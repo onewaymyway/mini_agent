@@ -658,6 +658,11 @@ monkeypatch 打桩验证文本原样出现在 `inputs` 字典里；`generate_sce
   的扩展点；如果后续模板需要模板专属徽章，需要在 `compute_achievements`
   之外再加一层"模板徽章插件"机制，阶段七范围内认为通用 6 个已经够验证
   "游戏化反馈"这个方向的价值。
+- **因果树/待兑现关系按分支隔离，但只对新写入的步生效（第二十二轮
+  WP0）**：旧实例历史里没有快照，行为与此前一致；边界与取舍见
+  `world_simulator/dynamic_state.py` docstring 与"变更记录"第二十二轮
+  P0 条目。`confirmed_*`/`suggested_causal_lines` 等其它 settings 列表
+  仍是实例级共享。
 
 ## 目录结构
 
@@ -4056,3 +4061,61 @@ deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
   自觉的发现机制、这个机制默认是不是开着"这一层；`capabilities_
   gained` 最终是否真的被模型采纳仍然完全是模型的判断，同一贯"建议
   而非强制"的设计边界。
+
+- 2026-09-30（第二十二轮 · 阶段 P0 / WP0，依据 `next_doc/world_simulator_
+  realism_tech_and_causal_engine_plan.md`，用户确认：执行顺序按
+  WP0→WP4→WP5→WP1/2/3、接受 `elapsed_days`（在 WP1 引入）、WP0 只对
+  新写入的步隔离且不迁移旧数据、一次只做一个阶段）：**修复因果树/待
+  兑现关系不按分支隔离的缺陷**。
+  **缺陷（先写复现测试，确认为红，再修）**：`fork_branch` 只复制历史与
+  自动挡配置，不复制/回滚 `manifest.settings`；而 `_apply_tree_updates`
+  把因果树状态就地写进 `manifest.settings["causal_lines"]`、
+  `relationship_pending_effects` 也在 `settings` 里——分叉后在新分支
+  推进会改写树，切回主线看到的是被另一条时间线改过的树。复现测试里
+  "新分支印证一个分支 → 切回主线，主线该分支仍是 `resolved`"，与计划
+  文档 §2.4 的读码推断一致。
+  1. **`state_model.py`**：`SimState` 新增可选字段 `dynamic_snapshot`
+     （`None` 时 `to_dict()` 不输出该 key，旧格式逐字节不变；`from_dict`
+     深拷贝）。
+  2. **新增 `world_simulator/dynamic_state.py`**：纳入范围
+     `DYNAMIC_KEYS = ("causal_lines", "relationship_pending_effects")`
+     （后续 WP 的 `tech_state`/`causal_pending` 在此追加）。
+     `snapshot_if_changed()`（有变化才写，空值视同不存在）、
+     `latest_snapshot()`（向前回溯最近一份）、`commit_working_copy()`、
+     `enter_branch()`、`load_branch_dynamic_state()`（只读，供对比视图/
+     后续 WP 读非活跃分支的树）。
+  3. **与计划文档的一处细化**：计划写"读取改走快照"。实际有十几处既有
+     读取方直接读 `manifest.settings`（`app.py`/`html_export.py`/
+     `spec_generator.py`/`hypothesis.py`/`advance_independent.py` 等），
+     逐处改会大面积改动界面代码。这里改为：**`manifest.settings` 保留
+     为"当前活跃分支的工作副本"，读取方一处都不改**，由分支操作在两个
+     时点与分支对齐——离开分支时把工作副本提交到该分支头部（仅当与
+     最近快照不一致才写盘）、进入分支时用该分支最近快照刷新工作副本。
+     语义等价于计划（每条分支有自己的树，分叉即回滚到那一刻），改动面小。
+  4. **`engine/advance.py` / `engine/advance_independent.py`**：落盘新
+     一步前调用 `snapshot_if_changed()`。`relationship_pending_effects`
+     的入队原先在 `append_state()` 之后，现前移到它之前（只改内存里的
+     `manifest.settings`，逻辑不变），否则快照拿不到这一步的入队。
+  5. **`branch_manager.py`**：`fork_branch`（活跃分支为源时先提交工作
+     副本；回溯不到快照时兜底用工作副本；`switch=True` 时刷新工作副本）、
+     `switch_branch`（提交旧分支 + 刷新新分支）、`merge_branch`（target
+     是活跃分支时按合并后的历史刷新工作副本）。`explore_branches` 只
+     编排 fork/advance/switch，自动获得隔离，无需改动。
+  6. **测试**：新增 `tests/test_branch_dynamic_state.py`（10 个用例）：
+     缺陷复现、分叉回滚语义、`explore_branches` 不污染主线、旧实例离开
+     时提交、旧实例无动态状态不产生快照、仅变化时写快照、设置面板手改
+     不丢、待兑现关系按分支隔离、合并刷新工作副本、序列化往返与省略。
+  **验收**：`pytest tests/`（739 passed，改动前基线 729 passed，含本轮
+  新增 10 个用例），未见回归。跑测试需要装 `fastapi`/`streamlit`/
+  `json_repair`（缺它们时 19 个既有用例会因 ImportError 失败，与本轮无关）。
+  **已知边界（如实记录，详见 `dynamic_state.py` docstring）**：
+  ① 旧实例只从新写入的步开始隔离，不迁移旧步；旧实例首次"离开分支"时
+  会往该分支头部提交一份快照，这是新写入而非回填；② 旧实例从更早的步
+  分叉时，旧历史里没有当时的树，回滚到的是"源分支离开时的工作副本"；
+  ③ 旧实例从**非活跃**且无快照的分支分叉，新分支不带快照，沿用工作
+  副本（等同旧行为，不算回退）；④ 快照是完整拷贝而非增量，只在有变化
+  的步写，`causal_lines` 很大时历史文件会相应变大；⑤ 只覆盖计划文档
+  点名的两类状态，`confirmed_*`/`suggested_causal_lines` 等其它
+  settings 里的列表仍是实例级共享，未纳入本轮（它们不是"因果树"，且
+  计划未列入，如需要另行评估）；⑥ 未在真实 LLM 与真实看板下运行，
+  `app.py` 无改动，看板行为按代码推断。

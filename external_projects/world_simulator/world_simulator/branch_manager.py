@@ -20,6 +20,7 @@ import string
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from world_simulator import dynamic_state
 from world_simulator.state_model import SimManifest, SimState
 from world_simulator.store import SimNotFoundError, SimStore, now_iso
 
@@ -147,6 +148,14 @@ def fork_branch(
     store = SimStore.for_root(data_dir, sim_id)
     manifest = store.load_manifest()
 
+    # 第二十二轮 WP0：分叉前先把"当前活跃分支的工作副本"提交到该分支
+    # 头部——工作副本（`manifest.settings` 里的因果树等）是活跃分支
+    # 的最新状态，可能还没落进历史（旧实例、或用户刚在设置面板里手改
+    # 过因果线）。提交之后，从活跃分支的任意一步分叉都能通过"向前回溯
+    # 最近一份快照"拿到分叉那一刻的树。只在真的有差异时才写盘。
+    if source_branch == manifest.branch:
+        dynamic_state.commit_working_copy(store, manifest, source_branch)
+
     source_history = store.load_history(source_branch)
     if not source_history:
         raise BranchError(f"分支 {source_branch!r} 没有历史，无法分叉")
@@ -159,6 +168,17 @@ def fork_branch(
     cutoff = cutoff[:-1] + [
         dataclasses.replace(cutoff[-1], chosen_option_id=None, chosen_by=None, chosen_reason=None)
     ]
+
+    # 第二十二轮 WP0：新分支的动态状态 = 分叉点向前回溯到的最近一份
+    # 快照（随 `cutoff` 历史一起复制，天然是"回滚到那一刻的树"）。回溯
+    # 不到（旧实例的更早历史没有快照）时的兜底：源分支就是活跃分支
+    # 则用它的工作副本（等同旧行为，不算回退）；源分支不是活跃分支则
+    # 不带快照——工作副本属于别的分支，不能拿来充数。见
+    # `dynamic_state.py` 的"已知边界"。
+    if dynamic_state.latest_snapshot(cutoff) is None and source_branch == manifest.branch:
+        fallback = dynamic_state.extract(manifest.settings)
+        if fallback:
+            cutoff[-1] = dataclasses.replace(cutoff[-1], dynamic_snapshot=fallback)
 
     new_branch = branch_id or _new_branch_id()
     if new_branch == "main":
@@ -200,6 +220,9 @@ def fork_branch(
     if switch:
         manifest.branch = new_branch
         manifest.current_step = cutoff[-1].step
+        # 进入新分支：工作副本刷新成新分支自己的树（上面 `cutoff` 里的
+        # 快照）。离开旧分支的提交已经在函数开头做过。
+        dynamic_state.enter_branch(store, manifest, new_branch)
         # 镜像新分支自己的自动挡配置到 manifest 顶层字段，道理同
         # `switch_branch`/`engine.set_pilot_config` 的注释：既有代码
         # 读的是 manifest.pilot_mode/manifest.autopilot，切过去之后
@@ -230,6 +253,13 @@ def switch_branch(data_dir: Path, sim_id: str, branch_id: str) -> SimManifest:
     if current is None:
         raise BranchError(f"分支 {branch_id!r} 缺少当前状态，数据可能已损坏")
     pilot_cfg = store.load_pilot_config(branch_id)
+    # 第二十二轮 WP0：离开旧分支前，把工作副本提交到旧分支头部；进入
+    # 新分支后，用它自己的快照刷新工作副本（`manifest.settings` 里的
+    # 因果树/待兑现关系是"当前活跃分支的工作副本"，见 `dynamic_state.py`）。
+    # 切到自己（branch_id == 当前分支）时什么都不用做。
+    if branch_id != manifest.branch:
+        dynamic_state.commit_working_copy(store, manifest, manifest.branch)
+        dynamic_state.enter_branch(store, manifest, branch_id)
     manifest.branch = branch_id
     manifest.current_step = current.step
     manifest.pilot_mode = pilot_cfg["pilot_mode"]
@@ -363,6 +393,10 @@ def merge_branch(
     manifest = store.load_manifest()
     if manifest.branch == target:
         manifest.current_step = last_state.step
+        # 第二十二轮 WP0：target 的历史被替换了，它作为活跃分支的工作
+        # 副本（因果树等）也要跟着刷新成合并后历史里的快照——否则界面
+        # 会继续显示合并前的旧树。合并后的历史没有任何快照时不动。
+        dynamic_state.enter_branch(store, manifest, target)
         store.save_manifest(manifest)
 
     return last_state.step

@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -899,9 +900,30 @@ class SimState:
     向后兼容。
     """
 
+    dynamic_snapshot: Optional[Dict[str, Any]] = None
+    """分支作用域动态状态快照（第二十二轮 WP0，`next_doc/world_simulator_
+    realism_tech_and_causal_engine_plan.md` §2.4/§4 WP0）。
+
+    因果树（`settings.causal_lines`）与待兑现关系（`settings.
+    relationship_pending_effects`）这类"随时间线变化"的状态，此前存在
+    整个实例共享的 `manifest.settings` 里，分叉后两条时间线会互相污染。
+    现在这类状态**在有变化的那一步**以完整快照的形式写进该步：读取时
+    向前回溯最近一份（见 `dynamic_state.py::latest_snapshot()`），
+    `fork_branch` 复制历史时快照跟着走，新分支天然拿到"分叉那一刻的
+    树"。`manifest.settings` 里的同名 key 只是**当前活跃分支的工作
+    副本**，供既有读取方（界面/导出/prompt 构造）继续使用，不需要改。
+
+    `None` = 这一步没有变化（不重复写）或旧数据（没有快照）；`to_dict()`
+    在 `None` 时不输出该 key，旧格式逐字节不变。不做旧数据迁移：
+    旧实例的历史里没有快照时，行为与从前完全一致（读 `manifest.
+    settings`）。
+    """
+
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         d["options"] = [o.to_dict() if isinstance(o, ChoiceOption) else o for o in self.options]
+        if d.get("dynamic_snapshot") is None:
+            d.pop("dynamic_snapshot", None)  # 关闭态/旧数据：不输出该 key，逐字节不变
         return d
 
     @classmethod
@@ -978,6 +1000,11 @@ class SimState:
                 dict(x) for x in (data.get("capabilities_gained") or []) if isinstance(x, dict)
             ],
             skill_version=str(data.get("skill_version", "") or ""),
+            dynamic_snapshot=(
+                copy.deepcopy(data["dynamic_snapshot"])
+                if isinstance(data.get("dynamic_snapshot"), dict)
+                else None
+            ),
         )
 
 

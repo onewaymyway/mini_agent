@@ -24,6 +24,7 @@ from world_simulator.engine.background_entities import (
     _normalize_background_entities,
 )
 from world_simulator import causal_tree, relationship
+from world_simulator import dynamic_state
 from world_simulator.engine.causal_lines import _apply_tree_updates, _auto_register_causal_lines
 from world_simulator.engine.errors import SimAlreadyEndedError, SimEngineError, SimPausedError
 from world_simulator.engine.ids import _read_skill_version, _skill_name_for_template
@@ -769,19 +770,6 @@ def advance(
     # 刚生成的 `tree_updates` 审计结果。
     next_state.decision_opportunity = _build_decision_opportunity(next_state)
 
-    store.append_state(next_state, branch=branch)
-
-    # 阶段二十（4.12 节 2.）：把这一步的结构化因果链沉淀进跨模拟知识库。
-    # 纯旁路操作，落盘之后才做、失败不影响本次推进（见
-    # `_safe_record_causal_links` docstring）。
-    _safe_record_causal_links(
-        data_dir,
-        sim_id=sim_id,
-        template=manifest.template,
-        causal_links=next_state.causal_links,
-        step=next_state.step,
-    )
-
     # 阶段三十六第二批（2.2 节）：把这一步 skill 声明的
     # `triggered_relationships` 记入 `settings.relationship_pending_
     # effects`，供 `_resolve_relationship_hint()` 在到期那一步提醒
@@ -800,6 +788,29 @@ def advance(
                 triggered_at_step=next_state.step,
             )
         manifest.settings["relationship_pending_effects"] = pending
+
+    # 第二十二轮 WP0：分支作用域动态状态。因果树/待兑现关系有变化时把
+    # 完整快照写进这一步（见 `dynamic_state.py`），这样分叉后两条时间线
+    # 各自持有自己的树，不再共用 `manifest.settings` 里那一份。必须在
+    # 上面所有对这两类状态的修改之后、`append_state()` 之前计算——快照
+    # 要包含这一步的入队/树更新结果。`history_for_prompt` 是推进前的
+    # 该分支历史，用来找上一份快照做变化判断。
+    next_state.dynamic_snapshot = dynamic_state.snapshot_if_changed(
+        manifest.settings, history_for_prompt
+    )
+
+    store.append_state(next_state, branch=branch)
+
+    # 阶段二十（4.12 节 2.）：把这一步的结构化因果链沉淀进跨模拟知识库。
+    # 纯旁路操作，落盘之后才做、失败不影响本次推进（见
+    # `_safe_record_causal_links` docstring）。
+    _safe_record_causal_links(
+        data_dir,
+        sim_id=sim_id,
+        template=manifest.template,
+        causal_links=next_state.causal_links,
+        step=next_state.step,
+    )
 
     # 第十轮批次一（`next_doc/world_simulator_tenth_round_problem_
     # discovery_automation_plan.md` 3 节）：Problem Discovery 自动

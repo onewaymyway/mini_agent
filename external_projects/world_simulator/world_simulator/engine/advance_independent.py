@@ -40,6 +40,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
+from world_simulator import dynamic_state
 from world_simulator.engine.errors import (
     OwnedVarsOverlapError,
     SimAlreadyEndedError,
@@ -264,6 +265,13 @@ def advance_lines(cfg, workspace_root: Path, data_dir: Path, sim_id: str) -> Sim
         time_label=current.time_label or "",
         time_granularity=current.time_granularity,
         line_updates=line_updates,
+    )
+
+    # 第二十二轮 WP0：`local_step` 推进改动了 `causal_lines`，同样按
+    # 分支写快照（见 `dynamic_state.py`）。这里只在落盘前多读一次历史
+    # 用于变化判断，不影响推进逻辑。
+    next_state.dynamic_snapshot = dynamic_state.snapshot_if_changed(
+        manifest.settings, store.load_history(branch)
     )
 
     store.append_state(next_state, branch=branch)
