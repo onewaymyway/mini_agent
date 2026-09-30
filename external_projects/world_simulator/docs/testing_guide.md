@@ -57,6 +57,7 @@ python -m pytest tests/ -v
 | `test_autopilot.py` | 是 | 自动挡代选记录、拒绝 LLM 编造的选项 id、未开启自动挡报错、重大决策触发暂停、批量推进跳过手动挡实例、单实例失败不中断整批 | 6 个用例全绿 |
 | `test_multi_template.py` | 是 | 新模板（`group_evolution`）能正确绑定到对应 skill、端到端创建+推进跑通，验证"新增模板不改引擎代码" | 2 个用例全绿 |
 | `test_branch_dynamic_state.py` | 是（打桩，无需真实 LLM） | 第二十二轮 WP0：因果树/待兑现关系按分支隔离——分叉后推进不污染主线、分叉即回滚、`explore_branches` 不污染主线、旧实例离开分支时提交、手改因果线不丢、合并后刷新、序列化往返 | 10 个用例全绿 |
+| `test_consistency_guard.py` | 是（打桩，无需真实 LLM） | 第二十二轮 WP4：一致性守卫 C1–C8 的判定边界（成熟度跳级/倒退、分支复活、前置违规、非常规迁移、数值波动、事件密度、边覆盖、校准）、`advance()` 端到端记录 C2、开关与异常兜底、序列化往返 | 23 个用例全绿 |
 
 **如何判断"没测通过"**：任何一条 `FAILED`（而不是因为上述 `fastapi`
 之类的环境缺依赖导致的 `ImportError` collection error）都说明改动

@@ -660,6 +660,21 @@ def _option_warnings_html(state) -> str:
     return "".join(lines)
 
 
+def _consistency_warnings_html(state) -> str:
+    """渲染这一步一致性守卫（`consistency_guard.py`，第二十二轮 WP4）的
+    结构性提示（可能为空）。风格同 `_option_warnings_html()`：只展示、
+    不阻断，措辞用"建议检查"——这些是结构性代理检查，会有误报。"""
+    warnings = getattr(state, "consistency_warnings", None) or []
+    if not warnings:
+        return ""
+    lines = []
+    for w in warnings:
+        code = _html_text(str(w.get("code", "")))
+        note = _html_text(str(w.get("message", "")))
+        lines.append(f'<div class="ws-chapter-option-warning">🧭 一致性提示 {code}：{note}</div>')
+    return "".join(lines)
+
+
 def _background_entities_html(state) -> str:
     """渲染这一步被 Hierarchical Agent 规则外推覆盖的背景角色提示
     （阶段十九，4.10 节设计草案第一步，可能为空）。纯信息性说明，不是
@@ -2411,7 +2426,7 @@ def _render_timeline(
         granularity_note = _granularity_note_html(state)
         resource_note = _resource_violations_html(state)
         relation_note = _relation_violations_html(state)
-        option_warnings_note = _option_warnings_html(state)
+        option_warnings_note = _option_warnings_html(state) + _consistency_warnings_html(state)
         background_note = _background_entities_html(state)
         key_drivers_note = _key_drivers_html(state)
         line_updates_note = _line_updates_html(state, causal_lines_meta)
@@ -4116,6 +4131,53 @@ def page_detail() -> None:
             "因果一致性、决策真实性这两条评价标准需要理解语义内容才能"
             "判断，暂时没有自动化的衡量方式，仍需自行阅读叙事/因果图判断。"
         )
+
+    # 第二十二轮 WP4：真实性体检（结构性检查，不是语义真实性评分）。
+    # 每次渲染都从历史现算，纯 Python、不调 LLM；默认折叠。
+    with st.expander("🩺 真实性体检（结构性检查，非真实性评分）"):
+        health = quality_signals_mod.summarize_realism_health(
+            history,
+            causal_lines=manifest.settings.get("causal_lines"),
+            declared_causal_graph=manifest.settings.get("declared_causal_graph"),
+        )
+        st.markdown(
+            f'<span class="ws-muted">{_html_text(health["disclaimer"])}'
+            "能力成熟度、因果树状态迁移、数值波动等只看结构，语义上是否合理仍需自行判断；"
+            "存在误报。</span>",
+            unsafe_allow_html=True,
+        )
+        counts = health["warning_counts"]
+        st.caption(
+            "结构性告警："
+            + ("，".join(f"{code} × {n}" for code, n in sorted(counts.items())) if counts else "暂无")
+        )
+        cov = health["coverage"]
+        st.caption(
+            f"分支状态检查（C2/C3/C4）覆盖 {cov['tree_transition_pairs_checked']} 处快照变化——"
+            "只覆盖新版本之后写入的步，旧步无法核验。"
+        )
+        dens = health["c5_event_density"]
+        if dens["ratio"] is not None:
+            st.caption(
+                f"事件密度（C5）：{dens['advanced_steps']} 步中 {dens['dramatic_steps']} 步有重大决策/"
+                f"结构性变化/新能力（{dens['ratio']:.0%}），最长连续 {dens['longest_run']} 步。"
+            )
+        edge = health["c7_edge_coverage"]
+        if edge["ratio"] is not None:
+            st.caption(
+                f"跨线因果链未在先验因果图声明的占比（C7）：{edge['ratio']:.0%}"
+                f"（{edge['cross_line_links']} 条中 {edge['undeclared']} 条）"
+            )
+        calib = health["c8_tree_calibration"]
+        for level, label in (("high", "高"), ("medium", "中"), ("low", "低")):
+            g = calib[level]
+            if g["terminal"]:
+                st.caption(
+                    f"未来树校准（C8）· 可能性「{label}」：已终结 {g['terminal']} 个，"
+                    f"命中 {g['resolved']} 个（{g['hit_rate']:.0%}）——样本少时不具统计意义。"
+                )
+        for w in health["warnings"][-20:]:
+            st.caption(f"第 {w['step']} 步 · {w['code']}：{w['message']}")
 
     # 阶段三十二（4.6 节，用户本次明确要求）：模拟复盘 / 经验教训总结。
     # 不自动触发——LLM 调用有成本，且复盘本身应该是用户主动想回顾时
@@ -6390,7 +6452,7 @@ def page_game() -> None:
     granularity_note = _granularity_note_html(s)
     resource_note = _resource_violations_html(s)
     relation_note = _relation_violations_html(s)
-    option_warnings_note = _option_warnings_html(s)
+    option_warnings_note = _option_warnings_html(s) + _consistency_warnings_html(s)
     background_note = _background_entities_html(s)
     key_drivers_note = _key_drivers_html(s)
     line_updates_note = _line_updates_html(s, manifest.settings.get("causal_lines"))

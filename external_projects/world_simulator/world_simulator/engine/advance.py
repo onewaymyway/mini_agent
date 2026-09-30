@@ -12,6 +12,7 @@ plan.md` 4.18 节剩余部分）。`advance()` 本身是原 `engine.py` 里
 
 from __future__ import annotations
 
+import copy
 import json
 import secrets
 import time
@@ -24,7 +25,7 @@ from world_simulator.engine.background_entities import (
     _normalize_background_entities,
 )
 from world_simulator import causal_tree, relationship
-from world_simulator import dynamic_state
+from world_simulator import consistency_guard, dynamic_state
 from world_simulator.engine.causal_lines import _apply_tree_updates, _auto_register_causal_lines
 from world_simulator.engine.errors import SimAlreadyEndedError, SimEngineError, SimPausedError
 from world_simulator.engine.ids import _read_skill_version, _skill_name_for_template
@@ -762,6 +763,13 @@ def advance(
     # `tree_updates` 才有对象可以合并。合并结果同时记回 `next_state.
     # tree_updates`（审计摘要），需要在 `store.append_state()` 之前
     # 完成，否则历史里就存不到这份摘要。
+    # 第二十二轮 WP4：一致性守卫需要"这一步树更新前后"的对比，所以在
+    # 合并之前先留一份深拷贝（只在守卫开启时才拷，关闭时零开销）。
+    tree_before = (
+        copy.deepcopy(manifest.settings.get("causal_lines"))
+        if consistency_guard.is_enabled(manifest.settings)
+        else None
+    )
     next_state.tree_updates = _apply_tree_updates(manifest, next_state, data)
 
     # 4.10 节（阶段三十三第五批）：把这一批 options 共享的决策背景
@@ -797,6 +805,16 @@ def advance(
     # 该分支历史，用来找上一份快照做变化判断。
     next_state.dynamic_snapshot = dynamic_state.snapshot_if_changed(
         manifest.settings, history_for_prompt
+    )
+
+    # 第二十二轮 WP4：结构性一致性检查，只记录不阻断、不改数值；出错或
+    # 关闭时返回空列表（`safe_check_step` 内部兜底）。
+    next_state.consistency_warnings = consistency_guard.safe_check_step(
+        history_for_prompt,
+        next_state,
+        manifest.settings,
+        tree_before=tree_before,
+        tree_after=manifest.settings.get("causal_lines"),
     )
 
     store.append_state(next_state, branch=branch)

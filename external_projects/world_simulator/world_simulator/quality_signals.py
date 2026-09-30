@@ -165,3 +165,25 @@ def summarize_quality_signals(
             "ratio": _ratio(steps_with_uncertain_fields, total_steps),
         },
     }
+
+
+def summarize_realism_health(
+    history: Sequence[Any],
+    causal_lines: Optional[Sequence[Any]] = None,
+    declared_causal_graph: Optional[Sequence[Any]] = None,
+) -> Dict[str, Any]:
+    """实例级"真实性体检"（第二十二轮 WP4）：委托 `consistency_guard.
+    analyze_history()`，重新计算 C1–C8 并汇总。
+
+    和上面 `summarize_quality_signals()` 的区别：那五项是"信息密度"计数；
+    这里检查的是**结构上有没有明显作弊**（能力成熟度跳级、分支复活、
+    前置违规、数值波动异常……）。同样是纯 Python、不调 LLM、不是评分；
+    展示时必须带上返回值里的 `disclaimer`。单独成函数而不是给
+    `summarize_quality_signals()` 加 key，是为了不改变它既有返回结构
+    （已有调用方/测试按固定 key 集合使用）。
+    """
+    from world_simulator import consistency_guard
+
+    return consistency_guard.analyze_history(
+        history, causal_lines=causal_lines, declared_causal_graph=declared_causal_graph
+    )

@@ -1,7 +1,7 @@
 # world_simulator 改进计划（第二十二轮）：让技术/事物发展更真实、因果树可执行可校验
 
 > **状态（2026-09-30 更新）：方案已确认，按阶段实施中。**
-> 已完成：**P0（WP0 分支隔离）**，详见文末 §9。未开始：P1（WP4）起。
+> 已完成：**P0（WP0 分支隔离）**、**P1（WP4 一致性守卫+真实性体检）**，详见文末 §9。未开始：P2（WP5 回测）起。
 > 本文只依据阅读代码得出结论，没有跑过真实 LLM，也没有在运行时复现
 > 下文 §2.4 之外的缺陷——每一条"现状"都标注了代码位置，"推断"会明说。
 > §2.4 的缺陷已在 P0 里写复现测试确认（先红后绿）。
@@ -349,3 +349,27 @@ perceived_stage?}`。阶段序数沿用现有 6 档，不新造枚举。
   `confirmed_*`/`suggested_causal_lines` 等其它 settings 列表未纳入；
   未在真实 LLM 与真实看板下验证，`app.py` 无改动。
 - **下一阶段**：P1 / WP4（一致性守卫 + 真实性体检）。
+
+### P1 / WP4 — 一致性守卫 + 真实性体检（已完成，2026-09-30）
+
+- **新增** `world_simulator/consistency_guard.py`（纯 Python、不调 LLM）：
+  C1–C8 八项检查，判定口径与阈值写在模块 docstring 里。逐步守卫结果写入
+  新字段 `SimState.consistency_warnings`（空时不输出，旧格式不变）；
+  `advance()` 在树更新前留深拷贝、落盘前调用 `safe_check_step()`（异常
+  返回空列表）。实例级体检 `analyze_history()` 从历史重算，C2–C4 走 WP0
+  的快照链；`quality_signals.summarize_realism_health()` 委托它。
+  `app.py`：每步"🧭 一致性提示" + 折叠面板"🩺 真实性体检"。
+- **与 §4 WP4 的偏离/细化**：① 守卫开关 `consistency_guard_enabled`
+  **默认开**（计划 §0 写"新机制默认关闭"，但 WP4 只读只记录，关闭则拿不到
+  C2–C4 逐步数据；可显式关）；② C5/C7 只统计不告警（按计划）；③ C8 校准
+  率**没有**写入 `knowledge_base`（计划标为可选，有跨实例副作用，待你确认）；
+  ④ 没给 `summarize_quality_signals()` 加 key，另设 `summarize_realism_health()`。
+- **验收**：`pytest tests/` 762 passed（P0 后基线 739，新增 23）；做过变异
+  验证（C2 判定置空 → 3 个用例转红）。
+- **已知边界**：结构非语义、会有误报（C6 在步长可变时最明显，`elapsed_days`
+  待 WP1）；C3 只能核验按 id 解析得到的前置，默认树无前置时恒为 0；C1 依赖
+  模型填 `maturity_stage`，`regression_reason` 暂无 prompt 引导；旧实例的
+  C2–C4 只覆盖 WP0 之后的步；`advance_lines()` 无逐步守卫；界面未在真实
+  看板目视验证；**告警在真实 LLM 输出上的误报率未知**。
+- **下一阶段**：P2 / WP5（回测框架）。开始前需要你给回测案例，或同意我
+  起草 1–2 个示例（日期由你核对）。

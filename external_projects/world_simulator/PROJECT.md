@@ -663,6 +663,10 @@ monkeypatch 打桩验证文本原样出现在 `inputs` 字典里；`generate_sce
   `world_simulator/dynamic_state.py` docstring 与"变更记录"第二十二轮
   P0 条目。`confirmed_*`/`suggested_causal_lines` 等其它 settings 列表
   仍是实例级共享。
+- **一致性守卫只做结构性检查、只记录不阻断（第二十二轮 WP4）**：
+  `consistency_guard.py` 的八项检查度量"结构上有没有明显作弊"，不是语义
+  真实性评分，会有误报；默认开启（`settings.consistency_guard_enabled`），
+  不想要可设 False。详见"变更记录"第二十二轮 P1 条目。
 
 ## 目录结构
 
@@ -4119,3 +4123,57 @@ deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
   settings 里的列表仍是实例级共享，未纳入本轮（它们不是"因果树"，且
   计划未列入，如需要另行评估）；⑥ 未在真实 LLM 与真实看板下运行，
   `app.py` 无改动，看板行为按代码推断。
+
+- 2026-09-30（第二十二轮 · 阶段 P1 / WP4，依据 `next_doc/world_simulator_
+  realism_tech_and_causal_engine_plan.md` §2.5/§4 WP4）：**一致性守卫 +
+  真实性体检**。目标是"先量尺子"——给已有实例出结构性基线数字，暴露
+  问题，不阻断、不修复、不改任何数值/状态。
+  1. **新增 `world_simulator/consistency_guard.py`**（纯 Python、不调
+     LLM）。八项检查：C1 能力 `maturity_stage` 跳级（相邻两次出现
+     序数差 >1）/倒退（<0，带 `regression_reason` 不告警）；C2 已终结
+     分支（resolved/expired/invalidated）又变回 active/emerging；C3 分支
+     变 active 时，`prerequisites` 里能按 id 解析到的前置未 resolved
+     （自由文本/跨线重名歧义算"无法核验"，不告警只计数）；C4 其它非常规
+     状态迁移（终结态之间改判、active→dormant 等）；C5 事件密度（只统计）；
+     C6 数值叶子字段本步变化量相对其历史变化量的 z 值超阈（默认
+     `z_threshold=4.0`、`min_deltas=5`，`granularity_changed` 那步跳过，
+     标准差为 0 时用 `0.1×|均值|` 兜底）；C7 跨线因果链未在
+     `declared_causal_graph` 声明的边占比（只统计）；C8 已终结分支按
+     `likelihood` 分组的命中率。
+  2. **`SimState.consistency_warnings`**（新增，空列表时 `to_dict()` 不
+     输出，旧格式逐字节不变）；`engine/advance.py` 在树更新前留一份深拷贝
+     （仅守卫开启时）、落盘前调用 `safe_check_step()`（任何异常返回空列表，
+     绝不连累推进）。C2/C3/C4 因此拿到"这一步树更新前后"的对比。
+  3. **开关 `settings.consistency_guard_enabled`，默认开**。这是对计划
+     §0"新机制默认关闭"的**一处有意偏离**：守卫只读、只记录，关闭反而
+     拿不到 C2–C4 的逐步数据；不想要可显式设 False。阈值可在 settings
+     里用同名 key 覆盖（`z_threshold`/`min_deltas`/`run_threshold`）。
+  4. **实例级体检**：`consistency_guard.analyze_history()` 从历史重算全部
+     检查；C2–C4 走 WP0 的 `dynamic_snapshot` 链，因此只覆盖 WP0 之后
+     写入的步，`coverage` 字段如实报告。`quality_signals.py` 新增
+     `summarize_realism_health()`（委托上面；没有给
+     `summarize_quality_signals()` 加 key，以免改变既有返回结构）。
+  5. **`app.py`**：每步章节新增"🧭 一致性提示"（同 `option_warnings` 的
+     样式）；详情页新增折叠面板"🩺 真实性体检（结构性检查，非真实性评分）"，
+     必带免责声明。**界面只做了语法检查与既有测试回归，未在真实看板里
+     目视验证**。
+  6. **测试**：新增 `tests/test_consistency_guard.py`（23 个用例），含
+     `advance()` 端到端（已印证分支被复活 → 记录 C2、树上照常生效、体检
+     重算得到同一条告警）、开关、异常兜底、序列化往返。做过一次变异
+     验证：把 C2 判定置空后 3 个相关用例转红，恢复后全绿。
+  **验收**：`pytest tests/` 762 passed（P0 后基线 739，含本轮新增 23 个）。
+  **已知边界（如实记录）**：① 度量的是结构而非语义，会有误报（C6 在
+  步长可变时最明显——`elapsed_days` 要到 WP1 才引入，之前无法归一）；
+  ② C3 只能核验能按 id 解析的前置，默认兜底树没有前置，该项在不写
+  `prerequisites` 的实例上恒为 0，不代表"没问题"；③ C1 依赖 skill 输出
+  `maturity_stage`（`capability_discovery` 的可选子字段），模型不填就
+  没数据；`regression_reason` 目前没有任何 prompt 会引导模型输出，
+  所以倒退基本都会告警——这是有意保守，WP1 的 prompt 改动再补；
+  ④ C5/C7 只统计不告警（阈值应由基线数据决定）；C8 的 `likelihood` 是
+  分支**当前**值，不追溯创建时取值，样本少时无统计意义；
+  ⑤ 没有把 C8 校准率写进跨模拟 `knowledge_base`（有副作用，计划里是
+  可选项，待确认）；⑥ `advance_lines()` 独立推进路径没有逐步守卫，
+  体检从历史重算会覆盖到；⑦ 旧实例首次"离开分支提交"写下的快照会让
+  C2–C4 把之前若干步的变化都归到那一步，属于旧数据固有的归因粗糙；
+  ⑧ 未在真实 LLM 下运行，告警在真实输出上的误报率**未知**——这正是
+  下一步（P2 / WP5 回测）之前需要用基线数据回答的问题。

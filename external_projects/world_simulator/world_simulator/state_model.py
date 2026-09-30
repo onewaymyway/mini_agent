@@ -919,11 +919,27 @@ class SimState:
     settings`）。
     """
 
+    consistency_warnings: List[Dict[str, Any]] = field(default_factory=list)
+    """一致性守卫（第二十二轮 WP4，`consistency_guard.py`）对*本状态*这一步
+    做的结构性检查结果：**只记录、不阻断、不改任何数值/状态**，同
+    `option_warnings`/`relation_violations` 的"仅展示、供人工抽查"取舍。
+
+    每项形如 `{"code": "C1", "severity": "warn", "step": 7, "message":
+    "...", "detail": {...}}`；`code` 见 `consistency_guard.py` 顶部表格
+    （C1 成熟度跳级/倒退、C2 分支复活、C3 前置违规、C4 非常规状态迁移、
+    C6 数值波动异常）。度量的是**结构上有没有明显作弊**，不是语义
+    真实性评分。空列表 = 没有告警或守卫未开启（`settings.
+    consistency_guard_enabled`，默认开）；`to_dict()` 在空列表时不输出
+    该 key，旧格式逐字节不变，旧数据读回为空列表。
+    """
+
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         d["options"] = [o.to_dict() if isinstance(o, ChoiceOption) else o for o in self.options]
         if d.get("dynamic_snapshot") is None:
             d.pop("dynamic_snapshot", None)  # 关闭态/旧数据：不输出该 key，逐字节不变
+        if not d.get("consistency_warnings"):
+            d.pop("consistency_warnings", None)
         return d
 
     @classmethod
@@ -1000,6 +1016,9 @@ class SimState:
                 dict(x) for x in (data.get("capabilities_gained") or []) if isinstance(x, dict)
             ],
             skill_version=str(data.get("skill_version", "") or ""),
+            consistency_warnings=[
+                copy.deepcopy(x) for x in (data.get("consistency_warnings") or []) if isinstance(x, dict)
+            ],
             dynamic_snapshot=(
                 copy.deepcopy(data["dynamic_snapshot"])
                 if isinstance(data.get("dynamic_snapshot"), dict)
