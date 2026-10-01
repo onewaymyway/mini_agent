@@ -689,6 +689,11 @@ monkeypatch 打桩验证文本原样出现在 `inputs` 字典里；`generate_sce
   P5b 起：兑现结论回写 `knowledge_base`（`causal_kb_writeback` 默认开）、关系延迟新增 `delay_days`、
   技术违规可选修复调用（`tech_repair_enabled` 默认关）。详见 `docs/causal_engine_guide.md`、
   `docs/tech_model_guide.md` 与"变更记录"第二十二轮 P5a/P5b 条目。
+- **因果树接地（第二十二轮 WP3 · P5c，默认关闭）**：`tree_grounding_enabled` 开启后，分支要 active 须前置
+  `resolved`、同一线内 `exclusive_group` 互斥，违反时引擎降回 `emerging` 并记录（G1/G2）；分支可带结构化
+  `trigger_condition`，满足时默认只给建议，子开关 `tree_auto_transition` 才自动置 active / 落败者置
+  invalidated（G4/G5）；体检新增 likelihood 校准账本。不改数值、不判断条件语义，没有在真实 LLM 下验证。
+  详见 `docs/tree_grounding_guide.md`。
 
 ## 目录结构
 
@@ -4404,3 +4409,25 @@ deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
   开启后新排队的项生效，旧待办仍按步。
   **下一阶段**：P5c / 3c（树接地：前置强制、结构化触发条件与 `trigger_met` 建议、`exclusive_group`、
   `likelihood` 校准账本；自动迁移放子开关 `tree_auto_transition` 默认关）。
+- 2026-10-01（第二十二轮 · 阶段 P5c：WP3 的 3c 树接地，依据 `next_doc/world_simulator_realism_tech_and_causal_engine_plan.md`）：
+  1. **新增 `world_simulator/tree_grounding.py`**：`enforce_step`（G1 前置强制、G2/G3 互斥组、子开关下 G4 触发条件
+     自动 active、G5 互斥落败者自动 invalidated）、`pending_suggestions`（trigger_met/trigger_blocked/exclusive_loser/
+     prereq_unmet）、`build_hint`、`build_likelihood_ledger`/`summarize_ledger`（终结时刻档位命中率+倒挂）。
+  2. **接线**：`causal_tree._normalize_branch` 新增可选 `trigger_condition`/`exclusive_group`（仅填写时输出）；
+     `SimState.tree_grounding`（空不输出）；`engine/advance.py` 在技术裁决后、因果引擎入队前、快照前裁决，结果写回
+     `manifest.settings["causal_lines"]` 并修正本步 `tree_updates` 审计；`consistency_guard.analyze_history` 新增
+     `c8_likelihood_ledger`；`quality_signals.summarize_realism_health(config=)`；两个 workflow 加
+     `{tree_grounding_hint}`；三个模板 SKILL.md 补字段说明。
+  3. **界面**：设置页三项（总开关/自动迁移/名义命中率）、「🌳 因果树接地」面板、每步 G 记录、体检账本。
+  4. **文档**：新增 `docs/tree_grounding_guide.md`；更新 `docs/README.md`、`docs/testing_guide.md`、
+     `docs/causal_engine_guide.md`、计划文档 §9。
+  5. **测试**：新增 `tests/test_tree_grounding.py`（45 个）。变异验证 17 个（G1/G2 检查去掉、追溯降级、审计不修正、
+     自动开关失效、G4/建议忽略前置互斥、账本取当前档位、倒挂不看样本量、G3 不记录、异常不兜底、占位者误算、
+     G5 误伤已终结分支、新字段总是输出、advance/hint 不接线、总开关失效）首轮 1 个存活（G5 误伤），补用例后全部转红。
+  **验收**：`pytest tests/` **1034 passed**（P5b 后基线 989，新增 45）；`streamlit.testing.AppTest` 详情页冒烟无异常。
+  **与计划的偏离/细化**：① 总开关独立（`tree_grounding_enabled`），不挂在 `causal_engine_enabled` 下；② 未改
+  `suggest_status_transitions()`，触发条件建议放新模块；③ 校准账本未写入 `knowledge_base`（仍待确认）。
+  **已知边界（如实记录）**：① 没有在真实 LLM 下运行过；② 引擎无法判断条件写得对不对；③ LLM 直接标 `resolved` 而
+  前置未满足不拦；④ 降级造成叙事与状态错位，只记录不消除；⑤ 只处理顶层分支，`advance_lines()` 不跑；⑥ `app.py`
+  设置页保存流程未实跑。
+  **下一阶段**：P5d / 3d（树影响世界）、3e（界面收尾），方案待你确认后再改代码。

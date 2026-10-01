@@ -1003,6 +1003,16 @@ E4 缺 reason/E6 队列已满/E0 引擎自身出错），每项 `{code, severity
 为什么。`to_dict()` 空时不输出。
     """
 
+    tree_grounding: List[Dict[str, Any]] = field(default_factory=list)
+    """因果树接地（`tree_grounding.py`，第二十二轮 WP3 / P5c）在*本步*做的裁决/动作（审计）：
+每项 `{code, action, severity, message, line_id, branch_id, detail?}`。`code`：G1 前置未满足
+→ active 降为 emerging、G2 互斥组已占位 → 降为 emerging、G3 互斥组内多个 resolved（只记录）、
+G4 触发条件满足 → 自动置 active、G5 互斥落败者自动置 invalidated、G0 引擎自身出错；`action`：
+`downgraded/flagged/auto_activated/auto_invalidated/error`。引擎**降级/自动迁移后的实际结果**
+已经体现在树里，这里说明为什么。空列表 = 未开启或本步没有动作；`to_dict()` 空时不输出，旧格式
+逐字节不变。
+    """
+
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         d["options"] = [o.to_dict() if isinstance(o, ChoiceOption) else o for o in self.options]
@@ -1020,7 +1030,7 @@ E4 缺 reason/E6 队列已满/E0 引擎自身出错），每项 `{code, severity
             d.pop("tech_repair", None)
         if not d.get("sampled_events"):
             d.pop("sampled_events", None)
-        for _key in ("causal_queued", "effect_dispositions", "causal_violations"):
+        for _key in ("causal_queued", "effect_dispositions", "causal_violations", "tree_grounding"):
             if not d.get(_key):
                 d.pop(_key, None)
         return d
@@ -1134,6 +1144,9 @@ E4 缺 reason/E6 队列已满/E0 引擎自身出错），每项 `{code, severity
             ],
             causal_violations=[
                 copy.deepcopy(x) for x in (data.get("causal_violations") or []) if isinstance(x, dict)
+            ],
+            tree_grounding=[
+                copy.deepcopy(x) for x in (data.get("tree_grounding") or []) if isinstance(x, dict)
             ],
         )
 

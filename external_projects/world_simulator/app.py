@@ -50,6 +50,7 @@ from world_simulator import reality_check as rc_mod
 from world_simulator import tech_model as tech_mod
 from world_simulator import event_sampler as event_mod
 from world_simulator import causal_engine as causal_mod
+from world_simulator import tree_grounding as tree_grounding_mod
 from world_simulator import retrospective as retrospective_mod
 from world_simulator import html_export as html_export_mod
 from world_simulator import agent_preview as agent_preview_mod
@@ -881,6 +882,55 @@ def _render_causal_panel(manifest, current, history) -> None:
                 f" · 抵消 {s_['countered']} · 自动结案 {s_['expired'] + s_['unaddressed']}"
                 f" · 兑现率 {rate}（{s_['concluded']} 次有结论）"
             )
+
+
+def _tree_grounding_html(state) -> str:
+    """因果树接地（第二十二轮 WP3 / P5c）本步的降级/自动迁移记录。透明记录，不是错误——
+    降级/自动迁移的结果已经体现在树里，这里说明为什么。"""
+    icons = {"downgraded": "⬇️", "flagged": "⚠️", "auto_activated": "⚡", "auto_invalidated": "✂️", "error": "⚙️"}
+    lines = []
+    for e in getattr(state, "tree_grounding", None) or []:
+        if not isinstance(e, dict):
+            continue
+        lines.append(
+            f'<div class="ws-chapter-option-warning">{icons.get(str(e.get("action")), "🌳")} 树接地 '
+            f'{html_stdlib.escape(str(e.get("code", "")))}：{html_stdlib.escape(str(e.get("message", "")))}</div>'
+        )
+    return "".join(lines)
+
+
+def _render_tree_grounding_panel(manifest, current) -> None:
+    """因果树接地面板（只读）：按**当前**状态算出的建议/被拦住的分支。结构化条件由 AI 或用户
+    填写，引擎只判断条件是否成立，不判断它写得对不对。"""
+    settings = manifest.settings
+    if not tree_grounding_mod.is_enabled(settings):
+        return
+    sugs = tree_grounding_mod.pending_suggestions(
+        settings.get("causal_lines"), getattr(current, "vars", None), settings
+    )
+    auto = tree_grounding_mod.auto_transition_enabled(settings)
+    with st.expander(f"🌳 因果树接地（{len(sugs)} 条当前建议/约束 · 自动迁移{'开' if auto else '关'}）"):
+        st.caption(
+            "前置未满足的分支不能直接 active、同一互斥组内不能同时 active；结构化触发条件只判断“是否成立”，"
+            "不判断条件本身写得对不对。自动迁移默认关闭，关闭时只给建议。"
+        )
+        if not sugs:
+            st.caption("当前没有触发条件已满足/被拦住/互斥落败/前置未满足的分支。")
+        labels = {
+            "trigger_met": "✅ 触发条件已满足（建议 active）",
+            "trigger_blocked": "⛔ 触发条件已满足但被拦住",
+            "exclusive_loser": "✂️ 互斥落败者（建议 invalidated）",
+            "prereq_unmet": "🔒 前置未满足（现在不能 active）",
+        }
+        for s_ in sugs:
+            extra = ""
+            if s_["kind"] == "trigger_blocked":
+                extra = " · " + "；".join(s_.get("reasons") or [])
+            elif s_["kind"] == "exclusive_loser":
+                extra = f" · 互斥组「{s_.get('exclusive_group')}」内「{s_.get('winner')}」已 resolved"
+            elif s_["kind"] == "prereq_unmet":
+                extra = " · 缺 " + ", ".join(s_.get("unmet_prerequisites") or [])
+            st.markdown(f"{labels.get(s_['kind'], s_['kind'])}：`{s_['line_id']}/{s_['branch_id']}`{extra}")
 
 
 def _consistency_warnings_html(state) -> str:
@@ -2649,7 +2699,7 @@ def _render_timeline(
         granularity_note = _granularity_note_html(state)
         resource_note = _resource_violations_html(state)
         relation_note = _relation_violations_html(state)
-        option_warnings_note = _option_warnings_html(state) + _consistency_warnings_html(state) + _tech_violations_html(state) + _sampled_events_html(state) + _causal_effects_html(state) + _causal_violations_html(state)
+        option_warnings_note = _option_warnings_html(state) + _consistency_warnings_html(state) + _tech_violations_html(state) + _sampled_events_html(state) + _causal_effects_html(state) + _causal_violations_html(state) + _tree_grounding_html(state)
         background_note = _background_entities_html(state)
         key_drivers_note = _key_drivers_html(state)
         line_updates_note = _line_updates_html(state, causal_lines_meta)
@@ -4359,6 +4409,7 @@ def page_detail() -> None:
     _render_tech_panel(manifest.settings)
     _render_event_panel(manifest, current, history)
     _render_causal_panel(manifest, current, history)
+    _render_tree_grounding_panel(manifest, current)
 
     # 第二十二轮 WP4：真实性体检（结构性检查，不是语义真实性评分）。
     # 每次渲染都从历史现算，纯 Python、不调 LLM；默认折叠。
@@ -4367,6 +4418,7 @@ def page_detail() -> None:
             history,
             causal_lines=manifest.settings.get("causal_lines"),
             declared_causal_graph=manifest.settings.get("declared_causal_graph"),
+            config={"likelihood_nominal": manifest.settings.get("likelihood_nominal") or None},
         )
         st.markdown(
             f'<span class="ws-muted">{_html_text(health["disclaimer"])}'
@@ -4404,6 +4456,18 @@ def page_detail() -> None:
                     f"未来树校准（C8）· 可能性「{label}」：已终结 {g['terminal']} 个，"
                     f"命中 {g['resolved']} 个（{g['hit_rate']:.0%}）——样本少时不具统计意义。"
                 )
+        ledger = health.get("c8_likelihood_ledger") or {}
+        for level, label in (("high", "高"), ("medium", "中"), ("low", "低")):
+            g = (ledger.get("by_likelihood") or {}).get(level) or {}
+            if g.get("n"):
+                gap = f"，与你给的名义值相差 {g['gap']:+.0%}" if g.get("gap") is not None else ""
+                st.caption(
+                    f"校准账本（终结时刻的可能性）·「{label}」：{g['n']} 个，命中 {g['resolved']} 个"
+                    f"（{g['hit_rate']:.0%}）{gap}"
+                    + ("" if g.get("enough_samples") else "——样本不足")
+                )
+        for inv in ledger.get("inversions") or []:
+            st.caption(f"⚠️ 档位倒挂：{inv['message']}（可能性档位没有区分度，或样本偶然）")
         for w in health["warnings"][-20:]:
             st.caption(f"第 {w['step']} 步 · {w['code']}：{w['message']}")
 
@@ -4865,6 +4929,34 @@ def page_detail() -> None:
                     "兑现与否是 AI 自报，引擎无法核验；同一分支同一步同一条边只计一次。"
                 ),
             )
+        cur_tg_enabled = bool(cur_settings.get("tree_grounding_enabled"))
+        with st.expander("高级：因果树接地（第二十二轮 WP3 / P5c，可选，默认关闭）"):
+            st.markdown(
+                '<span class="ws-muted">开启后，未来树开始<b>约束</b>世界：分支要变成 active，同树里能找到的前置分支必须已 resolved；'
+                "同一条线内同一 <code>exclusive_group</code> 的分支互斥；分支可带结构化触发条件 <code>trigger_condition</code>"
+                "（变量比较/技术阶段），满足时给 AI 建议。违反时引擎把 active 降回 emerging 并在时间线上记录，"
+                "<b>不改任何数值</b>；也无法判断条件本身写得对不对（条件由 AI 或你填写，是假设不是事实）。</span>",
+                unsafe_allow_html=True,
+            )
+            new_tg_enabled = st.checkbox(
+                "开启因果树接地", value=cur_tg_enabled, key="settings_tree_grounding_enabled",
+            )
+            new_tg_auto = st.checkbox(
+                "自动迁移（默认关闭）", value=bool(cur_settings.get("tree_auto_transition")),
+                key="settings_tree_auto_transition", disabled=not new_tg_enabled,
+                help=(
+                    "开启后：触发条件满足且前置/互斥放行的分支由引擎自动置 active；互斥组内有分支 resolved 时，"
+                    "同组 dormant/emerging 的落败者自动置 invalidated。关闭时只给建议，由 AI 自行判断。"
+                ),
+            )
+            cur_nominal = cur_settings.get("likelihood_nominal") or {}
+            new_nominal_text = st.text_area(
+                "可能性档位对应的名义命中率（JSON 对象，可选）",
+                value=json.dumps(cur_nominal, ensure_ascii=False) if cur_nominal else "",
+                key="settings_likelihood_nominal", height=60,
+                placeholder='{"high": 0.8, "medium": 0.5, "low": 0.2}',
+                help="只用于体检里的校准账本对账；引擎不内置任何档位对应的概率，不填就只看命中率与倒挂。",
+            )
         if st.button("保存设置", key="settings_save"):
             new_objectives = [o.strip() for o in new_objectives_text.split(",") if o.strip()]
             new_objectives_advanced = _safe_json_loads(new_objectives_advanced_text, None)
@@ -4998,6 +5090,13 @@ def page_detail() -> None:
                     causal_engine_enabled=bool(new_causal_enabled),
                     causal_params=new_causal_params if isinstance(new_causal_params, dict) else {},
                     causal_kb_writeback=bool(new_causal_kb),
+                    tree_grounding_enabled=bool(new_tg_enabled),
+                    tree_auto_transition=bool(new_tg_auto and new_tg_enabled),
+                    likelihood_nominal=(
+                        {k: v for k, v in (_safe_json_loads(new_nominal_text, None) or {}).items()
+                         if k in ("high", "medium", "low") and isinstance(v, (int, float)) and not isinstance(v, bool)}
+                        if isinstance(_safe_json_loads(new_nominal_text, None), dict) else {}
+                    ),
                 )
                 _, _ev_problems = event_mod.get_priors({"event_priors": new_event_priors})
                 st.success("设置已更新，下一步推进开始生效。")
@@ -6848,7 +6947,7 @@ def page_game() -> None:
     granularity_note = _granularity_note_html(s)
     resource_note = _resource_violations_html(s)
     relation_note = _relation_violations_html(s)
-    option_warnings_note = _option_warnings_html(s) + _consistency_warnings_html(s) + _tech_violations_html(s) + _sampled_events_html(s) + _causal_effects_html(s) + _causal_violations_html(s)
+    option_warnings_note = _option_warnings_html(s) + _consistency_warnings_html(s) + _tech_violations_html(s) + _sampled_events_html(s) + _causal_effects_html(s) + _causal_violations_html(s) + _tree_grounding_html(s)
     background_note = _background_entities_html(s)
     key_drivers_note = _key_drivers_html(s)
     line_updates_note = _line_updates_html(s, manifest.settings.get("causal_lines"))

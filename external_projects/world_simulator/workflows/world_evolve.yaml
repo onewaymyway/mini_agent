@@ -125,6 +125,12 @@ steps:
       源头已有进展、延迟期已到的因果边，按说明在 `effect_dispositions`
       里逐项交代 realized/dampened/postponed/countered 及原因）：
       {causal_pending_hint}
+      因果树接地（第二十二轮 WP3 / P5c，`next_doc/world_simulator_realism_tech_and_
+      causal_engine_plan.md`；为空说明没有开启，忽略这一项，新增分支也不要
+      填 `trigger_condition`/`exclusive_group`；非空时按其中的规则写
+      `tree_updates`：未满足前置的分支不要标 active，互斥组内不要同时
+      active，列出的"建议"只是引擎按结构化条件算出的参考，不是强制）：
+      {tree_grounding_hint}
 
       请按你所属 skill 的规范，给出这一步推进后的新状态、发生了什么的
       叙事文本、这一步结束时对应的模拟内时间点（`time_label`，人类

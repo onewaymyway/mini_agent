@@ -1,7 +1,7 @@
 # world_simulator 改进计划（第二十二轮）：让技术/事物发展更真实、因果树可执行可校验
 
 > **状态（2026-10-01 更新）：方案已确认，按阶段实施中。**
-> 已完成：**P0（WP0 分支隔离）**、**P1（WP4 一致性守卫+真实性体检）**、**P2（WP5 回测框架）**、**P3（WP1 技术模型 + `elapsed_days`）**、**P4（WP2 外生事件采样）**、**P5a（WP3 的 3a 边升级 + 3b 待兑现因果队列）**、**P5b（§8 三个确认项落地：关系延迟改 elapsed、兑现统计回写知识库、技术违规修复调用）**，详见文末 §9。进行中：P5（WP3）剩余子阶段 3c 树接地、3d 树影响世界、3e 界面。
+> 已完成：**P0（WP0 分支隔离）**、**P1（WP4 一致性守卫+真实性体检）**、**P2（WP5 回测框架）**、**P3（WP1 技术模型 + `elapsed_days`）**、**P4（WP2 外生事件采样）**、**P5a（WP3 的 3a 边升级 + 3b 待兑现因果队列）**、**P5b（§8 三个确认项落地：关系延迟改 elapsed、兑现统计回写知识库、技术违规修复调用）**、**P5c（WP3 的 3c 树接地）**，详见文末 §9。进行中：P5（WP3）剩余子阶段 3d 树影响世界、3e 界面。
 > 本文只依据阅读代码得出结论，没有跑过真实 LLM，也没有在运行时复现
 > 下文 §2.4 之外的缺陷——每一条"现状"都标注了代码位置，"推断"会明说。
 > §2.4 的缺陷已在 P0 里写复现测试确认（先红后绿）。
@@ -485,4 +485,19 @@ perceived_stage?}`。阶段序数沿用现有 6 档，不新造枚举。
 - **已知边界**：没有在真实 LLM 下运行过；兑现统计是 LLM 自报，进入跨模拟知识库后无法区分真假兑现；
   与 `record_causal_links()` 的计数会叠加到同一条目；知识库回写无撤销机制；`app.py` 设置页保存流程未实跑；
   修复不消除叙事与状态的错位，LLM 可能为过检查而补写理由。
-- **下一阶段**：P5c / 3c（树接地）。
+- **下一阶段**：P5c / 3c（树接地，已完成，见下）。
+
+### P5c / WP3 的 3c — 因果树接地（已完成，2026-10-01）
+
+- **做了什么**：新增 `world_simulator/tree_grounding.py`。(i) 前置强制 G1：本步新变 active 但可解析的前置未 resolved → 降回 emerging；
+  (ii) 分支可选 `trigger_condition`（复用 `event_sampler.evaluate_condition`），满足时默认只作 `trigger_met` 建议，子开关
+  `tree_auto_transition` 才自动置 active（G4）；(iii) `exclusive_group` 同线互斥（G2 降级 / G3 只记录），组内 resolved 后落败者建议或（自动）
+  置 invalidated（G5）；(iv) likelihood 校准账本（终结时刻档位命中率 + 倒挂，进体检，可选 `likelihood_nominal` 对账）。
+- **接线**：`causal_tree`（新字段仅填写时输出）、`SimState.tree_grounding`、`engine/advance.py`（技术裁决后/因果入队前/快照前；结果写回
+  settings 并修正 `tree_updates` 审计）、`consistency_guard`/`quality_signals`、两个 workflow、三个 SKILL.md、`app.py`（设置/面板/每步记录/账本）。
+- **开关**：`tree_grounding_enabled`（总，默认关）、`tree_auto_transition`（子，默认关）；关闭时逐字节等价。
+- **验收**：`pytest tests/` **1034 passed**（基线 989，新增 `tests/test_tree_grounding.py` 45 个）；变异验证 17 个，首轮存活 1 个（G5 误伤已终结同组分支），补用例后全部转红。
+- **与计划的偏离**：总开关独立于因果引擎；未改 `suggest_status_transitions()`；校准账本不写 `knowledge_base`（仍待确认）。
+- **已知边界**：未在真实 LLM 下验证；引擎无法判断条件写得对不对；LLM 直接标 resolved 不拦；降级造成叙事/状态错位；只处理顶层分支，
+  `advance_lines()` 不跑；设置页保存流程未实跑。详见 `docs/tree_grounding_guide.md`。
+- **下一阶段**：P5d / 3d（树影响世界）与 3e（界面收尾）——需先给方案、你确认后再改代码。

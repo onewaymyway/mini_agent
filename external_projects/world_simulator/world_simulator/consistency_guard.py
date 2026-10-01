@@ -469,6 +469,21 @@ def tree_calibration(causal_lines: Any) -> Dict[str, Any]:
     return groups
 
 
+def _likelihood_ledger(history: Sequence[Any], cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """C8 的对账版（P5c / 3c-iv）：终结那一刻的 likelihood 与结局，见 `tree_grounding`。
+    延迟导入避免包循环；任何异常都退化为空账本，不影响体检其它项。"""
+    try:
+        from world_simulator import tree_grounding
+
+        return tree_grounding.summarize_ledger(
+            tree_grounding.build_likelihood_ledger(history),
+            nominal=cfg.get("likelihood_nominal"),
+            min_n=int(cfg.get("ledger_min_n") or tree_grounding.DEFAULT_LEDGER_MIN_N),
+        )
+    except Exception:  # noqa: BLE001
+        return {"total_terminal": 0, "by_likelihood": {}, "inversions": [], "entries": [], "note": "账本计算出错"}
+
+
 def analyze_history(
     history: Sequence[Any],
     causal_lines: Any = None,
@@ -524,6 +539,7 @@ def analyze_history(
         "c5_event_density": _event_density(history, cfg["run_threshold"]),
         "c7_edge_coverage": _edge_coverage(history, declared_causal_graph),
         "c8_tree_calibration": tree_calibration(causal_lines),
+        "c8_likelihood_ledger": _likelihood_ledger(history, cfg),
         "coverage": {
             "snapshot_steps": snapshot_steps,
             "tree_transition_pairs_checked": transition_pairs,

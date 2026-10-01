@@ -25,7 +25,7 @@ from world_simulator.engine.background_entities import (
     _normalize_background_entities,
 )
 from world_simulator import causal_tree, relationship
-from world_simulator import causal_engine, consistency_guard, dynamic_state, event_sampler, tech_model
+from world_simulator import causal_engine, consistency_guard, dynamic_state, event_sampler, tech_model, tree_grounding
 from world_simulator.engine.causal_lines import _apply_tree_updates, _auto_register_causal_lines
 from world_simulator.engine.errors import SimAlreadyEndedError, SimEngineError, SimPausedError
 from world_simulator.engine.ids import _read_skill_version, _skill_name_for_template
@@ -445,6 +445,11 @@ def advance(
         "causal_pending_hint": causal_engine.safe_build_hint(
             manifest.settings, history_for_prompt, current.step + 1
         ),
+        # 第二十二轮 WP3 / P5c：因果树接地开启时，把前置/互斥/结构化触发条件的规则与当前
+        # 建议喂给 LLM；未开启返回空字符串（prompt 与之前等价）。
+        "tree_grounding_hint": tree_grounding.safe_build_hint(
+            manifest.settings, manifest.settings.get("causal_lines"), current.vars
+        ),
         **resolve_hints(
             manifest.settings, current_step=current.step + 1, history=history_for_prompt
         ),
@@ -804,6 +809,13 @@ def advance(
         if consistency_guard.is_enabled(manifest.settings)
         else None
     )
+    # 第二十二轮 P5c：接地裁决要知道\"本步新变为 active/resolved\"，所以在合并树更新之前留一份
+    # 状态索引（只在开启时才算，关闭时零开销）。
+    _tg_before = (
+        tree_grounding.status_index(manifest.settings.get("causal_lines"))
+        if tree_grounding.is_enabled(manifest.settings)
+        else None
+    )
     next_state.tree_updates = _apply_tree_updates(manifest, next_state, data)
 
     # 第二十二轮 WP2：把本步抽中的事件记进状态（审计 + 下一步冷却的依据）。
@@ -853,6 +865,24 @@ def advance(
                 violations=next_state.tech_violations,
                 narrative_hint=str(data.get("narrative", "") or data.get("next_summary", "") or ""),
             )
+
+    # 第二十二轮 WP3 / P5c：因果树接地（前置强制 / 互斥组 / 结构化触发条件）。必须在技术裁决之后
+    # （条件可能读 `tech_state`）、因果引擎入队之前（自动迁移要能被\"树分支 active\"触发源看到）、
+    # 快照之前。降级/自动迁移的结果写回 `manifest.settings`，并同步修正本步 `tree_updates` 审计
+    # 里的实际状态；未开启时整段是空操作。
+    if _tg_before is not None:
+        _tg_lines, _tg_audit, next_state.tree_grounding = tree_grounding.safe_enforce_step(
+            manifest.settings.get("causal_lines"),
+            _tg_before,
+            vars_=next_state.vars,
+            settings=manifest.settings,
+            step=next_state.step,
+            tree_updates=next_state.tree_updates,
+            auto=tree_grounding.auto_transition_enabled(manifest.settings),
+        )
+        if next_state.tree_grounding:
+            manifest.settings = {**manifest.settings, "causal_lines": _tg_lines}
+            next_state.tree_updates = _tg_audit
 
     # 第二十二轮 WP3 / P5a：因果引擎。先处置 LLM 对*上一步遗留*待兑现项的回报，再把本步
     # 源头有进展的边入队（顺序不能反：本步新入队的项不该被本步回报处置）。必须在下面

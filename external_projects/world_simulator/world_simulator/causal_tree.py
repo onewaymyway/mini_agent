@@ -88,6 +88,7 @@ world_simulator_potential_causal_space_and_decision_engine_plan.md`）**：
 
 from __future__ import annotations
 
+import copy
 import secrets
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -212,7 +213,7 @@ def _normalize_branch(raw: Any, *, used_ids: set) -> Optional[Dict[str, Any]]:
         except (TypeError, ValueError):
             first_seen_step = None
 
-    return {
+    normalized = {
         "id": branch_id,
         "description": description,
         "likelihood": likelihood,
@@ -228,6 +229,23 @@ def _normalize_branch(raw: Any, *, used_ids: set) -> Optional[Dict[str, Any]]:
         "sub_branches": sub_branches,
         "first_seen_step": first_seen_step,
     }
+    # 第二十二轮 P5c（WP3-3c，`tree_grounding.py`）：两个可选的结构化字段，**只在填写时
+    # 才输出**——没填的分支（含全部旧数据/兜底模板）形状与之前逐字节一致。
+    # `trigger_condition`：结构化触发条件（与外生事件同一套谓词，`event_sampler.
+    # evaluate_condition`），只接受 dict 或 dict 列表，其它写法忽略（不报错）；
+    # 与上面自由文本的 `trigger_conditions`（复数）是两个字段。
+    # `exclusive_group`：同一条线内同组互斥。
+    raw_cond = raw.get("trigger_condition")
+    if isinstance(raw_cond, dict) and raw_cond:
+        normalized["trigger_condition"] = copy.deepcopy(raw_cond)
+    elif isinstance(raw_cond, list):
+        conds = [copy.deepcopy(c) for c in raw_cond if isinstance(c, dict) and c]
+        if conds:
+            normalized["trigger_condition"] = conds
+    exclusive_group = str(raw.get("exclusive_group") or "").strip()
+    if exclusive_group:
+        normalized["exclusive_group"] = exclusive_group
+    return normalized
 
 
 def normalize_future_tree(raw: Any, *, as_of_step: int = 0) -> Optional[Dict[str, Any]]:
