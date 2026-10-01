@@ -119,7 +119,27 @@ LLM 在登记新节点时给出的 `typical_dwell_days` 会标 `dwell_source: ll
 - 保存设置里的"技术节点"会**覆盖**当前技术状态（含进度）。
 - 拆分模式（`split_decision_calls`）下，`{tech_state_hint}` 喂给 `world_evolve`，`elapsed_days`/`tech_updates` 由它输出（有端到端测试）。
 - 回测框架（WP5）尚未改用 `elapsed_days` 和 `tech_state` 算"阶段迁移时点偏差"——见 PROJECT.md 已知边界，留待后续。
-- 引擎违规策略是"降级 + 记录"；"修复调用"（让 LLM 重写被驳回的叙事）**没有实现**，计划为独立 opt-in。
+- 默认违规策略是"降级 + 记录"；修复调用见下方"修复调用（P5b，opt-in）"。
+
+## 修复调用（P5b，opt-in）
+
+开关 `settings.tech_repair_enabled`，**默认关闭**（需要技术模型也开启）。关闭时不会加载 `tech_repair`
+workflow、不额外调用 LLM，行为与之前逐字节一致。
+
+- **触发**：本步出现 T4（倒退无原因）/T5（新技术阶段夹值）/T6（采用率超额）/T7（成本无冲击上升）
+  之一。**T1/T2/T3 不触发**：进度由引擎按时间推算、硬前置由其它技术决定，重新提议改变不了裁决。
+- **流程**（`engine/tech_repair.py`，最多一次）：技术状态回滚到本步开始前 → 让 LLM 重新给出 `tech_updates`
+  → `constrain_repair()` 约束 → 引擎重新裁决 → 仅当可修复违规**严格减少**才采纳；否则保留第一次裁决。
+- **约束**：不得新增原提议没有的 id；只有 `stage/regression_reason/preexisting/adoption/market/cost_index/
+  cost_shock_reason` 的修改会被采纳（投入、前置、典型停留等一律还原）；阶段只能降不能升；修复结果里
+  没给的可编辑字段视为撤回该声明。
+- **降级**：workflow 缺失/执行失败/回复无法解析/重新裁决出错 → 恢复第一次裁决后的状态，记录 `status="failed"`。
+- **记录**：`SimState.tech_repair = {status, codes_before, codes_after, violations_before, notes}`，
+  `status` 为 `accepted`/`rejected`/`failed`；界面每步显示。`accepted` 时 `tech_violations` 是修复后
+  **剩余**的违规，修复前的在 `violations_before`。
+- **不能保证**：修复**只改技术提议，不改写叙事**，叙事与引擎状态的错位仍然存在；LLM 可能为通过检查而补写
+  理由（提示词要求"没有叙事依据就撤回，不要编造"，但引擎无法验证）；额外一次 LLM 调用的成本；没有在真实
+  LLM 下运行过。
 
 ## 相关
 

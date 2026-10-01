@@ -1,0 +1,63 @@
+name: tech_repair
+description: >-
+  技术违规的一次性修复调用（第二十二轮 P5b，`next_doc/world_simulator_realism_tech_and_
+  causal_engine_plan.md` §8 第 3 问）。由 `world_simulator/engine/tech_repair.py::
+  safe_repair_tech_step()` 触发，只在 `settings.tech_repair_enabled` 开启、且本步出现了
+  `tech_model.REPAIRABLE_CODES`（T4/T5/T6/T7）违规时才调用一次；关闭时永远不会调用。
+
+  用 `type: agent`（不是 `skill_agent`）——修正一份结构化提议是通用的一致性核对能力，不依赖
+  具体场景模板，同 `ledger_correction.yaml` 的取舍。`type: agent` 不支持 `result_file`，要求
+  Agent 直接把 JSON 作为最终回复的全部内容，由 `agent_step_result.extract_agent_json_output()`
+  解析。
+
+  只修一次：调用方不会因为修复后仍有问题而再次触发。修复结果还会被引擎约束（不得新增 id、
+  只能改白名单字段、阶段不得升高），并由引擎重新裁决，不直接采信。
+version: "1.0"
+steps:
+  - id: tech_repair
+    name: 修复技术状态提议
+    type: agent
+    prompt: |
+      你正在帮一次"世界模拟"的单步推进修正**技术状态提议**。上一次产出的 `tech_updates`
+      被引擎的规则检查发现了几处违规，需要你**只修正有问题的条目**，其它内容原样保留。
+
+      这一步的叙事/摘要（仅供理解背景，不要求你重写它们）：
+      {narrative_hint}
+
+      引擎在这一步**开始前**的权威技术状态与规则：
+      {tech_state_hint}
+
+      上一次给出的 `tech_updates`（JSON 数组）：
+      {proposals_json}
+
+      引擎发现的违规（JSON 数组，每项 code/tech_id/message）：
+      {violations_json}
+
+      违规类型说明：
+      - `T4`：声明技术阶段倒退，但没有给 `regression_reason`。
+      - `T5`：新登记的技术声明了高于最低档的阶段，但没有声明 `preexisting`（世界里本来就存在）。
+      - `T6`：同一 `market` 内各技术的 `adoption` 之和超过 1。
+      - `T7`：`cost_index` 上升，但没有给 `cost_shock_reason`。
+
+      【你的任务】针对上面列出的违规，**二选一**地处理每一条：
+      1. 叙事里**确实有依据**时补齐缺失的说明（例如叙事明确写了资金断裂导致倒退，才可以补
+         `regression_reason`；叙事明确写了这是世界里本来就有的技术，才可以声明 `preexisting`）；
+      2. 叙事里没有依据，就**撤回这条声明**：把对应字段从该条目里去掉（倒退就去掉 `stage`，
+         成本上升就去掉 `cost_index`，采用率超额就把 `adoption` 改成合理值或去掉）。
+
+      硬性要求：
+      - **不要为了通过检查而编造原因**。没有叙事依据就撤回，不要凭空写理由。
+      - 不要新增 `tech_updates` 里原来没有的技术；不要把 `stage` 改得比原来更高。
+      - 只有 `stage`/`regression_reason`/`preexisting`/`adoption`/`market`/`cost_index`/
+        `cost_shock_reason` 这几个字段的修改会被采纳，其它字段（投入、前置、典型停留……）的
+        改动会被引擎还原，不要碰。
+      - 没有出现在违规里的条目，原样保留即可（也可以省略）。
+
+      【输出格式，必须严格遵守】你的最终回复必须**只包含一个 JSON 对象**，不要有任何其它文字、
+      解释、markdown 代码块围栏、或工具调用：
+
+      - `tech_updates`：数组，修正后的完整提议（结构同上面的 `tech_updates`）。
+      - `note`：字符串，一句话说明你改了什么、为什么（没改动给空字符串）。
+
+      不要用 bash/echo 或任何工具来"打印"这个 JSON。你的最后一条回复消息，去掉首尾空白后，
+      必须能被直接当 JSON 解析。

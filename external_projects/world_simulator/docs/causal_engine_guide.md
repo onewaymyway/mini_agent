@@ -99,14 +99,34 @@
 
 ## 与计划的偏离
 
-1. 延迟单位用 `delay_days`（elapsed 天数）；**`relationship.py` 里关系的 `delay_steps` 没动**
-   （`relationship_pending_effects` 仍按步计）。计划 §8 第 2 问"统一改用 elapsed 单位"目前只覆盖本模块
-   新增的边，是否还要改关系部分待你确认。
-2. 计划 3b 写了"回写 `knowledge_base` 的 `validated_count/contradicted_count`"——**没做**：那是跨实例
-   副作用，与 P1 对 C8 的处理一致，待你确认。
+1. 延迟单位用 `delay_days`（elapsed 天数）。`relationship.py` 里关系的延迟已在 **P5b** 同样改用
+   `delay_days`，见下方"P5b 补充"。
+2. 计划 3b 的"回写 `knowledge_base`"已在 **P5b** 实现，见下方"P5b 补充"。
 3. 计划 3b 触发源里的"账本中显著变化"、"分支状态变化"中除 active 以外的状态——**没做**。
 4. 新增了 E1–E6 校验、`max_postpone`/`max_ignored`/`max_pending` 三个上限（计划未写），用来防止队列无限增长
    和"声明了却永远挂着"。
+
+## P5b 补充（2026-10-01）
+
+**兑现统计回写 `knowledge_base`**（`settings.causal_kb_writeback`，**默认开**，仅因果引擎开启时生效；
+设为 `false` 关闭）：
+
+| 处置 | 回写 |
+|---|---|
+| `realized` | `validated_count` +1 |
+| `countered` | `contradicted_count` +1 |
+| `dampened` / `postponed` / 自动结案（`expired`/`unaddressed`） | 不回写（没有明确结论） |
+
+- 条目的 `cause`/`effect` 取边两端的可读名（因果线 `label`，或技术节点 `name`，查不到用 id）。
+  先按**文本完全相同**匹配已有条目，找不到再用与 `record_causal_links()` 相同的 Jaccard 阈值，都没有才
+  新建 `hypothesis` 条目。
+- **幂等**：条目 `evidence` 里记 `"{sim_id}@{branch}#step{N}:{edge_id}"`，同一分支同一步同一条边只计一次。
+- **如实说明**：兑现与否是 LLM 自报，引擎无法核验，写进跨模拟知识库的是"某个世界里 LLM 说它兑现/被抵消了"。
+  这一来源与 `record_causal_links()` 的 `validated_count`（同一因果在叙事里再次出现）不同，可能叠加到同一条目。
+- 回写在推进落盘之后执行，失败被吞掉，不影响本次推进。
+
+**关系延迟改用 elapsed 单位**：见 `relationship.py` 模块 docstring。关系新增可选 `delay_days`，
+`delay_steps` 保留为旧数据/降级兜底。
 
 ## 已知边界
 

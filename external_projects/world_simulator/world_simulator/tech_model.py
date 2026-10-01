@@ -46,6 +46,20 @@
 `requires`、`typical_dwell_days` 是**结构性参数**：LLM 只能在登记新节点时给出，
 之后 LLM 想改会被忽略并记 T8（想改请在设置里手动编辑）。
 
+## 修复调用（第二十二轮 P5b，独立 opt-in：`settings.tech_repair_enabled`，默认 False）
+
+默认策略仍是"驳回/夹值 + 透明记录"，**不额外调 LLM**。开启后，若本步出现了**重新提议就能改变
+引擎裁决结果**的违规（`REPAIRABLE_CODES`：T4 倒退无原因 / T5 新技术阶段夹值 / T6 采用率超额 /
+T7 成本无冲击上升），发起**一次**修复调用（`engine/tech_repair.py`），让 LLM 重新给出
+`tech_updates`；引擎把技术状态回滚到本步开始前，用修复后的提议**重新裁决一遍**，仅当可修复违规
+数量严格减少才采纳，否则保留原裁决。**只修一次**，不循环。T1/T2/T3 不触发：进度由引擎按时间推算、
+硬前置由其它技术决定，重新提议改变不了裁决结果，只会白花一次调用。
+
+修复结果受 `constrain_repair()` 约束（防止"为了通过校验而改写提议"）：不得新增提议里没有的 id；
+只允许改 `REPAIR_EDITABLE_KEYS` 里的字段，`investment`/`requires`/`typical_dwell_days` 等一律
+还原为原提议；`stage` 只能降不能升。**修复调用不改写叙事/摘要**：叙事说"已上市"而引擎仍在
+`developer` 的错位仍然存在，只是被量化（见"已知边界"）。
+
 ## 已知边界（如实记录）
 
 - 只有 `advance()` 路径跑这套规则；`advance_lines()`（独立推进）不跑，
@@ -429,6 +443,77 @@ def safe_build_hint(settings: Optional[Dict[str, Any]]) -> str:
 
 
 # ── 每步裁决 ─────────────────────────────────────────────────────────
+
+
+# ── 修复调用（opt-in）────────────────────────────────────────────────
+
+REPAIRABLE_CODES: Tuple[str, ...] = ("T4", "T5", "T6", "T7")
+"""重新提议就能改变引擎裁决结果的违规码。T1/T2/T3 不在其中，原因见模块 docstring。"""
+
+REPAIR_EDITABLE_KEYS: Tuple[str, ...] = (
+    "stage", "regression_reason", "preexisting", "adoption", "market", "cost_index", "cost_shock_reason",
+)
+"""修复调用允许改动的提议字段。其余字段（投入/前置/典型停留/瓶颈……）一律还原为原提议。"""
+
+
+def repair_enabled(settings: Optional[Dict[str, Any]]) -> bool:
+    """技术模型开启**且**显式打开了修复调用（`tech_repair_enabled`，默认 False）。"""
+    return is_enabled(settings) and bool((settings or {}).get("tech_repair_enabled"))
+
+
+def repairable_violations(violations: Any) -> List[Dict[str, Any]]:
+    """违规里属于 `REPAIRABLE_CODES` 且 severity 为 warn 的那部分。"""
+    return [
+        v for v in violations or []
+        if isinstance(v, dict) and v.get("code") in REPAIRABLE_CODES and v.get("severity", "warn") == "warn"
+    ]
+
+
+def _proposal_id(raw: Any) -> str:
+    if not isinstance(raw, dict):
+        return ""
+    return str(raw.get("id") or raw.get("tech_id") or "").strip() or str(raw.get("name") or "").strip()
+
+
+def constrain_repair(original: Any, repaired: Any) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """把修复调用返回的 `tech_updates` 约束成"只修、不改写"，返回 `(约束后的提议, 备注)`。
+
+    - 原提议里有、修复结果里没有的 id：保留原提议不变（LLM 只返回了需要改的项也行）；
+    - 修复结果里有、原提议里没有的 id：丢弃（修复不能新增技术或新增变更）；
+    - 同一个 id：以原提议为底，只有 `REPAIR_EDITABLE_KEYS` 里的字段取修复结果——修复结果里没给
+      的可编辑字段视为"撤回这条声明"（从提议里删掉）；其余字段一律保持原提议；
+    - `stage` 取修复值但**不得高于**原提议声明的阶段（只能降、不能升）。
+    """
+    notes: List[str] = []
+    orig_list = [dict(x) for x in original or [] if isinstance(x, dict)] if isinstance(original, list) else []
+    rep_by_id: Dict[str, Dict[str, Any]] = {}
+    if isinstance(repaired, list):
+        for raw in repaired:
+            tid = _proposal_id(raw)
+            if tid:
+                rep_by_id[tid] = dict(raw)
+    orig_ids = {_proposal_id(o) for o in orig_list}
+    for tid in sorted(set(rep_by_id) - orig_ids):
+        notes.append(f"修复结果里的「{tid}」不在原提议中，已丢弃")
+    out: List[Dict[str, Any]] = []
+    for orig in orig_list:
+        tid = _proposal_id(orig)
+        rep = rep_by_id.get(tid)
+        if rep is None:
+            out.append(orig)
+            continue
+        merged = dict(orig)
+        for key in REPAIR_EDITABLE_KEYS:
+            if key in rep:
+                merged[key] = rep[key]
+            else:
+                merged.pop(key, None)
+        o_idx, r_idx = stage_index(orig.get("stage")), stage_index(merged.get("stage"))
+        if o_idx is not None and r_idx is not None and r_idx > o_idx:
+            merged["stage"] = orig["stage"]
+            notes.append(f"「{tid}」修复后的阶段高于原声明，已还原为 {orig['stage']}")
+        out.append(merged)
+    return out, notes
 
 
 def _violation(code: str, tech_id: str, message: str, severity: str = "warn", **detail: Any) -> Dict[str, Any]:

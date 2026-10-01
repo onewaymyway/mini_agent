@@ -960,6 +960,15 @@ world_simulator_realism_tech_and_causal_engine_plan.md` §4 WP1"时间基础
 说明为什么。`to_dict()` 空时不输出。
     """
 
+    tech_repair: Optional[Dict[str, Any]] = None
+    """技术违规修复调用（`engine/tech_repair.py`，P5b，`settings.tech_repair_enabled` 开启时才会有）
+的记录：`{status, codes_before, codes_after, violations_before, notes}`，`status` 为 `accepted`
+（修复后可修复违规减少，已采纳重新裁决的结果；此时 `tech_violations` 是修复后**剩余**的违规，
+修复前的在 `violations_before`）/`rejected`（修复后没有改善，保留第一次裁决）/`failed`（调用或
+解析失败，保留第一次裁决）。`None` = 没开启或本步没有可修复违规；`to_dict()` 为 `None` 时不输出，
+旧格式逐字节不变。
+    """
+
     sampled_events: List[Dict[str, Any]] = field(default_factory=list)
     """外生事件采样（`event_sampler.py`，第二十二轮 WP2）在*本步开始前*抽中的
 事件，作为"既成事实"注入了提示词。每项 `{id, description, severity, affects,
@@ -1007,6 +1016,8 @@ E4 缺 reason/E6 队列已满/E0 引擎自身出错），每项 `{code, severity
             d.pop("tech_updates", None)
         if not d.get("tech_violations"):
             d.pop("tech_violations", None)
+        if not d.get("tech_repair"):
+            d.pop("tech_repair", None)
         if not d.get("sampled_events"):
             d.pop("sampled_events", None)
         for _key in ("causal_queued", "effect_dispositions", "causal_violations"):
@@ -1109,6 +1120,9 @@ E4 缺 reason/E6 队列已满/E0 引擎自身出错），每项 `{code, severity
             tech_violations=[
                 copy.deepcopy(x) for x in (data.get("tech_violations") or []) if isinstance(x, dict)
             ],
+            tech_repair=(
+                copy.deepcopy(data["tech_repair"]) if isinstance(data.get("tech_repair"), dict) else None
+            ),
             sampled_events=[
                 copy.deepcopy(x) for x in (data.get("sampled_events") or []) if isinstance(x, dict)
             ],
@@ -1511,7 +1525,10 @@ class SimManifest:
       认识的值归一化为 `other`）、`strength` 取 `high`/`medium`/
       `low`（默认 `medium`，延续"不做伪精确"的一贯风格）、`note` 是
       一句话说明。第二批新增三个可选字段：`delay_steps`（非负整数，
-      默认 `0` 即时生效，这条关系的影响延迟几步后才体现）、
+      默认 `0` 即时生效，这条关系的影响延迟几步后才体现；步长可变时\"几步\"
+      不是固定时长，所以第二十二轮 P5b 起另有可选 `delay_days`——非负数，
+      elapsed 天数，优先于 `delay_steps`，用各步 `elapsed_days` 累加判定到期，
+      缺 `elapsed_days` 时退化为按 `delay_steps` 近似并标\"精度降级\"）、
       `propagation_path`（字符串数组，间接影响时经过的中间实体/
       因果线 id，不填表示直接影响）、`reversible`（`reversible`/
       `hard_to_reverse`/`irreversible` 三选一，不认识的值/不填归一化
@@ -1529,7 +1546,7 @@ class SimManifest:
       `advance_step`/`world_evolve` 输出里给出可选字段
       `triggered_relationships`（字符串数组，引用上面某条关系的
       `id` 或它在列表里的下标），且那条关系声明了 `delay_steps > 0`
-      时，`world_simulator.relationship.queue_pending_effect()` 会记
+      或 `delay_days > 0` 时，`world_simulator.relationship.queue_pending_effect()` 会记
       一条 `{"relationship_ref": ..., "triggered_at_step": ...,
       "due_step": ...}` 的待办追加进这个列表；到了 `due_step`，
       `_resolve_relationship_hint()` 会在提示文本里特别提醒 LLM

@@ -291,6 +291,90 @@ def record_causal_links(
     return added
 
 
+EDGE_OUTCOMES = {"realized": "validated_count", "countered": "contradicted_count"}
+"""因果引擎处置结论 → 知识库计数器的映射（第二十二轮 P5b）。只回写**有明确结论**的两种：
+`realized`（效果兑现 → 印证）与 `countered`（被别的因素抵消 → 证伪）。`dampened`（只体现了一部分）
+既不算印证也不算证伪，`postponed`/自动结案的 `expired`/`unaddressed` 没有结论，都不回写。"""
+
+
+def record_edge_outcomes(
+    data_dir: Path,
+    *,
+    sim_id: str,
+    template: str,
+    branch: str,
+    step: int,
+    outcomes: List[Dict[str, Any]],
+) -> Dict[str, int]:
+    """把因果引擎（`causal_engine.py`）里声明边的**兑现结论**回写进知识库的
+    `validated_count`/`contradicted_count`（第二十二轮 P5b，计划 §4 WP3 3b：让图开始
+    "学习哪些边在这个世界里真的成立"）。
+
+    `outcomes` 每项 `{edge_id, cause, effect, mechanism, outcome}`，`outcome` 取
+    `EDGE_OUTCOMES` 的键，其余取值静默忽略。匹配顺序：先找 `cause`/`effect` **文本完全相同**
+    的条目（同一条边反复回写一定落到同一条目，不依赖 Jaccard——否则条目自带的 `mechanism`
+    会稀释相似度，导致每次都新建一条），找不到再用与 `record_causal_links()` 相同的 Jaccard
+    阈值；都没有才新建（`confidence="hypothesis"`，计数从本次结论起算）。
+
+    **幂等**：每次回写在条目 `evidence` 里记 `"{sim_id}@{branch}#step{N}:{edge_id}"`，已存在则
+    跳过——同一分支同一步同一条边只算一次（重算、补跑不会重复计数）。
+
+    **如实说明**：兑现与否是 LLM 的**自报**，引擎无法核验；这里写进跨模拟知识库的是"某个世界里
+    LLM 说这条边兑现/被抵消了"，不是经过验证的事实。与 `record_causal_links()` 的 `validated_count`
+    （同一条因果在叙事里再次出现）是两个不同来源，可能叠加到同一个条目上。
+
+    Returns:
+        `{"validated": n, "contradicted": n, "created": n, "skipped": n}`。
+    """
+    result = {"validated": 0, "contradicted": 0, "created": 0, "skipped": 0}
+    outcomes = [o for o in (outcomes or []) if isinstance(o, dict) and o.get("outcome") in EDGE_OUTCOMES]
+    if not outcomes:
+        return result
+    existing = load_all(data_dir)
+    changed = False
+    for outcome in outcomes:
+        cause = str(outcome.get("cause") or "").strip()
+        effect = str(outcome.get("effect") or "").strip()
+        edge_id = str(outcome.get("edge_id") or "").strip()
+        if not cause or not effect or not edge_id:
+            continue
+        ref = f"{sim_id}@{branch}#step{step}:{edge_id}"
+        counter = EDGE_OUTCOMES[str(outcome["outcome"])]
+        match = next((it for it in existing if it.cause == cause and it.effect == effect), None)
+        if match is None:
+            keywords = _tokenize(cause) | _tokenize(effect)
+            match = next(
+                (it for it in existing if _jaccard(keywords, it._keyword_set()) >= _SIMILARITY_THRESHOLD),
+                None,
+            )
+        if match is not None:
+            if ref in match.evidence:
+                result["skipped"] += 1
+                continue
+            match.evidence.append(ref)
+            setattr(match, counter, getattr(match, counter) + 1)
+        else:
+            item = KnowledgeItem(
+                id=uuid.uuid4().hex[:12],
+                cause=cause,
+                effect=effect,
+                mechanism=str(outcome.get("mechanism") or "").strip(),
+                confidence="hypothesis",
+                source_sim_id=sim_id,
+                source_template=template,
+                created_at=_now_iso(),
+                evidence=[ref],
+            )
+            setattr(item, counter, 1)
+            existing.append(item)
+            result["created"] += 1
+        result["validated" if counter == "validated_count" else "contradicted"] += 1
+        changed = True
+    if changed:
+        _save_all(data_dir, existing)
+    return result
+
+
 def record_contradiction(data_dir: Path, item_id: str) -> bool:
     """把某条知识的 `contradicted_count` 加一（供阶段二十四 Reality
     Loop 完整版调用）。本阶段（二十）暂无调用方，先提供最小接口，

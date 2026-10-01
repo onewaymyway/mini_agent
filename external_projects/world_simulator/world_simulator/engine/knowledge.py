@@ -42,6 +42,22 @@ def _safe_record_causal_links(
         pass
 
 
+def _safe_record_edge_outcomes(
+    data_dir: Path, *, sim_id: str, template: str, branch: str, step: int, outcomes: list
+) -> None:
+    """`knowledge_base.record_edge_outcomes()` 的安全包装（第二十二轮 P5b）：把因果引擎
+    声明边的兑现结论回写知识库。和 `_safe_record_causal_links` 一样是推进落盘*之后*的旁路
+    操作，失败不应该让本次推进失败，吞掉异常、尽力而为。"""
+    if not outcomes:
+        return
+    try:
+        knowledge_base.record_edge_outcomes(
+            data_dir, sim_id=sim_id, template=template, branch=branch, step=step, outcomes=outcomes
+        )
+    except Exception:
+        pass
+
+
 def _safe_evaluate_reflexivity(data_dir: Path, sim_id: str, *, branch: str) -> None:
     """`reflexivity.evaluate_and_annotate()` 的安全包装（阶段三十六第
     四批，2.4 节）：反身性检查是这一步推进落盘*之后*的旁路观察，失败

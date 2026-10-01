@@ -685,9 +685,10 @@ monkeypatch 打桩验证文本原样出现在 `inputs` 字典里；`generate_sce
 - **因果引擎只记账、不改数值（第二十二轮 WP3 · P5a，默认关闭）**：声明的因果边在源头
   有进展时入队、延迟期到了提醒 LLM 交代；引擎**无法验证** `realized` 是否真的写进了
   状态，兑现统计是 LLM 自报的；`sign`/`strength` 只随提示词展示；账本显著变化不是触发源；
-  `relationship.py` 的 `delay_steps` 未改；未回写 `knowledge_base` 计数；`advance_lines()`
-  不入队；没有在真实 LLM 下验证过。3c/3d/3e 尚未实现。详见 `docs/causal_engine_guide.md`
-  与"变更记录"第二十二轮 P5a 条目。
+  `advance_lines()` 不入队；没有在真实 LLM 下验证过。3c/3d/3e 尚未实现。
+  P5b 起：兑现结论回写 `knowledge_base`（`causal_kb_writeback` 默认开）、关系延迟新增 `delay_days`、
+  技术违规可选修复调用（`tech_repair_enabled` 默认关）。详见 `docs/causal_engine_guide.md`、
+  `docs/tech_model_guide.md` 与"变更记录"第二十二轮 P5a/P5b 条目。
 
 ## 目录结构
 
@@ -4371,3 +4372,35 @@ deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
   `effect_dispositions` 协议、额外 token 成本未知；② 引擎**无法验证** `realized` 是否真的体现在
   状态里；③ 只看"源头有进展"，不看方向/幅度；④ `advance_lines()` 不入队；⑤ 只对新写入的步
   有效；⑥ 开启后 `causal_pending` 变化会多写完整快照，历史变大。
+- 2026-10-01（第二十二轮 · 阶段 P5b：计划 §8 三个确认项的落地，依据 `next_doc/world_simulator_
+  realism_tech_and_causal_engine_plan.md` §8 第 2/3 问）：
+  1. **`relationship.py` 延迟改用 elapsed 单位**：关系新增可选 `delay_days`（非负数）；待办排队时抄入
+     `delay_days`，`due_pending_effects(..., history=)` 用 `causal_engine.elapsed_between` 累计各步
+     `elapsed_days` 判定到期，缺数据退化为 `due_step` 并标 `precision:"steps"`（提示词写明精度降级）。
+     `delay_steps` 保留：只声明它的旧实例归一化结果、待办、到期判定逐字节不变。仅关系声明了天数延迟
+     且无其它功能索要时才索要 `elapsed_days`，并落盘 `elapsed_days`。`resolve_hints()` 新增可选 `history`。
+  2. **兑现统计回写 `knowledge_base`**：`knowledge_base.record_edge_outcomes()`（realized→validated、
+     countered→contradicted，dampened/postponed/自动结案不回写；文本完全匹配优先、Jaccard 兜底；按
+     `sim@branch#stepN:edge` 幂等）、`causal_engine.kb_outcomes()`、`engine/knowledge._safe_record_edge_outcomes`；
+     开关 `causal_kb_writeback` 默认开（仅因果引擎开启时生效）。
+  3. **技术违规修复调用**（独立 opt-in `tech_repair_enabled`，默认关）：新增 `engine/tech_repair.py`、
+     `workflows/tech_repair.yaml`、`tech_model.REPAIRABLE_CODES/constrain_repair/repair_enabled`、
+     `SimState.tech_repair`；界面两个开关 + 每步修复记录。
+  4. **文档**：更新 `docs/causal_engine_guide.md`、`docs/tech_model_guide.md`、`docs/testing_guide.md`、计划文档
+     §8/§9。
+  5. **测试**：新增 `tests/test_p5b_followups.py`（51 个）。变异验证 21 个（delay_days 边界/负数/未抄入待办/
+     降级忽略 due_step、重复索要 elapsed、关系不落盘 elapsed、countered 误记、幂等、文本完全匹配、自动结案
+     误回写、dampened 误回写、回写开关、T2 误入可修复、阶段夹值、受保护字段还原、新增 id 备注、无改善也采纳、
+     重裁前不回滚、失败不还原、开关关闭仍修复、技术模型关闭仍修复）全部转红，无存活。
+  **验收**：`pytest tests/` **989 passed**（P5a 后基线 938，新增 51）。
+  **与计划的偏离/细化**：① 修复调用只覆盖 T4–T7（T1–T3 重新提议改变不了裁决，见指南）；② 修复**不改写
+  叙事**，计划原文"让 LLM 重写被驳回的叙事"**未采用**（风险更大，若要做需另行确认）；③ 回写开关默认
+  **开**（因果引擎本身 opt-in），与 P1 对 C8"待确认才做"的处理不同——这是你的明确要求；④ `delay_steps` 的
+  `causal_links` 聚合（`causal_graph.py`）仍按步，未改（只是布尔汇总"是否有延迟"）。
+  **已知边界（如实记录）**：① **没有在真实 LLM 下运行过**（修复调用的编造理由倾向、额外成本、
+  `delay_days` 协议遵守度均未知）；② 兑现统计是 LLM 自报，回写进跨模拟知识库后无法区分"真兑现"与"自报兑现"；
+  ③ 同一知识条目可能同时被 `record_causal_links()` 与本回写计数，两种来源叠加；④ 已写入知识库的回写没有
+  撤销机制；⑤ `app.py` 只做语法检查与显示函数单测，设置页保存流程未跑；⑥ 关系 `delay_days` 的待办只对
+  开启后新排队的项生效，旧待办仍按步。
+  **下一阶段**：P5c / 3c（树接地：前置强制、结构化触发条件与 `trigger_met` 建议、`exclusive_group`、
+  `likelihood` 校准账本；自动迁移放子开关 `tree_auto_transition` 默认关）。

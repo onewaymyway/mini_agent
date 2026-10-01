@@ -321,8 +321,29 @@ def _resolve_causal_lines_hint(
     return hint
 
 
+_RELATIONSHIP_ELAPSED_ASK = (
+    "部分关系的延迟以天数（delay_days）声明：请在输出里给可选字段 `elapsed_days`"
+    "（这一步在模拟世界里跨越的天数，正数，量级估计即可）；不给则这些关系按步计数到期，精度降级。"
+)
+
+
+def _elapsed_asked_elsewhere(settings: "Dict[str, Any] | None") -> bool:
+    """技术模型/外生事件采样/因果引擎的提示词已经索要过 `elapsed_days` 时返回 True，
+    关系提示词就不再重复索要（同一份 prompt 里只问一次）。"""
+    from world_simulator import causal_engine, event_sampler, tech_model
+
+    return bool(
+        tech_model.is_enabled(settings)
+        or event_sampler.is_enabled(settings)
+        or causal_engine.needs_elapsed(settings)
+    )
+
+
 def _resolve_relationship_hint(
-    settings: "Dict[str, Any] | None", *, current_step: int = 0
+    settings: "Dict[str, Any] | None",
+    *,
+    current_step: int = 0,
+    history: "List[Any] | None" = None,
 ) -> str:
     """把 `settings.relationships` 转成喂给 `advance_step`/
     `world_evolve` prompt 的一句话提示（第二批，`next_doc/
@@ -351,7 +372,11 @@ def _resolve_relationship_hint(
             f'{item["from"]}→{item["to"]}（{item["kind_label"]}，'
             f'强度：{item["strength_label"]}'
         )
-        if item.get("delay_steps"):
+        if item.get("delay_days") is not None:
+            # 第二十二轮 P5b：delay_days 优先（elapsed 天数，不受步长变化影响）。
+            if item["delay_days"] > 0:
+                piece += f'，延迟约 {item["delay_days"]:g} 天后才体现'
+        elif item.get("delay_steps"):
             piece += f'，延迟 {item["delay_steps"]} 步后才体现'
         if item.get("propagation_path"):
             piece += "，经由：" + "→".join(item["propagation_path"])
@@ -363,7 +388,7 @@ def _resolve_relationship_hint(
         parts.append(piece)
 
     pending = (settings or {}).get("relationship_pending_effects")
-    due = rel_module.due_pending_effects(pending, current_step=current_step)
+    due = rel_module.due_pending_effects(pending, current_step=current_step, history=history)
     due_hint = ""
     if due:
         due_refs = "、".join(str(item.get("relationship_ref")) for item in due)
@@ -373,17 +398,25 @@ def _resolve_relationship_hint(
             "仅供参考，是否真的体现、以什么方式体现仍由你自行判断，不是"
             "机械触发。"
         )
+        degraded = [str(item.get("relationship_ref")) for item in due if item.get("precision") == "steps"]
+        if degraded:
+            due_hint += (
+                f"（关系 {'、'.join(degraded)} 声明了天数延迟，但缺少 elapsed_days 记录，"
+                "已按步数近似判定到期，时间精度降级。）"
+            )
+    if rel_module.needs_elapsed(raw) and not _elapsed_asked_elsewhere(settings):
+        due_hint += "\n" + _RELATIONSHIP_ELAPSED_ASK
 
     return (
         "已声明以下主体关系，仅供你判断情节走向时参考——这是给你的参考"
         "信息，不是要你机械计算数值传播，是否体现、怎么体现完全由你"
         "自行判断：" + "；".join(parts) + "。"
         "如果这一步的情节里，某条关系的\"源头\"确实发生了、并且这条关系"
-        "声明了延迟（delay_steps > 0），可以在输出里额外给一个可选字段"
+        "声明了延迟（delay_steps > 0 或 delay_days > 0），可以在输出里额外给一个可选字段"
         "`triggered_relationships`：一个字符串数组，列出被触发的关系"
         "序号（上面每条关系前面隐含的序号，从 0 开始，按声明顺序数，"
         "或者这条关系自带的 `id`，如果有的话）；没有关系被触发，或者"
-        "所有相关关系都是即时生效（未声明 delay_steps），都不需要输出"
+        "所有相关关系都是即时生效（未声明延迟），都不需要输出"
         "这个字段。" + due_hint
     )
 
@@ -651,7 +684,11 @@ def resolve_capabilities_hint(history: "Sequence[Any] | None") -> str:
 
 
 def resolve_hints(
-    settings: "Dict[str, Any] | None" = None, *, stage: str = "advance", current_step: int = 0
+    settings: "Dict[str, Any] | None" = None,
+    *,
+    stage: str = "advance",
+    current_step: int = 0,
+    history: "List[Any] | None" = None,
 ) -> Dict[str, str]:
     """把 `manifest.settings`（或创建向导里还没落盘成 manifest 时的临时
     设置字典）转成喂给 workflow prompt 的提示字符串。
@@ -675,6 +712,9 @@ def resolve_hints(
             哪些线预期有动静"；`stage == "create"` 场景没有意义，
             调用方不传时按 0 处理（不影响任何提示内容，因为
             `create` 分支本身不消费这个参数）。
+
+        history: 该分支推进前的历史（第二十二轮 P5b 新增，可选）。只用于按 `elapsed_days`
+            判定关系 `delay_days` 是否到期；不传时带 `delay_days` 的待办退化为按步判定。
 
     `time_granularity_hint` 的内容按 `time_granularity_mode` 分三种：
     - `fixed`：明确要求"每一步都严格按这个值推进"，行为与阶段一/二
@@ -731,7 +771,7 @@ def resolve_hints(
             settings, stage=stage, current_step=current_step
         ),
         "relationship_hint": _resolve_relationship_hint(
-            settings, current_step=current_step
+            settings, current_step=current_step, history=history
         ),
     }
 

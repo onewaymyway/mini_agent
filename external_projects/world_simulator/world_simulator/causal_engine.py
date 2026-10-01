@@ -99,6 +99,14 @@ def is_enabled(settings: Optional[Dict[str, Any]]) -> bool:
     return bool((settings or {}).get("causal_engine_enabled"))
 
 
+def kb_writeback_enabled(settings: Optional[Dict[str, Any]]) -> bool:
+    """兑现结论是否回写跨模拟知识库（`settings.causal_kb_writeback`，**默认 True**）。
+    只在因果引擎开启时才有意义；显式设为 False 即关闭回写。"""
+    if not is_enabled(settings):
+        return False
+    return bool((settings or {}).get("causal_kb_writeback", True))
+
+
 def _num(value: Any) -> Optional[float]:
     if isinstance(value, bool):
         return None
@@ -564,6 +572,50 @@ def edge_stats(history: List[Any]) -> Dict[str, Dict[str, Any]]:
         s["concluded"] = sum(s[k] for k in _CONCLUSIVE)
         s["realized_rate"] = round(s["realized"] / s["concluded"], 3) if s["concluded"] else None
     return stats
+
+
+def _display_name(settings: Optional[Dict[str, Any]], node_id: str) -> str:
+    """边端点的可读名：先查因果线 `label`，再查技术节点 `name`，都没有（或 label 就是 id）用 id。"""
+    for line in (settings or {}).get("causal_lines") or []:
+        if isinstance(line, dict) and str(line.get("id") or "") == node_id:
+            label = str(line.get("label") or line.get("name") or "").strip()
+            if label:
+                return label
+    try:
+        for node in tech_model.get_nodes(settings):
+            if node.get("id") == node_id and str(node.get("name") or "").strip():
+                return str(node["name"]).strip()
+    except Exception:  # noqa: BLE001 — 只是取名字，取不到就用 id
+        pass
+    return node_id
+
+
+def kb_outcomes(
+    settings: Optional[Dict[str, Any]], dispositions: Optional[List[Dict[str, Any]]]
+) -> List[Dict[str, Any]]:
+    """本步的处置审计 → 该回写知识库的结论列表（见 `knowledge_base.record_edge_outcomes`）。
+
+    只取 LLM 回报且引擎接受的 `realized`/`countered`；自动结案（`auto`）、`dampened`、
+    `postponed` 不回写。开关关闭或边已不在 `declared_causal_graph` 里时返回 `[]`。
+    """
+    if not kb_writeback_enabled(settings):
+        return []
+    edges = {e["id"]: e for e in get_edges(settings)[0]}
+    out: List[Dict[str, Any]] = []
+    for d in dispositions or []:
+        if not isinstance(d, dict) or d.get("auto") or d.get("disposition") not in ("realized", "countered"):
+            continue
+        edge = edges.get(str(d.get("edge_id") or ""))
+        if edge is None:
+            continue
+        out.append({
+            "edge_id": edge["id"],
+            "cause": _display_name(settings, edge["from_line_id"]),
+            "effect": _display_name(settings, edge["to_line_id"]),
+            "mechanism": edge["mechanism"] or edge["note"],
+            "outcome": d["disposition"],
+        })
+    return out
 
 
 def summarize_open(

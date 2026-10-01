@@ -32,10 +32,12 @@ from world_simulator.engine.ids import _read_skill_version, _skill_name_for_temp
 from world_simulator.engine.knowledge import (
     _safe_evaluate_reflexivity,
     _safe_record_causal_links,
+    _safe_record_edge_outcomes,
     _safe_suggest_knowledge,
 )
 from world_simulator.decision_validation import compute_option_warnings
 from world_simulator.engine.ledger_correction import _safe_correct_field_ledger
+from world_simulator.engine.tech_repair import safe_repair_tech_step
 from world_simulator.engine.resource_guard import (
     _apply_resource_guard,
     _auto_fill_unaccounted_ledger_entries,
@@ -443,7 +445,9 @@ def advance(
         "causal_pending_hint": causal_engine.safe_build_hint(
             manifest.settings, history_for_prompt, current.step + 1
         ),
-        **resolve_hints(manifest.settings, current_step=current.step + 1),
+        **resolve_hints(
+            manifest.settings, current_step=current.step + 1, history=history_for_prompt
+        ),
     }
 
 
@@ -815,15 +819,40 @@ def advance(
         tech_model.is_enabled(manifest.settings)
         or event_sampler.is_enabled(manifest.settings)
         or causal_engine.needs_elapsed(manifest.settings)
+        or relationship.needs_elapsed(manifest.settings.get("relationships"))
     ):
         next_state.elapsed_days = tech_model.normalize_reported_elapsed(data.get("elapsed_days"))
     if tech_model.is_enabled(manifest.settings):
+        # 修复调用（P5b，独立 opt-in `tech_repair_enabled`）需要"本步开始前"的技术状态用来回滚重裁，
+        # 所以只在开启时才拷贝，关闭时零开销、不走任何新分支。
+        _pre_tech_state = (
+            copy.deepcopy(manifest.settings.get("tech_state")) if tech_model.repair_enabled(manifest.settings) else None
+        )
         next_state.tech_updates, next_state.tech_violations = tech_model.safe_apply_step(
             manifest.settings,
             data.get("tech_updates"),
             step=next_state.step,
             elapsed_days_raw=data.get("elapsed_days"),
         )
+        if tech_model.repair_enabled(manifest.settings) and tech_model.repairable_violations(
+            next_state.tech_violations
+        ):
+            (
+                next_state.tech_updates,
+                next_state.tech_violations,
+                next_state.tech_repair,
+            ) = safe_repair_tech_step(
+                cfg,
+                workspace_root,
+                manifest.settings,
+                pre_tech_state=_pre_tech_state,
+                proposals=data.get("tech_updates"),
+                elapsed_days_raw=data.get("elapsed_days"),
+                step=next_state.step,
+                audit=next_state.tech_updates,
+                violations=next_state.tech_violations,
+                narrative_hint=str(data.get("narrative", "") or data.get("next_summary", "") or ""),
+            )
 
     # 第二十二轮 WP3 / P5a：因果引擎。先处置 LLM 对*上一步遗留*待兑现项的回报，再把本步
     # 源头有进展的边入队（顺序不能反：本步新入队的项不该被本步回报处置）。必须在下面
@@ -897,6 +926,17 @@ def advance(
         template=manifest.template,
         causal_links=next_state.causal_links,
         step=next_state.step,
+    )
+
+    # 第二十二轮 P5b：因果引擎声明边的兑现结论（realized/countered）回写知识库计数器。
+    # 同样是落盘之后的旁路操作；`causal_kb_writeback` 默认开（引擎本身 opt-in），可显式关闭。
+    _safe_record_edge_outcomes(
+        data_dir,
+        sim_id=sim_id,
+        template=manifest.template,
+        branch=branch,
+        step=next_state.step,
+        outcomes=causal_engine.kb_outcomes(manifest.settings, next_state.effect_dispositions),
     )
 
     # 第十轮批次一（`next_doc/world_simulator_tenth_round_problem_

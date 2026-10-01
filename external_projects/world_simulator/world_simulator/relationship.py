@@ -25,10 +25,24 @@ plan.md` 2.2 节（第二批，完整机制）。
 effect()`/`due_pending_effects()` 操作的
 `manifest.settings.relationship_pending_effects` 由调用方负责落盘
 （`SimStore.save_manifest()`），本模块本身不做任何文件 IO。
+
+**延迟的时间单位（第二十二轮 P5b，`next_doc/world_simulator_realism_tech_and_causal_engine_
+plan.md` §8 第 2 问）**：`delay_steps` 以\"步\"计，而步长可变（`time_granularity_mode`
+为 auto/guided 时），同样的 `delay_steps=2` 可能是 2 个月也可能是 2 年。所以关系新增
+可选字段 **`delay_days`**（elapsed 天数，非负数），延迟判定用历史里各步的 `elapsed_days`
+累加，与 `causal_engine` 的 `delay_days` 同一套口径（直接复用 `causal_engine.elapsed_between`）。
+`delay_steps` **保留**，作为旧数据与缺 `elapsed_days` 时的兜底：
+
+- 只声明 `delay_steps`（旧实例）→ 行为与改动前逐字节一致，按步计；
+- 声明了 `delay_days` 且区间内每一步都有 `elapsed_days` → 按天数判定到期；
+- 声明了 `delay_days` 但某一步缺 `elapsed_days` → 退化为按步（`due_step`），到期项带
+  `precision: \"steps\"`（\"精度降级\"，提示文本里会写明）；
+- 两者都声明 → `delay_days` 为准，`delay_steps` 只在精度降级时才用。
 """
 
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, List
 
 _VALID_KINDS = ("ally", "rival", "dependency", "authority", "other")
@@ -54,6 +68,23 @@ _STRENGTH_LABELS = {
 }
 
 
+def _non_negative_number(value: Any) -> "float | None":
+    """合法的非负有限数返回 float，其余（缺省/非数字/负数/NaN/bool）返回 None。"""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) and f >= 0 else None
+
+
+def needs_elapsed(raw: Any) -> bool:
+    """`settings.relationships`（原始值）里是否至少有一条声明了 `delay_days`：此时每步都需要
+    LLM 给 `elapsed_days`，否则延迟只能退化为按步计数。"""
+    return any("delay_days" in r for r in normalize_relationships(raw))
+
+
 def normalize_relationships(raw: Any) -> List[Dict[str, Any]]:
     """把 `settings.relationships` 的原始 JSON 清洗成规范形式，丢弃
     `from`/`to` 缺失的无效条目（不报错，容忍用户手填的不完整数据）。
@@ -67,6 +98,8 @@ def normalize_relationships(raw: Any) -> List[Dict[str, Any]]:
     不合法就退化为安全默认值"：
     - `delay_steps`：非负整数，这条关系的影响延迟几步后才体现，默认
       `0`（即时生效）；给出负数、非数字或缺省一律归一化为 `0`。
+    - `delay_days`（第二十二轮 P5b 新增）：非负数，影响延迟的 elapsed 天数；
+      未声明/非法（负数、非数字）时**不输出该 key**。见模块 docstring。
     - `propagation_path`：字符串数组，间接影响时经过的中间实体/因果
       线 id；非列表或缺省归一化为空列表（表示直接影响）。
     - `reversible`：`_VALID_REVERSIBLE` 三选一，不认识的取值/缺省归一
@@ -95,6 +128,7 @@ def normalize_relationships(raw: Any) -> List[Dict[str, Any]]:
             delay_steps = 0
         if delay_steps < 0:
             delay_steps = 0
+        delay_days = _non_negative_number(item.get("delay_days"))
 
         raw_path = item.get("propagation_path")
         propagation_path = (
@@ -118,6 +152,9 @@ def normalize_relationships(raw: Any) -> List[Dict[str, Any]]:
             "delay_steps": delay_steps,
             "propagation_path": propagation_path,
         }
+        if delay_days is not None:
+            # 只在声明了才输出：旧关系（只有 delay_steps）归一化结果与改动前逐字节一致。
+            entry["delay_days"] = delay_days
         if reversible is not None:
             entry["reversible"] = reversible
             entry["reversible_label"] = _REVERSIBLE_LABELS.get(reversible, reversible)
@@ -188,11 +225,13 @@ def queue_pending_effect(
     result = [dict(item) for item in (pending or []) if isinstance(item, dict)]
     rel = _resolve_relationship_ref(relationships, relationship_ref)
     delay_steps = 0
+    delay_days = None
     if rel is not None:
         try:
             delay_steps = max(0, int(rel.get("delay_steps") or 0))
         except (TypeError, ValueError):
             delay_steps = 0
+        delay_days = _non_negative_number(rel.get("delay_days"))
     due_step = triggered_at_step + delay_steps
 
     result = [
@@ -203,28 +242,63 @@ def queue_pending_effect(
             and item.get("triggered_at_step") == triggered_at_step
         )
     ]
-    result.append(
-        {
-            "relationship_ref": str(relationship_ref),
-            "triggered_at_step": triggered_at_step,
-            "due_step": due_step,
-        }
-    )
+    entry: Dict[str, Any] = {
+        "relationship_ref": str(relationship_ref),
+        "triggered_at_step": triggered_at_step,
+        "due_step": due_step,
+    }
+    if delay_days is not None:
+        # 排队时把声明的天数抄进待办：之后关系声明被用户改了，已排队的项仍按排队时的口径到期。
+        # `due_step` 保留作为缺 elapsed_days 时的按步兜底。
+        entry["delay_days"] = delay_days
+    result.append(entry)
     return result
 
 
 def due_pending_effects(
-    pending: "List[Dict[str, Any]] | None", *, current_step: int
+    pending: "List[Dict[str, Any]] | None",
+    *,
+    current_step: int,
+    history: "List[Any] | None" = None,
 ) -> List[Dict[str, Any]]:
-    """从待办列表里挑出"到了这一步该提醒 LLM 生效"的条目
-    （`due_step <= current_step`），不修改/不清除传入的列表——是否把
-    到期项从 `relationship_pending_effects` 里移除，由调用方
-    （`engine/advance.py`）在落盘时决定（默认保留，允许同一条到期提醒
-    连续出现几步，直到 LLM 真的在 `line_updates`/`narrative` 里体现
-    出来为止，比"提醒一次就永久消失"更稳妥）。
+    """从待办列表里挑出"到了这一步该提醒 LLM 生效"的条目，不修改/不清除传入的列表——
+    是否把到期项从 `relationship_pending_effects` 里移除，由调用方（`engine/advance.py`）
+    在落盘时决定（默认保留，允许同一条到期提醒连续出现几步，直到 LLM 真的在
+    `line_updates`/`narrative` 里体现出来为止，比"提醒一次就永久消失"更稳妥）。
+
+    到期判定（`current_step` 是**正在生成**的那一步，口径同 `causal_engine`）：
+
+    - 待办没有 `delay_days`（旧数据 / 只声明了 `delay_steps`）：`due_step <= current_step`，
+      与改动前一致，返回项不带新增字段；
+    - 有 `delay_days` 且传了 `history`，并且 `(triggered_at_step, current_step-1]` 内每一步
+      都有 `elapsed_days`：累计天数 `>= delay_days` 才到期，返回项带 `precision: "days"`
+      与 `elapsed_days_since`；
+    - 有 `delay_days` 但没传 `history` 或区间内有步缺 `elapsed_days`：退化为 `due_step`，
+      返回项带 `precision: "steps"`（精度降级）。
     """
-    return [
-        dict(item)
-        for item in (pending or [])
-        if isinstance(item, dict) and int(item.get("due_step", 0)) <= current_step
-    ]
+    from world_simulator.causal_engine import elapsed_between  # 延迟导入：避免模块级循环依赖
+
+    out: List[Dict[str, Any]] = []
+    for item in pending or []:
+        if not isinstance(item, dict):
+            continue
+        due_step = int(item.get("due_step", 0))
+        delay_days = _non_negative_number(item.get("delay_days"))
+        if delay_days is None:
+            if due_step <= current_step:
+                out.append(dict(item))
+            continue
+        triggered = int(item.get("triggered_at_step", 0))
+        days, complete = (
+            elapsed_between(history, triggered, current_step - 1) if history is not None else (0.0, False)
+        )
+        entry = dict(item)
+        if complete:
+            if days >= delay_days:
+                entry["precision"] = "days"
+                entry["elapsed_days_since"] = days
+                out.append(entry)
+        elif due_step <= current_step:
+            entry["precision"] = "steps"
+            out.append(entry)
+    return out

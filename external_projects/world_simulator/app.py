@@ -675,6 +675,24 @@ def _tech_violations_html(state) -> str:
             f'<div class="ws-chapter-option-warning">{icon} 技术模型 {html_stdlib.escape(str(v.get("code", "")))}：'
             f'{html_stdlib.escape(str(v.get("message", "")))}</div>'
         )
+    repair = getattr(state, "tech_repair", None)
+    if isinstance(repair, dict) and repair.get("status"):
+        status_text = {
+            "accepted": "已采纳修复结果（下面列出的是修复后剩余的违规）",
+            "rejected": "修复后没有改善，保留了第一次裁决",
+            "failed": "修复调用失败，保留了第一次裁决",
+        }.get(str(repair.get("status")), str(repair.get("status")))
+        before = "；".join(
+            f'{html_stdlib.escape(str(v.get("code", "")))}：{html_stdlib.escape(str(v.get("message", "")))}'
+            for v in (repair.get("violations_before") or []) if isinstance(v, dict)
+        )
+        notes = "；".join(html_stdlib.escape(str(n)) for n in (repair.get("notes") or []))
+        lines.append(
+            f'<div class="ws-chapter-option-warning">🛠️ 技术违规修复调用：{html_stdlib.escape(status_text)}。'
+            f"修复前的违规：{before or '（无）'}"
+            + (f"。备注：{notes}" if notes else "")
+            + "（修复只改写了技术提议，没有改写叙事。）</div>"
+        )
     for a in getattr(state, "tech_updates", None) or []:
         if isinstance(a, dict) and a.get("action") == "time" and a.get("elapsed_source") == "fallback":
             lines.append(
@@ -4621,7 +4639,9 @@ def page_detail() -> None:
             st.markdown(
                 '<span class="ws-muted">把主体之间的关系从叙事自由文本升级为一份可'
                 "独立查看的结构化列表——**不是**完整的 Influence Field/关系图架构，"
-                "没有影响半径/传播路径/自动推进，只是方便浏览。</span>",
+                "没有影响半径/传播路径/自动推进，只是方便浏览。"
+                "可选字段 <code>delay_days</code>（影响延迟的 elapsed 天数，优先于 <code>delay_steps</code>；"
+                "声明后 AI 每步需给 <code>elapsed_days</code>，缺失时按 <code>delay_steps</code> 近似并提示精度降级）。</span>",
                 unsafe_allow_html=True,
             )
             new_relationships_text = st.text_area(
@@ -4763,6 +4783,16 @@ def page_detail() -> None:
                 key="settings_tech_priors", height=70,
                 placeholder='{"energy": {"lab": 1800, "expert": 1200}, "default": {"lab": 730}}',
             )
+            new_tech_repair = st.checkbox(
+                "技术违规时发起一次修复调用（额外一次 LLM 调用，默认关闭）",
+                value=bool(cur_settings.get("tech_repair_enabled")), key="settings_tech_repair_enabled",
+                help=(
+                    "只在出现 T4/T5/T6/T7 违规（倒退无原因/新技术阶段夹值/采用率超额/成本无冲击上升）时调用一次，"
+                    "让 AI 重新给出技术提议，由引擎回滚后重新裁决，仅在违规减少时采纳。"
+                    "T1/T2/T3 不触发（重新提议改变不了裁决）。修复只改技术提议，不改写叙事，"
+                    "叙事与引擎状态的错位仍会存在；AI 也可能为了通过检查而补写理由。"
+                ),
+            )
         cur_event_enabled = bool(cur_settings.get("event_sampling_enabled"))
         with st.expander("高级：外生事件采样（第二十二轮 WP2，可选，默认关闭）"):
             st.markdown(
@@ -4826,6 +4856,14 @@ def page_detail() -> None:
                 value=json.dumps(cur_causal_params, ensure_ascii=False) if cur_causal_params else "",
                 key="settings_causal_params", height=60,
                 placeholder='{"max_postpone": 3, "max_ignored": 3, "max_pending": 40}',
+            )
+            new_causal_kb = st.checkbox(
+                "把边的兑现结论回写跨模拟知识库（默认开启）",
+                value=bool(cur_settings.get("causal_kb_writeback", True)), key="settings_causal_kb_writeback",
+                help=(
+                    "只回写“已兑现”（印证 +1）和“被抵消”（证伪 +1）；部分兑现/推迟/自动结案不回写。"
+                    "兑现与否是 AI 自报，引擎无法核验；同一分支同一步同一条边只计一次。"
+                ),
             )
         if st.button("保存设置", key="settings_save"):
             new_objectives = [o.strip() for o in new_objectives_text.split(",") if o.strip()]
@@ -4950,6 +4988,7 @@ def page_detail() -> None:
                     ),
                     tech_params=new_tech_params if isinstance(new_tech_params, dict) else {},
                     tech_priors=new_tech_priors if isinstance(new_tech_priors, dict) else {},
+                    tech_repair_enabled=bool(new_tech_repair),
                     event_sampling_enabled=bool(new_event_enabled),
                     event_priors=[x for x in new_event_priors if isinstance(x, dict)]
                     if isinstance(new_event_priors, list) else [],
@@ -4958,6 +4997,7 @@ def page_detail() -> None:
                     event_sampling_common_random_numbers=bool(new_event_common),
                     causal_engine_enabled=bool(new_causal_enabled),
                     causal_params=new_causal_params if isinstance(new_causal_params, dict) else {},
+                    causal_kb_writeback=bool(new_causal_kb),
                 )
                 _, _ev_problems = event_mod.get_priors({"event_priors": new_event_priors})
                 st.success("设置已更新，下一步推进开始生效。")
