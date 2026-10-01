@@ -25,7 +25,7 @@ from world_simulator.engine.background_entities import (
     _normalize_background_entities,
 )
 from world_simulator import causal_tree, relationship
-from world_simulator import consistency_guard, dynamic_state, event_sampler, tech_model
+from world_simulator import causal_engine, consistency_guard, dynamic_state, event_sampler, tech_model
 from world_simulator.engine.causal_lines import _apply_tree_updates, _auto_register_causal_lines
 from world_simulator.engine.errors import SimAlreadyEndedError, SimEngineError, SimPausedError
 from world_simulator.engine.ids import _read_skill_version, _skill_name_for_template
@@ -438,6 +438,11 @@ def advance(
         # 协议喂给 LLM；未开启返回空字符串（prompt 与之前等价）。
         "tech_state_hint": tech_model.safe_build_hint(manifest.settings),
         "sampled_events_hint": event_sampler.safe_build_hint(manifest.settings, sampled_events),
+        # 第二十二轮 WP3 / P5a：因果引擎开启且有到期的待兑现因果时，把它们连同输出协议
+        # （`effect_dispositions`）喂给 LLM；未开启或无到期项返回空字符串。
+        "causal_pending_hint": causal_engine.safe_build_hint(
+            manifest.settings, history_for_prompt, current.step + 1
+        ),
         **resolve_hints(manifest.settings, current_step=current.step + 1),
     }
 
@@ -806,7 +811,11 @@ def advance(
     # 不产生任何新字段（`SimState.to_dict()` 对空值不输出）。
     # `elapsed_days` 也服务于外生事件采样（WP2：下一步的事件概率用最近几步的跨度
     # 估计），所以两个功能任一开启都记录它；技术裁决本身仍只在技术模型开启时跑。
-    if tech_model.is_enabled(manifest.settings) or event_sampler.is_enabled(manifest.settings):
+    if (
+        tech_model.is_enabled(manifest.settings)
+        or event_sampler.is_enabled(manifest.settings)
+        or causal_engine.needs_elapsed(manifest.settings)
+    ):
         next_state.elapsed_days = tech_model.normalize_reported_elapsed(data.get("elapsed_days"))
     if tech_model.is_enabled(manifest.settings):
         next_state.tech_updates, next_state.tech_violations = tech_model.safe_apply_step(
@@ -815,6 +824,22 @@ def advance(
             step=next_state.step,
             elapsed_days_raw=data.get("elapsed_days"),
         )
+
+    # 第二十二轮 WP3 / P5a：因果引擎。先处置 LLM 对*上一步遗留*待兑现项的回报，再把本步
+    # 源头有进展的边入队（顺序不能反：本步新入队的项不该被本步回报处置）。必须在下面
+    # `dynamic_state.snapshot_if_changed()` 之前——`causal_pending` 是分支作用域动态状态。
+    # 未开启时整段是空操作，不产生任何新字段、不碰 `settings`。
+    if causal_engine.is_enabled(manifest.settings):
+        _cpending = manifest.settings.get("causal_pending")
+        _cpending, next_state.effect_dispositions, _disp_violations = causal_engine.safe_apply_dispositions(
+            manifest.settings, _cpending, data.get("effect_dispositions"),
+            history=history_for_prompt, step=next_state.step,
+        )
+        _cpending, next_state.causal_queued, _queue_violations = causal_engine.safe_queue_effects(
+            manifest.settings, _cpending, next_state,
+        )
+        next_state.causal_violations = _disp_violations + _queue_violations
+        manifest.settings = {**manifest.settings, "causal_pending": _cpending}
 
     # 4.10 节（阶段三十三第五批）：把这一批 options 共享的决策背景
     # 收纳进一个精简容器（`decision_opportunity`），必须在上面

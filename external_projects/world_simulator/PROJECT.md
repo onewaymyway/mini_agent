@@ -682,6 +682,12 @@ monkeypatch 打桩验证文本原样出现在 `inputs` 字典里；`generate_sce
   叙事；`affects` 只是提示；`advance_lines()` 不做采样；先验由用户手写（未做
   `generate_scenario` 提议）；没有在真实 LLM 下验证过。详见
   `docs/event_sampling_guide.md` 与"变更记录"第二十二轮 P4 条目。
+- **因果引擎只记账、不改数值（第二十二轮 WP3 · P5a，默认关闭）**：声明的因果边在源头
+  有进展时入队、延迟期到了提醒 LLM 交代；引擎**无法验证** `realized` 是否真的写进了
+  状态，兑现统计是 LLM 自报的；`sign`/`strength` 只随提示词展示；账本显著变化不是触发源；
+  `relationship.py` 的 `delay_steps` 未改；未回写 `knowledge_base` 计数；`advance_lines()`
+  不入队；没有在真实 LLM 下验证过。3c/3d/3e 尚未实现。详见 `docs/causal_engine_guide.md`
+  与"变更记录"第二十二轮 P5a 条目。
 
 ## 目录结构
 
@@ -4326,3 +4332,42 @@ deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
   先验，数值完全取决于用户；⑤ `affects` 只是提示，不自动改任何状态；⑥ 事件间无相关性；
   ⑦ `advance_lines()` 不做采样；⑧ 只对新写入的步有效；⑨ 公共随机数开启后重复采样各
   分支事件序列相同（除非设不同 salt）。
+- 2026-10-01（第二十二轮 · 阶段 P5a / WP3 的 3a+3b，依据 `next_doc/world_simulator_
+  realism_tech_and_causal_engine_plan.md` §4 WP3）：**因果边升级 + 待兑现因果队列**
+  （默认关闭 `settings.causal_engine_enabled`；关闭时 prompt/落盘/界面与之前等价）。
+  1. **新增** `world_simulator/causal_engine.py`（纯 Python、不调 LLM）：边规整（旧格式
+     兼容，新增可选 `id/mechanism/sign/strength/delay_days/condition/confidence/enabled`，
+     未知取值视为未声明）、四种触发源（线推进 / 树分支印证或激活 / 抽中的外生事件 /
+     技术阶段迁移）、同边去重累加、延迟（`delay_days` 按 elapsed 累计，缺数据降级为按步）、
+     到期提示词、处置校验（E1 引用不存在 / E2 取值非法 / E3 未到期 / E4 缺 reason /
+     E6 队列满 / E0 引擎出错）、自动结案（推迟过多 `expired`、长期未交代 `unaddressed`）、
+     兑现统计（从分支历史推导）、`safe_*` 兜底包装。
+  2. **`SimState` 新增** `causal_queued`/`effect_dispositions`/`causal_violations`
+     （空值不输出，旧格式逐字节不变）；**`dynamic_state.DYNAMIC_KEYS` 新增**
+     `causal_pending`（待兑现队列随分支，分叉即回滚）。
+  3. **`engine/advance.py`**：提示词注入 `{causal_pending_hint}`；落盘前**先处置上一步
+     遗留项、再入队本步新触发**（顺序有测试保证）；声明了 `delay_days` 的边会让每步
+     都落盘并索要 `elapsed_days`。
+  4. **`workflows/advance_step.yaml`、`world_evolve.yaml`** 加占位符与 `effect_dispositions`
+     输出说明；三个模板 SKILL.md 补说明。
+  5. **`app.py`**：设置页"高级：因果引擎"（开关 + 参数 JSON 校验 + 无效边警告）、详情页
+     "🔗 因果引擎"面板（待兑现 / 本分支兑现统计，标注"AI 自报"）、每步入队与交代提示
+     （HTML 已转义）。
+  6. **文档**：新增 `docs/causal_engine_guide.md`；更新 `docs/README.md`、`overview.md`、
+     `testing_guide.md`。
+  7. **测试**：新增 `tests/test_causal_engine.py`（40 个）。变异验证 21 个（去重、E1/E3/E4、
+     天数比较、降级、统计分母、四个触发源判定、条件、推迟/忽略上限、提示为空、`needs_elapsed`、
+     开关守卫、先入队后处置、`causal_pending` 不随分支、不落盘 `elapsed_days`、自指边、
+     HTML 转义）全部转红；首轮有 1 个存活（`max(1, delay_steps)` 里的死代码），已删除并补用例。
+  **验收**：`pytest tests/` 938 passed（P4 后基线 898，新增 40）；`streamlit.testing.AppTest`
+  冒烟：待兑现项 + 带入队/交代/违规的历史步，详情页无异常、面板与提示渲染、HTML 转义、
+  自指边给出警告。
+  **与 §4 WP3 的偏离/细化**：① **`delay_steps` 语义修正只覆盖本模块新增的边**（用
+  `delay_days`）；`relationship.py` 的 `delay_steps` 没动，§8 第 2 问是否扩展待你确认；
+  ② **没有回写 `knowledge_base` 的 `validated_count/contradicted_count`**（跨实例副作用，
+  同 P1 对 C8 的处理）；③ 触发源**没有"账本显著变化"**（无数据不设阈值）；④ 新增 E1–E6 与
+  `max_postpone/max_ignored/max_pending` 三个上限（计划未写），防止队列无限增长。
+  **已知边界（如实记录）**：① **没有在真实 LLM 下运行过**——LLM 是否遵守
+  `effect_dispositions` 协议、额外 token 成本未知；② 引擎**无法验证** `realized` 是否真的体现在
+  状态里；③ 只看"源头有进展"，不看方向/幅度；④ `advance_lines()` 不入队；⑤ 只对新写入的步
+  有效；⑥ 开启后 `causal_pending` 变化会多写完整快照，历史变大。

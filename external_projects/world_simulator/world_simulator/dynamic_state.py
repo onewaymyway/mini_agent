@@ -56,7 +56,8 @@ from world_simulator.store import SimStore, atomic_write_json, atomic_write_json
 # 停留时长——随时间线变化，分叉即回滚到那一刻。它每步都会变（进度随时间
 # 推进），所以开启技术模型后每步都会写一份完整快照（连带 `causal_lines`），
 # 历史文件会相应变大——见 PROJECT.md 第二十二轮 P3 的已知边界。
-DYNAMIC_KEYS = ("causal_lines", "relationship_pending_effects", "tech_state")
+# `causal_pending`（第二十二轮 WP3 / P5a，`causal_engine.py`）：待兑现因果队列，随分支。
+DYNAMIC_KEYS = ("causal_lines", "relationship_pending_effects", "tech_state", "causal_pending")
 
 
 def _normalize(value: Any) -> Any:

@@ -49,6 +49,7 @@ from world_simulator import hypothesis as hyp_mod
 from world_simulator import reality_check as rc_mod
 from world_simulator import tech_model as tech_mod
 from world_simulator import event_sampler as event_mod
+from world_simulator import causal_engine as causal_mod
 from world_simulator import retrospective as retrospective_mod
 from world_simulator import html_export as html_export_mod
 from world_simulator import agent_preview as agent_preview_mod
@@ -780,6 +781,88 @@ def _render_event_panel(manifest, current, history) -> None:
             if not p["verified"]:
                 line += " · ⚠️ 未核对"
             st.markdown(line)
+
+
+def _causal_violations_html(state) -> str:
+    """因果引擎（第二十二轮 WP3 / P5a）本步的裁决提示：被忽略的 `effect_dispositions`
+    及原因。透明记录，不是错误——被忽略的回报没有生效。"""
+    lines = []
+    for v in getattr(state, "causal_violations", None) or []:
+        if not isinstance(v, dict):
+            continue
+        lines.append(
+            f'<div class="ws-chapter-option-warning">🔗 因果引擎 {html_stdlib.escape(str(v.get("code", "")))}：'
+            f'{html_stdlib.escape(str(v.get("message", "")))}</div>'
+        )
+    return "".join(lines)
+
+
+def _causal_effects_html(state) -> str:
+    """因果引擎本步的入队与处置（只读展示）。`realized` 等是 AI 自报的，引擎无法验证。"""
+    lines = []
+    for q in getattr(state, "causal_queued", None) or []:
+        if isinstance(q, dict) and q.get("action") == "queued":
+            lines.append(
+                f'<div class="ws-chapter-option-warning">🔗 因果入队：{html_stdlib.escape(str(q.get("edge_id", "")))}'
+                f'（{html_stdlib.escape(causal_mod._reason_label(q.get("trigger_reason")))}），到期后会提醒 AI 交代效果</div>'
+            )
+    label = {"realized": "已兑现", "dampened": "部分兑现", "countered": "被抵消", "postponed": "推迟",
+             "expired": "推迟过多自动结案", "unaddressed": "长期未交代自动结案"}
+    for d in getattr(state, "effect_dispositions", None) or []:
+        if not isinstance(d, dict):
+            continue
+        reason = f"：{html_stdlib.escape(str(d.get('reason')))}" if d.get("reason") else ""
+        lines.append(
+            f'<div class="ws-chapter-option-warning">🔗 因果交代 {html_stdlib.escape(str(d.get("edge_id", "")))}'
+            f' → {html_stdlib.escape(label.get(str(d.get("disposition")), str(d.get("disposition"))))}（AI 自报）{reason}</div>'
+        )
+    return "".join(lines)
+
+
+def _render_causal_panel(manifest, current, history) -> None:
+    """因果引擎面板（只读）：当前待兑现项 + 每条边在本分支里的兑现统计。
+    兑现统计是 AI 自报的，不是世界里真实兑现的度量。"""
+    settings = manifest.settings
+    if not causal_mod.is_enabled(settings):
+        return
+    edges, problems = causal_mod.get_edges(settings)
+    step = int(getattr(current, "step", 0)) + 1
+    open_rows = causal_mod.summarize_open(settings, history, step)
+    with st.expander(f"🔗 因果引擎（{len(edges)} 条边 · {len(open_rows)} 项待兑现）"):
+        for why in problems:
+            st.warning(f"因果边被忽略：{why}")
+        st.caption(
+            "源头线有进展时，声明的因果边入队；延迟期到了，引擎提醒 AI 交代效果（兑现/部分/推迟/抵消）。"
+            "引擎不改任何数值，也无法验证 AI 是否真的把效果写进了状态——下面的兑现统计是 AI 自报的。"
+        )
+        if not edges:
+            st.caption("还没有可用的因果边——在设置里的“声明的因果结构”中添加。")
+            return
+        if open_rows:
+            st.markdown("**待兑现**")
+            for r in open_rows:
+                state_text = "⏰ 已到期，下一步会提醒" if r["due"] else "⏳ 延迟期未到"
+                extra = f" · 推迟 {r['postponed_count']} 次" if r.get("postponed_count") else ""
+                st.markdown(
+                    f"`{r['pending_id']}` {r['from_line_id']} → {r['to_line_id']} · "
+                    f"{causal_mod._reason_label(r.get('trigger_reason'))} · {state_text}{extra}"
+                )
+        stats = causal_mod.edge_stats(history)
+        st.markdown("**本分支兑现统计（AI 自报）**")
+        for e in edges:
+            s_ = stats.get(e["id"])
+            head = f"`{e['id']}` {e['from_line_id']} → {e['to_line_id']}"
+            if not e["enabled"]:
+                head += " · 已停用"
+            if s_ is None:
+                st.markdown(head + " · 还没有触发过")
+                continue
+            rate = f"{s_['realized_rate']:.0%}" if s_["realized_rate"] is not None else "—"
+            st.markdown(
+                head + f" · 入队 {s_['queued']} · 兑现 {s_['realized']} · 部分 {s_['dampened']}"
+                f" · 抵消 {s_['countered']} · 自动结案 {s_['expired'] + s_['unaddressed']}"
+                f" · 兑现率 {rate}（{s_['concluded']} 次有结论）"
+            )
 
 
 def _consistency_warnings_html(state) -> str:
@@ -2548,7 +2631,7 @@ def _render_timeline(
         granularity_note = _granularity_note_html(state)
         resource_note = _resource_violations_html(state)
         relation_note = _relation_violations_html(state)
-        option_warnings_note = _option_warnings_html(state) + _consistency_warnings_html(state) + _tech_violations_html(state) + _sampled_events_html(state)
+        option_warnings_note = _option_warnings_html(state) + _consistency_warnings_html(state) + _tech_violations_html(state) + _sampled_events_html(state) + _causal_effects_html(state) + _causal_violations_html(state)
         background_note = _background_entities_html(state)
         key_drivers_note = _key_drivers_html(state)
         line_updates_note = _line_updates_html(state, causal_lines_meta)
@@ -4257,6 +4340,7 @@ def page_detail() -> None:
     # 第二十二轮 WP1：技术树面板（只读；未开启技术模型时不渲染）。
     _render_tech_panel(manifest.settings)
     _render_event_panel(manifest, current, history)
+    _render_causal_panel(manifest, current, history)
 
     # 第二十二轮 WP4：真实性体检（结构性检查，不是语义真实性评分）。
     # 每次渲染都从历史现算，纯 Python、不调 LLM；默认折叠。
@@ -4721,6 +4805,28 @@ def page_detail() -> None:
                 value=bool(cur_settings.get("event_sampling_common_random_numbers")),
                 key="settings_event_common",
             )
+        cur_causal_enabled = bool(cur_settings.get("causal_engine_enabled"))
+        with st.expander("高级：因果引擎（第二十二轮 WP3 / P5a，可选，默认关闭）"):
+            st.markdown(
+                '<span class="ws-muted">开启后，上面“声明的因果结构”里的边变成<b>可执行</b>：源头线有进展时入队，'
+                "延迟期到了引擎提醒 AI 交代效果，并统计每条边的兑现情况。边可选字段："
+                "<code>id</code>/<code>mechanism</code>/<code>sign</code>(+/-/mixed)/<code>strength</code>/"
+                "<code>delay_days</code>/<code>condition</code>/<code>confidence</code>/<code>enabled</code>；"
+                "旧格式（只有 from_line_id/to_line_id/note）照常可用，延迟缺省=下一步到期。"
+                "<b>引擎不改任何数值</b>，也无法验证 AI 是否真的写进了状态；兑现统计是 AI 自报的。"
+                "声明 <code>delay_days</code> 时 AI 每步需要给 <code>elapsed_days</code>，否则按步计数（精度降级）。</span>",
+                unsafe_allow_html=True,
+            )
+            new_causal_enabled = st.checkbox(
+                "开启因果引擎", value=cur_causal_enabled, key="settings_causal_engine_enabled",
+            )
+            cur_causal_params = cur_settings.get("causal_params") or {}
+            new_causal_params_text = st.text_area(
+                "因果引擎参数覆盖（JSON 对象，可选）",
+                value=json.dumps(cur_causal_params, ensure_ascii=False) if cur_causal_params else "",
+                key="settings_causal_params", height=60,
+                placeholder='{"max_postpone": 3, "max_ignored": 3, "max_pending": 40}',
+            )
         if st.button("保存设置", key="settings_save"):
             new_objectives = [o.strip() for o in new_objectives_text.split(",") if o.strip()]
             new_objectives_advanced = _safe_json_loads(new_objectives_advanced_text, None)
@@ -4754,6 +4860,8 @@ def page_detail() -> None:
             new_event_params = _safe_json_loads(new_event_params_text, None)
             event_priors_invalid = new_event_priors_text.strip() and not isinstance(new_event_priors, list)
             event_params_invalid = new_event_params_text.strip() and not isinstance(new_event_params, dict)
+            new_causal_params = _safe_json_loads(new_causal_params_text, None)
+            causal_params_invalid = new_causal_params_text.strip() and not isinstance(new_causal_params, dict)
             tech_state_invalid = new_tech_state_text.strip() and not isinstance(new_tech_state, list)
             tech_params_invalid = new_tech_params_text.strip() and not isinstance(new_tech_params, dict)
             tech_priors_invalid = new_tech_priors_text.strip() and not isinstance(new_tech_priors, dict)
@@ -4779,6 +4887,8 @@ def page_detail() -> None:
                 st.error("事件先验不是合法的 JSON 数组，设置未保存，请修正后重试。")
             elif event_params_invalid:
                 st.error("事件采样参数不是合法的 JSON 对象，设置未保存，请修正后重试。")
+            elif causal_params_invalid:
+                st.error("因果引擎参数不是合法的 JSON 对象，设置未保存，请修正后重试。")
             else:
                 if isinstance(new_objectives_advanced, list):
                     new_objectives = new_objectives + [
@@ -4846,11 +4956,16 @@ def page_detail() -> None:
                     event_params=new_event_params if isinstance(new_event_params, dict) else {},
                     event_sampling_salt=new_event_salt.strip(),
                     event_sampling_common_random_numbers=bool(new_event_common),
+                    causal_engine_enabled=bool(new_causal_enabled),
+                    causal_params=new_causal_params if isinstance(new_causal_params, dict) else {},
                 )
                 _, _ev_problems = event_mod.get_priors({"event_priors": new_event_priors})
                 st.success("设置已更新，下一步推进开始生效。")
                 for _why in _ev_problems:
                     st.warning(f"事件先验被忽略（不会参与抽样）：{_why}")
+                _, _ce_problems = causal_mod.get_edges({"declared_causal_graph": declared_causal_graph_to_save})
+                for _why in _ce_problems:
+                    st.warning(f"因果边被忽略（不会参与因果引擎）：{_why}")
                 st.rerun()
 
     # ── Problem Discovery Engine 轻量入口（第九轮批次三，2.4 节，
@@ -6693,7 +6808,7 @@ def page_game() -> None:
     granularity_note = _granularity_note_html(s)
     resource_note = _resource_violations_html(s)
     relation_note = _relation_violations_html(s)
-    option_warnings_note = _option_warnings_html(s) + _consistency_warnings_html(s) + _tech_violations_html(s) + _sampled_events_html(s)
+    option_warnings_note = _option_warnings_html(s) + _consistency_warnings_html(s) + _tech_violations_html(s) + _sampled_events_html(s) + _causal_effects_html(s) + _causal_violations_html(s)
     background_note = _background_entities_html(s)
     key_drivers_note = _key_drivers_html(s)
     line_updates_note = _line_updates_html(s, manifest.settings.get("causal_lines"))

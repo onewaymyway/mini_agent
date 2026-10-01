@@ -970,6 +970,30 @@ probability, draw, basis_days, basis_source, source, verified}`，被
 历史里的这个字段推导的，所以天然按分支正确。
     """
 
+    causal_queued: List[Dict[str, Any]] = field(default_factory=list)
+    """因果引擎（`causal_engine.py`，第二十二轮 WP3 / P5a）在*本步*入队的待兑现因果：
+每项 `{pending_id, edge_id, action, trigger_reason}`，`action` 为 `queued`（新入队）/
+`retriggered`（该边已有未结案项，只累加重复触发次数）。待兑现项的*当前状态*不在这里，而在
+`dynamic_snapshot["causal_pending"]`（随分支）。空列表 = 未开启或本步没有入队；`to_dict()`
+空时不输出，旧格式逐字节不变。
+    """
+
+    effect_dispositions: List[Dict[str, Any]] = field(default_factory=list)
+    """因果引擎对*本步* LLM 回报的 `effect_dispositions` 的处理结果（审计）：每项
+`{pending_id, edge_id, from_line_id, to_line_id, disposition, reason, closed,
+triggered_at_step}`，`disposition` 为 `realized/dampened/countered/postponed`（LLM 回报、
+引擎接受的），或 `expired`/`unaddressed`（引擎自动结案，另带 `auto: true`）。边的兑现统计
+就是从历史里的这个字段推导的（`causal_engine.edge_stats()`），所以天然按分支正确。
+空列表 = 未开启或本步没有处置；`to_dict()` 空时不输出。
+    """
+
+    causal_violations: List[Dict[str, Any]] = field(default_factory=list)
+    """因果引擎裁决出的违规（E1 引用不存在的待兑现项/E2 处置取值非法/E3 延迟期未到就处置/
+E4 缺 reason/E6 队列已满/E0 引擎自身出错），每项 `{code, severity, message, detail}`。
+**透明记录**（沿用 `tech_violations` 的做法）：被忽略的回报已经体现在状态里（没生效），这里说明
+为什么。`to_dict()` 空时不输出。
+    """
+
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         d["options"] = [o.to_dict() if isinstance(o, ChoiceOption) else o for o in self.options]
@@ -985,6 +1009,9 @@ probability, draw, basis_days, basis_source, source, verified}`，被
             d.pop("tech_violations", None)
         if not d.get("sampled_events"):
             d.pop("sampled_events", None)
+        for _key in ("causal_queued", "effect_dispositions", "causal_violations"):
+            if not d.get(_key):
+                d.pop(_key, None)
         return d
 
     @classmethod
@@ -1084,6 +1111,15 @@ probability, draw, basis_days, basis_source, source, verified}`，被
             ],
             sampled_events=[
                 copy.deepcopy(x) for x in (data.get("sampled_events") or []) if isinstance(x, dict)
+            ],
+            causal_queued=[
+                copy.deepcopy(x) for x in (data.get("causal_queued") or []) if isinstance(x, dict)
+            ],
+            effect_dispositions=[
+                copy.deepcopy(x) for x in (data.get("effect_dispositions") or []) if isinstance(x, dict)
+            ],
+            causal_violations=[
+                copy.deepcopy(x) for x in (data.get("causal_violations") or []) if isinstance(x, dict)
             ],
         )
 

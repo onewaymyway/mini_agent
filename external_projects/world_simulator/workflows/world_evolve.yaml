@@ -119,6 +119,12 @@ steps:
       叙事与状态，不要否认/替换；没有列出事件=本步抽样结果为空，
       可以写平静的一步）：
       {sampled_events_hint}
+      因果引擎（第二十二轮 WP3，`next_doc/world_simulator_realism_tech_and_
+      causal_engine_plan.md`；为空说明没有开启或没有到期的待兑现因果，
+      忽略这一项，也不要输出 `effect_dispositions`；非空时其中列出的是
+      源头已有进展、延迟期已到的因果边，按说明在 `effect_dispositions`
+      里逐项交代 realized/dampened/postponed/countered 及原因）：
+      {causal_pending_hint}
 
       请按你所属 skill 的规范，给出这一步推进后的新状态、发生了什么的
       叙事文本、这一步结束时对应的模拟内时间点（`time_label`，人类
@@ -247,6 +253,11 @@ steps:
       额外带上可选字段 `elapsed_days`（这一步大致跨越的天数，正数）；
       "技术发展模型"提示非空时再带 `tech_updates`（技术变化数组），格式与
       约束以那段提示为准；两段提示都为空就不要输出这两个字段。
+
+      如果上面的"因果引擎"提示非空，这一步的输出还要带可选字段
+      `effect_dispositions`（数组），每个到期项一条，格式与约束以那段
+      提示为准（`dampened`/`postponed`/`countered` 必须给 `reason`）；
+      提示为空就不要输出这个字段。
 
       如果这一步的剧情/状态变化里，有某条因果线的"未来因果树"
       （`future_tree` 里的 `branches`）需要更新（某个分支被印证/被

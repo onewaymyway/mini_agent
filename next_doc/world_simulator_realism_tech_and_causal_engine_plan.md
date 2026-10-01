@@ -1,7 +1,7 @@
 # world_simulator 改进计划（第二十二轮）：让技术/事物发展更真实、因果树可执行可校验
 
 > **状态（2026-10-01 更新）：方案已确认，按阶段实施中。**
-> 已完成：**P0（WP0 分支隔离）**、**P1（WP4 一致性守卫+真实性体检）**、**P2（WP5 回测框架）**、**P3（WP1 技术模型 + `elapsed_days`）**、**P4（WP2 外生事件采样）**，详见文末 §9。未开始：P5（WP3 因果可执行）。
+> 已完成：**P0（WP0 分支隔离）**、**P1（WP4 一致性守卫+真实性体检）**、**P2（WP5 回测框架）**、**P3（WP1 技术模型 + `elapsed_days`）**、**P4（WP2 外生事件采样）**、**P5a（WP3 的 3a 边升级 + 3b 待兑现因果队列）**，详见文末 §9。进行中：P5（WP3）剩余子阶段 3c 树接地、3d 树影响世界、3e 界面。
 > 本文只依据阅读代码得出结论，没有跑过真实 LLM，也没有在运行时复现
 > 下文 §2.4 之外的缺陷——每一条"现状"都标注了代码位置，"推断"会明说。
 > §2.4 的缺陷已在 P0 里写复现测试确认（先红后绿）。
@@ -452,3 +452,24 @@ perceived_stage?}`。阶段序数沿用现有 6 档，不新造枚举。
   （边升级、待兑现因果队列、树接地、树影响世界、界面），建议**再拆成子阶段**逐个交付
   （先 3a+3b 边与待兑现队列，再 3c 树接地，再 3d/3e）；同时需要你确认 §8 第 2 问
   （`delay_steps` 语义修正并入 P5）与第 3 问（是否需要修复调用）。
+
+### P5a / WP3 的 3a+3b — 因果边升级 + 待兑现因果队列（已完成，2026-10-01）
+
+- **做了什么**：新增 `world_simulator/causal_engine.py`。`declared_causal_graph` 的边新增可选字段
+  （`id/mechanism/sign/strength/delay_days/condition/confidence/enabled`，旧格式兼容）；源头有进展
+  （线推进 / 树分支印证或激活 / 抽中的外生事件 / 技术阶段迁移）时入队，延迟期到了向提示词注入"到期
+  因果压力"，LLM 用 `effect_dispositions` 回报 `realized/dampened/postponed/countered`；引擎校验
+  （E1–E4、E6、E0）、自动结案、从分支历史推导每条边的兑现统计。`causal_pending` 加入分支作用域
+  动态状态（分叉即回滚）。界面：设置开关 + 详情页面板 + 每步提示。默认关闭，关闭时与之前逐字节等价。
+- **验证**：`pytest tests/` 938 passed（基线 898，新增 40）；变异验证 21 个全部转红；
+  `streamlit.testing.AppTest` 界面冒烟通过。文档见 `docs/causal_engine_guide.md`。
+- **与 §4 WP3 的偏离/细化**：① `delay_steps` 语义修正只覆盖本模块新增的边（用 `delay_days`），
+  `relationship.py` 的 `delay_steps` 未动；② 没做 `knowledge_base` 计数回写（跨实例副作用）；
+  ③ 触发源没有"账本显著变化"；④ 新增 E1–E6 与三个队列上限。
+- **已知边界**：没有在真实 LLM 下验证；引擎无法验证 `realized` 是否真的写进状态（统计是自报）；
+  只看"源头有进展"不看方向/幅度；`advance_lines()` 不入队。
+- **下一阶段**：P5b / 3c（树接地：前置强制、结构化触发条件与 `trigger_met` 建议——复用 P4 的
+  条件谓词、`exclusive_group` 互斥组、`likelihood` 校准账本；自动迁移放子开关
+  `tree_auto_transition` 默认关）。开始前建议你确认：① `relationship.py` 的 `delay_steps` 是否也改用 elapsed 单位（§8 第 2 问
+  剩余部分）；② 是否需要把兑现统计回写 `knowledge_base`；③ §8 第 3 问（技术违规是否需要修复调用，
+  仍未回复，目前按"降级 + 记录"）。
