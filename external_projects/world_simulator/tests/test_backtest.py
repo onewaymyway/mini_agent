@@ -95,11 +95,14 @@ def test_load_case_yaml_json_and_missing(tmp_path):
         bt.load_case(tmp_path / "missing.yaml")
 
 
-def test_shipped_sample_cases_are_valid_and_flagged_unverified():
+def test_shipped_sample_cases_are_valid_and_verified_with_covering_horizon():
     for name in ("internet_early", "personal_computer"):
         case = bt.load_case(CASES_DIR / f"{name}.yaml")
-        assert case.verified is False  # Claude 起草、未经核对
+        assert case.verified is True  # 2026-10-02 年份已对照公开资料核对
         assert case.disclaimer and len(case.milestones) >= 4
+        # 模拟跨度必须覆盖最后一条真值，否则该里程碑永远测不到（原草稿的缺陷）
+        last = max(m["year"] if isinstance(m, dict) else m.year for m in case.milestones)
+        assert case.start_year + case.steps * case.years_per_step >= last
 
 
 # ── 隐藏答案 ─────────────────────────────────────────────────────────
@@ -529,7 +532,7 @@ def test_cli_check_prints_anonymized_view_without_side_effects(monkeypatch, caps
     monkeypatch.setattr(sys, "argv", ["backtest.py", "check", str(CASES_DIR / "internet_early.yaml")])
     assert cli.main() == 0
     out = capsys.readouterr().out
-    assert "未经核对" in out and "联盟研究网" in out and "ARPANET" not in out.split("引擎将看到的意图：")[1]
+    assert "已核对" in out and "联盟研究网" in out and "ARPANET" not in out.split("引擎将看到的意图：")[1]
 
 
 def test_cli_parse_kv_json_and_string():

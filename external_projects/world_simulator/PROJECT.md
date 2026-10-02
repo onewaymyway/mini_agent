@@ -668,7 +668,7 @@ monkeypatch 打桩验证文本原样出现在 `inputs` 字典里；`generate_sce
   真实性评分，会有误报；默认开启（`settings.consistency_guard_enabled`），
   不想要可设 False。详见"变更记录"第二十二轮 P1 条目。
 - **回测框架只有相对比较价值（第二十二轮 WP5）**：训练数据污染无法根除，
-  绝对分数不可信；仓库自带的示例案例未经核对；框架没有在真实 LLM 下跑过。
+  绝对分数不可信；仓库自带的示例案例年份已于 2026-10-02 核对（非专家审定，stage/requires 为建模判断）；框架没有在真实 LLM 下跑过。
   详见 `docs/backtest_guide.md` 与"变更记录"第二十二轮 P2 条目。
 - **技术发展模型是结构性约束，不是语义判断（第二十二轮 WP1，默认关闭）**：
   引擎只检查阶段/进度/前置/采用率/成本，不判断"合不合理"；所有默认时长
@@ -4476,3 +4476,12 @@ deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
   ③ 没有在真实 LLM 下运行过，真实自报分布未知；④ `elapsed_days` 是估计值，"还差约 N 天"只看量级；⑤ `app.py` 设置页保存流程未实跑。
   **本计划 WP0–WP5 至此全部实施完毕**；遗留项见计划文档 §9 末尾。
   **下一阶段**：P5e / 3e（界面收尾：因果图按边状态着色〔假设/已观察/已证伪〕、兑现率、到期因果时间线）。
+
+- 2026-10-02（第二十二轮 · 后续计划立项 + 回测案例核对，依据 `next_doc/world_simulator_realism_tech_and_causal_engine_plan.md`）：
+  P0–P5e 完成后，对照代码核实遗留缺口（回测未用 `elapsed_days`/`tech_state`；事件先验无 LLM 提议；静态 HTML 导出未接新机制；`advance_lines()` 不跑新机制；
+  校准率/树声明统计未写知识库），经用户确认全部列入计划文档 §10 的 **P6–P10（尚未实施）**，其中 P9 按用户决定跨实例落库。同日按用户要求核对了两个回测案例：
+  11 个里程碑年份对照公开资料均一致，改 `verified: true`（非专家审定，`stage`/`requires` 未核对）；核对中发现并修正模拟跨度不覆盖后几条真值的缺陷
+  （互联网 8→13 步、PC 8→11 步，回测调用数相应增加）。改动：两个 `backtest_cases/*.yaml`、`tests/test_backtest.py`（案例断言）、`docs/backtest_guide.md`、
+  `docs/README.md`、`docs/testing_guide.md`、本文件、计划文档。**无引擎代码改动。** 测试：`test_backtest.py` 41 passed；2 个 LLM 匹配器用例在沙箱因缺 fastapi 无法运行，需完整环境复跑。
+  **下一阶段**：P6（回测改用 `elapsed_days`/`tech_state`）。
+
