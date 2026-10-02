@@ -39,6 +39,7 @@ from world_simulator import branch_manager as bm
 from world_simulator import causal_graph as cg_mod
 from world_simulator import causal_tree as causal_tree_mod
 from world_simulator import hypothesis as hyp_mod
+from world_simulator import html_export_mechanisms as mech_mod
 from world_simulator import retrospective as retrospective_mod
 from world_simulator.state_model import SimManifest, SimState
 from world_simulator.store import SimStore
@@ -817,6 +818,8 @@ def _render_state_card(
 
     ledger_html = _field_ledger_html(state, resource_fields)
     ledger_violations_html = _ledger_violations_html(state)
+    # P10：新机制的每步审计提示（一致性/技术/事件/因果/树接地）；无数据时为空串，旧导出不变。
+    mechanism_notes_html = mech_mod.step_notes_html(state)
 
     major_class = " ws-chapter-major" if state.major_decision else ""
     major_badge = ' <span class="ws-pill ws-pill-major">重大决策</span>' if state.major_decision else ""
@@ -832,7 +835,7 @@ def _render_state_card(
       {capabilities_html}
       {violations_html}
       {ledger_html}
-      {ledger_violations_html}
+      {ledger_violations_html}{mechanism_notes_html}
     </div>
     """
 
@@ -1052,15 +1055,22 @@ def export_simulation_html(data_dir: Path, sim_id: str, branch: str = "main") ->
         # 整个导出失败，页头退化为不展示"分叉自"这一行。
         branches_detailed = []
 
+    # P10：新机制区块（体检/技术树/事件先验/因果引擎/树接地）。全部无数据时为空串，
+    # 且只有此时/每步提示出现时才追加 EXTRA_CSS——旧实例导出与接入前逐字节相同。
+    mechanisms_html = mech_mod.mechanisms_sections_html(manifest, history, branch)
+    uses_mechanisms = bool(mechanisms_html) or mech_mod.any_step_notes(history)
+
     body = "".join(
         [
             _render_header(manifest, branch, branches_detailed),
             _render_input_and_background(manifest, state0),
             _render_causal_overview(manifest, history),
+            mechanisms_html,
             _render_timeline(history, (manifest.settings or {}).get("resource_fields")),
             _render_retrospectives(data_dir, sim_id, branch),
         ]
     )
+    extra_css = mech_mod.EXTRA_CSS if uses_mechanisms else ""
 
     title = _esc(manifest.title or manifest.sim_id)
     return f"""<!DOCTYPE html>
@@ -1069,7 +1079,7 @@ def export_simulation_html(data_dir: Path, sim_id: str, branch: str = "main") ->
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title} · 模拟导出</title>
-{_PAGE_CSS}
+{_PAGE_CSS}{extra_css}
 </head>
 <body>
 {body}

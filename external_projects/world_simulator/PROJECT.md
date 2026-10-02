@@ -700,7 +700,7 @@ monkeypatch 打桩验证文本原样出现在 `inputs` 字典里；`generate_sce
   没有在真实 LLM 下验证；从第 0 步（无快照）分叉沿用工作副本（P0 既有边界）。详见 `docs/tree_effects_guide.md`。
 - **因果图着色与到期时间线（第二十二轮 WP3 · P5e，无新开关、只读）**：因果引擎面板新增"🕸️ 着色关系图"（边按兑现统计分
   假设/已观察/已证伪/未定/已停用，标签带兑现率与样本数）与"⏰ 到期时间线"（未结案项已到期优先 + 最近处置记录）。状态是 **AI 自报**
-  统计的函数，不是世界里被验证/被证伪；阈值可用 `causal_view_params` 覆盖。静态 HTML 导出未接入；没有浏览器级验证，也没有在真实
+  统计的函数，不是世界里被验证/被证伪；阈值可用 `causal_view_params` 覆盖。静态 HTML 导出已在 P10 接入（见 `docs/html_export_mechanisms_guide.md`）；没有浏览器级验证，也没有在真实
   LLM 下验证。详见 `docs/causal_view_guide.md`。
 
 ## 目录结构
@@ -4522,4 +4522,8 @@ deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
   `tree_kb_writeback`（默认开，需树影响+因果引擎）、`kb_min_samples`。**顺带**补上 P8 遗漏：`advance_lines()` 路径此前未调用 P5b 边兑现回写。
   **文件**：`knowledge_base.py`、`tree_grounding.py`、`tree_effects.py`、`engine/{knowledge,advance,advance_independent}.py`、`app.py`、`entrypoints/knowledge.py`（新）、
   `tests/test_p9_kb_writeback.py`（新，54 个）、`docs/knowledge_writeback_guide.md`（新）及三份机制指南/README/testing_guide、计划文档。**测试**：全量 1217 passed；37 个变异全部转红；AppTest 冒烟通过。
-  **已知边界**：跨世界污染只能缓解；第一个被推进的步无基线不计入；`merge_branch` 可能重复计数；合并过计数的旧条目无法精确撤销；未在真实 LLM 下运行；界面无目视验证。**下一阶段**：P10。
+  **已知边界**：跨世界污染只能缓解；第一个被推进的步无基线不计入；`merge_branch` 可能重复计数；合并过计数的旧条目无法精确撤销；未在真实 LLM 下运行；界面无目视验证。**下一阶段**：P10（已完成，见下）。
+
+- **第二十二轮 P10：静态 HTML 导出接入新机制（2026-10-02）**：新增 `world_simulator/html_export_mechanisms.py`（只读、不调 LLM、不落盘、**无新开关**），`html_export.py` 接线。时间线每步卡片末尾显示一致性提示/技术违规与修复/抽样事件（含未核对、AI 提议未确认）/因果入队与交代/因果违规/树接地；文档级新增区块：真实性体检摘要、技术树（节点表+前置 DAG）、外生事件先验、因果引擎（着色关系图+图例、边状态与兑现率表、到期因果时间线、树声明）、树接地当前建议。**没数据就不输出**：没开新机制的实例导出与接入前逐字节相同（用接入前后两版导出器对同一实例逐字节比较核对过；过程中发现并修掉每步卡片模板里空占位多出一行空白的问题），额外 CSS 也仅在渲染了新内容时追加。导出分支的 `tech_state`/`causal_pending`/`causal_lines` 取该分支最近快照，无快照时仅活跃分支退回工作副本，其它分支不借用。转义沿用既有约定；区块失败降级为一行说明，不连累整个导出。
+  **文件**：`world_simulator/html_export_mechanisms.py`（新）、`world_simulator/html_export.py`、`tests/test_html_export_mechanisms.py`（新，28 个）、`docs/html_export_mechanisms_guide.md`（新）、`docs/{README,testing_guide,causal_view_guide,independent_line_mechanisms_guide}.md`、本文件、计划文档。`app.py` 无改动。**测试**：全量 1245 passed（P9 后 1217 + 28）；22 个变异全部转红（首轮存活 3 个，补用例后清零）；另用真实 `dot` 端到端渲染一次，确认生成 SVG 且各区块出现。
+  **已知边界**：没有浏览器级目视验证；区块反映导出分支末状态而非逐步演化；每步提示文案与 `app.py` 同名 helper 各自一份需人工保持一致；没有在真实 LLM 产出的数据上看过导出效果。**至此计划文档 §10 的 P6–P10 全部实施完毕**；唯一剩余是"全部新机制未在真实 LLM 下端到端验证"。
