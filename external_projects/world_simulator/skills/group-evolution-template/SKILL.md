@@ -299,6 +299,12 @@ triggers: 群体演化, 文明模拟, 组织发展模拟, 群体推演, 公司�
   数组表示全部满足；是你对"什么情况下它会发生"的可核验假设，没把握就不填）与 `exclusive_group`
   （同一条线内同名即互斥的组名）。引擎据此强制：前置未 resolved 的分支不能 active、互斥组内不能同时
   active，违反会被降回 emerging 并记录；条件满足只产生**建议**（除非用户另开自动迁移）。
+- `tree_updates` 里新增分支的可选字段 `effects_if_active`（第二十二轮 WP3 / P5d，**仅**当提示里出现\"树影响世界已开启\"
+  时才使用；否则不要填）：数组，每项 `{"to_line_id": "目标因果线或技术节点 id", "mechanism": "一句话机制",
+  "sign": "positive|negative|mixed", "strength": "high|medium|low", "delay_days": 90}`，声明"该分支一旦变为
+  active，会对哪里施加什么压力"。分支**新变为 active** 后，引擎把它排进待兑现队列，延迟期到了会在因果引擎
+  那一项里列出，你要用 `effect_dispositions` 交代。这是可核验的假设，没把握就不填，不要编目标 id；
+  引擎**不会替你改任何数值**。
 - `capabilities_gained`：数组（可选，第九轮批次二，Capability 对象），
   格式与用途与 `life-sim-template` 完全一致——只有这一步真正让群体
   获得了新能力（比如"建立了稳定的资源调配机制""形成了跨群体协作

@@ -80,4 +80,4 @@
 
 ## 相关
 
-[`causal_engine_guide.md`](./causal_engine_guide.md) · [`event_sampling_guide.md`](./event_sampling_guide.md)
+[`causal_engine_guide.md`](./causal_engine_guide.md) · [`tree_effects_guide.md`](./tree_effects_guide.md) · [`event_sampling_guide.md`](./event_sampling_guide.md)

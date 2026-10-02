@@ -128,6 +128,11 @@ steps:
       `tree_updates`：未满足前置的分支不要标 active，互斥组内不要同时
       active，列出的"建议"只是引擎按结构化条件算出的参考，不是强制）：
       {tree_grounding_hint}
+      树影响世界（第二十二轮 WP3 / P5d；为空说明没有开启，忽略这一项，新增
+      分支也不要填 `effects_if_active`；非空时按其中的说明，在新增分支时可选
+      声明"该分支一旦 active 会对哪里施加什么压力"，到期后在因果引擎那一项里
+      用 `effect_dispositions` 交代）：
+      {tree_effects_hint}
 
       请按你所属 skill 的规范，给出这一步推进后的新状态、发生了什么的
       叙事文本、这一步结束时对应的模拟内时间点（`time_label`，人类

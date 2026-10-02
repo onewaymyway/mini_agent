@@ -25,7 +25,7 @@ from world_simulator.engine.background_entities import (
     _normalize_background_entities,
 )
 from world_simulator import causal_tree, relationship
-from world_simulator import causal_engine, consistency_guard, dynamic_state, event_sampler, tech_model, tree_grounding
+from world_simulator import causal_engine, consistency_guard, dynamic_state, event_sampler, tech_model, tree_effects, tree_grounding
 from world_simulator.engine.causal_lines import _apply_tree_updates, _auto_register_causal_lines
 from world_simulator.engine.errors import SimAlreadyEndedError, SimEngineError, SimPausedError
 from world_simulator.engine.ids import _read_skill_version, _skill_name_for_template
@@ -450,6 +450,9 @@ def advance(
         "tree_grounding_hint": tree_grounding.safe_build_hint(
             manifest.settings, manifest.settings.get("causal_lines"), current.vars
         ),
+        # 第二十二轮 P5d：树影响世界（分支 `effects_if_active`）的协议说明；需同时开启因果引擎，
+        # 否则返回空字符串（prompt 与之前等价）。
+        "tree_effects_hint": tree_effects.safe_build_hint(manifest.settings),
         **resolve_hints(
             manifest.settings, current_step=current.step + 1, history=history_for_prompt
         ),
@@ -811,9 +814,10 @@ def advance(
     )
     # 第二十二轮 P5c：接地裁决要知道\"本步新变为 active/resolved\"，所以在合并树更新之前留一份
     # 状态索引（只在开启时才算，关闭时零开销）。
+    # P5d：树影响世界也需要这份"推进前状态"（判断"本步新变为 active"），所以它开启时同样要算。
     _tg_before = (
         tree_grounding.status_index(manifest.settings.get("causal_lines"))
-        if tree_grounding.is_enabled(manifest.settings)
+        if tree_grounding.is_enabled(manifest.settings) or tree_effects.is_enabled(manifest.settings)
         else None
     )
     next_state.tree_updates = _apply_tree_updates(manifest, next_state, data)
@@ -870,7 +874,7 @@ def advance(
     # （条件可能读 `tech_state`）、因果引擎入队之前（自动迁移要能被\"树分支 active\"触发源看到）、
     # 快照之前。降级/自动迁移的结果写回 `manifest.settings`，并同步修正本步 `tree_updates` 审计
     # 里的实际状态；未开启时整段是空操作。
-    if _tg_before is not None:
+    if _tg_before is not None and tree_grounding.is_enabled(manifest.settings):
         _tg_lines, _tg_audit, next_state.tree_grounding = tree_grounding.safe_enforce_step(
             manifest.settings.get("causal_lines"),
             _tg_before,
@@ -897,7 +901,13 @@ def advance(
         _cpending, next_state.causal_queued, _queue_violations = causal_engine.safe_queue_effects(
             manifest.settings, _cpending, next_state,
         )
-        next_state.causal_violations = _disp_violations + _queue_violations
+        # 第二十二轮 P5d：本步新激活的树分支声明的影响（`effects_if_active`）入队，与边入队共用队列上限；
+        # 在边入队之后、接地之后（看到的是降级后的树）。需要 `tree_effects_enabled`，否则空操作。
+        _cpending, _tree_queued, _tree_violations = tree_effects.safe_queue_tree_effects(
+            manifest.settings, _cpending, next_state, _tg_before, manifest.settings.get("causal_lines"),
+        )
+        next_state.causal_queued = next_state.causal_queued + _tree_queued
+        next_state.causal_violations = _disp_violations + _queue_violations + _tree_violations
         manifest.settings = {**manifest.settings, "causal_pending": _cpending}
 
     # 4.10 节（阶段三十三第五批）：把这一批 options 共享的决策背景

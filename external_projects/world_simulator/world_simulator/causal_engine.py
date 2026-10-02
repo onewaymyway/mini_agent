@@ -347,12 +347,17 @@ def due_entries(
 
 
 def needs_elapsed(settings: Optional[Dict[str, Any]]) -> bool:
-    """开启且至少有一条边声明了 `delay_days`：此时每步都需要 LLM 给 `elapsed_days`，
-    否则延迟只能退化为按步计数。"""
+    """开启且至少有一条边（或 P5d 起树分支声明的影响）声明了 `delay_days`：此时每步都需要 LLM 给
+    `elapsed_days`，否则延迟只能退化为按步计数。"""
     if not is_enabled(settings):
         return False
     edges, _ = get_edges(settings)
-    return any(e["enabled"] and e["delay_days"] is not None for e in edges)
+    if any(e["enabled"] and e["delay_days"] is not None for e in edges):
+        return True
+    # P5d：树分支声明的影响（`effects_if_active`）同样可能带 `delay_days`。延迟 import 避免循环依赖。
+    from world_simulator import tree_effects
+
+    return tree_effects.has_day_delays(settings)
 
 
 _ELAPSED_ASK = (
@@ -382,7 +387,8 @@ def build_hint(
         "（引擎只负责提醒，是否体现、怎么体现由你判断，但**必须给出交代**）：",
     ]
     for e in due:
-        piece = f"- [{e['pending_id']}] {e['from_line_id']} → {e['to_line_id']}"
+        src = f"{e['from_line_id']}/{e['branch_id']}" if e.get("branch_id") else e["from_line_id"]
+        piece = f"- [{e['pending_id']}] {src} → {e['to_line_id']}"
         attrs: List[str] = []
         if e.get("mechanism"):
             attrs.append(f"机制：{e['mechanism']}")
@@ -430,6 +436,7 @@ def _reason_label(reason: Any) -> str:
     return {
         "line_advanced": "源头线有进展", "tree_branch": "源头线的未来树分支被印证/激活",
         "sampled_event": "外生事件影响源头", "tech_transition": "源头技术阶段迁移",
+        "tree_effect": "未来树分支被激活，其声明的影响",
     }.get(str(reason or ""), str(reason or "未知"))
 
 

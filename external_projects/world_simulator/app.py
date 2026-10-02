@@ -50,6 +50,7 @@ from world_simulator import reality_check as rc_mod
 from world_simulator import tech_model as tech_mod
 from world_simulator import event_sampler as event_mod
 from world_simulator import causal_engine as causal_mod
+from world_simulator import tree_effects as tree_effects_mod
 from world_simulator import tree_grounding as tree_grounding_mod
 from world_simulator import retrospective as retrospective_mod
 from world_simulator import html_export as html_export_mod
@@ -854,6 +855,26 @@ def _render_causal_panel(manifest, current, history) -> None:
             "源头线有进展时，声明的因果边入队；延迟期到了，引擎提醒 AI 交代效果（兑现/部分/推迟/抵消）。"
             "引擎不改任何数值，也无法验证 AI 是否真的把效果写进了状态——下面的兑现统计是 AI 自报的。"
         )
+        tree_stats = {k: v for k, v in causal_mod.edge_stats(history).items() if tree_effects_mod.is_tree_edge(k)}
+        declared_tree = tree_effects_mod.declared_effects(settings.get("causal_lines"))
+        if tree_effects_mod.is_enabled(settings) and (declared_tree or tree_stats):
+            st.markdown("**🌳 树分支声明的影响（第二十二轮 P5d）**")
+            st.caption(
+                "分支新变为 active 时，其 effects_if_active 入队，之后与边同一条路径交代。"
+                "声明由 AI 或你填写，是假设不是事实；引擎无法验证效果是否合理或是否真的兑现。"
+            )
+            for d_ in declared_tree:
+                eff = d_["effect"]
+                eid = tree_effects_mod.edge_id_for(d_["line_id"], d_["branch_id"], eff["to_line_id"])
+                s_ = tree_stats.get(eid)
+                tail = (
+                    f" · 入队 {s_['queued']} · 兑现 {s_['realized']} · 部分 {s_['dampened']} · 抵消 {s_['countered']}"
+                    if s_ else " · 还没有触发过"
+                )
+                st.markdown(
+                    f"`{d_['line_id']}/{d_['branch_id']}`（{d_['status']}）→ {eff['to_line_id']}"
+                    f"{' · ' + eff['mechanism'] if eff['mechanism'] else ''}{tail}"
+                )
         if not edges:
             st.caption("还没有可用的因果边——在设置里的“声明的因果结构”中添加。")
             return
@@ -4949,6 +4970,16 @@ def page_detail() -> None:
                     "同组 dormant/emerging 的落败者自动置 invalidated。关闭时只给建议，由 AI 自行判断。"
                 ),
             )
+            new_te_enabled = st.checkbox(
+                "树影响世界（第二十二轮 P5d，默认关闭；需同时开启因果引擎）",
+                value=bool(cur_settings.get("tree_effects_enabled")), key="settings_tree_effects_enabled",
+                help=(
+                    "开启后，分支可声明 effects_if_active：分支新变为 active 时，这些影响排进因果引擎的待兑现队列，"
+                    "延迟期到了提醒 AI 交代效果。引擎不改任何数值，也无法验证声明是否合理。"
+                ),
+            )
+            if new_te_enabled and not bool(new_causal_enabled):
+                st.warning("“树影响世界”需要同时开启上面的因果引擎，否则不会生效。")
             cur_nominal = cur_settings.get("likelihood_nominal") or {}
             new_nominal_text = st.text_area(
                 "可能性档位对应的名义命中率（JSON 对象，可选）",
@@ -5092,6 +5123,7 @@ def page_detail() -> None:
                     causal_kb_writeback=bool(new_causal_kb),
                     tree_grounding_enabled=bool(new_tg_enabled),
                     tree_auto_transition=bool(new_tg_auto and new_tg_enabled),
+                    tree_effects_enabled=bool(new_te_enabled),
                     likelihood_nominal=(
                         {k: v for k, v in (_safe_json_loads(new_nominal_text, None) or {}).items()
                          if k in ("high", "medium", "low") and isinstance(v, (int, float)) and not isinstance(v, bool)}

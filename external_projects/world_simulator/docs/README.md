@@ -16,6 +16,7 @@
 - [`tech_model_guide.md`](./tech_model_guide.md) —— **技术发展模型**（第二十二轮 WP1/P5b）：提议–审核机制、`elapsed_days`、违规码 T0–T11、可选修复调用、参数（默认值均为占位值）、分支行为，以及它**不能**保证什么（语义合理性、真实 LLM 下的表现）。
 - [`event_sampling_guide.md`](./event_sampling_guide.md) —— **外生事件采样**（第二十二轮 WP2）：按用户声明的先验概率在每步开始前抽样外部事件、可复现种子、冷却/条件/上限、分支与实验行为，以及它**不能**保证什么（先验准确性、LLM 是否真的写进叙事）。
 - [`causal_engine_guide.md`](./causal_engine_guide.md) —— **因果引擎**（第二十二轮 WP3 · P5a/P5b）：声明的因果边可执行（入队 → 到期提醒 → `effect_dispositions` 回报 → 兑现统计 → 回写知识库）、违规码 E0–E6、延迟/精度降级、分支行为，以及它**不能**保证什么（引擎不改数值、无法验证 LLM 是否真的兑现）。
+- [`tree_effects_guide.md`](./tree_effects_guide.md) —— **树影响世界**（第二十二轮 WP3 · P5d / 3d，默认关闭，需同时开启因果引擎）：分支可声明 `effects_if_active`，分支新变为 active 时入因果引擎的待兑现队列、到期后由 LLM 用 `effect_dispositions` 交代；违规码 E5–E7，以及它**不能**保证什么（不改数值、不验证声明合理、不验证兑现）。
 - [`tree_grounding_guide.md`](./tree_grounding_guide.md) —— **因果树接地**（第二十二轮 WP3 · P5c / 3c，默认关闭）：前置强制、`exclusive_group` 互斥、结构化 `trigger_condition`（默认只建议，子开关 `tree_auto_transition` 才自动迁移）、`likelihood` 校准账本；裁决码 G0–G5，以及它**不能**保证什么（不判断条件语义、不改数值）。
 - [`testing_guide.md`](./testing_guide.md) —— **如何测试当前项目**：
   分两条路径——① 跑自动化单元测试（不需要真实 LLM，几秒钟出结果）；

@@ -245,7 +245,56 @@ def _normalize_branch(raw: Any, *, used_ids: set) -> Optional[Dict[str, Any]]:
     exclusive_group = str(raw.get("exclusive_group") or "").strip()
     if exclusive_group:
         normalized["exclusive_group"] = exclusive_group
+    # 第二十二轮 P5d（WP3-3d，`tree_effects.py`）：`effects_if_active`——分支一旦被激活就向世界施加的
+    # 待兑现因果。这里只做**形状**清理（要有目标、字段类型对），语义（符号/强度别名、延迟换算）留给
+    # `tree_effects.normalize_effect`；同样**只在填写时输出**，旧数据/兜底模板形状不变。
+    effects = _normalize_effects_if_active(raw.get("effects_if_active"))
+    if effects:
+        normalized["effects_if_active"] = effects
     return normalized
+
+
+_EFFECT_TEXT_KEYS = ("mechanism", "sign", "strength", "note", "confidence")
+_EFFECT_NUM_KEYS = ("delay_days", "delay_steps")
+
+
+def _normalize_effects_if_active(raw: Any) -> List[Dict[str, Any]]:
+    """分支声明的\"激活后的影响\"列表 → 形状规整后的列表。非 list / 条目非 dict / 缺 `to_line_id`
+    的条目被丢弃（不报错）。数字字段无法解析为非负有限数时丢弃该字段；`condition` 只接受 dict 或
+    dict 列表（与 `trigger_condition` 同口径）。"""
+    out: List[Dict[str, Any]] = []
+    if not isinstance(raw, list):
+        return out
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        target = str(item.get("to_line_id") or "").strip()
+        if not target:
+            continue
+        entry: Dict[str, Any] = {"to_line_id": target}
+        for key in _EFFECT_TEXT_KEYS:
+            text = str(item.get(key) or "").strip()
+            if text:
+                entry[key] = text
+        for key in _EFFECT_NUM_KEYS:
+            value = item.get(key)
+            if isinstance(value, bool) or value is None:
+                continue
+            try:
+                num = float(value)
+            except (TypeError, ValueError):
+                continue
+            if num == num and num not in (float("inf"), float("-inf")) and num >= 0:
+                entry[key] = num
+        cond = item.get("condition")
+        if isinstance(cond, dict) and cond:
+            entry["condition"] = copy.deepcopy(cond)
+        elif isinstance(cond, list):
+            conds = [copy.deepcopy(c) for c in cond if isinstance(c, dict) and c]
+            if conds:
+                entry["condition"] = conds
+        out.append(entry)
+    return out
 
 
 def normalize_future_tree(raw: Any, *, as_of_step: int = 0) -> Optional[Dict[str, Any]]:

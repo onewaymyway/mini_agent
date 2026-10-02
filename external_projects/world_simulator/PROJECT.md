@@ -685,7 +685,7 @@ monkeypatch 打桩验证文本原样出现在 `inputs` 字典里；`generate_sce
 - **因果引擎只记账、不改数值（第二十二轮 WP3 · P5a，默认关闭）**：声明的因果边在源头
   有进展时入队、延迟期到了提醒 LLM 交代；引擎**无法验证** `realized` 是否真的写进了
   状态，兑现统计是 LLM 自报的；`sign`/`strength` 只随提示词展示；账本显著变化不是触发源；
-  `advance_lines()` 不入队；没有在真实 LLM 下验证过。3c/3d/3e 尚未实现。
+  `advance_lines()` 不入队；没有在真实 LLM 下验证过。3c 已于 P5c 实现、3d 已于 P5d 实现，3e（界面收尾）尚未实现。
   P5b 起：兑现结论回写 `knowledge_base`（`causal_kb_writeback` 默认开）、关系延迟新增 `delay_days`、
   技术违规可选修复调用（`tech_repair_enabled` 默认关）。详见 `docs/causal_engine_guide.md`、
   `docs/tech_model_guide.md` 与"变更记录"第二十二轮 P5a/P5b 条目。
@@ -694,6 +694,10 @@ monkeypatch 打桩验证文本原样出现在 `inputs` 字典里；`generate_sce
   `trigger_condition`，满足时默认只给建议，子开关 `tree_auto_transition` 才自动置 active / 落败者置
   invalidated（G4/G5）；体检新增 likelihood 校准账本。不改数值、不判断条件语义，没有在真实 LLM 下验证。
   详见 `docs/tree_grounding_guide.md`。
+- **树影响世界（第二十二轮 WP3 · P5d，默认关闭，需同时开启因果引擎）**：`tree_effects_enabled` 开启后，分支可声明
+  `effects_if_active`；分支**本步新变为 active**（接地后仍是）时，这些声明入因果引擎的待兑现队列（`edge_id` 以
+  `tree:` 开头），到期后由 LLM 用 `effect_dispositions` 交代并统计。不改数值、不验证声明合理、不验证兑现，
+  没有在真实 LLM 下验证；从第 0 步（无快照）分叉沿用工作副本（P0 既有边界）。详见 `docs/tree_effects_guide.md`。
 
 ## 目录结构
 
@@ -4430,4 +4434,23 @@ deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
   **已知边界（如实记录）**：① 没有在真实 LLM 下运行过；② 引擎无法判断条件写得对不对；③ LLM 直接标 `resolved` 而
   前置未满足不拦；④ 降级造成叙事与状态错位，只记录不消除；⑤ 只处理顶层分支，`advance_lines()` 不跑；⑥ `app.py`
   设置页保存流程未实跑。
-  **下一阶段**：P5d / 3d（树影响世界）、3e（界面收尾），方案待你确认后再改代码。
+  **下一阶段**：P5d / 3d（树影响世界，已完成，见下）、3e（界面收尾）。
+- 2026-10-02（第二十二轮 · 阶段 P5d：WP3 的 3d 树影响世界，依据 `next_doc/world_simulator_realism_tech_and_causal_engine_plan.md`）：
+  1. **新增 `world_simulator/tree_effects.py`**：`queue_tree_effects`（本步新激活分支的 `effects_if_active` 入因果引擎待兑现队列，
+     与边入队共用队列上限）、`normalize_effect`、`declared_effects`、`build_hint`、`summarize_open`；违规码 E5/E6/E7/E0。
+  2. **接线**：`causal_tree._normalize_branch` 新增可选 `effects_if_active`（仅填写时输出）；`engine/advance.py` 在边入队之后、接地之后、
+     快照之前入队（"推进前状态索引"在接地或树影响任一开启时计算，接地裁决仍只受自身开关控制）；`causal_engine.needs_elapsed`
+     把树声明的 `delay_days` 算进去，提示词显示 `线/分支 → 目标`，新增原因标签 `tree_effect`；两个 workflow 加 `{tree_effects_hint}`；
+     三个模板 SKILL.md 补字段说明。
+  3. **界面**：设置页一个复选框（因果引擎未开时警告）、因果引擎面板新增"树分支声明的影响"列表与统计。
+  4. **文档**：新增 `docs/tree_effects_guide.md`；更新 `docs/README.md`、`docs/testing_guide.md`、`docs/causal_engine_guide.md`、
+     `docs/tree_grounding_guide.md`、计划文档 §9。
+  5. **测试**：新增 `tests/test_tree_effects.py`（22 个）。变异验证 15 个（不要求因果引擎/不判断新变为 active/忽略 condition/忽略队列上限/
+     不报 E7/不累加 retrigger/忽略开关/不标 source/needs_elapsed 不看树/提示不带分支/入队记录不落盘/接地忽略自身开关/不传推进前状态/
+     空也输出/不过滤非法数字），首轮存活 1 个（接地忽略自身开关），补用例后全部转红。
+  **验收**：`pytest tests/` **1056 passed**（P5c 后基线 1034，新增 22，均在 `test_tree_effects.py`，其余既有文件无改动）；`streamlit.testing.AppTest` 详情页冒烟无异常（设置项、声明列表、入队记录均渲染）。
+  **与计划的偏离/细化**：① 树声明的统计不回写 `knowledge_base`（树声明是实例内假设）；② 本开关独立，但必须与因果引擎同开才生效；
+  ③ 条目允许目标指向技术节点；目标未登记只记 E7 不阻断；④ 3e（因果图按边状态着色、兑现率图示、到期因果时间线）留给 P5e。
+  **已知边界（如实记录）**：① 没有在真实 LLM 下运行过；② 引擎无法验证声明合理性与兑现真假；③ 只看顶层分支，`advance_lines()` 不入队；
+  ④ 不追溯开启前已 active 的分支；⑤ 从第 0 步分叉沿用工作副本（P0 既有边界，未做种子锚定）；⑥ `app.py` 设置页保存流程未实跑。
+  **下一阶段**：P5e / 3e（界面收尾：因果图按边状态着色〔假设/已观察/已证伪〕、兑现率、到期因果时间线）。

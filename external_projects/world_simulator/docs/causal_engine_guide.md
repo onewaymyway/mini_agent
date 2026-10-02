@@ -141,4 +141,5 @@
 
 - 设计与取舍：`next_doc/world_simulator_realism_tech_and_causal_engine_plan.md` §4 WP3 / §9
 - 技术模型：[`tech_model_guide.md`](./tech_model_guide.md)；外生事件：[`event_sampling_guide.md`](./event_sampling_guide.md)
+- 树影响世界（分支 `effects_if_active` 入本队列，`edge_id` 以 `tree:` 开头）：[`tree_effects_guide.md`](./tree_effects_guide.md)。
 - 树接地（前置强制/互斥组/结构化触发条件/校准账本）：[`tree_grounding_guide.md`](./tree_grounding_guide.md)；其自动激活会作为本引擎的"树分支 active"触发源被看到。
