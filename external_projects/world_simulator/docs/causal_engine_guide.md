@@ -3,7 +3,7 @@
 > 设计依据：`next_doc/world_simulator_realism_tech_and_causal_engine_plan.md` §4 WP3 的 3a + 3b。
 > 代码：`world_simulator/causal_engine.py`。开关：`settings.causal_engine_enabled`
 > （**默认关闭**，关闭时提示词、落盘、界面与没有这个功能时完全一致）。
-> 本阶段**只做 3a + 3b**；3c 树接地、3d 树影响世界、3e 界面着色留给后续子阶段。
+> 本文档覆盖 3a + 3b；3c 树接地、3d 树影响世界、3e 界面着色/时间线已在后续阶段完成（见文末"相关"）。
 
 ## 它解决什么、不解决什么
 
@@ -139,6 +139,7 @@
 
 ## 相关
 
+- 界面：边按兑现统计着色（假设/已观察/已证伪/未定）、兑现率、到期因果时间线（P5e）：[`causal_view_guide.md`](./causal_view_guide.md)。
 - 设计与取舍：`next_doc/world_simulator_realism_tech_and_causal_engine_plan.md` §4 WP3 / §9
 - 技术模型：[`tech_model_guide.md`](./tech_model_guide.md)；外生事件：[`event_sampling_guide.md`](./event_sampling_guide.md)
 - 树影响世界（分支 `effects_if_active` 入本队列，`edge_id` 以 `tree:` 开头）：[`tree_effects_guide.md`](./tree_effects_guide.md)。

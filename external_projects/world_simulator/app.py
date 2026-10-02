@@ -51,6 +51,7 @@ from world_simulator import tech_model as tech_mod
 from world_simulator import event_sampler as event_mod
 from world_simulator import causal_engine as causal_mod
 from world_simulator import tree_effects as tree_effects_mod
+from world_simulator import causal_view as causal_view_mod
 from world_simulator import tree_grounding as tree_grounding_mod
 from world_simulator import retrospective as retrospective_mod
 from world_simulator import html_export as html_export_mod
@@ -839,6 +840,67 @@ def _causal_effects_html(state) -> str:
     return "".join(lines)
 
 
+def _render_causal_status_graph(settings, history) -> None:
+    """因果引擎面板的\"🕸️ 着色关系图\"（P5e / 3e）：边按 AI 自报的兑现统计着色。"""
+    rows = causal_view_mod.build_edge_view(settings, history)
+    if not rows:
+        st.caption("还没有可画的边——在设置里的“声明的因果结构”中添加，或让树分支声明 effects_if_active。")
+        return
+    st.caption(
+        "颜色 = 兑现统计推出的状态，**统计是 AI 自报的**：灰色虚线=假设（还没有有结论的处置）；"
+        "绿色粗线=已观察（AI 多次自报兑现）；红色=已证伪（AI 多次自报被抵消）；橙色=未定（有结论但不足以判已观察/已证伪）；浅灰点线=已停用。"
+        "“已观察/已证伪”只表示 AI 自己这么说，不是世界里被验证/被证伪；样本少时请看括号里的次数。"
+    )
+    st.graphviz_chart(causal_view_mod.edges_to_dot(rows))
+    counts: Dict[str, int] = {}
+    for r in rows:
+        counts[r["status"]] = counts.get(r["status"], 0) + 1
+    st.markdown(
+        "　".join(f"{causal_view_mod.STATUS_LABELS[k]} {counts[k]}" for k in causal_view_mod.STATUS_LABELS if k in counts)
+    )
+    for r in rows:
+        tag = "🌳 " if r["kind"] == "tree" else ""
+        tail = f" · 兑现率 {r['rate_text']}" if r["rate_text"] else ""
+        mech = f" · {r['mechanism']}" if r["mechanism"] else ""
+        st.markdown(
+            f"{tag}`{r['edge_id']}` {_html_text(r['from_name'])} → {_html_text(r['to_name'])}"
+            f" · **{r['status_label']}**{tail}{mech}"
+        )
+
+
+def _render_causal_due_timeline(settings, history, step: int) -> None:
+    """因果引擎面板的\"⏰ 到期因果时间线\"（P5e / 3e）：未结案项按到期远近排，加最近的处置记录。"""
+    tl = causal_view_mod.build_due_timeline(settings, history, step)
+    st.markdown("**待兑现（已到期的在前）**")
+    if not tl["open"]:
+        st.caption("当前没有未结案的待兑现项。")
+    for r in tl["open"]:
+        icon = "⏰" if r["due"] else "⏳"
+        extra = []
+        if r["postponed_count"]:
+            extra.append(f"推迟 {r['postponed_count']} 次")
+        if r["ignored_count"]:
+            extra.append(f"到期后已 {r['ignored_count']} 步未交代")
+        if r["retrigger_count"]:
+            extra.append(f"源头又有进展 {r['retrigger_count']} 次")
+        st.markdown(
+            f"{icon} `{r['pending_id']}` {_html_text(r['from_name'])} → {_html_text(r['to_name'])}"
+            f" · {r['reason_label']}（第 {r['triggered_at_step']} 步触发）· {r['text']}"
+            + (f" · {'，'.join(extra)}" if extra else "")
+        )
+    st.markdown("**最近的处置记录（AI 自报）**")
+    if not tl["recent"]:
+        st.caption("还没有处置记录。")
+    icons = {"realized": "✅", "dampened": "🔸", "postponed": "⏸️", "countered": "❌", "expired": "🕳️", "unaddressed": "🕳️"}
+    for r in tl["recent"]:
+        why = f" · {_html_text(r['reason'])}" if r["reason"] else ""
+        auto = "（自动结案）" if r["auto"] else ""
+        st.markdown(
+            f"{icons.get(str(r['disposition']), '•')} 第 {r['step']} 步 · {_html_text(r['from_name'])} → "
+            f"{_html_text(r['to_name'])} · {r['disposition']}{auto}{why}"
+        )
+
+
 def _render_causal_panel(manifest, current, history) -> None:
     """因果引擎面板（只读）：当前待兑现项 + 每条边在本分支里的兑现统计。
     兑现统计是 AI 自报的，不是世界里真实兑现的度量。"""
@@ -855,6 +917,16 @@ def _render_causal_panel(manifest, current, history) -> None:
             "源头线有进展时，声明的因果边入队；延迟期到了，引擎提醒 AI 交代效果（兑现/部分/推迟/抵消）。"
             "引擎不改任何数值，也无法验证 AI 是否真的把效果写进了状态——下面的兑现统计是 AI 自报的。"
         )
+        _panel_view = st.radio(
+            "查看方式", ["📋 兑现统计", "🕸️ 着色关系图", "⏰ 到期时间线"], horizontal=True,
+            key="causal_panel_view",
+        )
+        if _panel_view == "🕸️ 着色关系图":
+            _render_causal_status_graph(settings, history)
+            return
+        if _panel_view == "⏰ 到期时间线":
+            _render_causal_due_timeline(settings, history, step)
+            return
         tree_stats = {k: v for k, v in causal_mod.edge_stats(history).items() if tree_effects_mod.is_tree_edge(k)}
         declared_tree = tree_effects_mod.declared_effects(settings.get("causal_lines"))
         if tree_effects_mod.is_enabled(settings) and (declared_tree or tree_stats):

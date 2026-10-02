@@ -685,7 +685,7 @@ monkeypatch 打桩验证文本原样出现在 `inputs` 字典里；`generate_sce
 - **因果引擎只记账、不改数值（第二十二轮 WP3 · P5a，默认关闭）**：声明的因果边在源头
   有进展时入队、延迟期到了提醒 LLM 交代；引擎**无法验证** `realized` 是否真的写进了
   状态，兑现统计是 LLM 自报的；`sign`/`strength` 只随提示词展示；账本显著变化不是触发源；
-  `advance_lines()` 不入队；没有在真实 LLM 下验证过。3c 已于 P5c 实现、3d 已于 P5d 实现，3e（界面收尾）尚未实现。
+  `advance_lines()` 不入队；没有在真实 LLM 下验证过。3c 已于 P5c 实现、3d 已于 P5d 实现、3e（界面收尾）已于 P5e 实现。
   P5b 起：兑现结论回写 `knowledge_base`（`causal_kb_writeback` 默认开）、关系延迟新增 `delay_days`、
   技术违规可选修复调用（`tech_repair_enabled` 默认关）。详见 `docs/causal_engine_guide.md`、
   `docs/tech_model_guide.md` 与"变更记录"第二十二轮 P5a/P5b 条目。
@@ -698,6 +698,10 @@ monkeypatch 打桩验证文本原样出现在 `inputs` 字典里；`generate_sce
   `effects_if_active`；分支**本步新变为 active**（接地后仍是）时，这些声明入因果引擎的待兑现队列（`edge_id` 以
   `tree:` 开头），到期后由 LLM 用 `effect_dispositions` 交代并统计。不改数值、不验证声明合理、不验证兑现，
   没有在真实 LLM 下验证；从第 0 步（无快照）分叉沿用工作副本（P0 既有边界）。详见 `docs/tree_effects_guide.md`。
+- **因果图着色与到期时间线（第二十二轮 WP3 · P5e，无新开关、只读）**：因果引擎面板新增"🕸️ 着色关系图"（边按兑现统计分
+  假设/已观察/已证伪/未定/已停用，标签带兑现率与样本数）与"⏰ 到期时间线"（未结案项已到期优先 + 最近处置记录）。状态是 **AI 自报**
+  统计的函数，不是世界里被验证/被证伪；阈值可用 `causal_view_params` 覆盖。静态 HTML 导出未接入；没有浏览器级验证，也没有在真实
+  LLM 下验证。详见 `docs/causal_view_guide.md`。
 
 ## 目录结构
 
@@ -4453,4 +4457,22 @@ deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
   ③ 条目允许目标指向技术节点；目标未登记只记 E7 不阻断；④ 3e（因果图按边状态着色、兑现率图示、到期因果时间线）留给 P5e。
   **已知边界（如实记录）**：① 没有在真实 LLM 下运行过；② 引擎无法验证声明合理性与兑现真假；③ 只看顶层分支，`advance_lines()` 不入队；
   ④ 不追溯开启前已 active 的分支；⑤ 从第 0 步分叉沿用工作副本（P0 既有边界，未做种子锚定）；⑥ `app.py` 设置页保存流程未实跑。
+- 2026-10-02（第二十二轮 · 阶段 P5e：WP3 的 3e 界面收尾，依据 `next_doc/world_simulator_realism_tech_and_causal_engine_plan.md`）：
+  1. **新增 `world_simulator/causal_view.py`**（纯函数、不调 LLM、不落盘、无新开关）：`classify_edge`（假设/已观察/已证伪/未定/已停用，
+     由 `edge_stats()` 推出）、`build_edge_view`（声明边 + 树边 + 声明已删但有历史的树边）、`edges_to_dot`（按状态着色，边标签带兑现率与样本数）、
+     `build_due_timeline`（未结案项到期优先 + 最近处置记录）、`get_view_params`（`settings.causal_view_params` 覆盖阈值）。
+  2. **界面（`app.py`）**：因果引擎面板顶部新增"查看方式"单选（📋 兑现统计〔原有，默认〕/🕸️ 着色关系图/⏰ 到期时间线），
+     新增 `_render_causal_status_graph` / `_render_causal_due_timeline`。
+  3. **文档**：新增 `docs/causal_view_guide.md`；更新 `docs/README.md`、`docs/testing_guide.md`、`docs/causal_engine_guide.md`、
+     `docs/tree_effects_guide.md`、计划文档 §9。
+  4. **测试**：新增 `tests/test_causal_view.py`（22 个）。变异验证 24 个（各阈值比较符/停用优先/无结论判定/证伪忽略兑现/观察忽略最小次数/
+     到期排序与忽略次数/天步精度排序/最近记录倒序与上限/孤儿树边与声明树边丢失/着色线宽/树节点形状/转义/剩余步数与天数/树边起点名/
+     参数范围与下限/兑现率文本/来源标记），首轮存活 2 个（`observed_min_realized` 被兑现率阈值遮住、天/步精度排序），补用例后全部转红。
+  **验收**：`pytest tests/` **1078 passed**（P5d 后基线 1056，新增 22，均在 `test_causal_view.py`，其余既有文件无改动）；
+  `streamlit.testing.AppTest` 对面板三个视图的冒烟无异常。
+  **与计划的偏离/细化**：① 边状态在计划的三态（假设/已观察/已证伪）之外新增"未定"（单次自报抵消证据太薄、混合结果与仅部分兑现不该硬塞三态）；
+  ② 到期时间线放在因果引擎面板里，未改每步时间线；③ 静态 HTML 导出（`html_export.py`）未接入；④ 状态不落盘，每次现算。
+  **已知边界（如实记录）**：① 状态/兑现率是 LLM 自报统计的函数，小样本波动大；② 没有浏览器级验证（真实配色/布局未见），图边多时会挤；
+  ③ 没有在真实 LLM 下运行过，真实自报分布未知；④ `elapsed_days` 是估计值，"还差约 N 天"只看量级；⑤ `app.py` 设置页保存流程未实跑。
+  **本计划 WP0–WP5 至此全部实施完毕**；遗留项见计划文档 §9 末尾。
   **下一阶段**：P5e / 3e（界面收尾：因果图按边状态着色〔假设/已观察/已证伪〕、兑现率、到期因果时间线）。

@@ -71,4 +71,4 @@
 
 ## 相关
 
-[`causal_engine_guide.md`](./causal_engine_guide.md) · [`tree_grounding_guide.md`](./tree_grounding_guide.md)
+[`causal_engine_guide.md`](./causal_engine_guide.md) · [`tree_grounding_guide.md`](./tree_grounding_guide.md) · [`causal_view_guide.md`](./causal_view_guide.md)（树边在着色关系图/到期时间线里的展示）
