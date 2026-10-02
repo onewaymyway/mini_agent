@@ -891,8 +891,23 @@ class ScenarioDraft:
     编辑再存进 `settings`——这是对初始状态的描述性快照，同
     `field_provenance`/`uncertain_fields` 的既有取舍。"""
 
+    event_priors: List[Dict[str, Any]] = field(default_factory=list)
+    """skill 提议的外生事件先验（第二十二轮 P7，仅当 `settings.event_priors_proposal_enabled` 开启时
+    才会保留）。已经过 `event_sampler.sanitize_proposals()` 规整：一律 `source="llm_estimate"`、
+    `verified=False`、`confirmed=False`——**只是待用户确认的提议**，创建向导里用户逐条采用后才会存进
+    `settings.event_priors` 并参与抽样；这个字段本身不直接落盘。"""
+    event_prior_problems: List[str] = field(default_factory=list)
+    """提议里被丢弃的条目及原因（非法、重复、条件引用不存在的变量、超出上限），给向导展示。"""
+
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ScenarioDraft":
+    def from_dict(cls, data: Dict[str, Any], *, existing_prior_ids: "List[str] | None" = None) -> "ScenarioDraft":
+        from world_simulator import event_sampler
+
+        proposals, proposal_problems = event_sampler.sanitize_proposals(
+            data.get("event_priors"),
+            vars_=dict(data.get("vars") or {}),
+            existing_ids=existing_prior_ids,
+        )
         return cls(
             title=str(data.get("title", "")),
             summary=str(data.get("summary", "")),
@@ -923,6 +938,8 @@ class ScenarioDraft:
                 if isinstance(data.get("desired_state"), dict)
                 else {}
             ),
+            event_priors=proposals,
+            event_prior_problems=proposal_problems,
         )
 
 
@@ -1008,7 +1025,7 @@ def generate_scenario(
             "暂无相关的已知因果知识"，不影响生成本身。
     """
     from mini_agent.workflow.runner import WorkflowRunner
-    from world_simulator import knowledge_base
+    from world_simulator import event_sampler, knowledge_base
 
     if data_dir is not None:
         try:
@@ -1038,6 +1055,8 @@ def generate_scenario(
         "previous_draft_json": previous_draft_json,
         "calibration_notes": str((settings or {}).get("calibration_notes") or ""),
         "relevant_knowledge_hint": relevant_knowledge_hint,
+        # P7：仅创建阶段用；未开启提议时为空串（提示词里这一行就是空的，LLM 不会被要求输出该字段）
+        "event_priors_hint": event_sampler.safe_build_proposal_hint(settings),
         **resolve_hints(settings, stage="create"),
     }
 
@@ -1152,4 +1171,10 @@ def generate_scenario(
         # causal_graph 等因果/决策类字段，两者字段不重叠，直接展开
         # 合并即可（同 `advance.py` 拆分调用的既有合并方式）。
         data = {**data_causal, **data_world}
-    return ScenarioDraft.from_dict(data)
+    existing_ids = [str(p.get("id") or p.get("description") or "")
+                    for p in ((settings or {}).get("event_priors") or []) if isinstance(p, dict)]
+    draft = ScenarioDraft.from_dict(data, existing_prior_ids=existing_ids)
+    if not event_sampler.proposal_enabled(settings):
+        # 没开启提议却输出了 event_priors（LLM 自作主张）：一律忽略，不让它悄悄进入向导
+        draft.event_priors, draft.event_prior_problems = [], []
+    return draft

@@ -55,6 +55,19 @@ LLM 只负责把它写进叙事与状态；没抽中就明确告诉 LLM"本步�
 - 先验数值是用户/LLM 的猜测，`verified=False` 就是在提醒这一点。
 - `basis_days` 与实际 `elapsed_days` 的偏差会让事件频率偏离先验。
 - 不做事件之间的相关性（事件 A 触发事件 B），只有各自独立的抽样。
+
+## LLM 提议先验（P7）
+
+创建向导里可以让 `generate_scenario` 额外**提议**一批先验（`settings.event_priors_proposal_enabled`，
+默认关）。提议只是草稿建议：`sanitize_proposals()` 把每条强制规整成 `source="llm_estimate"`、
+`verified=False`、`confirmed=False`（LLM 自己写的这三个字段一律忽略），并丢掉写法非法、id 重复、
+条件引用了初始 `vars` 里不存在的变量、超出条数上限的条目。**`source="llm_estimate"` 且没有
+`confirmed=True` 的先验不参与抽样**（`_evaluate` 里状态为 `unconfirmed`）——用户在向导里逐条
+采用（`adopt_proposals()`，可改 `rate_per_year`）后才进入 `settings.event_priors`。手写先验
+（`source` 不是 `llm_estimate`）没有 `confirmed` 字段时视为已确认，行为与 P7 之前完全一致。
+
+已知边界：LLM 提议的频率就是猜测，`rationale`/`rate_range` 只是它自己的说明，不是核对过的来源；
+"采用"是用户的一次点选，不等于核实了数字；`verified` 采用后仍为 `False`。
 """
 
 from __future__ import annotations
@@ -75,6 +88,9 @@ _OPS = {
     "==": lambda a, b: a == b,
     "!=": lambda a, b: a != b,
 }
+
+PROPOSAL_SOURCE = "llm_estimate"
+MAX_PROPOSALS = 12  # 单次提议条数上限（占位值）：防止 LLM 一次倒出几十条让用户无从逐条确认
 
 DEFAULT_PARAMS: Dict[str, Any] = {
     # 通用占位值，不是领域事实。
@@ -113,6 +129,16 @@ def get_params(settings: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 # ── 先验 ─────────────────────────────────────────────────────────────
 
 
+def _norm_rate_range(raw: Any) -> Optional[Dict[str, float]]:
+    """`{"low": a, "high": b}`（均为非负数且 low <= high）；否则 None。仅作展示，不参与抽样。"""
+    if not isinstance(raw, dict):
+        return None
+    low, high = _num(raw.get("low")), _num(raw.get("high"))
+    if low is None or high is None or low < 0 or high < low:
+        return None
+    return {"low": low, "high": high}
+
+
 def normalize_prior(raw: Any) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """规整一条先验，返回 `(先验, 问题)`：先验不可用时为 None 且给出原因。"""
     if not isinstance(raw, dict):
@@ -127,6 +153,10 @@ def normalize_prior(raw: Any) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     severity = raw.get("severity")
     cooldown = _num(raw.get("cooldown_steps"))
     source = str(raw.get("source") or "").strip() or "user"
+    # P7：LLM 提议的先验默认未确认（不参与抽样）；手写先验没写 confirmed 就视为已确认（向后兼容）。
+    raw_confirmed = raw.get("confirmed")
+    confirmed = raw_confirmed if isinstance(raw_confirmed, bool) else (source != PROPOSAL_SOURCE)
+    rate_range = _norm_rate_range(raw.get("rate_range"))
     return {
         "id": pid,
         "description": description or pid,
@@ -139,6 +169,9 @@ def normalize_prior(raw: Any) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         "source": source,
         "verified": bool(raw.get("verified", False)),
         "enabled": bool(raw.get("enabled", True)),
+        "confirmed": confirmed,
+        "rationale": str(raw.get("rationale") or "").strip(),
+        "rate_range": rate_range,
     }, None
 
 
@@ -295,6 +328,9 @@ def _evaluate(
         row: Dict[str, Any] = {"prior": prior, "probability": 0.0, "draw": None, "status": ""}
         if not prior["enabled"]:
             row["status"] = "disabled"
+        elif not prior["confirmed"]:
+            # P7：LLM 提议、用户还没确认——不抽样（也不走条件/冷却，避免给人"它在起作用"的错觉）
+            row["status"] = "unconfirmed"
         else:
             last = fired_at.get(prior["id"])
             if prior["cooldown_steps"] > 0 and last is not None and step - last <= prior["cooldown_steps"]:
@@ -395,6 +431,134 @@ def safe_build_hint(settings: Optional[Dict[str, Any]], events: List[Dict[str, A
         return ""
 
 
+# ── LLM 提议（P7）────────────────────────────────────────────────────
+
+
+def proposal_enabled(settings: Optional[Dict[str, Any]]) -> bool:
+    return bool((settings or {}).get("event_priors_proposal_enabled"))
+
+
+def sanitize_proposals(
+    raw: Any,
+    *,
+    vars_: Optional[Dict[str, Any]] = None,
+    existing_ids: Optional[List[str]] = None,
+    limit: int = MAX_PROPOSALS,
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """把 LLM 输出的 `event_priors` 规整成"待用户确认的提议"，返回 `(提议, 被丢弃的原因)`。
+
+    - 一律强制 `source="llm_estimate"`、`verified=False`、`confirmed=False`、`enabled=True`
+      ——LLM 自己写的这些字段会被覆盖（它没有资格宣称"已核对/已确认"）。
+    - 丢弃：不是对象、缺 id/description、`rate_per_year` 不是非负数、id 与已有先验/本批前面的重复、
+      条件里的 `var` 在初始 `vars_` 里不存在（留着只会永远"条件未满足"，静默不起作用）、超出 `limit`。
+      条件里的 `tech` 不检查（创建时技术节点可能还没登记）。
+    - 其余字段沿用 `normalize_prior()` 的规整（severity/cooldown/affects/rationale/rate_range）。
+    """
+    problems: List[str] = []
+    out: List[Dict[str, Any]] = []
+    seen = {str(x) for x in (existing_ids or [])}
+    if raw in (None, "", [], {}):
+        return out, problems
+    if not isinstance(raw, list):
+        return out, ["event_priors 不是数组，整体忽略"]
+    for item in raw:
+        if len(out) >= limit:
+            problems.append(f"提议超过 {limit} 条，其余已忽略")
+            break
+        prior, why = normalize_prior(item)
+        if prior is None:
+            problems.append(f"提议被丢弃：{why}")
+            continue
+        if prior["id"] in seen:
+            problems.append(f"提议「{prior['id']}」与已有/前面的先验 id 重复，已忽略")
+            continue
+        bad_var = _first_missing_var(prior["condition"], vars_) if vars_ is not None else None
+        if bad_var:
+            problems.append(f"提议「{prior['id']}」的条件引用了初始变量里不存在的 {bad_var}，已丢弃")
+            continue
+        seen.add(prior["id"])
+        prior.update(source=PROPOSAL_SOURCE, verified=False, confirmed=False, enabled=True)
+        out.append(prior)
+    return out, problems
+
+
+def _first_missing_var(condition: Any, vars_: Optional[Dict[str, Any]]) -> Optional[str]:
+    if isinstance(condition, list):
+        for item in condition:
+            bad = _first_missing_var(item, vars_)
+            if bad:
+                return bad
+        return None
+    if isinstance(condition, dict) and "var" in condition:
+        if _get_path(vars_ or {}, str(condition["var"])) is _MISSING:
+            return str(condition["var"])
+    return None
+
+
+def adopt_proposals(
+    proposals: List[Dict[str, Any]],
+    decisions: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """把用户在向导里的逐条决定落成要存进 `settings.event_priors` 的先验。
+
+    `decisions = {先验 id: 采用时的 rate_per_year（数字）}`——**只有出现在 decisions 里的才采用**，
+    没出现 = 用户没勾选 = 丢弃（不留 unconfirmed 的残余）。采用的先验 `confirmed=True`；
+    `source` 在用户改过频率时变成 `"user_edited"`（那个数是用户的声明了），没改保持 `llm_estimate`；
+    `verified` 始终为 `False`——点选采用不等于核实。非法的 rate（负数/非数字）该条被丢弃。
+    """
+    adopted: List[Dict[str, Any]] = []
+    for p in proposals or []:
+        if p.get("id") not in decisions:
+            continue
+        rate = _num(decisions[p["id"]])
+        if rate is None or rate < 0:
+            continue
+        entry = dict(p)
+        changed = abs(rate - float(p["rate_per_year"])) > 1e-12
+        entry.update(rate_per_year=rate, confirmed=True, verified=False,
+                     source="user_edited" if changed else PROPOSAL_SOURCE)
+        adopted.append(entry)
+    return adopted
+
+
+def unconfirmed_ids(settings: Optional[Dict[str, Any]]) -> List[str]:
+    """已存进设置、但还没确认（不参与抽样）的先验 id，给界面提示。"""
+    priors, _ = get_priors(settings)
+    return [p["id"] for p in priors if not p["confirmed"]]
+
+
+def build_proposal_hint(settings: Optional[Dict[str, Any]]) -> str:
+    """喂给 `generate_scenario`/`world_builder` 的 `{event_priors_hint}`。
+
+    未开启提议 → 空字符串（不让 LLM 输出这个字段，也不增加提示词长度）。"""
+    if not proposal_enabled(settings):
+        return ""
+    existing, _ = get_priors(settings)
+    ids = "、".join(p["id"] for p in existing)
+    taken = f"用户已经声明的先验 id（不要重复提议）：{ids}。\n" if ids else ""
+    return (
+        "【外生事件先验提议已开启】请在输出里额外给一个可选字段 `event_priors`：数组，最多 "
+        f"{MAX_PROPOSALS} 条，每条是这次模拟里**外部世界**可能发生的、不由角色自身行动决定的"
+        "重大事件（灾害、政策变化、市场冲击、技术突破等）。每条给：`id`（简短英文或拼音，唯一）、"
+        "`description`、`rate_per_year`（每年期望发生次数，非负数；这是你的粗略估计，不要给看起来很精确的小数）、"
+        "`rate_range`（对象，含 low/high 两个数，表示你认为的合理区间）、`rationale`（一句话说明依据，"
+        "老实写“凭常识估计”也可以，不要编造具体的统计来源或数据）、`severity`（low/medium/high）、"
+        "`affects`（字符串数组，可能影响什么）、`cooldown_steps`（发生后几步内不再发生，可省略）、"
+        "`condition`（可选；只能引用你在 `vars` 里实际给出的字段，格式 "
+        "对象含 var、op、value 三个键，op 取 <、<=、>、>=、==、!= 之一）。\n"
+        + taken +
+        "这些只是给用户的**提议**：用户会逐条审阅、修改、决定是否采用，未经确认不会参与任何抽样。"
+        "没有把握的事件宁可不提；不要为了凑数而编造；你的估计不是核对过的事实，不要在 `rationale` 里声称它是。"
+    )
+
+
+def safe_build_proposal_hint(settings: Optional[Dict[str, Any]]) -> str:
+    try:
+        return build_proposal_hint(settings)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 # ── 展示用 ───────────────────────────────────────────────────────────
 
 
@@ -408,7 +572,7 @@ def preview(
     step: int,
 ) -> List[Dict[str, Any]]:
     """给界面：每条先验在 `step` 这一步的概率/状态（不写任何东西）。未开启返回 `[]`。
-    `status` ∈ hit/miss/cooldown/condition_unmet/disabled——注意这里的 hit/miss
+    `status` ∈ hit/miss/cooldown/condition_unmet/disabled/unconfirmed——注意这里的 hit/miss
     就是真会被抽到的结果，同一步重跑一致。"""
     if not is_enabled(settings):
         return []

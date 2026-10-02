@@ -256,7 +256,10 @@ def test_generate_scenario_binds_skill_and_parses_draft(tmp_path, monkeypatch):
 
     assert draft_step.skill_name == "life-sim-template"
     causal_lines_hint = captured["inputs"]["causal_lines_hint"]
-    assert {k: v for k, v in captured["inputs"].items() if k not in ("causal_lines_hint", "belief_fields_hint")} == {
+    # P7：`event_priors_hint` 是创建阶段新增的输入；默认（没开启提议）必须是空串
+    assert captured["inputs"]["event_priors_hint"] == ""
+    assert {k: v for k, v in captured["inputs"].items()
+            if k not in ("causal_lines_hint", "belief_fields_hint", "event_priors_hint")} == {
         "intent": "模拟一个刚毕业的人生",
         "feedback": "",
         "previous_draft_json": "",

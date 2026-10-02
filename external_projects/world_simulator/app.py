@@ -764,6 +764,13 @@ def _sampled_events_html(state) -> str:
     return "".join(lines)
 
 
+def _clear_event_prior_widget_state() -> None:
+    """换了一份新草稿（从零生成 / 按意见重新生成）后，清掉上一份提议先验的勾选与频率控件状态——
+    否则同 id 的新提议会沿用旧的“已勾选 + 旧频率”，等于悄悄替用户采用。"""
+    for key in [k for k in st.session_state.keys() if str(k).startswith(("ep_adopt_", "ep_rate_"))]:
+        st.session_state.pop(key, None)
+
+
 def _render_event_panel(manifest, current, history) -> None:
     """外生事件先验面板（只读）：每条先验当前的单步概率、冷却、条件状态。
     **不显示"下一步会不会抽中"**——避免把模拟当剧本提前剧透。"""
@@ -786,7 +793,8 @@ def _render_event_panel(manifest, current, history) -> None:
             sim_id=manifest.sim_id, branch=manifest.branch, step=int(getattr(current, "step", 0)) + 1,
         )
         label = {"disabled": "已停用", "cooldown": "冷却中", "condition_unmet": "条件未满足",
-                 "hit": "参与抽样", "miss": "参与抽样"}
+                 "hit": "参与抽样", "miss": "参与抽样",
+                 "unconfirmed": "AI 提议、你还没确认（不参与抽样）"}
         for r in rows:
             p = r["prior"]
             line = (
@@ -801,6 +809,10 @@ def _render_event_panel(manifest, current, history) -> None:
                 line += f"（{r['why']}）"
             if not p["verified"]:
                 line += " · ⚠️ 未核对"
+            if p["source"] != "user":
+                line += f" · 来源 {p['source']}"
+            if p.get("rationale"):
+                line += f" · 理由（提议者自述）：{p['rationale']}"
             st.markdown(line)
 
 
@@ -1787,6 +1799,12 @@ def page_create() -> None:
         "「模拟设置」里开关）",
         value=bool(st.session_state.get("create_observer_mode", True)),
     )
+    propose_event_priors = st.checkbox(
+        "🎲 让 AI 提议外生事件先验（第二十二轮 P7，默认关闭——生成草稿时 AI 会额外给出几条“外部世界可能发生的"
+        "重大事件及其年频率”。这只是**提议**：在下面逐条审阅、可改频率，**只有你勾选采用的才会开启外生事件采样"
+        "并参与抽样**；AI 给的频率是它的粗略估计，不是核对过的数据；会略增这一步的 token 成本）",
+        value=bool(st.session_state.get("create_propose_event_priors", False)),
+    )
 
     time_granularity = ""
     time_granularity_guide = ""
@@ -1846,6 +1864,7 @@ def page_create() -> None:
             st.session_state["create_granularity_mode"] = time_granularity_mode
             st.session_state["create_split_decision_calls"] = bool(split_decision_calls)
             st.session_state["create_split_creation_calls"] = bool(split_creation_calls)
+            st.session_state["create_propose_event_priors"] = bool(propose_event_priors)
             st.session_state["create_observer_mode"] = bool(observer_mode)
             if time_granularity_mode == "fixed":
                 st.session_state["create_granularity_custom"] = time_granularity
@@ -1860,6 +1879,7 @@ def page_create() -> None:
                 "split_decision_calls": bool(split_decision_calls),
                 "split_creation_calls": bool(split_creation_calls),
                 "observer_mode": bool(observer_mode),
+                "event_priors_proposal_enabled": bool(propose_event_priors),
             }
             st.session_state["create_settings"] = settings
             with st.spinner("正在生成提案草稿..."):
@@ -1869,6 +1889,7 @@ def page_create() -> None:
                         cfg, PROJECT_ROOT, template=template, intent=intent, settings=settings,
                         data_dir=DATA_DIR,
                     )
+                    _clear_event_prior_widget_state()
                     st.session_state["draft"] = draft
                     st.session_state["draft_template"] = template
                     # 新一轮从零生成，之前的候选方向选择/意见输入都失效。
@@ -2118,6 +2139,46 @@ def page_create() -> None:
             placeholder='{"conditions": ["financial_independence"], "constraints": ["limited capital"]}',
         )
 
+    # ── AI 提议的外生事件先验（P7）：逐条审阅，勾选采用的才会存进设置并参与抽样 ──
+    event_prior_decisions: Dict[str, float] = {}
+    for _why in getattr(draft, "event_prior_problems", None) or []:
+        st.warning(f"AI 的先验提议有一条被丢弃：{_why}")
+    if getattr(draft, "event_priors", None):
+        with st.expander(f"🎲 AI 提议的外生事件先验（{len(draft.event_priors)} 条，未采用的不会保存）", expanded=True):
+            st.markdown(
+                '<span class="ws-muted">下面每条都是 AI 的<b>粗略估计</b>（理由是它自己写的，不是核对过的来源）。'
+                "勾选“采用”的会连同“开启外生事件采样”一起存进这个实例，频率可以先改；"
+                "采用后仍标“⚠️ 未核对”。不勾选 = 丢弃。引擎按这些频率抽样并把结果当既成事实告诉 AI，"
+                "所以数字离谱会直接让模拟离谱。</span>",
+                unsafe_allow_html=True,
+            )
+            for _p in draft.event_priors:
+                _pid = _p["id"]
+                _c1, _c2 = st.columns([6, 3])
+                with _c1:
+                    _adopt = st.checkbox(
+                        f"采用：{_p['description']}（`{_pid}` · 严重度 {_p['severity']}）",
+                        value=False, key=f"ep_adopt_{_pid}",
+                    )
+                    _extra = []
+                    if _p.get("rate_range"):
+                        _extra.append(f"AI 认为合理区间 {_p['rate_range']['low']:g}–{_p['rate_range']['high']:g} 次/年")
+                    if _p.get("rationale"):
+                        _extra.append(f"理由：{_p['rationale']}")
+                    if _p.get("affects"):
+                        _extra.append("可能影响：" + "、".join(_p["affects"]))
+                    if _p.get("condition"):
+                        _extra.append(f"条件：{json.dumps(_p['condition'], ensure_ascii=False)}")
+                    if _extra:
+                        st.caption("；".join(_extra))
+                with _c2:
+                    _rate = st.number_input(
+                        "每年约发生次数", min_value=0.0, value=float(_p["rate_per_year"]), step=0.05,
+                        format="%g", key=f"ep_rate_{_pid}",
+                    )
+                if _adopt:
+                    event_prior_decisions[_pid] = float(_rate)
+
     # ── 初始候选方向：可编辑文案、可删除、可手动新增，并且真的可以选 ──
     st.markdown("**初始候选方向**")
     st.markdown(
@@ -2255,6 +2316,7 @@ def page_create() -> None:
                             settings=st.session_state.get("create_settings"),
                             data_dir=DATA_DIR,
                         )
+                        _clear_event_prior_widget_state()
                         st.session_state["draft"] = revised
                         st.session_state.pop("create_chosen_option_id", None)
                     except ScenarioGenerationError as exc:
@@ -2346,6 +2408,12 @@ def page_create() -> None:
             create_settings["declared_causal_graph"] = declared_causal_graph
             create_settings["objectives"] = objectives
             create_settings["desired_state"] = desired_state
+            create_settings.pop("event_priors_proposal_enabled", None)  # 只是生成阶段的开关，不落盘
+            _adopted_priors = event_mod.adopt_proposals(
+                getattr(draft, "event_priors", None) or [], event_prior_decisions)
+            if _adopted_priors:
+                create_settings["event_priors"] = _adopted_priors
+                create_settings["event_sampling_enabled"] = True
             create_settings["calibration_notes"] = calibration_notes_text.strip()
             background_entities = [
                 e.strip() for e in background_entities_text.split(",") if e.strip()
@@ -2387,7 +2455,7 @@ def page_create() -> None:
                 "create_background_entities", "create_causal_lines", "create_belief_fields",
                 "create_split_decision_calls", "create_declared_causal_graph",
                 "create_split_creation_calls", "create_observer_mode",
-                "create_desired_state",
+                "create_desired_state", "create_propose_event_priors",
             ):
                 st.session_state.pop(key, None)
             st.session_state["view"] = "detail"
@@ -4975,6 +5043,12 @@ def page_detail() -> None:
                     '"condition": {"var": "resources.land", "op": ">", "value": 0}, "verified": false}]'
                 ),
             )
+            _unconfirmed = event_mod.unconfirmed_ids(cur_settings)
+            if _unconfirmed:
+                st.warning(
+                    f"有 {len(_unconfirmed)} 条先验是 AI 提议、还没确认，**不参与抽样**：{'、'.join(_unconfirmed)}。"
+                    "确认的办法：核对频率后，在上面的 JSON 里给该条加上 `\"confirmed\": true`；不要的直接删掉。"
+                )
             cur_event_params = cur_settings.get("event_params") or {}
             new_event_params_text = st.text_area(
                 "采样参数覆盖（JSON 对象，可选）",

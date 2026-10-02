@@ -899,6 +899,10 @@ def run_case(
     from world_simulator.store import SimStore
     from world_simulator import consistency_guard
 
+    # 先校验再花钱：非法的 time_basis 不该等跑完所有（真实 LLM）步骤才报错
+    basis = time_basis or case.time_basis
+    if basis not in _TIME_BASES:
+        raise BacktestError(f"time_basis 必须是 {_TIME_BASES} 之一，收到 {basis!r}")
     matcher = matcher or rule_matcher
     create_fn = create_fn or _default_create
     advance_fn = advance_fn or _default_advance
@@ -931,9 +935,6 @@ def run_case(
     history = store.load_history(branch)
     causal_lines = manifest.settings.get("causal_lines")
     last_step = int(history[-1].step) if history else 0
-    basis = time_basis or case.time_basis
-    if basis not in _TIME_BASES:
-        raise BacktestError(f"time_basis 必须是 {_TIME_BASES} 之一，收到 {basis!r}")
     timeline = build_timeline(history, years_per_step=case.years_per_step, basis=basis)
     horizon_years = timeline["horizon_years"]
 

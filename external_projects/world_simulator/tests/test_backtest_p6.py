@@ -334,10 +334,24 @@ def test_case_time_basis_validation_and_default():
     assert _case().time_basis == "auto"
     with pytest.raises(bt.BacktestError):
         _case(time_basis="nonsense")
-    with pytest.raises(bt.BacktestError):
-        # 运行时参数同样校验
-        bt.run_case(_case(), cfg=None, workspace_root=Path("."), out_dir=Path("."), time_basis="x",
-                    create_fn=_make_stubs([])[0], advance_fn=_make_stubs([])[1])
+
+
+def test_run_time_basis_override_is_validated_before_any_engine_call(tmp_path):
+    """非法的运行时 time_basis 必须在创建实例/推进任何一步**之前**报错（真实 LLM 下每步都花钱）。"""
+    called = []
+
+    def create_fn(*a, **k):
+        called.append("create")
+        raise AssertionError("不该走到这里")
+
+    def advance_fn(*a, **k):
+        called.append("advance")
+        raise AssertionError("不该走到这里")
+
+    with pytest.raises(bt.BacktestError, match="time_basis"):
+        bt.run_case(_case(), cfg=None, workspace_root=tmp_path, out_dir=tmp_path / "r", time_basis="x",
+                    create_fn=create_fn, advance_fn=advance_fn)
+    assert called == [] and not (tmp_path / "r").exists()
 
 
 # ── rescore / A-B ────────────────────────────────────────────────────

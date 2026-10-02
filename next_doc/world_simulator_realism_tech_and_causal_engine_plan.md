@@ -1,6 +1,6 @@
 # world_simulator 改进计划（第二十二轮）：让技术/事物发展更真实、因果树可执行可校验
 
-> **状态（2026-10-02 更新）：P0–P5e 已全部实施完毕（未在真实 LLM 下验证）；后续补完阶段 P6–P10 见文末 §10：**P6 已实施（2026-10-02）**，P7–P10 尚未实施。**
+> **状态（2026-10-02 更新）：P0–P5e 已全部实施完毕（未在真实 LLM 下验证）；后续补完阶段 P6–P10 见文末 §10：**P6、P7 已实施（2026-10-02）**，P8–P10 尚未实施。**
 > 已完成：**P0（WP0 分支隔离）**、**P1（WP4 一致性守卫+真实性体检）**、**P2（WP5 回测框架）**、**P3（WP1 技术模型 + `elapsed_days`）**、**P4（WP2 外生事件采样）**、**P5a（WP3 的 3a 边升级 + 3b 待兑现因果队列）**、**P5b（§8 三个确认项落地：关系延迟改 elapsed、兑现统计回写知识库、技术违规修复调用）**、**P5c（WP3 的 3c 树接地）**、**P5d（WP3 的 3d 树影响世界）**、**P5e（WP3 的 3e 界面收尾：因果图着色/兑现率/到期时间线）**，详见文末 §9。**WP0–WP5 的原定阶段全部实施完毕；WP5/WP2/WP3 的遗留补完与收尾列为 P6–P10（§10）。**
 > 本文只依据阅读代码得出结论，没有跑过真实 LLM，也没有在运行时复现
 > 下文 §2.4 之外的缺陷——每一条"现状"都标注了代码位置，"推断"会明说。
@@ -436,7 +436,7 @@ perceived_stage?}`。阶段序数沿用现有 6 档，不新造枚举。
   三个模板 `SKILL.md`。规则（泊松概率/可复现种子/冷却/条件/上限）见
   `docs/event_sampling_guide.md`。
 - **与 §4 WP2 的偏离/细化**：① **先验由用户手写，未做 `generate_scenario` 提议**
-  （原计划"LLM 提议、标 `llm_estimate`、用户确认"未实现；理由与后续见指南）；
+  （原计划"LLM 提议、标 `llm_estimate`、用户确认"当时未实现；**P7 已补，见 §10**）；
   ② "每分支不同 salt"改为**分支名进种子**，另加公共随机数开关，用于比较不同策略时
   让各分支抽到相同事件；③ 新增 `max_events_per_step` 上限；④ 最小条件谓词（变量
   比较+技术阶段）先在此实现，P5 的 3c 树接地可复用；⑤ 冷却从分支历史推导，**没有**
@@ -552,7 +552,7 @@ perceived_stage?}`。阶段序数沿用现有 6 档，不新造枚举。
 - **验收**：`tests/test_backtest.py` 41 passed；另有 2 个 LLM 匹配器用例在本次沙箱里因缺 `fastapi`/`mini_agent.workflow` 无法运行（环境问题，
   与本改动无关，需在完整环境下复跑）。
 
-## 10. 后续计划（P6–P10，2026-10-02 立项；P6 已实施，P7–P10 尚未实施）
+## 10. 后续计划（P6–P10，2026-10-02 立项；P6、P7 已实施，P8–P10 尚未实施）
 
 来源：P5e 之后对照代码核实的遗留缺口，用户逐项确认要做（含第 5 项"跨实例落库"）。执行方式不变：**一个阶段一个阶段做，每阶段更新文档、
 按目录结构打包新增/修改文件**。每阶段开始前，若有设计分歧再给方案确认，没有则直接实施。
@@ -562,7 +562,7 @@ perceived_stage?}`。阶段序数沿用现有 6 档，不新造枚举。
 | 阶段 | 内容 | 依赖 | 理由 |
 |---|---|---|---|
 | P6 ✅ | 回测改用 `elapsed_days` / `tech_state`，补"阶段迁移时点偏差" | P3 | WP5 本身没收完；有了它才能量化 P3–P5 是否让结果更真实 |
-| P7 | `generate_scenario` 提议事件先验（LLM 提议 + 用户确认） | P4 | WP2 原计划项，P4 时改成了纯手写 |
+| P7 ✅ | `generate_scenario` 提议事件先验（LLM 提议 + 用户确认） | P4 | WP2 原计划项，P4 时改成了纯手写 |
 | P8 | `advance_lines()` 接入新机制 | P3/P4/P5 | 独立节奏因果线推进目前绕过全部新机制，是行为不一致 |
 | P9 | C8 校准率与树声明统计跨实例写入 `knowledge_base` | P1/P5c/P5d | 用户已确认跨实例落库；放在 P8 之后，让写入的数据覆盖两条推进路径 |
 | P10 | 静态 HTML 导出接入新机制 | P6–P9 | 纯展示，放最后一次性接齐 |
@@ -606,7 +606,7 @@ perceived_stage?}`。阶段序数沿用现有 6 档，不新造枚举。
   数量/命名/能否被匹配、`elapsed_days` 质量都是未知数。建议先用真实模型对已核对案例跑一次 ON/OFF，看 `tech_timing.available` 与 `n_timed` 是否有意义，再决定后续阶段。
 - **下一阶段**：P7（`generate_scenario` 提议事件先验）。
 
-### P7 — `generate_scenario` 提议事件先验（WP2 补完）
+### P7 — `generate_scenario` 提议事件先验（WP2 补完）✅ 已实施（2026-10-02）
 
 - **现状（已核实）**：`spec_generator.py` 只在判断机制开关时引用 `event_sampler`，没有任何生成先验的逻辑；先验目前全靠用户手写。
 - **做什么**：场景生成时（用户开启 `event_sampling_enabled`，或在生成界面勾选"提议外生事件先验"）让 LLM 额外提议 `event_priors`，每条标
@@ -615,6 +615,38 @@ perceived_stage?}`。阶段序数沿用现有 6 档，不新造枚举。
 - **与 P4 的关系**：不改抽样规则，只新增"来源/确认"这一层；先验仍经 `event_sampler` 既有校验（取值范围、冷却、条件谓词）。
 - **验收**：用桩 LLM 测试（提议→校验→未确认不抽样→确认后抽样）；非法提议被丢弃并记录；旧实例手写先验不受影响。
 - **风险**：LLM 提议的概率就是猜测，"确认"不能变成一键全通过——界面需逐条显示 `rate_per_year` 与理由；先验是否离谱仍只能靠 P1/P2 的体检与回测暴露。
+
+#### P7 实施记录（2026-10-02）
+
+- **核心语义**：LLM 提议的先验是**待用户确认的提议**，不是配置。`event_sampler.normalize_prior()` 新增 `confirmed`/`rationale`/`rate_range` 三个字段：
+  `source="llm_estimate"` 且没写 `confirmed` → `confirmed=False`；手写先验没写 `confirmed` → `True`（所以**旧实例与 P4 的行为逐字节不变**）。
+  `_evaluate()` 对未确认先验给状态 `unconfirmed`——**不抽样**，也不走条件/冷却；种子只含事件 id，所以确认/增删某条不会扰动别的事件的抽样值。
+- **提议规整** `sanitize_proposals()`：强制 `source=llm_estimate`、`verified=False`、`confirmed=False`、`enabled=True`（LLM 自己写的会被覆盖）；
+  丢弃并记录原因：非对象、缺 id/description、`rate_per_year` 非负数不成立、id 与已声明/本批前面的重复、**条件里 `var` 在初始 `vars` 中不存在**
+  （留着只会永远"条件未满足"、静默不起作用）、超过 `MAX_PROPOSALS=12`（占位值）。条件里的 `tech` 不检查（创建时技术节点可能还没登记）。
+- **采用** `adopt_proposals()`：向导里**勾选的才采用**，没勾 = 丢弃（不留 unconfirmed 残余）；改了频率 → `source="user_edited"`，没改保持 `llm_estimate`；
+  `verified` 始终 `False`（点选≠核实）；非法频率该条丢弃；不改入参。采用至少一条时创建的实例 `event_sampling_enabled=True` 并带上这些先验。
+- **生成路径**：开关 `settings.event_priors_proposal_enabled`（向导里的复选框，默认关，**只是生成阶段开关，不落盘**）。`generate_scenario()` 新增创建阶段输入
+  `event_priors_hint`（关闭时为空串；开启时要求 LLM 给 `event_priors`，强调"粗略估计、不要编造统计来源、没把握宁可不提"，并列出已声明 id 避免重复），
+  `generate_scenario.yaml` 与 `world_builder.yaml`（拆分创建路径）各加一行 `{event_priors_hint}`；`ScenarioDraft` 新增 `event_priors`/`event_prior_problems`；
+  **没开启却输出了 `event_priors`（LLM 自作主张）一律忽略**。`resolve_hints()` 未改，所以推进阶段的输入键集合不变。
+- **界面**（`app.py`）：向导复选框；草稿下方"🎲 AI 提议的外生事件先验"审阅块（逐条：采用复选框、可改频率、AI 自述的合理区间/理由/影响/条件；文案明确这是粗略估计、不是核对过的来源）；
+  被丢弃的提议以警告显示；换草稿（从零/按意见重新生成）时清掉旧提议的勾选与频率控件状态，避免同 id 新提议沿用"已勾选+旧频率"悄悄被采用；事件面板新增
+  "AI 提议、你还没确认（不参与抽样）"标签与来源/理由显示；设置页对已存进设置但未确认的先验给警告（确认办法：核对后在 JSON 里加 `"confirmed": true`，不要的删掉）。
+- **与原计划的偏差**：① 原计划"在设置页逐条确认"——落成**创建向导里逐条采用**（核心场景），设置页只提示未确认的并靠手改 JSON 确认，没做设置页的"一键提议"（那需要再调一次 LLM，另议）；
+  ② 原计划条件触发"用户开启 `event_sampling_enabled` 或勾选提议"——落成**只看专门的提议开关**（勾选才花这笔 token，也不隐式依赖是否已开采样）；
+  ③ 多做了条件变量校验、条数上限、`rate_range`/`rationale` 展示字段、`user_edited` 来源标记。
+- **文件**：`world_simulator/event_sampler.py`、`world_simulator/spec_generator.py`、`app.py`、`workflows/generate_scenario.yaml`、`workflows/world_builder.yaml`、
+  `tests/test_event_prior_proposals.py`（新增，22 个用例）、`tests/test_spec_and_engine.py`（逐键比对输入的旧用例同步新增键并断言默认空串）、`docs/event_sampling_guide.md`、
+  `docs/testing_guide.md`、`PROJECT.md`、本文件。
+- **验收**：全量 `external_projects/world_simulator/tests`（依赖同 P6 记录）1129 passed（P6 后 1107 + 22）；对 `event_sampler.py`/`spec_generator.py` 做了 15 个变异
+  （unconfirmed 仍抽样、llm_estimate 默认已确认、提议不强制未确认、不查条件变量、不查重复、不限条数、采用不看勾选、改频率不标 user_edited、采用后变 verified、
+  提示词始终开启、不列已有 id、关闭时不清空提议、不排除已声明 id、不传提示词，以及强制 enabled/verified/source 各一），全部被测试抓到；
+  第一轮有 1 个"不剥离 LLM 的 verified/confirmed"变异存活，原因是它与随后的强制覆盖等价，已删掉这段冗余代码。
+- **已知边界**：① 提议的频率就是 LLM 的猜测，`rationale`/`rate_range` 是它自己的说明，不是核对过的来源；"采用"是一次点选，不等于核实，所以采用后仍标"⚠️ 未核对"；
+  ② **界面没有做浏览器级目视验证**（只有静态接线检查与桩测试），控件布局/文案可能需要调整；③ **没有在真实 LLM 下运行过**：LLM 是否遵守"不编造来源"、
+  提议质量、额外 token 成本都未知；④ 提议只发生在创建阶段，已有实例想要提议需要重新走一遍（或手写）；⑤ `advance_lines()` 仍不做事件采样（P8）。
+- **下一阶段**：P8（`advance_lines()` 接入新机制）——开工前需要你确认三个设计点（时间基准、抽样 salt、快照写入点），见上文 P8 条目。
 
 ### P8 — `advance_lines()` 接入新机制
 

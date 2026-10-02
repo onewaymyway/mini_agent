@@ -4496,3 +4496,14 @@ deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
   **已知边界**：节点↔真值配对靠字面/LLM 匹配；`rescore` 覆盖不重算技术节点配对；`elapsed_days` 为 LLM 估计未夹值；A/B 两臂开关不同时时间基准可能不同（需 `--time-basis` 固定）；
   旧 `result.json` 不含新字段；**未在真实 LLM 下运行**。**下一阶段**：P7（`generate_scenario` 提议事件先验）。
 
+- 2026-10-02（第二十二轮 · P7：`generate_scenario` 提议事件先验，依据计划文档 §10 P7）：
+  **做了什么**：LLM 提议的外生事件先验是"待用户确认的提议"——`event_sampler` 新增 `confirmed`/`rationale`/`rate_range`；`source=llm_estimate` 且未确认的先验**不抽样**（状态 `unconfirmed`），
+  手写先验不写 `confirmed` 视为已确认（旧行为逐字节不变）；`sanitize_proposals()` 强制来源/未核对/未确认并丢弃非法、重复、条件引用初始 vars 中不存在字段、超过 12 条的提议；
+  `adopt_proposals()` 只采用向导里勾选的（改频率→`user_edited`，`verified` 恒 false）；`generate_scenario()` 新增创建阶段输入 `event_priors_hint`（开关 `settings.event_priors_proposal_enabled`，默认关，不落盘），
+  `generate_scenario.yaml`/`world_builder.yaml` 各加一行占位符，`ScenarioDraft` 新增 `event_priors`/`event_prior_problems`，没开启却输出的一律忽略；`app.py` 向导复选框 + 逐条审阅块 + 换草稿时清控件状态 +
+  事件面板"未确认"标签 + 设置页未确认警告。**与计划偏差**：设置页没做"一键提议"（落成创建向导里逐条采用；设置页靠手改 JSON 的 `confirmed`）；触发只看专门的提议开关。
+  **文件**：`world_simulator/event_sampler.py`、`world_simulator/spec_generator.py`、`app.py`、`workflows/generate_scenario.yaml`、`workflows/world_builder.yaml`、`tests/test_event_prior_proposals.py`（新，22 用例）、
+  `tests/test_spec_and_engine.py`（旧的逐键输入断言同步新增键）、`docs/event_sampling_guide.md`、`docs/testing_guide.md`、本文件、计划文档。
+  **测试**：全量 1129 passed（P6 后 1107 + 22）；15+3 个变异全部转红。**已知边界**：提议频率是 LLM 猜测、采用≠核实；界面无浏览器级目视验证；未在真实 LLM 下运行；提议只发生在创建阶段；
+  `advance_lines()` 仍不做事件采样。**下一阶段**：P8（`advance_lines()` 接入新机制）——开工前需确认时间基准/抽样 salt/快照写入点三个设计点。
+
