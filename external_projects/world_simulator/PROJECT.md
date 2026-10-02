@@ -4507,3 +4507,10 @@ deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
   **测试**：全量 1129 passed（P6 后 1107 + 22）；15+3 个变异全部转红。**已知边界**：提议频率是 LLM 猜测、采用≠核实；界面无浏览器级目视验证；未在真实 LLM 下运行；提议只发生在创建阶段；
   `advance_lines()` 仍不做事件采样。**下一阶段**：P8（`advance_lines()` 接入新机制）——开工前需确认时间基准/抽样 salt/快照写入点三个设计点。
 
+- **第二十二轮 P8：`advance_lines()` 接入新机制（2026-10-02，设计点已由用户确认）**：独立推进路径起也跑技术模型/外生事件采样/因果引擎（含树影响）/树接地/一致性守卫。
+  把 `advance()` 里"LLM 返回之后"的机制链原样抽到 `world_simulator/engine/mechanisms.py`，两条路径各调一次（不是复制）。**决定**：全局 `elapsed_days` = 到点各线申报跨度的最大值；事件每步抽一次、
+  `affects` 与线 id/`owned_vars` 有交集的投给对应线、为空的投给所有到点线（`delivered_to` 可审计）；多线同技术提议只采纳先到的（新增 `T10`）；目标线本步没到点的待兑现因果**挂起**（不记"到期未交代"）。
+  **默认行为变化**：一致性守卫（默认开）现在也在这条路径上写 `consistency_warnings`。**与计划偏差**：线仍不产出 `tree_updates`/`causal_links`、不处理 `triggered_relationships`，所以树只靠结构化触发条件自动迁移。
+  **文件**：`engine/mechanisms.py`（新）、`engine/advance.py`、`engine/advance_independent.py`、`causal_engine.py`（`build_hint` 新增 `ask_elapsed_override`）、`workflows/line_evolve.yaml`（1.1）、`tests/test_advance_lines_mechanisms.py`（新，33 用例）、
+  `docs/independent_line_mechanisms_guide.md`（新）及五份机制指南、`docs/README.md`、`docs/testing_guide.md`、计划文档。**测试**：全量 1163 passed（1130 + 33）；24 个变异首轮存活 4 个，补用例后全部转红。
+  **已知边界**：`elapsed_days` 是各线自报值的最大值；投给没到点线的事件不补投；挂起项占用队列名额；未在真实 LLM 下运行；未改界面。**下一阶段**：P9。

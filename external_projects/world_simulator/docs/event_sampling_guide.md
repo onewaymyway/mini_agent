@@ -131,7 +131,7 @@ LLM 不给时基准退回占位天数，精度降低。
 
 ## 已知边界
 
-- 独立推进路径 `advance_lines()` **不做**事件采样。
+- 独立推进路径 `advance_lines()` 自 P8 起也做事件采样：每步抽一次，`affects` 为空投给所有到点线，否则投给与线 id/`owned_vars` 有交集的到点线；每个事件记 `delivered_to`，投给没到点线的事件不补投（见 [`independent_line_mechanisms_guide.md`](./independent_line_mechanisms_guide.md)）。
 - 事件概率是按估计跨度算的；`elapsed_days` 不稳定会让频率偏离先验。
 - 用户在设置页保存先验会立即生效，但已写入历史的 `sampled_events` 不会被改。
 

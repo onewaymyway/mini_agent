@@ -27,6 +27,7 @@ from world_simulator.engine.background_entities import (
 from world_simulator import causal_tree, relationship
 from world_simulator import causal_engine, consistency_guard, dynamic_state, event_sampler, tech_model, tree_effects, tree_grounding
 from world_simulator.engine.causal_lines import _apply_tree_updates, _auto_register_causal_lines
+from world_simulator.engine import mechanisms
 from world_simulator.engine.errors import SimAlreadyEndedError, SimEngineError, SimPausedError
 from world_simulator.engine.ids import _read_skill_version, _skill_name_for_template
 from world_simulator.engine.knowledge import (
@@ -376,18 +377,10 @@ def advance(
 
     history_for_prompt = store.load_history(branch)
 
-    # 第二十二轮 WP1：技术种子锚定。用户在设置里写入的 `tech_state` 种子（或
-    # 中途才开启技术模型）在历史里还没有任何 `tech_state` 快照时，先把当前
-    # 工作副本提交到该分支头部——否则第一步推进后才有快照，从推进之前的
-    # 步分叉会拿到"已被推进过的技术状态"而不是种子（回滚语义失效）。只在
-    # 这一个窄条件下触发，不改变其它动态状态的既有归属规则。
-    if tech_model.is_enabled(manifest.settings) and manifest.settings.get("tech_state"):
-        _anchor = dynamic_state.latest_snapshot(history_for_prompt)
-        if (_anchor is None or "tech_state" not in _anchor) and dynamic_state.commit_working_copy(
-            store, manifest, branch
-        ):
-            history_for_prompt = store.load_history(branch)
-            current = store.load_current_state(branch) or current
+    # 第二十二轮 WP1：技术种子锚定（P8 起抽到 `engine/mechanisms.py`，逻辑不变）。
+    history_for_prompt, current = mechanisms.anchor_tech_seed(
+        store, manifest, branch, history_for_prompt, current
+    )
 
     # 第二十二轮 WP2：外生事件采样。必须在调用 LLM *之前*完成（抽中的事件是
     # 注入提示词的"既成事实"）；可复现种子=(sim_id, 分支, 步序号, salt, 事件 id)，
@@ -815,100 +808,16 @@ def advance(
     # 第二十二轮 P5c：接地裁决要知道\"本步新变为 active/resolved\"，所以在合并树更新之前留一份
     # 状态索引（只在开启时才算，关闭时零开销）。
     # P5d：树影响世界也需要这份"推进前状态"（判断"本步新变为 active"），所以它开启时同样要算。
-    _tg_before = (
-        tree_grounding.status_index(manifest.settings.get("causal_lines"))
-        if tree_grounding.is_enabled(manifest.settings) or tree_effects.is_enabled(manifest.settings)
-        else None
-    )
+    _tg_before = mechanisms.tree_status_before(manifest.settings)
     next_state.tree_updates = _apply_tree_updates(manifest, next_state, data)
 
-    # 第二十二轮 WP2：把本步抽中的事件记进状态（审计 + 下一步冷却的依据）。
-    next_state.sampled_events = sampled_events
-
-    # 第二十二轮 WP1：技术模型裁决（提议–审核）。必须在下面
-    # `dynamic_state.snapshot_if_changed()` 之前——`tech_state` 是分支作用域
-    # 动态状态，快照要包含这一步的推进/迁移结果。未开启时整段是空操作，
-    # 不产生任何新字段（`SimState.to_dict()` 对空值不输出）。
-    # `elapsed_days` 也服务于外生事件采样（WP2：下一步的事件概率用最近几步的跨度
-    # 估计），所以两个功能任一开启都记录它；技术裁决本身仍只在技术模型开启时跑。
-    if (
-        tech_model.is_enabled(manifest.settings)
-        or event_sampler.is_enabled(manifest.settings)
-        or causal_engine.needs_elapsed(manifest.settings)
-        or relationship.needs_elapsed(manifest.settings.get("relationships"))
-    ):
-        next_state.elapsed_days = tech_model.normalize_reported_elapsed(data.get("elapsed_days"))
-    if tech_model.is_enabled(manifest.settings):
-        # 修复调用（P5b，独立 opt-in `tech_repair_enabled`）需要"本步开始前"的技术状态用来回滚重裁，
-        # 所以只在开启时才拷贝，关闭时零开销、不走任何新分支。
-        _pre_tech_state = (
-            copy.deepcopy(manifest.settings.get("tech_state")) if tech_model.repair_enabled(manifest.settings) else None
-        )
-        next_state.tech_updates, next_state.tech_violations = tech_model.safe_apply_step(
-            manifest.settings,
-            data.get("tech_updates"),
-            step=next_state.step,
-            elapsed_days_raw=data.get("elapsed_days"),
-        )
-        if tech_model.repair_enabled(manifest.settings) and tech_model.repairable_violations(
-            next_state.tech_violations
-        ):
-            (
-                next_state.tech_updates,
-                next_state.tech_violations,
-                next_state.tech_repair,
-            ) = safe_repair_tech_step(
-                cfg,
-                workspace_root,
-                manifest.settings,
-                pre_tech_state=_pre_tech_state,
-                proposals=data.get("tech_updates"),
-                elapsed_days_raw=data.get("elapsed_days"),
-                step=next_state.step,
-                audit=next_state.tech_updates,
-                violations=next_state.tech_violations,
-                narrative_hint=str(data.get("narrative", "") or data.get("next_summary", "") or ""),
-            )
-
-    # 第二十二轮 WP3 / P5c：因果树接地（前置强制 / 互斥组 / 结构化触发条件）。必须在技术裁决之后
-    # （条件可能读 `tech_state`）、因果引擎入队之前（自动迁移要能被\"树分支 active\"触发源看到）、
-    # 快照之前。降级/自动迁移的结果写回 `manifest.settings`，并同步修正本步 `tree_updates` 审计
-    # 里的实际状态；未开启时整段是空操作。
-    if _tg_before is not None and tree_grounding.is_enabled(manifest.settings):
-        _tg_lines, _tg_audit, next_state.tree_grounding = tree_grounding.safe_enforce_step(
-            manifest.settings.get("causal_lines"),
-            _tg_before,
-            vars_=next_state.vars,
-            settings=manifest.settings,
-            step=next_state.step,
-            tree_updates=next_state.tree_updates,
-            auto=tree_grounding.auto_transition_enabled(manifest.settings),
-        )
-        if next_state.tree_grounding:
-            manifest.settings = {**manifest.settings, "causal_lines": _tg_lines}
-            next_state.tree_updates = _tg_audit
-
-    # 第二十二轮 WP3 / P5a：因果引擎。先处置 LLM 对*上一步遗留*待兑现项的回报，再把本步
-    # 源头有进展的边入队（顺序不能反：本步新入队的项不该被本步回报处置）。必须在下面
-    # `dynamic_state.snapshot_if_changed()` 之前——`causal_pending` 是分支作用域动态状态。
-    # 未开启时整段是空操作，不产生任何新字段、不碰 `settings`。
-    if causal_engine.is_enabled(manifest.settings):
-        _cpending = manifest.settings.get("causal_pending")
-        _cpending, next_state.effect_dispositions, _disp_violations = causal_engine.safe_apply_dispositions(
-            manifest.settings, _cpending, data.get("effect_dispositions"),
-            history=history_for_prompt, step=next_state.step,
-        )
-        _cpending, next_state.causal_queued, _queue_violations = causal_engine.safe_queue_effects(
-            manifest.settings, _cpending, next_state,
-        )
-        # 第二十二轮 P5d：本步新激活的树分支声明的影响（`effects_if_active`）入队，与边入队共用队列上限；
-        # 在边入队之后、接地之后（看到的是降级后的树）。需要 `tree_effects_enabled`，否则空操作。
-        _cpending, _tree_queued, _tree_violations = tree_effects.safe_queue_tree_effects(
-            manifest.settings, _cpending, next_state, _tg_before, manifest.settings.get("causal_lines"),
-        )
-        next_state.causal_queued = next_state.causal_queued + _tree_queued
-        next_state.causal_violations = _disp_violations + _queue_violations + _tree_violations
-        manifest.settings = {**manifest.settings, "causal_pending": _cpending}
+    # 第二十二轮 WP1–WP3（P8 起抽到 `engine/mechanisms.py`，与 `advance_lines()` 共用）：事件落状态 →
+    # `elapsed_days` → 技术裁决（+可选修复）→ 树接地 → 因果处置/入队 → 树影响入队。必须在下面
+    # `snapshot_and_check()` 之前（这些都是分支作用域动态状态，快照要包含这一步的结果）。
+    mechanisms.apply_post_llm(
+        cfg, workspace_root, manifest, next_state, data,
+        history=history_for_prompt, tg_before=_tg_before, sampled_events=sampled_events,
+    )
 
     # 4.10 节（阶段三十三第五批）：把这一批 options 共享的决策背景
     # 收纳进一个精简容器（`decision_opportunity`），必须在上面
@@ -941,19 +850,7 @@ def advance(
     # 上面所有对这两类状态的修改之后、`append_state()` 之前计算——快照
     # 要包含这一步的入队/树更新结果。`history_for_prompt` 是推进前的
     # 该分支历史，用来找上一份快照做变化判断。
-    next_state.dynamic_snapshot = dynamic_state.snapshot_if_changed(
-        manifest.settings, history_for_prompt
-    )
-
-    # 第二十二轮 WP4：结构性一致性检查，只记录不阻断、不改数值；出错或
-    # 关闭时返回空列表（`safe_check_step` 内部兜底）。
-    next_state.consistency_warnings = consistency_guard.safe_check_step(
-        history_for_prompt,
-        next_state,
-        manifest.settings,
-        tree_before=tree_before,
-        tree_after=manifest.settings.get("causal_lines"),
-    )
+    mechanisms.snapshot_and_check(manifest, next_state, history_for_prompt, tree_before=tree_before)
 
     store.append_state(next_state, branch=branch)
 

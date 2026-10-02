@@ -133,7 +133,7 @@
 - 只看"源头有进展"，不看进展的方向/幅度。
 - LLM 可能无视协议：不给 `effect_dispositions` 时，到期项会累计"未被交代"并最终自动结案——
   这会被量化，但不会被消除。
-- `advance_lines()` 独立推进路径不入队、不处置。
+- `advance_lines()` 独立推进路径自 P8 起也入队、处置：待兑现项只交给目标线交代，目标线本步没到点则挂起（不记"到期未交代"）；线不产出 `causal_links`/`tree_updates`（见 [`independent_line_mechanisms_guide.md`](./independent_line_mechanisms_guide.md)）。
 - 开启后每步可能多写一份完整快照（`causal_pending` 变化时），历史文件会变大。
 - 未在真实 LLM 与真实看板下验证（界面只做了 `streamlit.testing.AppTest` 冒烟）。
 

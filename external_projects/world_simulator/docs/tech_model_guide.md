@@ -114,8 +114,8 @@ LLM 在登记新节点时给出的 `typical_dwell_days` 会标 `dwell_source: ll
 
 ## 已知边界
 
-- `advance_lines()`（独立因果线推进）**不跑**技术模型：开了 `independent_line_advance` 的实例，
-  技术状态不随时间前进。
+- `advance_lines()`（独立因果线推进）自 P8 起也跑技术模型：各到点的线申报 `elapsed_days`（取最大值）和 `tech_updates`（同一技术多线提议只采纳先到的，其余记 `T10`）。
+  细节与边界见 [`independent_line_mechanisms_guide.md`](./independent_line_mechanisms_guide.md)。
 - 保存设置里的"技术节点"会**覆盖**当前技术状态（含进度）。
 - 拆分模式（`split_decision_calls`）下，`{tech_state_hint}` 喂给 `world_evolve`，`elapsed_days`/`tech_updates` 由它输出（有端到端测试）。
 - 回测框架（WP5）自 P6 起用 `elapsed_days` 累加候选时间、用 `tech_state` 快照还原各技术阶段的到达时点，算"阶段迁移时点偏差"（见 `docs/backtest_guide.md` §时间基准与阶段迁移时点偏差）。只有开启 `tech_model_enabled` 的运行才有 `tech_state`，否则该指标为"无数据"。

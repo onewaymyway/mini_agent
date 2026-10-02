@@ -73,7 +73,7 @@
 - 引擎无法判断 `trigger_condition` 写得对不对；LLM 写的条件是猜测，不是事实。
 - LLM 直接标 `resolved` 而前置未满足不拦截（只有 C3 对 `active` 告警）。
 - 降级会造成"叙事说已激活、引擎说仍是 emerging"的错位，只能记录不能消除。
-- 只看顶层分支；`advance_lines()` 独立推进路径不跑本模块。
+- 只看顶层分支；`advance_lines()` 独立推进路径自 P8 起也跑本模块，但线不产出 `tree_updates`，所以只有结构化 `trigger_condition` 的自动迁移会生效，提示词也没喂给线（见 [`independent_line_mechanisms_guide.md`](./independent_line_mechanisms_guide.md)）。
 - 账本样本通常很少；`likelihood` 是主观档位，不是概率；只覆盖 WP0 之后写入快照的步。
 - **没有在真实 LLM 下验证**（LLM 是否会填 `trigger_condition`、是否遵守协议、降级频率均未知）。
 - `app.py` 只做了 `streamlit.testing.AppTest` 冒烟，设置页保存流程未实跑。

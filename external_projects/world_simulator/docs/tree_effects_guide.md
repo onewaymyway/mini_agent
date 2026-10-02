@@ -59,7 +59,7 @@
 ## 已知边界（如实）
 
 - 引擎**无法验证**声明是否合理，也无法验证 `realized` 是否真的写进了状态——统计是 LLM 自报。
-- 只看顶层分支；`advance_lines()` 独立推进路径不入队；不追溯（开启前已 active 的分支不补入队）。
+- 只看顶层分支；`advance_lines()` 独立推进路径自 P8 起也入队（仅在分支被树接地自动迁移为 active 时触发，因为线不产出 `tree_updates`）；不追溯（开启前已 active 的分支不补入队）。
 - 树边统计不回写 `knowledge_base`（`causal_engine.kb_outcomes` 只认 `declared_causal_graph` 里的边；
   树声明是实例内的假设）。
 - **从第 0 步（种子步，没有快照）分叉时，新分支沿用当前工作副本**，其中包含主线已排的待兑现项与树状态——

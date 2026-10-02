@@ -32,6 +32,11 @@ advance_every_n_steps == 0`，用线自己的 `local_step` 而不是全局
   建议先在 `life_sim` 模板小范围人工验证（3~5 次真实多因果线模拟）
   确认"错峰调用"不会让体验割裂，再考虑要不要推广，这是一条建议给
   真实使用时的节奏，本模块的实现本身不限制具体使用哪个模板。
+
+**第二十二轮 P8**：本路径起也跑技术模型/外生事件采样/因果引擎/树接地/一致性守卫，与 `advance()` 共用
+`engine/mechanisms.py` 里的步骤函数（不是复制）。四个决定：全局 `elapsed_days` = 到点各线申报跨度的最大值；
+事件每步抽一次、按 `affects`（线 id 或 `owned_vars`）投放；多线同技术提议只采纳先到的（`T10`）；目标线本步没到点的
+待兑现因果挂起。线仍不产出 `tree_updates`/`causal_links`。详见 `docs/independent_line_mechanisms_guide.md`。
 """
 
 from __future__ import annotations
@@ -40,7 +45,10 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
-from world_simulator import dynamic_state
+import copy
+
+from world_simulator import consistency_guard, event_sampler, tech_model
+from world_simulator.engine import mechanisms
 from world_simulator.engine.errors import (
     OwnedVarsOverlapError,
     SimAlreadyEndedError,
@@ -126,6 +134,10 @@ def advance_lines(cfg, workspace_root: Path, data_dir: Path, sim_id: str) -> Sim
     if current is None:
         raise SimEngineError(f"模拟实例缺少当前状态，数据可能已损坏：{sim_id}")
 
+    # P8：与 `advance()` 共用的技术种子锚定；历史也提前读（原来在落盘前才读，内容相同）。
+    history = store.load_history(branch)
+    history, current = mechanisms.anchor_tech_seed(store, manifest, branch, history, current)
+
     causal_lines = [
         dict(x) for x in (manifest.settings.get("causal_lines") or []) if isinstance(x, dict)
     ]
@@ -147,6 +159,22 @@ def advance_lines(cfg, workspace_root: Path, data_dir: Path, sim_id: str) -> Sim
     line_updates: Dict[str, Dict[str, Any]] = {}
     narrative_parts: List[str] = []
     advanced_line_ids: set = set()
+
+    # P8：新机制（技术模型/事件采样/因果引擎/树接地/一致性守卫）。没有任何线到点的空推进里世界没有前进，
+    # 所以不抽样、不裁决（与 P8 之前一致）；机制全关时下面所有分支都是空操作。
+    owned_ids = mechanisms.owned_line_ids(causal_lines)
+    due_ids = {str(line["id"]).strip() for line in due_lines}
+    sampled_events: List[Dict[str, Any]] = []
+    line_outputs: List[Any] = []
+    if due_lines:
+        sampled_events = event_sampler.safe_sample_step(
+            manifest.settings, history, current.vars,
+            sim_id=sim_id, branch=branch, step=current.step + 1,
+        )
+        mechanisms.annotate_event_delivery(sampled_events, due_lines)
+    mech_on = bool(due_lines) and (
+        mechanisms.any_mechanism_enabled(manifest.settings) or mechanisms.needs_elapsed(manifest.settings)
+    )
 
     if due_lines:
         from mini_agent.workflow.runner import WorkflowRunner
@@ -187,6 +215,11 @@ def advance_lines(cfg, workspace_root: Path, data_dir: Path, sim_id: str) -> Sim
                 "line_label": label,
                 "line_local_step": str(local_step),
                 "line_owned_vars_json": json.dumps(owned_vars_snapshot, ensure_ascii=False),
+                # P8：本条线的机制提示（事件/技术/待兑现因果/时间跨度）；机制全关时为空串。
+                "line_mechanism_hint": mechanisms.build_line_hint(
+                    manifest.settings, history, current.step + 1,
+                    line=line, events=sampled_events, owned_ids=owned_ids,
+                ) if mech_on else "",
             }
 
             result = runner.run(wf, inputs)
@@ -228,6 +261,11 @@ def advance_lines(cfg, workspace_root: Path, data_dir: Path, sim_id: str) -> Sim
                 narrative_parts.append(f"[{label}] {narrative}")
 
             entry: Dict[str, Any] = {"summary": summary, "advanced": True}
+            if mech_on:
+                line_outputs.append((line_id, data))
+                _days = tech_model.normalize_reported_elapsed(data.get("elapsed_days"))
+                if _days is not None and mechanisms.needs_elapsed(manifest.settings):
+                    entry["elapsed_days"] = _days  # 这条线自己申报的跨度（全局步长取各线最大值）
             trend = data.get("trend")
             if trend in ("accelerating", "steady", "decelerating", "reversing"):
                 entry["trend"] = trend
@@ -267,12 +305,28 @@ def advance_lines(cfg, workspace_root: Path, data_dir: Path, sim_id: str) -> Sim
         line_updates=line_updates,
     )
 
-    # 第二十二轮 WP0：`local_step` 推进改动了 `causal_lines`，同样按
-    # 分支写快照（见 `dynamic_state.py`）。这里只在落盘前多读一次历史
-    # 用于变化判断，不影响推进逻辑。
-    next_state.dynamic_snapshot = dynamic_state.snapshot_if_changed(
-        manifest.settings, store.load_history(branch)
+    # P8：与 `advance()` 共用的机制链。顺序与主路径一致：事件落状态 → elapsed_days → 技术裁决 →
+    # 树接地 → 因果处置/入队 → 树影响入队，最后才是快照与一致性守卫。本路径的线不产出 `tree_updates`
+    # （树的状态迁移只来自树接地的结构化触发条件），也不处理 `triggered_relationships`。
+    tree_before = (
+        copy.deepcopy(manifest.settings.get("causal_lines"))
+        if consistency_guard.is_enabled(manifest.settings)
+        else None
     )
+    if mech_on:
+        _tg_before = mechanisms.tree_status_before(manifest.settings)
+        merged, merge_notes, _reported = mechanisms.merge_line_outputs(line_outputs)
+        mechanisms.apply_post_llm(
+            cfg, workspace_root, manifest, next_state, merged,
+            history=history, tg_before=_tg_before, sampled_events=sampled_events,
+            hold_out_pending=mechanisms.hold_out_predicate(owned_ids, due_ids),
+        )
+        if merge_notes and tech_model.is_enabled(manifest.settings):
+            next_state.tech_violations = list(next_state.tech_violations or []) + merge_notes
+
+    # 第二十二轮 WP0：`local_step` 推进改动了 `causal_lines`、机制又改了技术/待兑现状态，同样按分支写快照
+    # （见 `dynamic_state.py`），随后跑一致性守卫（P8 起独立推进路径也有）。
+    mechanisms.snapshot_and_check(manifest, next_state, history, tree_before=tree_before)
 
     store.append_state(next_state, branch=branch)
     manifest.current_step = next_state.step

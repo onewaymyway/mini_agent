@@ -12,7 +12,7 @@ description: >-
   步骤的 `skill_name` 按 `template` 输入动态改写为
   `<template>-template`，复用场景模板既有的叙事风格约定，不需要为
   独立推进单独维护一套 skill。
-version: "1.0"
+version: "1.1"
 steps:
   - id: line_evolve
     name: 独立推进一条因果线
@@ -63,3 +63,5 @@ steps:
       不要输出 `options` 字段）；也不要输出/推测任何不在"独占的变量
       子集"里的字段——即使你能从 `current_summary` 猜到全局其它字段
       大概是什么，这次调用也不应该改动它们。
+
+      {line_mechanism_hint}

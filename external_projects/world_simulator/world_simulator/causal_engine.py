@@ -367,7 +367,7 @@ _ELAPSED_ASK = (
 
 
 def build_hint(
-    settings: Optional[Dict[str, Any]], history: List[Any], step: int
+    settings: Optional[Dict[str, Any]], history: List[Any], step: int, *, ask_elapsed_override: Optional[bool] = None
 ) -> str:
     """喂给 `advance_step`/`world_evolve` 的 `{causal_pending_hint}`。未开启、或既没有到期项
     也不需要索要 `elapsed_days` 时返回空字符串（此时 prompt 与未开启时逐字节等价）。"""
@@ -379,6 +379,8 @@ def build_hint(
         needs_elapsed(settings)
         and not (tech_model.is_enabled(settings) or event_sampler.is_enabled(settings))
     )
+    if ask_elapsed_override is not None:  # P8：独立推进路径自己写"这条线的跨度"那句，不要重复索要
+        ask_elapsed = ask_elapsed_override
     if not due:
         return _ELAPSED_ASK if ask_elapsed else ""
     stats = edge_stats(history)
