@@ -8,9 +8,10 @@
   check <case>                       校验案例并打印引擎将看到的（别名化+平移后的）
                                      意图与真值，**不调用 LLM、不写任何数据**——
                                      跑之前先用它核对案例。
-  run <case> [--steps N] [--matcher rule|llm] [--set k=v ...]
+  run <case> [--steps N] [--matcher rule|llm] [--set k=v ...] [--time-basis auto|years_per_step]
                                      跑一次回测（真实 LLM 调用，成本 ≈ 步数）。
   ab <case> --arm-b k=v [--arm-b k=v ...] [--repeats R] [--matcher rule|llm]
+            [--time-basis auto|years_per_step]
                                      同一案例 A（不改设置）/B（覆盖设置）各重复 R
                                      次，输出指标分布对比（成本 ≈ 2×R×步数）。
   rescore <result.json> --override 真值id=候选id|none [...]
@@ -66,6 +67,17 @@ def _print_metrics(result: Dict[str, Any]) -> None:
     print(f"  区间误差 {_fmt(ie['mean_abs_years'])} 年（带符号 {_fmt(ie['mean_signed_years'])}，正=引擎更慢）  "
           f"前置违反 {m['prerequisite_violations']['violations']}/{m['prerequisite_violations']['checked']}  "
           f"阶段一致 {_fmt(m['stage']['agreement'])}")
+    tb = result.get("time_basis") or {}
+    if tb:
+        print(f"  时间基准：{tb.get('basis_used')}（{tb.get('reported_steps')}/{tb.get('total_steps')} 步有 elapsed_days）"
+              f" · 模拟跨度 {_fmt(result.get('horizon_years'))} 年")
+    tt = m.get("tech_timing") or {}
+    if tt.get("available"):
+        print(f"  阶段迁移时点偏差 {_fmt(tt['mean_abs_years'])} 年（带符号 {_fmt(tt['mean_signed_years'])}，正=引擎更慢）  "
+              f"可计时 {tt['n_timed']} · 起点已在 {tt['n_initial']} · 未到达 {tt['n_not_reached']}  "
+              f"阶段到达率 {_fmt(tt['stage_reached_rate'])}")
+    elif tt:
+        print(f"  阶段迁移时点偏差：无数据（{tt.get('reason')}）")
     print(f"  结构性告警（WP4）：{result['structural_health']['warning_counts'] or '无'}")
     for c in result["caveats"]:
         print(f"  ※ {c}")
@@ -92,11 +104,15 @@ def main() -> int:
     p.add_argument("--matcher", choices=["rule", "llm"], default="rule")
     p.add_argument("--set", dest="sets", action="append", default=[])
     p.add_argument("--label", default="run")
+    p.add_argument("--time-basis", dest="time_basis", choices=["auto", "years_per_step"], default=None,
+                   help="候选时间基准：auto（有 elapsed_days 的步用它）/ years_per_step（忽略 elapsed_days）；默认取案例声明")
 
     p = sub.add_parser("ab")
     p.add_argument("case")
     p.add_argument("--arm-b", dest="arm_b", action="append", required=True)
     p.add_argument("--repeats", type=int, default=3)
+    p.add_argument("--time-basis", dest="time_basis", choices=["auto", "years_per_step"], default=None,
+                   help="两臂开关不同时 elapsed_days 可能只出现在一臂，用 years_per_step 固定到同一基准")
     p.add_argument("--steps", type=int, default=None)
     p.add_argument("--matcher", choices=["rule", "llm"], default="rule")
 
@@ -141,7 +157,8 @@ def main() -> int:
             out = bt.default_out_dir(REPORTS_DIR, case.id, args.label)
             result = bt.run_case(case, cfg=cfg, workspace_root=PROJECT_ROOT, out_dir=out,
                                  matcher=matcher, steps=args.steps,
-                                 settings_override=_parse_kv(args.sets), label=args.label)
+                                 settings_override=_parse_kv(args.sets), label=args.label,
+                                 time_basis=args.time_basis)
             _print_metrics(result)
             print(f"结果：{out / 'result.json'}")
             return 0
@@ -149,7 +166,9 @@ def main() -> int:
         out = bt.default_out_dir(REPORTS_DIR, case.id, "ab")
         report = bt.run_ab(case, cfg=cfg, workspace_root=PROJECT_ROOT, out_root=out,
                            arms={"A": {}, "B": _parse_kv(args.arm_b)}, repeats=args.repeats,
-                           matcher=matcher, steps=args.steps)
+                           matcher=matcher, steps=args.steps, time_basis=args.time_basis)
+        if report.get("time_basis_warning"):
+            print(f"⚠ {report['time_basis_warning']}")
         for arm, stats in report["arms"].items():
             print(f"臂 {arm}（{stats['_runs']} 次，中途终止 {stats['_aborted_runs']} 次）")
             for name, s in stats.items():

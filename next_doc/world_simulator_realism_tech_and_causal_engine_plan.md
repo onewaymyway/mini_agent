@@ -1,6 +1,6 @@
 # world_simulator 改进计划（第二十二轮）：让技术/事物发展更真实、因果树可执行可校验
 
-> **状态（2026-10-02 更新）：P0–P5e 已全部实施完毕（未在真实 LLM 下验证）；后续补完阶段 P6–P10 已立项并排期，见文末 §10（尚未实施）。**
+> **状态（2026-10-02 更新）：P0–P5e 已全部实施完毕（未在真实 LLM 下验证）；后续补完阶段 P6–P10 见文末 §10：**P6 已实施（2026-10-02）**，P7–P10 尚未实施。**
 > 已完成：**P0（WP0 分支隔离）**、**P1（WP4 一致性守卫+真实性体检）**、**P2（WP5 回测框架）**、**P3（WP1 技术模型 + `elapsed_days`）**、**P4（WP2 外生事件采样）**、**P5a（WP3 的 3a 边升级 + 3b 待兑现因果队列）**、**P5b（§8 三个确认项落地：关系延迟改 elapsed、兑现统计回写知识库、技术违规修复调用）**、**P5c（WP3 的 3c 树接地）**、**P5d（WP3 的 3d 树影响世界）**、**P5e（WP3 的 3e 界面收尾：因果图着色/兑现率/到期时间线）**，详见文末 §9。**WP0–WP5 的原定阶段全部实施完毕；WP5/WP2/WP3 的遗留补完与收尾列为 P6–P10（§10）。**
 > 本文只依据阅读代码得出结论，没有跑过真实 LLM，也没有在运行时复现
 > 下文 §2.4 之外的缺陷——每一条"现状"都标注了代码位置，"推断"会明说。
@@ -386,10 +386,10 @@ perceived_stage?}`。阶段序数沿用现有 6 档，不新造枚举。
   （召回/精确/Kendall τ-b/区间误差/前置违反/阶段一致率）；对账写入
   `reality_checks.jsonl`；匹配结果可由用户覆盖（`rescore`）；A/B 只给分布。
 - **与 §4 WP5 的偏离/细化**：① 默认匹配器是规则匹配（零成本可复现），LLM
-  匹配需 `--matcher llm`，两者分数不要混比；② "阶段迁移时点偏差"需要 WP1 的
+  匹配需 `--matcher llm`，两者分数不要混比；② "阶段迁移时点偏差"（P6 已补，见 §10）需要 WP1 的
   `tech_state`，本阶段只做阶段**一致率**；③ 没有登记进 `project.yaml`（长时间
   按步数计费的 LLM 调用，手动运行）；④ 候选时间用案例声明的 `years_per_step`
-  近似，等 `elapsed_days` 落地后改用引擎记录的跨度。
+  近似，等 `elapsed_days` 落地后改用引擎记录的跨度（P6 已改，见 §10）。
 - **验收**：`pytest tests/` 805 passed（P1 后基线 762，新增 43）；变异验证
   （别名顺序/前置判定/范围边界）各有用例转红。
 - **已知边界**：**没有在真实 LLM 下运行过**（涌现里程碑数量、匹配质量、成本
@@ -424,7 +424,7 @@ perceived_stage?}`。阶段序数沿用现有 6 档，不新造枚举。
   成本未知）；默认数值是占位值；LLM 典型时长"未验证"；`advance_lines()` 独立推进路径
   不跑技术模型；开启后每步写完整快照、历史文件变大；叙事与引擎状态的错位无法消除只能量化；
   设置页保存"技术节点"会覆盖当前技术状态；回测框架尚未改用 `elapsed_days`/`tech_state`
-  （"阶段迁移时点偏差"未做）。
+  （"阶段迁移时点偏差"未做；P6 已补，见 §10）。
 - **下一阶段**：P4 / WP2（外生事件采样，依赖 `elapsed_days`，已就绪）。开始前建议你
   确认：① `delay_steps` 推迟到 P5 是否接受；② 是否需要修复调用（§8 第 3 问）。
 
@@ -552,7 +552,7 @@ perceived_stage?}`。阶段序数沿用现有 6 档，不新造枚举。
 - **验收**：`tests/test_backtest.py` 41 passed；另有 2 个 LLM 匹配器用例在本次沙箱里因缺 `fastapi`/`mini_agent.workflow` 无法运行（环境问题，
   与本改动无关，需在完整环境下复跑）。
 
-## 10. 后续计划（P6–P10，2026-10-02 立项，**尚未实施**）
+## 10. 后续计划（P6–P10，2026-10-02 立项；P6 已实施，P7–P10 尚未实施）
 
 来源：P5e 之后对照代码核实的遗留缺口，用户逐项确认要做（含第 5 项"跨实例落库"）。执行方式不变：**一个阶段一个阶段做，每阶段更新文档、
 按目录结构打包新增/修改文件**。每阶段开始前，若有设计分歧再给方案确认，没有则直接实施。
@@ -561,13 +561,13 @@ perceived_stage?}`。阶段序数沿用现有 6 档，不新造枚举。
 
 | 阶段 | 内容 | 依赖 | 理由 |
 |---|---|---|---|
-| P6 | 回测改用 `elapsed_days` / `tech_state`，补"阶段迁移时点偏差" | P3 | WP5 本身没收完；有了它才能量化 P3–P5 是否让结果更真实 |
+| P6 ✅ | 回测改用 `elapsed_days` / `tech_state`，补"阶段迁移时点偏差" | P3 | WP5 本身没收完；有了它才能量化 P3–P5 是否让结果更真实 |
 | P7 | `generate_scenario` 提议事件先验（LLM 提议 + 用户确认） | P4 | WP2 原计划项，P4 时改成了纯手写 |
 | P8 | `advance_lines()` 接入新机制 | P3/P4/P5 | 独立节奏因果线推进目前绕过全部新机制，是行为不一致 |
 | P9 | C8 校准率与树声明统计跨实例写入 `knowledge_base` | P1/P5c/P5d | 用户已确认跨实例落库；放在 P8 之后，让写入的数据覆盖两条推进路径 |
 | P10 | 静态 HTML 导出接入新机制 | P6–P9 | 纯展示，放最后一次性接齐 |
 
-### P6 — 回测改用引擎记录的时间与技术状态（WP5 补完）
+### P6 — 回测改用引擎记录的时间与技术状态（WP5 补完）✅ 已实施（2026-10-02）
 
 - **现状（已核实）**：`backtest.py` 候选时间 = `start_year + step × years_per_step`（模块 docstring 与结果里都标了"近似"），`elapsed_days`/`tech_state`
   在该文件中没有任何引用；"阶段迁移时点偏差"（原 §4 WP5 的指标）因此没做，只有阶段一致率。
@@ -577,6 +577,34 @@ perceived_stage?}`。阶段序数沿用现有 6 档，不新造枚举。
   （`tech_model_enabled` 等）由案例 `settings:` 声明（目前只能靠 CLI 传），保证 ON/OFF 对照可复现。
 - **验收**：补用例（有/无 `elapsed_days` 两条路径、降级标注、迁移时点偏差计算、跨度判定）；变异验证；既有回测用例仍绿。
 - **风险/边界**：`elapsed_days` 是 LLM 估计值；没开技术模型的运行没有 `tech_state`，迁移偏差为空（不是 0）；仍无真实 LLM 验证。
+
+#### P6 实施记录（2026-10-02）
+
+- **候选时间**：新增 `backtest.build_timeline()`——`SimState.elapsed_days` 是该步自己的跨度，有合法值（正、有限、非 bool）的步累加 `/365.25`，
+  缺失的步按 `years_per_step` 补，历史有空洞时被跳过的步也按近似补；`basis_used` 由数据决定（`elapsed_days` / `mixed` / `years_per_step`），
+  `caveats` 随之变化（不再无条件写"由 years_per_step 近似"）。模拟跨度（决定哪些真值算"范围内"）同样按累计时间算——**这会改变开启
+  技术模型/事件采样的运行的召回分母**，是预期行为。`result.json` 新增 `time_basis`、`timeline`、`horizon_years`。
+- **阶段迁移时点偏差**：新增 `extract_tech_nodes()`（从 `dynamic_snapshot["tech_state"]` 快照链还原各节点各阶段到达时点，kind =
+  `initial` 起点已在/不计时、`registered` 起点后登记、`transition` 观测到上升；快照缺失沿用上一份；倒退不改已到达阶段）与
+  `score_tech_timing()`（带 `stage` 且匹配到节点的真值：可计时配对以第一个为原点算间隔偏差，口径同 `interval_error`；另计
+  `n_initial`/`n_not_reached`/`n_out_of_horizon`/`stage_reached_rate`；无节点 → `available=False`）。节点↔真值用与里程碑**同一个匹配器**
+  配对；没有节点就不多调一次匹配器（LLM 匹配器不多花钱）。里程碑候选集**不含**技术节点，所以不改变既有召回/精确/τ 的定义。
+- **A/B**：`_METRIC_PATHS` 新增 `tech_timing_mean_abs_years`、`tech_stage_reached_rate`；`compare_arms` 记录每臂的时间基准，**基准不一致时
+  给 `time_basis_warning`**。新增案例字段与 CLI 参数 `time_basis: auto|years_per_step`（`--time-basis`），把两臂固定到同一基准。
+- **与原计划的偏差**：① 原计划⑤"案例 `settings:` 声明开关"——核实后 `start.settings` 早已存在并被 `run_case` 使用，故没有重复实现，改为新增
+  `time_basis`；② 原计划写"报告里标注时间精度降级"——落成 `time_basis.basis_used`/`reported_steps/total_steps` + 动态 `caveats`，没有单独的"降级"标记；
+  ③ 原计划只提阶段迁移偏差，落地时多了 `stage_reached_rate` 与三个状态计数（否则"没到该阶段"会被静默丢掉）。
+- **文件**：`world_simulator/backtest.py`、`entrypoints/backtest.py`、`tests/test_backtest_p6.py`（新增，29 个用例）、`docs/backtest_guide.md`、
+  `docs/tech_model_guide.md`、`docs/testing_guide.md`、`PROJECT.md`、本文件。
+- **验收**：全量 `external_projects/world_simulator/tests` 在装齐依赖（`fastapi`/`streamlit`/`httpx`/`json_repair`，且 `mini_agent` 在 `PYTHONPATH`）后
+  1107 passed（基线 1078 + 29）；对 `backtest.py` 做了 14 个变异（时间线忽略 elapsed、缺失步不补、强制基准失效、initial 也计时、符号取反、
+  范围外算未到达、horizon 用旧口径、rescore 丢 tech_timing、A/B 不警告、快照不沿用、无节点也调匹配器、倒退擦掉到达、到达率分母漏未到达、
+  候选时间不用 timeline），全部被测试抓到。
+- **已知边界**：① 节点↔真值的配对是字面匹配或 LLM 语义匹配，配不上的真值不进入该指标；② `rescore` 的覆盖只作用于里程碑候选，技术节点配对原样保留；
+  ③ `elapsed_days` 是 LLM 估计，回测不像技术模型那样夹值；④ `elapsed_days` 只在开启技术模型/事件采样/因果引擎时才有，**A/B 两臂开关不同则时间基准可能不同**
+  （已加警告，但需要使用者主动选 `--time-basis`）；⑤ P6 之前的 `result.json` 不含新字段，`rescore` 退回旧口径；⑥ **没有在真实 LLM 下运行过**——涌现的技术节点
+  数量/命名/能否被匹配、`elapsed_days` 质量都是未知数。建议先用真实模型对已核对案例跑一次 ON/OFF，看 `tech_timing.available` 与 `n_timed` 是否有意义，再决定后续阶段。
+- **下一阶段**：P7（`generate_scenario` 提议事件先验）。
 
 ### P7 — `generate_scenario` 提议事件先验（WP2 补完）
 

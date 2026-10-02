@@ -118,7 +118,7 @@ LLM 在登记新节点时给出的 `typical_dwell_days` 会标 `dwell_source: ll
   技术状态不随时间前进。
 - 保存设置里的"技术节点"会**覆盖**当前技术状态（含进度）。
 - 拆分模式（`split_decision_calls`）下，`{tech_state_hint}` 喂给 `world_evolve`，`elapsed_days`/`tech_updates` 由它输出（有端到端测试）。
-- 回测框架（WP5）尚未改用 `elapsed_days` 和 `tech_state` 算"阶段迁移时点偏差"——见 PROJECT.md 已知边界，留待后续。
+- 回测框架（WP5）自 P6 起用 `elapsed_days` 累加候选时间、用 `tech_state` 快照还原各技术阶段的到达时点，算"阶段迁移时点偏差"（见 `docs/backtest_guide.md` §时间基准与阶段迁移时点偏差）。只有开启 `tech_model_enabled` 的运行才有 `tech_state`，否则该指标为"无数据"。
 - 默认违规策略是"降级 + 记录"；修复调用见下方"修复调用（P5b，opt-in）"。
 
 ## 修复调用（P5b，opt-in）

@@ -30,8 +30,8 @@ ON/OFF 下各重复几次，比较指标分布——这是后续技术模型/事
   该真值属于"范围外"、不计入召回，永远测不到。原示例草稿有此缺陷（互联网案例 8 步×2 年
   只到 1985，6 条真值里只有 2 条在范围内），核对时已修正（互联网 13 步、PC 11 步；
   步数变多，单次回测的 LLM 调用也更多）。
-- 候选时间由案例声明的 `years_per_step` 近似推得，不是引擎记录的真实跨度；
-  等 `elapsed_days`（WP1）落地后应改用后者。
+- 候选时间的来源见下文"时间基准"：有 `elapsed_days` 的步用它（LLM 对每步跨度的估计，只宜作量级判断），
+  没有的步退回案例声明的 `years_per_step`。
 - 本功能**没有在真实 LLM 下运行过**（测试全部用桩），真实输出上的匹配质量、
   涌现里程碑的数量、单次运行成本都是未知数。
 
@@ -49,7 +49,7 @@ start:
   template: group_evolution
   time_granularity: "2 年"
   start_year: 1969         # 真实年份（会加上 year_shift）
-  years_per_step: 2        # 一步约多少年，用于把"第几步"换算成时间
+  years_per_step: 2        # 一步约多少年；引擎没记录 elapsed_days 的步用它换算时间
   intent: "..."            # 给引擎的一句话意图（写真实名称即可，运行时被别名化）
   settings: {}             # 创建实例时的 settings（A/B 的 B 臂在此基础上覆盖）
 milestones:
@@ -121,3 +121,35 @@ resolved 的步数取自 WP0 的快照链，找不到快照时保守地取最后
 
 每次运行的 `result.json` 里带 WP4 体检的告警计数（`structural_health`），这样
 "里程碑对账"与"结构性作弊"两类基线数字在同一处出。
+
+## 时间基准与阶段迁移时点偏差（P6）
+
+**候选时间怎么算。** `SimState.elapsed_days` 是该步自己跨越的天数。`time_basis: auto`（默认）时，有合法
+`elapsed_days` 的步累加 `elapsed_days / 365.25`，没有的步按 `years_per_step` 补；模拟跨度（决定哪些真值算"范围内"）
+同样按累计时间算。结果里 `time_basis.basis_used` 记录实际用的是 `elapsed_days`（全部步有记录）/ `mixed` / `years_per_step`，
+`caveats` 随之变化，`result.json` 另存 `timeline`（步号→距起点年数）与 `horizon_years`。
+
+**什么时候才有 `elapsed_days`。** 只有开启技术模型、事件采样、因果引擎（或带延迟的关系）时引擎才会向 LLM 索要并落盘它。
+所以 **A/B 两臂开关不同时，可能只有一臂有 `elapsed_days`——两臂的时间基准不同，区间误差、阶段迁移时点偏差不能直接比较**。
+`ab` 报告会在检测到基准不一致时给出 `time_basis_warning`。要比时间类指标，用 `--time-basis years_per_step`（或案例里写
+`time_basis: years_per_step`）把所有运行固定在同一基准上——代价是丢掉引擎记录的真实跨度；要用 `elapsed_days`，就让两臂都开启
+某个会索要它的机制。
+
+**阶段迁移时点偏差。** 开启 `tech_model_enabled` 后，`tech_state` 随分支快照落盘。回测从快照链还原每个技术节点各阶段的到达时点：
+`initial`（起点就有，不计时）、`registered`（起点之后新登记）、`transition`（观测到阶段上升）。节点与**带 `stage` 的真值**用
+同一个匹配器配对（`--matcher llm` 时会多一次 LLM 调用；没有技术节点则不多调）。口径与"区间误差"一致：可计时的配对按真值
+年份排序，以第一个为原点，各项（引擎到达时间差 − 真值时间差）的平均绝对误差与带符号均值（年，正 = 引擎更慢），至少 2 个
+可计时配对才有值。同时给出 `n_initial`（起点已在）、`n_not_reached`（范围内却没到该阶段，引擎太慢/停滞）、`n_out_of_horizon`
+（范围外，不算错）、`stage_reached_rate`。没有任何技术快照时 `available=False`——是"无数据"，不是 0 分。A/B 汇总新增
+`tech_timing_mean_abs_years` 与 `tech_stage_reached_rate`。
+
+**示例。** 技术模型 ON/OFF 对照、两臂固定同一时间基准：
+`python entrypoints/backtest.py ab backtest_cases/internet_early.yaml --arm-b tech_model_enabled=true --time-basis years_per_step`
+（OFF 臂没有 `tech_state`，阶段迁移指标只会在 ON 臂有值，这是预期的；真正可比的是里程碑召回/顺序/区间等指标）。
+
+**P6 的局限（如实写明）。**
+- 节点↔真值的配对是**字面匹配**（规则匹配器）或 LLM 语义匹配，配不上的真值不进入该指标；
+- `rescore` 的覆盖只作用于里程碑候选，**技术节点配对不随覆盖重算**，原样保留；
+- `elapsed_days` 是 LLM 估计，长跨度/变步长时误差可能很大，且回测不会像技术模型那样夹值（只取落盘的合法正数）；
+- 旧的 `result.json`（P6 之前）没有 `horizon_years`/`tech_timing`，`rescore` 退回旧口径、不补该指标；
+- 没有在真实 LLM 下运行过：涌现的技术节点数量与命名、能否被匹配、`elapsed_days` 质量都是未知数。

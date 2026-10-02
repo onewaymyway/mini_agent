@@ -4250,7 +4250,7 @@ deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
   Claude 凭记忆起草、未经核对的**（`verified: false`，报告每次都标注），
   在你核对之前不应据此下任何结论；用户在本轮开始前未回复"回测案例"一问，
   按计划起草示例；④ 精确率是下界；⑤ 候选时间由 `years_per_step` 近似推得，
-  `elapsed_days`（WP1）落地后应改用引擎记录的跨度；⑥ 阶段迁移**时点**
+  `elapsed_days`（WP1）落地后应改用引擎记录的跨度（**P6 已改，见文末 P6 条目**）；⑥ 阶段迁移**时点**
   偏差需要 WP1 的 `tech_state`，本阶段只做阶段一致率；⑦ `run_ab` 不做显著性
   检验，n<5 时写"不足以下结论"；⑧ 候选来源只有 `capabilities_gained`
   与 resolved 分支，不含 `structural_change` 等；⑨ A/B 的 B 臂只是覆盖
@@ -4302,7 +4302,7 @@ deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
   （连带 `causal_lines`），历史变大；⑥ 叙事与引擎状态的错位无法消除，只能被量化；
   ⑦ 未登记前置不阻断，这类前置形同虚设；⑧ 设置页保存"技术节点"会覆盖当前
   技术状态（含进度）；⑨ 回测框架（WP5）**尚未**改用 `elapsed_days`/`tech_state`
-  （"阶段迁移时点偏差"仍未做）；⑩ 分支隔离只对新写入的步生效。
+  （"阶段迁移时点偏差"仍未做；**P6 已补**）；⑩ 分支隔离只对新写入的步生效。
 
 - 2026-10-01（第二十二轮 · 阶段 P4 / WP2，依据 `next_doc/world_simulator_
   realism_tech_and_causal_engine_plan.md` §4 WP2）：**外生事件采样**（默认关闭
@@ -4484,4 +4484,15 @@ deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
   （互联网 8→13 步、PC 8→11 步，回测调用数相应增加）。改动：两个 `backtest_cases/*.yaml`、`tests/test_backtest.py`（案例断言）、`docs/backtest_guide.md`、
   `docs/README.md`、`docs/testing_guide.md`、本文件、计划文档。**无引擎代码改动。** 测试：`test_backtest.py` 41 passed；2 个 LLM 匹配器用例在沙箱因缺 fastapi 无法运行，需完整环境复跑。
   **下一阶段**：P6（回测改用 `elapsed_days`/`tech_state`）。
+
+- 2026-10-02（第二十二轮 · P6：回测改用 `elapsed_days` / `tech_state`，依据计划文档 §10 P6）：
+  **做了什么**：`backtest.py` 新增 `build_timeline()`（有 `elapsed_days` 的步累加、缺失步按 `years_per_step` 补，`basis_used` = `elapsed_days`/`mixed`/`years_per_step`）、
+  `extract_tech_nodes()`（从 `tech_state` 快照链还原各节点各阶段到达时点：initial/registered/transition）、`score_tech_timing()`（阶段迁移时点偏差，口径同区间误差，
+  另计起点已在/未到达/范围外/阶段到达率，无节点 → `available=False`）；模拟跨度与候选时间改按累计时间；`result.json` 新增 `time_basis`/`timeline`/`horizon_years`/`tech_nodes`/`tech_matches`；
+  A/B 新增 `tech_timing_mean_abs_years`、`tech_stage_reached_rate`，两臂时间基准不一致时给 `time_basis_warning`；案例与 CLI 新增 `time_basis: auto|years_per_step`（`--time-basis`）；
+  CLI 打印时间基准与阶段迁移偏差。**与计划偏差**：原计划⑤"案例 settings 声明开关"核实后已存在（`start.settings`），未重复做，改为新增 `time_basis`。
+  **文件**：`world_simulator/backtest.py`、`entrypoints/backtest.py`、`tests/test_backtest_p6.py`（新，29 用例）、`docs/backtest_guide.md`、`docs/tech_model_guide.md`、`docs/testing_guide.md`、本文件、计划文档。
+  **测试**：全量 1107 passed（基线 1078 + 29；需装齐 `fastapi`/`streamlit`/`httpx`/`json_repair` 且 `mini_agent` 在 `PYTHONPATH`）；14 个变异全部转红。
+  **已知边界**：节点↔真值配对靠字面/LLM 匹配；`rescore` 覆盖不重算技术节点配对；`elapsed_days` 为 LLM 估计未夹值；A/B 两臂开关不同时时间基准可能不同（需 `--time-basis` 固定）；
+  旧 `result.json` 不含新字段；**未在真实 LLM 下运行**。**下一阶段**：P7（`generate_scenario` 提议事件先验）。
 

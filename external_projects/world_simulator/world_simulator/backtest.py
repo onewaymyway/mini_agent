@@ -26,9 +26,22 @@ WP1/2/3 是否真的有效的唯一量化手段。
 
 引擎看到的是别名化名称 + 平移后的年份，打分只用**顺序**（τ）和**区间**
 （首个命中里程碑对齐后的间隔误差），不用绝对年份，所以平移不影响分数。
-`years_per_step` 是案例声明的"一步约多少年"，候选时间 = 起点 + 步数 ×
-该值——这是近似；`elapsed_days`（WP1 引入）落地后应改用引擎自己记录的
-每步跨度。
+候选时间（P6 起）：引擎记录了 `elapsed_days`（每步跨越的天数，LLM 估计）的步
+用它累加，没记录的步退回案例声明的 `years_per_step`（"一步约多少年"）；
+`time_basis` 记录实际用的是哪种（`elapsed_days` / `mixed` / `years_per_step`）。
+注意 `elapsed_days` 只在技术模型/事件采样/因果引擎等开启时才会被索要——
+A/B 两臂开关不同时，两臂的时间基准可能不同，区间类指标不可直接比较，
+`compare_arms` 会给出警告，也可用案例的 `time_basis: years_per_step` 把两臂
+固定在同一基准上。
+
+## 阶段迁移时点偏差（P6）
+
+引擎开启技术模型后，`tech_state` 随分支快照落盘。`extract_tech_nodes()` 从
+快照链还原每个技术节点各阶段的到达时点（观测到的迁移 / 新登记 / 起点已存在），
+`match` 把节点与带 `stage` 的真值配对（与里程碑同一个匹配器，LLM 匹配器会多一次
+调用），`score_tech_timing()` 以第一个可计时的配对为原点，算"引擎到达该阶段的
+时间差 − 真值时间差"。起点就已存在的节点不计时（不是涌现）；到不了该阶段的计入
+`not_reached`；没有技术快照时 `available=False`（无数据，不是 0）。
 
 ## 已知局限（必须如实标注，报告里每次都会带上）
 
@@ -59,11 +72,25 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-CAVEATS: Tuple[str, ...] = (
+_BASE_CAVEATS: Tuple[str, ...] = (
     "训练数据污染只能缓解不能根除：绝对分数不可信，只有同一案例、同一匹配方式下的 A/B 相对差异才有参考价值。",
     "精确率是下界：真值列表稀疏，引擎合理涌现的其它里程碑会被算作未命中。",
-    "候选时间由 years_per_step 近似推得，不是引擎记录的真实跨度。",
 )
+_TIME_CAVEATS: Dict[str, str] = {
+    "years_per_step": "候选时间由 years_per_step 近似推得，不是引擎记录的真实跨度。",
+    "elapsed_days": "候选时间来自引擎记录的 elapsed_days——那是 LLM 对每步跨度的估计，有误差，只宜作量级判断。",
+    "mixed": "部分步没有 elapsed_days，缺失步按 years_per_step 补；候选时间是估计值与近似值的混合。",
+}
+# 旧版常量（years_per_step 近似口径），保留给外部引用
+CAVEATS: Tuple[str, ...] = _BASE_CAVEATS + (_TIME_CAVEATS["years_per_step"],)
+
+
+def caveats_for(time_basis_used: Optional[str]) -> List[str]:
+    """按本次运行实际使用的时间基准给出局限说明。"""
+    return list(_BASE_CAVEATS) + [_TIME_CAVEATS.get(time_basis_used or "years_per_step", _TIME_CAVEATS["years_per_step"])]
+
+
+_TIME_BASES = ("auto", "years_per_step")
 
 _YEAR_RE = re.compile(r"\b(1[5-9]\d\d|20\d\d)\b")
 _STAGES = ("lab", "expert", "developer", "consumer", "cheap_at_scale", "infrastructure")
@@ -105,6 +132,7 @@ class BacktestCase:
     year_shift: int = 0
     verified: bool = False
     disclaimer: str = ""
+    time_basis: str = "auto"
 
 
 def _fail(case_id: str, msg: str) -> BacktestError:
@@ -180,6 +208,9 @@ def parse_case(data: Dict[str, Any]) -> BacktestCase:
         raise _fail(case_id, "year_shift/steps 必须是整数")
     if steps < 1:
         raise _fail(case_id, "steps 必须 >= 1")
+    time_basis = str(data.get("time_basis") or "auto").strip()
+    if time_basis not in _TIME_BASES:
+        raise _fail(case_id, f"time_basis 必须是 {_TIME_BASES} 之一")
     return BacktestCase(
         id=case_id,
         title=str(data.get("title") or case_id),
@@ -195,6 +226,7 @@ def parse_case(data: Dict[str, Any]) -> BacktestCase:
         year_shift=year_shift,
         verified=bool(data.get("verified", False)),
         disclaimer=str(data.get("disclaimer") or ""),
+        time_basis=time_basis,
     )
 
 
@@ -294,22 +326,94 @@ def _resolved_branches(causal_lines: Any) -> Dict[Tuple[str, str], Dict[str, Any
     return out
 
 
+_DAYS_PER_YEAR = 365.25
+
+
+def build_timeline(
+    history: Sequence[Any], *, years_per_step: float, basis: str = "auto"
+) -> Dict[str, Any]:
+    """步号 → "距起点的年数"。
+
+    `SimState.elapsed_days` 是该步**自己**跨越的天数（上一步到这一步）。`basis="auto"`
+    时：有合法 `elapsed_days` 的步累加 `elapsed_days / 365.25`，没有的步按
+    `years_per_step` 补；`basis="years_per_step"` 完全忽略 `elapsed_days`（用于把
+    A/B 两臂固定在同一基准上）。起点（最小步号）距起点 0 年。
+
+    返回 `{"basis_requested", "basis_used", "points": {step: years}, "reported_steps",
+    "total_steps", "horizon_years"}`；`basis_used` 由数据决定：全部步都有记录 →
+    `elapsed_days`，部分 → `mixed`，没有（或被强制）→ `years_per_step`。
+    """
+    states = sorted(history, key=lambda st: int(getattr(st, "step", 0) or 0))
+    points: Dict[int, float] = {}
+    reported = total = 0
+    cum = 0.0
+    prev_step = 0
+    for idx, state in enumerate(states):
+        step = int(getattr(state, "step", 0) or 0)
+        if idx == 0:
+            # 第一条历史：步号 0 就是起点；不从 0 开始（不应发生）按近似给个起点
+            points[step] = max(step, 0) * years_per_step
+            cum = points[step]
+            prev_step = step
+            continue
+        gap = max(step - prev_step, 1)
+        days = getattr(state, "elapsed_days", None)
+        valid = (
+            basis != "years_per_step"
+            and isinstance(days, (int, float)) and not isinstance(days, bool)
+            and math.isfinite(days) and days > 0
+        )
+        total += 1
+        if valid:
+            reported += 1
+            # 跨多步的空洞（历史不连续）：这一步的 elapsed 只覆盖最后一步，其余按近似补
+            cum += float(days) / _DAYS_PER_YEAR + (gap - 1) * years_per_step
+        else:
+            cum += gap * years_per_step
+        points[step] = cum
+        prev_step = step
+    if basis == "years_per_step" or reported == 0:
+        used = "years_per_step"
+    elif reported == total:
+        used = "elapsed_days"
+    else:
+        used = "mixed"
+    return {
+        "basis_requested": basis,
+        "basis_used": used,
+        "points": points,
+        "reported_steps": reported,
+        "total_steps": total,
+        "horizon_years": (max(points.values()) if points else 0.0),
+    }
+
+
+def _time_at(step: int, start_year: float, years_per_step: float, timeline: Optional[Dict[str, Any]]) -> float:
+    if timeline:
+        pts = timeline.get("points") or {}
+        if int(step) in pts:
+            return start_year + float(pts[int(step)])
+    return start_year + int(step) * years_per_step
+
+
 def extract_candidates(
-    history: Sequence[Any], causal_lines: Any, *, start_year: float, years_per_step: float
+    history: Sequence[Any], causal_lines: Any, *, start_year: float, years_per_step: float,
+    timeline: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """从历史抽取涌现的里程碑候选，按步数升序：
     - `capabilities_gained` 每项一个候选（带 `maturity_stage`）；
     - 因果树里 `resolved` 的分支：首次出现 resolved 的步数取自
       `dynamic_snapshot` 链（WP0），找不到快照时退到最后一步（保守：不
       编造更早的时点）。
-    候选时间 = `start_year + step × years_per_step`（近似，见模块 docstring）。
+    候选时间：给了 `timeline`（`build_timeline()`）就用它（P6，引擎记录的跨度），
+    否则 `start_year + step × years_per_step`（近似，见模块 docstring）。
     """
     candidates: List[Dict[str, Any]] = []
 
     def add(step: int, text: str, source: str, stage: Optional[str] = None, extra: str = "") -> None:
         candidates.append({
             "step": int(step),
-            "time": start_year + int(step) * years_per_step,
+            "time": _time_at(step, start_year, years_per_step, timeline),
             "text": text.strip(),
             "source": source,
             "maturity_stage": stage if stage in _STAGES else None,
@@ -344,6 +448,159 @@ def extract_candidates(
     for i, c in enumerate(candidates, 1):
         c["id"] = f"c{i}"
     return candidates
+
+
+# ── 技术节点（P6：阶段迁移时点）──────────────────────────────────────
+
+
+def _stage_idx(stage: Any) -> Optional[int]:
+    return _STAGES.index(stage) if stage in _STAGES else None
+
+
+def extract_tech_nodes(
+    history: Sequence[Any], *, start_year: float, years_per_step: float,
+    timeline: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """从分支快照链（`dynamic_snapshot["tech_state"]`，WP0/WP1）还原每个技术节点
+    各阶段的**到达时点**。返回按首次出现步数排序的节点候选，每个形如：
+
+    `{"id": "tn1", "tech_id", "text": 节点名, "step": 首次出现步, "time", "source":
+    "tech_node", "maturity_stage": 最终阶段, "detail": "", "arrivals": {阶段: {"step",
+    "time", "kind"}}}`，`kind` 三种：
+
+    - `initial`：起点就有（种子 / `preexisting`）——不是涌现，**不计时**；
+    - `registered`：起点之后新登记（登记时阶段，技术模型规定夹到最低档）——计时；
+    - `transition`：快照链里观测到阶段上升——计时。
+
+    快照缺失的步沿用上一份（快照只在有变化时写）；阶段倒退不改已记录的到达时点。
+    历史里完全没有 `tech_state` → 返回空列表。
+    """
+    from world_simulator import tech_model
+
+    states = sorted(history, key=lambda st: int(getattr(st, "step", 0) or 0))
+    if not states:
+        return []
+    first_step = int(getattr(states[0], "step", 0) or 0)
+    nodes: Dict[str, Dict[str, Any]] = {}
+    order: List[str] = []
+    current: Optional[Dict[str, Any]] = None
+    for state in states:
+        step = int(getattr(state, "step", 0) or 0)
+        snap = getattr(state, "dynamic_snapshot", None)
+        if isinstance(snap, dict) and isinstance(snap.get("tech_state"), dict):
+            current = snap["tech_state"]
+        if current is None:
+            continue
+        t = _time_at(step, start_year, years_per_step, timeline)
+        for raw in tech_model.get_nodes({"tech_state": current}, step=step):
+            tid = raw["id"]
+            idx = _stage_idx(raw["stage"])
+            if idx is None:
+                continue
+            rec = nodes.get(tid)
+            if rec is None:
+                initial = bool(raw.get("preexisting")) or step == first_step
+                kind = "initial" if initial else "registered"
+                rec = {
+                    "tech_id": tid, "text": raw["name"], "step": step, "time": t,
+                    "source": "tech_node", "detail": "", "arrivals": {},
+                    "_max": idx,
+                }
+                for i in range(idx + 1):
+                    rec["arrivals"][_STAGES[i]] = {"step": step, "time": t, "kind": kind}
+                nodes[tid] = rec
+                order.append(tid)
+            elif idx > rec["_max"]:
+                for i in range(rec["_max"] + 1, idx + 1):
+                    rec["arrivals"][_STAGES[i]] = {"step": step, "time": t, "kind": "transition"}
+                rec["_max"] = idx
+            rec["maturity_stage"] = _STAGES[rec["_max"]]
+    out: List[Dict[str, Any]] = []
+    for i, tid in enumerate(sorted(order, key=lambda k: (nodes[k]["step"], k)), 1):
+        rec = nodes[tid]
+        rec.pop("_max", None)
+        rec["id"] = f"tn{i}"
+        out.append(rec)
+    return out
+
+
+def score_tech_timing(
+    truths: List[Dict[str, Any]],
+    tech_nodes: List[Dict[str, Any]],
+    tech_matches: Dict[str, Optional[str]],
+    *,
+    start_year: float,
+    horizon_years: float,
+) -> Dict[str, Any]:
+    """阶段迁移时点偏差。只看**带 `stage` 且匹配到技术节点**的真值：
+
+    - 节点在该阶段 `kind=transition|registered` → 可计时；
+    - `kind=initial`（起点就在）→ `n_initial`，不计时；
+    - 节点没到过该阶段：真值年份在模拟范围内 → `n_not_reached`（引擎太慢/停滞），
+      范围外 → `n_out_of_horizon`（不是错）。
+
+    偏差口径与 `interval_error` 一致：可计时的配对按真值年份排序，以第一个为
+    原点，各项 (引擎到达时间差 − 真值时间差) 的平均绝对误差与带符号均值（年，
+    正 = 引擎更慢），至少 2 个可计时配对才有值。`stage_reached_rate` =
+    (可计时 + 起点已在) / (可计时 + 起点已在 + 未到达)。没有任何技术节点时
+    `available=False`——是"无数据"，不是 0 分。
+    """
+    if not tech_nodes:
+        return {"available": False, "reason": "历史里没有 tech_state 快照（技术模型未开启，或没有登记任何技术节点）"}
+    node_by_id = {n["id"]: n for n in tech_nodes}
+    horizon_end = start_year + horizon_years
+    per_truth: List[Dict[str, Any]] = []
+    timed: List[Tuple[Dict[str, Any], float]] = []
+    n_initial = n_not_reached = n_out = 0
+    staged = [t for t in truths if t.get("stage") in _STAGES]
+    matched = 0
+    for t in staged:
+        node = node_by_id.get(tech_matches.get(t["id"]) or "")
+        if node is None:
+            continue
+        matched += 1
+        arrival = node["arrivals"].get(t["stage"])
+        row: Dict[str, Any] = {"truth_id": t["id"], "node_id": node["id"], "tech_id": node["tech_id"],
+                               "stage": t["stage"]}
+        if arrival is None:
+            if t["year"] > horizon_end:
+                n_out += 1
+                row["status"] = "out_of_horizon"
+            else:
+                n_not_reached += 1
+                row["status"] = "not_reached"
+        elif arrival["kind"] == "initial":
+            n_initial += 1
+            row.update(status="initial", engine_time=arrival["time"])
+        else:
+            timed.append((t, float(arrival["time"])))
+            row.update(status=arrival["kind"], engine_time=arrival["time"])
+        per_truth.append(row)
+    out: Dict[str, Any] = {
+        "available": True,
+        "nodes": len(tech_nodes),
+        "staged_truths": len(staged),
+        "matched": matched,
+        "n_timed": len(timed),
+        "n_initial": n_initial,
+        "n_not_reached": n_not_reached,
+        "n_out_of_horizon": n_out,
+        "n_intervals": max(len(timed) - 1, 0),
+        "mean_abs_years": None,
+        "mean_signed_years": None,
+        "stage_reached_rate": None,
+        "per_truth": per_truth,
+    }
+    denom = len(timed) + n_initial + n_not_reached
+    if denom:
+        out["stage_reached_rate"] = (len(timed) + n_initial) / denom
+    if len(timed) >= 2:
+        ordered = sorted(timed, key=lambda p: p[0]["year"])
+        t0, e0 = ordered[0]
+        errs = [((e - e0) - (t["year"] - t0["year"])) for t, e in ordered[1:]]
+        out["mean_abs_years"] = sum(abs(x) for x in errs) / len(errs)
+        out["mean_signed_years"] = sum(errs) / len(errs)
+    return out
 
 
 # ── 匹配 ─────────────────────────────────────────────────────────────
@@ -626,8 +883,12 @@ def run_case(
     label: str = "run",
     create_fn: Optional[Callable[..., Any]] = None,
     advance_fn: Optional[Callable[..., Any]] = None,
+    time_basis: Optional[str] = None,
 ) -> Dict[str, Any]:
     """跑一次回测并把结果落盘到 `out_dir/result.json`。
+
+    `time_basis`：`None` = 用案例声明的（默认 `auto`：有 `elapsed_days` 的步用它）；
+    `years_per_step` = 忽略 `elapsed_days`，A/B 两臂要比区间类指标时用它固定基准。
 
     `create_fn`/`advance_fn` 可注入（测试用桩；默认走真实引擎）。数据目录
     是 `out_dir/data`，与用户真实 `data/` 完全隔离。推进中遇到引擎错误
@@ -670,13 +931,24 @@ def run_case(
     history = store.load_history(branch)
     causal_lines = manifest.settings.get("causal_lines")
     last_step = int(history[-1].step) if history else 0
-    horizon_years = last_step * case.years_per_step
+    basis = time_basis or case.time_basis
+    if basis not in _TIME_BASES:
+        raise BacktestError(f"time_basis 必须是 {_TIME_BASES} 之一，收到 {basis!r}")
+    timeline = build_timeline(history, years_per_step=case.years_per_step, basis=basis)
+    horizon_years = timeline["horizon_years"]
 
-    candidates = extract_candidates(history, causal_lines,
-                                    start_year=view["start_year"], years_per_step=case.years_per_step)
+    candidates = extract_candidates(history, causal_lines, start_year=view["start_year"],
+                                    years_per_step=case.years_per_step, timeline=timeline)
     matches = matcher(candidates, view["truths"])
     metrics = score_run(view["truths"], candidates, matches,
                         start_year=view["start_year"], horizon_years=horizon_years)
+    tech_nodes = extract_tech_nodes(history, start_year=view["start_year"],
+                                    years_per_step=case.years_per_step, timeline=timeline)
+    staged_truths = [t for t in view["truths"] if t.get("stage") in _STAGES]
+    tech_matches: Dict[str, Optional[str]] = (
+        matcher(tech_nodes, staged_truths) if tech_nodes and staged_truths else {})
+    metrics["tech_timing"] = score_tech_timing(view["truths"], tech_nodes, tech_matches,
+                                               start_year=view["start_year"], horizon_years=horizon_years)
     health = consistency_guard.analyze_history(
         history, causal_lines=causal_lines,
         declared_causal_graph=manifest.settings.get("declared_causal_graph"))
@@ -702,9 +974,14 @@ def run_case(
         "engine_intent": view["intent"],
         "start_year": view["start_year"],
         "years_per_step": case.years_per_step,
+        "horizon_years": horizon_years,
+        "time_basis": {k: timeline[k] for k in ("basis_requested", "basis_used", "reported_steps", "total_steps")},
+        "timeline": {str(k): v for k, v in timeline["points"].items()},
         "truths": view["truths"],
         "candidates": candidates,
         "matches": matches,
+        "tech_nodes": tech_nodes,
+        "tech_matches": tech_matches,
         "overrides": {},
         "metrics": metrics,
         "structural_health": {
@@ -713,7 +990,7 @@ def run_case(
             "c5_event_density": health["c5_event_density"],
         },
         "reality_checks_written": recorded,
-        "caveats": list(CAVEATS),
+        "caveats": caveats_for(timeline["basis_used"]),
     }
     (out_dir / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     return result
@@ -728,12 +1005,19 @@ def rescore(result_path: Path, overrides: Dict[str, Optional[str]]) -> Dict[str,
     result = json.loads(result_path.read_text(encoding="utf-8"))
     truths, candidates = result["truths"], result["candidates"]
     new_matches, changed = apply_overrides(result["matches"], overrides, candidates, truths)
-    horizon_years = result["steps_run"] * result["years_per_step"]
+    # P6 之前的 result.json 没有 horizon_years，退回旧口径
+    horizon_years = result.get("horizon_years")
+    if horizon_years is None:
+        horizon_years = result["steps_run"] * result["years_per_step"]
+    old_tech_timing = (result.get("metrics") or {}).get("tech_timing")
     result["matches"] = new_matches
     result["overrides"] = {**result.get("overrides", {}), **overrides}
     result["matcher"] = f"{result.get('matcher', 'custom')}+user_override"
     result["metrics"] = score_run(truths, candidates, new_matches,
                                   start_year=result["start_year"], horizon_years=horizon_years)
+    if old_tech_timing is not None:
+        # 覆盖针对里程碑候选的配对；技术节点配对不受影响，原样保留（见 backtest_guide）
+        result["metrics"]["tech_timing"] = old_tech_timing
     if changed:
         _record_reality_checks(
             result_path.parent / "data", result["sim_id"], result["branch"], result["steps_run"],
@@ -753,6 +1037,8 @@ _METRIC_PATHS: Dict[str, Tuple[str, ...]] = {
     "interval_mean_abs_years": ("interval_error", "mean_abs_years"),
     "prerequisite_violations": ("prerequisite_violations", "violations"),
     "stage_agreement": ("stage", "agreement"),
+    "tech_timing_mean_abs_years": ("tech_timing", "mean_abs_years"),
+    "tech_stage_reached_rate": ("tech_timing", "stage_reached_rate"),
 }
 
 
@@ -791,7 +1077,14 @@ def compare_arms(arm_results: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Any]
         }
         per_arm[arm]["_runs"] = len(runs)
         per_arm[arm]["_aborted_runs"] = sum(1 for r in runs if r.get("aborted"))
-    out: Dict[str, Any] = {"arms": per_arm, "caveats": list(CAVEATS)}
+        per_arm[arm]["_time_bases"] = sorted({
+            (r.get("time_basis") or {}).get("basis_used", "years_per_step") for r in runs})
+    all_used = sorted({b for stats in per_arm.values() for b in stats["_time_bases"]})
+    out: Dict[str, Any] = {"arms": per_arm, "caveats": caveats_for(all_used[0] if len(all_used) == 1 else "mixed")}
+    if len(all_used) > 1:
+        out["time_basis_warning"] = (
+            f"各臂/各次运行的时间基准不一致（{', '.join(all_used)}）：区间误差、阶段迁移时点偏差等"
+            "时间类指标不可直接比较。可用 --time-basis years_per_step 把所有运行固定到同一基准。")
     arms = list(arm_results)
     if len(arms) == 2:
         a, b = arms
@@ -822,6 +1115,7 @@ def run_ab(
     steps: Optional[int] = None,
     create_fn: Optional[Callable[..., Any]] = None,
     advance_fn: Optional[Callable[..., Any]] = None,
+    time_basis: Optional[str] = None,
 ) -> Dict[str, Any]:
     """同一案例、每个臂（`{名称: settings 覆盖}`）各重复 `repeats` 次，
     汇总指标分布并落盘 `out_root/ab_report.json`。臂与重复按顺序串行跑
@@ -839,7 +1133,7 @@ def run_ab(
                 case, cfg=cfg, workspace_root=workspace_root,
                 out_dir=out_root / f"{arm}_{i + 1}", matcher=matcher, steps=steps,
                 settings_override=override, label=f"{arm}#{i + 1}",
-                create_fn=create_fn, advance_fn=advance_fn))
+                create_fn=create_fn, advance_fn=advance_fn, time_basis=time_basis))
     report = compare_arms(results)
     report.update({
         "case_id": case.id, "case_verified": case.verified, "repeats": repeats,
