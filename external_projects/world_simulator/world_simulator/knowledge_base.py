@@ -48,6 +48,13 @@ except ImportError:  # 独立运行、未装 mini_agent 时的降级实现，同
         )
 
 
+CALIBRATION_ORIGIN = "likelihood_calibration"
+TREE_DECLARATION_ORIGIN = "tree_declaration"
+SELF_REPORTED_NOTE = "【LLM 自报统计，非验证事实】"
+DEFAULT_MIN_SAMPLES = 3
+"""P9：写入跨实例知识库所需的最少样本数（占位值，可由 `settings.kb_min_samples` 覆盖）。
+低于它的档位/声明**不写入**——两三个事件的"命中率"没有可比性，写进共享库只会放大噪声。"""
+
 _VALID_CONFIDENCE = ("confirmed", "supported", "hypothesis", "speculative")
 
 # 相似度判定的阈值：两条知识的关键词集合 Jaccard 相似度达到这个比例，
@@ -124,9 +131,20 @@ class KnowledgeItem:
     （目前只有 `valid_range` 被更新为不同的非空取值这一种情况）才
     递增；`validated_count`/`contradicted_count`/`evidence`/`notes`
     的增长不算内容性修改，不触发递增。"""
+    origin: str = ""
+    """第二十二轮 P9 新增：条目类型。空串 = 旧来源（`record_causal_links()`/P5b 的边兑现，
+    保持原行为）；`likelihood_calibration` = 未来树 likelihood 档位对账；`tree_declaration` =
+    分支 `effects_if_active` 声明的兑现统计。P9 两类条目**不参与** `record_causal_links()` 的
+    Jaccard 合并，只由各自的写入函数按 (实例, 分支, 档位/声明) 覆盖更新。"""
+    self_reported: bool = False
+    """第二十二轮 P9 新增：条目的 `validated_count`/`contradicted_count` 含 LLM **自报**的
+    处置/结局统计（引擎无法核验），读取侧（提示词注入、界面）据此标注"LLM 自报统计，非验证
+    事实"。只有 `True` 时才落盘，旧文件逐字节不变。"""
+    source_instance: str = ""
+    """第二十二轮 P9 新增：写入该条目的实例 id（P9 两类条目才有），供 `retract_instance()` 清理。"""
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        data: Dict[str, Any] = {
             "id": self.id,
             "cause": self.cause,
             "effect": self.effect,
@@ -142,6 +160,14 @@ class KnowledgeItem:
             "valid_range": self.valid_range,
             "version": self.version,
         }
+        # P9 新字段仅在有值时输出：旧知识库文件（及旧来源的条目）逐字节不变。
+        if self.origin:
+            data["origin"] = self.origin
+        if self.self_reported:
+            data["self_reported"] = True
+        if self.source_instance:
+            data["source_instance"] = self.source_instance
+        return data
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "KnowledgeItem":
@@ -163,6 +189,9 @@ class KnowledgeItem:
             evidence=[str(e) for e in (data.get("evidence") or []) if str(e).strip()],
             valid_range=str(data.get("valid_range") or ""),
             version=int(data.get("version") or 1),
+            origin=str(data.get("origin") or ""),
+            self_reported=bool(data.get("self_reported")),
+            source_instance=str(data.get("source_instance") or ""),
         )
 
     def _keyword_set(self) -> set:
@@ -259,6 +288,8 @@ def record_causal_links(
         candidate_keywords = _tokenize(cause) | _tokenize(effect)
         match = None
         for item in existing:
+            if item.origin:  # P9 条目只由各自的写入函数维护，不参与 Jaccard 合并
+                continue
             if _jaccard(candidate_keywords, item._keyword_set()) >= _SIMILARITY_THRESHOLD:
                 match = item
                 break
@@ -340,11 +371,12 @@ def record_edge_outcomes(
             continue
         ref = f"{sim_id}@{branch}#step{step}:{edge_id}"
         counter = EDGE_OUTCOMES[str(outcome["outcome"])]
-        match = next((it for it in existing if it.cause == cause and it.effect == effect), None)
+        match = next((it for it in existing if not it.origin and it.cause == cause and it.effect == effect), None)
         if match is None:
             keywords = _tokenize(cause) | _tokenize(effect)
             match = next(
-                (it for it in existing if _jaccard(keywords, it._keyword_set()) >= _SIMILARITY_THRESHOLD),
+                (it for it in existing
+                 if not it.origin and _jaccard(keywords, it._keyword_set()) >= _SIMILARITY_THRESHOLD),
                 None,
             )
         if match is not None:
@@ -353,6 +385,7 @@ def record_edge_outcomes(
                 continue
             match.evidence.append(ref)
             setattr(match, counter, getattr(match, counter) + 1)
+            match.self_reported = True  # P9：计数里含 LLM 自报的处置结论
         else:
             item = KnowledgeItem(
                 id=uuid.uuid4().hex[:12],
@@ -364,6 +397,7 @@ def record_edge_outcomes(
                 source_template=template,
                 created_at=_now_iso(),
                 evidence=[ref],
+                self_reported=True,
             )
             setattr(item, counter, 1)
             existing.append(item)
@@ -373,6 +407,240 @@ def record_edge_outcomes(
     if changed:
         _save_all(data_dir, existing)
     return result
+
+
+# ── P9：校准率 / 树声明统计的跨实例写入 ──────────────────────────────
+
+
+def _nonneg_int(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return max(0, int(value))
+
+
+def clean_min_samples(value: Any) -> int:
+    """`settings.kb_min_samples` 的取值清洗：正整数，非法/缺失退回 `DEFAULT_MIN_SAMPLES`。"""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value or value < 1:
+        return DEFAULT_MIN_SAMPLES
+    return int(value)
+
+
+def _upsert_aggregate(
+    existing: List[KnowledgeItem],
+    *,
+    origin: str,
+    ref: str,
+    sim_id: str,
+    template: str,
+    cause: str,
+    effect: str,
+    mechanism: str,
+    validated: int,
+    contradicted: int,
+) -> str:
+    """P9 两类条目共用的"按 (来源, 引用) 覆盖更新"。返回 `created`/`updated`/`unchanged`。
+
+    计数是**绝对值**（调用方每次从分支历史重算），不是增量——所以重复调用、补跑、重算都幂等，
+    不会像增量计数那样重复累计。条目由 `evidence` 里的 `ref` 唯一定位。
+    """
+    item = next((it for it in existing if it.origin == origin and ref in it.evidence), None)
+    if item is None:
+        existing.append(KnowledgeItem(
+            id=uuid.uuid4().hex[:12], cause=cause, effect=effect, mechanism=mechanism,
+            confidence="hypothesis", source_sim_id=sim_id, source_template=template,
+            created_at=_now_iso(), validated_count=validated, contradicted_count=contradicted,
+            evidence=[ref], origin=origin, self_reported=True, source_instance=sim_id,
+        ))
+        return "created"
+    before = (item.cause, item.effect, item.mechanism, item.validated_count, item.contradicted_count)
+    item.cause, item.effect, item.mechanism = cause, effect, mechanism
+    item.validated_count, item.contradicted_count = validated, contradicted
+    item.self_reported = True
+    return "unchanged" if before == (cause, effect, mechanism, validated, contradicted) else "updated"
+
+
+def record_likelihood_calibration(
+    data_dir: Path,
+    *,
+    sim_id: str,
+    template: str,
+    branch: str,
+    tiers: Dict[str, Dict[str, Any]],
+    min_samples: int = DEFAULT_MIN_SAMPLES,
+) -> Dict[str, int]:
+    """把某分支上未来树 likelihood 档位的**终结命中情况**写成跨实例知识条目（P9，计划 §10）。
+
+    `tiers` 形如 `{"high": {"resolved": 3, "expired": 1, "invalidated": 0}, ...}`（调用方从
+    `tree_grounding.summarize_ledger()` 的 `by_likelihood` 取，且只含该分支**自己产生**的终结事件，
+    不含分叉前继承的历史）。每个档位一条条目：`validated_count` = resolved（命中），
+    `contradicted_count` = expired + invalidated（未命中）；样本数 < `min_samples` 的档位**不写入**。
+
+    条目 `origin="likelihood_calibration"`、`self_reported=True`，不进 `search()`（见该函数）。
+    绝对值覆盖更新，幂等。**如实说明**：档位是 LLM 的主观给定、终结状态也是 LLM 自己标的，
+    这里写进去的是"某个世界里 LLM 给 high 的分支后来有几成被它自己标成 resolved"，
+    不是现实世界的校准率。
+
+    Returns: `{"created", "updated", "unchanged", "skipped_small"}`。
+    """
+    result = {"created": 0, "updated": 0, "unchanged": 0, "skipped_small": 0}
+    threshold = clean_min_samples(min_samples)
+    existing = load_all(data_dir)
+    changed = False
+    for tier in ("high", "medium", "low"):
+        counts = (tiers or {}).get(tier) or {}
+        resolved = _nonneg_int(counts.get("resolved"))
+        expired = _nonneg_int(counts.get("expired"))
+        invalidated = _nonneg_int(counts.get("invalidated"))
+        n = resolved + expired + invalidated
+        if n < threshold:
+            result["skipped_small"] += 1
+            continue
+        status = _upsert_aggregate(
+            existing, origin=CALIBRATION_ORIGIN, ref=f"{sim_id}@{branch}#likelihood:{tier}",
+            sim_id=sim_id, template=template,
+            cause=f"未来树分支被标为 likelihood={tier}",
+            effect="该分支最终 resolved（而非 expired/invalidated）",
+            mechanism=(f"样本 n={n}：resolved {resolved} / expired {expired} / invalidated {invalidated}；"
+                       "档位与结局都是 LLM 自己标的，不是概率"),
+            validated=resolved, contradicted=expired + invalidated,
+        )
+        result[status] += 1
+        changed = changed or status != "unchanged"
+    if changed:
+        _save_all(data_dir, existing)
+    return result
+
+
+def record_tree_declaration_stats(
+    data_dir: Path,
+    *,
+    sim_id: str,
+    template: str,
+    branch: str,
+    stats: List[Dict[str, Any]],
+    min_samples: int = DEFAULT_MIN_SAMPLES,
+) -> Dict[str, int]:
+    """把某分支上"树分支声明的影响（`effects_if_active`）"的兑现统计写成跨实例知识条目（P9）。
+
+    `stats` 每项 `{edge_id, cause, effect, mechanism, realized, countered}`（调用方从
+    `tree_effects.kb_stats()` 取，且只含该分支自己产生的处置）。与 P5b 的边统计口径一致：
+    只有明确结论才计——`realized` → 印证、`countered` → 证伪；部分兑现/推迟/自动结案不计。
+    有明确结论的样本数（realized + countered）< `min_samples` 的声明**不写入**。
+
+    条目 `origin="tree_declaration"`、`self_reported=True`，**独立于** P5b 的边条目（不做 Jaccard
+    合并）：树声明是单个实例里 LLM/用户写下的假设，混进"边"的统计会改变后者的含义。
+    绝对值覆盖更新，幂等。
+
+    Returns: `{"created", "updated", "unchanged", "skipped_small"}`。
+    """
+    result = {"created": 0, "updated": 0, "unchanged": 0, "skipped_small": 0}
+    threshold = clean_min_samples(min_samples)
+    rows = [r for r in (stats or []) if isinstance(r, dict) and str(r.get("edge_id") or "").strip()]
+    if not rows:
+        return result
+    existing = load_all(data_dir)
+    changed = False
+    for row in rows:
+        realized = _nonneg_int(row.get("realized"))
+        countered = _nonneg_int(row.get("countered"))
+        cause = str(row.get("cause") or "").strip()
+        effect = str(row.get("effect") or "").strip()
+        if not cause or not effect:
+            continue
+        if realized + countered < threshold:
+            result["skipped_small"] += 1
+            continue
+        status = _upsert_aggregate(
+            existing, origin=TREE_DECLARATION_ORIGIN,
+            ref=f"{sim_id}@{branch}#treedecl:{str(row['edge_id']).strip()}",
+            sim_id=sim_id, template=template, cause=cause, effect=effect,
+            mechanism=(str(row.get("mechanism") or "").strip()
+                       or "未来树分支声明：该分支激活后会影响目标"),
+            validated=realized, contradicted=countered,
+        )
+        result[status] += 1
+        changed = changed or status != "unchanged"
+    if changed:
+        _save_all(data_dir, existing)
+    return result
+
+
+def _ref_from_instance(ref: str, sim_id: str) -> bool:
+    """`evidence` 引用是否来自该实例。引用格式 `sim#stepN` / `sim@branch#...`，用分隔符精确匹配，
+    避免 `sim_1` 误伤 `sim_10`。"""
+    return ref.startswith(f"{sim_id}#") or ref.startswith(f"{sim_id}@")
+
+
+def retract_instance(
+    data_dir: Path,
+    sim_id: str,
+    *,
+    include_legacy: bool = False,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """撤销某实例写进跨实例知识库的内容（P9 防护 ①）。
+
+    - **总是**移除 P9 条目（`origin` 为 `likelihood_calibration`/`tree_declaration` 且
+      `source_instance == sim_id`）——它们只由该实例的某条分支产生，可以整条撤。
+    - `include_legacy=True` 时另外移除**确认只由该实例产生**的旧来源条目：`source_sim_id` 是它、
+      `evidence` 非空且全部来自它、没有观察标注（`notes`）。
+    - 旧来源里与别的实例**合并过计数**的条目（含 P5b 的边兑现、`record_causal_links()` 的合并）
+      **不动**：计数器是合并后的总和，没有记录每个来源各加了多少，无法精确回退。这类条目只统计
+      数量放进 `left_shared` 如实报告，由使用者决定是否手工处理。
+
+    `dry_run=True` 只返回将要发生的变化，不落盘。
+
+    Returns: `{sim_id, dry_run, removed_p9: [id], removed_legacy: [id], left_shared: int}`。
+    """
+    items = load_all(data_dir)
+    removed_p9: List[str] = []
+    removed_legacy: List[str] = []
+    keep: List[KnowledgeItem] = []
+    left_shared = 0
+    for item in items:
+        if item.origin:
+            if item.source_instance == sim_id:
+                removed_p9.append(item.id)
+                continue
+        else:
+            from_me = [e for e in item.evidence if _ref_from_instance(e, sim_id)]
+            sole = (
+                include_legacy and item.source_sim_id == sim_id and item.evidence
+                and len(from_me) == len(item.evidence) and not item.notes
+            )
+            if sole:
+                removed_legacy.append(item.id)
+                continue
+            if from_me:
+                left_shared += 1
+        keep.append(item)
+    if (removed_p9 or removed_legacy) and not dry_run:
+        _save_all(data_dir, keep)
+    return {
+        "sim_id": sim_id, "dry_run": bool(dry_run), "removed_p9": removed_p9,
+        "removed_legacy": removed_legacy, "left_shared": left_shared,
+    }
+
+
+def summarize_sources(data_dir: Path) -> Dict[str, Dict[str, int]]:
+    """各实例往跨实例知识库写了什么：`{sim_id: {likelihood_calibration, tree_declaration,
+    shared_refs}}`。`shared_refs` = 旧来源条目 `evidence` 里该实例的引用数（不一定能撤，见
+    `retract_instance`）。供 CLI `list` 与界面提示用。"""
+    out: Dict[str, Dict[str, int]] = {}
+
+    def _row(sim: str) -> Dict[str, int]:
+        return out.setdefault(sim, {CALIBRATION_ORIGIN: 0, TREE_DECLARATION_ORIGIN: 0, "shared_refs": 0})
+
+    for item in load_all(data_dir):
+        if item.origin in (CALIBRATION_ORIGIN, TREE_DECLARATION_ORIGIN):
+            if item.source_instance:
+                _row(item.source_instance)[item.origin] += 1
+            continue
+        for ref in item.evidence:
+            sim = ref.split("#", 1)[0].split("@", 1)[0]
+            if sim:
+                _row(sim)["shared_refs"] += 1
+    return out
 
 
 def record_contradiction(data_dir: Path, item_id: str) -> bool:
@@ -427,6 +695,8 @@ def update_confidence_from_reality_check(
             continue
         candidate_keywords = _tokenize(cause) | _tokenize(effect)
         for candidate in existing:
+            if candidate.origin:  # P9 条目不是"某条因果关系"，现实反馈不匹配它们
+                continue
             if _jaccard(candidate_keywords, candidate._keyword_set()) >= _SIMILARITY_THRESHOLD:
                 if record_contradiction(data_dir, candidate.id):
                     contradicted_ids.append(candidate.id)
@@ -480,6 +750,7 @@ def search(
     *,
     template: str = "",
     limit: int = 5,
+    include_calibration: bool = False,
 ) -> List[KnowledgeItem]:
     """按关键词重叠检索最相关的若干条知识（4.12 节 3.）。
 
@@ -488,8 +759,13 @@ def search(
     来源的条目额外加一点权重（同类场景的因果模式更可能适用）。按
     `(score, validated_count, -contradicted_count)` 排序，只返回
     score > 0 的条目——找不到相关知识时返回空列表，不勉强凑数。
+
+    P9：`likelihood_calibration` 条目讲的是"某档位的分支最终命中率"这类元信息，不是一条
+    可检索的因果关系，默认不参与检索（不进提示词）；`include_calibration=True` 才返回。
     """
     items = load_all(data_dir)
+    if not include_calibration:
+        items = [it for it in items if it.origin != CALIBRATION_ORIGIN]
     if not items:
         return []
     query_keywords = _tokenize(query_text)
@@ -527,6 +803,8 @@ def format_for_prompt(items: List[KnowledgeItem]) -> str:
         line = f"- {item.cause} → {item.effect}（{confidence_note}，{track_record}）"
         if item.mechanism:
             line += f" {item.mechanism}"
+        if item.self_reported:
+            line += f" {SELF_REPORTED_NOTE}"
         lines.append(line)
     return "\n".join(lines)
 

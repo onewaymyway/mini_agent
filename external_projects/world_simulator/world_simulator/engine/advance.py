@@ -34,6 +34,7 @@ from world_simulator.engine.knowledge import (
     _safe_evaluate_reflexivity,
     _safe_record_causal_links,
     _safe_record_edge_outcomes,
+    _safe_record_p9_stats,
     _safe_suggest_knowledge,
 )
 from world_simulator.decision_validation import compute_option_warnings
@@ -875,6 +876,10 @@ def advance(
         step=next_state.step,
         outcomes=causal_engine.kb_outcomes(manifest.settings, next_state.effect_dispositions),
     )
+
+    # 第二十二轮 P9：未来树 likelihood 校准账本、树声明的兑现统计跨实例写入知识库（绝对值覆盖、
+    # 幂等、样本不足不写、只统计本分支自己产生的事件）。同样是落盘之后的旁路操作。
+    _safe_record_p9_stats(data_dir, store=store, manifest=manifest, branch=branch)
 
     # 第十轮批次一（`next_doc/world_simulator_tenth_round_problem_
     # discovery_automation_plan.md` 3 节）：Problem Discovery 自动

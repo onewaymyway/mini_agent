@@ -53,8 +53,9 @@
 - 降级会造成"叙事说已激活、引擎说仍是 emerging"的错位；只能记录不能消除。
 - `advance_lines()` 独立推进路径不跑本模块。
 - 校准账本只有**终结事件**数据：样本通常很少，`n<min_n` 的档位不参与倒挂判断；
-  `likelihood` 本身是 LLM 的主观档位，不是概率。账本**不**写入 `knowledge_base`
-  （跨实例副作用，P1 起一直待确认）。
+  `likelihood` 本身是 LLM 的主观档位，不是概率。账本本身只读；P9 起可另经
+  `kb_calibration_tiers()` 写入跨实例 `knowledge_base`（默认开，需树接地，样本不足不写，
+  条目标注"LLM 自报"，可撤销；见 `docs/knowledge_writeback_guide.md`）。
 """
 
 from __future__ import annotations
@@ -493,6 +494,31 @@ def build_likelihood_ledger(history: Any) -> List[Dict[str, Any]]:
                     })
         prev = cur
     return ledger
+
+
+def kb_calibration_enabled(settings: Optional[Dict[str, Any]]) -> bool:
+    """校准账本是否写入跨实例知识库（P9）：必须开启树接地，且 `settings.kb_calibration_writeback`
+    不为 False（**默认 True**）。只对用了树接地的实例生效——和 P5b 的"因果引擎开启才回写"同一思路，
+    避免升级后所有旧实例悄悄开始往共享库写东西。"""
+    return is_enabled(settings) and bool((settings or {}).get("kb_calibration_writeback", True))
+
+
+def kb_calibration_tiers(history: Any, *, own_after: Optional[int] = None) -> Dict[str, Dict[str, int]]:
+    """给 `knowledge_base.record_likelihood_calibration()` 的输入：各档位 resolved/expired/invalidated 数。
+
+    `own_after`：只统计 `step > own_after` 的终结事件——分叉出来的分支，分叉点及之前的历史是从
+    源分支**拷贝**来的，那些终结事件属于源分支；不剔除会让同一个事件被两条分支各写一遍，
+    在共享库里重复计数。`None`（主线）统计全部。
+    """
+    ledger = [
+        e for e in build_likelihood_ledger(history)
+        if own_after is None or int(e.get("step", 0) or 0) > own_after
+    ]
+    by = summarize_ledger(ledger)["by_likelihood"]
+    return {
+        tier: {k: int(by[tier].get(k, 0)) for k in ("resolved", "expired", "invalidated")}
+        for tier in _LIKELIHOODS
+    }
 
 
 def summarize_ledger(

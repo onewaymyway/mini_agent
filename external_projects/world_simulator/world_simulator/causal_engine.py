@@ -58,8 +58,8 @@
 - 入队只看"源头有进展"，不看"进展的方向/幅度"（边的 `sign`/`strength` 只随提示词展示）。
 - `delay_steps` 的语义修正只覆盖**本模块新增的边**；`relationship.py` 里关系的
   `delay_steps`（`relationship_pending_effects`）**本阶段没动**，仍按步计。
-- 兑现统计没有回写 `knowledge_base` 的 `validated_count/contradicted_count`：那是跨实例副作用，
-  与 P1 对 C8 的处理一致，待你确认后再做。
+- 兑现统计回写 `knowledge_base` 已在 P5b 实现（`causal_kb_writeback`）；P9 起这类条目带
+  `self_reported` 标注，读取侧提示"LLM 自报统计，非验证事实"。
 - `advance_lines()` 独立推进路径不入队、不处置。
 """
 

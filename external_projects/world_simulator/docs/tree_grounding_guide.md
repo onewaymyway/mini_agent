@@ -66,7 +66,9 @@
 沿分支快照链找"某分支在相邻两份快照间变为终结状态"的事件，记终结那一刻的 `likelihood` 与结局
 （`resolved` 记命中，`expired/invalidated` 记未命中），按档位汇总命中率；高档命中率低于低档且两档样本都
 ≥ `ledger_min_n`（默认 3）时报**倒挂**。给了 `likelihood_nominal` 才算与名义值的差。出现在
-`analyze_history()["c8_likelihood_ledger"]`，只读。**不写入 `knowledge_base`**（跨实例副作用，仍待确认）。
+`analyze_history()["c8_likelihood_ledger"]`，体检里只读。**P9 起**可另外写入跨实例 `knowledge_base`（`settings.kb_calibration_writeback`，默认开，
+需开启树接地；档位样本 < `kb_min_samples` 不写；标注"LLM 自报"；可撤销），见
+[`knowledge_writeback_guide.md`](./knowledge_writeback_guide.md)。
 
 ## 已知边界（如实）
 

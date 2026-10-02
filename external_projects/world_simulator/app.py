@@ -5134,6 +5134,31 @@ def page_detail() -> None:
                 placeholder='{"high": 0.8, "medium": 0.5, "low": 0.2}',
                 help="只用于体检里的校准账本对账；引擎不内置任何档位对应的概率，不填就只看命中率与倒挂。",
             )
+            st.markdown(
+                '<span class="ws-muted"><b>跨模拟知识库写入（第二十二轮 P9）</b>：下面两项会把<b>本实例</b>的统计写进所有实例共享的知识库，'
+                "条目全部标注为“LLM 自报统计，非验证事实”。一个设定离谱的实例会把偏差写进共享库、影响别的实例的提示词——"
+                "不想这样就关掉；已写入的可用命令行 <code>python entrypoints/knowledge.py retract &lt;实例id&gt;</code> 撤销。</span>",
+                unsafe_allow_html=True,
+            )
+            new_kb_cal = st.checkbox(
+                "把“可能性档位”的命中情况写入跨模拟知识库（默认开启；需开启树接地）",
+                value=bool(cur_settings.get("kb_calibration_writeback", True)), key="settings_kb_calibration_writeback",
+                help="每档一条：已 resolved 算命中，expired/invalidated 算未命中；档位和结局都是 AI 自己标的。只统计本分支自己产生的事件。",
+            )
+            new_tree_kb = st.checkbox(
+                "把树声明的兑现统计写入跨模拟知识库（默认开启；需开启“树影响世界”和因果引擎）",
+                value=bool(cur_settings.get("tree_kb_writeback", True)), key="settings_tree_kb_writeback",
+                help="只计“已兑现”（印证）与“被抵消”（证伪）；兑现与否是 AI 自报，引擎无法核验。",
+            )
+            try:
+                _kb_min_default = int(cur_settings.get("kb_min_samples") or knowledge_base_mod.DEFAULT_MIN_SAMPLES)
+            except (TypeError, ValueError):
+                _kb_min_default = knowledge_base_mod.DEFAULT_MIN_SAMPLES
+            new_kb_min = st.number_input(
+                "跨模拟写入的最小样本数", min_value=1, max_value=50, value=max(1, _kb_min_default), step=1,
+                key="settings_kb_min_samples",
+                help="某档位/某条声明有明确结论的样本数低于它时不写入共享库——两三个事件的命中率没有可比性。",
+            )
         if st.button("保存设置", key="settings_save"):
             new_objectives = [o.strip() for o in new_objectives_text.split(",") if o.strip()]
             new_objectives_advanced = _safe_json_loads(new_objectives_advanced_text, None)
@@ -5270,6 +5295,9 @@ def page_detail() -> None:
                     tree_grounding_enabled=bool(new_tg_enabled),
                     tree_auto_transition=bool(new_tg_auto and new_tg_enabled),
                     tree_effects_enabled=bool(new_te_enabled),
+                    kb_calibration_writeback=bool(new_kb_cal),
+                    tree_kb_writeback=bool(new_tree_kb),
+                    kb_min_samples=int(new_kb_min),
                     likelihood_nominal=(
                         {k: v for k, v in (_safe_json_loads(new_nominal_text, None) or {}).items()
                          if k in ("high", "medium", "low") and isinstance(v, (int, float)) and not isinstance(v, bool)}
@@ -6956,12 +6984,29 @@ def page_knowledge() -> None:
         items = sorted(items, key=lambda it: it.validated_count, reverse=True)
 
     st.caption(f"共 {len(items)} 条知识")
+    if any(it.self_reported for it in items):
+        st.caption("标注“🧾 LLM 自报”的条目：计数来自 AI 在模拟里自己报告的处置/结局，引擎无法核验，不是验证过的事实。")
     for item in items:
-        track_record = f"印证 {item.validated_count} 次"
-        if item.contradicted_count:
-            track_record += f" · 证伪 {item.contradicted_count} 次"
-        title = f"{item.cause} → {item.effect}（{_confidence_label(item.confidence)} · {track_record}）"
+        if item.origin == knowledge_base_mod.CALIBRATION_ORIGIN:
+            track_record = f"命中 {item.validated_count} · 未命中 {item.contradicted_count}"
+        else:
+            track_record = f"印证 {item.validated_count} 次"
+            if item.contradicted_count:
+                track_record += f" · 证伪 {item.contradicted_count} 次"
+        origin_tag = {
+            knowledge_base_mod.CALIBRATION_ORIGIN: "📐 档位校准 · ",
+            knowledge_base_mod.TREE_DECLARATION_ORIGIN: "🌳 树声明 · ",
+        }.get(item.origin, "")
+        self_tag = " · 🧾 LLM 自报" if item.self_reported else ""
+        title = (
+            f"{origin_tag}{item.cause} → {item.effect}"
+            f"（{_confidence_label(item.confidence)} · {track_record}{self_tag}）"
+        )
         with st.expander(title):
+            if item.self_reported:
+                st.warning(f"{knowledge_base_mod.SELF_REPORTED_NOTE}计数来自 AI 自报，不是验证过的事实。")
+            if item.source_instance:
+                st.caption(f"写入实例：{item.source_instance}（可用 entrypoints/knowledge.py retract 撤销）")
             if item.mechanism:
                 st.markdown(f"**机制**：{_html_text(item.mechanism)}", unsafe_allow_html=True)
             if item.valid_range:

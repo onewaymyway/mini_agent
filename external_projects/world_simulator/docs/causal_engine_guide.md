@@ -108,7 +108,7 @@
 
 ## P5b 补充（2026-10-01）
 
-**兑现统计回写 `knowledge_base`**（`settings.causal_kb_writeback`，**默认开**，仅因果引擎开启时生效；
+**兑现统计回写 `knowledge_base`**（P9 起这类条目带 `self_reported` 标注；跨实例写入的撤销与小样本防护见 [`knowledge_writeback_guide.md`](./knowledge_writeback_guide.md)；`settings.causal_kb_writeback`，**默认开**，仅因果引擎开启时生效；
 设为 `false` 关闭）：
 
 | 处置 | 回写 |

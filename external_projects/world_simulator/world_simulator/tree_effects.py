@@ -49,8 +49,10 @@
 
 - 引擎**无法验证**分支声明的影响是否合理，也无法验证 `realized` 是否真的写进了状态（统计是 LLM 自报）。
 - 声明由 LLM 在新增分支时可选填，或用户在设置里手填；LLM 填的是**猜测**，不是事实。
-- 树边的兑现统计（`edge_stats`）会按 `tree:` 边 id 累计，**不回写 `knowledge_base`**
-  （`causal_engine.kb_outcomes` 只认 `declared_causal_graph` 里的边；树声明是实例内的假设）。
+- 树边的兑现统计（`edge_stats`）按 `tree:` 边 id 累计。`causal_engine.kb_outcomes` 仍只认
+  `declared_causal_graph` 里的边（P5b 的"边"条目不含树声明）；P9 起树声明另经 `kb_stats()` +
+  `knowledge_base.record_tree_declaration_stats()` 写成独立的 `tree_declaration` 条目
+  （`tree_kb_writeback` 默认开、样本不足不写、标注"LLM 自报"、可撤销）。
 - 只看顶层分支；`advance_lines()` 独立推进路径不入队。
 - 不追溯：开启前已经 active 的分支不会补入队；分支状态只靠\"本步新变为 active\"触发。
 """
@@ -297,6 +299,64 @@ def safe_build_hint(*args: Any, **kwargs: Any) -> str:
 
 
 # ── 汇总（界面/体检）────────────────────────────────────────────────
+
+
+def kb_writeback_enabled(settings: Optional[Dict[str, Any]]) -> bool:
+    """树声明的兑现统计是否写入跨实例知识库（P9）：树影响与因果引擎都开启，且
+    `settings.tree_kb_writeback` 不为 False（**默认 True**）。"""
+    return is_enabled(settings) and bool((settings or {}).get("tree_kb_writeback", True))
+
+
+def _split_tree_edge(edge_id: str) -> Optional[Tuple[str, str, str]]:
+    body = edge_id[len(TREE_EDGE_PREFIX):]
+    left, sep, target = body.partition("->")
+    line_id, slash, branch_id = left.partition("/")
+    if not (sep and slash and line_id and branch_id and target):
+        return None
+    return line_id, branch_id, target
+
+
+def kb_stats(
+    settings: Optional[Dict[str, Any]], history: List[Any], *, own_after: Optional[int] = None
+) -> List[Dict[str, Any]]:
+    """给 `knowledge_base.record_tree_declaration_stats()` 的输入：每条树声明的兑现统计。
+
+    只含**有明确结论**的两种（realized/countered，口径同 P5b）。`own_after` 同
+    `tree_grounding.kb_calibration_tiers`：只统计 `step > own_after` 的处置，避免分叉继承的历史
+    被重复写入。`cause`/`effect` 取可读名（分支描述、线标签、目标线/技术节点名），声明被删掉后
+    取不到就退回 id。纯函数，不调 LLM、不落盘。
+    """
+    states = [s for s in (history or []) if own_after is None or int(getattr(s, "step", 0) or 0) > own_after]
+    declared = {
+        edge_id_for(d["line_id"], d["branch_id"], d["effect"]["to_line_id"]): d
+        for d in declared_effects((settings or {}).get("causal_lines"))
+    }
+    rows: List[Dict[str, Any]] = []
+    for edge_id, st in sorted(causal_engine.edge_stats(states).items()):
+        if not is_tree_edge(edge_id):
+            continue
+        parts = _split_tree_edge(edge_id)
+        if parts is None or not (st.get("realized") or st.get("countered")):
+            continue
+        line_id, branch_id, target = parts
+        decl = declared.get(edge_id)
+        branch_text = branch_id
+        line_text = causal_engine._display_name(settings, line_id)
+        for line in (settings or {}).get("causal_lines") or []:
+            if tree_grounding._line_id(line) != line_id:
+                continue
+            for b in tree_grounding._top_branches(line):
+                if tree_grounding._bid(b) == branch_id and str(b.get("description") or "").strip():
+                    branch_text = str(b["description"]).strip()[:40]
+        rows.append({
+            "edge_id": edge_id,
+            "cause": f"未来树分支「{branch_text}」（线「{line_text}」）被激活",
+            "effect": causal_engine._display_name(settings, target),
+            "mechanism": (decl["effect"]["mechanism"] if decl else "") or "",
+            "realized": int(st.get("realized", 0)),
+            "countered": int(st.get("countered", 0)),
+        })
+    return rows
 
 
 def summarize_open(settings: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from world_simulator import knowledge_base, reflexivity
+from world_simulator import knowledge_base, reflexivity, tree_effects, tree_grounding
 
 
 def _safe_suggest_knowledge(data_dir: Path, query_text: str, *, template: str) -> str:
@@ -56,6 +56,60 @@ def _safe_record_edge_outcomes(
         )
     except Exception:
         pass
+
+
+def _own_after(store, branch: str):
+    """分叉出来的分支，分叉点及之前的历史是从源分支拷贝来的；跨实例写入只统计分支**自己产生**的
+    事件（`step > from_step`），否则同一事件会被源分支与分叉分支各写一遍。返回 `(可写, 起点)`：
+    主线 `(True, None)`（全部都是自己的）；分叉分支取 `branch_meta.from_step`；取不到
+    （旧数据/元信息缺失）返回 `(False, None)`——**宁可不写也不重复计数**。"""
+    if branch == "main":
+        return True, None
+    try:
+        value = (store.load_branch_meta(branch) or {}).get("from_step")
+    except Exception:  # noqa: BLE001
+        return False, None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False, None
+    return True, int(value)
+
+
+def _safe_record_p9_stats(data_dir: Path, *, store, manifest, branch: str) -> None:
+    """P9：把 likelihood 校准账本与树声明兑现统计写入跨实例知识库（见
+    `knowledge_base.record_likelihood_calibration` / `record_tree_declaration_stats`）。
+
+    推进落盘**之后**的旁路操作，两路各自独立兜底（一路出错不影响另一路，更不影响本次推进）。
+    各自的开关/前置条件见 `tree_grounding.kb_calibration_enabled`、`tree_effects.kb_writeback_enabled`；
+    都不满足时什么都不做、也不读历史。`advance()` 与 `advance_lines()` 共用本函数。
+    """
+    settings = getattr(manifest, "settings", None) or {}
+    want_cal = tree_grounding.kb_calibration_enabled(settings)
+    want_tree = tree_effects.kb_writeback_enabled(settings)
+    if not (want_cal or want_tree):
+        return
+    try:
+        ok, own_after = _own_after(store, branch)
+        if not ok:
+            return
+        history = store.load_history(branch)
+        min_samples = knowledge_base.clean_min_samples(settings.get("kb_min_samples"))
+    except Exception:  # noqa: BLE001
+        return
+    common = dict(sim_id=manifest.sim_id, template=manifest.template, branch=branch, min_samples=min_samples)
+    if want_cal:
+        try:
+            knowledge_base.record_likelihood_calibration(
+                data_dir, tiers=tree_grounding.kb_calibration_tiers(history, own_after=own_after), **common
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    if want_tree:
+        try:
+            knowledge_base.record_tree_declaration_stats(
+                data_dir, stats=tree_effects.kb_stats(settings, history, own_after=own_after), **common
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _safe_evaluate_reflexivity(data_dir: Path, sim_id: str, *, branch: str) -> None:

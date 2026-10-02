@@ -1,6 +1,6 @@
 # world_simulator 改进计划（第二十二轮）：让技术/事物发展更真实、因果树可执行可校验
 
-> **状态（2026-10-02 更新）：P0–P5e 已全部实施完毕（未在真实 LLM 下验证）；后续补完阶段 P6–P10 见文末 §10：**P6、P7、P8 已实施（2026-10-02）**，P9–P10 尚未实施。**
+> **状态（2026-10-02 更新）：P0–P5e 已全部实施完毕（未在真实 LLM 下验证）；后续补完阶段 P6–P10 见文末 §10：**P6、P7、P8、P9 已实施（2026-10-02）**，P10 尚未实施。**
 > 已完成：**P0（WP0 分支隔离）**、**P1（WP4 一致性守卫+真实性体检）**、**P2（WP5 回测框架）**、**P3（WP1 技术模型 + `elapsed_days`）**、**P4（WP2 外生事件采样）**、**P5a（WP3 的 3a 边升级 + 3b 待兑现因果队列）**、**P5b（§8 三个确认项落地：关系延迟改 elapsed、兑现统计回写知识库、技术违规修复调用）**、**P5c（WP3 的 3c 树接地）**、**P5d（WP3 的 3d 树影响世界）**、**P5e（WP3 的 3e 界面收尾：因果图着色/兑现率/到期时间线）**，详见文末 §9。**WP0–WP5 的原定阶段全部实施完毕；WP5/WP2/WP3 的遗留补完与收尾列为 P6–P10（§10）。**
 > 本文只依据阅读代码得出结论，没有跑过真实 LLM，也没有在运行时复现
 > 下文 §2.4 之外的缺陷——每一条"现状"都标注了代码位置，"推断"会明说。
@@ -536,7 +536,7 @@ perceived_stage?}`。阶段序数沿用现有 6 档，不新造枚举。
   边多时图会挤；`elapsed_days` 是估计值；没有在真实 LLM 下运行过；设置页保存流程未实跑。
 - **遗留（不属于本计划各阶段、仍待你决定）**：① ~~§8 第 4 项回测案例的真实日期仍待你核对~~——已于 2026-10-02 由 Claude 核对年份并改 `verified: true`（见上"回测案例核对"；非专家审定）；
   ② 全部新机制均未在真实 LLM 下端到端验证——建议下一步用真实模型跑一遍回测（P2）并看体检（P1）的基线与开启后差异，再决定哪些默认值/阈值需要调整；
-  ③ 校准账本、树声明统计均未写入 `knowledge_base`（P5c/P5d 已记录，仍待确认）；④ 静态 HTML 导出可按需接入着色/时间线。
+  ③ ~~校准账本、树声明统计均未写入 `knowledge_base`~~——已由 P9 实施（见 §10）；④ 静态 HTML 导出可按需接入着色/时间线。
 
 ### 回测案例核对（已完成，2026-10-02，随 §10 立项一并完成）
 
@@ -552,7 +552,7 @@ perceived_stage?}`。阶段序数沿用现有 6 档，不新造枚举。
 - **验收**：`tests/test_backtest.py` 41 passed；另有 2 个 LLM 匹配器用例在本次沙箱里因缺 `fastapi`/`mini_agent.workflow` 无法运行（环境问题，
   与本改动无关，需在完整环境下复跑）。
 
-## 10. 后续计划（P6–P10，2026-10-02 立项；P6、P7、P8 已实施，P9–P10 尚未实施）
+## 10. 后续计划（P6–P10，2026-10-02 立项；P6、P7、P8、P9 已实施，P10 尚未实施）
 
 来源：P5e 之后对照代码核实的遗留缺口，用户逐项确认要做（含第 5 项"跨实例落库"）。执行方式不变：**一个阶段一个阶段做，每阶段更新文档、
 按目录结构打包新增/修改文件**。每阶段开始前，若有设计分歧再给方案确认，没有则直接实施。
@@ -564,7 +564,7 @@ perceived_stage?}`。阶段序数沿用现有 6 档，不新造枚举。
 | P6 ✅ | 回测改用 `elapsed_days` / `tech_state`，补"阶段迁移时点偏差" | P3 | WP5 本身没收完；有了它才能量化 P3–P5 是否让结果更真实 |
 | P7 ✅ | `generate_scenario` 提议事件先验（LLM 提议 + 用户确认） | P4 | WP2 原计划项，P4 时改成了纯手写 |
 | P8 ✅ | `advance_lines()` 接入新机制 | P3/P4/P5 | 独立节奏因果线推进目前绕过全部新机制，是行为不一致 |
-| P9 | C8 校准率与树声明统计跨实例写入 `knowledge_base` | P1/P5c/P5d | 用户已确认跨实例落库；放在 P8 之后，让写入的数据覆盖两条推进路径 |
+| P9 ✅ | C8 校准率与树声明统计跨实例写入 `knowledge_base` | P1/P5c/P5d | 用户已确认跨实例落库；放在 P8 之后，让写入的数据覆盖两条推进路径 |
 | P10 | 静态 HTML 导出接入新机制 | P6–P9 | 纯展示，放最后一次性接齐 |
 
 ### P6 — 回测改用引擎记录的时间与技术状态（WP5 补完）✅ 已实施（2026-10-02）
@@ -686,7 +686,7 @@ perceived_stage?}`。阶段序数沿用现有 6 档，不新造枚举。
   **没有在真实 LLM 下运行过**（线是否遵守"只提议与自己相关的技术变化"、`elapsed_days` 质量、额外 token 成本都未知）；P8 没有改界面，没有浏览器级验证。
 - **下一阶段**：P9（校准率与树声明统计跨实例写入 `knowledge_base`，含撤销/自报标注/小样本不写入三项防护）。
 
-### P9 — 校准率与树声明统计跨实例写入 `knowledge_base`
+### P9 — 校准率与树声明统计跨实例写入 `knowledge_base` ✅ 已实施（2026-10-02）
 
 - **用户决策**：跨实例落库（✅ 已确认）。涵盖：① C8/`build_likelihood_ledger` 的 likelihood 档位命中率；② P5d 树声明（`effects_if_active`）的兑现统计
   （P5d 当时的取舍是"实例内假设、不回写"，现按用户决定改为回写，与 P5b 的边统计回写并列；**边统计回写已在 P5b 实现，本阶段不重做**）。
@@ -696,6 +696,31 @@ perceived_stage?}`。阶段序数沿用现有 6 档，不新造枚举。
   ② 条目带 `self_reported=true`，读取侧（提示词注入、界面）标注"LLM 自报统计，非验证事实"；③ 样本数低于阈值时不写入。
 - **验收**：幂等、撤销、小样本不写入、读取侧标注；旧知识库文件向后兼容。
 - **风险**：跨世界污染——一个设定离谱的实例会把偏差写进共享库、影响其它实例的提示词。撤销与标注是缓解，不是消除。
+
+#### P9 实施记录（2026-10-02）
+
+- **做了什么**：新增两类跨实例条目（`origin` 区分）——`likelihood_calibration`（某分支上每个 likelihood 档位一条：resolved 记命中，expired+invalidated 记未命中）与
+  `tree_declaration`（每条 `effects_if_active` 声明一条：`realized` 印证、`countered` 证伪）。都带 `self_reported=true`/`source_instance`。绝对值覆盖更新（不是累加），
+  所以重复推进/补跑幂等，未变化不重写文件；以 `evidence` 里的 `sim@branch#likelihood:档位` / `#treedecl:边id` 定位。`advance()` 与 `advance_lines()` 共用
+  `engine/knowledge._safe_record_p9_stats`（推进落盘之后的旁路，两路各自 try/except）。详见 `docs/knowledge_writeback_guide.md`。
+- **三项防护（计划要求）**：① 撤销——`knowledge_base.retract_instance()` + `entrypoints/knowledge.py`（`list`/`retract`，`--dry-run`、`--include-legacy`）；
+  ② 自报标注——提示词注入后缀"【LLM 自报统计，非验证事实】"、知识库页标 🧾 与警告，P5b 的边兑现条目也补了 `self_reported`；③ 样本不足不写——`kb_min_samples`（默认 3，占位值）。
+- **开关**：`kb_calibration_writeback`（默认开，需 `tree_grounding_enabled`）、`tree_kb_writeback`（默认开，需 `tree_effects_enabled` + `causal_engine_enabled`）、`kb_min_samples`；设置页三个控件。
+- **与计划/原设想的偏离与自行决定（请审阅）**：① 默认开但**加前置条件**——计划写默认开；不加的话升级后所有旧实例会悄悄开始往共享库写，故要求对应机制已开启；
+  ② **分叉去重**——分叉分支只统计 `step > from_step` 的事件，否则源分支与分叉分支各写一遍；分叉元信息缺失时宁可不写；③ **P9 条目独立**：不参与 Jaccard 合并、不被 P5b 命中、不被现实反馈证伪；
+  **校准条目不进检索/提示词**（元信息不是因果关系），树声明条目可被检索；④ 树声明条目**不并入** P5b 的"边"条目（树声明是单实例假设，混入会改变"边统计"的含义）；
+  ⑤ **顺带修了 P8 的遗漏**：`advance_lines()` 路径此前从未调用 P5b 的边兑现回写，现已补上——开启因果引擎的独立推进实例会开始回写（行为变化）；
+  ⑥ 撤销只能精确回退 P9 条目与"确认只由该实例产生"的旧来源条目，与别的实例合并过计数的旧条目不动、只报告数量。
+- **文件**：新增 `entrypoints/knowledge.py`、`tests/test_p9_kb_writeback.py`、`docs/knowledge_writeback_guide.md`；修改 `world_simulator/knowledge_base.py`、`tree_grounding.py`、`tree_effects.py`、
+  `engine/knowledge.py`、`engine/advance.py`、`engine/advance_independent.py`、`app.py`，以及 `consistency_guard.py`/`causal_engine.py` 里已过时的"不写入 knowledge_base"说明、
+  `docs/{tree_grounding,tree_effects,causal_engine}_guide.md`、`docs/README.md`、`docs/testing_guide.md`、`PROJECT.md`、本文件。
+- **验收**：全量 `external_projects/world_simulator/tests`（依赖同 P6 记录）**1217 passed**（P8 后 1163 + 54）；对实现做了 37 个变异（字段序列化、累加 vs 覆盖、阈值边界、invalidated 计入、
+  搜索/合并/现实反馈污染、自报标注、撤销的前缀碰撞/共享条目/标注/dry-run/他实例、`own_after` 过滤与缺元信息、开关与前置条件、两条路径未接线、单路失败隔离、树统计口径、去重键等），
+  首轮存活 6 个（invalidated 计入、前缀碰撞、失败隔离桩、`@` 引用拆分、非树边识别、未变化仍重写），补用例后全部转红；`streamlit.testing.AppTest` 冒烟：知识库页（📐/🌳/🧾 标注）与详情页设置面板新控件渲染、无异常。
+- **已知边界**：① 跨世界污染只能缓解不能消除（树声明条目可被检索进别的实例的提示词）；② 第一个被推进的步没有基线快照，在这一步就终结的分支不计入（P5c 账本既有口径，有用例固定）；
+  ③ `merge_branch` 之后被并入的事件可能被目标分支再算一次，未处理；④ 无法精确撤销已合并计数的旧条目；删除实例不会自动撤销；⑤ 阈值 3 是占位值；⑥ 没有在真实 LLM 下运行过；
+  ⑦ 界面只做 AppTest 冒烟，无浏览器级目视验证，设置页保存流程未实跑。
+- **下一阶段**：P10（静态 HTML 导出接入新机制）。
 
 ### P10 — 静态 HTML 导出接入新机制
 

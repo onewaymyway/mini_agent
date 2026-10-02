@@ -4513,4 +4513,13 @@ deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
   **默认行为变化**：一致性守卫（默认开）现在也在这条路径上写 `consistency_warnings`。**与计划偏差**：线仍不产出 `tree_updates`/`causal_links`、不处理 `triggered_relationships`，所以树只靠结构化触发条件自动迁移。
   **文件**：`engine/mechanisms.py`（新）、`engine/advance.py`、`engine/advance_independent.py`、`causal_engine.py`（`build_hint` 新增 `ask_elapsed_override`）、`workflows/line_evolve.yaml`（1.1）、`tests/test_advance_lines_mechanisms.py`（新，33 用例）、
   `docs/independent_line_mechanisms_guide.md`（新）及五份机制指南、`docs/README.md`、`docs/testing_guide.md`、计划文档。**测试**：全量 1163 passed（1130 + 33）；24 个变异首轮存活 4 个，补用例后全部转红。
-  **已知边界**：`elapsed_days` 是各线自报值的最大值；投给没到点线的事件不补投；挂起项占用队列名额；未在真实 LLM 下运行；未改界面。**下一阶段**：P9。
+  **已知边界**：`elapsed_days` 是各线自报值的最大值；投给没到点线的事件不补投；挂起项占用队列名额；未在真实 LLM 下运行；未改界面。**下一阶段**：P9（已完成，见下）。
+
+- **第二十二轮 P9：校准率与树声明统计跨实例写入知识库（2026-10-02）**：新增 `likelihood_calibration`（每分支每档位一条：resolved 命中，expired+invalidated 未命中）与 `tree_declaration`
+  （每条 `effects_if_active` 声明一条：realized 印证、countered 证伪）两类跨实例条目，带 `origin`/`self_reported`/`source_instance`（仅有值时落盘，旧文件逐字节不变）。绝对值覆盖、幂等、
+  只统计本分支自己产生的事件（分叉去重，元信息缺失不写）、样本 < `kb_min_samples`（默认 3，占位值）不写；P9 条目不被旧来源合并/命中/现实反馈证伪，校准条目不进检索。
+  防护：`retract_instance()` + `entrypoints/knowledge.py`（`list`/`retract`）、提示词与知识库页"LLM 自报"标注（P5b 条目也补标）、小样本门槛。开关 `kb_calibration_writeback`（默认开，需树接地）、
+  `tree_kb_writeback`（默认开，需树影响+因果引擎）、`kb_min_samples`。**顺带**补上 P8 遗漏：`advance_lines()` 路径此前未调用 P5b 边兑现回写。
+  **文件**：`knowledge_base.py`、`tree_grounding.py`、`tree_effects.py`、`engine/{knowledge,advance,advance_independent}.py`、`app.py`、`entrypoints/knowledge.py`（新）、
+  `tests/test_p9_kb_writeback.py`（新，54 个）、`docs/knowledge_writeback_guide.md`（新）及三份机制指南/README/testing_guide、计划文档。**测试**：全量 1217 passed；37 个变异全部转红；AppTest 冒烟通过。
+  **已知边界**：跨世界污染只能缓解；第一个被推进的步无基线不计入；`merge_branch` 可能重复计数；合并过计数的旧条目无法精确撤销；未在真实 LLM 下运行；界面无目视验证。**下一阶段**：P10。

@@ -60,8 +60,10 @@
 
 - 引擎**无法验证**声明是否合理，也无法验证 `realized` 是否真的写进了状态——统计是 LLM 自报。
 - 只看顶层分支；`advance_lines()` 独立推进路径自 P8 起也入队（仅在分支被树接地自动迁移为 active 时触发，因为线不产出 `tree_updates`）；不追溯（开启前已 active 的分支不补入队）。
-- 树边统计不回写 `knowledge_base`（`causal_engine.kb_outcomes` 只认 `declared_causal_graph` 里的边；
-  树声明是实例内的假设）。
+- 树边统计**不并入** P5b 的"边"条目（`causal_engine.kb_outcomes` 只认 `declared_causal_graph` 里的边）；
+  **P9 起**另写成独立的 `tree_declaration` 跨实例条目（`settings.tree_kb_writeback`，默认开；需同时开
+  树影响与因果引擎；有明确结论的样本 < `kb_min_samples` 不写；标注"LLM 自报"；可撤销），见
+  [`knowledge_writeback_guide.md`](./knowledge_writeback_guide.md)。
 - **从第 0 步（种子步，没有快照）分叉时，新分支沿用当前工作副本**，其中包含主线已排的待兑现项与树状态——
   这是 P0 起就记录的既有边界，不是本阶段引入（技术模型靠"种子锚定"单独规避；因果树/待兑现项没有做同样的锚定）。
   从任何有快照的步分叉则正确回滚。

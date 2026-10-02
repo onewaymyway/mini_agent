@@ -58,8 +58,9 @@
 
 ## 不做的事（如实记录）
 
-- 不把 C8 校准率写进跨模拟 `knowledge_base`：那是跨实例共享数据，写入有
-  副作用，本阶段只读展示；计划里"也可写入"是可选项，留到确认后再做。
+- 本模块自己只读展示 C8 校准率，不写盘。跨实例写入 `knowledge_base` 由 P9 在
+  `tree_grounding.kb_calibration_tiers()` + `knowledge_base.record_likelihood_calibration()`
+  实现（见 `docs/knowledge_writeback_guide.md`），不在体检里发生。
 - 不做修复调用（`consistency_repair_enabled` 属于后续阶段）。
 - `advance_lines()`（独立推进）路径本阶段不做逐步守卫；体检从历史重算，
   该路径的步同样会被覆盖到。

@@ -47,7 +47,7 @@ from typing import Any, Dict, List
 
 import copy
 
-from world_simulator import consistency_guard, event_sampler, tech_model
+from world_simulator import causal_engine, consistency_guard, event_sampler, tech_model
 from world_simulator.engine import mechanisms
 from world_simulator.engine.errors import (
     OwnedVarsOverlapError,
@@ -56,6 +56,7 @@ from world_simulator.engine.errors import (
     SimPausedError,
 )
 from world_simulator.engine.ids import _skill_name_for_template
+from world_simulator.engine.knowledge import _safe_record_edge_outcomes, _safe_record_p9_stats
 from world_simulator.state_model import SimState
 from world_simulator.store import SimStore
 
@@ -329,6 +330,15 @@ def advance_lines(cfg, workspace_root: Path, data_dir: Path, sim_id: str) -> Sim
     mechanisms.snapshot_and_check(manifest, next_state, history, tree_before=tree_before)
 
     store.append_state(next_state, branch=branch)
+
+    # P9：独立推进路径也要覆盖到跨实例写入。P5b 的边兑现回写此前只在 `advance()` 里调用
+    # （P8 漏接，线路径产生的处置从未回写）；这里一并补上，与 P9 的两类统计同一处、同样的开关。
+    _safe_record_edge_outcomes(
+        data_dir, sim_id=sim_id, template=manifest.template, branch=branch, step=next_state.step,
+        outcomes=causal_engine.kb_outcomes(manifest.settings, next_state.effect_dispositions),
+    )
+    _safe_record_p9_stats(data_dir, store=store, manifest=manifest, branch=branch)
+
     manifest.current_step = next_state.step
     store.save_manifest(manifest)
     return next_state
