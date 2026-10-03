@@ -47,6 +47,7 @@ from world_simulator import causal_graph as cg_mod
 from world_simulator import causal_tree
 from world_simulator import hypothesis as hyp_mod
 from world_simulator import reality_check as rc_mod
+from world_simulator import element_registry as element_mod
 from world_simulator import tech_model as tech_mod
 from world_simulator import event_sampler as event_mod
 from world_simulator import causal_engine as causal_mod
@@ -4984,7 +4985,19 @@ def page_detail() -> None:
             new_tech_enabled = st.checkbox(
                 "开启技术发展模型", value=cur_tech_enabled, key="settings_tech_model_enabled",
             )
-            cur_tech_nodes = (cur_settings.get("tech_state") or {}).get("nodes") or []
+            new_element_enabled = st.checkbox(
+                "启用统一元素模型（第二十三轮 E1，默认：新实例开启 / 旧实例关闭）",
+                value=element_mod.is_enabled(cur_settings), key="settings_element_modeling_enabled",
+                help=(
+                    "开启后，技术节点不再单独存放，而是作为各因果线的 lifecycle 子对象（统一 id 空间）；"
+                    "技术裁决规则不变。旧实例开启时会把现有技术节点折叠进因果线（幂等）；"
+                    "关闭时会把它们还原回独立的技术节点列表。当前阶段（E1）只改存储位置，不改 AI 行为。"
+                ),
+            )
+            if element_mod.is_enabled(cur_settings):
+                cur_tech_nodes = tech_mod.get_nodes(cur_settings)
+            else:
+                cur_tech_nodes = (cur_settings.get("tech_state") or {}).get("nodes") or []
             new_tech_state_text = st.text_area(
                 "技术节点（JSON 数组，可选；保存会覆盖当前技术状态，包括进度）",
                 value=json.dumps(cur_tech_nodes, ensure_ascii=False, indent=1) if cur_tech_nodes else "",
@@ -5234,6 +5247,23 @@ def page_detail() -> None:
                     [line for line in new_causal_lines if isinstance(line, dict)]
                     if isinstance(new_causal_lines, list) else []
                 )
+                # 第二十三轮 E1：技术节点的存储位置由元素模式开关决定。文本框里的技术节点是权威
+                # （与旧行为一致：留空 = 清空）。开启 → 写进各线 `lifecycle`、不再留 `tech_state`；
+                # 关闭 → 还原成独立的 `tech_state`，并去掉线上的 `lifecycle`（避免残留过期副本）。
+                _tech_nodes_in = new_tech_state if isinstance(new_tech_state, list) else []
+                if new_element_enabled:
+                    _tmp = {"element_modeling_enabled": True, "causal_lines": causal_lines_to_save}
+                    tech_mod.replace_nodes(_tmp, _tech_nodes_in)
+                    causal_lines_to_save = _tmp.get("causal_lines") or []
+                    tech_state_to_save = {}
+                else:
+                    causal_lines_to_save = [
+                        {k: v for k, v in line.items() if k != "lifecycle"} for line in causal_lines_to_save
+                    ]
+                    tech_state_to_save = (
+                        {"nodes": tech_mod.get_nodes({"tech_state": {"nodes": new_tech_state}})}
+                        if isinstance(new_tech_state, list) else {}
+                    )
                 declared_causal_graph_to_save = (
                     [item for item in new_declared_causal_graph if isinstance(item, dict)]
                     if isinstance(new_declared_causal_graph, list) else []
@@ -5276,10 +5306,8 @@ def page_detail() -> None:
                     problem_discovery_auto_scan_interval=int(new_pd_auto_scan_interval),
                     capability_discovery_auto_scan_interval=int(new_cd_auto_scan_interval),
                     tech_model_enabled=bool(new_tech_enabled),
-                    tech_state=(
-                        {"nodes": tech_mod.get_nodes({"tech_state": {"nodes": new_tech_state}})}
-                        if isinstance(new_tech_state, list) else {}
-                    ),
+                    element_modeling_enabled=bool(new_element_enabled),
+                    tech_state=tech_state_to_save,
                     tech_params=new_tech_params if isinstance(new_tech_params, dict) else {},
                     tech_priors=new_tech_priors if isinstance(new_tech_priors, dict) else {},
                     tech_repair_enabled=bool(new_tech_repair),

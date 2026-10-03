@@ -39,11 +39,11 @@ def _slim(violations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     ]
 
 
-def _restore(settings: Dict[str, Any], tech_state: Optional[Dict[str, Any]]) -> None:
-    if tech_state is None:
-        settings.pop("tech_state", None)
-    else:
-        settings["tech_state"] = copy.deepcopy(tech_state)
+def _restore(settings: Dict[str, Any], tech_state: Any) -> None:
+    """回滚技术状态。`tech_state` 是 `tech_model.capture_storage()` 的返回值（也兼容旧式的
+    裸 `tech_state` 值 / `None`）；存取细节（`tech_state` 还是元素 `lifecycle`）由
+    `tech_model.restore_storage()` 处理。"""
+    tech_model.restore_storage(settings, tech_state)
 
 
 def _record(status: str, before: List[Dict[str, Any]], after: List[Dict[str, Any]], notes: List[str]) -> Dict[str, Any]:
@@ -110,7 +110,8 @@ def safe_repair_tech_step(
     裁决后的状态，否则恢复第一次裁决后的状态）。
 
     Args:
-        pre_tech_state: **第一次裁决之前**的 `settings["tech_state"]` 深拷贝（`None` 表示当时没有）。
+        pre_tech_state: **第一次裁决之前**的技术状态存储（`tech_model.capture_storage()` 的返回值；
+            兼容旧式的裸 `settings["tech_state"]` 深拷贝，`None` 表示当时没有）。
         audit/violations: 第一次裁决的结果。
 
     Returns:
@@ -120,12 +121,11 @@ def safe_repair_tech_step(
     before = tech_model.repairable_violations(violations)
     if not before:
         return audit, violations, None
-    post_first = copy.deepcopy(settings.get("tech_state"))
+    post_first = tech_model.capture_storage(settings)
     try:
         repaired_raw = _call_repair_workflow(
             cfg, workspace_root,
-            settings_before={**settings, "tech_state": pre_tech_state} if pre_tech_state is not None
-            else {k: v for k, v in settings.items() if k != "tech_state"},
+            settings_before=tech_model.settings_with_storage(settings, pre_tech_state),
             proposals=proposals, violations=before, narrative_hint=narrative_hint,
         )
         constrained, notes = tech_model.constrain_repair(proposals, repaired_raw)

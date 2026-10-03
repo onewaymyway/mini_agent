@@ -487,12 +487,15 @@ def extract_tech_nodes(
     for state in states:
         step = int(getattr(state, "step", 0) or 0)
         snap = getattr(state, "dynamic_snapshot", None)
-        if isinstance(snap, dict) and isinstance(snap.get("tech_state"), dict):
-            current = snap["tech_state"]
+        # 快照里的技术节点有两种形态：旧 `tech_state`，或元素模式下 `causal_lines[].lifecycle`
+        # （第二十三轮 E1）；都没有就沿用上一份（快照只在有变化时写）。
+        view = tech_model.settings_view_of_snapshot(snap)
+        if view is not None:
+            current = view
         if current is None:
             continue
         t = _time_at(step, start_year, years_per_step, timeline)
-        for raw in tech_model.get_nodes({"tech_state": current}, step=step):
+        for raw in tech_model.get_nodes(current, step=step):
             tid = raw["id"]
             idx = _stage_idx(raw["stage"])
             if idx is None:

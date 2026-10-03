@@ -258,16 +258,18 @@ def evaluate_condition(
         return True, ""
     if not isinstance(condition, dict):
         return False, "条件写法非法"
-    if "tech" in condition:
+    if "tech" in condition or "element" in condition:
+        # `element` 是第二十三轮新增的同义写法（统一元素模型，方案 §4.2）；两者都写时以 `tech` 为准。
+        ref = condition["tech"] if "tech" in condition else condition["element"]
         min_stage = condition.get("min_stage")
         need = tech_model.stage_index(min_stage)
         if need is None:
             return False, "条件里的 min_stage 非法"
-        node = next((n for n in tech_model.get_nodes(settings) if n["id"] == str(condition["tech"])), None)
+        node = next((n for n in tech_model.get_nodes(settings) if n["id"] == str(ref)), None)
         if node is None:
-            return False, f"技术 {condition['tech']} 未登记"
+            return False, f"技术 {ref} 未登记"
         if (tech_model.stage_index(node["stage"]) or 0) < need:
-            return False, f"技术 {condition['tech']} 阶段 {node['stage']} 低于 {min_stage}"
+            return False, f"技术 {ref} 阶段 {node['stage']} 低于 {min_stage}"
         return True, ""
     if "var" in condition:
         op = condition.get("op")

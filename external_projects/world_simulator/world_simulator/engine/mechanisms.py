@@ -57,9 +57,9 @@ def any_mechanism_enabled(settings: Optional[Dict[str, Any]]) -> bool:
 
 def anchor_tech_seed(store: Any, manifest: Any, branch: str, history: List[Any], current: Any) -> Tuple[List[Any], Any]:
     """技术种子锚定（WP1），搬自 `advance()`：返回（可能已刷新的）`(history, current)`。"""
-    if tech_model.is_enabled(manifest.settings) and manifest.settings.get("tech_state"):
+    if tech_model.is_enabled(manifest.settings) and tech_model.storage_has_nodes(manifest.settings):
         _anchor = dynamic_state.latest_snapshot(history)
-        if (_anchor is None or "tech_state" not in _anchor) and dynamic_state.commit_working_copy(
+        if (_anchor is None or not tech_model.snapshot_has_nodes(_anchor, manifest.settings)) and dynamic_state.commit_working_copy(
             store, manifest, branch
         ):
             history = store.load_history(branch)
@@ -128,7 +128,7 @@ def apply_post_llm(
         # 修复调用（P5b，独立 opt-in `tech_repair_enabled`）需要"本步开始前"的技术状态用来回滚重裁，
         # 所以只在开启时才拷贝，关闭时零开销、不走任何新分支。
         _pre_tech_state = (
-            copy.deepcopy(manifest.settings.get("tech_state")) if tech_model.repair_enabled(manifest.settings) else None
+            tech_model.capture_storage(manifest.settings) if tech_model.repair_enabled(manifest.settings) else None
         )
         next_state.tech_updates, next_state.tech_violations = tech_model.safe_apply_step(
             manifest.settings,

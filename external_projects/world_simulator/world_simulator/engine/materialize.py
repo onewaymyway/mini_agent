@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from world_simulator import causal_tree
+from world_simulator import causal_tree, element_registry
 from world_simulator.engine.ids import _new_sim_id
 from world_simulator.spec_generator import generate_scenario
 from world_simulator.state_model import ChoiceOption, SimManifest, SimState
@@ -106,6 +106,15 @@ def materialize_simulation(
             manifest.settings.get("causal_lines"), as_of_step=0
         ),
     }
+    # 第二十三轮 E1（`next_doc/world_simulator_element_causal_lines_plan.md` §5.2）：新实例显式
+    # 写入元素模式总开关（默认开）；调用方明确传了 True/False 就尊重。旧实例的 manifest 里没有这个
+    # key = 关闭，行为不变。创建时若带有 `tech_state` 种子，落盘时折叠进元素 `lifecycle`
+    # （放在 `ensure_future_trees` 之后：保证"至少有一条核心因果线"的既有兜底不受影响）。
+    _settings = dict(manifest.settings)
+    _settings.setdefault("element_modeling_enabled", True)
+    if element_registry.is_enabled(_settings) and _settings.get("tech_state") is not None:
+        element_registry.fold_legacy_tech_state(_settings)
+    manifest.settings = _settings
     store.save_manifest(manifest)
     store.append_state(state0, branch="main")
     store.save_pilot_config("main", manifest.pilot_mode, manifest.autopilot)

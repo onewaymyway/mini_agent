@@ -102,6 +102,15 @@
 LLM 在登记新节点时给出的 `typical_dwell_days` 会标 `dwell_source: llm_estimate`、
 `dwell_verified: false`，界面显示"典型时长未验证"。**这些数值没有任何来源保证，请自行校准。**
 
+## 存储位置（第二十三轮 E1：统一元素模型）
+
+技术节点放在哪由 `settings.element_modeling_enabled` 决定：**未写入/False（旧实例）= `settings.tech_state.nodes`**
+（与本文其余部分描述一致）；**True（新实例默认）= `settings.causal_lines[].lifecycle`**，节点成为带
+`element_type=technology` 的元素线，`id`/`name` 对应线的 `id`/`label`，节点原 `kind` 存为 `lifecycle.sub_kind`。
+**裁决规则（R1–R7、T1–T10、修复调用）一字不改**，对外读写入口仍是 `tech_model.get_nodes()` 等函数，
+`tech_updates` 协议键名不变。下文凡写 `tech_state` 之处，在元素模式下读作"各线的 `lifecycle`"。
+细节、折叠规则与边界见 [`element_model_guide.md`](./element_model_guide.md)。
+
 ## 分支行为
 
 `tech_state` 是分支作用域的动态状态（`dynamic_state.DYNAMIC_KEYS`）：分叉即回滚到那一刻的技术状态，
@@ -143,5 +152,5 @@ workflow、不额外调用 LLM，行为与之前逐字节一致。
 
 ## 相关
 
-- 测试：`tests/test_tech_model.py`（54 个用例，见 `testing_guide.md`）
+- 测试：`tests/test_tech_model.py`（54 个用例，见 `testing_guide.md`）；元素存储下的契约测试见 `tests/test_element_tech_adapter.py`
 - 设计/记录：`next_doc/world_simulator_realism_tech_and_causal_engine_plan.md` §4 WP1、§9 P3

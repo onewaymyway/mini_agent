@@ -1,6 +1,6 @@
 # world_simulator 改进计划（第二十三轮）：因果线从"领域级"升级为"元素级"，并在模拟中持续发现新元素
 
-> **状态（2026-10-03）：方案已确认，尚未实施。** 实施按 §6 分期（E1–E6）一个阶段一个阶段执行，
+> **状态（2026-10-03）：方案已确认；E1 已实施（见 §10），E2–E6 尚未实施。** 实施按 §6 分期（E1–E6）一个阶段一个阶段执行，
 > 每阶段完成后更新相关文档并打包修改/新增文件（保持目录结构，可直接覆盖）。
 > 本文只依据阅读代码得出结论，没有跑过真实 LLM，也没有运行时复现；每条"现状"都标了代码位置，
 > "推断"会明说。
@@ -467,6 +467,49 @@ active。分级只是展示细节，不是权限。
 ## 10. 实施记录
 
 （各阶段完成后在此回填：改动文件、测试、与计划的偏差、遗留问题。）
+
+### 进度总表
+
+| 阶段 | 状态 | 说明 |
+|---|---|---|
+| E1 数据模型、存取层、兼容 | ✅ 已完成（2026-10-03） | 见下 |
+| E2 创建阶段元素展开 | ⬜ 未开始 | |
+| E3 发现、去重、登记、补全 | ⬜ 未开始 | |
+| E4 分层与 prompt 预算 | ⬜ 未开始 | |
+| E5 元素运维与周期扫描 | ⬜ 未开始 | |
+| E6 联动与收尾 | ⬜ 未开始 | |
+
+### E1 实施记录（2026-10-03）
+
+**范围**：数据模型、存取层、兼容。**不改 LLM 行为**：没有新增 prompt 段落、输出协议键或 LLM 调用。
+
+**新增**
+- `world_simulator/element_registry.py`：开关 `is_enabled`；`norm_key`（NFKC+小写+去标点，只做精确规范化匹配）；`normalize_element`（只规整出现了的字段，非法值丢弃，旧式线逐字节不变）；`get_lines`/`resolve`（精确 id→规范化 id→规范化 label/别名）/`domains`/`children_of`/`group_by_domain`；`node_to_lifecycle`/`line_to_node_raw`（节点 `kind`→`lifecycle.sub_kind`，`id`/`name`↔线 `id`/`label`）；`read_tech_nodes_raw`/`write_tech_nodes`/`new_tech_line`；`fold_legacy_tech_state`（幂等；与领域线 id 冲突→`<id>_tech`+别名+改写前置引用；与非领域同 id 线→并入）。
+- `tests/test_element_registry.py`（28 个）、`tests/test_element_tech_adapter.py`（29 个）、`docs/element_model_guide.md`。
+
+**修改**
+- `tech_model.py`：`get_nodes`/`_write_nodes` 经开关选存储；新增 `replace_nodes`、`capture_storage`/`restore_storage`/`settings_with_storage`（修复调用的回滚点）、`storage_has_nodes`/`snapshot_has_nodes`（种子锚定）、`settings_view_of_snapshot`（回测）；`is_enabled` 增同义别名 `element_lifecycle_enabled`。**裁决规则（R1–R7、T1–T10）代码一字未改。**
+- `engine/tech_repair.py`、`engine/mechanisms.py`：不再直接碰 `settings["tech_state"]`，改走上述适配函数（旧模式行为等价）。
+- `dynamic_state.py`：`DYNAMIC_KEYS` 增 `element_candidates`；`apply_to_settings` 在元素模式下折叠旧形态快照。
+- `engine/materialize.py`：新实例显式写入 `element_modeling_enabled: True`（尊重调用方显式值），`tech_state` 种子落盘时折叠（在 `ensure_future_trees` 之后，`main_line` 兜底不变）。
+- `event_sampler.py`：条件新增 `{"element": id}` 同义写法。`backtest.py`：`extract_tech_nodes` 同时读两种快照形态。
+- `app.py`：设置页新增"启用统一元素模型"复选框；技术节点文本框读写当前存储；保存时文本框为权威。
+
+**测试**：全量 `pytest tests/` **1302 passed**（基线 1245 + 57 新增；既有用例零修改）。变异验证 12 个全部转红（首轮存活 2 个：精确 id 优先、写入后清理空 `tech_state`，补用例后清零）。
+核心契约：同一组提议分别走旧存储与元素存储，`apply_step` 的审计/违规/节点读出完全一致；`advance` 端到端（旧种子+开关、预折叠种子）、分叉回滚、分支互不污染、修复调用 accepted/rejected/重裁失败均在元素存储下验证。
+测试过程中发现并修掉一个真实缺陷：修复调用被拒绝、要把"第一次裁决后"的状态放回时，元素模式下被回滚撤销的技术登记线没有放回（`restore_storage` 现以捕获时的顺序为骨架重建，并有专门用例）。
+
+**与计划的偏差**
+1. §6 E1 "因果线总览/HTML 导出按领域分组"：只做了 `group_by_domain` 工具函数（有测试），渲染接线推迟到 E2。理由：E1 里引擎不会创建领域线，分组渲染是空操作，没有可验证的东西。
+2. `docs/element_model_guide.md` 计划在 E6 新增，提前建立并随各阶段增补，避免文档滞后。
+3. §8 第 8 条"逐一核对 `tech_state` 读取点"：已核对 `world_simulator/` 与 `app.py` 全部引用，除 `state_model.py`/`tree_grounding.py`/`html_export_mechanisms.py` 的文档注释外均已走适配器（见 `grep tech_state` 结果）。
+4. 计划 §4.2 提到的 `html_export_mechanisms` 适配：它通过 `tech_model.summarize`/`apply_to_settings` 读取，已随适配器自动生效，无需单独改动（`tests/test_html_export_mechanisms.py` 全部通过）。
+
+**遗留 / 已知边界**
+- 新实例默认开启后，带技术种子的实例里每个技术节点会作为一条因果线出现在总览与 prompt 因果线列表里（带默认三分支树）；E4 的分级与预算才控制其展开程度。
+- 设置页"因果线 JSON"文本框在元素模式下包含各技术线 `lifecycle`；与技术节点文本框同时手改时，以后者为准。
+- `app.py` 新增代码只做静态检查与 import 级验证，没有 Streamlit 运行时验证。
+- 未在真实 LLM 下运行。
 
 ### 仍不属于本轮的遗留
 

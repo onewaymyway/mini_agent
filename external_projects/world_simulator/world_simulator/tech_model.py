@@ -78,6 +78,7 @@ import math
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from world_simulator import element_registry
 from world_simulator.capability_discovery import _MATURITY_STAGES as _CD_STAGES
 
 STAGES: Tuple[str, ...] = tuple(_CD_STAGES)
@@ -113,7 +114,10 @@ DEFAULT_PARAMS: Dict[str, Any] = {
 
 
 def is_enabled(settings: Optional[Dict[str, Any]]) -> bool:
-    return bool((settings or {}).get("tech_model_enabled"))
+    """技术生命周期规则开关。`element_lifecycle_enabled` 是第二十三轮新增的同义别名
+    （方案 §4.2）；两个 key 都没写时与以前一致（关）。"""
+    s = settings or {}
+    return bool(s.get("tech_model_enabled") or s.get("element_lifecycle_enabled"))
 
 
 def stage_index(stage: Any) -> Optional[int]:
@@ -237,9 +241,18 @@ def normalize_node(raw: Dict[str, Any], *, step: int = 0) -> Optional[Dict[str, 
 
 
 def get_nodes(settings: Optional[Dict[str, Any]], *, step: int = 0) -> List[Dict[str, Any]]:
-    """读出 `settings.tech_state.nodes` 并规整（重复 id 保留第一个）。"""
-    state = (settings or {}).get("tech_state")
-    raw_nodes = state.get("nodes") if isinstance(state, dict) else None
+    """读出技术节点并规整（重复 id 保留第一个）。
+
+    存储位置由 `element_registry.is_enabled(settings)` 决定（第二十三轮 E1，存取适配器）：
+    - 关闭（旧实例，默认）：`settings.tech_state.nodes`，与以前逐字节一致；
+    - 开启：`settings.causal_lines[].lifecycle`（万一还有没折叠的旧 `tech_state` 节点也并入）。
+    两种存储交给同一个 `normalize_node()` 规整，裁决规则看到的节点 dict 完全一样。
+    """
+    if element_registry.is_enabled(settings):
+        raw_nodes = element_registry.read_tech_nodes_raw(settings)
+    else:
+        state = (settings or {}).get("tech_state")
+        raw_nodes = state.get("nodes") if isinstance(state, dict) else None
     seen: set = set()
     nodes: List[Dict[str, Any]] = []
     for raw in raw_nodes or []:
@@ -252,10 +265,130 @@ def get_nodes(settings: Optional[Dict[str, Any]], *, step: int = 0) -> List[Dict
 
 
 def _write_nodes(settings: Dict[str, Any], nodes: List[Dict[str, Any]]) -> None:
+    if element_registry.is_enabled(settings):
+        element_registry.write_tech_nodes(settings, nodes)
+        return
     if nodes:
         settings["tech_state"] = {"nodes": nodes}
     else:
         settings.pop("tech_state", None)
+
+
+def replace_nodes(settings: Dict[str, Any], nodes: List[Dict[str, Any]]) -> None:
+    """用 `nodes`（原始或已规整的节点 dict 列表）整体覆盖技术节点（设置页保存 / 种子落盘用）。
+    就地改 `settings`，按当前存储模式写入。"""
+    normalized = get_nodes({**settings, "element_modeling_enabled": False, "tech_state": {"nodes": nodes}})
+    _write_nodes(settings, normalized)
+
+
+# ── 存储适配（给 `tech_repair` / `mechanisms` / 回测用） ─────────────────
+#
+# 这几个函数让"技术状态存在哪"对调用方透明：旧模式 = `tech_state`，元素模式 = `causal_lines`
+# 里各线的 `lifecycle`。调用方不再直接碰 `settings["tech_state"]`。
+
+_STORAGE_MARK = "__tech_storage__"
+
+
+def capture_storage(settings: Dict[str, Any]) -> Dict[str, Any]:
+    """深拷贝当前技术状态的存储（修复调用的回滚点）。"""
+    if element_registry.is_enabled(settings):
+        return {
+            _STORAGE_MARK: "element",
+            "causal_lines": copy.deepcopy([x for x in (settings.get("causal_lines") or []) if isinstance(x, dict)]),
+            "tech_state": copy.deepcopy(settings.get("tech_state")),
+        }
+    return {_STORAGE_MARK: "legacy", "tech_state": copy.deepcopy(settings.get("tech_state"))}
+
+
+def restore_storage(settings: Dict[str, Any], captured: Any) -> None:
+    """把技术状态恢复到 `captured`。`captured` 也可以是旧式的裸 `tech_state` 值（或 `None`
+    = 当时没有），保持与旧调用方/旧测试兼容。就地改 `settings`。
+
+    元素模式只回滚技术相关部分，不动其它因果线内容：捕获时已有的线 → 恢复其 `lifecycle`；
+    捕获后新出现且带 `lifecycle` 的线 = 本步技术登记建出来的 → 删除；捕获时带 `lifecycle`、
+    现在已被撤销的线 → 放回（修复被拒绝时要还原"第一次裁决后"的状态）；其它线原样保留。
+    """
+    if not (isinstance(captured, dict) and captured.get(_STORAGE_MARK) in ("element", "legacy")):
+        if captured is None:
+            settings.pop("tech_state", None)
+        else:
+            settings["tech_state"] = copy.deepcopy(captured)
+        return
+    if captured[_STORAGE_MARK] == "legacy":
+        legacy = captured.get("tech_state")
+        if legacy is None:
+            settings.pop("tech_state", None)
+        else:
+            settings["tech_state"] = copy.deepcopy(legacy)
+        return
+    captured_lines = [x for x in captured.get("causal_lines") or [] if isinstance(x, dict)]
+    before = {str(x.get("id") or "").strip(): x for x in captured_lines}
+    current = {
+        str(x.get("id") or "").strip(): x for x in settings.get("causal_lines") or [] if isinstance(x, dict)
+    }
+    restored: List[Dict[str, Any]] = []
+    # 以捕获时的顺序为骨架：现在还在的线 → 用现在的内容、只恢复 `lifecycle`；
+    # 现在已经不在、但捕获时带 `lifecycle` 的线（回滚后又被撤销的技术登记）→ 原样放回。
+    for lid, cap_line in before.items():
+        line = current.get(lid)
+        if line is None:
+            if isinstance(cap_line.get("lifecycle"), dict):
+                restored.append(copy.deepcopy(cap_line))
+            continue
+        line = dict(line)
+        if isinstance(cap_line.get("lifecycle"), dict):
+            line["lifecycle"] = copy.deepcopy(cap_line["lifecycle"])
+        else:
+            line.pop("lifecycle", None)
+        restored.append(line)
+    # 捕获之后才出现的线：带 `lifecycle` 的 = 本步技术登记新建的 → 丢弃；其它（别处新增的）保留。
+    for lid, line in current.items():
+        if lid not in before and not isinstance(line.get("lifecycle"), dict):
+            restored.append(line)
+    if restored or "causal_lines" in settings:
+        settings["causal_lines"] = restored
+    legacy = captured.get("tech_state")
+    if legacy is None:
+        settings.pop("tech_state", None)
+    else:
+        settings["tech_state"] = copy.deepcopy(legacy)
+
+
+def settings_with_storage(settings: Dict[str, Any], captured: Any) -> Dict[str, Any]:
+    """返回一份技术状态恢复到 `captured` 的 settings 副本（不改入参）。"""
+    result = dict(settings)
+    restore_storage(result, captured)
+    return result
+
+
+def storage_has_nodes(settings: Optional[Dict[str, Any]]) -> bool:
+    """当前存储里是否有技术节点（锚定种子快照用）。旧模式 = `bool(settings["tech_state"])`
+    （与以前一致）。"""
+    settings = settings or {}
+    if element_registry.is_enabled(settings):
+        return element_registry.has_lifecycle(settings) or bool(settings.get("tech_state"))
+    return bool(settings.get("tech_state"))
+
+
+def snapshot_has_nodes(snapshot: Optional[Dict[str, Any]], settings: Optional[Dict[str, Any]]) -> bool:
+    """动态快照里是否已经带着技术节点。旧模式 = `"tech_state" in snapshot`（与以前一致）。"""
+    if not isinstance(snapshot, dict):
+        return False
+    if element_registry.is_enabled(settings):
+        return "tech_state" in snapshot or element_registry.snapshot_has_lifecycle(snapshot)
+    return "tech_state" in snapshot
+
+
+def settings_view_of_snapshot(snapshot: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """把动态快照还原成能喂给 `get_nodes()` 的 settings 视图（回测用）；快照里没有技术
+    节点信息返回 None。旧形态（`tech_state`）优先；其次元素形态（`causal_lines[].lifecycle`）。"""
+    if not isinstance(snapshot, dict):
+        return None
+    if isinstance(snapshot.get("tech_state"), dict):
+        return {"tech_state": snapshot["tech_state"]}
+    if element_registry.snapshot_has_lifecycle(snapshot):
+        return {"element_modeling_enabled": True, "causal_lines": snapshot.get("causal_lines")}
+    return None
 
 
 # ── 时间 ─────────────────────────────────────────────────────────────

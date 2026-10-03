@@ -47,6 +47,7 @@ import copy
 import json
 from typing import Any, Dict, List, Optional
 
+from world_simulator import element_registry
 from world_simulator.state_model import SimManifest, SimState
 from world_simulator.store import SimStore, atomic_write_json, atomic_write_jsonl
 
@@ -57,7 +58,12 @@ from world_simulator.store import SimStore, atomic_write_json, atomic_write_json
 # 推进），所以开启技术模型后每步都会写一份完整快照（连带 `causal_lines`），
 # 历史文件会相应变大——见 PROJECT.md 第二十二轮 P3 的已知边界。
 # `causal_pending`（第二十二轮 WP3 / P5a，`causal_engine.py`）：待兑现因果队列，随分支。
-DYNAMIC_KEYS = ("causal_lines", "relationship_pending_effects", "tech_state", "causal_pending")
+# `element_candidates`（第二十三轮 E1，`element_registry.py`）：元素候选池（E3 才开始写入），随分支。
+#   元素模式下技术节点不再单独存 `tech_state`，而是作为 `causal_lines[].lifecycle` 随 `causal_lines`
+#   一起快照；`tech_state` 仍保留在这里，用来读旧快照（恢复后由 `fold_legacy_tech_state()` 折叠）。
+DYNAMIC_KEYS = (
+    "causal_lines", "relationship_pending_effects", "tech_state", "causal_pending", "element_candidates",
+)
 
 
 def _normalize(value: Any) -> Any:
@@ -117,6 +123,10 @@ def apply_to_settings(
             result[key] = copy.deepcopy(snapshot[key])
         else:
             result.pop(key, None)
+    # 第二十三轮 E1：元素模式下，旧形态快照（仍带 `tech_state`）恢复后立刻折叠成元素 `lifecycle`
+    # （幂等；分叉/回滚到旧快照时分支互不污染——折叠只动这份刚深拷贝出来的 `result`）。
+    if element_registry.is_enabled(result) and result.get("tech_state") is not None:
+        element_registry.fold_legacy_tech_state(result)
     return result
 
 

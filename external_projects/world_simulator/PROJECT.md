@@ -702,6 +702,11 @@ monkeypatch 打桩验证文本原样出现在 `inputs` 字典里；`generate_sce
   假设/已观察/已证伪/未定/已停用，标签带兑现率与样本数）与"⏰ 到期时间线"（未结案项已到期优先 + 最近处置记录）。状态是 **AI 自报**
   统计的函数，不是世界里被验证/被证伪；阈值可用 `causal_view_params` 覆盖。静态 HTML 导出已在 P10 接入（见 `docs/html_export_mechanisms_guide.md`）；没有浏览器级验证，也没有在真实
   LLM 下验证。详见 `docs/causal_view_guide.md`。
+- **统一元素模型目前只完成 E1（第二十三轮，新实例默认开启 `element_modeling_enabled`）**：E1 只改技术节点的存储位置
+  （`causal_lines[].lifecycle`）与读写层，不改 LLM 行为；发现新元素/去重/补全/分级与 prompt 预算/元素运维/
+  领域聚合联动（E2–E6）尚未实施，所以引擎还不会创建领域线，带技术种子的新实例里每个技术节点会作为一条因果线
+  出现在因果线总览与 prompt 因果线列表里（带默认三分支未来树）。设置页新增代码只做了静态检查，没有 Streamlit
+  运行时验证；没有在真实 LLM 下运行。详见 `docs/element_model_guide.md`。
 
 ## 目录结构
 
@@ -4527,3 +4532,11 @@ deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
 - **第二十二轮 P10：静态 HTML 导出接入新机制（2026-10-02）**：新增 `world_simulator/html_export_mechanisms.py`（只读、不调 LLM、不落盘、**无新开关**），`html_export.py` 接线。时间线每步卡片末尾显示一致性提示/技术违规与修复/抽样事件（含未核对、AI 提议未确认）/因果入队与交代/因果违规/树接地；文档级新增区块：真实性体检摘要、技术树（节点表+前置 DAG）、外生事件先验、因果引擎（着色关系图+图例、边状态与兑现率表、到期因果时间线、树声明）、树接地当前建议。**没数据就不输出**：没开新机制的实例导出与接入前逐字节相同（用接入前后两版导出器对同一实例逐字节比较核对过；过程中发现并修掉每步卡片模板里空占位多出一行空白的问题），额外 CSS 也仅在渲染了新内容时追加。导出分支的 `tech_state`/`causal_pending`/`causal_lines` 取该分支最近快照，无快照时仅活跃分支退回工作副本，其它分支不借用。转义沿用既有约定；区块失败降级为一行说明，不连累整个导出。
   **文件**：`world_simulator/html_export_mechanisms.py`（新）、`world_simulator/html_export.py`、`tests/test_html_export_mechanisms.py`（新，28 个）、`docs/html_export_mechanisms_guide.md`（新）、`docs/{README,testing_guide,causal_view_guide,independent_line_mechanisms_guide}.md`、本文件、计划文档。`app.py` 无改动。**测试**：全量 1245 passed（P9 后 1217 + 28）；22 个变异全部转红（首轮存活 3 个，补用例后清零）；另用真实 `dot` 端到端渲染一次，确认生成 SVG 且各区块出现。
   **已知边界**：没有浏览器级目视验证；区块反映导出分支末状态而非逐步演化；每步提示文案与 `app.py` 同名 helper 各自一份需人工保持一致；没有在真实 LLM 产出的数据上看过导出效果。**至此计划文档 §10 的 P6–P10 全部实施完毕**；唯一剩余是"全部新机制未在真实 LLM 下端到端验证"。
+
+- **第二十三轮 E1：统一元素模型——数据模型、存取层、兼容（2026-10-03，依据 `next_doc/world_simulator_element_causal_lines_plan.md` §6 E1）**：
+  新增 `world_simulator/element_registry.py`（纯 Python、不调 LLM）：元素字段规整（`normalize_element`，只规整出现了的字段、旧式线逐字节不变）、`resolve`（精确 id→规范化 id→规范化 label/别名，不做模糊匹配）、领域查询与 `group_by_domain`、技术节点↔`lifecycle` 往返、`write_tech_nodes`、`fold_legacy_tech_state`（幂等；与领域线 id 冲突时改名 `<id>_tech` 并写别名、改写前置引用）。
+  `tech_model.get_nodes/_write_nodes` 改走存取适配器（开关 `element_modeling_enabled`：未写入=旧 `tech_state`，True=`causal_lines[].lifecycle`），**裁决规则一字未改**；新增 `replace_nodes`/`capture_storage`/`restore_storage`/`settings_with_storage`/`storage_has_nodes`/`snapshot_has_nodes`/`settings_view_of_snapshot` 供 `tech_repair`、`mechanisms`（种子锚定）、回测使用；`is_enabled` 增加同义别名 `element_lifecycle_enabled`。`dynamic_state`：`DYNAMIC_KEYS` 增 `element_candidates`，`apply_to_settings` 在元素模式下折叠旧形态快照；`engine/materialize.py`：新实例显式写入开关（默认 True，尊重调用方显式值）并折叠 `tech_state` 种子（放在 `ensure_future_trees` 之后，`main_line` 兜底不变）；`event_sampler`：条件新增 `{"element": id}` 同义写法；`backtest.extract_tech_nodes` 同时读两种快照形态；`app.py` 设置页新增"启用统一元素模型"复选框并让技术节点文本框读写当前存储。
+  **文件**：`world_simulator/element_registry.py`（新）、`tech_model.py`、`dynamic_state.py`、`engine/materialize.py`、`engine/mechanisms.py`、`engine/tech_repair.py`、`event_sampler.py`、`backtest.py`、`app.py`、`tests/test_element_registry.py`（新，28 个）、`tests/test_element_tech_adapter.py`（新，29 个）、`docs/element_model_guide.md`（新）、`docs/tech_model_guide.md`、`docs/README.md`、`docs/overview.md`、`docs/testing_guide.md`。
+  **测试**：全量 **1302 passed**（基线 1245 + 57）；既有 1245 个用例零修改全部通过；变异验证 12 个全部转红（首轮存活 2 个——精确 id 优先于规范化匹配、写入后清理空 `tech_state`——补用例后清零）。过程中测试发现并修掉一个真实缺陷：修复调用被拒绝、需把"第一次裁决后"的状态放回时，元素模式下被回滚撤销的技术登记线没有被放回（`restore_storage` 现以捕获时的顺序为骨架重建）。
+  **与计划的偏差**：① 计划 §6 E1 的"因果线总览/HTML 导出按领域分组"只提供了 `group_by_domain` 工具函数并有测试，渲染接线推迟到 E2——E1 里引擎不会创建领域线，分组渲染是空操作；② `docs/element_model_guide.md` 计划在 E6 新增，这里提前建立并随各阶段增补，避免文档滞后；③ 计划 §8 第 8 条要求"全局搜 `tech_state` 的读取点逐一核对"——已核对 `world_simulator/` 与 `app.py` 全部引用（`mechanisms`/`tech_repair`/`backtest`/`tree_effects`/`causal_engine`/`event_sampler`/`app.py`），除 `state_model.py`/`tree_grounding.py` 的纯文档注释外均已走适配器。
+  **已知边界**：见 `docs/element_model_guide.md` "已知边界（E1）"；设置页新增代码无 Streamlit 运行时验证；未在真实 LLM 下运行。**下一阶段**：E2（创建阶段元素展开，需要先给出创建向导树形编辑的具体形态后再改）。
