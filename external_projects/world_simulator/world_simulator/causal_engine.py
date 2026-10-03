@@ -187,6 +187,16 @@ def get_edges(settings: Optional[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]],
         if edge is None:
             problems.append(f"第 {i + 1} 条：{why}")
             continue
+        # 第二十三轮 E5：端点是已被合并元素的 id 时，读取时改指合并目标（`declared_causal_graph` 不是分支作用域，
+        # 不能在合并那一刻改写它；边 id 不变，已入队的待兑现仍按原 edge_id 对得上）。非元素模式/非合并端点原样。
+        if element_registry.is_enabled(settings):
+            new_from = element_registry.redirect_merged(settings, edge["from_line_id"])
+            new_to = element_registry.redirect_merged(settings, edge["to_line_id"])
+            if (new_from, new_to) != (edge["from_line_id"], edge["to_line_id"]):
+                if new_from == new_to:
+                    problems.append(f"第 {i + 1} 条：端点合并后指向同一元素「{new_from}」，已忽略")
+                    continue
+                edge = {**edge, "from_line_id": new_from, "to_line_id": new_to}
         if edge["id"] in seen:
             problems.append(f"第 {i + 1} 条：边 id「{edge['id']}」重复，已忽略")
             continue
@@ -281,8 +291,11 @@ def queue_effects(
     edges, _ = get_edges(settings)
     params = get_params(settings)
     step = int(next_state.step)
+    retired = element_registry.retired_ids(settings)  # E5：已退场元素不再产生新的待兑现因果（已入队的不撤销）
     for edge in edges:
         if not edge["enabled"]:
+            continue
+        if retired and (edge["from_line_id"] in retired or edge["to_line_id"] in retired):
             continue
         reason = _source_reason(edge, next_state)
         if reason is None:

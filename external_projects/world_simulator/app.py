@@ -47,6 +47,7 @@ from world_simulator import causal_graph as cg_mod
 from world_simulator import causal_tree
 from world_simulator import hypothesis as hyp_mod
 from world_simulator import reality_check as rc_mod
+from world_simulator import element_discovery as element_discovery_mod
 from world_simulator import element_registry as element_mod
 from world_simulator import tech_model as tech_mod
 from world_simulator import event_sampler as event_mod
@@ -5054,6 +5055,18 @@ def page_detail() -> None:
                     "关闭时会把它们还原回独立的技术节点列表。当前阶段（E1）只改存储位置，不改 AI 行为。"
                 ),
             )
+            new_element_scan_interval = st.number_input(
+                "元素周期扫描间隔（步，0 = 关闭，第二十三轮 E5，默认关闭）",
+                min_value=0, max_value=500, step=1,
+                value=element_discovery_mod.get_scan_interval(cur_settings),
+                key="settings_element_scan_interval",
+                help=(
+                    "元素发现靠 AI 在推进输出里主动写 discovered_elements；这一项是兜底：每隔 N 步再单独调用"
+                    "一次 AI，回看近期叙事，列出\"反复出现但还没建模\"的对象并按同一套规则登记。"
+                    "**这是额外的 AI 调用**（每 N 步多 1 次），所以默认关闭。需要先开启统一元素模型才生效；"
+                    "也可以在下面的\"扫描遗漏元素\"里手动扫一次。"
+                ),
+            )
             if element_mod.is_enabled(cur_settings):
                 cur_tech_nodes = tech_mod.get_nodes(cur_settings)
             else:
@@ -5367,6 +5380,7 @@ def page_detail() -> None:
                     capability_discovery_auto_scan_interval=int(new_cd_auto_scan_interval),
                     tech_model_enabled=bool(new_tech_enabled),
                     element_modeling_enabled=bool(new_element_enabled),
+                    element_scan_interval=int(new_element_scan_interval),
                     tech_state=tech_state_to_save,
                     tech_params=new_tech_params if isinstance(new_tech_params, dict) else {},
                     tech_priors=new_tech_priors if isinstance(new_tech_priors, dict) else {},
@@ -5521,6 +5535,41 @@ def page_detail() -> None:
                             DATA_DIR, sim_id, suggestion_id
                         )
                         st.rerun()
+
+    # ── 元素扫描入口（第二十三轮 E5）：手动扫一次\"反复出现但未建模\"的元素。和能力/问题发现不同，
+    # 建议直接走与 discovered_elements 同一套校验并登记（登记错了可用 element_ops 的 retire/merge 纠正）。
+    if element_mod.is_enabled(cur_settings):
+        with st.expander("🧩 扫描遗漏元素（第二十三轮 E5，可选，会额外调用一次 AI）"):
+            st.markdown(
+                '<span class="ws-muted">回顾最近几步的叙事和事件，找出反复出现、与已登记元素有明确因果关系、'
+                "但还没有独立元素线的关键对象，并按与\"发现元素\"相同的规则（别名去重、关键性门槛、数量预算）"
+                "登记。只对当前分支生效；登记后可在因果线总览里查看，登记错了让 AI 用 retire / merge 纠正即可。</span>",
+                unsafe_allow_html=True,
+            )
+            if st.button("扫描遗漏元素", key="element_scan_btn"):
+                try:
+                    cfg = _load_cfg()
+                    with st.spinner("正在扫描..."):
+                        scan_res = element_discovery_mod.scan_now(
+                            cfg, PROJECT_ROOT, cur_settings, current.vars, history, step=current.step,
+                        )
+                    update_settings(
+                        DATA_DIR, sim_id,
+                        causal_lines=scan_res["settings"].get("causal_lines") or [],
+                        element_candidates=scan_res["settings"].get("element_candidates") or [],
+                    )
+                    registered = [a.get("element_id") for a in scan_res["audit"] if a.get("action") in ("registered", "promoted")]
+                    st.success(
+                        f"扫描完成：模型提出 {len(scan_res['suggestions'])} 个对象，新登记 {len(registered)} 个"
+                        + (f"（{'、'.join(str(x) for x in registered)}）" if registered else "") + "。"
+                    )
+                    for a in scan_res["audit"]:
+                        if a.get("action") in ("candidate", "budget_blocked", "merged_alias"):
+                            st.caption(f"{a.get('action')}: {a.get('element_id')}")
+                except ImportError as exc:
+                    st.error(f"未检测到 mini_agent 框架，无法扫描：{exc}")
+                except element_discovery_mod.ElementDiscoveryError as exc:
+                    st.error(f"扫描失败：{exc}")
 
     # ── Capability Discovery Engine 轻量入口（第二十一轮，和上面
     # Problem Discovery Engine 的折叠区逐项对称，同样只建议、不自动

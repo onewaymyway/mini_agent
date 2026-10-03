@@ -70,6 +70,7 @@ def _update_element_registry(
             tech_updates=data.get("tech_updates"),
             discovered=data.get("discovered_elements"),
             enrichments=data.get("element_enrichments"),
+            ops=data.get("element_ops"),
         )
     except Exception as exc:  # noqa: BLE001 — 旁路功能，绝不让它中断推进
         _auto_register_causal_lines(manifest, next_state)

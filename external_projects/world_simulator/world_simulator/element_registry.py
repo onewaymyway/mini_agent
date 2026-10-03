@@ -156,6 +156,27 @@ def normalize_element(raw: Dict[str, Any]) -> Dict[str, Any]:
             line.pop("merged_into")
     if "tier_pin" in line and line["tier_pin"] not in TIER_PINS:
         line.pop("tier_pin")
+    # 第二十三轮 E5：元素运维留下的链路字段（拆分来源/去向、合并来源、退场信息）。
+    for key in ("split_from", "retire_reason"):
+        if key in line:
+            text = str(line[key] or "").strip()
+            if text:
+                line[key] = text
+            else:
+                line.pop(key)
+    for key in ("split_into", "merged_from"):
+        if key in line:
+            ids = [a for a in _str_list(line[key]) if a != str(line.get("id") or "").strip()]
+            if ids:
+                line[key] = ids
+            else:
+                line.pop(key)
+    if "retired_step" in line:
+        rstep = _int_or_none(line["retired_step"])
+        if rstep is None or rstep < 0:
+            line.pop("retired_step")
+        else:
+            line["retired_step"] = rstep
     if "var_refs" in line:
         refs = _str_list(line["var_refs"])
         if refs:
@@ -236,15 +257,26 @@ def is_alive(line: Dict[str, Any]) -> bool:
     return line.get("status", "alive") not in ("retired", "merged")
 
 
-def resolve(lines_or_settings: Any, ref: Any) -> Optional[Dict[str, Any]]:
+def resolve(lines_or_settings: Any, ref: Any, *, follow_merged: bool = True) -> Optional[Dict[str, Any]]:
     """把一个引用（id / label / 别名）解析到已登记的线；解析不到返回 None。
 
     优先级：① 精确 id；② 规范化后的 id；③ 规范化后的 label / aliases（按线的登记顺序，
     先到先得）。只做精确的规范化匹配，不做模糊匹配。接受 `settings` 或线列表。
+
+    第二十三轮 E5：命中的线若已被合并（`status=merged` + `merged_into`），默认**跟随到合并目标**
+    （`follow_merged=True`）——历史里的旧 id、别名视图层都经这里落到存活的那条线上（历史不可变，
+    只在读取时改写）。元素运维自己要找\"被合并的那条线本身\"时传 `follow_merged=False`。
     """
     lines = get_lines(lines_or_settings) if isinstance(lines_or_settings, dict) else [
         x for x in (lines_or_settings or []) if isinstance(x, dict) and str(x.get("id") or "").strip()
     ]
+    found = _lookup(lines, ref)
+    if found is not None and follow_merged:
+        found = follow_merge(lines, found)
+    return found
+
+
+def _lookup(lines: List[Dict[str, Any]], ref: Any) -> Optional[Dict[str, Any]]:
     text = str(ref if ref is not None else "").strip()
     if not text:
         return None
@@ -262,6 +294,49 @@ def resolve(lines_or_settings: Any, ref: Any) -> Optional[Dict[str, Any]]:
         if any(norm_key(n) == key for n in names if n is not None and str(n).strip()):
             return line
     return None
+
+
+MERGE_FOLLOW_MAX = 16
+
+
+def follow_merge(lines: List[Dict[str, Any]], line: Dict[str, Any]) -> Dict[str, Any]:
+    """沿 `merged_into` 链走到存活的那条线（有环/断链/超过 16 跳时停在最后一个能走到的线上，不报错）。"""
+    seen = {str(line.get("id") or "").strip()}
+    cur = line
+    for _ in range(MERGE_FOLLOW_MAX):
+        if cur.get("status") != "merged":
+            break
+        target_id = str(cur.get("merged_into") or "").strip()
+        if not target_id or target_id in seen:
+            break
+        nxt = next((x for x in lines if str(x.get("id") or "").strip() == target_id), None)
+        if nxt is None:
+            break
+        seen.add(target_id)
+        cur = nxt
+    return cur
+
+
+def redirect_merged(lines_or_settings: Any, ref: Any) -> str:
+    """**只按精确 id** 把被合并元素的 id 重定向到合并目标的 id；其它情况（存活元素、解析不到、只靠别名/名称
+    才能命中）原样返回。给因果边端点这类\"读取时改写\"的地方用——不改变任何非合并引用的既有行为。"""
+    text = str(ref if ref is not None else "").strip()
+    if not text:
+        return text
+    lines = get_lines(lines_or_settings) if isinstance(lines_or_settings, dict) else [
+        x for x in (lines_or_settings or []) if isinstance(x, dict) and str(x.get("id") or "").strip()
+    ]
+    line = next((x for x in lines if str(x.get("id")).strip() == text), None)
+    if line is None or line.get("status") != "merged":
+        return text
+    return str(follow_merge(lines, line).get("id") or text).strip()
+
+
+def retired_ids(settings: Optional[Dict[str, Any]]) -> set:
+    """已退场（`status=retired`）元素的 id 集合；元素模式未开启返回空集合（旧实例不受影响）。"""
+    if not is_enabled(settings):
+        return set()
+    return {str(x["id"]).strip() for x in get_lines(settings) if x.get("status") == "retired"}
 
 
 def domains(lines: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -994,6 +1069,21 @@ def _enrich_line(ctx: _Ctx, line: Dict[str, Any], item: Dict[str, Any]) -> Tuple
     return new, changed
 
 
+def _follow_idx(ctx: _Ctx, idx: int) -> int:
+    """`ctx.lines[idx]` 若已被合并，沿 `merged_into` 走到存活那条线的下标（找不到/有环就停在原地）。"""
+    seen = {idx}
+    for _ in range(MERGE_FOLLOW_MAX):
+        line = ctx.lines[idx]
+        if line.get("status") != "merged":
+            break
+        nxt = ctx.index_of(str(line.get("merged_into") or "").strip())
+        if nxt < 0 or nxt in seen:
+            break
+        seen.add(nxt)
+        idx = nxt
+    return idx
+
+
 def _merge_hit(ctx: _Ctx, idx: int, item: Dict[str, Any], source: str) -> None:
     """发现项命中了已登记元素（id/label/别名规范化后相等）：视为同一个——补别名、补关系；
     若它还在待补全/兜底，同时按补全处理。不新建线。"""
@@ -1099,14 +1189,23 @@ def _qualifies(ctx: _Ctx, item: Dict[str, Any], mentions: int) -> Tuple[bool, st
     return False, ""
 
 
-def _discover_one(ctx: _Ctx, item: Dict[str, Any], source: str = "discovered_elements") -> None:
+def _discover_one(ctx: _Ctx, item: Dict[str, Any], source: str = "discovered_elements", *, scan: bool = False) -> None:
+    """`scan=True`（E5 周期扫描）：扫描本身只列\"反复出现但未建模\"的对象，视为已满足提次门槛——
+    有 `relations` 或有 `why_key` 就登记；两者都没有仍进候选池。"""
     idx = _find_by_names(ctx.lines, [item["id"], item["label"], *item["aliases"]])
     if idx is not None:
+        idx = _follow_idx(ctx, idx)  # 命中已被合并的元素 → 落到合并目标上
         _merge_hit(ctx, idx, item, source)
         return
     was_pooled = _find_by_names(ctx.cands, [item["id"], item["label"], *item["aliases"]]) is not None
     cand = _upsert_candidate(ctx, item, reason="below_threshold")
     cidx = _find_by_names(ctx.cands, [cand["id"]])
+    if scan:
+        credit = int(ctx.params["candidate_promote_mentions"] or 1)
+        if int(cand.get("mentions", 1)) < credit:
+            cand = dict(cand)
+            cand["mentions"] = credit
+            ctx.cands[cidx] = cand
     merged = _cand_to_item(cand)  # 合并了候选池里此前攒下的信息（别名/关系/why_key）
     ok, why = _qualifies(ctx, merged, int(cand.get("mentions", 1)))
     if not ok:
@@ -1276,6 +1375,7 @@ def _apply_enrichments(ctx: _Ctx, items: List[Dict[str, Any]]) -> None:
         if idx is None:
             ctx.log("enrichment_unknown", item["id"])
             continue
+        idx = _follow_idx(ctx, idx)
         line = ctx.lines[idx]
         lid = str(line["id"]).strip()
         if str(line.get("profile_status") or "complete") not in ("pending_enrichment", "fallback"):
@@ -1317,10 +1417,12 @@ def process_step(
     tech_updates: Any = None,
     discovered: Any = None,
     enrichments: Any = None,
+    ops: Any = None,
 ) -> Dict[str, Any]:
     """元素模式下一步推进输出的\"元素登记\"处理（替换旧 `_auto_register_causal_lines`）。
 
-    顺序：补全（`element_enrichments`）→ 发现（`discovered_elements`）→ 引用即登记（规范化
+    顺序：补全（`element_enrichments`）→ 发现（`discovered_elements`）→ 元素运维（`element_ops`，E5：
+    split/merge/retire/reparent）→ 引用即登记（规范化
     `line_updates`/`causal_links`/`tree_updates`/`tech_updates` 里的 id，登记桩元素）→ 候选池转正 →
     宽限期过后落 `fallback`。就地写回 `settings["causal_lines"]` / `settings["element_candidates"]`
     （处理中途出错则不写回，由调用方兜底）。
@@ -1334,6 +1436,10 @@ def process_step(
     for item in (_norm_item(x) for x in discovered_list(discovered)):
         if item is not None:
             _discover_one(ctx, item)
+    if ops:
+        from world_simulator import element_ops  # 延迟导入（element_ops 反过来用本模块的内部工具）
+
+        element_ops.apply_ops(ctx, ops)  # 先于引用规范化：同一步里写旧 id 的 line_updates 会落到合并目标上
     new_line_updates = _canon_line_updates(ctx, dict(line_updates or {}))
     new_links: List[Any] = []
     for link in causal_links or []:
@@ -1364,6 +1470,29 @@ def process_step(
         "tech_updates": new_tech_updates,
         "audit": ctx.audit,
     }
+
+
+def register_scan_items(settings: Dict[str, Any], items: Any, *, step: int) -> List[Dict[str, Any]]:
+    """E5 周期扫描/手动扫描的建议项 → 与 `discovered_elements` **同一套**校验与登记（别名去重、关键性门槛、
+    预算、桩元素待补全）。就地写回 `settings[\"causal_lines\"]`/`[\"element_candidates\"]`，返回审计。
+
+    与 `process_step` 的差别：扫描是事后回看，不处理 `line_updates` 等引用，也不产生 `lifecycle_seed`
+    （技术裁决只在推进那一步发生，事后没有出口，所以丢弃）；元素模式未开启时什么都不做。
+    """
+    if not is_enabled(settings):
+        return []
+    ctx = _Ctx(settings, step)
+    for raw in discovered_list(items):
+        item = _norm_item(raw)
+        if item is None:
+            continue
+        item["lifecycle_seed"] = None
+        _discover_one(ctx, item, "element_scan", scan=True)
+    _sweep_candidates(ctx)
+    settings["causal_lines"] = ctx.lines
+    if ctx.cands or "element_candidates" in settings:
+        settings["element_candidates"] = ctx.cands
+    return ctx.audit
 
 
 def discovered_list(raw: Any) -> List[Any]:
@@ -1413,7 +1542,7 @@ def derived_edges(settings: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 _PROTOCOL = (
     "【元素建模已开启】因果线分两层：领域线（只做分组）和元素线（每个具体的技术/项目/公司/政策/资产/市场/人物都"
-    "可以是一条独立的线，有自己的未来树）。下面三个输出键都是**可选**的，没有就不要输出：\n"
+    "可以是一条独立的线，有自己的未来树）。下面三个输出键（`discovered_elements`/`element_enrichments`/`element_ops`）都是**可选**的，没有就不要输出：\n"
     "1. `discovered_elements`（数组）：这一步出现了**值得单独建模的新关键对象**，且它不在下面的\"已登记元素\"里时才列。"
     "每项 `{\"id\": 简短英文/拼音 id, \"label\": 中文名, \"element_type\": technology/project/organization/person/"
     "asset/policy/market/resource/event_series 之一, \"parent\": 所属领域线 id（没有合适的就省略，不要编）, "
@@ -1426,7 +1555,16 @@ _PROTOCOL = (
     "不要把普通名词、一次性提到的对象、同一件事的不同说法列进来。\n"
     "2. `element_enrichments`（数组）：给下面\"待补全元素\"补信息，每项 `{\"id\": 已登记 id, 以及上面同样的 label/element_type/"
     "parent/aliases/relations/future_tree}`；只补缺的字段，补不出来就不要编。\n"
-    "3. 其余因果线输出（`line_updates`/`tree_updates`/`tech_updates`）照常，只是现在它们寻址的是同一套 id。"
+    "3. `element_ops`（数组，可选）：对**已登记**元素做结构调整，每项 `{\"op\": ..., ...}`，只在确有必要时才写：\n"
+    "   - `{\"op\": \"merge\", \"from\": 被并入的 id, \"into\": 保留的 id, \"note\": 一句话原因}`：确认两个 id 其实是同一个对象\n"
+    "（名字不同但指同一件事）时用；被并入的会变成保留者的别名，它的未来树分支会以前缀 id 追加到保留者上。"
+    "带发展阶段（lifecycle）的元素不能作为被并入方。\n"
+    "   - `{\"op\": \"split\", \"from\": id, \"into\": [{\"id\":..., \"label\":..., \"element_type\":..., \"future_tree\":...}, ...]}`："
+    "一个对象分化成多个时用；原元素保留，新元素默认继承它的领域归属。\n"
+    "   - `{\"op\": \"retire\", \"id\": id, \"reason\": 一句话}`：对象已终止（技术被淘汰、项目取消）；不删除，只是不再产生新的待兑现因果。\n"
+    "   - `{\"op\": \"reparent\", \"id\": id, \"parent\": 领域线 id}`：改所属领域（只能指向已登记的领域线）。\n"
+    "   引擎只做结构校验（id 存在、不自己并自己、领域线不参与合并/退场），不通过的会在审计里写明原因；\"是不是该合并/拆分\"由你判断。\n"
+    "4. 其余因果线输出（`line_updates`/`tree_updates`/`tech_updates`）照常，只是现在它们寻址的是同一套 id。"
 )
 
 

@@ -133,12 +133,16 @@ class _Index:
         self.exact: Dict[str, str] = {}
         self.norm_id: Dict[str, str] = {}
         self.norm_name: Dict[str, str] = {}
+        # 第二十三轮 E5：被合并的元素，历史里的旧 id/名称落到合并目标上（历史不可变，只在读取时改写）
+        target = {
+            str(line["id"]).strip(): str(er.follow_merge(lines, line)["id"]).strip() for line in lines
+        }
         for line in lines:
             lid = str(line["id"]).strip()
-            self.exact.setdefault(lid, lid)
+            self.exact.setdefault(lid, target[lid])
             key = er.norm_key(lid)
             if key:
-                self.norm_id.setdefault(key, lid)
+                self.norm_id.setdefault(key, target[lid])
         for line in lines:
             lid = str(line["id"]).strip()
             for name in [line.get("label")] + list(line.get("aliases") or []):
@@ -146,7 +150,7 @@ class _Index:
                     continue
                 key = er.norm_key(name)
                 if key:
-                    self.norm_name.setdefault(key, lid)
+                    self.norm_name.setdefault(key, target[lid])
 
     def get(self, ref: Any) -> Optional[str]:
         text = str(ref if ref is not None else "").strip()

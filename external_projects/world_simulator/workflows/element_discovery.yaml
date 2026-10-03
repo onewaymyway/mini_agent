@@ -1,0 +1,49 @@
+name: element_discovery
+description: >-
+  元素周期扫描（第二十三轮 E5，`world_simulator/element_discovery.py::suggest_elements()` 触发，
+  形态参照 `capability_discovery.yaml`）。用 `type: agent`——"回顾近期叙事，有没有反复出现、但还没有
+  被建模成元素线的关键对象"是通用推理能力，不依赖具体场景模板。
+  这是**额外的 LLM 调用**，所以默认不开（`settings.element_scan_interval` 默认 0 = 关；也可以在设置页
+  手动点一次"扫描遗漏元素"）。
+  【重要】同 `capability_discovery.yaml`：`type: agent` 不支持 `result_file`，这里同样要求 Agent 直接把
+  JSON 作为最终回复的全部内容，由 `world_simulator/agent_step_result.py` 从 `StepResult.output` 解析。
+version: "1.0"
+steps:
+  - id: element_discovery
+    name: 回顾近期发展，扫描反复出现但未建模的关键元素
+    type: agent
+    prompt: |
+      你正在为一次"世界模拟"回顾"有没有一些关键对象（技术、项目、公司、政策、资产、市场、人物……）在近期
+      叙事里反复出现、对其它元素有明确影响，但还没有被登记成独立的元素"。下面是相关素材：
+
+      已经登记的元素和领域（JSON 数组，每项含 id/label/aliases/element_type/parent/kind；**这些已经建模了，
+      不要再列**，名字、别名相同或只是换了个说法的也不要列）：
+      {registered_json}
+
+      候选池里已经提到过、还没正式登记的对象（JSON 数组，可以出现在你的建议里，补上与已登记元素的关系即可转正）：
+      {candidates_json}
+
+      当前状态里的实体/数值（JSON 对象，仅供参考）：
+      {entities_json}
+
+      最近几步的历史（JSON 数组，每项含 step/summary/narrative/events，按时间顺序）：
+      {recent_history_json}
+
+      请找出最多 {max_suggestions} 个**反复出现（至少在两个不同步骤的叙事里被提到）、且与已登记元素有明确因果
+      关系**的新对象。必须有叙事里的具体依据，不要凭空猜测；普通名词、只提到一次的对象、同一件事的不同说法
+      都不要列。找不到就给空数组，比硬凑更好。
+
+      每一项格式（`parent` 必须是上面已登记的领域 id，没有合适的就省略，不要编；`relations[].with` 必须是
+      已登记元素或领域的 id）：
+      `{{"id": "简短英文/拼音 id", "label": "中文名", "element_type": "technology/project/organization/
+      person/asset/policy/market/resource/event_series 之一", "parent": "领域 id（可选）", "aliases":
+      ["别名"], "why_key": "一句话：为什么值得单独建模，在哪几步出现过", "relations": [{{"with": "已登记 id",
+      "direction": "affects 或 affected_by", "sign": "positive/negative/mixed", "note": "一句话"}}]}}`。
+
+      【输出格式，必须严格遵守】你的最终回复必须**只包含一个 JSON 对象**，不要有任何其它文字、解释、
+      markdown 代码块围栏、或工具调用——直接把下面这个字段组成的 JSON 对象作为你这一轮对话的最后回复内容：
+
+      - `suggestions`：数组，格式见上文，最多 {max_suggestions} 项，没有就给空数组。
+
+      不要用 bash/echo 或任何工具来"打印"这个 JSON。你的最后一条回复消息，去掉首尾空白后，必须能被直接
+      当 JSON 解析。

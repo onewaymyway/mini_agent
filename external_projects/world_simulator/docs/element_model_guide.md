@@ -1,8 +1,8 @@
 # 统一元素模型（第二十三轮）
 
 > 设计依据：仓库 `next_doc/world_simulator_element_causal_lines_plan.md`。
-> **实施进度：E1（数据模型、存取层、兼容折叠）、E2（创建阶段元素展开）、E3（发现·去重·登记·补全）、E4（分层与 prompt 预算）已完成**；
-> E5–E6（元素运维与周期扫描 / 联动与收尾）**尚未实施**。本文随各阶段增补，只写已落地的行为，不提前描述后续阶段。
+> **实施进度：E1（数据模型、存取层、兼容折叠）、E2（创建阶段元素展开）、E3（发现·去重·登记·补全）、E4（分层与 prompt 预算）、E5（元素运维与周期扫描）已完成**；
+> E6（联动与收尾）**尚未实施**。本文随各阶段增补，只写已落地的行为，不提前描述后续阶段。
 
 ## 它是什么
 
@@ -232,11 +232,56 @@ label）；与**领域**线相同 → 节点改名 `<id>_tech`（重名再加序
 
 `element_tiers.get_tier_params()` / `invalid_tier_param_keys()` 读取与校验；设置页尚无控件（只能改 `settings.element_params` JSON，E6 补）。
 
+## 元素运维与周期扫描（E5）
+
+### `element_ops`：结构调整（推进输出里的可选数组）
+
+LLM 在推进输出里可以写 `element_ops`，对**已登记**元素做结构调整。引擎**只做结构校验**（id 存在、不自己并自己、
+领域线不参与、不成环），"该不该合并/拆分"是语义判断，仍归 LLM。校验不过的操作**不生效**，审计里记 `op_rejected` + 原因，
+不报错、不影响同一步其它处理；每条操作先拷贝工作区，出错整条回滚（审计 `op_error`）；每步最多 8 条，多的记 `op_rejected`。
+顺序：补全 → 发现 → **元素运维** → 引用规范化（所以同一步里写旧 id 的 `line_updates` 会落到合并目标上）。
+
+| 操作 | 写法 | 效果 |
+|---|---|---|
+| `merge` | `{"op":"merge","from":旧,"into":留,"note":原因}` | `from` 的 id/名称/别名并入 `into` 的别名；`into` 缺的类型/归属补上；关系并入、其它线指向 `from` 的关系改指 `into`；其它线分支 `effects_if_active` 里指向 `from` 的改指 `into`；`from` 的未来树分支以前缀 id（`<from>__<分支id>`，同组互斥/同线前置同步改名）追加到 `into`，状态原样保留（`from` 若还是通用兜底树就不搬）；`from` 标 `status=merged` + `merged_into`，**不删除**。`into` 写成已被合并的旧 id 时自动并到最终归宿 |
+| `split` | `{"op":"split","from":id,"into":[{id,label,element_type,...}]}` | 原元素保留（记 `split_into`）；新元素 `origin=split`、`split_from=原元素`，**默认继承原元素的 `parent`**（条目自带合法 parent 则以它为准）；与已登记元素重名的跳过（`op_split_skipped`）；预算与"发现"同一套（`budget_blocked`）；技术类 `lifecycle_seed` 走同一套技术裁决 |
+| `retire` | `{"op":"retire","id":id,"reason":原因}` | `status=retired`（+`retired_step`/`retire_reason`），不删除、树与历史保留，不再进 prompt；`causal_engine.queue_effects` 与 `tree_effects` **不再为端点是它的边/分支影响入新的待兑现**；**已入队的不撤销**；清掉 `tier_pin` |
+| `reparent` | `{"op":"reparent","id":id,"parent":领域线 id}` | 改归属领域，目标必须是已登记且存活的领域线；顺带把"待补全/兜底"且现在信息齐了的元素标回 `complete` |
+
+### 合并后旧 id 怎么读（历史不可变，只在读取时改写）
+
+被合并元素的 id **不会**从任何历史里改掉。以下读取点会把它落到合并目标：`element_registry.resolve()`（默认 `follow_merged=True`，沿 `merged_into`
+最多 16 跳、有环/断链就停在原地）；元素发现/补全命中被合并的名字时并到目标；`causal_engine.get_edges()` 读取时把 `declared_causal_graph`
+的端点改指目标（边 id 不变，已入队的待兑现对得上；合并后两端相同的边被忽略并给出原因）；`element_tiers` 的历史索引（旧 id/名称/别名的动静算在目标头上）。
+`redirect_merged()` **只按精确 id** 重定向，别名/名称不做（边端点是配置里写死的 id）。
+
+### 周期扫描（默认关闭，额外一次 LLM 调用）
+
+元素发现靠 LLM 在推进输出里主动写 `discovered_elements`，漏了没有兜底。`settings.element_scan_interval`（N>0 时每 N 步一次；缺省/0/非法 = 关）
+再单独调一次 LLM（`workflows/element_discovery.yaml`，`type: agent`，形态同 `capability_discovery`），回看最近 6 步叙事/事件与 `vars.entities`，
+列出"反复出现但未建模"的对象（最多 5 个）。
+
+- **建议直接走与 `discovered_elements` 同一套校验并登记**（别名去重、预算、桩元素待补全），不做"建议→用户确认"。理由：元素登记是低风险结构操作
+  （不污染 `vars`，登记错了可 retire/merge），且计划要求同一套校验。扫描列出的本来就是"反复出现"的对象，视为已满足候选池提次门槛：
+  有 `relations` 或有 `why_key` 就登记，两者都没有仍留在候选池。扫描**不产生 `lifecycle_seed`**（技术裁决只在推进那一步，事后没有出口）。
+- 在 `engine/advance.py` 里位于 `snapshot_and_check` **之前**，新登记的元素进入本步分支快照；审计追加到 `element_audit`（`scan` + 各登记动作，来源 `element_scan`）。
+  任何异常吞掉，留一条 `scan_error`，不影响本次推进。元素模式关闭时不跑。
+- 设置页：「元素周期扫描间隔」数字框；元素模式开启时多一个「🧩 扫描遗漏元素」折叠区，手动扫一次，只对当前分支生效。
+- 为什么默认关：吸取 `problem_discovery` 的教训——默认关没人开，但额外 LLM 调用不能偷偷开；设置页直说"每 N 步多 1 次调用"。
+
 ## 当前**不**做什么（后续阶段）
 
-split/merge/retire/reparent 与周期扫描（E5）；领域聚合联动、界面按领域折叠
-分组、一致性守卫提示（E6）。因此引擎自己不会创建领域线（推进中发现的新元素 `parent` 只能挂到已有领域线，没有合适的就留空）。向导里已有"领域 → 元素"预览；
-因果线总览和静态 HTML 导出的按领域折叠分组留到 E6。
+领域聚合联动、界面按领域折叠分组、一致性守卫提示（E6）。引擎自己不会创建领域线（推进中发现的新元素 `parent` 只能挂到已有领域线，没有合适的就留空；
+领域线也不能被 merge/split/retire，要动领域只能改设置）。向导里已有"领域 → 元素"预览；因果线总览和静态 HTML 导出的按领域折叠分组留到 E6。
+
+## 已知边界（E5）
+
+- **引擎只做结构校验，不判断语义**：LLM 把不该合并的两个元素合并了，引擎不会拦；**v1 没有 unmerge，也没有"复活"已退场元素**（已退场元素再被"发现"只会补别名，不会复活）。
+- **带 `lifecycle` 的元素不能作为被并入方**：技术节点 id 被其它节点的 `requires` 引用，合并会让前置悬空；要淘汰这类元素用 `retire`（保留方带 lifecycle 没问题）。
+- **重定向只覆盖四处**（`resolve`/发现补全/`get_edges`/分级索引）。`causal_view` 的统计、静态 HTML 导出、因果线总览里，历史中的旧 id 仍按旧 id 展示，**没有专门接重定向**（E6 收尾时核对）；设置页的 `declared_causal_graph` JSON 里端点仍是原 id（只在读取时改指）。
+- 退场只阻止**新**待兑现因果入队；已入队的照常到期、照常要求交代。
+- 周期扫描：额外 LLM 调用；直接登记、不经用户确认；只在 `advance()` 路径跑，独立推进 `advance_lines()` 不跑；扫描不带技术种子（技术类新元素登记后没有 lifecycle，需后续推进补）。
+- 新增的设置页控件和「扫描遗漏元素」按钮**只做了 Streamlit 加载冒烟（无异常），没有进入实例的设置页实际点过**；`element_ops` 与扫描**没有在真实 LLM 下运行过**，弱模型可能写出格式不稳的 `element_ops`（解析一律"不认识就忽略/记 op_rejected"）。
 
 ## 已知边界（E4）
 
@@ -251,7 +296,7 @@ split/merge/retire/reparent 与周期扫描（E5）；领域聚合联动、界�
 ## 已知边界（E3）
 
 - **关键性只做结构校验**：引擎只看"有没有连到已登记元素的关系 / 有没有 `why_key` 且被再次提到"，判断不了"真的重不重要"；阈值 2 次是经验值，需用真实模拟调。
-- **去重只做精确规范化**：语义相同但名字完全不同的元素不会自动合并（疑似重复只是提示，合并要等 E5 的 `element_ops.merge`）。
+- **去重只做精确规范化**：语义相同但名字完全不同的元素不会自动合并（疑似重复只是提示；E5 起 LLM 可用 `element_ops.merge` 合并，见上文）。
 - **LLM 不补全**时元素落到 `fallback`（通用树、未归类），这是如实记录而非掩盖。
 - **旧实例中途开启元素模式**：既有无 `kind` 的线仍是旧式独立线；"请 LLM 顺带给 `kind`/`parent`"**本阶段没做**（计划 §5.2），留 E4/E6。
 - **引用源未覆盖**：事件 `affects`、`declared_causal_graph` 端点、跨线 `prerequisites` 仍未接入"引用即登记"（前两者是配置而非 LLM 步输出；统一接入留 E6）。
@@ -283,6 +328,6 @@ split/merge/retire/reparent 与周期扫描（E5）；领域聚合联动、界�
 
 ## 相关
 
-- 测试：`tests/test_element_registry.py`（28 个）、`tests/test_element_tech_adapter.py`（29 个）、`tests/test_element_creation.py`（28 个）、`tests/test_element_discovery.py`（82 个，E3）、`tests/test_element_tiers.py`（57 个，E4）
+- 测试：`tests/test_element_registry.py`（28 个）、`tests/test_element_tech_adapter.py`（29 个）、`tests/test_element_creation.py`（28 个）、`tests/test_element_discovery.py`（82 个，E3）、`tests/test_element_tiers.py`（57 个，E4）、`tests/test_element_ops.py`（47 个，E5）
 - 设计/记录：`next_doc/world_simulator_element_causal_lines_plan.md`（§10 实施记录）
 - 技术规则本身：[`tech_model_guide.md`](./tech_model_guide.md)

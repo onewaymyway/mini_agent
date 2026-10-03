@@ -1,6 +1,6 @@
 # world_simulator 改进计划（第二十三轮）：因果线从"领域级"升级为"元素级"，并在模拟中持续发现新元素
 
-> **状态（2026-10-03）：方案已确认；E1、E2、E3、E4 已实施（见 §10），E5–E6 尚未实施。** 实施按 §6 分期（E1–E6）一个阶段一个阶段执行，
+> **状态（2026-10-03）：方案已确认；E1、E2、E3、E4、E5 已实施（见 §10），E6 尚未实施。** 实施按 §6 分期（E1–E6）一个阶段一个阶段执行，
 > 每阶段完成后更新相关文档并打包修改/新增文件（保持目录结构，可直接覆盖）。
 > 本文只依据阅读代码得出结论，没有跑过真实 LLM，也没有运行时复现；每条"现状"都标了代码位置，
 > "推断"会明说。
@@ -476,7 +476,7 @@ active。分级只是展示细节，不是权限。
 | E2 创建阶段元素展开 | ✅ 已完成（2026-10-03） | 见下 |
 | E3 发现、去重、登记、补全 | ✅ 已完成（2026-10-03） | 见下 |
 | E4 分层与 prompt 预算 | ✅ 已完成（2026-10-03） | 见下 |
-| E5 元素运维与周期扫描 | ⬜ 未开始 | |
+| E5 元素运维与周期扫描 | ✅ 已完成（2026-10-03） | 见下 |
 | E6 联动与收尾 | ⬜ 未开始 | |
 
 ### E1 实施记录（2026-10-03）
@@ -576,6 +576,30 @@ prompt 规模按计划验证：元素从 10 增到 100，active 固定 12，增�
 6. 计划 §4.6 的 prompt 展示写"active 给…生命周期状态"，实现为 `发展阶段：stage（进度 x）`，只在元素带 `lifecycle.stage` 时出现。
 
 **遗留 / 已知边界**：见 `docs/element_model_guide.md` "已知边界（E4）"。主要是：分级只看"有没有动静"不看语义重要性；休眠索引超上限的元素既不在索引里也不在 `element_hint` 里，LLM 可能重复"发现"（引擎按 id/名称/别名精确去重兜底）；被预算降级的 watch 元素本步看不到自己的树；窗口 3/10 与 12 个 active 是经验值；`advance_lines()` 不经过这套展示（E6）；未在真实 LLM 下验证。
+
+
+### E5 实施记录（2026-10-03）
+
+**范围**：`element_ops`（split/merge/retire/reparent）与周期扫描。运维不新增 LLM 调用（只是推进输出里多一个可选键）；周期扫描是**额外一次 LLM 调用**，默认关。
+
+**新增/修改**
+- `world_simulator/element_ops.py`（新，纯 Python）：`normalize_op`、`apply_ops`、四个处理器；每条操作先深拷贝工作区、出错整条回滚；每步最多 `OPS_PER_STEP_MAX`=8 条。
+- `world_simulator/element_discovery.py`（新）+ `workflows/element_discovery.yaml`（新，`type: agent`，形态同 `capability_discovery`）：`get_scan_interval`、`suggest_elements`、`register_suggestions`、`safe_scan_in_step`、`scan_now`。
+- `element_registry.py`：新字段 `split_from`/`split_into`/`merged_from`/`retired_step`/`retire_reason`；`resolve(follow_merged=)`、`follow_merge`、`redirect_merged`、`retired_ids`；`process_step(ops=)`；`register_scan_items`；`_discover_one(scan=)`；发现/补全命中被合并元素时并到目标；输出协议提示补 `element_ops`。
+- `causal_engine.py`：`get_edges` 读取时把合并端点改指目标（自指的边忽略并给原因）；`queue_effects` 跳过端点已退场的边。`tree_effects.py`：跳过源/目标已退场。`element_tiers.py`：历史索引把被合并元素的 id/名称/别名算到目标上。
+- `engine/causal_lines.py`：把 `element_ops` 传进 `process_step`。`engine/advance.py`：在 `snapshot_and_check` 之前调用 `safe_scan_in_step`。
+- `app.py`：设置页「元素周期扫描间隔」+ 元素模式开启时的「🧩 扫描遗漏元素」手动入口。
+- 测试 `tests/test_element_ops.py`（47 个）；文档 `element_model_guide.md`（新增"元素运维与周期扫描（E5）"与"已知边界（E5）"）、`testing_guide.md`、`docs/README.md`、`docs/overview.md`、`PROJECT.md`。
+
+**设计取舍（相对 §4.5/§4.8 的落地选择）**
+1. 带 `lifecycle` 的元素不能作为被并入方：技术节点 id 被其它节点 `requires` 引用，合并会让前置悬空；要淘汰用 `retire`。
+2. `declared_causal_graph` 不是分支作用域状态，合并时不改写，改在 `get_edges` 读取时改指，边 id 不变，已入队的待兑现对得上。
+3. 扫描建议直接走同一套校验并登记（按 §4.8 "走同一套校验"），不做用户确认；扫描视为已满足候选池提次门槛；扫描不带 `lifecycle_seed`。
+4. 已退场元素不会被"再发现"复活，v1 无复活操作；无 unmerge。
+
+**测试**：全量 **1516 passed**（E4 后 1469 + 47）。34 个变异全部转红。变异验证第一轮有 8 个存活：其中 **2 条测试是空转的**（树影响退场测试没开 `causal_engine_enabled`，断言 `== []` 本来就成立）、另有补全落点、单条回滚（原测试的假处理器没改状态就抛错，回滚无从体现）、扫描丢弃 `lifecycle_seed`、协议提示四种操作、分级按名称/别名索引共 6 处覆盖缺口；已补强（加正向对照、让假处理器先改一半再抛错等）并重跑清零。另有 2 个存活是我变异写得无意义（改字符串但断言用子串），换成真正改条件的变异后被抓住。**对既有测试零修改。**
+
+**遗留 / 已知边界**：见 `docs/element_model_guide.md` "已知边界（E5）"。主要是：无 unmerge/复活；`causal_view` 统计、静态 HTML 导出、因果线总览里历史旧 id 仍按旧 id 展示（**没接重定向**，E6 收尾核对）；设置页新控件与手动扫描按钮只做了 Streamlit 加载冒烟（无异常），**没有进入实例设置页实际点过**；`advance_lines()` 不跑扫描；`element_ops`/扫描未在真实 LLM 下运行。
 
 ### 仍不属于本轮的遗留
 

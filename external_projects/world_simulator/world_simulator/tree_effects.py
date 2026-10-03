@@ -61,7 +61,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
-from world_simulator import causal_engine, event_sampler, tech_model, tree_grounding
+from world_simulator import causal_engine, event_sampler, tech_model, tree_grounding, element_registry
 
 TREE_EDGE_PREFIX = "tree:"
 TRIGGER_REASON = "tree_effect"
@@ -201,8 +201,11 @@ def queue_tree_effects(
     params = causal_engine.get_params(settings)
     step = int(next_state.step)
     known = _known_targets(settings)
+    retired = element_registry.retired_ids(settings)  # 第二十三轮 E5：已退场元素不再产生新的待兑现因果
     for lid, branch in newly_active(causal_lines, status_before):
         bid = tree_grounding._bid(branch)
+        if lid in retired:
+            continue
         for raw in branch.get("effects_if_active") or []:
             eff, note = normalize_effect(raw)
             if eff is None:
@@ -216,6 +219,8 @@ def queue_tree_effects(
                     line_id=lid, branch_id=bid, target=eff["to_line_id"]))
             ok, _why = event_sampler.evaluate_condition(eff["condition"], next_state.vars, settings)
             if not ok:
+                continue
+            if eff["to_line_id"] in retired:
                 continue
             edge_id = edge_id_for(lid, bid, eff["to_line_id"])
             if known and eff["to_line_id"] not in known:

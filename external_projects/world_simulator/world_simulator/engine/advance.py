@@ -25,7 +25,7 @@ from world_simulator.engine.background_entities import (
     _normalize_background_entities,
 )
 from world_simulator import causal_tree, relationship
-from world_simulator import causal_engine, consistency_guard, dynamic_state, element_registry, event_sampler, tech_model, tree_effects, tree_grounding
+from world_simulator import causal_engine, consistency_guard, dynamic_state, element_discovery, element_registry, event_sampler, tech_model, tree_effects, tree_grounding
 from world_simulator.engine.causal_lines import _apply_tree_updates, _auto_register_causal_lines, _update_element_registry
 from world_simulator.engine import mechanisms
 from world_simulator.engine.errors import SimAlreadyEndedError, SimEngineError, SimPausedError
@@ -870,6 +870,12 @@ def advance(
     # 上面所有对这两类状态的修改之后、`append_state()` 之前计算——快照
     # 要包含这一步的入队/树更新结果。`history_for_prompt` 是推进前的
     # 该分支历史，用来找上一份快照做变化判断。
+    # 第二十三轮 E5：元素周期扫描（`settings.element_scan_interval` > 0 才跑，默认关；额外一次 LLM 调用）。
+    # 必须在快照之前——新登记的元素要进入本步的分支快照，否则分叉到这一步会丢掉扫描结果。
+    element_discovery.safe_scan_in_step(
+        cfg, workspace_root, manifest, history=history_for_prompt, next_state=next_state,
+    )
+
     mechanisms.snapshot_and_check(manifest, next_state, history_for_prompt, tree_before=tree_before)
 
     store.append_state(next_state, branch=branch)

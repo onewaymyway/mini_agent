@@ -702,11 +702,10 @@ monkeypatch 打桩验证文本原样出现在 `inputs` 字典里；`generate_sce
   假设/已观察/已证伪/未定/已停用，标签带兑现率与样本数）与"⏰ 到期时间线"（未结案项已到期优先 + 最近处置记录）。状态是 **AI 自报**
   统计的函数，不是世界里被验证/被证伪；阈值可用 `causal_view_params` 覆盖。静态 HTML 导出已在 P10 接入（见 `docs/html_export_mechanisms_guide.md`）；没有浏览器级验证，也没有在真实
   LLM 下验证。详见 `docs/causal_view_guide.md`。
-- **统一元素模型目前完成 E1、E2、E3、E4（第二十三轮，新实例默认开启 `element_modeling_enabled`）**：E1 改技术节点的存储位置
+- **统一元素模型目前完成 E1、E2、E3、E4、E5（第二十三轮，新实例默认开启 `element_modeling_enabled`）**：E1 改技术节点的存储位置
   （`causal_lines[].lifecycle`）与读写层；E2 让创建阶段先划领域再展开元素并带创建预算；E3 让推进阶段自动发现新元素（`discovered_elements`/
   `element_enrichments`，别名去重、候选池与关键性门槛、引用即登记、补全宽限与兜底，零额外 LLM 调用）；E4 让 prompt 里的因果线按派生分级展示
-  （active 完整含未终态分支 / watch 一行 / dormant 只留受上限约束的 id 索引，`tier_pin` 固定、预算可调可不限）。元素运维（合并/拆分/退场）与
-  领域聚合联动（E5–E6）尚未实施，所以重复元素只能靠提示而不能自动合并；带技术种子的新实例里每个技术节点会作为一条因果线
+  （active 完整含未终态分支 / watch 一行 / dormant 只留受上限约束的 id 索引，`tier_pin` 固定、预算可调可不限）。E5 让 LLM 可用 `element_ops`（merge/split/retire/reparent）做结构调整并提供默认关闭的周期扫描；领域聚合联动（E6）尚未实施；带技术种子的新实例里每个技术节点会作为一条因果线
   出现在因果线总览里，但不再无限制地进 prompt。设置页新增代码只做了静态检查，没有 Streamlit
   运行时验证；没有在真实 LLM 下运行。详见 `docs/element_model_guide.md`。
 
@@ -4557,3 +4556,7 @@ deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
   **测试**：全量 1469 passed（E3 后 1412 + 57）；30 个变异全部转红（窗口两个边界、窗口缩放、钉住/用户意见/活跃分支/到期/事件命中/领域展开/一跳传播、预算开关与钉住名额、入度/新近度排序、`tree_updates`/技术动作计入进展、刚登记计入活动、休眠索引上限与完整扫描、`null`=不限、终态集合、陈旧/到点范围、retired 过滤、分级开关、指引分支、`current_vars`/事件命中接线）。**对既有测试的唯一修改**：`test_advance_registers_discovered_elements_...` 里"已登记索引在 `element_hint`"改为"在 `causal_lines_hint`"，因为 E4 有意把 id 索引挪到了分级展示里。
   **与计划的偏差**：① 钉住（`tier_pin`）的元素不受预算裁剪（计划的排序里"固定"排第一，但超出预算时会被裁掉；这里让用户明确固定的不被丢，但仍占名额）；② 增加一条 active 规则"线上留有 `user_feedback`"（计划没写；休眠元素的用户修改意见原来每步都在 prompt 里，分级后不能悄悄消失）；③ 刚登记（`born_step`）也算"近期动静"（计划只写了 `line_updates` 等；否则新实例所有种子元素在第 1 步就全是休眠）；④ 休眠索引按"最近动静"排序需要完整历史，只在索引要截断时才额外扫一遍完整历史，其余只扫有限窗口；⑤ 设置页的 `tier_pin`/预算参数控件、总览里展示当前分级留 E6（与 E3"运行期参数无控件"同一处遗留）。
   **已知边界**：见 `docs/element_model_guide.md` "已知边界（E4）"；未在真实 LLM 下运行。**下一阶段**：E5（元素运维与周期扫描）。
+
+- **第二十三轮 E5：统一元素模型——元素运维与周期扫描（2026-10-03，依据 `next_doc/world_simulator_element_causal_lines_plan.md` §4.5 / §4.8 / §6 E5）**：新增 `world_simulator/element_ops.py`（纯 Python）：推进输出可选的 `element_ops`（`merge`/`split`/`retire`/`reparent`），引擎只做结构校验（id 存在、不自并、领域线不参与、带 `lifecycle` 的元素不能被并入），不通过记 `op_rejected` 不报错；每条操作出错整条回滚，每步最多 8 条。merge：别名/关系/分支（前缀 id 追加）并入、其它线的关系与 `effects_if_active` 改指目标、原线标 `merged` 不删除；retire：不删除，`queue_effects`/`tree_effects` 不再为其入新的待兑现（已入队的不撤销）。历史不可变，旧 id 只在读取时落到合并目标：`element_registry.resolve(follow_merged=True)`、发现/补全、`causal_engine.get_edges`（`declared_causal_graph` 端点读取时改指）、`element_tiers` 历史索引。新增 `world_simulator/element_discovery.py` + `workflows/element_discovery.yaml`：`settings.element_scan_interval`（默认 0=关，额外一次 LLM 调用）每 N 步回看叙事列出"反复出现但未建模"的对象，**直接走与 `discovered_elements` 同一套校验并登记**；`advance()` 里在分支快照之前调用，异常吞掉；设置页新增间隔数字框与「🧩 扫描遗漏元素」手动入口。
+  **测试**：全量 **1516 passed**（E4 后 1469 + 47）；34 个变异全部转红。变异验证第一轮有 8 个存活，暴露出 **2 条测试是空转的**（树影响的退场测试没开 `causal_engine_enabled`，`q == []` 本来就成立、没有正向对照）以及补全落点/回滚/扫描丢弃 seed/协议提示/分级名称索引共 6 处覆盖缺口，已补强后重跑清零。**对既有测试零修改。**
+  **已知边界**：见 `docs/element_model_guide.md` "已知边界（E5）"。主要是：无 unmerge/复活；`causal_view`、静态 HTML 导出、总览里旧 id 仍按旧 id 展示（没接重定向，留 E6 核对）；设置页新控件只做了加载冒烟、没有进入实例页实际点过；未在真实 LLM 下运行。**下一阶段**：E6（联动与收尾）。
