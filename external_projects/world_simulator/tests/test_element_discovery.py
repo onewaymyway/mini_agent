@@ -713,7 +713,9 @@ def test_advance_registers_discovered_elements_audits_them_and_feeds_the_next_pr
 
     cap2: dict = {}
     _adv(monkeypatch, tmp_path, data_dir, _default_payload(2), cap2)
-    assert "open_rival_x" in cap2["inputs_list"][0]["element_hint"]              # 下一步的已登记索引里
+    # E4：已登记元素的索引由分级展示（`causal_lines_hint`）承担，`element_hint` 只留指引、不再重复列 id。
+    assert "open_rival_x" in cap2["inputs_list"][0]["causal_lines_hint"]         # 下一步的已登记索引里
+    assert "因果线设置" in cap2["inputs_list"][0]["element_hint"]
 
 
 def test_advance_same_step_tree_updates_can_target_a_just_discovered_element(tmp_path, monkeypatch):

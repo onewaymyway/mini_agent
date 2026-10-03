@@ -674,7 +674,7 @@ RUNTIME_DEFAULT_PARAMS: Dict[str, Optional[int]] = {
     "enrich_grace_steps": 2,          # 补全宽限步数，>= 0；0 = 不向 LLM 索要补全，登记当步即按兜底
 }
 CANDIDATE_POOL_MAX = 50   # 候选池条数上限（防无限增长）；超出时丢"提次最少、最久没被提到"的
-INDEX_MAX = 60            # prompt 里已登记元素索引的条数上限（E4 起由分级/休眠索引接管）
+INDEX_MAX = 60            # prompt 里已登记元素索引的条数上限（不传 history 的旧调用方；E4 起引擎路径由分级/休眠索引接管）
 
 
 def _valid_int_at_least(value: Any, minimum: int) -> Tuple[bool, Optional[int]]:
@@ -1496,9 +1496,13 @@ def suspected_duplicates(lines: List[Dict[str, Any]], recent_ids: Iterable[str],
     return pairs
 
 
-def build_hint(settings: Optional[Dict[str, Any]], *, step: int) -> str:
+def build_hint(settings: Optional[Dict[str, Any]], *, step: int, history: Optional[List[Any]] = None) -> str:
     """喂给 `advance_step`/`world_evolve` 的 `{element_hint}`：输出协议 + 已登记元素索引 + 待补全请求 +
-    候选池 + 疑似重复提示。`step` 是**正在生成**的那一步。元素模式未开启返回空串（prompt 与之前等价）。"""
+    候选池 + 疑似重复提示。`step` 是**正在生成**的那一步。元素模式未开启返回空串（prompt 与之前等价）。
+
+    `history`（第二十三轮 E4，可选）：传了（哪怕是空列表）表示调用方同时把分级展示接进了
+    `{causal_lines_hint}`——那里已经列出所有 active 元素、watch 摘要和休眠索引，所以这里**不再重复列
+    "已登记元素"索引**，只留一句指引；不传（旧调用方/单测）保持 E3 的行为。"""
     if not is_enabled(settings):
         return ""
     params = get_runtime_params(settings)
@@ -1513,7 +1517,12 @@ def build_hint(settings: Optional[Dict[str, Any]], *, step: int) -> str:
         ) + "。")
     else:
         parts.append("当前没有领域线，`parent` 一律省略。")
-    if elements:
+    if elements and history is not None:
+        parts.append(
+            "已登记元素的 id 都列在上面的\"因果线设置\"里（活跃的完整展开，其余是摘要/休眠索引）：复用这些 id，"
+            "不要重复发现；写别名也认。"
+        )
+    elif elements:
         shown = elements[-INDEX_MAX:]
         text = "已登记元素（复用这些 id，不要重复发现）：" + "；".join(_fmt_element(x) for x in shown)
         if len(elements) > len(shown):
@@ -1555,9 +1564,9 @@ def build_hint(settings: Optional[Dict[str, Any]], *, step: int) -> str:
     return "\n".join(parts)
 
 
-def safe_build_hint(settings: Optional[Dict[str, Any]], *, step: int) -> str:
+def safe_build_hint(settings: Optional[Dict[str, Any]], *, step: int, history: Optional[List[Any]] = None) -> str:
     """`build_hint()` 的兜底版：任何异常返回空串，不拖垮推进。"""
     try:
-        return build_hint(settings, step=step)
+        return build_hint(settings, step=step, history=history)
     except Exception:  # noqa: BLE001 — 提示词是旁路信息
         return ""

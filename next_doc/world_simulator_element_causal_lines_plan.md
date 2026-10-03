@@ -1,6 +1,6 @@
 # world_simulator 改进计划（第二十三轮）：因果线从"领域级"升级为"元素级"，并在模拟中持续发现新元素
 
-> **状态（2026-10-03）：方案已确认；E1、E2、E3 已实施（见 §10），E4–E6 尚未实施。** 实施按 §6 分期（E1–E6）一个阶段一个阶段执行，
+> **状态（2026-10-03）：方案已确认；E1、E2、E3、E4 已实施（见 §10），E5–E6 尚未实施。** 实施按 §6 分期（E1–E6）一个阶段一个阶段执行，
 > 每阶段完成后更新相关文档并打包修改/新增文件（保持目录结构，可直接覆盖）。
 > 本文只依据阅读代码得出结论，没有跑过真实 LLM，也没有运行时复现；每条"现状"都标了代码位置，
 > "推断"会明说。
@@ -475,7 +475,7 @@ active。分级只是展示细节，不是权限。
 | E1 数据模型、存取层、兼容 | ✅ 已完成（2026-10-03） | 见下 |
 | E2 创建阶段元素展开 | ✅ 已完成（2026-10-03） | 见下 |
 | E3 发现、去重、登记、补全 | ✅ 已完成（2026-10-03） | 见下 |
-| E4 分层与 prompt 预算 | ⬜ 未开始 | |
+| E4 分层与 prompt 预算 | ✅ 已完成（2026-10-03） | 见下 |
 | E5 元素运维与周期扫描 | ⬜ 未开始 | |
 | E6 联动与收尾 | ⬜ 未开始 | |
 
@@ -552,6 +552,30 @@ active。分级只是展示细节，不是权限。
 5. `get_params`（创建期）与 `get_runtime_params`（运行期）分开，因为 E2 测试把 `get_params(None)` 钉死为两个键。
 
 **遗留 / 已知边界**：见 `docs/element_model_guide.md` "已知边界（E3）"。主要是：关键性与阈值（2 次）是经验值；去重只做精确规范化，合并要等 E5；LLM 不补全就落 `fallback`；`advance_lines()` 不经过元素管线（E6）；未在真实 LLM 下验证。
+
+### E4 实施记录（2026-10-03）
+
+**范围**：元素的派生分级（active/watch/dormant）与 prompt 预算。**不新增 LLM 调用，不改输出协议**；只改 `{causal_lines_hint}` 的渲染和 `{element_hint}` 里的索引段。元素模式关闭（旧实例）时提示词逐字节不变。
+
+**新增/修改**
+- `world_simulator/element_tiers.py`（新，纯 Python）：`derive_tiers(history, settings, step=, hit_refs=)`（分级由历史**派生**，唯一存储的是 `tier_pin`；返回分级/原因/年龄/排序/被预算降级者）、`get_tier_params`/`invalid_tier_param_keys`（`max_active_in_prompt`=12、`active_window_steps`=3、`watch_window_steps`=10、`dormant_index_max`=60，与前两阶段共用 `settings.element_params`；只有 `max_active_in_prompt` 接受 `null`=不限）、`view()`（切成领域/active/watch/休眠索引）、`active_piece`/`watch_piece`/`branch_text`（active 只列未终态分支、终态只给计数）/`var_refs_text`（`var_refs` 当前值，点号路径）、`expand_hits`（事件 `affects`，领域 id 展开为其下 alive 元素）。
+- `spec_generator.py`：`_resolve_causal_lines_hint`/`resolve_hints` 新增 `history`/`current_vars`/`hit_refs`；元素模式的 advance 阶段改走分级展示；新增 `_tier_sections_hint`（watch 一行摘要 + 休眠索引 + "它们同样可以更新"的说明）；到点提示覆盖领域+active+watch，陈旧分支建议只覆盖领域+active。
+- `element_registry.py`：`build_hint`/`safe_build_hint` 新增可选 `history`——传了就不再重复列"已登记元素"索引（改为指向因果线设置的一句话）；不传保持 E3 行为。
+- `engine/advance.py`：传入 `history`、`current.vars`、本步（未被 `max_events_per_step` 压掉的）外生事件的 `affects`。
+- 测试 `tests/test_element_tiers.py`（57 个）；文档 `element_model_guide.md`（新增"分层与 prompt 预算（E4）"一节与"已知边界（E4）"）、`testing_guide.md`、`docs/README.md`、`docs/overview.md`、`PROJECT.md`。
+
+**测试**：全量 **1469 passed**（E3 后 1412 + 57）。30 个变异全部转红。**对既有测试的唯一修改**：`test_element_discovery.py::test_advance_registers_discovered_elements_...` 里"已登记索引在 `element_hint`"改成"在 `causal_lines_hint`"——这是 E4 有意的设计变更（id 索引挪进分级展示，避免两处重复列）。
+prompt 规模按计划验证：元素从 10 增到 100，active 固定 12，增量只来自 watch 一行摘要和受上限约束的休眠索引；索引封顶后再从 80 增到 1000 个元素，prompt 增长不到 40 个字符（只多"另有 N 个"的位数），且 100 个元素时 prompt 不到"全部展开"做法的 1/3。
+
+**与计划的偏差**
+1. **钉住的元素不受预算裁剪**（计划排序里"固定"排第一，但超出预算时仍会被裁掉）；钉住的仍占用名额。理由：用户明确固定的不该被悄悄丢掉。
+2. **新增一条 active 规则：线上有 `user_feedback`**（计划没写）。理由：休眠元素的用户修改意见原来每步都出现在 prompt 里，分级后不能悄悄消失。
+3. **刚登记（`born_step`）算"近期动静"**（计划只列了 `line_updates` 等）。理由：否则新实例所有种子元素在第 1 步就全是休眠。没有 `born_step` 的旧式线按 0 处理。
+4. 休眠索引"按最近动静截断"需要完整历史；只在索引真的要截断时才额外扫一遍完整历史，分级本身只扫有限窗口。
+5. **设置页的 `tier_pin`/预算参数控件、因果线总览展示当前分级未做**，与 E3 的"运行期参数无控件"一起留 E6（本阶段没有 Streamlit 运行时可验证，且界面完整化本来就在 E6 范围）。
+6. 计划 §4.6 的 prompt 展示写"active 给…生命周期状态"，实现为 `发展阶段：stage（进度 x）`，只在元素带 `lifecycle.stage` 时出现。
+
+**遗留 / 已知边界**：见 `docs/element_model_guide.md` "已知边界（E4）"。主要是：分级只看"有没有动静"不看语义重要性；休眠索引超上限的元素既不在索引里也不在 `element_hint` 里，LLM 可能重复"发现"（引擎按 id/名称/别名精确去重兜底）；被预算降级的 watch 元素本步看不到自己的树；窗口 3/10 与 12 个 active 是经验值；`advance_lines()` 不经过这套展示（E6）；未在真实 LLM 下验证。
 
 ### 仍不属于本轮的遗留
 

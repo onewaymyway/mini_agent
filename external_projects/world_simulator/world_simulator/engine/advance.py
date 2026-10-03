@@ -449,9 +449,18 @@ def advance(
         "tree_effects_hint": tree_effects.safe_build_hint(manifest.settings),
         # 第二十三轮 E3：统一元素模型开启时，把 `discovered_elements`/`element_enrichments` 的输出协议、
         # 已登记元素索引、待补全请求、候选池、疑似重复提示喂给 LLM；未开启返回空字符串。
-        "element_hint": element_registry.safe_build_hint(manifest.settings, step=current.step + 1),
+        # 第二十三轮 E4：传 `history` 后，已登记元素的 id 索引改由 `{causal_lines_hint}` 的分级展示（含休眠索引）
+        # 承担，这里不再重复列一遍。
+        "element_hint": element_registry.safe_build_hint(
+            manifest.settings, step=current.step + 1, history=history_for_prompt
+        ),
         **resolve_hints(
-            manifest.settings, current_step=current.step + 1, history=history_for_prompt
+            manifest.settings, current_step=current.step + 1, history=history_for_prompt,
+            current_vars=current.vars,
+            hit_refs=[
+                ref for ev in sampled_events if isinstance(ev, dict) and not ev.get("suppressed_by_cap")
+                for ref in (ev.get("affects") or [])
+            ],
         ),
     }
 

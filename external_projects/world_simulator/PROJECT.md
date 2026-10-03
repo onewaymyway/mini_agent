@@ -702,11 +702,12 @@ monkeypatch 打桩验证文本原样出现在 `inputs` 字典里；`generate_sce
   假设/已观察/已证伪/未定/已停用，标签带兑现率与样本数）与"⏰ 到期时间线"（未结案项已到期优先 + 最近处置记录）。状态是 **AI 自报**
   统计的函数，不是世界里被验证/被证伪；阈值可用 `causal_view_params` 覆盖。静态 HTML 导出已在 P10 接入（见 `docs/html_export_mechanisms_guide.md`）；没有浏览器级验证，也没有在真实
   LLM 下验证。详见 `docs/causal_view_guide.md`。
-- **统一元素模型目前完成 E1、E2、E3（第二十三轮，新实例默认开启 `element_modeling_enabled`）**：E1 改技术节点的存储位置
+- **统一元素模型目前完成 E1、E2、E3、E4（第二十三轮，新实例默认开启 `element_modeling_enabled`）**：E1 改技术节点的存储位置
   （`causal_lines[].lifecycle`）与读写层；E2 让创建阶段先划领域再展开元素并带创建预算；E3 让推进阶段自动发现新元素（`discovered_elements`/
-  `element_enrichments`，别名去重、候选池与关键性门槛、引用即登记、补全宽限与兜底，零额外 LLM 调用）。分级与 prompt 预算/元素运维/
-  领域聚合联动（E4–E6）尚未实施，所以元素多了之后 prompt 里还没有分级截断（已登记元素索引只按 60 条截尾）；带技术种子的新实例里每个技术节点会作为一条因果线
-  出现在因果线总览与 prompt 因果线列表里（带默认三分支未来树）。设置页新增代码只做了静态检查，没有 Streamlit
+  `element_enrichments`，别名去重、候选池与关键性门槛、引用即登记、补全宽限与兜底，零额外 LLM 调用）；E4 让 prompt 里的因果线按派生分级展示
+  （active 完整含未终态分支 / watch 一行 / dormant 只留受上限约束的 id 索引，`tier_pin` 固定、预算可调可不限）。元素运维（合并/拆分/退场）与
+  领域聚合联动（E5–E6）尚未实施，所以重复元素只能靠提示而不能自动合并；带技术种子的新实例里每个技术节点会作为一条因果线
+  出现在因果线总览里，但不再无限制地进 prompt。设置页新增代码只做了静态检查，没有 Streamlit
   运行时验证；没有在真实 LLM 下运行。详见 `docs/element_model_guide.md`。
 
 ## 目录结构
@@ -4550,3 +4551,9 @@ deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
   **测试**：全量 1412 passed（E2 后 1330 + 82，既有用例零修改）；19 个变异全部转红（首轮 3 个存活，补 4 个用例后清零）。写测试时发现并修掉两处真实缺陷：① 首次提到即达标的登记被误记成 `promoted`；② 合并别名时已有别名因规范化后等于 id 被误删（现在已有别名原样保留，只过滤新增项）。
   **与计划的偏差**：① `relations` 不写进 `declared_causal_graph`（它不是分支作用域，会让分支间互相漏），改存元素线上、经 `derived_edges()` 读取——与计划 §4.4 ⑤"并入 `declared_causal_graph`"字面不同，目的一致；② 引用即登记只覆盖 LLM 单步输出里的引用源，事件 `affects`/`declared_causal_graph` 端点/跨线 `prerequisites` 留 E6；③ 计划 §5.2"中途开启的旧实例请 LLM 顺带给既有线 `kind`/`parent`"本阶段未做；④ 运行期参数没有设置页控件（只能写 `settings.element_params`），留 E6；⑤ 运行期参数与创建期参数分两个函数读取（`get_runtime_params` / `get_params`），因为 E2 测试把 `get_params(None)` 钉死为两个键。
   **已知边界**：见 `docs/element_model_guide.md` "已知边界（E3）"；未在真实 LLM 下运行。**下一阶段**：E4（分层与 prompt 预算）。
+
+- **第二十三轮 E4：统一元素模型——分层与 prompt 预算（2026-10-03，依据 `next_doc/world_simulator_element_causal_lines_plan.md` §4.6 / §6 E4）**：新增 `world_simulator/element_tiers.py`（纯 Python、不调 LLM）：`derive_tiers(history, settings, step=, hit_refs=)` 把每个 alive 非领域元素**派生**成 active/watch/dormant（唯一存储的是用户的 `tier_pin`，所以天然按分支正确、不触发快照重写）。active：钉住/留有用户意见/近期进展（`line_updates`·`tree_updates`·技术迁移倒退，或刚登记；窗口按线自身 `advance_every_n_steps` 缩放）/有 emerging·active 分支/有到期待兑现因果/被本步事件命中（领域展开）/被 active 元素经因果边一跳触发；超过 `max_active_in_prompt`（默认 12，`null`=不限）按（到期压力>活跃分支>用户意见>最近进展>入度）排序，超出降为 watch，钉住的不受裁剪。`spec_generator._resolve_causal_lines_hint` 元素模式下改为分级展示：领域线+active 完整（类型/领域/发展阶段/`var_refs` 当前值/**只列未终态分支**，终态只给计数），watch 一行摘要，dormant 只留 `id（label）` 索引（`dormant_index_max` 默认 60，按最近动静截断并写"另有 N 个未列出"）；到点提示覆盖领域+active+watch，陈旧分支建议只覆盖领域+active。`element_registry.build_hint` 新增可选 `history`：传了就不再重复列已登记元素索引（改为指引）。`engine/advance.py` 传入 `history`/`current_vars`/本步事件 `affects`。分级只决定展示详细程度，**不拦截**：LLM 更新休眠元素照常接受，下一步自动升为 active。未开启元素模式的旧实例提示词逐字节不变。
+  **文件**：`world_simulator/element_tiers.py`（新）、`spec_generator.py`、`element_registry.py`、`engine/advance.py`、`tests/test_element_tiers.py`（新，57 个）、`tests/test_element_discovery.py`（1 处断言随设计变更调整，见下）、`docs/element_model_guide.md`、`docs/testing_guide.md`、`docs/README.md`、`docs/overview.md`。
+  **测试**：全量 1469 passed（E3 后 1412 + 57）；30 个变异全部转红（窗口两个边界、窗口缩放、钉住/用户意见/活跃分支/到期/事件命中/领域展开/一跳传播、预算开关与钉住名额、入度/新近度排序、`tree_updates`/技术动作计入进展、刚登记计入活动、休眠索引上限与完整扫描、`null`=不限、终态集合、陈旧/到点范围、retired 过滤、分级开关、指引分支、`current_vars`/事件命中接线）。**对既有测试的唯一修改**：`test_advance_registers_discovered_elements_...` 里"已登记索引在 `element_hint`"改为"在 `causal_lines_hint`"，因为 E4 有意把 id 索引挪到了分级展示里。
+  **与计划的偏差**：① 钉住（`tier_pin`）的元素不受预算裁剪（计划的排序里"固定"排第一，但超出预算时会被裁掉；这里让用户明确固定的不被丢，但仍占名额）；② 增加一条 active 规则"线上留有 `user_feedback`"（计划没写；休眠元素的用户修改意见原来每步都在 prompt 里，分级后不能悄悄消失）；③ 刚登记（`born_step`）也算"近期动静"（计划只写了 `line_updates` 等；否则新实例所有种子元素在第 1 步就全是休眠）；④ 休眠索引按"最近动静"排序需要完整历史，只在索引要截断时才额外扫一遍完整历史，其余只扫有限窗口；⑤ 设置页的 `tier_pin`/预算参数控件、总览里展示当前分级留 E6（与 E3"运行期参数无控件"同一处遗留）。
+  **已知边界**：见 `docs/element_model_guide.md` "已知边界（E4）"；未在真实 LLM 下运行。**下一阶段**：E5（元素运维与周期扫描）。

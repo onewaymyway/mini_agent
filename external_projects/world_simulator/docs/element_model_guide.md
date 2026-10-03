@@ -1,8 +1,8 @@
 # 统一元素模型（第二十三轮）
 
 > 设计依据：仓库 `next_doc/world_simulator_element_causal_lines_plan.md`。
-> **实施进度：E1（数据模型、存取层、兼容折叠）、E2（创建阶段元素展开）、E3（发现·去重·登记·补全）已完成**；
-> E4–E6（分层与 prompt 预算 / 元素运维 / 联动与收尾）**尚未实施**。本文随各阶段增补，只写已落地的行为，不提前描述后续阶段。
+> **实施进度：E1（数据模型、存取层、兼容折叠）、E2（创建阶段元素展开）、E3（发现·去重·登记·补全）、E4（分层与 prompt 预算）已完成**；
+> E5–E6（元素运维与周期扫描 / 联动与收尾）**尚未实施**。本文随各阶段增补，只写已落地的行为，不提前描述后续阶段。
 
 ## 它是什么
 
@@ -167,7 +167,7 @@ label）；与**领域**线相同 → 节点改名 `<id>_tech`（重名再加序
 
 - `SimState.element_audit`（空时不输出）：`registered/promoted/candidate/budget_blocked/merged_alias/enriched/fallback/ref_registered/
   alias_resolved/alias_collision/enrichment_unknown/enrichment_ignored/lifecycle_seed_queued/lifecycle_seed_ignored/error`。
-- `{element_hint}`（`element_registry.build_hint`）：输出协议、可用领域 id、已登记元素索引（上限 `INDEX_MAX`=60，E4 起由分级接管）、待补全请求
+- `{element_hint}`（`element_registry.build_hint`）：输出协议、可用领域 id、已登记元素索引（上限 `INDEX_MAX`=60；**E4 起引擎路径传了 `history`，这一段改为一句指引**——id 索引由 `{causal_lines_hint}` 的分级展示承担，见下一节）、待补全请求
   （只在 `born_step+1 … born_step+grace` 的步里问）、候选池前 5 条、**疑似重复提示**（名称词元 Jaccard ≥ 0.5 或较短名 ≥4 字符被包含；只提示不合并）。
 - 引擎管线任何异常 → 退回旧最小登记，审计留 `error`，`manifest.settings` 不留半截状态。
 
@@ -181,11 +181,72 @@ label）；与**领域**线相同 → 节点改名 `<id>_tech`（重名再加序
 
 与 E2 的创建期两个键共用同一个 `element_params` 字典，但 `get_params()`（创建期）与 `get_runtime_params()`（运行期）分开读取。
 
+## 分层与 prompt 预算（E4）
+
+元素会越来越多，不能每步把全部元素的全部分支都拼进 prompt。E4 把元素分三档，**分级只决定本步 prompt 里展示多详细，
+不决定"能不能更新"**。实现在 `world_simulator/element_tiers.py`（纯 Python、不调 LLM、不读写磁盘）；
+接入点是 `spec_generator._resolve_causal_lines_hint(stage="advance")`（即 `advance_step`/`world_evolve` 的
+`{causal_lines_hint}`）。**未开启元素模式（旧实例）时输出与之前逐字节一致。**
+
+### 分级是派生的，不存储
+
+唯一存储的分级信息是用户的 `tier_pin`（只有 `active`）。其余由 `(settings, history, step)` 现算——所以天然按分支正确
+（两个分支历史不同 → 分级不同），分级变化也不会让 `causal_lines` 快照反复重写。历史只扫最近
+`watch_window_steps × 各线 advance_every_n_steps 最大值` 步，不随历史变长而变慢。
+
+### 规则（`derive_tiers`）
+
+| 档 | 条件（任一成立） |
+|---|---|
+| **active** | `tier_pin=active`；线上留有 `user_feedback`（不能因为休眠就把用户的话从 prompt 里拿掉）；最近 `active_window_steps`（默认 3，**按线自身 `advance_every_n_steps` 缩放**）步内有 `line_updates` / `tree_updates` / 技术阶段迁移或倒退，或刚登记（`born_step`；没有 `born_step` 的旧式线按 0 处理）；有分支处于 `emerging`/`active`；因果引擎开着且有**到期**的待兑现因果指向它；本步外生事件的 `affects` 命中它（领域 id 展开为其下 alive 元素）；被上述元素经因果边**一跳**触发（含元素 `relations` 派生的边，不含 `enabled=false` 的边） |
+| **watch** | 不满足 active，但在 `watch_window_steps`（默认 10，同样按线缩放；小于 active 窗口时按 active 窗口处理）内有过动静 |
+| **dormant** | 其余 |
+
+- **预算**：active 超过 `max_active_in_prompt`（默认 12）时按（有到期压力 > 有活跃分支 > 有用户意见 > 最近进展 > 因果边入度）排序，超出的**降为 watch**（不是 dormant）；`null` = 不限，`0` 是"0 个"（全部降级）。
+  `tier_pin=active` 的元素**不受预算裁剪**（用户明确固定的不替他丢掉），但仍占用名额。
+- 领域线不参与分级（数量少，始终完整展示）；`retired`/`merged` 的元素不进 prompt（历史与树保留，LLM 引用它们的 id 引擎照常解析）。
+- 被 LLM 更新过的休眠元素，下一步因"最近有进展"自动升为 active——**不拦截**。
+
+### prompt 里长什么样
+
+| 档 | 展示 |
+|---|---|
+| 领域线 + active | 完整一项：`id（label，类型，领域，发展阶段（进度），节奏参考，对应状态：vars.xxx=当前值，用户修改意见）`；树只列**未终态**分支，终态（`resolved`/`expired`/`invalidated`）只给计数 |
+| watch | 一行：`id（label；类型，领域 x，N 步前有动静）` |
+| dormant | 不展开；只留 `id（label）` 精简索引，按最近动静排序、受 `dormant_index_max`（默认 60，0 = 不列）限制，超出时写"另有 N 个更久没有动静的休眠元素未列出" |
+
+索引的目的是让 LLM 优先复用已有 id、不重复"发现"。到点/陈旧分支提示（`_lines_due_this_step_hint`/`_stale_branch_suggestions_hint`）
+随分级收窄：到点提示覆盖领域线 + active + watch，陈旧分支建议只覆盖领域线 + active（休眠元素等被激活后再说，否则提示会随元素数线性增长）。
+`var_refs` 的当前值来自该步推进前的 `vars`（支持点号路径、可带 `vars.` 前缀、列表下标用数字；取不到的路径跳过）。
+
+`element_hint`（E3）在引擎路径下不再重复列"已登记元素"索引，只留一句指引；不传 `history` 的调用方（旧调用/单测）保持 E3 的行为。
+
+### 新增设置（`settings.element_params`，与前两阶段共用同一字典；`null`=不限，非法回退默认）
+
+| key | 默认 | 说明 |
+|---|---|---|
+| `max_active_in_prompt` | 12 | 同时以完整信息进 prompt 的元素数；**只有它接受 `null`（不限）** |
+| `active_window_steps` | 3 | active 窗口（≥1） |
+| `watch_window_steps` | 10 | watch 窗口（≥1） |
+| `dormant_index_max` | 60 | 休眠索引条数上限（≥0） |
+
+`element_tiers.get_tier_params()` / `invalid_tier_param_keys()` 读取与校验；设置页尚无控件（只能改 `settings.element_params` JSON，E6 补）。
+
 ## 当前**不**做什么（后续阶段）
 
-分级与 prompt 预算（E4）；split/merge/retire/reparent 与周期扫描（E5）；领域聚合联动、界面按领域折叠
+split/merge/retire/reparent 与周期扫描（E5）；领域聚合联动、界面按领域折叠
 分组、一致性守卫提示（E6）。因此引擎自己不会创建领域线（推进中发现的新元素 `parent` 只能挂到已有领域线，没有合适的就留空）。向导里已有"领域 → 元素"预览；
 因果线总览和静态 HTML 导出的按领域折叠分组留到 E6。
+
+## 已知边界（E4）
+
+- **分级只看"有没有动静"，不看语义重要性**：一个很重要但一直没人提的元素会沉到休眠，只剩 id+label；LLM 想更新它时缺少上下文，只能凭名字推断，更新后下一步才重新展开。事件命中、`tier_pin`、用户修改意见、因果边触发是几条"拉回 active"的途径。
+- **休眠索引超过上限（默认 60）时，更久没动静的元素既不在索引里也不在 `element_hint` 里**，LLM 可能把它们当新对象再"发现"一次——引擎按 id/名称/别名精确去重，名字完全不同的才会漏。索引上限与"每步 prompt 多大"是直接的取舍，可通过 `dormant_index_max` 调。
+- **预算降级的 watch 元素一行摘要里没有分支**：被预算挤下去的元素本步看不到自己的树。排序用的是规则（到期压力 > 活跃分支 > 用户意见 > 最近进展 > 入度），不是语义判断。
+- 窗口默认值（3/10）和 12 个 active 是经验值，需要用真实模拟调；窗口按线自身节奏线性缩放，节奏很慢的线 watch 窗口会很长。
+- 因果边一跳传播只用元素的因果边，**领域端点不展开**（领域→元素的聚合联动是 E6）；独立推进 `advance_lines()` 不经过这套展示（E6）。
+- 设置页没有 `max_active_in_prompt` 等参数和 `tier_pin` 的编辑控件，也没有展示当前分级（E6）。
+- 未在真实 LLM 下验证：分级展示对弱模型"是否仍能正确复用 id"的影响没有实测。
 
 ## 已知边界（E3）
 
@@ -195,7 +256,7 @@ label）；与**领域**线相同 → 节点改名 `<id>_tech`（重名再加序
 - **旧实例中途开启元素模式**：既有无 `kind` 的线仍是旧式独立线；"请 LLM 顺带给 `kind`/`parent`"**本阶段没做**（计划 §5.2），留 E4/E6。
 - **引用源未覆盖**：事件 `affects`、`declared_causal_graph` 端点、跨线 `prerequisites` 仍未接入"引用即登记"（前两者是配置而非 LLM 步输出；统一接入留 E6）。
 - **独立推进路径** `advance_lines()` 不经过元素管线（E6）。设置页尚无 `max_total_elements` 等运行期参数的编辑控件（只能改 `settings.element_params` JSON；E6）。
-- prompt 里的已登记元素索引目前只按登记顺序截尾，元素很多时还没有分级；E4 解决。
+- （E4 已解决）prompt 里的已登记元素索引不再只按登记顺序截尾，改为分级展示。
 - 所有行为以单元/契约测试 + 假 LLM 输出验证，**没有在真实 LLM 下运行过**；较弱的模型可能格式不稳，解析一律"不认识就忽略"。
 
 ## 已知边界（E2）
@@ -222,6 +283,6 @@ label）；与**领域**线相同 → 节点改名 `<id>_tech`（重名再加序
 
 ## 相关
 
-- 测试：`tests/test_element_registry.py`（28 个）、`tests/test_element_tech_adapter.py`（29 个）、`tests/test_element_creation.py`（28 个）、`tests/test_element_discovery.py`（82 个，E3）
+- 测试：`tests/test_element_registry.py`（28 个）、`tests/test_element_tech_adapter.py`（29 个）、`tests/test_element_creation.py`（28 个）、`tests/test_element_discovery.py`（82 个，E3）、`tests/test_element_tiers.py`（57 个，E4）
 - 设计/记录：`next_doc/world_simulator_element_causal_lines_plan.md`（§10 实施记录）
 - 技术规则本身：[`tech_model_guide.md`](./tech_model_guide.md)

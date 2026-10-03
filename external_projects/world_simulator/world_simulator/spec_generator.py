@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Sequence
 
-from world_simulator import element_registry
+from world_simulator import element_registry, element_tiers
 from world_simulator.causal_tree import suggest_status_transitions
 from world_simulator.state_model import ChoiceOption
 
@@ -213,7 +213,13 @@ def _element_create_hint(lines: "List[Dict[str, Any]]", settings: "Dict[str, Any
 
 
 def _resolve_causal_lines_hint(
-    settings: "Dict[str, Any] | None", *, stage: str = "advance", current_step: int = 0
+    settings: "Dict[str, Any] | None",
+    *,
+    stage: str = "advance",
+    current_step: int = 0,
+    history: "List[Any] | None" = None,
+    current_vars: "Dict[str, Any] | None" = None,
+    hit_refs: "List[Any] | None" = None,
 ) -> str:
     """把 `settings.causal_lines` 转成喂给 prompt 的一句话提示（阶段
     二十二，4.13 节，多尺度因果线；阶段二十六，`next_doc/
@@ -237,11 +243,23 @@ def _resolve_causal_lines_hint(
     声明时退化为"自己判断因果线并自行起 id"（`engine.
     _auto_register_causal_lines`/`causal_tree.auto_register_lines` 会
     在落盘时自动登记，且同样带上兜底的默认未来树）。
+
+    第二十三轮 E4：`stage == "advance"` 且开启统一元素模型时，不再把所有线的所有分支都拼进来，而是
+    按 `element_tiers.view()` 派生的分级展示——领域线与 active 元素给完整信息（含**未终态**分支，
+    终态只给计数），watch 元素一行摘要，dormant 元素只留 id+label 索引（数量有上限）。`history` 用来
+    派生分级（不传按空历史处理）、`current_vars` 用来展示元素 `var_refs` 的当前值、`hit_refs` 是本步
+    外生事件已命中的引用。分级只影响展示详细程度，不影响哪些线"可以被更新"。未开启元素模型时这三个
+    参数都不起作用，输出与之前逐字节一致。
     """
     lines = [
         line for line in ((settings or {}).get("causal_lines") or [])
         if isinstance(line, dict) and str(line.get("id") or "").strip()
     ]
+    tiered: "Dict[str, Any] | None" = None
+    if stage != "create" and element_registry.is_enabled(settings):
+        lines = [line for line in lines if element_registry.is_alive(line)]
+        if lines:
+            tiered = element_tiers.view(settings, history, step=current_step, hit_refs=hit_refs or ())
 
     if stage == "create" and element_registry.creation_enabled(settings):
         return _element_create_hint(lines, settings)
@@ -305,7 +323,17 @@ def _resolve_causal_lines_hint(
         )
     parts = []
     tree_parts = []
-    for line in lines:
+    if tiered is not None:
+        shown_lines = tiered["domains"] + tiered["active"]
+        for line in shown_lines:
+            parts.append(element_tiers.active_piece(line, current_vars))
+            live_text, done = element_tiers.branch_text(line)
+            if live_text or done:
+                desc = live_text or "（没有未终态分支）"
+                if done:
+                    desc += f"（另有 {done} 个已终态分支，不再展开）"
+                tree_parts.append(f'{str(line["id"]).strip()} 当前未来分支——{desc}')
+    for line in ([] if tiered is not None else lines):
         line_id = str(line["id"]).strip()
         label = str(line.get("label") or line_id).strip()
         granularity = str(line.get("time_granularity") or "").strip()
@@ -342,10 +370,15 @@ def _resolve_causal_lines_hint(
         "这条线自己觉得现在处于什么阶段——不确定就不填，不要为了填而猜"
         "一个；不认识的取值会被系统忽略，不影响这条线其余字段的解析。"
     )
-    due_hint = _lines_due_this_step_hint(lines, current_step)
+    due_lines, stale_lines = lines, lines
+    if tiered is not None:
+        hint += _tier_sections_hint(tiered)
+        due_lines = tiered["domains"] + tiered["active"] + tiered["watch"]
+        stale_lines = tiered["domains"] + tiered["active"]   # 休眠元素的陈旧分支建议等它被激活后再说，避免提示随元素数线性增长
+    due_hint = _lines_due_this_step_hint(due_lines, current_step)
     if due_hint:
         hint += due_hint
-    stale_hint = _stale_branch_suggestions_hint(lines, current_step)
+    stale_hint = _stale_branch_suggestions_hint(stale_lines, current_step)
     if stale_hint:
         hint += stale_hint
     if tree_parts:
@@ -377,6 +410,31 @@ def _resolve_causal_lines_hint(
             "更新的树就不用给。"
         )
     return hint
+
+
+def _tier_sections_hint(tiered: "Dict[str, Any]") -> str:
+    """元素分级展示里 watch / dormant 两段（第二十三轮 E4）。active 与领域线已经在主句里完整列出。"""
+    watch, shown, hidden = tiered["watch"], tiered["dormant_shown"], tiered["dormant_hidden"]
+    result = tiered["result"]
+    if not (watch or shown or hidden):
+        return ""
+    text = (
+        "\n元素较多时，上面只展开了近期活跃的线；其余元素按下面两档简写，**它们同样可以更新**——"
+        "直接在 `line_updates`/`tree_updates` 里用它们的 id 即可，被更新的元素下一步会重新展开完整信息。"
+    )
+    if watch:
+        text += "\n近期少动的元素（一行摘要）：" + "；".join(
+            element_tiers.watch_piece(x, result["age"].get(str(x["id"]).strip(), 0)) for x in watch
+        ) + "。"
+    if shown or hidden:
+        names = "、".join(
+            f'{str(x["id"]).strip()}（{str(x.get("label") or x["id"]).strip()}）' for x in shown
+        )
+        text += "\n休眠元素索引（已登记、很久没有动静；需要时直接沿用这些 id，不要当成新对象重复发现）：" + (names or "（未列出）")
+        if hidden:
+            text += f"；……另有 {hidden} 个更久没有动静的休眠元素未列出"
+        text += "。"
+    return text
 
 
 _RELATIONSHIP_ELAPSED_ASK = (
@@ -759,6 +817,8 @@ def resolve_hints(
     stage: str = "advance",
     current_step: int = 0,
     history: "List[Any] | None" = None,
+    current_vars: "Dict[str, Any] | None" = None,
+    hit_refs: "List[Any] | None" = None,
 ) -> Dict[str, str]:
     """把 `manifest.settings`（或创建向导里还没落盘成 manifest 时的临时
     设置字典）转成喂给 workflow prompt 的提示字符串。
@@ -784,7 +844,10 @@ def resolve_hints(
             `create` 分支本身不消费这个参数）。
 
         history: 该分支推进前的历史（第二十二轮 P5b 新增，可选）。只用于按 `elapsed_days`
-            判定关系 `delay_days` 是否到期；不传时带 `delay_days` 的待办退化为按步判定。
+            判定关系 `delay_days` 是否到期；不传时带 `delay_days` 的待办退化为按步判定。第二十三轮 E4 起
+            元素模式下还用它派生元素分级。
+        current_vars: 当前状态的 `vars`（E4，可选）：只用于展示 active 元素 `var_refs` 的当前值。
+        hit_refs: 本步外生事件已命中的引用列表（E4，可选）：命中的元素本步升为 active。
 
     `time_granularity_hint` 的内容按 `time_granularity_mode` 分三种：
     - `fixed`：明确要求"每一步都严格按这个值推进"，行为与阶段一/二
@@ -838,7 +901,8 @@ def resolve_hints(
         "multi_entity_mode_hint": _resolve_multi_entity_hint(settings),
         "background_entities_hint": _resolve_background_entities_hint(settings),
         "causal_lines_hint": _resolve_causal_lines_hint(
-            settings, stage=stage, current_step=current_step
+            settings, stage=stage, current_step=current_step,
+            history=history, current_vars=current_vars, hit_refs=hit_refs,
         ),
         "relationship_hint": _resolve_relationship_hint(
             settings, current_step=current_step, history=history
