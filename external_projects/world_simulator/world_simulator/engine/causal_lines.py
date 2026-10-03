@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from world_simulator import causal_tree
+from world_simulator import causal_tree, element_registry
 from world_simulator.state_model import SimManifest, SimState
 
 
@@ -41,6 +41,47 @@ def _auto_register_causal_lines(manifest: SimManifest, next_state: SimState) -> 
             as_of_step=next_state.step,
         ),
     }
+
+
+def _update_element_registry(
+    manifest: SimManifest, next_state: SimState, data: Dict[str, Any]
+) -> List[Dict[str, Any]]:
+    """元素模式下替换 `_auto_register_causal_lines()`（第二十三轮 E3，`next_doc/
+    world_simulator_element_causal_lines_plan.md` §4.4）：处理 `element_enrichments`/
+    `discovered_elements`，把这一步里所有引用 id 的位置（`line_updates`/`causal_links`/`tree_updates`/
+    `tech_updates`）规范成已登记元素的 id，引用了未登记 id 的登记成待补全的桩元素。
+
+    **必须在 `_apply_tree_updates()` 之前调用**（新元素要先存在，同一步的 `tree_updates` 才能引用它），
+    也要在技术裁决（`mechanisms.apply_post_llm`）之前——`lifecycle_seed` 转成的合成登记提议和别名
+    规范后的 `tech_updates` 都写回 `data["tech_updates"]`，由同一套技术裁决处理。
+
+    就地改 `next_state.line_updates`/`next_state.causal_links`/`data`/`manifest.settings`，返回落到
+    `SimState.element_audit` 的审计。**任何异常都不连累本次推进**：回退到旧的最小登记
+    （`_auto_register_causal_lines`），审计里留一条 `error` 记录，`manifest.settings` 不留半截状态。
+    """
+    settings = dict(manifest.settings)
+    try:
+        result = element_registry.process_step(
+            settings,
+            step=next_state.step,
+            line_updates=next_state.line_updates,
+            causal_links=next_state.causal_links,
+            tree_updates=data.get("tree_updates"),
+            tech_updates=data.get("tech_updates"),
+            discovered=data.get("discovered_elements"),
+            enrichments=data.get("element_enrichments"),
+        )
+    except Exception as exc:  # noqa: BLE001 — 旁路功能，绝不让它中断推进
+        _auto_register_causal_lines(manifest, next_state)
+        return [{"action": "error", "message": f"元素登记本步出错，已退回最小登记：{exc}"}]
+    manifest.settings = settings
+    next_state.line_updates = result["line_updates"]
+    next_state.causal_links = result["causal_links"]
+    if "tree_updates" in data or result["tree_updates"]:
+        data["tree_updates"] = result["tree_updates"]
+    if "tech_updates" in data or result["tech_updates"]:
+        data["tech_updates"] = result["tech_updates"]
+    return result["audit"]
 
 
 def _apply_tree_updates(

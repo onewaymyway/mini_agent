@@ -702,9 +702,10 @@ monkeypatch 打桩验证文本原样出现在 `inputs` 字典里；`generate_sce
   假设/已观察/已证伪/未定/已停用，标签带兑现率与样本数）与"⏰ 到期时间线"（未结案项已到期优先 + 最近处置记录）。状态是 **AI 自报**
   统计的函数，不是世界里被验证/被证伪；阈值可用 `causal_view_params` 覆盖。静态 HTML 导出已在 P10 接入（见 `docs/html_export_mechanisms_guide.md`）；没有浏览器级验证，也没有在真实
   LLM 下验证。详见 `docs/causal_view_guide.md`。
-- **统一元素模型目前完成 E1、E2（第二十三轮，新实例默认开启 `element_modeling_enabled`）**：E1 改技术节点的存储位置
-  （`causal_lines[].lifecycle`）与读写层；E2 让创建阶段先划领域再展开元素并带创建预算；推进中发现新元素/去重/补全/
-  分级与 prompt 预算/元素运维/领域聚合联动（E3–E6）尚未实施，所以推进阶段引擎还不会创建线，带技术种子的新实例里每个技术节点会作为一条因果线
+- **统一元素模型目前完成 E1、E2、E3（第二十三轮，新实例默认开启 `element_modeling_enabled`）**：E1 改技术节点的存储位置
+  （`causal_lines[].lifecycle`）与读写层；E2 让创建阶段先划领域再展开元素并带创建预算；E3 让推进阶段自动发现新元素（`discovered_elements`/
+  `element_enrichments`，别名去重、候选池与关键性门槛、引用即登记、补全宽限与兜底，零额外 LLM 调用）。分级与 prompt 预算/元素运维/
+  领域聚合联动（E4–E6）尚未实施，所以元素多了之后 prompt 里还没有分级截断（已登记元素索引只按 60 条截尾）；带技术种子的新实例里每个技术节点会作为一条因果线
   出现在因果线总览与 prompt 因果线列表里（带默认三分支未来树）。设置页新增代码只做了静态检查，没有 Streamlit
   运行时验证；没有在真实 LLM 下运行。详见 `docs/element_model_guide.md`。
 
@@ -4544,3 +4545,8 @@ deferred_directions_plan.md` 第 1～6 节全部完成**（第 1、2 节两个
 - **第二十三轮 E2：创建阶段元素展开（2026-10-03，依据 `next_doc/world_simulator_element_causal_lines_plan.md` §6 E2）**：创建提示改为"先领域线、再关键元素"两步（元素模式缺省开，显式 False 才用旧提示）；引擎后处理 `element_registry.prepare_created_lines`（规整、按 id/别名去重、parent 解析、`lifecycle_seed`→`lifecycle`、创建期戳、预算裁剪，被裁的进 `ScenarioDraft.element_candidates`）；预算 `settings.element_params`（总数默认 20、每领域默认 6，`null`=不限、0≠不限）；向导新增"元素数量上限"（含"不限"）、领域→元素预览、候选勾选加回。
   **文件**：`world_simulator/element_registry.py`、`spec_generator.py`、`workflows/causal_space_builder.yaml`、`app.py`、`tests/test_element_creation.py`（新，28 个）、`docs/element_model_guide.md`、`docs/testing_guide.md`、`docs/README.md`。
   **测试**：全量 1330 passed（E1 后 1302 + 28）；12 个变异全部转红。**偏差**：向导做成"分组预览+候选勾选+原 JSON 框"，没有可就地编辑的树形控件；去重键不含 label。**已知边界**：划分质量取决于 AI 是否照提示输出；向导新代码无 Streamlit 运行时验证；未在真实 LLM 下运行。**下一阶段**：E3（发现、去重、登记、补全，核心阶段，改动 `engine/advance.py` 与 `advance_step`/`world_evolve` 的输出协议）。
+
+- **第二十三轮 E3：统一元素模型——发现、去重、登记、补全（2026-10-03，依据 `next_doc/world_simulator_element_causal_lines_plan.md` §4.4 / §6 E3）**：`element_registry.process_step()`（纯 Python、零额外 LLM 调用）在元素模式下替换 `advance()` 里的 `_auto_register_causal_lines`（旧实例未开启时仍走旧函数）：处理新增可选输出键 `discovered_elements`/`element_enrichments`，按 id/label/别名精确规范化去重（`gpt5`/`gpt_5` 同一元素，不模糊合并），关键性门槛（关系连到已登记元素直接登记，否则 `why_key` + 被不同步骤提到 2 次转正，候选池 `settings.element_candidates` 随分支），运行中总数预算 `max_total_elements`（默认不限，不挤掉已有元素），补全宽限（默认 2 步）后落 `fallback`（通用树、不猜领域），引用即登记（`line_updates`/`causal_links`/`tree_updates`/`effects_if_active.to_line_id`/结构化条件 id 先规范成规范 id，未登记的登记成待补全桩元素），`lifecycle_seed` 转成合成 `tech_updates` 走同一套技术裁决，`relations` 存在元素线上并经 `derived_edges()` 并入 `causal_engine.get_edges` 与先验结构提示。`advance_step`/`world_evolve` 新增 `{element_hint}`（协议、已登记索引、待补全请求、候选池、疑似重复提示）；`SimState.element_audit` 落审计；引擎管线异常退回旧最小登记。
+  **测试**：全量 1412 passed（E2 后 1330 + 82，既有用例零修改）；19 个变异全部转红（首轮 3 个存活，补 4 个用例后清零）。写测试时发现并修掉两处真实缺陷：① 首次提到即达标的登记被误记成 `promoted`；② 合并别名时已有别名因规范化后等于 id 被误删（现在已有别名原样保留，只过滤新增项）。
+  **与计划的偏差**：① `relations` 不写进 `declared_causal_graph`（它不是分支作用域，会让分支间互相漏），改存元素线上、经 `derived_edges()` 读取——与计划 §4.4 ⑤"并入 `declared_causal_graph`"字面不同，目的一致；② 引用即登记只覆盖 LLM 单步输出里的引用源，事件 `affects`/`declared_causal_graph` 端点/跨线 `prerequisites` 留 E6；③ 计划 §5.2"中途开启的旧实例请 LLM 顺带给既有线 `kind`/`parent`"本阶段未做；④ 运行期参数没有设置页控件（只能写 `settings.element_params`），留 E6；⑤ 运行期参数与创建期参数分两个函数读取（`get_runtime_params` / `get_params`），因为 E2 测试把 `get_params(None)` 钉死为两个键。
+  **已知边界**：见 `docs/element_model_guide.md` "已知边界（E3）"；未在真实 LLM 下运行。**下一阶段**：E4（分层与 prompt 预算）。

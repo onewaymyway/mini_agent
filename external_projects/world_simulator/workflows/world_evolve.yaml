@@ -136,6 +136,12 @@ steps:
       声明"该分支一旦 active 会对哪里施加什么压力"，到期后在因果引擎那一项里
       用 `effect_dispositions` 交代）：
       {tree_effects_hint}
+      元素建模（第二十三轮 E3，`next_doc/world_simulator_element_causal_lines_plan.md`；
+      为空说明没有开启，忽略这一项，也不要输出 `discovered_elements`/
+      `element_enrichments`；非空时按其中的说明，在出现了值得单独建模的新关键
+      对象时可选输出 `discovered_elements`，在有"待补全元素"时可选输出
+      `element_enrichments`；两者都是可选键，没有就不要输出）：
+      {element_hint}
 
       请按你所属 skill 的规范，给出这一步推进后的新状态、发生了什么的
       叙事文本、这一步结束时对应的模拟内时间点（`time_label`，人类

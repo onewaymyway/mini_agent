@@ -1,8 +1,8 @@
 # 统一元素模型（第二十三轮）
 
 > 设计依据：仓库 `next_doc/world_simulator_element_causal_lines_plan.md`。
-> **实施进度：E1（数据模型、存取层、兼容折叠）、E2（创建阶段元素展开）已完成**；E3–E6（发现·去重·补全 /
-> 分层与 prompt 预算 / 元素运维 / 联动与收尾）**尚未实施**。本文随各阶段增补，只写已落地的行为，不提前描述后续阶段。
+> **实施进度：E1（数据模型、存取层、兼容折叠）、E2（创建阶段元素展开）、E3（发现·去重·登记·补全）已完成**；
+> E4–E6（分层与 prompt 预算 / 元素运维 / 联动与收尾）**尚未实施**。本文随各阶段增补，只写已落地的行为，不提前描述后续阶段。
 
 ## 它是什么
 
@@ -31,6 +31,7 @@ E1 **只改"数据放在哪、怎么读写"，不改任何 LLM 行为**：没有
 | `tier_pin` | 用户固定的分级（`active`） |
 | `var_refs` | 该元素状态落在 `vars` 的哪些路径（只读展示） |
 | `lifecycle` | 生命周期子对象；E1 里**只有技术元素有**，内容就是原技术节点（见下） |
+| `relations` | （E3）`[{with, direction: affects\|affected_by, sign?, note?}]`，推进中发现时声明的元素关系；`with` 登记时解析成规范 id；经 `derived_edges()` 翻成因果边 |
 
 没有这些字段的旧式线逐字节不变。`element_registry.normalize_element()` 只规整**出现了**的字段，
 非法取值直接丢弃该字段（回到缺省语义）。
@@ -125,12 +126,77 @@ label）；与**领域**线相同 → 节点改名 `<id>_tech`（重名再加序
 存在候选时显示"候选元素（勾选加回）"多选框，勾选的在保存时并入因果线（已存在的不重复）。原 JSON
 文本框保留作为高级编辑。没有领域线也没有候选时向导和以前视觉一致。
 
+## 推进阶段：发现、去重、登记、补全（E3）
+
+元素模式开启时，`advance()` 在 `_apply_tree_updates` 之前用 `engine/causal_lines.py::_update_element_registry()`
+（内部调 `element_registry.process_step()`）替换旧的 `_auto_register_causal_lines`；**未开启（旧实例）仍走旧函数，行为不变**。
+全部是纯 Python，**不新增 LLM 调用**。
+
+### 新增的两个可选输出键（写在 `advance_step`/`world_evolve` 的 `{element_hint}` 里）
+
+| 键 | 作用 |
+|---|---|
+| `discovered_elements` | 这一步出现的新关键对象：`id`/`label`/`element_type`/`parent`/`aliases`/`why_key`/`relations`/`future_tree`/`lifecycle_seed` |
+| `element_enrichments` | 给"待补全"元素补信息，字段同上，只补缺的 |
+
+不认识的字段、非数组、缺 id 的项一律忽略，不报错。
+
+### 处理顺序
+
+1. **补全**：命中**待补全/兜底**元素才生效；只补缺（类型/归属只在缺省时填；label 以补全为准；树只在仍是通用兜底模板时替换），
+   对已完整元素记 `enrichment_ignored`，对未知 id 记 `enrichment_unknown`。
+2. **发现**（每项）：
+   - id/label/别名按 `norm_key` 精确规范化命中已登记元素 → **合并**（补别名与关系，记 `merged_alias`），不新建；`gpt5`/`gpt_5` 是同一个；
+   - 否则进**候选池** `settings.element_candidates`（随分支）：有关系连到已登记 alive 元素 → 立即登记（`registered`）；
+     否则需要 `why_key` 且被**不同步骤**提到 `candidate_promote_mentions`（默认 2）次才转正（`promoted`），同一步重复提只算一次；
+   - 预算 `max_total_elements`（默认不限）已满 → 留候选池（`budget_blocked`），**不挤掉已有元素**；领域线与已退场元素不占预算。
+3. **引用即登记**：`line_updates` 的 key、`causal_links[].line_id`、`tree_updates[].line_id`、新分支 `effects_if_active[].to_line_id`、
+   结构化条件里的 `{"tech"|"element": id}` 先按别名/规范化解析成规范 id（审计 `alias_resolved`，key 被改写；两个 key 落到同一元素时
+   先到优先、后到补缺，记 `alias_collision`）；解析不到 → 登记成**待补全桩元素**（`ref_registered`）；命中候选池 → 转正；预算已满 → 保留原 key、id 进候选池。
+   `tech_updates` 的 id 只做别名解析、**不登记**（新技术仍由技术裁决登记并同时建元素线）。
+4. **兜底**：待补全元素超过 `enrich_grace_steps`（默认 2）步仍未补全 → `fallback`：保留通用树、`parent` 保持空（"未归类"），**不猜领域**；之后任何时候补全仍可转 `complete`。
+5. **`lifecycle_seed`**：技术类 + 技术模型开着 → 转成一条合成的 `tech_updates` 登记提议，交给**同一套**技术裁决（T5 阶段夹值、`preexisting` 声明只有一个出口）；LLM 自己对同 id 给了提议则以它为准；技术模型没开只记 `lifecycle_seed_ignored`。
+
+### 关系 → 因果边
+
+`relations` 存在**元素线上**（随分支快照），不写进 `declared_causal_graph`（它不是分支作用域，会让分支 A 的发现漏到分支 B）。
+`element_registry.derived_edges()` 把它们翻成边，由 `causal_engine.get_edges()` 与先验结构提示（`resolve_causal_graph_hint`）并入；
+与 `declared_causal_graph` 同 id/同端点的以后者为准。只在元素模式、两端都是 alive 元素时产出。
+
+### 审计与 prompt
+
+- `SimState.element_audit`（空时不输出）：`registered/promoted/candidate/budget_blocked/merged_alias/enriched/fallback/ref_registered/
+  alias_resolved/alias_collision/enrichment_unknown/enrichment_ignored/lifecycle_seed_queued/lifecycle_seed_ignored/error`。
+- `{element_hint}`（`element_registry.build_hint`）：输出协议、可用领域 id、已登记元素索引（上限 `INDEX_MAX`=60，E4 起由分级接管）、待补全请求
+  （只在 `born_step+1 … born_step+grace` 的步里问）、候选池前 5 条、**疑似重复提示**（名称词元 Jaccard ≥ 0.5 或较短名 ≥4 字符被包含；只提示不合并）。
+- 引擎管线任何异常 → 退回旧最小登记，审计留 `error`，`manifest.settings` 不留半截状态。
+
+### 新增设置（`settings.element_params`，`null`=不限，非法回退默认）
+
+| key | 默认 | 说明 |
+|---|---|---|
+| `max_total_elements` | `null`（不限） | 运行中 alive 元素总数上限 |
+| `candidate_promote_mentions` | 2 | 候选池转正所需被提次数（≥1） |
+| `enrich_grace_steps` | 2 | 补全宽限步数（≥0；0 = 不索要，登记当步即按兜底） |
+
+与 E2 的创建期两个键共用同一个 `element_params` 字典，但 `get_params()`（创建期）与 `get_runtime_params()`（运行期）分开读取。
+
 ## 当前**不**做什么（后续阶段）
 
-推进中发现新元素、别名去重、关键性门槛、下一步 prompt 顺带补全（E3）；
 分级与 prompt 预算（E4）；split/merge/retire/reparent 与周期扫描（E5）；领域聚合联动、界面按领域折叠
-分组、一致性守卫提示（E6）。因此除了创建阶段 AI 按提示给出的领域线，引擎自己不会创建领域线。向导里已有"领域 → 元素"预览；
+分组、一致性守卫提示（E6）。因此引擎自己不会创建领域线（推进中发现的新元素 `parent` 只能挂到已有领域线，没有合适的就留空）。向导里已有"领域 → 元素"预览；
 因果线总览和静态 HTML 导出的按领域折叠分组留到 E6。
+
+## 已知边界（E3）
+
+- **关键性只做结构校验**：引擎只看"有没有连到已登记元素的关系 / 有没有 `why_key` 且被再次提到"，判断不了"真的重不重要"；阈值 2 次是经验值，需用真实模拟调。
+- **去重只做精确规范化**：语义相同但名字完全不同的元素不会自动合并（疑似重复只是提示，合并要等 E5 的 `element_ops.merge`）。
+- **LLM 不补全**时元素落到 `fallback`（通用树、未归类），这是如实记录而非掩盖。
+- **旧实例中途开启元素模式**：既有无 `kind` 的线仍是旧式独立线；"请 LLM 顺带给 `kind`/`parent`"**本阶段没做**（计划 §5.2），留 E4/E6。
+- **引用源未覆盖**：事件 `affects`、`declared_causal_graph` 端点、跨线 `prerequisites` 仍未接入"引用即登记"（前两者是配置而非 LLM 步输出；统一接入留 E6）。
+- **独立推进路径** `advance_lines()` 不经过元素管线（E6）。设置页尚无 `max_total_elements` 等运行期参数的编辑控件（只能改 `settings.element_params` JSON；E6）。
+- prompt 里的已登记元素索引目前只按登记顺序截尾，元素很多时还没有分级；E4 解决。
+- 所有行为以单元/契约测试 + 假 LLM 输出验证，**没有在真实 LLM 下运行过**；较弱的模型可能格式不稳，解析一律"不认识就忽略"。
 
 ## 已知边界（E2）
 
@@ -156,6 +222,6 @@ label）；与**领域**线相同 → 节点改名 `<id>_tech`（重名再加序
 
 ## 相关
 
-- 测试：`tests/test_element_registry.py`（28 个）、`tests/test_element_tech_adapter.py`（29 个）、`tests/test_element_creation.py`（28 个）
+- 测试：`tests/test_element_registry.py`（28 个）、`tests/test_element_tech_adapter.py`（29 个）、`tests/test_element_creation.py`（28 个）、`tests/test_element_discovery.py`（82 个，E3）
 - 设计/记录：`next_doc/world_simulator_element_causal_lines_plan.md`（§10 实施记录）
 - 技术规则本身：[`tech_model_guide.md`](./tech_model_guide.md)

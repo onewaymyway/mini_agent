@@ -619,6 +619,18 @@ def resolve_causal_graph_hint(
         if note:
             piece += f"（{note}）"
         declared_parts.append(piece)
+    # 第二十三轮 E3：推进中发现的元素关系（存在元素线上、随分支）也算已知的结构性认知；声明过的同端点边不重复列。
+    _declared_pairs = {
+        (str(i.get("from_line_id") or "").strip(), str(i.get("to_line_id") or "").strip())
+        for i in settings.get("declared_causal_graph") or [] if isinstance(i, dict)
+    }
+    for item in element_registry.derived_edges(settings):
+        if (item["from_line_id"], item["to_line_id"]) in _declared_pairs:
+            continue
+        piece = f"{item['from_line_id']} → {item['to_line_id']}"
+        if item.get("note"):
+            piece += f"（{item['note']}）"
+        declared_parts.append(piece)
 
     sections = []
     if declared_parts:

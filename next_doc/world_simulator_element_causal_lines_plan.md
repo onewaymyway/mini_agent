@@ -1,6 +1,6 @@
 # world_simulator 改进计划（第二十三轮）：因果线从"领域级"升级为"元素级"，并在模拟中持续发现新元素
 
-> **状态（2026-10-03）：方案已确认；E1、E2 已实施（见 §10），E3–E6 尚未实施。** 实施按 §6 分期（E1–E6）一个阶段一个阶段执行，
+> **状态（2026-10-03）：方案已确认；E1、E2、E3 已实施（见 §10），E4–E6 尚未实施。** 实施按 §6 分期（E1–E6）一个阶段一个阶段执行，
 > 每阶段完成后更新相关文档并打包修改/新增文件（保持目录结构，可直接覆盖）。
 > 本文只依据阅读代码得出结论，没有跑过真实 LLM，也没有运行时复现；每条"现状"都标了代码位置，
 > "推断"会明说。
@@ -474,7 +474,7 @@ active。分级只是展示细节，不是权限。
 |---|---|---|
 | E1 数据模型、存取层、兼容 | ✅ 已完成（2026-10-03） | 见下 |
 | E2 创建阶段元素展开 | ✅ 已完成（2026-10-03） | 见下 |
-| E3 发现、去重、登记、补全 | ⬜ 未开始 | |
+| E3 发现、去重、登记、补全 | ✅ 已完成（2026-10-03） | 见下 |
 | E4 分层与 prompt 预算 | ⬜ 未开始 | |
 | E5 元素运维与周期扫描 | ⬜ 未开始 | |
 | E6 联动与收尾 | ⬜ 未开始 | |
@@ -530,6 +530,28 @@ active。分级只是展示细节，不是权限。
 3. 因果线总览/HTML 导出按领域折叠分组仍未接线，留 E6（计划 E6 本来就包含"界面/导出完整化"）。
 
 **遗留 / 已知边界**：见 `docs/element_model_guide.md` "已知边界（E2）"。主要是：划分质量取决于 AI 是否照提示输出；候选元素只存在于向导会话；向导新代码无运行时验证；真实 LLM 下未验证。
+
+### E3 实施记录（2026-10-03）
+
+**范围**：推进阶段的发现、去重、登记、补全；引用即登记；关系派生因果边。**零新增 LLM 调用**；元素模式关闭时与旧行为逐项等价。
+
+**新增/修改**
+- `element_registry.py`：`process_step()`（补全→发现→引用规范化→候选池清扫→宽限兜底，结果一次性写回，出错不留半截）；`get_runtime_params`/`invalid_runtime_param_keys`（`max_total_elements`=null、`candidate_promote_mentions`=2、`enrich_grace_steps`=2）；候选池（上限 50 条）；`derived_edges()`；`build_hint()`/`safe_build_hint()`（含疑似重复提示）；`normalize_element` 增 `relations`。
+- `engine/causal_lines.py::_update_element_registry()`；`engine/advance.py` 在元素模式下调用它（旧实例仍调 `_auto_register_causal_lines`），并注入 `element_hint`。
+- `state_model.SimState.element_audit`（空不输出）。`causal_engine.get_edges` 与 `spec_generator.resolve_causal_graph_hint` 并入派生边。
+- `workflows/advance_step.yaml`、`world_evolve.yaml` 新增 `{element_hint}` 段落（输出协议是可选键）。
+- 测试 `tests/test_element_discovery.py`（82 个）；文档 `element_model_guide.md`、`testing_guide.md`、`docs/README.md`、`PROJECT.md`、`tech_model_guide.md`、`causal_engine_guide.md`。
+
+**测试**：全量 **1412 passed**（E2 后 1330 + 82，既有用例零修改）。19 个变异全部转红。测试中发现并修掉两处真实缺陷：首次提到即达标的登记被误记为 `promoted`；合并别名时已有别名因规范化后等于 id 被误删。
+
+**与计划的偏差**
+1. `relations` 存元素线上、经 `derived_edges()` 读取，**不写进 `declared_causal_graph`**（它不是 `DYNAMIC_KEYS` 成员，写进去会让分支 A 的发现漏到分支 B）。计划 §4.4 ⑤ 字面是"并入 `declared_causal_graph`"，目的（让因果引擎看到这些边）一致。
+2. 引用即登记只覆盖 LLM 单步输出里的引用源；事件 `affects`、`declared_causal_graph` 端点、跨线 `prerequisites` 留 E6。
+3. §5.2 "中途开启的旧实例请 LLM 顺带给既有线 `kind`/`parent`" 本阶段未做。
+4. 运行期参数没有设置页控件，只能写 `settings.element_params`；留 E6。
+5. `get_params`（创建期）与 `get_runtime_params`（运行期）分开，因为 E2 测试把 `get_params(None)` 钉死为两个键。
+
+**遗留 / 已知边界**：见 `docs/element_model_guide.md` "已知边界（E3）"。主要是：关键性与阈值（2 次）是经验值；去重只做精确规范化，合并要等 E5；LLM 不补全就落 `fallback`；`advance_lines()` 不经过元素管线（E6）；未在真实 LLM 下验证。
 
 ### 仍不属于本轮的遗留
 

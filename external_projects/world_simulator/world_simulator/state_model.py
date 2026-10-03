@@ -1013,6 +1013,17 @@ G4 触发条件满足 → 自动置 active、G5 互斥落败者自动置 invalid
 逐字节不变。
     """
 
+    element_audit: List[Dict[str, Any]] = field(default_factory=list)
+    """统一元素模型（`element_registry.py`，第二十三轮 E3）在*本步*做的登记动作审计，每项
+`{action, element_id?, ...}`。`action`：`registered`（发现项直接登记）/`promoted`（候选池转正）/
+`candidate`（关键性门槛未过，进候选池）/`budget_blocked`（超过 `max_total_elements`，留候选池）/
+`merged_alias`（命中已登记元素，只并入别名/关系）/`enriched`（补全）/`fallback`（宽限期过了仍未补全）/
+`ref_registered`（引用即登记：被引用但未登记的 id 登记成待补全桩元素）/`alias_resolved`（别名/规范化命中，
+id 被改写成规范 id）/`alias_collision`（同一步两个 key 规范到同一元素）/`enrichment_unknown`/
+`enrichment_ignored`/`lifecycle_seed_queued`/`lifecycle_seed_ignored`。元素的*当前状态*在
+`dynamic_snapshot[\"causal_lines\"]`。空列表 = 未开启或本步没有动作；`to_dict()` 空时不输出，旧格式逐字节不变。
+    """
+
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         d["options"] = [o.to_dict() if isinstance(o, ChoiceOption) else o for o in self.options]
@@ -1028,6 +1039,8 @@ G4 触发条件满足 → 自动置 active、G5 互斥落败者自动置 invalid
             d.pop("tech_violations", None)
         if not d.get("tech_repair"):
             d.pop("tech_repair", None)
+        if not d.get("element_audit"):
+            d.pop("element_audit", None)
         if not d.get("sampled_events"):
             d.pop("sampled_events", None)
         for _key in ("causal_queued", "effect_dispositions", "causal_violations", "tree_grounding"):
@@ -1133,6 +1146,9 @@ G4 触发条件满足 → 自动置 active、G5 互斥落败者自动置 invalid
             tech_repair=(
                 copy.deepcopy(data["tech_repair"]) if isinstance(data.get("tech_repair"), dict) else None
             ),
+            element_audit=[
+                copy.deepcopy(x) for x in (data.get("element_audit") or []) if isinstance(x, dict)
+            ],
             sampled_events=[
                 copy.deepcopy(x) for x in (data.get("sampled_events") or []) if isinstance(x, dict)
             ],

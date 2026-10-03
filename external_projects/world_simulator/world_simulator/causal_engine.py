@@ -68,7 +68,7 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, List, Optional, Tuple
 
-from world_simulator import event_sampler, tech_model
+from world_simulator import element_registry, event_sampler, tech_model
 
 _STRENGTHS = ("high", "medium", "low")
 _CONFIDENCES = ("high", "medium", "low")
@@ -189,6 +189,14 @@ def get_edges(settings: Optional[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]],
             continue
         if edge["id"] in seen:
             problems.append(f"第 {i + 1} 条：边 id「{edge['id']}」重复，已忽略")
+            continue
+        seen.add(edge["id"])
+        edges.append(edge)
+    # 第二十三轮 E3：元素模式下，元素线上的 `relations`（推进中发现的元素关系，随分支存放）并入边集合；
+    # 与 `declared_causal_graph` 同 id 的以后者为准。未开启元素模式时 `derived_edges()` 返回 []，行为不变。
+    for raw in element_registry.derived_edges(settings):
+        edge, why = normalize_edge(raw)
+        if edge is None or edge["id"] in seen:
             continue
         seen.add(edge["id"])
         edges.append(edge)

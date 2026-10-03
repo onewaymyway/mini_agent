@@ -144,3 +144,5 @@
 - 技术模型：[`tech_model_guide.md`](./tech_model_guide.md)；外生事件：[`event_sampling_guide.md`](./event_sampling_guide.md)
 - 树影响世界（分支 `effects_if_active` 入本队列，`edge_id` 以 `tree:` 开头）：[`tree_effects_guide.md`](./tree_effects_guide.md)。
 - 树接地（前置强制/互斥组/结构化触发条件/校准账本）：[`tree_grounding_guide.md`](./tree_grounding_guide.md)；其自动激活会作为本引擎的"树分支 active"触发源被看到。
+
+> **第二十三轮 E3 补充**：元素模式下，推进中发现的元素关系（元素线上的 `relations`）经 `element_registry.derived_edges()` 并入 `get_edges()`，两端须是已登记的 alive 元素；与 `declared_causal_graph` 同 id 的边以后者为准；关系随分支存放，不写入 `declared_causal_graph`。详见 [`element_model_guide.md`](./element_model_guide.md)。

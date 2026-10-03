@@ -25,8 +25,8 @@ from world_simulator.engine.background_entities import (
     _normalize_background_entities,
 )
 from world_simulator import causal_tree, relationship
-from world_simulator import causal_engine, consistency_guard, dynamic_state, event_sampler, tech_model, tree_effects, tree_grounding
-from world_simulator.engine.causal_lines import _apply_tree_updates, _auto_register_causal_lines
+from world_simulator import causal_engine, consistency_guard, dynamic_state, element_registry, event_sampler, tech_model, tree_effects, tree_grounding
+from world_simulator.engine.causal_lines import _apply_tree_updates, _auto_register_causal_lines, _update_element_registry
 from world_simulator.engine import mechanisms
 from world_simulator.engine.errors import SimAlreadyEndedError, SimEngineError, SimPausedError
 from world_simulator.engine.ids import _read_skill_version, _skill_name_for_template
@@ -447,6 +447,9 @@ def advance(
         # 第二十二轮 P5d：树影响世界（分支 `effects_if_active`）的协议说明；需同时开启因果引擎，
         # 否则返回空字符串（prompt 与之前等价）。
         "tree_effects_hint": tree_effects.safe_build_hint(manifest.settings),
+        # 第二十三轮 E3：统一元素模型开启时，把 `discovered_elements`/`element_enrichments` 的输出协议、
+        # 已登记元素索引、待补全请求、候选池、疑似重复提示喂给 LLM；未开启返回空字符串。
+        "element_hint": element_registry.safe_build_hint(manifest.settings, step=current.step + 1),
         **resolve_hints(
             manifest.settings, current_step=current.step + 1, history=history_for_prompt
         ),
@@ -791,7 +794,14 @@ def advance(
     # 污染 `vars`/推进逻辑，风险和 `structural_change` 不在同一量级，
     # 不需要额外的确认环节。新登记的线同样会带上兜底的默认未来树（阶段
     # 二十六），保证"自发出现的线"不会缺未来展望。
-    _auto_register_causal_lines(manifest, next_state)
+    #
+    # 第二十三轮 E3：开启统一元素模型时改走 `_update_element_registry()`——在“发现即登记”之外还处理
+    # `discovered_elements`/`element_enrichments`、别名去重、引用即登记（桩元素待补全）；
+    # 未开启（旧实例）仍走上面这个旧函数，行为不变。
+    if element_registry.is_enabled(manifest.settings):
+        next_state.element_audit = _update_element_registry(manifest, next_state, data)
+    else:
+        _auto_register_causal_lines(manifest, next_state)
 
     # 阶段二十六：合并这一步对因果线"未来树"的修正（印证/排除/新增
     # 分支），必须在 `_auto_register_causal_lines()` 之后调用——新登记
