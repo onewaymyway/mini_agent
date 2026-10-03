@@ -21,7 +21,7 @@
 - [`tree_grounding_guide.md`](./tree_grounding_guide.md) —— **因果树接地**（第二十二轮 WP3 · P5c / 3c，默认关闭）：前置强制、`exclusive_group` 互斥、结构化 `trigger_condition`（默认只建议，子开关 `tree_auto_transition` 才自动迁移）、`likelihood` 校准账本；裁决码 G0–G5，以及它**不能**保证什么（不判断条件语义、不改数值）。
 - [`independent_line_mechanisms_guide.md`](./independent_line_mechanisms_guide.md) —— **独立推进路径上的新机制**（第二十二轮 P8）：`advance_lines()` 也跑技术模型/事件采样/因果引擎/树接地/一致性守卫；全局步长取各线自报跨度的最大值、事件投放规则、多线技术提议冲突（`T10`）、目标线没到点的待兑现项挂起，以及**线不产出 `tree_updates`** 等边界
 - [`html_export_mechanisms_guide.md`](./html_export_mechanisms_guide.md) —— **静态 HTML 导出接入新机制**（第二十二轮 P10）：每步审计提示、真实性体检、技术树、事件先验、因果引擎着色图/到期时间线、树接地；有数据才渲染、旧实例导出逐字节不变、按分支取动态状态、转义与失败降级
-- [`element_model_guide.md`](./element_model_guide.md) —— **统一元素模型**（第二十三轮，E1 已完成，E2–E6 待做）：因果线从领域级升级为元素级；E1 只改存储与读写（`causal_lines` 条目新增可选字段、技术节点并入元素 `lifecycle`、旧 `tech_state` 幂等折叠、新实例默认开启 `element_modeling_enabled`），不改任何 LLM 行为；以及发现/预算/分级等**尚未实现**的部分
+- [`element_model_guide.md`](./element_model_guide.md) —— **统一元素模型**（第二十三轮，E1/E2 已完成，E3–E6 待做）：因果线从领域级升级为元素级；E1 只改存储与读写（`causal_lines` 条目新增可选字段、技术节点并入元素 `lifecycle`、旧 `tech_state` 幂等折叠、新实例默认开启 `element_modeling_enabled`），不改任何 LLM 行为；E2 创建阶段先划领域再展开元素 + 创建预算（含"不限"）+ 候选元素；以及发现/分级等**尚未实现**的部分
 - [`knowledge_writeback_guide.md`](./knowledge_writeback_guide.md) —— **跨实例知识库写入**（第二十二轮 P9）：未来树 likelihood 档位校准与树声明兑现统计写入共享知识库；开关与前置条件、绝对值覆盖幂等、分叉去重、小样本不写、"LLM 自报"标注、`entrypoints/knowledge.py` 撤销（及无法精确回退的合并条目）
 - [`testing_guide.md`](./testing_guide.md) —— **如何测试当前项目**：
   分两条路径——① 跑自动化单元测试（不需要真实 LLM，几秒钟出结果）；

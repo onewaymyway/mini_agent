@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Sequence
 
+from world_simulator import element_registry
 from world_simulator.causal_tree import suggest_status_transitions
 from world_simulator.state_model import ChoiceOption
 
@@ -157,6 +158,60 @@ def _stale_branch_suggestions_hint(lines: "List[Dict[str, Any]]", current_step: 
     )
 
 
+def _fmt_limit(value: "int | None") -> str:
+    return "不限" if value is None else str(value)
+
+
+def _element_create_hint(lines: "List[Dict[str, Any]]", settings: "Dict[str, Any] | None") -> str:
+    """创建阶段的因果线提示（第二十三轮 E2，统一元素模型）：先划领域，再给每个领域展开关键元素。
+
+    只改"怎么要求 skill 规划因果线"，输出仍是同一个 `causal_lines` 数组（条目多了可选字段），
+    `declared_causal_graph` 的端点可以是元素 id。预算由引擎在拿到结果后裁剪（
+    `element_registry.prepare_created_lines`），这里写上数字只是让 skill 心里有数。
+    """
+    params = element_registry.get_params(settings)
+    total = _fmt_limit(params["create_max_elements"])
+    per_dom = _fmt_limit(params["create_max_per_domain"])
+    base = (
+        "因果线是这次模拟的核心结构，不是可选项。请分两步规划，结果都填进输出的 `causal_lines` 数组："
+        "\n第一步，规划若干**领域线**（`\"kind\": \"domain\"`，比如技术、金融、宏观、个人……），"
+        "领域线只做分组与整体走向，数量不限，每条给简短的英文/拼音 `id` 和一句话中文 `label`，"
+        "以及自己的 `future_tree`。"
+        "\n第二步，对每个领域列出其下**真正值得单独建模的关键元素**（`\"kind\": \"element\"`，"
+        "比如一项具体技术、一个项目、一家公司、一项政策、一类资产、一个市场、一位关键人物），每个元素给："
+        "`id`、`label`、`element_type`（推荐词表：technology/project/organization/person/asset/policy/"
+        "market/resource/event_series）、`parent`（所属领域线的 id；没有合适领域就省略，不要编）、"
+        "可选的 `aliases`（别名/中英文名）、`time_granularity`（它自己的节奏），"
+        "以及初始 `future_tree`。技术类元素如果起点时已经存在，可以再给 "
+        '`lifecycle_seed`：{"stage": "lab|expert|developer|consumer|cheap_at_scale|infrastructure", '
+        '"preexisting": true}；不确定就不给。'
+        f"\n元素不要贪多：整体大约 {total} 个以内、每个领域大约 {per_dom} 个以内"
+        "（超出的会被系统暂存为候选，由用户决定是否加回），优先选与其他元素有明确因果关系、"
+        "发展节奏和分叉走向各不相同的关键对象，不要把同一件事拆成多个元素。"
+        "\n**每条线（领域线和元素线）都必须同时给出初始的未来因果树 `future_tree`**："
+        '形如 {"branches": [{"id": ..., "description": ..., "likelihood": "high"|"medium"|"low"}, ...]}，'
+        "给 2~3 个相互之间有实质区分度的未来可能分支（比如\"快速发展\"/\"缓慢发展\"/\"遭遇阻力\"这类"
+        "明显不同的方向，不要写成同义反复），覆盖目前能想到的主要分歧点即可。每个分支还可以选填 "
+        "`semantic_event`、`trigger_conditions`、`candidate_actions`，创建阶段留空也完全可以。"
+    )
+    if lines:
+        refine_parts = [
+            f'{str(line.get("id"))}（{str(line.get("label") or line.get("id"))}）' for line in lines
+        ]
+        base += (
+            "上一版草稿已经给出以下因果线，如果本次是根据反馈意见修改，"
+            "优先在这些线的基础上调整/补充，而不是重新换一套 id：" + "、".join(refine_parts) + "。"
+        )
+    base += (
+        "如果线之间存在明显的、创建时就能判断的先验关系（比如\"某项技术通常影响某个项目\"这种在任何具体"
+        "历史事件发生之前就成立的常识性结构），可以在输出里额外给一个可选字段 "
+        "`declared_causal_graph`：一个数组，每项 {\"from_line_id\": ..., \"to_line_id\": ..., "
+        "\"note\": \"一句话说明\"}，端点可以是领域线或元素线的 id（用上面 `causal_lines` 里的 id）；"
+        "没有明显的先验关系就不用输出这个字段或给空数组，不要为了填这个字段而牵强地编造。"
+    )
+    return base
+
+
 def _resolve_causal_lines_hint(
     settings: "Dict[str, Any] | None", *, stage: str = "advance", current_step: int = 0
 ) -> str:
@@ -187,6 +242,9 @@ def _resolve_causal_lines_hint(
         line for line in ((settings or {}).get("causal_lines") or [])
         if isinstance(line, dict) and str(line.get("id") or "").strip()
     ]
+
+    if stage == "create" and element_registry.creation_enabled(settings):
+        return _element_create_hint(lines, settings)
 
     if stage == "create":
         base = (
@@ -897,6 +955,9 @@ class ScenarioDraft:
     `verified=False`、`confirmed=False`——**只是待用户确认的提议**，创建向导里用户逐条采用后才会存进
     `settings.event_priors` 并参与抽样；这个字段本身不直接落盘。"""
     event_prior_problems: List[str] = field(default_factory=list)
+    element_candidates: List[Dict[str, Any]] = field(default_factory=list)
+    """被创建预算（`element_params.create_max_*`）裁掉的候选元素线（第二十三轮 E2）。不丢：
+    向导展示出来，用户可以手动加回。只在向导里使用，不落盘。"""
     """提议里被丢弃的条目及原因（非法、重复、条件引用不存在的变量、超出上限），给向导展示。"""
 
     @classmethod
@@ -1174,6 +1235,11 @@ def generate_scenario(
     existing_ids = [str(p.get("id") or p.get("description") or "")
                     for p in ((settings or {}).get("event_priors") or []) if isinstance(p, dict)]
     draft = ScenarioDraft.from_dict(data, existing_prior_ids=existing_ids)
+    if element_registry.creation_enabled(settings):
+        # 第二十三轮 E2：元素字段规整 + 去重 + 预算裁剪（被裁掉的进候选，不丢）。
+        draft.causal_lines, draft.element_candidates = element_registry.prepare_created_lines(
+            draft.causal_lines, draft.declared_causal_graph, settings
+        )
     if not event_sampler.proposal_enabled(settings):
         # 没开启提议却输出了 event_priors（LLM 自作主张）：一律忽略，不让它悄悄进入向导
         draft.event_priors, draft.event_prior_problems = [], []

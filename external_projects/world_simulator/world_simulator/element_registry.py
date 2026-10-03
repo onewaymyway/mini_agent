@@ -460,3 +460,158 @@ def fold_legacy_tech_state(settings: Dict[str, Any]) -> bool:
         settings["causal_lines"] = lines
     settings.pop(_TECH_STATE_FLAG, None)
     return True
+
+
+# ── 预算参数（第二十三轮 E2；其余键由 E4 追加） ──────────────────────
+
+DEFAULT_PARAMS: Dict[str, Optional[int]] = {
+    "create_max_elements": 20,     # 创建时元素总数上限（不含领域线）；None = 不限
+    "create_max_per_domain": 6,    # 创建时每个领域下的元素上限；None = 不限
+}
+
+
+def _valid_limit(value: Any) -> Tuple[bool, Optional[int]]:
+    """`(是否合法, 规整值)`。`None` = 不限（合法）；非负整数合法；其余（负数、非整数、布尔、文本）非法。
+    0 是合法的"0 个"，不表示不限（避免混淆，方案 §5.1）。"""
+    if value is None:
+        return True, None
+    if isinstance(value, bool):
+        return False, None
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if isinstance(value, int) and value >= 0:
+        return True, value
+    return False, None
+
+
+def get_params(settings: Optional[Dict[str, Any]]) -> Dict[str, Optional[int]]:
+    """`DEFAULT_PARAMS` 叠加 `settings.element_params`；非法值回退默认。"""
+    params = dict(DEFAULT_PARAMS)
+    override = (settings or {}).get("element_params")
+    if isinstance(override, dict):
+        for key in DEFAULT_PARAMS:
+            if key in override:
+                ok, val = _valid_limit(override[key])
+                if ok:
+                    params[key] = val
+    return params
+
+
+def invalid_param_keys(settings: Optional[Dict[str, Any]]) -> List[str]:
+    """`element_params` 里取值非法（已回退默认）的 key，给设置页提示。"""
+    override = (settings or {}).get("element_params")
+    if not isinstance(override, dict):
+        return []
+    return [k for k in DEFAULT_PARAMS if k in override and not _valid_limit(override[k])[0]]
+
+
+def creation_enabled(settings: Optional[Dict[str, Any]]) -> bool:
+    """创建阶段是否走"领域→元素"展开。创建时 manifest 还没写开关，所以**缺省视为开启**
+    （新实例默认开，方案 §9.1）；只有显式 False 才关。"""
+    return (settings or {}).get("element_modeling_enabled", True) is not False
+
+
+# ── 创建阶段：规整 + 预算裁剪 ────────────────────────────────────────
+
+
+def clip_to_budget(
+    lines: List[Dict[str, Any]],
+    edges: Optional[List[Dict[str, Any]]],
+    params: Dict[str, Optional[int]],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """按创建预算裁剪元素，返回 `(保留, 被裁掉的候选)`，各自保持原顺序。
+
+    - 领域线不计数、永不裁；其余线都算"元素"（含旧式无 `kind` 的线）。
+    - 总数上限 `create_max_elements`、每领域上限 `create_max_per_domain`（`None` = 不限）。
+    - 优先级：先验边端点 > `technology` 类型 > LLM 给的顺序。被裁掉的**不丢**，作为候选返回，
+      由向导展示让用户手动加回。
+    - `declared_causal_graph` 的边不随裁剪过滤（用户加回候选后边仍然有效）。
+    """
+    endpoints: set = set()
+    for edge in edges or []:
+        if isinstance(edge, dict):
+            for key in ("from_line_id", "to_line_id"):
+                if str(edge.get(key) or "").strip():
+                    endpoints.add(str(edge[key]).strip())
+    dom_ids = {str(x["id"]).strip() for x in lines if x.get("kind") == "domain"}
+    ranked = sorted(
+        (i for i, x in enumerate(lines) if x.get("kind") != "domain"),
+        key=lambda i: (
+            0 if str(lines[i]["id"]).strip() in endpoints else 1,
+            0 if lines[i].get("element_type") == TECHNOLOGY_TYPE else 1,
+            i,
+        ),
+    )
+    total_cap = params.get("create_max_elements")
+    dom_cap = params.get("create_max_per_domain")
+    kept_idx: set = set()
+    per_domain: Dict[str, int] = {}
+    for i in ranked:
+        parent = str(lines[i].get("parent") or "").strip()
+        in_domain = parent in dom_ids
+        if total_cap is not None and len(kept_idx) >= total_cap:
+            continue
+        if in_domain and dom_cap is not None and per_domain.get(parent, 0) >= dom_cap:
+            continue
+        kept_idx.add(i)
+        if in_domain:
+            per_domain[parent] = per_domain.get(parent, 0) + 1
+    kept = [x for i, x in enumerate(lines) if x.get("kind") == "domain" or i in kept_idx]
+    cut = [x for i, x in enumerate(lines) if x.get("kind") != "domain" and i not in kept_idx]
+    return kept, cut
+
+
+def prepare_created_lines(
+    raw_lines: Optional[List[Any]],
+    edges: Optional[List[Dict[str, Any]]],
+    settings: Optional[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """创建草稿里的 `causal_lines` → `(落盘用的线, 被预算裁掉的候选)`。
+
+    规整元素字段；按规范化 id/label/别名去重（先到先得，不模糊）；`parent` 能解析到领域线
+    就改写成领域 id，解析不到就清空（未归类，不猜）；有 `parent` 无 `kind` 视为元素；盖创建期
+    戳（`origin=seed`/`born_step=0`/`profile_status=complete`，只补缺省）；技术元素的
+    `lifecycle_seed` 经 `tech_model.normalize_node` 落成 `lifecycle`；最后按预算裁剪。
+    只处理 dict 条目，其余忽略。
+    """
+    from world_simulator import tech_model  # 延迟导入，避免循环依赖
+
+    normalized: List[Dict[str, Any]] = []
+    for raw in raw_lines or []:
+        if not isinstance(raw, dict) or not str(raw.get("id") or "").strip():
+            continue
+        line = normalize_element(raw)
+        line["id"] = str(line["id"]).strip()
+        # 重复判定：新线的 id 或任一别名命中已有线的 id/label/别名 → 先到先得。只看 id 和别名、
+        # 不看新线自己的 label（两个不同元素碰巧同名比误合并更常见，宁可漏合并）。
+        if any(resolve(normalized, ref) is not None for ref in [line["id"], *(line.get("aliases") or [])]):
+            continue
+        normalized.append(line)
+
+    domain_lines = [x for x in normalized if x.get("kind") == "domain"]
+    for line in normalized:
+        if line.get("kind") == "domain":
+            line.pop("parent", None)
+            continue
+        parent = line.get("parent")
+        if parent:
+            target = resolve(domain_lines, parent)
+            if target is not None:
+                line["parent"] = str(target["id"]).strip()
+                line.setdefault("kind", "element")
+            else:
+                line.pop("parent")
+        seed = line.pop("lifecycle_seed", None)
+        if isinstance(seed, dict) and not isinstance(line.get("lifecycle"), dict):
+            node = tech_model.normalize_node(
+                {**seed, "id": line["id"], "name": str(line.get("label") or line["id"])}, step=0
+            )
+            if node is not None:
+                line["lifecycle"] = node_to_lifecycle(node)
+                line.setdefault("element_type", TECHNOLOGY_TYPE)
+    for line in normalized:
+        if line.get("kind") in KINDS:
+            line.setdefault("origin", "seed")
+            line.setdefault("born_step", 0)
+            line.setdefault("profile_status", "complete")
+    return clip_to_budget(normalized, edges, get_params(settings))

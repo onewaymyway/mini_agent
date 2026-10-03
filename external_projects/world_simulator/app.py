@@ -1793,6 +1793,17 @@ def page_create() -> None:
         "推进）",
         value=bool(st.session_state.get("create_split_creation_calls", True)),
     )
+    with st.expander("元素数量上限（第二十三轮 E2，统一元素模型）"):
+        st.markdown(
+            '<span class="ws-muted">创建时 AI 会先划领域线、再给每个领域展开关键元素（技术/项目/公司/政策……）。'
+            "超出上限的元素不会丢，会作为「候选元素」留在草稿里，由你决定是否加回。勾选「不限」表示不设上限"
+            "（不是 0 个）。</span>",
+            unsafe_allow_html=True,
+        )
+        _ep_defaults = element_mod.get_params(None)
+        _ep_prev = (st.session_state.get("create_element_params") or {})
+        create_max_elements = _limit_input("创建时元素总数上限", "create_max_elements", _ep_prev, _ep_defaults)
+        create_max_per_domain = _limit_input("每个领域下的元素上限", "create_max_per_domain", _ep_prev, _ep_defaults)
     observer_mode = st.checkbox(
         "🔭 Observer 模式（世界独立演化最小实验，阶段三十一 4.25 节——仅自动挡"
         "下生效，提示 AI 优先让背景/宏观因果线自然演化、尽量不产生需要立刻"
@@ -1867,6 +1878,10 @@ def page_create() -> None:
             st.session_state["create_split_creation_calls"] = bool(split_creation_calls)
             st.session_state["create_propose_event_priors"] = bool(propose_event_priors)
             st.session_state["create_observer_mode"] = bool(observer_mode)
+            st.session_state["create_element_params"] = {
+                "create_max_elements": create_max_elements,
+                "create_max_per_domain": create_max_per_domain,
+            }
             if time_granularity_mode == "fixed":
                 st.session_state["create_granularity_custom"] = time_granularity
             elif time_granularity_mode == "guided":
@@ -1881,6 +1896,7 @@ def page_create() -> None:
                 "split_creation_calls": bool(split_creation_calls),
                 "observer_mode": bool(observer_mode),
                 "event_priors_proposal_enabled": bool(propose_event_priors),
+                "element_params": dict(st.session_state["create_element_params"]),
             }
             st.session_state["create_settings"] = settings
             with st.spinner("正在生成提案草稿..."):
@@ -2021,6 +2037,7 @@ def page_create() -> None:
             '"future_tree": {"branches": [{"id": "fast", "description": "快速发展", '
             '"likelihood": "medium"}]}}]',
         )
+        picked_candidate_ids = _render_element_overview_and_candidates(draft, causal_lines_text)
 
     # ── 因果图先验声明（第五轮方案 5.4 节）：区别于「因果线总览」里
     # 能看到的"实际发生过"的历史统计，这里声明的是"这条线一般来说会
@@ -2396,6 +2413,10 @@ def page_create() -> None:
                 [line for line in causal_lines_parsed if isinstance(line, dict)]
                 if isinstance(causal_lines_parsed, list) else []
             )
+            # 第二十三轮 E2：用户从"候选元素"里勾选加回的线并入（已存在的不重复加）
+            for _cand in getattr(draft, "element_candidates", None) or []:
+                if _cand.get("id") in picked_candidate_ids and element_mod.resolve(causal_lines, _cand["id"]) is None:
+                    causal_lines.append(dict(_cand))
             declared_causal_graph = (
                 [item for item in declared_causal_graph_parsed if isinstance(item, dict)]
                 if isinstance(declared_causal_graph_parsed, list) else []
@@ -2453,7 +2474,7 @@ def page_create() -> None:
                 "create_feedback", "create_settings", "create_options_count",
                 "create_granularity_preset", "create_granularity_custom", "create_resource_fields",
                 "create_resource_relations", "create_objectives", "create_calibration_notes",
-                "create_background_entities", "create_causal_lines", "create_belief_fields",
+                "create_background_entities", "create_causal_lines", "create_belief_fields", "create_element_params",
                 "create_split_decision_calls", "create_declared_causal_graph",
                 "create_split_creation_calls", "create_observer_mode",
                 "create_desired_state", "create_propose_event_priors",
@@ -3051,6 +3072,45 @@ def _render_timeline(
                     else:
                         st.success(f"已在第 {state.step} 步之后创建分支 {new_branch} 并切换为当前分支。")
                         st.rerun()
+
+
+def _limit_input(label: str, key: str, prev: Dict[str, Any], defaults: Dict[str, Any]) -> Optional[int]:
+    """数量上限输入：「不限」勾选 + 数字框。返回 `None`（不限）或非负整数。"""
+    prev_val = prev.get(key, defaults.get(key)) if isinstance(prev, dict) else defaults.get(key)
+    unlimited = st.checkbox(f"{label}：不限", value=prev_val is None, key=f"create_{key}_unlimited")
+    number = st.number_input(
+        label, min_value=0, step=1, value=int(prev_val if prev_val is not None else defaults.get(key) or 0),
+        disabled=unlimited, key=f"create_{key}_number",
+    )
+    return None if unlimited else int(number)
+
+
+def _render_element_overview_and_candidates(draft: Any, causal_lines_text: str) -> List[str]:
+    """创建向导：把当前因果线声明按「领域→元素」分组预览，并列出被预算裁掉的候选元素，
+    返回用户勾选要加回的候选 id。没有领域线、也没有候选时什么都不画（与以前的向导视觉一致）。"""
+    parsed = _safe_json_loads(causal_lines_text, None)
+    lines = [x for x in (parsed if isinstance(parsed, list) else getattr(draft, "causal_lines", None) or [])
+             if isinstance(x, dict) and str(x.get("id") or "").strip()]
+    groups = element_mod.group_by_domain(lines)
+    if any(dom is not None for dom, _ in groups):
+        rows = []
+        for dom, members in groups:
+            title = f"**{dom.get('label') or dom.get('id')}**（`{dom.get('id')}`）" if dom else "**未归类**"
+            items = "、".join(
+                f"{m.get('label') or m.get('id')}（{m.get('element_type') or '元素'}）" for m in members
+            ) or "（暂无元素）"
+            rows.append(f"- {title}：{items}")
+        st.markdown("当前因果线结构（领域 → 元素）：\n" + "\n".join(rows))
+    candidates = [c for c in (getattr(draft, "element_candidates", None) or []) if isinstance(c, dict)]
+    if not candidates:
+        return []
+    labels = {str(c["id"]): f"{c.get('label') or c['id']}（{c.get('element_type') or '元素'}，所属 {c.get('parent') or '未归类'}）"
+              for c in candidates}
+    st.info(f"有 {len(candidates)} 个元素超出创建预算，暂存为候选。勾选的会并入因果线。")
+    return list(st.multiselect(
+        "候选元素（勾选加回）", options=list(labels), format_func=lambda i: labels[i],
+        key="create_element_candidates_pick",
+    ))
 
 
 def _render_causal_lines_overview(
