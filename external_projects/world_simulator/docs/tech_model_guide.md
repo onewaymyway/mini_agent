@@ -130,6 +130,8 @@ LLM 在登记新节点时给出的 `typical_dwell_days` 会标 `dwell_source: ll
 - 回测框架（WP5）自 P6 起用 `elapsed_days` 累加候选时间、用 `tech_state` 快照还原各技术阶段的到达时点，算"阶段迁移时点偏差"（见 `docs/backtest_guide.md` §时间基准与阶段迁移时点偏差）。只有开启 `tech_model_enabled` 的运行才有 `tech_state`，否则该指标为"无数据"。
 - 默认违规策略是"降级 + 记录"；修复调用见下方"修复调用（P5b，opt-in）"。
 
+> E6 补充：元素模式下体检新增只读 C9（元素规模/长期待补全提示），技术规则本身不变。
+
 ## 修复调用（P5b，opt-in）
 
 开关 `settings.tech_repair_enabled`，**默认关闭**（需要技术模型也开启）。关闭时不会加载 `tech_repair`

@@ -19,7 +19,7 @@
 它度量的是**结构上有没有明显作弊**（跳级、复活、前置违规、波动异常……），
 **不是语义上合不合理**。界面与文档必须这样标注，不得当作"真实性评分"。
 
-## 八项检查
+## 八项检查（E6 起元素模式下另有只读的 C9：元素规模/补全提示，见 `element_health()`）
 
 | 码 | 含义 | 逐步告警 | 体检统计 |
 |---|---|---|---|
@@ -214,7 +214,16 @@ def _resolve_prerequisite(
     if (line_id, prereq) in index:
         return (line_id, prereq)
     matches = [key for key in index if key[1] == prereq]
-    return matches[0] if len(matches) == 1 else None
+    if len(matches) == 1:
+        return matches[0]
+    # 第二十三轮 E6：元素线之间的跨线前置可写成限定形式 `线id/分支id`（元素多了之后分支 id 容易重名）。
+    # 只在上面都没解析出来、且恰好命中一个时采用；解析不到仍是“无法核验”，不阻断。
+    if not matches and "/" in prereq:
+        left, _, right = prereq.partition("/")
+        left, right = left.strip(), right.strip()
+        if left and right and (left, right) in index:
+            return (left, right)
+    return None
 
 
 def check_tree_transitions(
@@ -485,11 +494,60 @@ def _likelihood_ledger(history: Sequence[Any], cfg: Dict[str, Any]) -> Dict[str,
         return {"total_terminal": 0, "by_likelihood": {}, "inversions": [], "entries": [], "note": "账本计算出错"}
 
 
+NEAR_BUDGET_RATIO = 0.8  # 存活元素数达到 `max_total_elements` 的这个比例就提示“接近预算”
+
+
+def element_health(settings: Optional[Dict[str, Any]], history: Sequence[Any] = ()) -> Optional[Dict[str, Any]]:
+    """C9（第二十三轮 E6，只读）：元素模型的规模与补全情况。元素模式未开启返回 None（体检结果里不出现该键，
+    旧实例的体检输出与之前逐字节一致）。
+
+    提示两类事实，**不改任何状态**：
+    - 存活元素数接近 `element_params.max_total_elements`（`null`=不限则不提示）——到上限后新元素进候选池，不再登记；
+    - 长期没补全：`profile_status=pending_enrichment` 且登记已超过 `enrich_grace_steps` 步仍没补上，
+      以及已落到 `fallback`（宽限期内 LLM 没补全，用了兜底树/未归类）的元素。这类元素是“登记了但建模粗糙”。
+    """
+    from world_simulator import element_registry
+
+    if not element_registry.is_enabled(settings):
+        return None
+    lines = element_registry.get_lines(settings)
+    alive = [x for x in lines if element_registry.is_alive(x) and x.get("kind") != "domain"]
+    params = element_registry.get_runtime_params(settings)
+    grace = int(params.get("enrich_grace_steps") or 0)
+    cur_step = 0
+    for state in history or []:
+        cur_step = max(cur_step, int(_get(state, "step", 0) or 0))
+    limit = params.get("max_total_elements")
+    notes: List[str] = []
+    near = bool(limit) and len(alive) >= limit * NEAR_BUDGET_RATIO
+    if near:
+        notes.append(f"存活元素 {len(alive)} 个，已接近总数上限 {limit}（到上限后新元素只进候选池）")
+    stale = sorted(
+        str(x["id"]).strip() for x in alive
+        if x.get("profile_status") == "pending_enrichment" and cur_step - int(x.get("born_step") or 0) > grace
+    )
+    fallback = sorted(str(x["id"]).strip() for x in alive if x.get("profile_status") == "fallback")
+    if stale:
+        notes.append(f"{len(stale)} 个元素登记超过 {grace} 步仍待补全：{'、'.join(stale[:8])}{'…' if len(stale) > 8 else ''}")
+    if fallback:
+        notes.append(f"{len(fallback)} 个元素已落到兜底（未补全，用了兜底树/未归类）：{'、'.join(fallback[:8])}{'…' if len(fallback) > 8 else ''}")
+    return {
+        "alive_elements": len(alive),
+        "max_total_elements": limit,
+        "near_budget": near,
+        "stale_pending_enrichment": stale,
+        "fallback": fallback,
+        "notes": notes,
+        "note": "只读提示：说明有哪些元素建模粗糙/规模接近上限，不代表元素本身有问题。",
+    }
+
+
 def analyze_history(
     history: Sequence[Any],
     causal_lines: Any = None,
     declared_causal_graph: Any = None,
     config: Optional[Dict[str, Any]] = None,
+    settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """实例级"真实性体检"：重新计算全部检查并汇总。返回值全部是 JSON 兼容
     结构；`disclaimer` 字段必须随结果一起展示。
@@ -529,7 +587,7 @@ def analyze_history(
         name for name, stage in stage_tracker.first_seen_stage.items()
         if _STAGE_ORD[stage] >= _STAGE_ORD["consumer"]
     )
-    return {
+    result = {
         "total_steps": len(history),
         "warnings": warnings,
         "warning_counts": counts,
@@ -553,3 +611,8 @@ def analyze_history(
         "config": copy.deepcopy(cfg),
         "disclaimer": "结构性代理指标：只说明有没有明显的结构性作弊，不是语义真实性评分。",
     }
+    # E6：传了 settings 且元素模式开启时才附带 C9；否则不出现该键（既有调用方/测试的返回结构不变）。
+    c9 = element_health(settings, history) if settings is not None else None
+    if c9 is not None:
+        result["c9_element_health"] = c9
+    return result

@@ -128,6 +128,10 @@
 **关系延迟改用 elapsed 单位**：见 `relationship.py` 模块 docstring。关系新增可选 `delay_days`，
 `delay_steps` 保留为旧数据/降级兜底。
 
+## 元素模型下的端点（第二十三轮 E6）
+
+元素模式开启时：边的源头可以是**领域 id**（任一存活子元素有进展即触发，原因 `domain_child`）；外生事件 `affects` 写领域 id/别名会先展开到其下元素；边的目标是领域时，到期提示列出其下 active 元素但**不自动扇出**。详见 [`element_model_guide.md`](./element_model_guide.md) “联动与收尾（E6）”。旧实例不受影响。
+
 ## 已知边界
 
 - 只看"源头有进展"，不看进展的方向/幅度。

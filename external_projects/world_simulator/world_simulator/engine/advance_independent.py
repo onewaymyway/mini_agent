@@ -47,8 +47,9 @@ from typing import Any, Dict, List
 
 import copy
 
-from world_simulator import causal_engine, consistency_guard, event_sampler, tech_model
+from world_simulator import causal_engine, consistency_guard, element_discovery, element_registry, event_sampler, tech_model
 from world_simulator.engine import mechanisms
+from world_simulator.engine.causal_lines import _update_element_registry
 from world_simulator.engine.errors import (
     OwnedVarsOverlapError,
     SimAlreadyEndedError,
@@ -176,6 +177,8 @@ def advance_lines(cfg, workspace_root: Path, data_dir: Path, sim_id: str) -> Sim
     mech_on = bool(due_lines) and (
         mechanisms.any_mechanism_enabled(manifest.settings) or mechanisms.needs_elapsed(manifest.settings)
     )
+    # 第二十三轮 E6：元素模式下，各线输出里的 `discovered_elements` 要被收集并登记（与机制是否开启无关）。
+    elem_on = bool(due_lines) and element_registry.is_enabled(manifest.settings)
 
     if due_lines:
         from mini_agent.workflow.runner import WorkflowRunner
@@ -220,7 +223,7 @@ def advance_lines(cfg, workspace_root: Path, data_dir: Path, sim_id: str) -> Sim
                 "line_mechanism_hint": mechanisms.build_line_hint(
                     manifest.settings, history, current.step + 1,
                     line=line, events=sampled_events, owned_ids=owned_ids,
-                ) if mech_on else "",
+                ) if (mech_on or elem_on) else "",
             }
 
             result = runner.run(wf, inputs)
@@ -262,8 +265,9 @@ def advance_lines(cfg, workspace_root: Path, data_dir: Path, sim_id: str) -> Sim
                 narrative_parts.append(f"[{label}] {narrative}")
 
             entry: Dict[str, Any] = {"summary": summary, "advanced": True}
-            if mech_on:
+            if mech_on or elem_on:
                 line_outputs.append((line_id, data))
+            if mech_on:
                 _days = tech_model.normalize_reported_elapsed(data.get("elapsed_days"))
                 if _days is not None and mechanisms.needs_elapsed(manifest.settings):
                     entry["elapsed_days"] = _days  # 这条线自己申报的跨度（全局步长取各线最大值）
@@ -309,6 +313,16 @@ def advance_lines(cfg, workspace_root: Path, data_dir: Path, sim_id: str) -> Sim
     # P8：与 `advance()` 共用的机制链。顺序与主路径一致：事件落状态 → elapsed_days → 技术裁决 →
     # 树接地 → 因果处置/入队 → 树影响入队，最后才是快照与一致性守卫。本路径的线不产出 `tree_updates`
     # （树的状态迁移只来自树接地的结构化触发条件），也不处理 `triggered_relationships`。
+    merged: Dict[str, Any] = {}
+    merge_notes: List[Dict[str, Any]] = []
+    if mech_on or elem_on:
+        merged, merge_notes, _reported = mechanisms.merge_line_outputs(line_outputs)
+    # 第二十三轮 E6：元素模式下，各线的 `discovered_elements`（已拼接）与线上 id 引用走注册表登记/规范化。
+    # 顺序与 `advance()` 一致：先于技术裁决（`lifecycle_seed` 转成的合成提议写回 `merged["tech_updates"]`，
+    # 由同一套裁决处理）、先于 `tree_before` 的深拷贝。本路径的线不产出 `tree_updates`/`causal_links`。
+    # 周期扫描（默认关，额外一次 LLM 调用）也只在有线到点的步跑，与 `advance()` 同一个入口。
+    if elem_on:
+        next_state.element_audit = _update_element_registry(manifest, next_state, merged)
     tree_before = (
         copy.deepcopy(manifest.settings.get("causal_lines"))
         if consistency_guard.is_enabled(manifest.settings)
@@ -316,7 +330,6 @@ def advance_lines(cfg, workspace_root: Path, data_dir: Path, sim_id: str) -> Sim
     )
     if mech_on:
         _tg_before = mechanisms.tree_status_before(manifest.settings)
-        merged, merge_notes, _reported = mechanisms.merge_line_outputs(line_outputs)
         mechanisms.apply_post_llm(
             cfg, workspace_root, manifest, next_state, merged,
             history=history, tg_before=_tg_before, sampled_events=sampled_events,
@@ -327,6 +340,11 @@ def advance_lines(cfg, workspace_root: Path, data_dir: Path, sim_id: str) -> Sim
 
     # 第二十二轮 WP0：`local_step` 推进改动了 `causal_lines`、机制又改了技术/待兑现状态，同样按分支写快照
     # （见 `dynamic_state.py`），随后跑一致性守卫（P8 起独立推进路径也有）。
+    if elem_on:
+        element_discovery.safe_scan_in_step(
+            cfg, workspace_root, manifest, history=history, next_state=next_state,
+        )
+
     mechanisms.snapshot_and_check(manifest, next_state, history, tree_before=tree_before)
 
     store.append_state(next_state, branch=branch)

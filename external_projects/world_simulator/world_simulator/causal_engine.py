@@ -30,6 +30,11 @@
 4. 本步技术模型的 `transition` 审计里 `tech_id == from`（`tech_transition`）——
    所以边的端点既可以是因果线 id，也可以是技术节点 id。
 
+5. （第二十三轮 E6，仅元素模式）边的源头是**领域** id 时，该领域下任一 alive 元素满足上面 1–4 中的任一条，
+   即视为源头有进展（`domain_child`）；外生事件的 `affects` 写领域 id 时，领域会先展开为其下 alive 元素
+   （`event_sampler.expand_affects`），所以源头是元素的边同样会被触发。边的**目标**是领域时，到期压力展示给
+   LLM 时会列出该领域下当前 active 的元素，**不自动逐个扇出**（扇出就是在替 LLM 做语义判断）。
+
 账本显著变化、分支状态变化之外的触发源（计划 §4 WP3 3b 里提到的"账本中显著变化"）
 **本阶段没做**：什么算"显著"需要阈值，没有数据前不拍脑袋（见 `docs/causal_engine_guide.md`）。
 
@@ -253,8 +258,9 @@ def _is_due(entry: Dict[str, Any], history: List[Any], step: int) -> Tuple[bool,
 # ── 触发 ─────────────────────────────────────────────────────────────
 
 
-def _source_reason(edge: Dict[str, Any], next_state: Any) -> Optional[str]:
-    src = edge["from_line_id"]
+def _direct_reason(src: str, next_state: Any, *, event_affects: Optional[Dict[int, set]] = None) -> Optional[str]:
+    """`src`（一个线 id / 技术 id）本步是否直接有进展。`event_affects` 是 `{事件下标: 展开后的 affects 集合}`
+    （元素模式下领域已展开为其下元素）；不传则按事件原始 `affects` 判断（与 E6 之前一致）。"""
     upd = (getattr(next_state, "line_updates", None) or {}).get(src)
     if isinstance(upd, dict) and upd.get("advanced", True) is not False:
         return "line_advanced"
@@ -266,12 +272,36 @@ def _source_reason(edge: Dict[str, Any], next_state: Any) -> Optional[str]:
         for su in entry.get("status_updates") or []:
             if isinstance(su, dict) and su.get("status") == "active":
                 return "tree_branch"
-    for ev in getattr(next_state, "sampled_events", None) or []:
-        if isinstance(ev, dict) and not ev.get("suppressed_by_cap") and src in (ev.get("affects") or []):
+    for i, ev in enumerate(getattr(next_state, "sampled_events", None) or []):
+        if not isinstance(ev, dict) or ev.get("suppressed_by_cap"):
+            continue
+        affects = event_affects.get(i) if event_affects is not None else None
+        if src in (affects if affects is not None else (ev.get("affects") or [])):
             return "sampled_event"
     for upd in getattr(next_state, "tech_updates", None) or []:
         if isinstance(upd, dict) and upd.get("action") == "transition" and str(upd.get("tech_id") or "") == src:
             return "tech_transition"
+    return None
+
+
+def _source_reason(
+    edge: Dict[str, Any], next_state: Any, *, settings: Optional[Dict[str, Any]] = None,
+    event_affects: Optional[Dict[int, set]] = None,
+) -> Optional[str]:
+    src = edge["from_line_id"]
+    reason = _direct_reason(src, next_state, event_affects=event_affects)
+    if reason is not None:
+        return reason
+    # E6：源头是领域线时，任一 alive 子元素有进展即视为触发（仅元素模式；非元素模式 `settings` 不传/未开启，
+    # 行为与之前逐字节一致）。
+    if element_registry.is_enabled(settings):
+        lines = element_registry.get_lines(settings)
+        dom = next((x for x in lines if str(x.get("id")).strip() == src and x.get("kind") == "domain"), None)
+        if dom is not None and element_registry.is_alive(dom):
+            for child in element_registry.children_of(lines, src):
+                if element_registry.is_alive(child) and _direct_reason(
+                        str(child["id"]).strip(), next_state, event_affects=event_affects) is not None:
+                    return "domain_child"
     return None
 
 
@@ -292,12 +322,19 @@ def queue_effects(
     params = get_params(settings)
     step = int(next_state.step)
     retired = element_registry.retired_ids(settings)  # E5：已退场元素不再产生新的待兑现因果（已入队的不撤销）
+    # E6：元素模式下，外生事件 `affects` 里的领域 id 先展开为其下 alive 元素（一次算好，供所有边共用）。
+    event_affects: Optional[Dict[int, set]] = None
+    if element_registry.is_enabled(settings):
+        event_affects = {
+            i: set(event_sampler.expand_affects(settings, ev.get("affects")))
+            for i, ev in enumerate(getattr(next_state, "sampled_events", None) or []) if isinstance(ev, dict)
+        }
     for edge in edges:
         if not edge["enabled"]:
             continue
         if retired and (edge["from_line_id"] in retired or edge["to_line_id"] in retired):
             continue
-        reason = _source_reason(edge, next_state)
+        reason = _source_reason(edge, next_state, settings=settings, event_affects=event_affects)
         if reason is None:
             continue
         ok, _why = event_sampler.evaluate_condition(edge["condition"], next_state.vars, settings)
@@ -405,6 +442,7 @@ def build_hint(
     if not due:
         return _ELAPSED_ASK if ask_elapsed else ""
     stats = edge_stats(history)
+    domain_children = _domain_target_children(settings, history, step, due)
     lines = [
         "【因果引擎已开启】以下声明的因果边，源头已出现进展且延迟期已到——这一步该交代它们的效果了"
         "（引擎只负责提醒，是否体现、怎么体现由你判断，但**必须给出交代**）：",
@@ -433,6 +471,11 @@ def build_hint(
             attrs.append(f"已有 {e['ignored_count']} 步未被交代")
         if e.get("note"):
             attrs.append(f"备注：{e['note']}")
+        if e["to_line_id"] in domain_children:
+            kids = domain_children[e["to_line_id"]]
+            attrs.append(
+                ("目标是领域，其下当前 active 的元素：" + "、".join(kids) + "；效果落在哪个元素由你判断，引擎不会逐个扇出")
+                if kids else "目标是领域，其下暂无 active 元素；效果落在哪个元素由你判断，引擎不会逐个扇出")
         lines.append(piece + "（" + "；".join(attrs) + "）")
     lines.append(
         "请在输出里给可选字段 `effect_dispositions`（数组），每个到期项一条："
@@ -448,6 +491,36 @@ def build_hint(
     return "\n".join(lines)
 
 
+def _domain_target_children(
+    settings: Optional[Dict[str, Any]], history: List[Any], step: int, due: List[Dict[str, Any]]
+) -> Dict[str, List[str]]:
+    """E6：到期项里目标是**领域**的，列出该领域下当前 active 的元素（`{领域 id: ["id（label）", ...]}`）。
+    非元素模式 / 没有目标是领域的项返回 `{}`（此时 prompt 与 E6 之前逐字节一致）。"""
+    if not element_registry.is_enabled(settings):
+        return {}
+    lines = element_registry.get_lines(settings)
+    dom_ids = {str(x["id"]).strip() for x in element_registry.domains(lines)}
+    wanted = sorted({e["to_line_id"] for e in due if e.get("to_line_id") in dom_ids})
+    if not wanted:
+        return {}
+    from world_simulator import element_tiers  # 延迟导入：element_tiers 反向引用 causal_engine
+
+    try:
+        tiers = element_tiers.derive_tiers(history, settings, step=step)["tiers"]
+    except Exception:  # noqa: BLE001 — 只是展示细节，分级算不出来就当没有 active
+        tiers = {}
+    out: Dict[str, List[str]] = {}
+    for did in wanted:
+        kids = []
+        for child in element_registry.children_of(lines, did):
+            cid = str(child["id"]).strip()
+            if element_registry.is_alive(child) and tiers.get(cid) == "active":
+                label = str(child.get("label") or "").strip()
+                kids.append(f"{cid}（{label}）" if label and label != cid else cid)
+        out[did] = kids
+    return out
+
+
 def safe_build_hint(*args: Any, **kwargs: Any) -> str:
     try:
         return build_hint(*args, **kwargs)
@@ -460,6 +533,7 @@ def _reason_label(reason: Any) -> str:
         "line_advanced": "源头线有进展", "tree_branch": "源头线的未来树分支被印证/激活",
         "sampled_event": "外生事件影响源头", "tech_transition": "源头技术阶段迁移",
         "tree_effect": "未来树分支被激活，其声明的影响",
+        "domain_child": "源头领域下的元素有进展",
     }.get(str(reason or ""), str(reason or "未知"))
 
 
@@ -606,6 +680,9 @@ def edge_stats(history: List[Any]) -> Dict[str, Dict[str, Any]]:
 
 def _display_name(settings: Optional[Dict[str, Any]], node_id: str) -> str:
     """边端点的可读名：先查因果线 `label`，再查技术节点 `name`，都没有（或 label 就是 id）用 id。"""
+    # E6：元素模式下，被合并元素的 id（历史/已入队项里还是旧 id）显示成合并目标的名字。
+    if element_registry.is_enabled(settings):
+        node_id = element_registry.redirect_merged(settings, node_id)
     for line in (settings or {}).get("causal_lines") or []:
         if isinstance(line, dict) and str(line.get("id") or "") == node_id:
             label = str(line.get("label") or line.get("name") or "").strip()

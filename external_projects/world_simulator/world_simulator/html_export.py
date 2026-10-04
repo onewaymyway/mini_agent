@@ -38,6 +38,7 @@ from typing import Any, Dict, List, Optional, Sequence
 from world_simulator import branch_manager as bm
 from world_simulator import causal_graph as cg_mod
 from world_simulator import causal_tree as causal_tree_mod
+from world_simulator import element_view as element_view_mod
 from world_simulator import hypothesis as hyp_mod
 from world_simulator import html_export_mechanisms as mech_mod
 from world_simulator import retrospective as retrospective_mod
@@ -422,6 +423,8 @@ def _render_causal_line_row(
     history: List[SimState],
     line_meta: Optional[Dict[str, Any]],
     futures: List[Dict[str, Any]],
+    badges: Optional[List[str]] = None,
+    merged_sources: Optional[Sequence[str]] = None,
 ) -> str:
     """渲染单条因果线的完整卡片：时间点序列（时间正序）+ 关联因果链
     + 未来因果树 + 历史外推，对齐 `app.py::_render_causal_lines_
@@ -435,7 +438,7 @@ def _render_causal_line_row(
     last_trend: Optional[str] = None
     for state in history:
         line_updates = getattr(state, "line_updates", None) or {}
-        update = line_updates.get(line_id)
+        update = element_view_mod.update_for_line(line_updates, line_id, merged_sources)
         if not isinstance(update, dict) or update.get("advanced") is False:
             continue
         time_label = str(update.get("time_label") or "").strip()
@@ -458,10 +461,14 @@ def _render_causal_line_row(
         if last_trend else ""
     )
 
+    # 第二十三轮 E6：元素模式下的类型/分级/待补全等徽标（`badges` 缺省 = 不加，旧实例导出逐字节不变）。
+    element_badges = "".join(
+        f' <span class="ws-uncertain-badge">{_esc(b)}</span>' for b in (badges or [])
+    )
     parts = [
         '<div class="ws-causal-line-row">'
         f'<div class="ws-causal-line-row-title">📈 {_esc(label)}{granularity_suffix} '
-        f'<span class="ws-causal-line-row-id">{_esc(line_id)}</span>{trend_badge}</div>'
+        f'<span class="ws-causal-line-row-id">{_esc(line_id)}</span>{trend_badge}{element_badges}</div>'
     ]
 
     if not points:
@@ -483,7 +490,7 @@ def _render_causal_line_row(
         (state.step, link)
         for state in history
         for link in (getattr(state, "causal_links", None) or [])
-        if isinstance(link, dict) and str(link.get("line_id") or "") == line_id
+        if isinstance(link, dict) and str(link.get("line_id") or "") in element_view_mod.link_ids(line_id, merged_sources)
     ]
     if related_links:
         rows = []
@@ -583,8 +590,31 @@ def _render_causal_lines_breakdown(manifest: SimManifest, history: List[SimState
     except Exception:  # noqa: BLE001 — 展望是辅助信息，算失败不影响总览本身。
         futures_by_id = {}
 
+    # 第二十三轮 E6：元素模式下按领域分组（领域线做小标题，子元素在下，未归类的最后），并带徽标。
+    # 静态页面没有交互，所以没有“按类型过滤”控件，类型以徽标呈现；未开启元素模式时 `overview` 不启用，
+    # 下面的分组/徽标全部为空，输出与 E6 之前逐字节一致。
+    declared_ids = {
+        str(line.get("id")) for line in causal_lines_meta if isinstance(line, dict) and line.get("id")
+    }
+    overview = element_view_mod.build_overview(
+        manifest.settings, history, extra_ids=[i for i in label_by_id if i not in declared_ids],
+    )
+    badge_by_id: Dict[str, List[str]] = {}
+    header_before: Dict[str, str] = {}
+    merged_src = element_view_mod.merged_sources(manifest.settings)
+    if overview.get("enabled"):
+        label_by_id = {i: label_by_id[i] for i in element_view_mod.ordered_ids(overview) if i in label_by_id}
+        for g in overview["groups"]:
+            first = g["domain_row"]["id"] if g["domain_row"] is not None else (g["rows"][0]["id"] if g["rows"] else "")
+            if first:
+                header_before[first] = f"{g['domain_label']}（{len(g['rows'])}）"
+            for r in ([g["domain_row"]] if g["domain_row"] is not None else []) + g["rows"]:
+                badge_by_id[r["id"]] = r["badges"]
+
     rows_html = []
     for line_id, label in label_by_id.items():
+        if line_id in header_before:
+            rows_html.append(f'<h4 class="ws-serif">{_esc(header_before[line_id])}</h4>')
         line_meta = next(
             (
                 line for line in causal_lines_meta
@@ -602,6 +632,8 @@ def _render_causal_lines_breakdown(manifest: SimManifest, history: List[SimState
                 history,
                 line_meta,
                 futures_by_id.get(line_id) or [],
+                badge_by_id.get(line_id),
+                merged_src.get(line_id),
             )
         )
     return "".join(rows_html)

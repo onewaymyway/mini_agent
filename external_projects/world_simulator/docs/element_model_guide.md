@@ -1,8 +1,8 @@
 # 统一元素模型（第二十三轮）
 
 > 设计依据：仓库 `next_doc/world_simulator_element_causal_lines_plan.md`。
-> **实施进度：E1（数据模型、存取层、兼容折叠）、E2（创建阶段元素展开）、E3（发现·去重·登记·补全）、E4（分层与 prompt 预算）、E5（元素运维与周期扫描）已完成**；
-> E6（联动与收尾）**尚未实施**。本文随各阶段增补，只写已落地的行为，不提前描述后续阶段。
+> **实施进度：E1（数据模型、存取层、兼容折叠）、E2（创建阶段元素展开）、E3（发现·去重·登记·补全）、E4（分层与 prompt 预算）、E5（元素运维与周期扫描）、E6（联动与收尾）已完成——计划 E1–E6 全部实施完毕**。
+> 本文随各阶段增补，只写已落地的行为。
 
 ## 它是什么
 
@@ -274,6 +274,42 @@ LLM 在推进输出里可以写 `element_ops`，对**已登记**元素做结构�
 领域聚合联动、界面按领域折叠分组、一致性守卫提示（E6）。引擎自己不会创建领域线（推进中发现的新元素 `parent` 只能挂到已有领域线，没有合适的就留空；
 领域线也不能被 merge/split/retire，要动领域只能改设置）。向导里已有"领域 → 元素"预览；因果线总览和静态 HTML 导出的按领域折叠分组留到 E6。
 
+## 联动与收尾（E6）
+
+E6 把元素模型接进其余机制，并补全界面。**没有新开关**；元素模式未开启（旧实例）时下列行为全部不生效，输出与 E6 之前一致。
+
+**因果引擎（`causal_engine`）**
+- 边的**源头是领域 id**：该领域下任一存活元素满足四种触发源之一，即视为源头有进展，触发原因记 `domain_child`（领域自己直接有进展时仍记原来的原因）。
+- 外生事件 `affects` 写**领域 id** 或别名：先经 `event_sampler.expand_affects()` 展开（领域 → 其下存活元素，保序去重），所以源头是元素的边也会被触发。事件记录本身不改写（历史不可变）；prompt 里“可能影响”仍按原文显示。
+- 边的**目标是领域**：到期提示里列出该领域下当前 active 的元素，**不自动逐个扇出**（扇出等于替 LLM 做语义判断）；没有 active 元素时明确写出。
+- 边与待兑现项的显示名跟随合并（旧 id → 合并目标的名字）。
+
+**树影响 / 树接地 / 体检**
+- `tree_effects`：分支 `effects_if_active` 的目标经注册表解析（id/名称/别名，已合并的跟随到存活元素），并写回规范 id；解析不到的仍按 E7 提示、照常入队（不过滤，也**不**替 LLM 登记桩元素）。
+- 跨线前置新增限定写法 `线id/分支id`（`tree_grounding` 与 `consistency_guard` 的 C3 一致）；裸分支 id 重名仍是“无法核验”。
+- 体检新增只读 **C9**（`consistency_guard.element_health()`，`analyze_history(..., settings=)` 传入且元素模式开启才出现）：存活元素数达到 `max_total_elements` 的 80%、登记超过 `enrich_grace_steps` 仍待补全、已落到兜底的元素。只提示，不改任何状态。
+
+**独立推进 `advance_lines()`**
+- 元素线默认没有 `owned_vars`，不会被单独调用，所以调用数不随元素数增长（沿用原规则，未新增代码）。
+- 每条线的提示末尾带一小段元素说明（只讲 `discovered_elements`，附领域线 id 与最近 60 个已登记元素索引）；各线输出的 `discovered_elements` 按线声明顺序拼接，由注册表按 id/名称/别名去重（先到先登记，后到的并入）。
+- 步骤中在机制链之前调用元素登记（与 `advance()` 同序），审计写入 `element_audit`；周期扫描（`element_scan_interval`>0）在有线到点的步里同样会跑。
+- 事件投放：`affects` 写领域 id 时，投给 `parent` 为该领域的到点线。
+- 仍不处理 `element_enrichments`/`element_ops`（运维和补全在主推进路径或周期扫描里做）。
+
+**界面与导出**（共用 `world_simulator/element_view.py`，纯逻辑）
+- 因果线总览：按领域分组（领域线做小标题，未归类最后），每行带徽标——类型、当前分级（派生值）、📌固定活跃、待补全/兜底、已退场；顶部统计行；按类型多选过滤；“隐藏已退场/已合并”。**被合并的元素不再单独占行**：它的历史（`line_updates`/`causal_links`）在读取时并入合并目标那一行，目标行徽标注明“并入：…”（E5 遗留的“旧 id 展示”在此收口）。
+- 设置页「🧩 元素管理与预算」：九个预算/窗口参数表单（上限类可勾“不限”，写 `null`，不用 0 表示不限；非法值整次保存作废）；单个元素的所属领域/别名/钉住为活跃/状态编辑（领域必须存在、别名不得与其它线的 id/名称/别名冲突、状态只能在存活与已退场间切换、已合并不可改；任何错误整次编辑作废）。手动把已退场改回存活是用户的显式决定，允许。
+- 静态 HTML 导出：同样按领域分组并带徽标，被合并元素历史并入目标行；静态页面没有过滤控件。真实性体检摘要附 C9 提示。
+
+## 已知边界（E6）
+
+- 领域→元素的扇出只用于**触发**（源头）与**展示**（目标），不会自动把到期效果分配给某个子元素。
+- `tree_effects` 目标未知时不登记桩元素（保持 E7 提示）；跨线前置的别名解析未做，只支持精确的 `线id/分支id`。
+- 独立推进路径不做补全与运维；`discovered_elements` 去重靠注册表，同一步多条线描述同一对象但名字完全不同时仍会各登记一个，需靠后续 `merge`。
+- 新增的设置页表单与总览过滤只做了 Streamlit 加载冒烟（无异常），**没有进入实例页实际点过**；纯逻辑部分（`element_view`）有单元测试。
+- 手动退场/恢复不撤销已入队的待兑现因果；无 unmerge。
+- 全部新机制仍**未在真实 LLM 下端到端验证**。
+
 ## 已知边界（E5）
 
 - **引擎只做结构校验，不判断语义**：LLM 把不该合并的两个元素合并了，引擎不会拦；**v1 没有 unmerge，也没有"复活"已退场元素**（已退场元素再被"发现"只会补别名，不会复活）。
@@ -328,6 +364,6 @@ LLM 在推进输出里可以写 `element_ops`，对**已登记**元素做结构�
 
 ## 相关
 
-- 测试：`tests/test_element_registry.py`（28 个）、`tests/test_element_tech_adapter.py`（29 个）、`tests/test_element_creation.py`（28 个）、`tests/test_element_discovery.py`（82 个，E3）、`tests/test_element_tiers.py`（57 个，E4）、`tests/test_element_ops.py`（47 个，E5）
+- 测试：`tests/test_element_registry.py`（28 个）、`tests/test_element_tech_adapter.py`（29 个）、`tests/test_element_creation.py`（28 个）、`tests/test_element_discovery.py`（82 个，E3）、`tests/test_element_tiers.py`（57 个，E4）、`tests/test_element_ops.py`（47 个，E5）、`tests/test_element_linkage.py`（54 个，E6）
 - 设计/记录：`next_doc/world_simulator_element_causal_lines_plan.md`（§10 实施记录）
 - 技术规则本身：[`tech_model_guide.md`](./tech_model_guide.md)

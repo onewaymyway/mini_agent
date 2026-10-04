@@ -1702,6 +1702,47 @@ def build_hint(settings: Optional[Dict[str, Any]], *, step: int, history: Option
     return "\n".join(parts)
 
 
+def build_line_hint(settings: Optional[Dict[str, Any]], *, step: int) -> str:
+    """第二十三轮 E6：独立推进（`advance_lines()`）里**一条线**的元素提示（`line_evolve` 的 `{line_mechanism_hint}`
+    末段）。只说明一个可选输出键 `discovered_elements`——独立推进不处理 `element_enrichments`/`element_ops`
+    （避免调用数与输出复杂度随元素数增长；运维和补全在主推进路径或周期扫描里做）。元素模式未开启返回空串。
+
+    已登记元素只给精简索引（最近登记的 `INDEX_MAX` 个 id+label），目的是让这条线复用已有 id、不重复发现；
+    各线的发现项由 `mechanisms.merge_line_outputs` 拼接，注册表按 id/名称/别名去重。"""
+    if not is_enabled(settings):
+        return ""
+    lines = [x for x in get_lines(settings) if is_alive(x)]
+    domain_lines = [x for x in lines if x.get("kind") == "domain"]
+    elements = [x for x in lines if x.get("kind") != "domain"]
+    parts = [
+        "【元素建模已开启】如果你在这条线这一步的推进里看到**值得单独建模的新关键对象**（新技术/项目/组织/政策/"
+        "资产/市场/人物等），且它不在下面的已登记元素里，可在输出里给可选键 `discovered_elements`（数组，没有就不要输出）："
+        "每项 `{\"id\": 简短 id, \"label\": 中文名, \"element_type\": technology/project/organization/person/asset/policy/"
+        "market/resource/event_series 之一, \"parent\": 所属领域线 id（没有合适的就省略，不要编）, \"aliases\": [别名], "
+        "\"why_key\": 一句话说明为什么值得单独建模, \"relations\": [{\"with\": 已登记元素或领域的 id, \"direction\": "
+        "\"affects\"|\"affected_by\", \"sign\": \"positive\"|\"negative\"|\"mixed\", \"note\": 一句话}]}`。"
+        "已登记的对象不要重复列出，直接沿用它的 id；关系说不清的先进入候选池，之后被再次提到才转正。"
+    ]
+    if domain_lines:
+        parts.append("可用的领域线 id（`parent` 只能填这些）：" + "、".join(
+            f"{x['id']}（{x.get('label') or x['id']}）" for x in domain_lines) + "。")
+    if elements:
+        shown = elements[-INDEX_MAX:]
+        text = "已登记元素：" + "；".join(f"{x['id']}（{x.get('label') or x['id']}）" for x in shown)
+        if len(elements) > len(shown):
+            text += f"；……另有 {len(elements) - len(shown)} 个较早登记的元素"
+        parts.append(text + "。")
+    return "\n".join(parts)
+
+
+def safe_build_line_hint(settings: Optional[Dict[str, Any]], *, step: int) -> str:
+    """`build_line_hint()` 的兜底版：任何异常返回空串。"""
+    try:
+        return build_line_hint(settings, step=step)
+    except Exception:  # noqa: BLE001 — 提示词是旁路信息
+        return ""
+
+
 def safe_build_hint(settings: Optional[Dict[str, Any]], *, step: int, history: Optional[List[Any]] = None) -> str:
     """`build_hint()` 的兜底版：任何异常返回空串，不拖垮推进。"""
     try:

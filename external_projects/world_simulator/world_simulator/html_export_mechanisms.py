@@ -200,6 +200,7 @@ def health_html(manifest: Any, history: List[Any], settings: Dict[str, Any]) -> 
             causal_lines=settings.get("causal_lines"),
             declared_causal_graph=settings.get("declared_causal_graph"),
             config={"likelihood_nominal": settings.get("likelihood_nominal") or None},
+            settings=settings,
         )
         counts = health["warning_counts"]
         rows: List[str] = [
@@ -244,6 +245,9 @@ def health_html(manifest: Any, history: List[Any], settings: Dict[str, Any]) -> 
                 ))
         for inv in ledger.get("inversions") or []:
             rows.append(_muted(f"⚠️ 档位倒挂：{inv.get('message', '')}（可能性档位没有区分度，或样本偶然）"))
+        c9 = health.get("c9_element_health")
+        for note in (c9 or {}).get("notes") or []:
+            rows.append(_muted(f"🧩 元素（C9，只读提示）：{note}"))
         recent = health["warnings"][-20:]
         if recent:
             rows.append("<ul>" + "".join(

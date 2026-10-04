@@ -1,6 +1,6 @@
 # world_simulator 改进计划（第二十三轮）：因果线从"领域级"升级为"元素级"，并在模拟中持续发现新元素
 
-> **状态（2026-10-03）：方案已确认；E1、E2、E3、E4、E5 已实施（见 §10），E6 尚未实施。** 实施按 §6 分期（E1–E6）一个阶段一个阶段执行，
+> **状态（2026-10-03）：方案已确认；E1–E6 全部已实施（见 §10）。** 实施按 §6 分期（E1–E6）一个阶段一个阶段执行，
 > 每阶段完成后更新相关文档并打包修改/新增文件（保持目录结构，可直接覆盖）。
 > 本文只依据阅读代码得出结论，没有跑过真实 LLM，也没有运行时复现；每条"现状"都标了代码位置，
 > "推断"会明说。
@@ -477,7 +477,7 @@ active。分级只是展示细节，不是权限。
 | E3 发现、去重、登记、补全 | ✅ 已完成（2026-10-03） | 见下 |
 | E4 分层与 prompt 预算 | ✅ 已完成（2026-10-03） | 见下 |
 | E5 元素运维与周期扫描 | ✅ 已完成（2026-10-03） | 见下 |
-| E6 联动与收尾 | ⬜ 未开始 | |
+| E6 联动与收尾 | ✅ 已完成（2026-10-04） | 见下 |
 
 ### E1 实施记录（2026-10-03）
 
@@ -600,6 +600,29 @@ prompt 规模按计划验证：元素从 10 增到 100，active 固定 12，增�
 **测试**：全量 **1516 passed**（E4 后 1469 + 47）。34 个变异全部转红。变异验证第一轮有 8 个存活：其中 **2 条测试是空转的**（树影响退场测试没开 `causal_engine_enabled`，断言 `== []` 本来就成立）、另有补全落点、单条回滚（原测试的假处理器没改状态就抛错，回滚无从体现）、扫描丢弃 `lifecycle_seed`、协议提示四种操作、分级按名称/别名索引共 6 处覆盖缺口；已补强（加正向对照、让假处理器先改一半再抛错等）并重跑清零。另有 2 个存活是我变异写得无意义（改字符串但断言用子串），换成真正改条件的变异后被抓住。**对既有测试零修改。**
 
 **遗留 / 已知边界**：见 `docs/element_model_guide.md` "已知边界（E5）"。主要是：无 unmerge/复活；`causal_view` 统计、静态 HTML 导出、因果线总览里历史旧 id 仍按旧 id 展示（**没接重定向**，E6 收尾核对）；设置页新控件与手动扫描按钮只做了 Streamlit 加载冒烟（无异常），**没有进入实例设置页实际点过**；`advance_lines()` 不跑扫描；`element_ops`/扫描未在真实 LLM 下运行。
+
+### E6 实施记录（2026-10-04）
+
+**范围**：领域端点联动、事件领域展开、树影响目标规范化、体检只读提示、独立推进接入、界面/导出完整化、文档收尾。无新开关、无新增 LLM 调用（周期扫描沿用 E5 的 opt-in）。
+
+**新增/修改**
+- `causal_engine.py`：`_direct_reason`/`_source_reason`（领域源头 `domain_child`）、`queue_effects` 事件 `affects` 展开、`build_hint` 的目标领域 active 子元素展示（`_domain_target_children`，延迟导入 `element_tiers`）、`_display_name` 跟随合并。
+- `event_sampler.py`：`expand_affects()`。`tree_effects.py`：目标经注册表解析写回规范 id。`tree_grounding.py`/`consistency_guard.py`：`线id/分支id` 限定前置；`consistency_guard.element_health()` + `analyze_history(settings=)` 的 C9；`quality_signals.summarize_realism_health(settings=)`。
+- `element_registry.py`：`build_line_hint`/`safe_build_line_hint`。`engine/mechanisms.py`：事件按 `parent` 投放、`merge_line_outputs` 拼接 `discovered_elements`（仅有时才加键）、`build_line_hint` 末段元素说明。`engine/advance_independent.py`：元素登记、周期扫描、`elem_on` 门控。
+- 新增 `element_view.py`（分组/过滤/徽标、`merged_sources`/`update_for_line`/`link_ids`、`apply_element_edit`、`param_specs`/`current_params`/`build_params`）；`app.py`（总览分组/过滤/徽标、「🧩 元素管理与预算」、C9 展示）；`html_export.py`/`html_export_mechanisms.py`（分组、徽标、合并历史并入、C9）。
+- 测试 `tests/test_element_linkage.py`（54 个）；文档 `element_model_guide.md`（E6 节与已知边界）、`causal_engine_guide.md`、`independent_line_mechanisms_guide.md`、`tech_model_guide.md`、`testing_guide.md`、`docs/README.md`、`docs/overview.md`、`PROJECT.md`。
+
+**测试**：全量 **1570 passed**（E5 后 1516 + 54）。5 组变异（`domain_child`、领域事件投放、`advance_lines` 登记、元素编辑 parent、事件展开等）全部转红；Streamlit `AppTest` 加载无异常。**对既有测试零修改。**
+
+**与计划的偏差**
+1. `tree_effects` 目标未知时**不**走 `resolve_or_register`（计划 §4.7 写“不再过滤，走 resolve_or_register”）：此处不持有可写注册表，且会把笔误登记成元素；改为规范化已知别名/合并目标，未知的保持 E7 提示并照常入队（本来就不过滤）。
+2. 跨线前置只加了精确的 `线id/分支id` 限定写法，未做别名解析。
+3. 静态导出没有“按类型过滤”控件（静态页），类型以徽标呈现。
+4. 被合并元素不再单独占行（计划未写），其历史并入目标行——用于收口 E5 遗留的“旧 id 展示”。
+5. 计划写“元素默认不单独发起 line_evolve”——现有规则（需 `owned_vars`）已满足，未改。
+6. 计划 §4.7 的“独立推进接入 `discovered_elements`”按“拼接后由注册表去重”实现，而非在合并层单独做“先到先采纳”；结果等价（先到先登记，后到的并入）。
+
+**遗留**：见 `docs/element_model_guide.md` “已知边界（E6）”。主要是：新表单未在页面实际点过；全部新机制未在真实 LLM 下验证；无 unmerge；独立推进不做补全/运维。
 
 ### 仍不属于本轮的遗留
 

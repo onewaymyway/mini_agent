@@ -25,6 +25,7 @@ from world_simulator import (
     causal_engine,
     consistency_guard,
     dynamic_state,
+    element_registry,
     event_sampler,
     relationship,
     tech_model,
@@ -248,14 +249,18 @@ def owned_line_ids(causal_lines: List[Dict[str, Any]]) -> set:
 
 def event_delivered_to(event: Dict[str, Any], due_lines: List[Dict[str, Any]]) -> List[str]:
     """一个已抽中事件投给哪些到点线（用户确认的规则）：`affects` 为空 → 所有到点线；
-    否则 `affects` 与线 id 或该线 `owned_vars` 有交集的线。被上限压掉的事件不投放。"""
+    否则 `affects` 与线 id 或该线 `owned_vars` 有交集的线。被上限压掉的事件不投放。
+
+    第二十三轮 E6：`affects` 里写的是**领域 id** 时，也投给 `parent` 为该领域的到点线（元素线）。
+    旧式独立线没有 `parent` 字段，这条规则对它们不起作用（行为不变）。"""
     if event.get("suppressed_by_cap"):
         return []
     affects = {str(a).strip() for a in (event.get("affects") or []) if str(a).strip()}
     out: List[str] = []
     for line in due_lines:
         lid = str(line.get("id") or "").strip()
-        if not affects or lid in affects or affects & set(_owned(line)):
+        parent = str(line.get("parent") or "").strip()
+        if not affects or lid in affects or affects & set(_owned(line)) or (parent and parent in affects):
             out.append(lid)
     return out
 
@@ -351,6 +356,11 @@ def build_line_hint(
 
     if needs_elapsed(settings):
         parts.append(_LINE_ELAPSED_ASK)
+    # 第二十三轮 E6：元素模式下，这条线的输出也可以带 `discovered_elements`。放在最后，元素模式关闭时为空，
+    # 其余各段与 E6 之前逐字节一致。
+    elem = element_registry.safe_build_line_hint(settings, step=step)
+    if elem:
+        parts.append(elem)
     return "\n\n".join(parts)
 
 
@@ -371,6 +381,7 @@ def merge_line_outputs(
     notes: List[Dict[str, Any]] = []
     dispositions: List[Any] = []
     narratives: List[str] = []
+    discovered: List[Any] = []
     for line_id, data in outputs:
         days = tech_model.normalize_reported_elapsed(data.get("elapsed_days"))
         if days is not None:
@@ -391,6 +402,11 @@ def merge_line_outputs(
         raw_disp = data.get("effect_dispositions")
         if isinstance(raw_disp, list):
             dispositions.extend(raw_disp)
+        # 第二十三轮 E6：各线发现的新元素按线声明顺序拼接；重复的（同 id/名称/别名）由元素注册表按“先到先采纳、
+        # 后到的并入”去重（`element_registry.process_step` → `_discover_one`），这里不重复实现。
+        raw_disc = data.get("discovered_elements")
+        if isinstance(raw_disc, list):
+            discovered.extend(raw_disc)
         text = str(data.get("narrative", "") or data.get("summary", "") or "")
         if text:
             narratives.append(text)
@@ -400,4 +416,6 @@ def merge_line_outputs(
         "effect_dispositions": dispositions,
         "narrative": "\n".join(narratives),
     }
+    if discovered:  # 只有真的有才加键：没有时 `merged` 与 E6 之前逐字节一致
+        merged["discovered_elements"] = discovered
     return merged, notes, reported

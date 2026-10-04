@@ -217,6 +217,13 @@ def queue_tree_effects(
                 violations.append(_violation(
                     "E5", f"分支「{bid}」（线 {lid}）→「{eff['to_line_id']}」：{note}",
                     line_id=lid, branch_id=bid, target=eff["to_line_id"]))
+            # 第二十三轮 E6：元素模式下，目标经注册表解析（id/名称/别名，已合并的跟随到存活元素）后写回规范 id，
+            # 这样边 id、已入队项、退场判断、`known` 核对都用同一个 id；解析不到的保持原样（仍走下面的 E7 提示，
+            # 不过滤、也不替 LLM 登记——此处不持有可写的元素注册表，避免把笔误登记成元素）。
+            if element_registry.is_enabled(settings):
+                _target_line = element_registry.resolve(settings, eff["to_line_id"])
+                if _target_line is not None and str(_target_line["id"]).strip() != eff["to_line_id"]:
+                    eff = {**eff, "to_line_id": str(_target_line["id"]).strip()}
             ok, _why = event_sampler.evaluate_condition(eff["condition"], next_state.vars, settings)
             if not ok:
                 continue

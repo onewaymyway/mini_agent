@@ -55,6 +55,10 @@
 
 **没有任何线到点的空推进里世界没有前进**：不抽样、不裁决、不调用 LLM，与 P8 之前一致。
 
+## 元素模型（第二十三轮 E6）
+
+元素模式开启时，独立推进的每条线提示末尾多一段元素说明，线输出可带可选的 `discovered_elements`；各线的发现项拼接后经注册表去重登记（先到先登记），审计写入 `element_audit`；事件 `affects` 写领域 id 时投给其下元素线；周期扫描在有线到点的步里同样会跑。元素线默认无 `owned_vars`，不会被单独调用。不处理 `element_enrichments`/`element_ops`。详见 [`element_model_guide.md`](./element_model_guide.md)。
+
 ## 已知边界（如实记录）
 
 - **这条路径上的线不产出 `tree_updates`、`causal_links`，也不处理 `triggered_relationships`。** 因此：树分支的状态迁移只来自

@@ -197,6 +197,36 @@ def get_priors(settings: Optional[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]]
 # ── 概率/种子 ────────────────────────────────────────────────────────
 
 
+def expand_affects(settings: Optional[Dict[str, Any]], affects: Any) -> List[str]:
+    """第二十三轮 E6：外生事件的 `affects` 展开。元素模式下，写的是**领域 id** 的项，在原项之外追加该领域下
+    所有 alive 元素的 id（去重、保序）；写的是别名/名称的项追加其规范 id。**不改写原项**，也不修改事件记录
+    （历史不可变）。非元素模式（旧实例）原样返回——行为与 E6 之前一致。
+
+    被命中元素在 prompt 里“升为 active”由 `element_tiers.expand_hits` 负责（E4）；这里服务于因果引擎的触发判定
+    （`causal_engine` 里 `sampled_event` 触发源）。"""
+    base = [str(x).strip() for x in (affects or []) if str(x).strip()] if isinstance(affects, (list, tuple)) else []
+    from world_simulator import element_registry  # 延迟导入，避免与 element_registry 的反向依赖形成环
+
+    if not element_registry.is_enabled(settings):
+        return base
+    lines = element_registry.get_lines(settings)
+    out: List[str] = list(dict.fromkeys(base))
+    seen = set(out)
+    for ref in base:
+        line = element_registry.resolve(lines, ref)
+        if line is None:
+            continue
+        lid = str(line["id"]).strip()
+        extra = [lid]
+        if line.get("kind") == "domain":
+            extra += [str(c["id"]).strip() for c in element_registry.children_of(lines, lid) if element_registry.is_alive(c)]
+        for x in extra:
+            if x not in seen:
+                seen.add(x)
+                out.append(x)
+    return out
+
+
 def step_probability(rate_per_year: float, days: float) -> float:
     """泊松到达：一段时间内至少发生一次的概率。"""
     if rate_per_year <= 0 or days <= 0:

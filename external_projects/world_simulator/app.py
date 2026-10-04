@@ -49,6 +49,7 @@ from world_simulator import hypothesis as hyp_mod
 from world_simulator import reality_check as rc_mod
 from world_simulator import element_discovery as element_discovery_mod
 from world_simulator import element_registry as element_mod
+from world_simulator import element_view as element_view_mod
 from world_simulator import tech_model as tech_mod
 from world_simulator import event_sampler as event_mod
 from world_simulator import causal_engine as causal_mod
@@ -3198,6 +3199,43 @@ def _render_causal_lines_overview(
                     label_by_id[lid] = lid
                     granularity_by_id.setdefault(lid, "")
 
+    # 第二十三轮 E6：元素模式下按领域分组、给每条线加类型/分级/待补全等徽标，并支持按类型过滤。
+    # 未开启元素模式（旧实例）`overview["enabled"]` 为 False，下面所有分支都不走，展示与之前完全一致。
+    _declared_ids = {
+        str(line.get("id")) for line in causal_lines_meta if isinstance(line, dict) and line.get("id")
+    }
+    overview: Dict[str, Any] = {"enabled": False}
+    badge_by_id: Dict[str, List[str]] = {}
+    header_before: Dict[str, str] = {}
+    if manifest is not None and label_by_id:
+        overview = element_view_mod.build_overview(
+            manifest.settings, history, extra_ids=[i for i in label_by_id if i not in _declared_ids],
+        )
+    if overview.get("enabled"):
+        _c = overview["counts"]
+        st.caption(
+            f"🧩 元素 {_c['elements']} 个（存活 {_c['alive']}，待补全 {_c['pending_enrichment']}，"
+            f"兜底 {_c['fallback']}，已退场 {_c['retired']}），领域 {_c['domains']} 个。"
+        )
+        _fcols = st.columns([3, 1])
+        with _fcols[0]:
+            _picked_types = st.multiselect(
+                "按元素类型过滤", options=[t["value"] for t in overview["types"]],
+                format_func=lambda v: next((t["label"] for t in overview["types"] if t["value"] == v), v or "未标注类型"),
+                key=f"causal_overview_types_{sim_id or 'x'}",
+            ) if overview["types"] else []
+        with _fcols[1]:
+            _hide_inactive = st.checkbox("隐藏已退场/已合并", value=False, key=f"causal_overview_hide_{sim_id or 'x'}")
+        overview = element_view_mod.filter_overview(overview, _picked_types, hide_inactive=bool(_hide_inactive))
+        _ordered = element_view_mod.ordered_ids(overview)
+        label_by_id = {i: label_by_id[i] for i in _ordered if i in label_by_id}
+        for g in overview["groups"]:
+            first = g["domain_row"]["id"] if g["domain_row"] is not None else (g["rows"][0]["id"] if g["rows"] else "")
+            if first:
+                header_before[first] = f"{g['domain_label']}（{len(g['rows'])}）"
+            for r in ([g["domain_row"]] if g["domain_row"] is not None else []) + g["rows"]:
+                badge_by_id[r["id"]] = r["badges"]
+
     if not label_by_id:
         st.markdown(
             '<span class="ws-muted">因果线是模拟的默认基础机制，不需要提前声明——'
@@ -3227,12 +3265,16 @@ def _render_causal_lines_overview(
         except Exception:  # noqa: BLE001 — 展望是辅助信息，算失败不影响总览本身
             futures_by_id = {}
 
+    # E6：被合并元素的历史按“读取时重定向”并入合并目标那一行（未开启元素模式 = 空字典，行为不变）。
+    _merged_src = element_view_mod.merged_sources(manifest.settings) if manifest is not None else {}
     for line_id, label in label_by_id.items():
+        if line_id in header_before:
+            st.markdown(f"#### {_html_text(header_before[line_id])}", unsafe_allow_html=True)
         points = []
         last_trend = None
         for state in history:
             line_updates = getattr(state, "line_updates", None) or {}
-            update = line_updates.get(line_id)
+            update = element_view_mod.update_for_line(line_updates, line_id, _merged_src.get(line_id))
             if not isinstance(update, dict) or update.get("advanced") is False:
                 continue
             time_label = str(update.get("time_label") or "").strip()
@@ -3257,11 +3299,14 @@ def _render_causal_lines_overview(
             f' <span class="ws-uncertain-badge">{_html_text(_TREND_LABELS[last_trend])}</span>'
             if last_trend else ""
         )
+        element_badges = "".join(
+            f' <span class="ws-uncertain-badge">{_html_text(b)}</span>' for b in badge_by_id.get(line_id, [])
+        )
         title_html = (
             '<div class="ws-causal-line-row">'
             f'<div class="ws-causal-line-row-title">📈 {_html_text(label)}'
             f'{granularity_suffix} <span class="ws-causal-line-row-id">{_html_text(line_id)}</span>'
-            f'{trend_badge}</div>'
+            f'{trend_badge}{element_badges}</div>'
         )
         if not points:
             title_html += '<div class="ws-causal-line-empty">这条线目前还没有推进记录。</div></div>'
@@ -3286,7 +3331,8 @@ def _render_causal_lines_overview(
         related_links = []
         for state in history:
             for link in (getattr(state, "causal_links", None) or []):
-                if isinstance(link, dict) and str(link.get("line_id") or "") == line_id:
+                if isinstance(link, dict) and str(link.get("line_id") or "") in element_view_mod.link_ids(
+                        line_id, _merged_src.get(line_id)):
                     related_links.append((state.step, link))
         with st.expander(f"展开「{label}」关联的因果链（{len(related_links)} 条）"):
             if not related_links:
@@ -4642,6 +4688,7 @@ def page_detail() -> None:
             causal_lines=manifest.settings.get("causal_lines"),
             declared_causal_graph=manifest.settings.get("declared_causal_graph"),
             config={"likelihood_nominal": manifest.settings.get("likelihood_nominal") or None},
+            settings=manifest.settings,
         )
         st.markdown(
             f'<span class="ws-muted">{_html_text(health["disclaimer"])}'
@@ -4691,6 +4738,10 @@ def page_detail() -> None:
                 )
         for inv in ledger.get("inversions") or []:
             st.caption(f"⚠️ 档位倒挂：{inv['message']}（可能性档位没有区分度，或样本偶然）")
+        c9 = health.get("c9_element_health")
+        if c9 and c9.get("notes"):
+            for note in c9["notes"]:
+                st.caption(f"🧩 元素（C9，只读提示）：{note}")
         for w in health["warnings"][-20:]:
             st.caption(f"第 {w['step']} 步 · {w['code']}：{w['message']}")
 
@@ -5535,6 +5586,91 @@ def page_detail() -> None:
                             DATA_DIR, sim_id, suggestion_id
                         )
                         st.rerun()
+
+    # ── 元素管理与预算（第二十三轮 E6）：把此前只能在“因果线 JSON”里手改的 parent/aliases/tier_pin/status，
+    # 以及散在各阶段的九个预算参数做成表单。只做结构校验（见 `element_view`），不改引擎行为；
+    # 上限类参数勾“不限”写 null，不用 0 表示不限。
+    if element_mod.is_enabled(cur_settings):
+        with st.expander("🧩 元素管理与预算（第二十三轮 E6）"):
+            _bad_keys = (
+                element_mod.invalid_param_keys(cur_settings)
+                + element_mod.invalid_runtime_param_keys(cur_settings)
+                + element_view_mod.et.invalid_tier_param_keys(cur_settings)
+            )
+            if _bad_keys:
+                st.warning("下列预算参数取值非法，已回退默认值：" + "、".join(sorted(set(_bad_keys))))
+            st.markdown("**预算与窗口**（上限类可勾“不限”；运行中总数不限时，长模拟的历史文件会增长）")
+            _specs = element_view_mod.param_specs()
+            _cur_p = element_view_mod.current_params(cur_settings)
+            with st.form(f"element_params_form_{sim_id}"):
+                _form_in: Dict[str, Dict[str, Any]] = {}
+                for _sp in _specs:
+                    _cv = _cur_p[_sp["key"]]
+                    _c1, _c2 = st.columns([3, 1])
+                    with _c1:
+                        _val = st.number_input(
+                            _sp["label"], min_value=int(_sp["min"]), step=1,
+                            value=int(_cv) if _cv is not None else int(max(_sp["min"], 1)),
+                            key=f"element_param_{_sp['key']}_{sim_id}", help=_sp["help"],
+                        )
+                    _unl = False
+                    if _sp["limit"]:
+                        with _c2:
+                            _unl = st.checkbox("不限", value=_cv is None, key=f"element_param_unl_{_sp['key']}_{sim_id}")
+                    _form_in[_sp["key"]] = {"value": int(_val), "unlimited": bool(_unl)}
+                if st.form_submit_button("保存预算与窗口"):
+                    _new_params, _errs = element_view_mod.build_params(cur_settings.get("element_params"), _form_in)
+                    if _errs:
+                        st.error("；".join(_errs))
+                    else:
+                        update_settings(DATA_DIR, sim_id, element_params=_new_params)
+                        st.success("已保存，从下一步推进开始生效。")
+                        st.rerun()
+
+            st.markdown("**编辑单个元素**（所属领域 / 别名 / 钉住为活跃 / 状态）")
+            _all_lines = element_mod.get_lines(cur_settings)
+            _editable = [x for x in _all_lines if x.get("kind") != "domain"]
+            if not _editable:
+                st.caption("当前没有元素线。")
+            else:
+                _pick = st.selectbox(
+                    "选择元素", options=[str(x["id"]) for x in _editable],
+                    format_func=lambda i: f"{next((x.get('label') or i for x in _editable if str(x['id']) == i), i)}（{i}）",
+                    key=f"element_edit_pick_{sim_id}",
+                )
+                _line = next(x for x in _editable if str(x["id"]) == _pick)
+                _dom_opts = [""] + [str(x["id"]) for x in _all_lines if x.get("kind") == "domain" and element_mod.is_alive(x)]
+                _cur_status = str(_line.get("status") or "alive")
+                with st.form(f"element_edit_form_{sim_id}_{_pick}"):
+                    _parent = st.selectbox(
+                        "所属领域（空 = 未归类）", options=_dom_opts,
+                        index=_dom_opts.index(str(_line.get("parent") or "")) if str(_line.get("parent") or "") in _dom_opts else 0,
+                        format_func=lambda i: i or "（未归类）",
+                    )
+                    _aliases = st.text_input("别名（逗号分隔）", value="，".join(str(a) for a in (_line.get("aliases") or [])))
+                    _pin = st.checkbox("钉住为活跃（不受 prompt 预算裁剪）", value=_line.get("tier_pin") == "active")
+                    if _cur_status == "merged":
+                        st.caption(f"该元素已合并到「{_line.get('merged_into') or '?'}」，不能改状态。")
+                        _status = "merged"
+                    else:
+                        _status = st.selectbox(
+                            "状态", options=list(element_view_mod.EDITABLE_STATUSES),
+                            index=list(element_view_mod.EDITABLE_STATUSES).index(_cur_status) if _cur_status in element_view_mod.EDITABLE_STATUSES else 0,
+                            format_func=lambda v: {"alive": "存活", "retired": "已退场"}.get(v, v),
+                        )
+                    if st.form_submit_button("保存该元素"):
+                        _kw: Dict[str, Any] = {"parent": _parent, "aliases": _aliases, "tier_pin": "active" if _pin else ""}
+                        if _status != "merged":
+                            _kw["status"] = _status
+                        _new_lines, _errs = element_view_mod.apply_element_edit(
+                            _all_lines, _pick, step=int(current.step), **_kw,
+                        )
+                        if _errs:
+                            st.error("；".join(_errs))
+                        else:
+                            update_settings(DATA_DIR, sim_id, causal_lines=_new_lines)
+                            st.success("已保存。")
+                            st.rerun()
 
     # ── 元素扫描入口（第二十三轮 E5）：手动扫一次\"反复出现但未建模\"的元素。和能力/问题发现不同，
     # 建议直接走与 discovered_elements 同一套校验并登记（登记错了可用 element_ops 的 retire/merge 纠正）。

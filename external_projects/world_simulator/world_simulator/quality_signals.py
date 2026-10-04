@@ -172,6 +172,7 @@ def summarize_realism_health(
     causal_lines: Optional[Sequence[Any]] = None,
     declared_causal_graph: Optional[Sequence[Any]] = None,
     config: Optional[Dict[str, Any]] = None,
+    settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """实例级"真实性体检"（第二十二轮 WP4）：委托 `consistency_guard.
     analyze_history()`，重新计算 C1–C8 并汇总。
@@ -186,5 +187,6 @@ def summarize_realism_health(
     from world_simulator import consistency_guard
 
     return consistency_guard.analyze_history(
-        history, causal_lines=causal_lines, declared_causal_graph=declared_causal_graph, config=config
+        history, causal_lines=causal_lines, declared_causal_graph=declared_causal_graph, config=config,
+        settings=settings,
     )

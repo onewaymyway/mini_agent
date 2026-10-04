@@ -44,7 +44,7 @@ external_projects/world_simulator/
     overview.md                #   本文件：项目说明
     backtest_guide.md           #   回测与校准（WP5）
     tech_model_guide.md         #   技术发展模型（WP1）
-    element_model_guide.md      #   统一元素模型（第二十三轮，E1–E5）
+    element_model_guide.md      #   统一元素模型（第二十三轮，E1–E6）
     event_sampling_guide.md     #   外生事件采样（WP2）
     causal_engine_guide.md      #   因果引擎（WP3 · P5a）
     testing_guide.md            #   如何测试/验证

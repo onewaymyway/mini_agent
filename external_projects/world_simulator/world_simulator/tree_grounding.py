@@ -127,7 +127,16 @@ def _resolve_prerequisite(line_id: str, prereq: str, index: Dict[Tuple[str, str]
     if (line_id, prereq) in index:
         return (line_id, prereq)
     matches = [key for key in index if key[1] == prereq]
-    return matches[0] if len(matches) == 1 else None
+    if len(matches) == 1:
+        return matches[0]
+    # 第二十三轮 E6：元素线之间的跨线前置可写成限定形式 `线id/分支id`（元素多了之后分支 id 容易重名）。
+    # 只在上面都没解析出来、且恰好命中一个时采用；解析不到仍是“无法核验”，不阻断。
+    if not matches and "/" in prereq:
+        left, _, right = prereq.partition("/")
+        left, right = left.strip(), right.strip()
+        if left and right and (left, right) in index:
+            return (left, right)
+    return None
 
 
 def unmet_prerequisites(
