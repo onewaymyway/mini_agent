@@ -454,7 +454,8 @@ GET  /v1/growth/pursuits                                  # 正在被自主推�
   自动兜底，不会因为归档就查不到）
 - `.agent/growth_feedback_ledger.jsonl` — 采纳/忽略/回访反馈流水
 - `.agent/growth_topic_trend.jsonl` — 按主题的证据数/置信度历史快照
-  （P4-6，超过 60 天的旧快照会被降采样压缩）
+  （P4-6，超过 60 天的旧快照会被降采样压缩）。读取方式见下方
+  "趋势索引（性能说明）"
 - `.agent/growth_goal_dedup_suppressions.jsonl` — 候选生成阶段因命中
   已有 Goal 标题被抑制的话题快照（`growth_advisor_goal_cron_dedup_
   plan.md`，只在本轮确实发生抑制时才追加一行，同样按天降采样压缩）
@@ -463,6 +464,31 @@ GET  /v1/growth/pursuits                                  # 正在被自主推�
 - `.agent/growth_advisor_state.json` — 推送节流状态 + 首次触达提示
   状态
 - `.agent/wiki/growth/*.md` — 调研报告正文
+
+### 趋势索引（性能说明）
+
+`growth_topic_trend.jsonl` 的行数正比于话题数（每个话题每轮扫描一行）。
+早期实现里 `growth_topic_map()` / `pending_followups()` /
+`reports_needing_refresh()` 在"每个话题"的循环里各自重读整个文件，总开销
+随话题数**平方**增长（400 话题时仅主题地图就约 30 秒，是成长顾问 tab 概览
+超时的主因，见 `next_doc/growth_tab_split_and_trend_index_plan.md`）。
+
+现在的做法：
+
+- `load_topic_trend_index(paths)`：一次读取，按 `dedupe_key` 分组并按
+  `scanned_at` 升序排好；畸形行（缺字段 / 非 dict / 非法 JSON）被跳过。
+- 上述三个函数以及 `followup_question_hint()`、`diagnostics_snapshot()`、
+  `monthly_retrospective_summary()` 都新增可选参数 `trend_index=`：
+  - 传入 → 直接使用，不再读文件；
+  - 不传 → 函数内最多构建一次并在循环里复用（`pending_followups` /
+    `reports_needing_refresh` 在没有任何需要看趋势的候选时完全不读；
+    `growth_topic_map` / `diagnostics_snapshot` 恒读 1 次）。
+- `monthly_retrospective_summary(include_topic_map=False)` 返回值不含
+  `topic_map`（默认 `True`，行为不变）。
+- 所有新参数默认 `None`，原调用方无需修改，输出与改动前逐项一致。
+
+> 本节仅描述数据层（方案 A）。看板按板块独立加载、`/growth/overview` 等
+> 拆分端点属于方案 B，实施后会在此补充。
 
 ## 7. 当前局限（P1 ~ P6 全部完成后的已知边界）
 

@@ -2975,9 +2975,57 @@ def _record_topic_trend_snapshot(
     )
 
 
-def _topic_trend_series(paths, dedupe_key: str, limit: int = _DEFAULT_TREND_MAX_POINTS) -> list[dict]:
+def load_topic_trend_index(paths) -> dict[str, list[dict]]:
+    """[next_doc/growth_tab_split_and_trend_index_plan.md 方案 A] 一次性
+    读取整个 growth_topic_trend.jsonl，按 `dedupe_key` 分组并按
+    `scanned_at` 升序排好，返回 `{dedupe_key: [{scanned_at, evidence_count,
+    confidence}, ...]}`。
+
+    背景：`_topic_trend_series()` 每次调用都会读并解析整个文件，而
+    `growth_topic_map()` / `pending_followups()` / `reports_needing_refresh()`
+    都在"每个话题"的循环里调它，总开销随话题数平方增长。调用方构建一份
+    索引后传给下游函数的 `trend_index=` 参数，整个请求内趋势文件只读一次。
+
+    - 索引里保留全量点，不在这里截断（`limit` 由 `_topic_trend_series()`
+      在取用时应用）。
+    - 畸形行（不是 dict / 缺 `dedupe_key` / `scanned_at` / `evidence_count`，
+      或 `scanned_at` 不是数字）直接跳过——比原函数更宽容：原函数只会在
+      "命中目标 key 的行"上访问这些字段，这里对所有行都做防御，一行坏数据
+      不会影响其它 key。
+    """
+    grouped: dict[str, list[dict]] = {}
+    for r in _read_jsonl(paths.growth_topic_trend_path):
+        if not isinstance(r, dict):
+            continue
+        key = r.get("dedupe_key")
+        ts = r.get("scanned_at")
+        if key is None or "evidence_count" not in r:
+            continue
+        if isinstance(ts, bool) or not isinstance(ts, (int, float)):
+            continue
+        grouped.setdefault(key, []).append(
+            {"scanned_at": ts, "evidence_count": r["evidence_count"], "confidence": r.get("confidence")}
+        )
+    for rows in grouped.values():
+        rows.sort(key=lambda r: r["scanned_at"])  # 稳定排序，同 scanned_at 保持文件顺序
+    return grouped
+
+
+def _topic_trend_series(
+    paths,
+    dedupe_key: str,
+    limit: int = _DEFAULT_TREND_MAX_POINTS,
+    *,
+    index: Optional[dict[str, list[dict]]] = None,
+) -> list[dict]:
     """返回某个主题按时间正序排列的快照点，最多取最近 `limit` 个（早期
-    的点丢弃，展示更关心"最近的走势"而不是完整历史）。"""
+    的点丢弃，展示更关心"最近的走势"而不是完整历史）。
+
+    `index`：可选，`load_topic_trend_index()` 的返回值。传入时直接从索引取，
+    不再读文件；不传（默认）时行为与改动前一致（读一次文件）。"""
+    if index is not None:
+        rows = [dict(r) for r in index.get(dedupe_key, [])]
+        return rows[-limit:] if limit else rows
     rows = [
         {"scanned_at": r["scanned_at"], "evidence_count": r["evidence_count"], "confidence": r.get("confidence")}
         for r in _read_jsonl(paths.growth_topic_trend_path)
@@ -3090,14 +3138,16 @@ def health_trend_series(paths, *, limit: int = _DEFAULT_HEALTH_TREND_MAX_POINTS)
 # 也避免了"要不要撤销已经推迟的标记"这类需要额外语义澄清的状态管理。
 
 
-def _topic_trend_rising(paths, dedupe_key: str, *, window_days: int) -> Optional[bool]:
+def _topic_trend_rising(
+    paths, dedupe_key: str, *, window_days: int, index: Optional[dict[str, list[dict]]] = None
+) -> Optional[bool]:
     """判断某个主题最近 `window_days` 天内的证据数走势是"在涨"还是"走平/
     下降"。数据点不足（窗口内少于 2 个快照点）时返回 `None`，代表"没有
     足够信息判断"——调用方应当把 `None` 当成"不确定"处理，不能默认成
     "在涨"或"没在涨"中的任何一个，避免在数据稀疏时把不确定性伪装成
     确定的判断。
     """
-    series = _topic_trend_series(paths, dedupe_key)
+    series = _topic_trend_series(paths, dedupe_key, index=index)
     cutoff = time.time() - max(0, window_days) * 86400
     in_window = [p for p in series if p["scanned_at"] >= cutoff]
     if len(in_window) < 2:
@@ -3131,7 +3181,10 @@ def _goal_progress_signal(goal_backlog, goal_id: str, *, stalled_days: int) -> O
     return "stalled"
 
 
-def followup_question_hint(paths, candidate: GrowthCandidate, *, cfg=None, goal_backlog=None) -> str:
+def followup_question_hint(
+    paths, candidate: GrowthCandidate, *, cfg=None, goal_backlog=None,
+    trend_index: Optional[dict[str, list[dict]]] = None,
+) -> str:
     """给回访卡片挑一句更贴合实际状态的提问，而不是固定的"有推进/没空"。
     看板侧读取这个字段决定文案，不影响 `pending_followups()`/
     `record_followup()` 本身的行为（回答仍然只有 progressed/stalled 两种，
@@ -3175,13 +3228,16 @@ def followup_question_hint(paths, candidate: GrowthCandidate, *, cfg=None, goal_
             return f"「{candidate.title}」对应的目标看起来有一阵没动了，要不要先放一放，或者重新规划一下？"
         if signal == "progressed":
             return f"「{candidate.title}」对应的目标最近还在推进，要不要跟我说说进展？"
-    rising = _topic_trend_rising(paths, candidate.dedupe_key(), window_days=days)
+    rising = _topic_trend_rising(paths, candidate.dedupe_key(), window_days=days, index=trend_index)
     if rising is False:
         return f"最近「{candidate.title}」相关的记忆变少了，是先放一放了吗？"
     return f"「{candidate.title}」这个方向，后续有没有真的推进？"
 
 
-def pending_followups(paths, cfg=None, *, goal_backlog=None) -> list[GrowthCandidate]:
+def pending_followups(
+    paths, cfg=None, *, goal_backlog=None,
+    trend_index: Optional[dict[str, list[dict]]] = None,
+) -> list[GrowthCandidate]:
     """返回已采纳、满足回访窗口、且尚未回访过的候选（供看板渲染"这个方向
     后续有没有推进？"的回访卡片）。
 
@@ -3201,6 +3257,11 @@ def pending_followups(paths, cfg=None, *, goal_backlog=None) -> list[GrowthCandi
       `followup_question_hint()`）。
     未关联 Goal，或未传入 `goal_backlog`（老调用点未升级）时，完全
     退化为原有的 memory 证据数走势逻辑，不影响既有行为。
+
+    [growth_tab_split_and_trend_index_plan.md 方案 A] `trend_index`：可选，
+    `load_topic_trend_index()` 的返回值。不传时，本函数在第一次真正需要
+    趋势数据时才构建一次（没有需要看趋势的候选就完全不读趋势文件），
+    之后循环内复用，不再每个候选读一遍文件。
     """
     days = getattr(cfg, "followup_review_days", 30) if cfg is not None else 30
     stalled_days = getattr(cfg, "goal_alignment_stalled_days", 21) if cfg is not None else 21
@@ -3231,7 +3292,9 @@ def pending_followups(paths, cfg=None, *, goal_backlog=None) -> list[GrowthCandi
             # signal is None：找不到 Goal 或 goal_backlog 异常，退化到
             # memory 证据数走势逻辑（走到下面的兜底分支）。
 
-        if _topic_trend_rising(paths, c.dedupe_key(), window_days=days) is True:
+        if trend_index is None:
+            trend_index = load_topic_trend_index(paths)  # 懒构建，仅一次
+        if _topic_trend_rising(paths, c.dedupe_key(), window_days=days, index=trend_index) is True:
             continue  # 证据还在涨，顺延一轮，不主动打扰
         out.append(c)
     return sorted(out, key=lambda c: c.accepted_at or 0)
@@ -3281,7 +3344,9 @@ def _recent_delta_from_series(
     return max(0, series[-1][1] - baseline[1])
 
 
-def _recent_evidence_delta(paths, dedupe_key: str, *, window_days: int) -> Optional[int]:
+def _recent_evidence_delta(
+    paths, dedupe_key: str, *, window_days: int, index: Optional[dict[str, list[dict]]] = None
+) -> Optional[int]:
     """从趋势快照里估算最近 `window_days` 天内新增了多少证据：用最新一个
     快照点减去"窗口边界之前最后一个快照点"（如果全部快照都落在窗口内，
     说明这个候选本身历史就短，直接把最早的一个点当基线，相当于把全部
@@ -3290,14 +3355,17 @@ def _recent_evidence_delta(paths, dedupe_key: str, *, window_days: int) -> Optio
     总量排序，不能默认成 0（0 意味着"确定没有最近突增"，跟"不知道"是
     两回事）。
     """
-    series = _topic_trend_series(paths, dedupe_key)
+    series = _topic_trend_series(paths, dedupe_key, index=index)
     if len(series) < 2:
         return None
     points = [(p["scanned_at"], p["evidence_count"]) for p in series]
     return _recent_delta_from_series(points, window_days=window_days)
 
 
-def reports_needing_refresh(paths, cfg=None, *, goal_backlog=None, profile=None) -> list[dict]:
+def reports_needing_refresh(
+    paths, cfg=None, *, goal_backlog=None, profile=None,
+    trend_index: Optional[dict[str, list[dict]]] = None,
+) -> list[dict]:
     """返回"生成之后证据又显著增长、值得提示用户刷新一下"的报告列表。
     只看每个候选**当前挂着的那份报告**（`candidate.report_id`），已经被
     刷新过的旧报告不会重复出现。纯只读聚合，不做任何写入。
@@ -3328,6 +3396,10 @@ def reports_needing_refresh(paths, cfg=None, *, goal_backlog=None, profile=None)
     多算一次比对开销。命中该条件的行返回时会带 `external_drift` 字段
     （否则不带该键——保持返回结构对"没启用这个方向"的调用方完全
     不变，而不是恒定输出一个 `None` 占位）。
+
+    `trend_index`：[growth_tab_split_and_trend_index_plan.md 方案 A] 可选，
+    `load_topic_trend_index()` 的返回值；不传时在第一次需要趋势数据时懒
+    构建一次并在循环内复用（没有候选通过触发条件就完全不读趋势文件）。
     """
     min_new = getattr(cfg, "report_refresh_min_new_evidence", _DEFAULT_REPORT_REFRESH_MIN_NEW_EVIDENCE) if cfg is not None else _DEFAULT_REPORT_REFRESH_MIN_NEW_EVIDENCE
     drift_enabled = profile is not None and bool(getattr(cfg, "report_external_drift_refresh_enabled", False))
@@ -3371,8 +3443,11 @@ def reports_needing_refresh(paths, cfg=None, *, goal_backlog=None, profile=None)
         if not (evidence_trigger or drift_trigger):
             continue
 
+        if trend_index is None:
+            trend_index = load_topic_trend_index(paths)  # 懒构建，仅一次
         recent_delta = _recent_evidence_delta(
-            paths, c.dedupe_key(), window_days=_REPORT_REFRESH_RECENT_BURST_WINDOW_DAYS
+            paths, c.dedupe_key(), window_days=_REPORT_REFRESH_RECENT_BURST_WINDOW_DAYS,
+            index=trend_index,
         )
         row = {
             "candidate_id": c.candidate_id,
@@ -6329,7 +6404,7 @@ def _active_search_excerpts_for_topic(
     return merged
 
 
-def growth_topic_map(paths) -> list[dict]:
+def growth_topic_map(paths, *, trend_index: Optional[dict[str, list[dict]]] = None) -> list[dict]:
     """跨候选的主题聚合视图（方案第 6 节"能力地图"聚合，对齐
     `self_model_snapshot.py` 的思路——只是问题从"Agent 自己的能力弱项
     清单变长变短"换成了"用户在每个成长方向上的推进轨迹"）。
@@ -6346,10 +6421,16 @@ def growth_topic_map(paths) -> list[dict]:
 
     只做聚合展示，不做任何预测/排序推荐——聚合结果按 `updated_at` 倒序
     返回，供看板/CLI 直接渲染成一张列表，不引入新的落盘文件。
+
+    [growth_tab_split_and_trend_index_plan.md 方案 A] `trend_index`：可选，
+    `load_topic_trend_index()` 的返回值；不传时本函数内构建一次（趋势文件
+    读取次数与话题数无关，恒为 1 次）。
     """
     all_c = GrowthBacklog(paths).load_all()
     if not all_c:
         return []
+    if trend_index is None:
+        trend_index = load_topic_trend_index(paths)
 
     groups: dict[str, list[GrowthCandidate]] = {}
     for c in all_c:
@@ -6374,7 +6455,7 @@ def growth_topic_map(paths) -> list[dict]:
                 # [P4-6] 简单的证据数走势（最近若干轮扫描的快照点），
                 # 供看板画一条走势线/文字趋势，不是新的权威数据源，纯粹
                 # 从 growth_topic_trend.jsonl 里按 dedupe_key 查出来。
-                "evidence_trend": _topic_trend_series(paths, key),
+                "evidence_trend": _topic_trend_series(paths, key, index=trend_index),
             }
         )
 
@@ -6501,7 +6582,10 @@ def growth_topic_lifecycle(paths, dedupe_key: str, *, goal_backlog=None) -> list
     return events
 
 
-def monthly_retrospective_summary(paths, *, goal_backlog=None) -> dict[str, Any]:
+def monthly_retrospective_summary(
+    paths, *, goal_backlog=None, include_topic_map: bool = True,
+    trend_index: Optional[dict[str, list[dict]]] = None,
+) -> dict[str, Any]:
     """月度成长复盘统计。P2 在 P1 的数量统计基础上新增 `acceptance_rate`
     （采纳率）与按候选标题聚合的采纳/忽略排行——对应方案第 6 节"推荐命中
     率"这类自我评估指标；跨候选的能力地图聚合仍留给 P3。
@@ -6515,6 +6599,11 @@ def monthly_retrospective_summary(paths, *, goal_backlog=None) -> dict[str, Any]
     顾问自己的候选"扩大到"用户的全部 Goal"。不传（`None`，默认值）时
     行为与改动前完全一致，向后兼容所有既有调用方——`goal_overview` 键
     此时不出现在返回值里，而不是恒定返回一个空字典占位。
+
+    [growth_tab_split_and_trend_index_plan.md 方案 A/B] `include_topic_map`
+    默认 `True`（行为不变）；传 `False` 时返回值不含 `topic_map`（概览不需要
+    它，主题地图由单独的端点按需获取）。`trend_index` 透传给
+    `growth_topic_map()`。
     """
     backlog = GrowthBacklog(paths)
     all_c = backlog.load_all()
@@ -6557,8 +6646,9 @@ def monthly_retrospective_summary(paths, *, goal_backlog=None) -> dict[str, Any]
         # report_not_useful），不参与任何置信度计算，仅供参考。
         "report_quality_flags_total": sum(report_quality_counts.values()),
         "top_report_quality_flags": top_report_quality_flags,
-        "topic_map": growth_topic_map(paths),
     }
+    if include_topic_map:
+        result["topic_map"] = growth_topic_map(paths, trend_index=trend_index)
 
     if goal_backlog is not None:
         try:
@@ -6636,6 +6726,7 @@ def diagnostics_snapshot(
     paths, cfg, profile, memory_store, profile_cfg=None,
     *, llm_helper: Optional[Callable[[str], str]] = None,
     force_refresh_backfill_count: bool = False,
+    trend_index: Optional[dict[str, list[dict]]] = None,
 ) -> dict[str, Any]:
     """成长顾问的自检信息：当前配置快照、上一次信号扫描命中了哪些主题
     各多少条（只给计数，不回显记忆原文——诊断信息也要遵守"知情但克制"
@@ -6656,7 +6747,14 @@ def diagnostics_snapshot(
     `force_refresh_backfill_count` 透传给 `_backfill_candidates_count_
     cached()`，默认走 5 分钟 TTL 缓存；看板"🔄 刷新诊断数据"按钮传
     `True` 绕过缓存拿真实最新值。
+
+    [growth_tab_split_and_trend_index_plan.md 方案 A] `trend_index`：可选，
+    `load_topic_trend_index()` 的返回值，透传给 `pending_followups()` 和
+    `reports_needing_refresh()`，让调用方（如 summary）整个请求内趋势文件
+    只读一次；不传时在入口处构建一次（整个诊断快照趋势文件恒读 1 次）。
     """
+    if trend_index is None:
+        trend_index = load_topic_trend_index(paths)
     derived = dict(getattr(profile, "derived", {}) or {})
     focus_areas: dict[str, list[str]] = derived.get("growth_focus_areas") or {}
     last_scan_at = derived.get("growth_focus_areas_updated_at")
@@ -6807,10 +6905,12 @@ def diagnostics_snapshot(
         # 具体列表通过 GET /growth/followups 单独获取（避免每次
         # /growth/summary 都要多做一遍 accepted_at 过滤）。
         "pending_followups_count": len(
-            pending_followups(paths, cfg, goal_backlog=_load_goal_backlog_safely(paths))
+            pending_followups(
+                paths, cfg, goal_backlog=_load_goal_backlog_safely(paths), trend_index=trend_index
+            )
         ),
         # [P4-4] 待刷新报告数量，明细走 GET /growth/reports/refresh_candidates。
-        "reports_needing_refresh_count": len(reports_needing_refresh(paths, cfg)),
+        "reports_needing_refresh_count": len(reports_needing_refresh(paths, cfg, trend_index=trend_index)),
         # [P4-5] 按类别的历史采纳率（供看板解释"为什么这条被优先推送了"），
         # 只包含有过至少一次 accept/dismiss 决策的类别。
         "category_acceptance_rate": _category_acceptance_rate(paths, profile),

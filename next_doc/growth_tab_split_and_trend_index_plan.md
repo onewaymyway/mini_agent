@@ -1,6 +1,6 @@
 # 成长顾问 tab 概览超时治理：趋势索引（A）+ 概览拆分与板块独立加载（B）
 
-- **状态**：方案已确认，待实施（见 §10 实施状态表）
+- **状态**：实施中——阶段一（方案 A：A1–A4 趋势索引）已完成，阶段二起（方案 B）待实施（见 §10 实施状态表与 §13 实施记录）
 - **范围**：本轮只做 A + B。C（HTTP 并发与隔离）已确认单独立项，见 §9
 - **关联文档**：
   - `next_doc/growth_summary_client_timeout_fix.md`（上一次只调客户端超时预算 6s→25s 的修复，本文是它的根治版）
@@ -245,10 +245,10 @@ B 完成后 `section_loader` 已经让看板不再同时发起大量重复请求
 
 | 序号 | 内容 | 文件 | 状态 |
 |---|---|---|---|
-| A1 | `load_topic_trend_index` + `_topic_trend_series(index=)` | `src/mini_agent/evolution/growth_advisor.py` | 待实施 |
-| A2 | 五个函数接入 `trend_index`，`diagnostics_snapshot` 透传 | 同上 | 待实施 |
-| A3 | `monthly_retrospective_summary(include_topic_map=)` | 同上 | 待实施 |
-| A4 | 测试 `test_growth_trend_index.py` | `tests/` | 待实施 |
+| A1 | `load_topic_trend_index` + `_topic_trend_series(index=)` | `src/mini_agent/evolution/growth_advisor.py` | ✅ 已完成（阶段一） |
+| A2 | 五个函数接入 `trend_index`，`diagnostics_snapshot` 透传 | 同上 | ✅ 已完成（阶段一） |
+| A3 | `monthly_retrospective_summary(include_topic_map=)` | 同上 | ✅ 已完成（阶段一） |
+| A4 | 测试 `test_growth_trend_index.py` | `tests/` | ✅ 已完成（阶段一） |
 | B1 | 路由拆出三个内部 payload 函数 + 三个新端点 + summary 改为拼装 | `src/mini_agent/api/routes.py` | 待实施 |
 | B2 | 测试 `test_growth_split_endpoints.py` | `tests/` | 待实施 |
 | B3 | 客户端新方法、`_HTTP_NO_READ_RETRY`、`retry` 参数、成长顾问 GET 关闭读重试 | `apps/mini_agent_kanban/client.py` | 待实施 |
@@ -257,7 +257,7 @@ B 完成后 `section_loader` 已经让看板不再同时发起大量重复请求
 | B6 | 测试 `test_kanban_section_loader.py` | `tests/` | 待实施 |
 | B7 | `render_growth_tab` 改造：各板块接入 `render_section`、写操作失效、主题地图按需加载 | `apps/mini_agent_kanban/app.py` | 待实施 |
 | B8 | 压测脚本 | `scripts/bench_growth_summary.py` | 待实施 |
-| D1 | 文档：成长顾问指南（端点、性能说明）、看板指南（加载行为）、旧修复文档补"局限与后续"、端点清单 | `docs/growth-advisor-guide.md`、`docs/kanban-dashboard-guide.md`、`next_doc/growth_summary_client_timeout_fix.md`、`next_doc/kanban_feature_inventory.md`、`docs/architecture_v2/phase10-entrypoint-inventory.md` | 待实施 |
+| D1 | 文档（阶段一已先行更新 `docs/growth-advisor-guide.md` 趋势索引小节，其余随各阶段补）：成长顾问指南（端点、性能说明）、看板指南（加载行为）、旧修复文档补"局限与后续"、端点清单 | `docs/growth-advisor-guide.md`、`docs/kanban-dashboard-guide.md`、`next_doc/growth_summary_client_timeout_fix.md`、`next_doc/kanban_feature_inventory.md`、`docs/architecture_v2/phase10-entrypoint-inventory.md` | 待实施 |
 | D2 | 本文状态表更新为实施记录 | 本文 | 待实施 |
 | D3 | 打包：仅改动与新增文件，保留目录结构，便于直接覆盖 | — | 待实施 |
 
@@ -279,3 +279,34 @@ B 完成后 `section_loader` 已经让看板不再同时发起大量重复请求
 4. **数据来自不同时刻**：板块间 TTL 不同，同一屏上的"候选总数"与"待处理候选"理论上可能相差一个 TTL。通过写操作主动失效缓解，不追求强一致。
 5. **C 未做**：兄弟端点仍在事件循环上执行，A 把它们压到毫秒级但没有消除结构性问题；`pending_followups()` 的 GET 写盘也未处理。
 6. **新旧版本需配套**：看板依赖新端点，升级时 daemon 与看板需同时覆盖。
+
+
+## 13. 实施记录
+
+### 阶段一：方案 A 趋势索引（A1–A4，已完成）
+
+**改动文件**
+
+| 文件 | 内容 |
+|---|---|
+| `src/mini_agent/evolution/growth_advisor.py` | 新增 `load_topic_trend_index()`；`_topic_trend_series(..., index=)`；`_topic_trend_rising` / `_recent_evidence_delta` / `followup_question_hint` / `pending_followups` / `reports_needing_refresh` / `growth_topic_map` / `diagnostics_snapshot` / `monthly_retrospective_summary` 新增可选 `trend_index`；`monthly_retrospective_summary` 新增 `include_topic_map`（默认 `True`） |
+| `tests/test_growth_trend_index.py`（新增） | 16 用例 |
+| `docs/growth-advisor-guide.md` | 新增"趋势索引（性能说明）"小节 |
+
+**与方案文字的小差异（实施时的取舍）**
+
+1. `pending_followups` / `reports_needing_refresh` 不传索引时是**懒构建**（第一次真正需要趋势数据时才读一次），而不是函数入口无条件构建：没有到期候选或没有候选通过触发条件时，一次都不读趋势文件。`growth_topic_map` 与 `diagnostics_snapshot` 按方案在入口构建，恒读 1 次。
+2. `_topic_trend_series(index=...)` 返回的是索引行的**拷贝**，调用方改返回值不会污染共享索引（有测试覆盖）。
+3. 索引对 `scanned_at` 不是数字的行也会跳过（含 bool）——比原函数更宽容，原函数遇到这种命中行，与数字混排时会在排序处抛 `TypeError`。
+
+**验证**
+
+- `tests/test_growth_trend_index.py` 16 用例全过：索引与原函数逐 key 逐 limit 等价；畸形行跳过；`growth_topic_map` / `pending_followups` / `reports_needing_refresh` / `diagnostics_snapshot` 的趋势文件读取次数均为 1（用 `_read_jsonl` 调用计数，不用耗时）；读取次数与话题数无关；传入与不传索引输出相同；`include_topic_map=False` 不含 `topic_map` 且其余字段与默认一致。
+- 人为破坏实现（让 `growth_topic_map` 忽略索引）后 4 个用例转红，确认测试有效。
+- 回归：`tests/test_growth_advisor*.py` 与其它 `*growth*` 测试共 484 例，483 通过。唯一失败 `test_growth_advisor.py::TestTopicTrend::test_compact_topic_trend_storage_downsamples_old_points` 在**未改动的原始代码上同样失败**（该用例按"周"分桶，结果依赖运行当天落在哪个周边界），与本阶段无关，未处理。
+- 看板相关测试（需要 streamlit）本环境未安装，未运行；本阶段未改动任何看板代码。
+
+**已知遗留，留给后续阶段**
+
+- `routes.py` 约 10888 行 `GET /growth/followups` 对每个待回访候选调用一次 `followup_question_hint()`，不传索引时每次读一遍趋势文件。待回访数量通常很小，但阶段二（B1）改路由时顺手在路由里构建一份索引传入即可。
+- §11 验收标准第 1 条的"400 话题 < 0.5 s"需要 `scripts/bench_growth_summary.py`（B8）才能量化，本阶段以读取次数断言代替。
