@@ -27,6 +27,8 @@ from __future__ import annotations
 import copy
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from world_simulator import anatomy as an
+from world_simulator import anatomy_templates as at
 from world_simulator import element_registry as er
 from world_simulator import element_tiers as et
 
@@ -429,3 +431,115 @@ def build_params(
         return (dict(existing) if isinstance(existing, dict) else {}), errors
     result.update(updates)
     return result, []
+
+
+# ── 元素档案（第二十四轮 A1：只读骨架版） ────────────────────────────
+
+BASIS_LABELS: Dict[str, str] = {
+    "sourced": "有出处", "llm_prior": "LLM 先验", "user_confirmed": "已确认", "user_edited": "已编辑",
+}
+STATUS_LABELS: Dict[str, str] = {
+    "none": "无", "draft": "未审阅", "reviewed": "已审阅", "verified": "已核实",
+}
+BOTTLENECK_STATUS_LABELS = {"open": "未解决", "resolved": "已解决", "exhausted": "路径耗尽"}
+
+
+def _fmt_num(v: Any) -> str:
+    return f"{v:g}" if isinstance(v, (int, float)) else str(v)
+
+
+def _badge(item: Dict[str, Any]) -> str:
+    return BASIS_LABELS.get(an.basis_of(item)["state"], "LLM 先验")
+
+
+def _criteria_text(node: Any) -> str:
+    """条件树的一行可读形式（只展示，不求值）。"""
+    if not isinstance(node, dict):
+        return ""
+    for key, join in (("all", " 且 "), ("any", " 或 ")):
+        if key in node:
+            return "（" + join.join(_criteria_text(c) for c in node[key]) + "）"
+    if "not" in node:
+        return "非" + _criteria_text(node["not"])
+    if "metric" in node:
+        return f"{node['metric']} {node['op']} {_fmt_num(node['value'])}"
+    if "component" in node:
+        return f"{node['component']} 就绪度 ≥ {_fmt_num(node['min_readiness'])}"
+    if "bottleneck" in node:
+        return f"{node['bottleneck']} 状态={BOTTLENECK_STATUS_LABELS.get(node['status'], node['status'])}"
+    return "，".join(f"{k}={v}" for k, v in node.items())
+
+
+def _rows_for(part: str, items: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    rows: List[Dict[str, str]] = []
+    for it in items:
+        name = it.get("name") or it["id"]
+        detail = ""
+        if part == "components":
+            if "readiness" in it:
+                detail = f"就绪度 {_fmt_num(it['readiness'])}"
+            if it.get("requires"):
+                detail += ("；" if detail else "") + "依赖 " + "、".join(it["requires"])
+        elif part == "metrics":
+            cur = it.get("current") or {}
+            if "value" in cur:
+                detail = f"现值 {_fmt_num(cur['value'])}{it.get('unit', '')}"
+                if cur.get("as_of"):
+                    detail += f"（{cur['as_of']}，{_badge(cur)}）"
+            if it.get("target"):
+                detail += f"；目标 {it['target']['op']} {_fmt_num(it['target']['value'])}"
+            trend = it.get("trend") or {}
+            if trend:
+                detail += f"；趋势 {trend['kind']}" + ("" if trend['kind'] in an.RECOMMENDED_TRENDS else "（非推荐库）")
+        elif part == "bottlenecks":
+            detail = BOTTLENECK_STATUS_LABELS.get(it.get("status", "open"), "未解决")
+            if it.get("severity"):
+                detail += f"；严重度 {it['severity']}"
+            paths = it.get("resolution_paths") or []
+            if paths:
+                detail += f"；{len(paths)} 条解决路径"
+        elif part in ("approaches", "signals", "assumptions"):
+            detail = it.get("desc") or it.get("statement") or it.get("watch") or ""
+            if part == "assumptions" and "prior_p_true" in it:
+                detail += f"（先验成立概率 {_fmt_num(it['prior_p_true'])}）"
+        elif part in ("milestones", "adoption_gates"):
+            detail = it.get("desc") or it.get("market") or ""
+            crit = _criteria_text(it.get("criteria"))
+            if crit:
+                detail += ("；" if detail else "") + "判据 " + crit
+            if it.get("reached_step") is not None:
+                detail += f"；第 {it['reached_step']} 步达成"
+        rows.append({"id": it["id"], "name": str(name), "detail": detail, "basis": _badge(it)})
+    return rows
+
+
+def build_profile(settings: Optional[Dict[str, Any]], element_ref: Any) -> Dict[str, Any]:
+    """元素档案视图（只读）。纯函数，界面与后续导出共用。
+
+    - 剖面总开关未开启（含旧实例）→ `{"enabled": False}`，调用方什么都不画；
+    - 元素不存在或没有剖面 → `{"enabled": True, "has_anatomy": False}`；
+    - 否则返回表头（名称/类型/模板/状态/重点）、来源统计、按模板顺序排好的各部分行，以及体检提示。
+    """
+    if not an.is_enabled(settings):
+        return {"enabled": False}
+    line = er.resolve(settings or {}, element_ref)
+    anatomy = an.get_anatomy(line)
+    if line is None or anatomy is None:
+        return {"enabled": True, "has_anatomy": False}
+    meta = anatomy.get("meta") or {}
+    tpl = at.get_template(line.get("element_type"))
+    stats = an.basis_stats(anatomy)
+    sections = [
+        {"part": p, "label": at.SLOT_LABELS[p], "rows": _rows_for(p, anatomy[p])}
+        for p in an.PARTS if anatomy.get(p)
+    ]
+    return {
+        "enabled": True, "has_anatomy": True,
+        "id": str(line["id"]).strip(), "label": str(line.get("label") or line["id"]),
+        "type_label": type_label(line.get("element_type")), "template": tpl["name"], "template_label": tpl["label"],
+        "status": meta.get("anatomy_status", "draft"),
+        "status_label": STATUS_LABELS.get(meta.get("anatomy_status", "draft"), "未审阅"),
+        "key": bool(meta.get("key")),
+        "stats": stats, "counts": an.counts(anatomy), "sections": sections,
+        "problems": an.validate_anatomy(anatomy),
+    }

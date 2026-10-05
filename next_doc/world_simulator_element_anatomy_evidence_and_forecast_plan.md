@@ -1,6 +1,7 @@
 # world_simulator 第二十四轮：元素剖面（anatomy）、证据层、定量骨架与预测呈现
 
-> 状态：**计划（待用户确认第 10 节的具体化取值后开始 A1）**。本文只描述方案，**尚未修改任何代码**。
+> 状态：**实施中**。第 10 节取值按推荐值执行（用户回复"继续"）。**A1 已完成（2026-10-06）**；A2–A8 未开始。
+> 实施进度见文末"实施进度"。
 > 前置文档：
 > - `world_simulator_realism_tech_and_causal_engine_plan.md`（第二十二轮：技术模型 / 事件采样 / 因果引擎）
 > - `world_simulator_element_causal_lines_plan.md`（第二十三轮：统一元素模型，一个元素一条因果线）
@@ -629,3 +630,25 @@ LLM 每步只需要报告"**偏离引擎模型的事件 + 原因**"。引擎记�
 - 每个阶段结束重新打包 zip。
 - 说明：`next_doc/README.md` 目前没有为 world_simulator 系列文档设专门的索引分组，本文沿用现状，不在本次修改索引；
   如需把 world_simulator 系列归并成一个分组，可以单独做一次整理。
+
+---
+
+## 12. 实施进度
+
+| 阶段 | 状态 | 说明 |
+|---|---|---|
+| A1 数据模型、存取层、兼容 | ✅ 2026-10-06 | `anatomy.py`、`anatomy_templates.py`、`normalize_element` 接线、新实例开关、合并保护、`build_profile` 只读档案、设置页勾选；31 个新用例、8 个变异全转红。详见 `external_projects/world_simulator/docs/anatomy_guide.md` |
+| A2 创建期拆解 + 向导审阅 | ⏳ 未开始 | |
+| A3 联网证据研究 + 出处 | ⏳ 未开始 | 开始前须先实测宿主 agent 步骤能否联网（风险 1） |
+| A4 引擎定量骨架 | ⏳ 未开始 | |
+| A5 推进期深化 | ⏳ 未开始 | |
+| A6 蒙特卡洛 / 敏感性 / 监测清单 | ⏳ 未开始 | |
+| A7 预测简报与导出收尾 | ⏳ 未开始 | |
+| A8 指标级回测 | ⏳ 未开始 | |
+
+### A1 与计划的偏差
+1. `sourced` 必须带 `evidence_ids`，否则降为 `llm_prior`（计划未写）。
+2. `anatomy_enabled` 仅在元素模式开启时默认写入 `True`（计划写"默认写入 True"；元素模式关闭时写它没有意义且会改动旧形态的 settings）。
+3. 新增合并保护：带剖面的元素不能被并入（对应计划 §9 风险 13 的数据丢失面，计划未列）。
+4. 累计模拟日（`anatomy_clock`）核对结论：复用每步 `elapsed_days`，不新增存储。
+5. `deep_time_budget_sec` 留给 A5 定。

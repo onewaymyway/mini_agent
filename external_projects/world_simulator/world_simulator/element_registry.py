@@ -191,6 +191,15 @@ def normalize_element(raw: Dict[str, Any]) -> Dict[str, Any]:
             line.pop("relations")
     if "lifecycle" in line and not isinstance(line["lifecycle"], dict):
         line.pop("lifecycle")
+    # 第二十四轮 A1：元素剖面。只规整已出现的 `anatomy` 键；规整后为空则摘掉（回到"没有剖面"）。
+    if "anatomy" in line:
+        from world_simulator import anatomy  # 函数内延迟导入：anatomy 反过来依赖本模块
+
+        norm = anatomy.normalize_anatomy(line["anatomy"])
+        if norm:
+            line["anatomy"] = norm
+        else:
+            line.pop("anatomy")
     return line
 
 

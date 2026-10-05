@@ -238,6 +238,8 @@ def _op_merge(ctx: Any, op: Dict[str, Any]) -> None:
         return _reject(ctx, op, "已退场/已合并的元素不能参与合并", sid if not er.is_alive(src) else did)
     if isinstance(src.get("lifecycle"), dict):
         return _reject(ctx, op, "被并入方带技术发展阶段（lifecycle），节点 id 被其它节点的前置引用，合并会让前置悬空；请改用 retire", sid)
+    if isinstance(src.get("anatomy"), dict) and src["anatomy"]:
+        return _reject(ctx, op, "被并入方带元素剖面（anatomy），合并会丢失其指标/瓶颈/里程碑；请改用 retire", sid)
 
     # 先在副本上算，最后一次性落到 ctx.lines
     new_dst = dict(dst)

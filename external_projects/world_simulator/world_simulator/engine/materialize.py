@@ -114,6 +114,10 @@ def materialize_simulation(
     _settings.setdefault("element_modeling_enabled", True)
     if element_registry.is_enabled(_settings) and _settings.get("tech_state") is not None:
         element_registry.fold_legacy_tech_state(_settings)
+    # 第二十四轮 A1：剖面开关。仅在元素模式开启时默认写入 True（调用方明确传值则尊重）；
+    # 元素模式关闭的新实例、以及所有旧实例（manifest 里没有该 key）= 关闭，行为不变。
+    if element_registry.is_enabled(_settings):
+        _settings.setdefault("anatomy_enabled", True)
     manifest.settings = _settings
     store.save_manifest(manifest)
     store.append_state(state0, branch="main")

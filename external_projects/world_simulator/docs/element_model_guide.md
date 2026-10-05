@@ -367,3 +367,5 @@ E6 把元素模型接进其余机制，并补全界面。**没有新开关**；�
 - 测试：`tests/test_element_registry.py`（28 个）、`tests/test_element_tech_adapter.py`（29 个）、`tests/test_element_creation.py`（28 个）、`tests/test_element_discovery.py`（82 个，E3）、`tests/test_element_tiers.py`（57 个，E4）、`tests/test_element_ops.py`（47 个，E5）、`tests/test_element_linkage.py`（54 个，E6）
 - 设计/记录：`next_doc/world_simulator_element_causal_lines_plan.md`（§10 实施记录）
 - 技术规则本身：[`tech_model_guide.md`](./tech_model_guide.md)
+
+> 第二十四轮在元素线上新增了可选字段 `anatomy`（元素剖面），见 [`anatomy_guide.md`](./anatomy_guide.md)。带剖面的元素不能作为 `merge` 的被并入方（与 `lifecycle` 规则一致）。

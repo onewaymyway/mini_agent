@@ -48,6 +48,7 @@ from world_simulator import causal_tree
 from world_simulator import hypothesis as hyp_mod
 from world_simulator import reality_check as rc_mod
 from world_simulator import element_discovery as element_discovery_mod
+from world_simulator import anatomy as anatomy_mod
 from world_simulator import element_registry as element_mod
 from world_simulator import element_view as element_view_mod
 from world_simulator import tech_model as tech_mod
@@ -3354,6 +3355,28 @@ def _render_causal_lines_overview(
                         unsafe_allow_html=True,
                     )
 
+        # 第二十四轮 A1：元素档案（只读骨架版）。剖面开关未开/元素没有剖面 = 什么都不画。
+        _prof = element_view_mod.build_profile(manifest.settings, line_id) if manifest is not None else {"enabled": False}
+        if _prof.get("has_anatomy"):
+            _st = _prof["stats"]
+            with st.expander(
+                f"🧬 「{label}」元素档案（{_prof['template_label']}模板 · {_prof['status_label']}"
+                f"{' · 重点' if _prof['key'] else ''}）"
+            ):
+                _ratio = _st["llm_prior_ratio"]
+                st.caption(
+                    f"共 {_st['total']} 项；有出处 {_st['sourced']}，已确认 {_st['user_confirmed']}，"
+                    f"已编辑 {_st['user_edited']}，LLM 先验 {_st['llm_prior']}"
+                    + (f"（占 {_ratio:.0%}）" if _ratio is not None else "")
+                    + "。LLM 先验 = 没有外部出处，仅是模型的猜测。"
+                )
+                for _sec in _prof["sections"]:
+                    st.markdown(f"**{_sec['label']}**")
+                    for _r in _sec["rows"]:
+                        st.markdown(f"- {_html_text(_r['name'])} `{_r['basis']}` {_html_text(_r['detail'])}", unsafe_allow_html=True)
+                if _prof["problems"]:
+                    st.warning("体检提示（不影响使用）：" + "；".join(f"{p['where']}：{p['message']}" for p in _prof["problems"][:8]))
+
         # 阶段二十六（`next_doc/world_simulator_causal_line_future_tree_
         # plan.md`）：因果树——创建模拟时就已经落盘（见
         # `causal_tree.ensure_future_trees()`），不要求先推进一步才能
@@ -5626,6 +5649,18 @@ def page_detail() -> None:
                         update_settings(DATA_DIR, sim_id, element_params=_new_params)
                         st.success("已保存，从下一步推进开始生效。")
                         st.rerun()
+
+            _an_on = st.checkbox(
+                "启用元素剖面（第二十四轮 A1，目前只是只读骨架：能存、能看，推进时不会自动使用）",
+                value=bool(cur_settings.get("anatomy_enabled")), key=f"anatomy_enabled_{sim_id}",
+                help="旧实例默认关闭；开启只影响之后新增/编辑的剖面，不回填历史。",
+            )
+            if _an_on != bool(cur_settings.get("anatomy_enabled")):
+                update_settings(DATA_DIR, sim_id, anatomy_enabled=bool(_an_on))
+                st.rerun()
+            _an_bad = anatomy_mod.invalid_param_keys(cur_settings)
+            if _an_bad:
+                st.warning("anatomy_params 里下列取值非法，已回退默认值：" + "、".join(_an_bad))
 
             st.markdown("**编辑单个元素**（所属领域 / 别名 / 钉住为活跃 / 状态）")
             _all_lines = element_mod.get_lines(cur_settings)
