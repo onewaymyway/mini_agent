@@ -1,6 +1,6 @@
 # 成长顾问 tab 概览超时治理：趋势索引（A）+ 概览拆分与板块独立加载（B）
 
-- **状态**：实施中——阶段一（方案 A：A1–A4 趋势索引）、阶段二（B1–B2 服务端拆分端点）、阶段三（B3–B4 客户端）、阶段四（B5–B6 section_loader）、阶段五（B7 看板接入）已完成，阶段六起（B8 压测脚本、D 收尾）待实施（见 §10 实施状态表与 §13 实施记录）
+- **状态**：✅ 全部阶段已完成（阶段一至六；方案 A 趋势索引、方案 B 服务端拆分 / 客户端 / 板块加载 / 看板接入、B8 压测脚本与文档收尾）。仍有两项需要人工在真实环境确认，见 §13"阶段六"末尾与 §12。实施取舍与验证记录见 §13
 - **范围**：本轮只做 A + B。C（HTTP 并发与隔离）已确认单独立项，见 §9
 - **关联文档**：
   - `next_doc/growth_summary_client_timeout_fix.md`（上一次只调客户端超时预算 6s→25s 的修复，本文是它的根治版）
@@ -257,10 +257,10 @@ B 完成后 `section_loader` 已经让看板不再同时发起大量重复请求
 | B6 | 测试 `test_kanban_section_loader.py` | `tests/` | ✅ 已完成（阶段四） |
 | B7 | `render_growth_tab` 改造：各板块接入 `render_section`、写操作失效、主题地图按需加载（另：`SectionCache.refresh(key, fetch_fn)`） | `apps/mini_agent_kanban/app.py`、`section_loader.py` | ✅ 已完成（阶段五） |
 | B7t | 测试 `test_kanban_growth_tab_sections.py`（方案 §8 未单列，B7 实施时补充） | `tests/` | ✅ 已完成（阶段五） |
-| B8 | 压测脚本 | `scripts/bench_growth_summary.py` | 待实施 |
-| D1 | 文档（随各阶段补；阶段五已更新 `docs/kanban-dashboard-guide.md` 接入小节、`docs/growth-advisor-guide.md`、`next_doc/kanban_feature_inventory.md`、`next_doc/growth_summary_client_timeout_fix.md`）：成长顾问指南（端点、性能说明）、看板指南（加载行为）、旧修复文档补"局限与后续"、端点清单 | `docs/growth-advisor-guide.md`、`docs/kanban-dashboard-guide.md`、`next_doc/growth_summary_client_timeout_fix.md`、`next_doc/kanban_feature_inventory.md`、`docs/architecture_v2/phase10-entrypoint-inventory.md` | 待实施 |
-| D2 | 本文状态表更新为实施记录 | 本文 | 待实施 |
-| D3 | 打包：仅改动与新增文件，保留目录结构，便于直接覆盖 | — | 待实施 |
+| B8 | 压测脚本 | `scripts/bench_growth_summary.py` | ✅ 已完成（阶段六） |
+| D1 | 文档（随各阶段补；阶段六补压测脚本说明并修正阶段五遗留的一处残句、入口清单 `/growth/summary` 行号；阶段五已更新 `docs/kanban-dashboard-guide.md` 接入小节、`docs/growth-advisor-guide.md`、`next_doc/kanban_feature_inventory.md`、`next_doc/growth_summary_client_timeout_fix.md`）：成长顾问指南（端点、性能说明）、看板指南（加载行为）、旧修复文档补"局限与后续"、端点清单 | `docs/growth-advisor-guide.md`、`docs/kanban-dashboard-guide.md`、`next_doc/growth_summary_client_timeout_fix.md`、`next_doc/kanban_feature_inventory.md`、`docs/architecture_v2/phase10-entrypoint-inventory.md` | ✅ 已完成（阶段一、五、六） |
+| D2 | 本文状态表更新为实施记录 | 本文 | ✅ 已完成（阶段六） |
+| D3 | 打包：仅改动与新增文件，保留目录结构，便于直接覆盖 | — | ✅ 每阶段均已打包（阶段六为最后一包） |
 
 建议顺序：A1→A4（先用测试锁住等价性）→ B1→B2 → B3→B4 → B5→B6 → B7 → B8 → D。
 
@@ -310,7 +310,7 @@ B 完成后 `section_loader` 已经让看板不再同时发起大量重复请求
 **已知遗留，留给后续阶段**
 
 - `routes.py` 约 10888 行 `GET /growth/followups` 对每个待回访候选调用一次 `followup_question_hint()`，不传索引时每次读一遍趋势文件。待回访数量通常很小，但阶段二（B1）改路由时顺手在路由里构建一份索引传入即可。
-- §11 验收标准第 1 条的"400 话题 < 0.5 s"需要 `scripts/bench_growth_summary.py`（B8）才能量化，本阶段以读取次数断言代替。
+- §11 验收标准第 1 条的"400 话题 < 0.5 s"需要 `scripts/bench_growth_summary.py`（B8）才能量化，本阶段以读取次数断言代替（B8 已在阶段六完成，结果见"阶段六"）。
 
 ### 阶段二：方案 B 服务端拆分（B1–B2，已完成）
 
@@ -429,3 +429,58 @@ B 完成后 `section_loader` 已经让看板不再同时发起大量重复请求
 - 板块内仍有少量同步小请求（只阻塞所在板块的 fragment）：自主推进里每个进行中方向的"饱和度走势"（expander 折叠时也会执行）、"素材"展开里的执行规范、"我的偏好设置"。
 - 写操作后的失效范围靠人工归类，新增写操作时需要自己补 `_growth_write_rerun(...)`，否则最多显示一个 TTL 的旧数据。
 - 报告查看器 / 待处理候选在写操作之后会短暂显示旧状态，直到概览后台刷新完成（毫秒到秒级）。
+
+### 阶段六：B8 压测脚本与收尾（B8、D，已完成）
+
+**改动文件**
+
+| 文件 | 内容 |
+|---|---|
+| `scripts/bench_growth_summary.py`（新增） | 合成数据压测，人工运行，不进 CI（见下） |
+| `docs/growth-advisor-guide.md` | "趋势索引（性能说明）"后新增"压测脚本"小节；修正阶段五改文档时留下的一处残句（"……只读 1 次。看板按 / 看板已按板块独立加载……"） |
+| `docs/architecture_v2/phase10-entrypoint-inventory.md` | 仅把 `GET /v1/growth/summary` 一行的行号 10446→10715（阶段二把它改成拼装后位置变了）。其余行不动，原因见下 |
+| `next_doc/growth_tab_split_and_trend_index_plan.md` | 状态表、§11 验收结论、本节 |
+
+**压测脚本**
+
+- 合成模式（默认）：对 50/100/200/400 话题（`--topics` 可改）× 60 点（`--points`）造数据，对 `growth_topic_map` / `pending_followups` / `reports_needing_refresh` / `diagnostics_snapshot` 计时并统计趋势文件读取次数。造数据与 `test_growth_trend_index.py::_seed_topics` 同构；`HOME` 指向临时目录，不会碰真实 `~/.agent`。
+- "改动前基线"：逐话题不带索引调用 `_topic_trend_series`，即修复前 `growth_topic_map` 的行为；话题数超过 `--baseline-max`（默认 200）自动跳过，`--no-baseline` 完全跳过。
+- `--check`：`growth_topic_map` 超过 `--threshold`（默认 0.5 s）或任一函数趋势读取次数不为 1 时退出码 1。
+- `--project-root`：真实数据模式，对已有项目目录只读计时。已验证：对一份造好的数据运行前后，33 个文件的内容和 mtime 均无变化。
+
+**实测结果**（1 核沙箱，合成数据，每话题 60 点，绝对值仅供参考）
+
+| 话题数 | `growth_topic_map` | `reports_needing_refresh` | `diagnostics_snapshot` | 趋势读取次数 | 改动前 N+1 基线 |
+|---|---|---|---|---|---|
+| 50 | 0.015 s | 0.014 s | 0.033 s | 1 | 0.54 s |
+| 200 | 0.057 s | 0.064 s | 0.070 s | 1 | 8.9 s |
+| 400（趋势文件 24000 行 / 3.3 MiB） | 0.116 s | 0.117 s | 0.144 s | 1 | 未跑（§2.1 旧实测 32.7 s） |
+
+- 与 §2.1 的旧实测相比，400 话题 `growth_topic_map` 从 32.7 s 降到约 0.12 s；耗时随话题数近似线性增长，不再是平方级。
+- `pending_followups` 在合成数据上返回 0 条：合成趋势的证据数一直在涨，被判为"顺延一轮"（逻辑本就如此）。趋势读取路径已被走到（读取次数 1），脚本会打印一行说明。
+- 验证 `--check` 能失败：阈值设为 0.00001 s 时退出码为 1 并列出原因。
+
+**§11 验收对照**
+
+| # | 标准 | 结论 | 依据 |
+|---|---|---|---|
+| 1 | 400 话题 × 60 天：`growth_topic_map` < 0.5 s；summary 趋势读取次数 = 1；输出与改动前逐项一致 | ✅ | 0.116 s；读取次数 1（脚本 + `test_growth_trend_index.py` / `test_growth_split_endpoints.py`）；等价性由阶段一的随机数据对照测试保证 |
+| 2 | 看板：首屏各板块独立出现；人为让某端点超时只有对应板块报错并可重试；TTL 内点按钮不重复拉取 | ⚠️ 部分 | `AppTest` 用例覆盖了逻辑（失败隔离、TTL 内请求次数）。**真实页面里"加载中 → 自动出现数据"的体验没有验证**，需人工点一遍 |
+| 3 | 读超时场景下对成长顾问端点只发 1 次请求 | ✅ | `test_kanban_client_retry.py`（本地桩 server） |
+| 4 | 新增测试通过；现有 growth 与看板测试无回归 | ✅（附 3 个既有失败） | 见下 |
+| 5 | 文档与代码一致，打包内容仅含改动与新增文件 | ✅ | 每阶段对比原始包打包 |
+
+**回归结果**：`tests/test_*growth*.py` + `tests/test_kanban_*.py` + 入口清单测试，共 646 例：643 通过、3 失败。这 3 个在**未改动的原始包上同样失败**，与本方案无关，未处理：
+
+- `test_kanban_growth_dragdrop.py` 2 例：测试假 client 缺 `get_latest_async_job` 等方法（阶段五已记录）。
+- `test_growth_advisor.py::TestTopicTrend::test_compact_topic_trend_storage_downsamples_old_points`：错误为 `1 != 2`。该用例按周分桶压缩旧快照，我推测与运行日期落在周内哪一天有关，**这只是推测，没有验证**。
+
+本阶段为跑服务端测试在沙箱里额外安装了 `fastapi`、`httpx`、`rich`（项目环境本就有）；阶段二、三因缺依赖未重跑的服务端测试这次一并跑过（`test_growth_split_endpoints.py` 等，均在上面 643 例之内）。
+
+**为什么没有整份重新生成入口清单**：该文件前半是人工分析，只有附录和汇总表是 `scripts/entrypoint_inventory.py` 生成的，整份覆盖会丢人工内容。其它入口（如 `/growth/materials`）的行号落后属于既有状况，与本方案无关，本阶段只改了本方案涉及的 `/growth/summary` 一行；`overview` / `diagnostics` / `topic_map` 三行行号与当前代码一致。
+
+**仍需人工确认（方案收尾时的未决项）**
+
+1. **真实 Streamlit 页面**：板块加载、轮询停止、嵌套 fragment 的实际表现（§12 风险 2，测试环境 Streamlit 1.65，项目最低 1.39）。
+2. **真实数据复核**：在真实环境用 `python scripts/bench_growth_summary.py --project-root <项目目录>` 看趋势文件行数与耗时，并对照 `~/.agent/logs/kanban_client_http.jsonl`（§12 风险 1）。若真实趋势文件很小仍然超时，说明还有未测到的因素，需要先查清。
+3. **首屏并发**：7 个后台请求占共享线程池 8 个 worker 中的 7 个（§12 风险 3），上线后观察会话列表等 tab 是否被拖慢。

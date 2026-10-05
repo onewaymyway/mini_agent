@@ -492,9 +492,27 @@ GET  /v1/growth/pursuits                                  # 正在被自主推�
 > 服务端拆分端点（`/growth/overview` / `diagnostics` / `topic_map`）见
 > "API" 一节：三者各自独立的 `blocking_guard` where（`growth_overview` /
 > `growth_diagnostics` / `growth_topic_map`），熔断互不影响；`/growth/summary`
-> 整个请求先建一份趋势索引供诊断与主题地图共用，趋势文件只读 1 次。看板按
-> 看板已按板块独立加载（不再调用 `/growth/summary`，该端点保留供其它调用方使用）；
+> 整个请求先建一份趋势索引供诊断与主题地图共用，趋势文件只读 1 次。看板已按
+> 板块独立加载（不再调用 `/growth/summary`，该端点保留供其它调用方使用）；
 > 加载机制与各板块 TTL 见 `docs/kanban-dashboard-guide.md`。
+
+#### 压测脚本
+
+`scripts/bench_growth_summary.py`（人工运行，不进 CI）造合成数据，对
+`growth_topic_map` / `pending_followups` / `reports_needing_refresh` /
+`diagnostics_snapshot` 计时并统计趋势文件读取次数，还能跑"改动前 N+1"基线做对比：
+
+```bash
+python scripts/bench_growth_summary.py                        # 50/100/200/400 话题 × 60 点
+python scripts/bench_growth_summary.py --topics 400 --check   # 验收：topic_map < 0.5s 且读取次数 = 1
+python scripts/bench_growth_summary.py --project-root <项目目录>  # 对真实数据只读复核（不写文件）
+```
+
+`--check` 不通过时退出码为 1。耗时受机器影响，读取次数是确定性断言。参考结果
+（1 核沙箱、合成数据）：400 话题 × 60 点时 `growth_topic_map` 约 0.12 s（改动前约 33 s），
+四个函数的趋势读取次数均为 1；200 话题时 N+1 基线约 9 s，当前约 0.06 s。
+`pending_followups` 在合成数据上返回 0 条是正常的（证据数一直在涨 → 顺延），
+但它的趋势读取路径已被走到。
 
 ## 7. 当前局限（P1 ~ P6 全部完成后的已知边界）
 
