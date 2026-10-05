@@ -10524,12 +10524,205 @@ async def post_user_profile_preference_delete(request: Request, body: _UserProfi
 # 完全由 cron job + GrowthAdvisorConfig.notification_* 控制，这里只负责
 # 把当前状态如实透出给看板。
 
+# ── [next_doc/growth_tab_split_and_trend_index_plan.md 方案 B] 概览拆分 ──
+# 原 `/growth/summary` 把"候选/报告/复盘/首次触达提示/诊断/主题地图"一次性
+# 拼在一个请求里，任何一块慢都会拖垮整个 tab。这里拆成三个内部 payload
+# 函数，三个新端点（overview / diagnostics / topic_map）和兼容端点
+# `/growth/summary` 共用它们，保证新旧路径数据口径一致、不出现两份逻辑漂移。
+# 三块各自独立的 `run_blocking` where（growth_overview / growth_diagnostics /
+# growth_topic_map），熔断互不影响。
+
+async def _growth_overview_payload(request: Request, paths) -> dict:
+    """概览：候选 + 报告 + 月度复盘（**不含** topic_map）+ 首次触达提示。
+    全是简单聚合，预期毫秒级。"""
+    from mini_agent.evolution import growth_advisor as ga
+
+    backlog = ga.GrowthBacklog(paths)
+
+    # [BUGFIX] 之前 backlog.load_all()/list_reports()/
+    # monthly_retrospective_summary() 是直接同步调用，写在 async 路由
+    # 函数体里、没有 await 也没进线程池——候选/报告数量增长后这几步本身
+    # 会变慢，而且会跟其它并发请求一起阻塞事件循环（同类问题见
+    # next_doc/session_list_blocking_and_cache_fix.md）。这里合并成
+    # 一次 run_blocking() 调用。
+    def _load_backlog_reports_retro():
+        # [personal_researcher_and_coach_capability_gap_plan.md C4]
+        # 传入 GoalBacklog，月度复盘的返回值会带上 goal_overview
+        # 字段（全部 Goal 的整体统计），失败时静默降级为不带该字段，
+        # 不影响成长顾问自己的候选统计部分。
+        try:
+            from mini_agent.perception.goal_backlog import load_goal_backlog
+            gb = load_goal_backlog(paths)
+        except Exception:
+            gb = None
+        return (
+            backlog.load_all(),
+            ga.list_reports(paths),
+            # topic_map 由单独的端点/payload 提供，概览不再计算它。
+            ga.monthly_retrospective_summary(paths, goal_backlog=gb, include_topic_map=False),
+        )
+
+    candidates, reports, retro = await run_blocking(
+        _load_backlog_reports_retro,
+        fallback=([], [], {}),
+        **_blocking_call_opts(request, "growth_overview"),
+    )
+
+    # [BUGFIX] first_touch_notice_shown() 是磁盘读取，一并进线程池。
+    first_touch_shown = await run_blocking(
+        ga.first_touch_notice_shown, paths,
+        fallback=True,  # 拿不到时保守当作"已展示过"，不重复打扰用户
+        **_blocking_call_opts(request, "growth_summary_first_touch"),
+    )
+
+    return {
+        "candidates": [c.to_dict() for c in candidates],
+        "reports": [r.to_dict() for r in reports],
+        "retrospective": retro,
+        "first_touch_notice_shown": first_touch_shown,
+    }
+
+
+async def _growth_diagnostics_payload(
+    request: Request, paths, *, refresh: bool = False, trend_index=None
+) -> dict:
+    """诊断快照（含 `cron_jobs`）。超时/熔断时返回 `{"_note": ...}` 占位，
+    不抛错。`refresh=True` 语义同原 `refresh_diagnostics`。"""
+    from mini_agent.evolution import growth_advisor as ga
+    from mini_agent.profile import UserProfileManager
+
+    http_server = getattr(request.app.state, "http_server", None)
+    self_agent = http_server.bridge.agent if http_server else None
+    cfg = getattr(self_agent.cfg, "growth_advisor", None) if self_agent else None
+    if cfg is None:
+        from mini_agent.config.models import GrowthAdvisorConfig
+        cfg = GrowthAdvisorConfig()
+    profile = UserProfileManager(paths).load()
+    # [next_doc/growth_advisor_diagnostics_and_language_fix_plan.md
+    # 方向一] 之前这里是 `MemoryStore(paths)`——把整个 AgentPaths 实例
+    # 当路径传了进去，静默降级为空记忆列表，导致诊断面板"记忆总条数"
+    # 永远是 0，跟健康度趋势里 cron 任务记的真实条数对不上。
+    from mini_agent.perception.memory_factory import build_default_memory_store
+    store = build_default_memory_store(paths)
+    profile_cfg = getattr(self_agent.cfg, "profile", None) if self_agent else None
+    # [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 2
+    # 第二步] 跟 `/growth/align` 的 `goal_alignment_llm_enabled` 同款
+    # opt-in 约定：只有配置开启且拿得到 agent 上下文时才传 llm_helper，
+    # `diagnostics_snapshot()` 内部再按 `feedback_pattern_llm_enabled`
+    # 决定要不要真的触发那次归纳调用。
+    llm_helper = None
+    if self_agent is not None and getattr(cfg, "feedback_pattern_llm_enabled", False):
+        helper = getattr(self_agent, "llm_helper", None)
+        if helper is not None:
+            llm_helper = lambda prompt: helper.ask(prompt)
+    diagnostics = await run_blocking(
+        ga.diagnostics_snapshot,
+        paths, cfg, profile, store, profile_cfg=profile_cfg, llm_helper=llm_helper,
+        force_refresh_backfill_count=refresh,
+        trend_index=trend_index,
+        fallback=None,
+        **_blocking_call_opts(request, "growth_diagnostics"),
+    )
+    if diagnostics is None:
+        # 熔断/超时兜底：拿不到最新诊断快照时，返回一个最小占位，
+        # 不让调用方 500——其它板块（candidates/reports 等）仍然正常展示。
+        diagnostics = {"_note": "diagnostics snapshot unavailable (timed out or circuit open)"}
+
+    cs = _get_cron_scheduler(http_server) if http_server else None
+    if cs is not None:
+        jobs_by_id = {j.id: j for j in cs.list_jobs()}
+        # [next_doc/memory_backfill_and_profile_update_plan.md 看板展示]
+        # 把 sys:memory_backfill_scan 也一并透出，跟 diagnostics.memory.
+        # backfill_candidates_count 搭配展示——看板能同时看到"还有多少
+        # 候选没处理"和"上一次自动回填是什么时候跑的"。
+        diagnostics["cron_jobs"] = {
+            jid: {
+                "enabled": j.enabled,
+                "last_run_at": j.last_run_at,
+                "next_run_at": j.next_run_at,
+                "run_count": j.run_count,
+                "consecutive_skip_count": j.consecutive_skip_count,
+            }
+            for jid, j in jobs_by_id.items()
+            if jid in (ga.JOB_ID_DAILY, ga.JOB_ID_MONTHLY, "sys:memory_backfill_scan")
+        }
+    else:
+        diagnostics["cron_jobs"] = {"_note": "CronScheduler not available (daemon mode required)"}
+    return diagnostics
+
+
+async def _growth_topic_map_payload(request: Request, paths, *, trend_index=None) -> dict:
+    """成长主题地图。超时/熔断时返回空列表并带 `_note`。"""
+    from mini_agent.evolution import growth_advisor as ga
+
+    rows = await run_blocking(
+        ga.growth_topic_map, paths, trend_index=trend_index,
+        fallback=None,
+        **_blocking_call_opts(request, "growth_topic_map"),
+    )
+    if rows is None:
+        return {"topic_map": [], "_note": "topic map unavailable (timed out or circuit open)"}
+    return {"topic_map": rows}
+
+
+@router.get("/growth/overview")
+async def get_growth_overview(request: Request):
+    """GET /v1/growth/overview — 看板"🌱 成长顾问"tab 的概览板块数据：
+    `{candidates, reports, retrospective（不含 topic_map）,
+    first_touch_notice_shown}`。不含诊断与主题地图（分别见
+    `/growth/diagnostics`、`/growth/topic_map`）。"""
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        return await _growth_overview_payload(request, paths)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/growth/diagnostics")
+async def get_growth_diagnostics(request: Request, refresh_diagnostics: bool = False):
+    """GET /v1/growth/diagnostics — 诊断快照（含 `cron_jobs`），与
+    `/growth/summary` 里的 `diagnostics` 字段逐字段一致。
+    `refresh_diagnostics=true` 语义同 `/growth/summary`。超时/熔断时返回
+    `{"_note": ...}` 占位。"""
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        return await _growth_diagnostics_payload(request, paths, refresh=refresh_diagnostics)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/growth/topic_map")
+async def get_growth_topic_map(request: Request):
+    """GET /v1/growth/topic_map — 成长主题地图，返回 `{topic_map: [...]}`，
+    供看板按需拉取（默认折叠的板块打开时才请求）。"""
+    _require_owner(request)
+    try:
+        paths = _get_paths_for_request(request)
+        return await _growth_topic_map_payload(request, paths)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/growth/summary")
 async def get_growth_summary(request: Request, refresh_diagnostics: bool = False):
-    """GET /v1/growth/summary — 返回当前候选队列（pending 优先）+ 已生成的
-    调研报告列表 + 月度复盘统计 + 首次触达提示是否已展示过 + 诊断快照
-    （配置/信号扫描命中情况/记忆条目数，供用户自查"为什么候选一直是 0"），
-    供看板"🌱 成长顾问"tab 一次性渲染。
+    """GET /v1/growth/summary — 兼容聚合端点：返回当前候选队列（pending
+    优先）+ 已生成的调研报告列表 + 月度复盘统计（含 topic_map）+ 首次触达
+    提示是否已展示过 + 诊断快照（配置/信号扫描命中情况/记忆条目数，供用户
+    自查"为什么候选一直是 0"）。
+
+    [growth_tab_split_and_trend_index_plan.md 方案 B] 内部改为由
+    `_growth_overview_payload` / `_growth_diagnostics_payload` /
+    `_growth_topic_map_payload` 拼装，响应结构与拆分前完全一致；看板已改为
+    按板块调用拆分端点，本端点保留给其它调用方。整个请求先构建一份趋势
+    索引，诊断与主题地图共用，趋势文件只读一次。
 
     [next_doc/growth_diagnostics_backfill_count_cache_plan.md]
     `refresh_diagnostics=True`（看板"🔄 刷新诊断数据"按钮）时，诊断快照
@@ -10539,114 +10732,21 @@ async def get_growth_summary(request: Request, refresh_diagnostics: bool = False
     try:
         paths = _get_paths_for_request(request)
         from mini_agent.evolution import growth_advisor as ga
-        # [dead-code cleanup] 原 "from mini_agent.perception.memory_store
-        # import MemoryStore" 未被本函数使用（下方已改用
-        # memory_factory.build_default_memory_store()，MemoryStore 直接
-        # 构造是被替换掉的旧写法），已删除（见
-        # next_doc/refactor_plan/03-sprint1.5-memory-perception-coupling-assessment.md 八）
-        from mini_agent.profile import UserProfileManager
 
-        backlog = ga.GrowthBacklog(paths)
-        # [BUGFIX] 之前 backlog.load_all()/list_reports()/
-        # monthly_retrospective_summary() 是直接同步调用，写在 async 路由
-        # 函数体里、没有 await 也没进线程池——候选/报告数量增长后这几步本身
-        # 会变慢，而且会跟其它并发请求一起阻塞事件循环（同类问题见
-        # next_doc/session_list_blocking_and_cache_fix.md）。这里合并成
-        # 一次 run_blocking() 调用，跟下面 diagnostics_snapshot() 用同一套
-        # 熔断/超时策略，且避免线程池里再嵌套起线程（分开一次调用，不是
-        # 在 diagnostics_snapshot 内部再调 run_blocking）。
-        def _load_backlog_reports_retro():
-            # [personal_researcher_and_coach_capability_gap_plan.md C4]
-            # 传入 GoalBacklog，月度复盘的返回值会带上 goal_overview
-            # 字段（全部 Goal 的整体统计），失败时静默降级为不带该字段，
-            # 不影响成长顾问自己的候选统计部分。
-            try:
-                from mini_agent.perception.goal_backlog import load_goal_backlog
-                gb = load_goal_backlog(paths)
-            except Exception:
-                gb = None
-            return backlog.load_all(), ga.list_reports(paths), ga.monthly_retrospective_summary(paths, goal_backlog=gb)
-
-        candidates, reports, retro = await run_blocking(
-            _load_backlog_reports_retro,
-            fallback=([], [], {}),
-            **_blocking_call_opts(request, "growth_summary_backlog_reports"),
+        trend_index = await run_blocking(
+            ga.load_topic_trend_index, paths,
+            fallback=None,  # 拿不到就让下游各自读（行为退化但不失败）
+            **_blocking_call_opts(request, "growth_trend_index"),
         )
-
-        http_server = getattr(request.app.state, "http_server", None)
-        self_agent = http_server.bridge.agent if http_server else None
-        cfg = getattr(self_agent.cfg, "growth_advisor", None) if self_agent else None
-        if cfg is None:
-            from mini_agent.config.models import GrowthAdvisorConfig
-            cfg = GrowthAdvisorConfig()
-        profile = UserProfileManager(paths).load()
-        # [next_doc/growth_advisor_diagnostics_and_language_fix_plan.md
-        # 方向一] 之前这里是 `MemoryStore(paths)`——把整个 AgentPaths 实例
-        # 当路径传了进去，静默降级为空记忆列表，导致诊断面板"记忆总条数"
-        # 永远是 0，跟健康度趋势里 cron 任务记的真实条数对不上。
-        from mini_agent.perception.memory_factory import build_default_memory_store
-        store = build_default_memory_store(paths)
-        profile_cfg = getattr(self_agent.cfg, "profile", None) if self_agent else None
-        # [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 2
-        # 第二步] 跟 `/growth/align` 的 `goal_alignment_llm_enabled` 同款
-        # opt-in 约定：只有配置开启且拿得到 agent 上下文时才传 llm_helper，
-        # `diagnostics_snapshot()` 内部再按 `feedback_pattern_llm_enabled`
-        # 决定要不要真的触发那次归纳调用。
-        llm_helper = None
-        if self_agent is not None and getattr(cfg, "feedback_pattern_llm_enabled", False):
-            helper = getattr(self_agent, "llm_helper", None)
-            if helper is not None:
-                llm_helper = lambda prompt: helper.ask(prompt)
-        diagnostics = await run_blocking(
-            ga.diagnostics_snapshot,
-            paths, cfg, profile, store, profile_cfg=profile_cfg, llm_helper=llm_helper,
-            force_refresh_backfill_count=refresh_diagnostics,
-            fallback=None,
-            **_blocking_call_opts(request, "growth_diagnostics_snapshot"),
+        overview = await _growth_overview_payload(request, paths)
+        diagnostics = await _growth_diagnostics_payload(
+            request, paths, refresh=refresh_diagnostics, trend_index=trend_index
         )
-        if diagnostics is None:
-            # 熔断/超时兜底：拿不到最新诊断快照时，返回一个最小占位，
-            # 不让整个 /growth/summary 500——看板其他字段（candidates/reports 等）
-            # 仍然正常展示。
-            diagnostics = {"_note": "diagnostics snapshot unavailable (timed out or circuit open)"}
-
-        cs = _get_cron_scheduler(http_server) if http_server else None
-        if cs is not None:
-            jobs_by_id = {j.id: j for j in cs.list_jobs()}
-            # [next_doc/memory_backfill_and_profile_update_plan.md 看板展示]
-            # 把 sys:memory_backfill_scan 也一并透出，跟 diagnostics.memory.
-            # backfill_candidates_count 搭配展示——看板能同时看到"还有多少
-            # 候选没处理"和"上一次自动回填是什么时候跑的"。
-            diagnostics["cron_jobs"] = {
-                jid: {
-                    "enabled": j.enabled,
-                    "last_run_at": j.last_run_at,
-                    "next_run_at": j.next_run_at,
-                    "run_count": j.run_count,
-                    "consecutive_skip_count": j.consecutive_skip_count,
-                }
-                for jid, j in jobs_by_id.items()
-                if jid in (ga.JOB_ID_DAILY, ga.JOB_ID_MONTHLY, "sys:memory_backfill_scan")
-            }
-        else:
-            diagnostics["cron_jobs"] = {"_note": "CronScheduler not available (daemon mode required)"}
-
-        # [BUGFIX] 同上，first_touch_notice_shown() 是磁盘读取，一并进
-        # 线程池——这里单开一次调用而不是塞进上面那次，因为它依赖
-        # `paths` 之外没有别的输入，开销也很小，拆开更清楚。
-        first_touch_shown = await run_blocking(
-            ga.first_touch_notice_shown, paths,
-            fallback=True,  # 拿不到时保守当作"已展示过"，不重复打扰用户
-            **_blocking_call_opts(request, "growth_summary_first_touch"),
-        )
-
-        return {
-            "candidates": [c.to_dict() for c in candidates],
-            "reports": [r.to_dict() for r in reports],
-            "retrospective": retro,
-            "first_touch_notice_shown": first_touch_shown,
-            "diagnostics": diagnostics,
-        }
+        topic_map = (await _growth_topic_map_payload(request, paths, trend_index=trend_index))["topic_map"]
+        retro = dict(overview["retrospective"])
+        if retro:  # 概览降级为 {} 时保持空，与拆分前的降级行为一致
+            retro["topic_map"] = topic_map
+        return {**overview, "retrospective": retro, "diagnostics": diagnostics}
     except HTTPException:
         raise
     except Exception as e:
@@ -10881,12 +10981,15 @@ async def get_growth_followups(request: Request):
         except Exception:
             goal_backlog = None
         candidates = ga.pending_followups(paths, cfg, goal_backlog=goal_backlog)
+        # [growth_tab_split_and_trend_index_plan.md] 提示语逐个候选生成，
+        # 共用一份趋势索引，避免每个候选各读一遍趋势文件。
+        trend_index = ga.load_topic_trend_index(paths) if candidates else None
         return {
             "followups": [
                 {
                     **c.to_dict(),
                     "question_hint": ga.followup_question_hint(
-                        paths, c, cfg=cfg, goal_backlog=goal_backlog
+                        paths, c, cfg=cfg, goal_backlog=goal_backlog, trend_index=trend_index
                     ),
                 }
                 for c in candidates

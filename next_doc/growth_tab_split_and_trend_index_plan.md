@@ -1,6 +1,6 @@
 # 成长顾问 tab 概览超时治理：趋势索引（A）+ 概览拆分与板块独立加载（B）
 
-- **状态**：实施中——阶段一（方案 A：A1–A4 趋势索引）已完成，阶段二起（方案 B）待实施（见 §10 实施状态表与 §13 实施记录）
+- **状态**：实施中——阶段一（方案 A：A1–A4 趋势索引）、阶段二（B1–B2 服务端拆分端点）已完成，阶段三起（B3 起，客户端与看板）待实施（见 §10 实施状态表与 §13 实施记录）
 - **范围**：本轮只做 A + B。C（HTTP 并发与隔离）已确认单独立项，见 §9
 - **关联文档**：
   - `next_doc/growth_summary_client_timeout_fix.md`（上一次只调客户端超时预算 6s→25s 的修复，本文是它的根治版）
@@ -249,8 +249,8 @@ B 完成后 `section_loader` 已经让看板不再同时发起大量重复请求
 | A2 | 五个函数接入 `trend_index`，`diagnostics_snapshot` 透传 | 同上 | ✅ 已完成（阶段一） |
 | A3 | `monthly_retrospective_summary(include_topic_map=)` | 同上 | ✅ 已完成（阶段一） |
 | A4 | 测试 `test_growth_trend_index.py` | `tests/` | ✅ 已完成（阶段一） |
-| B1 | 路由拆出三个内部 payload 函数 + 三个新端点 + summary 改为拼装 | `src/mini_agent/api/routes.py` | 待实施 |
-| B2 | 测试 `test_growth_split_endpoints.py` | `tests/` | 待实施 |
+| B1 | 路由拆出三个内部 payload 函数 + 三个新端点 + summary 改为拼装 | `src/mini_agent/api/routes.py` | ✅ 已完成（阶段二） |
+| B2 | 测试 `test_growth_split_endpoints.py` | `tests/` | ✅ 已完成（阶段二） |
 | B3 | 客户端新方法、`_HTTP_NO_READ_RETRY`、`retry` 参数、成长顾问 GET 关闭读重试 | `apps/mini_agent_kanban/client.py` | 待实施 |
 | B4 | 测试 `test_kanban_client_retry.py` | `tests/` | 待实施 |
 | B5 | `section_loader.py`（`SectionCache` + `render_section`） | `apps/mini_agent_kanban/section_loader.py` | 待实施 |
@@ -310,3 +310,31 @@ B 完成后 `section_loader` 已经让看板不再同时发起大量重复请求
 
 - `routes.py` 约 10888 行 `GET /growth/followups` 对每个待回访候选调用一次 `followup_question_hint()`，不传索引时每次读一遍趋势文件。待回访数量通常很小，但阶段二（B1）改路由时顺手在路由里构建一份索引传入即可。
 - §11 验收标准第 1 条的"400 话题 < 0.5 s"需要 `scripts/bench_growth_summary.py`（B8）才能量化，本阶段以读取次数断言代替。
+
+### 阶段二：方案 B 服务端拆分（B1–B2，已完成）
+
+**改动文件**
+
+| 文件 | 内容 |
+|---|---|
+| `src/mini_agent/api/routes.py` | 新增 `_growth_overview_payload` / `_growth_diagnostics_payload` / `_growth_topic_map_payload`；新增 `GET /v1/growth/overview`、`/diagnostics`、`/topic_map`；`/growth/summary` 改为拼装；`/growth/followups` 的提示语共用一份趋势索引 |
+| `tests/test_growth_split_endpoints.py`（新增） | 10 用例 |
+| `docs/growth-advisor-guide.md` | API 清单与"趋势索引"小节补充拆分端点 |
+| `docs/architecture_v2/phase10-entrypoint-inventory.md`、`next_doc/kanban_feature_inventory.md` | 端点清单补三行 |
+
+**实施取舍**
+
+1. **`run_blocking` 的 where 名变化**：`/growth/summary` 原先的 `growth_summary_backlog_reports`、`growth_diagnostics_snapshot` 改为与新端点共用的 `growth_overview`、`growth_diagnostics`（新增 `growth_topic_map`、`growth_trend_index`）。summary 与对应拆分端点现在共享熔断状态；这符合"口径一致"的目标，但意味着 summary 与新端点并非互相隔离。`growth_summary_first_touch` 保持不变。
+2. **topic_map 降级**：方案没写超时行为。实现为 `/growth/topic_map` 超时/熔断时返回 `{"topic_map": [], "_note": ...}`；`/growth/summary` 里对应降级为空列表。
+3. **summary 的概览降级**：概览部分降级为 `{}` 时，`retrospective` 保持 `{}`，不凭空塞入 `topic_map`，与拆分前降级行为一致。
+4. **`/growth/followups`**：没有到期候选时不读趋势文件；有则 `pending_followups` 读 1 次 + 提示语共用索引读 1 次，合计 ≤ 2，与候选数无关（原先为 1 + 候选数）。该端点仍是 `async def` 中的同步调用，未进线程池——属于方案 §9 的 C 范围，本阶段不动。
+5. 为让 summary 与 diagnostics 的 `trend_index` 在线程池里构建，summary 先单独 `run_blocking(load_topic_trend_index)`，失败则退化为下游各自读取，不影响可用性。
+
+**验证**
+
+- `test_growth_split_endpoints.py` 10 用例全过：三个端点拼起来与 `/growth/summary` 逐字段一致（忽略 `backfill_candidates_count_computed_at`）；overview 无 `topic_map`/diagnostics 且不读趋势文件；diagnostics 超时返回占位、overview/topic_map/summary 仍正常；topic_map 超时降级；`refresh_diagnostics` 透传（含经 summary）；summary 整个请求趋势文件只读 1 次；followups 读取 ≤ 2 次。
+- 人为去掉 summary 的索引透传、followups 的索引透传，对应用例转红。
+- 回归：growth / api / `*routes*` 相关测试 674 例，672 通过。2 个失败均在**原始代码上同样失败**，与本阶段无关：`test_growth_advisor.py::...downsamples_old_points`（按周分桶，依赖运行日期）、`test_capability_routes_mount.py::TestPersonaDraftRoutes::test_draft_show_publish_full_flow`。
+- 看板未改动（仍调用 `/growth/summary`，行为不变）；看板相关测试需 streamlit，本环境未运行。
+
+**注意（新旧版本配套）**：本阶段仅新增服务端端点，`/growth/summary` 响应不变，单独覆盖 daemon 侧不会影响现有看板。

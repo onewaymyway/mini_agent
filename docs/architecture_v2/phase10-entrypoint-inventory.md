@@ -464,8 +464,11 @@ ObjectiveExecutor/CronScheduler/...` 等旧类名给最终用户*。可度量的
 | `POST /v1/growth/pursuits/{goal_id}/view_material` | legacy | GoalBacklog, growth_advisor | - | `src/mini_agent/api/routes.py:11156` |
 | `GET /v1/growth/reports/refresh_candidates` | legacy | GoalBacklog, growth_advisor | - | `src/mini_agent/api/routes.py:10978` |
 | `GET /v1/growth/reports/{report_id}` | legacy | growth_advisor | - | `src/mini_agent/api/routes.py:11537` |
+| `GET /v1/growth/diagnostics` | legacy | MemoryStore, growth_advisor | - | `src/mini_agent/api/routes.py:10685` |
+| `GET /v1/growth/overview` | legacy | GoalBacklog, growth_advisor | - | `src/mini_agent/api/routes.py:10669` |
 | `POST /v1/growth/scan` | legacy | MemoryStore, growth_advisor | - | `src/mini_agent/api/routes.py:10593` |
 | `GET /v1/growth/summary` | legacy | GoalBacklog, MemoryStore, growth_advisor | - | `src/mini_agent/api/routes.py:10446` |
+| `GET /v1/growth/topic_map` | legacy | growth_advisor | - | `src/mini_agent/api/routes.py:10701` |
 | `GET /v1/health` | none | - | - | `src/mini_agent/api/routes.py:567` |
 | `DELETE /v1/history` | none | - | - | `src/mini_agent/api/routes.py:2244` |
 | `GET /v1/history` | none | - | - | `src/mini_agent/api/routes.py:2213` |

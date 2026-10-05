@@ -348,7 +348,10 @@ docstring 和 `next_doc/growth_advisor_implementation_record.md` 里）。
 ### API
 
 ```
-GET  /v1/growth/summary                              # 候选队列 + 报告列表 + 复盘统计 + 首次触达状态 + 诊断快照
+GET  /v1/growth/summary                              # 兼容聚合端点：候选队列 + 报告列表 + 复盘统计 + 首次触达状态 + 诊断快照（响应结构不变；内部由下面三个端点的 payload 拼装）
+GET  /v1/growth/overview                              # 概览：candidates / reports / retrospective（不含 topic_map）/ first_touch_notice_shown
+GET  /v1/growth/diagnostics[?refresh_diagnostics=true]  # 诊断快照（含 cron_jobs），超时/熔断时返回 {"_note": ...} 占位
+GET  /v1/growth/topic_map                              # 成长主题地图 {topic_map: [...]}，超时/熔断时 [] + _note
 POST /v1/growth/first_touch_ack                       # 标记首次触达提示已展示（幂等）
 POST /v1/growth/scan                                   # 手动触发一轮扫描
 POST /v1/growth/candidates/{id}/accept|dismiss          # 采纳 / 忽略；dismiss 可选 body {"reason": "..."}（见 演进日志 §2.7）；accept 响应体新增 `pursuit` 字段（见 演进日志 §2.12，`auto_pursue_on_accept=false` 时不出现）
@@ -487,8 +490,11 @@ GET  /v1/growth/pursuits                                  # 正在被自主推�
   `topic_map`（默认 `True`，行为不变）。
 - 所有新参数默认 `None`，原调用方无需修改，输出与改动前逐项一致。
 
-> 本节仅描述数据层（方案 A）。看板按板块独立加载、`/growth/overview` 等
-> 拆分端点属于方案 B，实施后会在此补充。
+> 服务端拆分端点（`/growth/overview` / `diagnostics` / `topic_map`）见
+> "API" 一节：三者各自独立的 `blocking_guard` where（`growth_overview` /
+> `growth_diagnostics` / `growth_topic_map`），熔断互不影响；`/growth/summary`
+> 整个请求先建一份趋势索引供诊断与主题地图共用，趋势文件只读 1 次。看板按
+> 板块独立加载属于方案 B 后续阶段，实施后再补充。
 
 ## 7. 当前局限（P1 ~ P6 全部完成后的已知边界）
 
