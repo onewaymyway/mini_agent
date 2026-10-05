@@ -1860,7 +1860,11 @@ class AgentClient:
     # [growth_advisor_autonomy_deepening_plan.md 方向 A3] 兴趣方向 ⇄
     # Goal 对齐分析 + 批量落地。
     def growth_align(self):
-        return self._get("/growth/align", retry=False)
+        # 服务端 `growth_align` 的 run_blocking 硬超时是 45s（开了
+        # `goal_alignment_llm_enabled` 时会调一次 LLM 做语义匹配，6s 默认值
+        # 必超时）；客户端预算取 50s，略大于服务端，避免客户端先放弃而服务端
+        # 仍在算。不重试（见 `_HTTP_NO_READ_RETRY`）。
+        return self._get("/growth/align", timeout=50, retry=False)
 
     def growth_align_adopt_all(self):
         return self._post("/growth/align/adopt_all")

@@ -484,3 +484,11 @@ B 完成后 `section_loader` 已经让看板不再同时发起大量重复请求
 1. **真实 Streamlit 页面**：板块加载、轮询停止、嵌套 fragment 的实际表现（§12 风险 2，测试环境 Streamlit 1.65，项目最低 1.39）。
 2. **真实数据复核**：在真实环境用 `python scripts/bench_growth_summary.py --project-root <项目目录>` 看趋势文件行数与耗时，并对照 `~/.agent/logs/kanban_client_http.jsonl`（§12 风险 1）。若真实趋势文件很小仍然超时，说明还有未测到的因素，需要先查清。
 3. **首屏并发**：7 个后台请求占共享线程池 8 个 worker 中的 7 个（§12 风险 3），上线后观察会话列表等 tab 是否被拖慢。
+
+### 后续修补：`growth_align` 客户端超时 6s → 50s（2026-10-05）
+
+真实环境报 `/v1/growth/align` 读超时（`read timeout=6`）。阶段三只关闭了读重试，没有调整该方法的超时预算（见阶段三取舍 1），而 `agent_config.json` 里 `goal_alignment_llm_enabled=true`，该端点会调一次 LLM，6s 不够。改为 `timeout=50`（略大于服务端 45s 硬超时，仍不重试）。
+
+- 改动：`apps/mini_agent_kanban/client.py::growth_align`；`tests/test_kanban_client_retry.py` 新增 1 用例；`docs/kanban-dashboard-guide.md` 补一句。
+- 只改了 `growth_align`。`growth_followups` / `growth_reports_refresh_candidates` / `growth_pursuits` / `growth_health_trend` 等仍是默认 6s，未改（它们不涉及 LLM）。
+- 这只是放宽等待，没有解决 LLM 调用慢本身，也没有解决"超时后服务端仍在算、重试会叠加"的问题；上一条回复提出的方案（LLM 部分拆出并缓存、single-flight、LLM 失败不触发熔断）尚未实施，等待确认。

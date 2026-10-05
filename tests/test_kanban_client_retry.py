@@ -172,6 +172,13 @@ class TestGrowthTabMethods(unittest.TestCase):
             self.assertEqual(len(self.calls), 1, name)
             self.assertIs(self.calls[0][3], False, name)
 
+    def test_growth_align_timeout_budget_covers_server_hard_timeout(self):
+        # 服务端 growth_align 的 run_blocking 硬超时 45s（开 LLM 语义匹配时会调一次
+        # LLM），客户端预算必须不小于它，否则客户端先放弃、服务端仍在算。
+        self.calls.clear()
+        self.client.growth_align()
+        self.assertEqual((self.calls[0][2], self.calls[0][3]), (50, False))
+
     def test_unrelated_get_keeps_default_retry(self):
         self.calls.clear()
         self.client.decision_profile()

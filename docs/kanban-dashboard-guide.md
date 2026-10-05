@@ -1145,6 +1145,8 @@ GET 改传 `retry=False`，使用 `_HTTP_NO_READ_RETRY` Session——**只对连
 `growth_align` / `growth_health_trend`；其余端点行为不变。新增的三个方法的超时
 预算：`growth_overview` 15s、`growth_diagnostics` 25s（`refresh=True` 为 50s）、
 `growth_topic_map` 25s，对应服务端 `GET /v1/growth/overview|diagnostics|topic_map`。
+`growth_align` 超时预算 50s（略大于服务端 `growth_align` 的 45s 硬超时；开启
+`goal_alignment_llm_enabled` 时该端点会调一次 LLM，原默认 6s 必超时）。
 成长顾问 tab 已不再调用 `growth_summary()`，改为各板块通过 `section_loader` 独立加载
 （见下方"板块独立加载（section_loader）"与"成长顾问 tab 的接入"）；`growth_summary()` 保留供其它调用方使用。
 
