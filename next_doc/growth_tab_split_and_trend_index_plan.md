@@ -1,6 +1,6 @@
 # 成长顾问 tab 概览超时治理：趋势索引（A）+ 概览拆分与板块独立加载（B）
 
-- **状态**：实施中——阶段一（方案 A：A1–A4 趋势索引）、阶段二（B1–B2 服务端拆分端点）、阶段三（B3–B4 客户端）已完成，阶段四起（B5 起，section_loader 与看板）待实施（见 §10 实施状态表与 §13 实施记录）
+- **状态**：实施中——阶段一（方案 A：A1–A4 趋势索引）、阶段二（B1–B2 服务端拆分端点）、阶段三（B3–B4 客户端）、阶段四（B5–B6 section_loader）已完成，阶段五起（B7 看板接入起）待实施（见 §10 实施状态表与 §13 实施记录）
 - **范围**：本轮只做 A + B。C（HTTP 并发与隔离）已确认单独立项，见 §9
 - **关联文档**：
   - `next_doc/growth_summary_client_timeout_fix.md`（上一次只调客户端超时预算 6s→25s 的修复，本文是它的根治版）
@@ -253,8 +253,8 @@ B 完成后 `section_loader` 已经让看板不再同时发起大量重复请求
 | B2 | 测试 `test_growth_split_endpoints.py` | `tests/` | ✅ 已完成（阶段二） |
 | B3 | 客户端新方法、`_HTTP_NO_READ_RETRY`、`retry` 参数、成长顾问 GET 关闭读重试 | `apps/mini_agent_kanban/client.py` | ✅ 已完成（阶段三） |
 | B4 | 测试 `test_kanban_client_retry.py` | `tests/` | ✅ 已完成（阶段三） |
-| B5 | `section_loader.py`（`SectionCache` + `render_section`） | `apps/mini_agent_kanban/section_loader.py` | 待实施 |
-| B6 | 测试 `test_kanban_section_loader.py` | `tests/` | 待实施 |
+| B5 | `section_loader.py`（`SectionCache` + `render_section`） | `apps/mini_agent_kanban/section_loader.py` | ✅ 已完成（阶段四） |
+| B6 | 测试 `test_kanban_section_loader.py` | `tests/` | ✅ 已完成（阶段四） |
 | B7 | `render_growth_tab` 改造：各板块接入 `render_section`、写操作失效、主题地图按需加载 | `apps/mini_agent_kanban/app.py` | 待实施 |
 | B8 | 压测脚本 | `scripts/bench_growth_summary.py` | 待实施 |
 | D1 | 文档（阶段一已先行更新 `docs/growth-advisor-guide.md` 趋势索引小节，其余随各阶段补）：成长顾问指南（端点、性能说明）、看板指南（加载行为）、旧修复文档补"局限与后续"、端点清单 | `docs/growth-advisor-guide.md`、`docs/kanban-dashboard-guide.md`、`next_doc/growth_summary_client_timeout_fix.md`、`next_doc/kanban_feature_inventory.md`、`docs/architecture_v2/phase10-entrypoint-inventory.md` | 待实施 |
@@ -362,3 +362,29 @@ B 完成后 `section_loader` 已经让看板不再同时发起大量重复请求
 - 把 `retry=False` 路径改回共享 Session 后，读超时与 504 两个用例转红。
 - 回归：workflow editor / phase10 / 本测试共 183 例通过。
 - 看板 `app.py` 未改动，仍调用 `growth_summary()`；本阶段无 UI 变化。
+
+### 阶段四：方案 B 板块加载机制（B5–B6，已完成）
+
+**改动文件**
+
+| 文件 | 内容 |
+|---|---|
+| `apps/mini_agent_kanban/section_loader.py`（新增） | `SectionCache`（`get` / `refresh` / `invalidate` / `invalidate_all` / `peek` / `is_pending`）+ `render_section()` / `get_cache()` / `invalidate_sections()` |
+| `tests/test_kanban_section_loader.py`（新增） | 20 用例 |
+| `docs/kanban-dashboard-guide.md` | 新增"板块独立加载（section_loader）"一节与相关文件条目 |
+
+本阶段**不接入看板界面**（`app.py` 未改），接入在 B7。
+
+**实施取舍（与方案文字的差异）**
+
+1. **轮询方式**：方案写"用 `st.rerun(scope="fragment")` 做轻量轮询"。但 `app.py` 里已有记录（`_dialog_sync_fetch` / `_render_goal_tree_report_fragment` 注释）：`scope="fragment"` 在"全量重跑阶段首次进入 fragment"时会抛 `StreamlitInvalidLayoutContextError`，永远进不了真正的局部重跑。因此改用 `@st.fragment(run_every=poll_seconds)`：loading / 后台刷新时才带 `run_every`；加载结束后在 fragment 内调用一次整页 `st.rerun()`，让下一轮换成无 `run_every` 的 fragment，停止轮询。代价是每个板块加载完成会触发一次整页重跑（多个板块同时完成时相互合并/打断，开销很小）。这是方案 §12 风险 2 里"需要验证的点"，**真实浏览器里的定时重跑行为仍需人工确认**（见下）。
+2. **失败不自动重试**：方案写"请求失败…无缓存则返回 error"，未明确是否自动重试。实现为失败后不自动重试（沿用 `_dialog_sync_fetch` 的约定），避免后端有问题时无限刷屏；`refresh` / `invalidate` 才会重新请求。
+3. **失效与在途请求**：方案只说"失效不丢旧数据"。补充了在途期间失效的语义（见指南表格）：用 `gen` / `fresh_gen` 两个计数实现，避免写操作之前发出的请求结果被当成最新。
+4. 增加 `ui_key`：同一份数据被两个板块共享（相同 `key`）时，按钮 widget key 不冲突。
+
+**验证**
+
+- `SectionCache` 纯逻辑：状态流转 loading→ready；TTL 内不重复请求；过期返回旧数据并后台刷新；失败时保留旧数据；`_error` 视同失败；失败后不自动重试；`refresh` 只重试本板块；`invalidate` 保留旧数据并刷新；在途期间失效会再刷新一次；提交失败转为 error；共享 key 单在途；真实线程池下并发 `get` 只发 1 次请求。
+- 变异检查：让失败后自动重试 → 对应用例转红；让在途失效不触发再刷新 → 对应用例转红。
+- Streamlit 包装层用 `streamlit.testing.v1.AppTest` 烟雾测试（Streamlit 1.65 下）：ready 渲染；loading 时不阻塞页面其余内容；error 显示错误与重试按钮、点击不抛异常；`@st.fragment` 外层 + 循环内多个板块嵌套时各板块独立渲染。
+- **未验证**：`AppTest` 不会触发 `run_every` 定时重跑，也不是真实浏览器，所以"loading → 自动出现数据 → 轮询停止"的完整链路没有在真实 Streamlit 服务里跑过；也只在 Streamlit 1.65 上测过，`requirements.txt` 的最低版本是 1.39。若真实环境发现问题，方案 §12 的回退是"板块内 `time.sleep` 短轮询 + 整页 `st.rerun()`"，`SectionCache` 不受影响。B7 接入后需要在真实页面点一遍。

@@ -1289,10 +1289,39 @@ Tab 的"关键词管理"板块）最初没有包 `@st.fragment`，导致勾选/�
 （或对应 Tab 下的同类兜底函数）包一层，做到"单个板块出错/卡顿只影响它
 自己，不拖垮整个 Tab"。
 
+## 板块独立加载（section_loader）
+
+`apps/mini_agent_kanban/section_loader.py`（`next_doc/growth_tab_split_and_trend_index_plan.md`
+§6.4）让一个 tab 里的每个板块各自后台加载、各自 TTL 缓存、各自展示
+loading / 错误 / 重试，任何一个慢或失败都不影响其它板块。成长顾问 tab 是第一个
+使用者（接入见该方案后续阶段），其它 tab 以后可直接复用。
+
+**纯逻辑层 `SectionCache(store, submit)`**（不依赖 streamlit，`store` 传
+`st.session_state`，`submit` 传 `client.submit_async`）：
+
+| 场景 | 行为 |
+|---|---|
+| 无缓存 | 提交后台任务，返回 `loading` |
+| 有缓存且未过期 | 直接返回 `ready`，不发请求 |
+| 有缓存但过期 / 被失效 | 返回旧数据（`stale=True`）并后台刷新，界面不闪空 |
+| 请求失败（异常或返回 `{"_error": ...}`） | 有旧数据则继续展示并带 `error`；无则 `error` 状态。**失败后不自动重试**，要点"🔄 重试"（`refresh`）或写操作后 `invalidate` |
+| 同一 key | 同时只有一个在途请求；多个板块可共享同一 key（如诊断信息与"Agent 对你的了解"） |
+| 请求在途时发生 `invalidate` | 在途结果仍入缓存，但立即判定过期并再刷新一次，不会把写操作前的数据当最新 |
+
+**包装层 `render_section(key, label, fetch_fn, ttl, render_fn, *, submit, ui_key=)`**：
+loading 时原地显示"⏳ 正在加载 …"，用 `@st.fragment(run_every=…)` 只重跑本板块轮询
+（刻意不用 `st.rerun(scope="fragment")`，原因见 `app.py::_dialog_sync_fetch` 注释）；
+加载结束后做一次整页 `st.rerun()` 换成不带 `run_every` 的 fragment 以停止轮询；错误时
+本板块显示错误与重试按钮。共享同一 `key` 的多个板块需传不同的 `ui_key`，避免按钮
+widget key 冲突。写操作之后用 `invalidate_sections(submit, *keys)` 使相关板块失效。
+
 ## 相关文件
 
 - `apps/mini_agent_kanban/app.py` — 看板主程序（15 个 Tab）
 - `apps/mini_agent_kanban/client.py` — `AgentClient` HTTP 封装
+- `apps/mini_agent_kanban/section_loader.py` — 板块独立加载机制：
+  `SectionCache`（纯逻辑，stale-while-revalidate 缓存）+ `render_section()`
+  （Streamlit 包装层）。见下方"板块独立加载（section_loader）"
 - `apps/mini_agent_kanban/README.md` — 应用自带的简要说明
 - `docs/http-api-guide.md` — HTTP API 完整参考
 - `docs/artifacts-dashboard-guide.md` — 产出物 Manifest 设计与自动侦测开关详解
