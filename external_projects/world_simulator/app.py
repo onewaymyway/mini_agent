@@ -33,7 +33,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import streamlit as st
 
@@ -1807,6 +1807,20 @@ def page_create() -> None:
         _ep_prev = (st.session_state.get("create_element_params") or {})
         create_max_elements = _limit_input("创建时元素总数上限", "create_max_elements", _ep_prev, _ep_defaults)
         create_max_per_domain = _limit_input("每个领域下的元素上限", "create_max_per_domain", _ep_prev, _ep_defaults)
+    with st.expander("重点元素拆解（第二十四轮 A2）"):
+        st.markdown(
+            '<span class="ws-muted">让 AI 对最关键的几个元素（技术优先）进一步拆开：构成、关键指标、瓶颈、里程碑、假设、先行信号。'
+            "拆解内容都标为「LLM 先验」（没有外部出处的猜测），生成后可在下方逐条确认或驳回；"
+            "A2 阶段推进时还不会使用这些内容。会略增生成草稿的 token 成本。</span>",
+            unsafe_allow_html=True,
+        )
+        _an_prev = st.session_state.get("create_anatomy") or {}
+        create_anatomy_on = st.checkbox(
+            "拆解重点元素", value=bool(_an_prev.get("enabled", True)), key="create_anatomy_enabled",
+        )
+        create_key_count = _limit_input(
+            "重点元素个数", "key_element_count", _an_prev, anatomy_mod.get_params(None),
+        )
     observer_mode = st.checkbox(
         "🔭 Observer 模式（世界独立演化最小实验，阶段三十一 4.25 节——仅自动挡"
         "下生效，提示 AI 优先让背景/宏观因果线自然演化、尽量不产生需要立刻"
@@ -1885,6 +1899,9 @@ def page_create() -> None:
                 "create_max_elements": create_max_elements,
                 "create_max_per_domain": create_max_per_domain,
             }
+            st.session_state["create_anatomy"] = {
+                "enabled": bool(create_anatomy_on), "key_element_count": create_key_count,
+            }
             if time_granularity_mode == "fixed":
                 st.session_state["create_granularity_custom"] = time_granularity
             elif time_granularity_mode == "guided":
@@ -1900,6 +1917,8 @@ def page_create() -> None:
                 "observer_mode": bool(observer_mode),
                 "event_priors_proposal_enabled": bool(propose_event_priors),
                 "element_params": dict(st.session_state["create_element_params"]),
+                "anatomy_enabled": bool(st.session_state["create_anatomy"]["enabled"]),
+                "anatomy_params": {"key_element_count": st.session_state["create_anatomy"]["key_element_count"]},
             }
             st.session_state["create_settings"] = settings
             with st.spinner("正在生成提案草稿..."):
@@ -2041,6 +2060,7 @@ def page_create() -> None:
             '"likelihood": "medium"}]}}]',
         )
         picked_candidate_ids = _render_element_overview_and_candidates(draft, causal_lines_text)
+        _key_pick, _anatomy_decisions = _render_anatomy_review(draft, causal_lines_text)
 
     # ── 因果图先验声明（第五轮方案 5.4 节）：区别于「因果线总览」里
     # 能看到的"实际发生过"的历史统计，这里声明的是"这条线一般来说会
@@ -2420,6 +2440,8 @@ def page_create() -> None:
             for _cand in getattr(draft, "element_candidates", None) or []:
                 if _cand.get("id") in picked_candidate_ids and element_mod.resolve(causal_lines, _cand["id"]) is None:
                     causal_lines.append(dict(_cand))
+            # 第二十四轮 A2：重点元素勾选与逐条审阅结果落到线上（用户没动过就原样）
+            causal_lines = anatomy_mod.apply_creation_review(causal_lines, _key_pick, _anatomy_decisions)
             declared_causal_graph = (
                 [item for item in declared_causal_graph_parsed if isinstance(item, dict)]
                 if isinstance(declared_causal_graph_parsed, list) else []
@@ -2477,7 +2499,7 @@ def page_create() -> None:
                 "create_feedback", "create_settings", "create_options_count",
                 "create_granularity_preset", "create_granularity_custom", "create_resource_fields",
                 "create_resource_relations", "create_objectives", "create_calibration_notes",
-                "create_background_entities", "create_causal_lines", "create_belief_fields", "create_element_params",
+                "create_background_entities", "create_causal_lines", "create_belief_fields", "create_element_params", "create_anatomy",
                 "create_split_decision_calls", "create_declared_causal_graph",
                 "create_split_creation_calls", "create_observer_mode",
                 "create_desired_state", "create_propose_event_priors",
@@ -3114,6 +3136,47 @@ def _render_element_overview_and_candidates(draft: Any, causal_lines_text: str) 
         "候选元素（勾选加回）", options=list(labels), format_func=lambda i: labels[i],
         key="create_element_candidates_pick",
     ))
+
+
+def _render_anatomy_review(draft: Any, causal_lines_text: str) -> Tuple[Optional[List[str]], Dict[Tuple[str, str, str], str]]:
+    """创建向导：重点元素勾选 + 对每个重点元素的拆解逐条审阅（确认/驳回/保持）。
+
+    返回 `(用户勾选的重点元素 id 或 None, {(元素, part, 条目): 动作})`。线里没有任何剖面（拆解关闭或旧模板）时
+    什么都不画、返回 `(None, {})`，与以前的向导视觉一致。编辑内容请直接改上面的因果线 JSON（改过的内容仍是「LLM 先验」）。
+    """
+    parsed = _safe_json_loads(causal_lines_text, None)
+    lines = [x for x in (parsed if isinstance(parsed, list) else getattr(draft, "causal_lines", None) or [])
+             if isinstance(x, dict) and str(x.get("id") or "").strip()]
+    elements = [x for x in lines if element_mod.line_kind(x) == "element"]
+    if not any(anatomy_mod.get_anatomy(x) is not None for x in elements):
+        return None, {}
+    labels = {str(x["id"]): f"{x.get('label') or x['id']}（{x.get('element_type') or '元素'}）" for x in elements}
+    default_keys = [str(x["id"]) for x in elements if anatomy_mod.is_key(x)]
+    st.markdown("**重点元素拆解审阅**（拆解内容目前都是 AI 的先验猜测，没有外部出处）")
+    key_pick = list(st.multiselect(
+        "重点元素（取消勾选不会删除已有内容，只是不再当作重点）", options=list(labels), default=default_keys,
+        format_func=lambda i: labels[i], key="create_anatomy_key_pick",
+    ))
+    decisions: Dict[Tuple[str, str, str], str] = {}
+    action_labels = {"keep": "保持（先验）", "confirm": "确认", "reject": "驳回（删除）"}
+    for line in elements:
+        eid = str(line["id"])
+        prof = element_view_mod.build_profile({"element_modeling_enabled": True, "anatomy_enabled": True, "causal_lines": [line]}, eid)
+        if eid not in key_pick or not prof.get("has_anatomy") or not prof["sections"]:
+            continue
+        with st.expander(f"审阅「{labels[eid]}」的拆解（{prof['stats']['total']} 项）"):
+            for sec in prof["sections"]:
+                st.markdown(f"**{sec['label']}**")
+                for row in sec["rows"]:
+                    c1, c2 = st.columns([4, 1])
+                    with c1:
+                        st.markdown(f"{row['name']}　{row['detail']}")
+                    with c2:
+                        decisions[(eid, sec["part"], row["id"])] = st.selectbox(
+                            "处理", options=list(action_labels), format_func=lambda a: action_labels[a],
+                            key=f"create_anatomy_review_{eid}_{sec['part']}_{row['id']}", label_visibility="collapsed",
+                        )
+    return key_pick, decisions
 
 
 def _render_causal_lines_overview(

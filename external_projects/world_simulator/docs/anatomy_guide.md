@@ -1,8 +1,8 @@
 # 元素剖面（anatomy）指南
 
 > 第二十四轮。设计依据：`next_doc/world_simulator_element_anatomy_evidence_and_forecast_plan.md`。
-> **本文只写已落地的行为**，随阶段增补。当前已落地：**A1（数据模型、存取层、兼容、只读档案）**。
-> A2 创建期拆解、A3 联网证据、A4 引擎骨架、A5 推进期深化、A6 蒙特卡洛、A7 预测简报、A8 指标回测尚未实施。
+> **本文只写已落地的行为**，随阶段增补。当前已落地：**A1（数据模型、存取层、兼容、只读档案）、A2（创建期拆解 + 向导审阅）**。
+> A3 联网证据、A4 引擎骨架、A5 推进期深化、A6 蒙特卡洛、A7 预测简报、A8 指标回测尚未实施。
 
 ## 1. 它是什么
 
@@ -85,7 +85,7 @@ technology / project / organization / person / asset / policy / market / resourc
 
 ## 9. 已知边界（A1）
 
-- 没有任何生成剖面的路径（A2/A3 才有），实际使用只能经 `set_anatomy`；因此界面目前只有在有人/后续阶段写入后才会出现档案。
+- （A1 当时）没有生成剖面的路径；A2 起创建期会产生草稿，见 §11。
 - `maps_to_stage` 只当字符串保存，不校验是否是 `tech_model.STAGES` 之一（A4 判定时处理）。
 - `adoption_gates.unlocks` 只认 `adoption_cap`，其余键被丢弃，A4 定义更多解锁项时再放开。
 - 跨元素引用（`元素#子项`）A1 不解析；解析复用 `element_registry.resolve`，在 A4 条件求值时接入。
@@ -94,6 +94,49 @@ technology / project / organization / person / asset / policy / market / resourc
 
 ## 10. 测试
 
+`tests/test_anatomy_creation.py`（A2，17 个用例）：重点元素选择、种子落成草稿的强制改写、空壳/非重点丢弃/种子键不落盘、创建提示开关与前缀、单次与拆分两条路径一致、审阅与勾选纯函数、落盘；9 个变异全部转红。
+
 `tests/test_anatomy.py`（31 个用例，无需真实 LLM）：规整（非法丢弃/不补缺省/幂等/体积上限/id 规则/数值与区间）、basis 规则、趋势无白名单、条件树形状与深度、
 模板（返回拷贝、无数值）、参数回退（`null`/0/非法）、存取（领域线/退场拒绝、清除、旧式线可写）、`normalize_element` 契约、快照往返回滚、
 新实例开关、合并保护（被并入方拒绝/保留方放行）、统计、体检、累计日、档案视图门控与内容。8 个变异（sourced 降级、区间颠倒、趋势白名单、合并保护、开关默认、规整接线、领域线拒绝、统计）全部转红。
+
+## 11. 创建期拆解与向导审阅（A2）
+
+**流程**：创建 prompt 末尾追加一段（`anatomy.create_hint`），要求 LLM 对最关键的元素在其 `causal_lines` 条目里额外给 `anatomy_seed`；
+引擎在预算裁剪之后（`element_registry.prepare_created_lines` → `anatomy.apply_seeds`）选出重点元素并把种子落成**草稿**剖面。
+单次创建与拆分创建（世界构建 + 因果空间构建）共用同一个提示入口，行为一致（测试覆盖两条路径）。
+
+**开关**：创建时 `anatomy_enabled` **缺省视为开启**（同 `element_modeling_enabled` 的创建期约定），显式 `False`、元素模式创建被关、
+或 `anatomy_params.key_element_count = 0` 时关闭——此时 prompt 是开启时 prompt 的**逐字节前缀**（只在末尾追加），落盘内容与没有本功能时一致。
+`anatomy_seed` 键**任何情况下都不会落盘**（关闭时也会被摘掉）。推进阶段的 prompt 不受影响。
+
+**重点元素选择**（`anatomy.select_key_elements`）：存活的 `kind=element` 线中，按 **先验边端点 > `technology` 类型 > LLM 给的顺序** 取前 `key_element_count`
+（默认 5，`null` = 不限，`0` = 一个都不选）。领域线、没有 `kind` 的旧式独立线、已退场元素不参与。
+
+**种子落成草稿**（`anatomy.seed_to_anatomy`）——LLM 没有权限声明以下内容，引擎强制改写：
+- 所有 `basis` 清掉，一律 `llm_prior`（LLM 不能声称"有出处/已确认"）；
+- 引擎状态字段被剥掉：瓶颈路径的 `status`/`resolve_at_day`、里程碑的 `reached_step`/`reached_sim_day`（A4 引擎才拥有）；
+  瓶颈本身的 `status`（如起点就已解决）是合法声明，保留；
+- `meta` 重写为 `{anatomy_status: draft, key: true, template}`。
+重点元素没给种子（或种子规整后为空）→ 写一个**空壳** `{meta: {anatomy_status: none, key: true, template}}`，让 A3 的研究知道它是重点；
+非重点元素的种子丢弃（只有重点元素享受拆解）；被预算裁掉的候选元素也不带种子。
+
+**向导**（`app.py`）：
+- 「重点元素拆解（A2）」折叠区：开关 + 重点元素个数（含"不限"），写入 `settings.anatomy_enabled` / `anatomy_params.key_element_count`；
+- 生成草稿后新增审阅区（只有线里确实有剖面才出现）：重点元素多选（取消勾选**不删除**内容，只把 `key` 置 false；新勾选的无剖面元素得到空壳）、
+  每个重点元素一个折叠区，**每条拆解各一个"保持/确认/驳回"**；确认 → `user_confirmed`（保留已有证据 id，指标现值一并确认），驳回 → 删除该条，保持 → 仍是 `llm_prior`。
+  全部条目都已确认/有出处 → `anatomy_status = reviewed`，否则 `draft`。
+- 落盘时一次性套用（`anatomy.apply_creation_review`）；用户没动过重点元素多选时（`None`）不改动。
+- **编辑内容**请直接改向导里的因果线 JSON（改过的内容仍标 `llm_prior`）；A2 不提供逐字段编辑控件。
+
+**纯函数（均不改入参）**：`select_key_elements` / `seed_to_anatomy` / `apply_seeds`（就地改刚创建的线）/ `apply_key_selection` / `apply_review` / `apply_creation_review`。
+
+**与计划的偏差/细化（A2）**
+1. 没有 `kind` 的旧式独立线不当作元素，不拆解（保守，且保持既有测试与旧草稿行为不变）。
+2. 审阅粒度是"每条拆解"（组件/指标/瓶颈…各条），不到指标现值/参数这类叶子字段；指标的现值随条目一起确认。
+3. 向导不提供逐字段编辑控件（见上）；"驳回"= 删除该条而不是"回到 llm_prior"，因为被驳回的内容没有保留价值。
+4. 驳回某条不会自动清理引用它的其它条目；悬空引用由体检（`validate_anatomy`）报告，不静默改别处。
+5. 向导的"重点元素个数"没有走 `element_params`，而是独立的 `anatomy_params`，与计划 §7 一致。
+
+**已知边界（A2）**：未在真实 LLM 下验证 LLM 是否遵守 `anatomy_seed` 格式（解析失败/不合规时降级为空壳，不阻断创建）；
+向导新控件只做了静态检查（`py_compile`），没有在真实页面点过；创建期拆解尚未联网（A3）。

@@ -939,3 +939,231 @@ def validate_anatomy(
                         if ev not in known:
                             problems.append({"kind": "dangling_evidence", "where": label, "message": f"证据 {ev} 不存在"})
     return problems
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 第二十四轮 A2：创建期拆解（重点元素选择、`anatomy_seed` 提示与落成、向导审阅）
+#
+# 纯 Python、不调 LLM。LLM 只在创建 prompt 里被要求给 `anatomy_seed`（见 `create_hint`）；
+# 引擎拿到后由 `apply_seeds` 落成 `anatomy`——**LLM 不能自己声明"有出处/已确认"，也不能写引擎状态**。
+# ═════════════════════════════════════════════════════════════════════
+
+SEED_KEY = "anatomy_seed"
+# 创建期 LLM 不得写入的引擎状态字段（A4 引擎才拥有它们）。
+_ENGINE_PATH_FIELDS = ("status", "resolve_at_day")
+_ENGINE_MILESTONE_FIELDS = ("reached_step", "reached_sim_day")
+
+
+def creation_enabled(settings: Optional[Dict[str, Any]]) -> bool:
+    """创建阶段是否拆解重点元素。创建时 manifest 还没写开关，所以**缺省视为开启**（新实例默认开，计划 §7）；
+    只有元素模式创建被关掉、或显式 `anatomy_enabled=False` 才关。"""
+    return er.creation_enabled(settings) and (settings or {}).get("anatomy_enabled", True) is not False
+
+
+def select_key_elements(
+    lines: List[Dict[str, Any]], edges: Optional[List[Dict[str, Any]]], params: Dict[str, Any],
+) -> List[str]:
+    """重点元素选择（计划 §5.2.4）：存活的元素线（`kind=element`）中，按 **先验边端点 > `technology` 类型 > LLM 给的顺序**
+    取前 `key_element_count` 个（`None` = 全部，`0` = 一个都不选）。返回线 id（按优先级排序）。"""
+    limit = params.get("key_element_count")
+    # 只有明确是元素（`kind=element`）的线参与：没有 `kind` 的旧式独立线不是"元素"，不拆解（保守，行为不变）。
+    candidates = [x for x in lines if er.line_kind(x) == "element" and er.is_alive(x)]
+    endpoint_ids: set = set()
+    for edge in edges or []:
+        if not isinstance(edge, dict):
+            continue
+        for key in ("from_line_id", "to_line_id"):
+            hit = er.resolve(candidates, edge.get(key))
+            if hit is not None:
+                endpoint_ids.add(str(hit["id"]).strip())
+    ranked = sorted(
+        enumerate(candidates),
+        key=lambda t: (
+            0 if str(t[1]["id"]).strip() in endpoint_ids else 1,
+            0 if str(t[1].get("element_type") or "").strip().lower() == er.TECHNOLOGY_TYPE else 1,
+            t[0],
+        ),
+    )
+    ids = [str(x["id"]).strip() for _, x in ranked]
+    return ids if limit is None else ids[: max(0, int(limit))]
+
+
+def seed_to_anatomy(seed: Any, element_type: Any) -> Tuple[Dict[str, Any], List[str]]:
+    """LLM 的 `anatomy_seed` → 创建期剖面 `(剖面, 被丢弃项说明)`。
+
+    规整后再**强制**：所有条目 `basis` 一律回到 `llm_prior`（LLM 无权声明出处/已确认）、剥掉引擎状态字段
+    （路径 `status`/`resolve_at_day`、里程碑 `reached_*`）、`meta` 重写为 `{anatomy_status: draft, key: true, template}`。
+    """
+    anatomy, dropped = normalize_anatomy_report(seed)
+    for part in PARTS:
+        for item in anatomy.get(part) or []:
+            item.pop("basis", None)
+            cur = item.get("current")
+            if isinstance(cur, dict):
+                cur.pop("basis", None)
+            for path in item.get("resolution_paths") or []:
+                for f in _ENGINE_PATH_FIELDS:
+                    path.pop(f, None)
+            if part == "milestones":
+                for f in _ENGINE_MILESTONE_FIELDS:
+                    item.pop(f, None)
+    anatomy["meta"] = {
+        "anatomy_status": "draft", "key": True, "template": anatomy_templates.template_name(element_type),
+    }
+    return normalize_anatomy(anatomy), dropped
+
+
+def _key_shell(element_type: Any) -> Dict[str, Any]:
+    """没有内容的重点元素壳：`anatomy_status=none`，让后续研究阶段（A3）知道它是重点。"""
+    return {"meta": {"anatomy_status": "none", "key": True, "template": anatomy_templates.template_name(element_type)}}
+
+
+def apply_seeds(
+    lines: List[Dict[str, Any]], edges: Optional[List[Dict[str, Any]]], settings: Optional[Dict[str, Any]],
+) -> List[str]:
+    """创建后处理（`element_registry.prepare_created_lines` 末尾调用）。**就地改 `lines`**，返回说明列表。
+
+    - 任何情况下都把 `anatomy_seed` 摘掉（它不是持久字段，不能漏进落盘数据）；
+    - 创建拆解开启时：选出重点元素，有种子的落成 `anatomy`（草稿），没种子的给一个空壳；
+      非重点元素的种子丢弃（计划：只有重点元素享受拆解）；
+    - 关闭时到此为止，线的内容与没有本功能时一致。
+    """
+    seeds: Dict[str, Any] = {}
+    for line in lines:
+        if SEED_KEY in line:
+            seeds[str(line["id"]).strip()] = line.pop(SEED_KEY)
+    if not creation_enabled(settings):
+        return []
+    notes: List[str] = []
+    key_ids = set(select_key_elements(lines, edges, get_params(settings)))
+    for line in lines:
+        lid = str(line["id"]).strip()
+        if lid not in key_ids:
+            if lid in seeds:
+                notes.append(f"{lid}：不是重点元素，拆解草稿未保留")
+            continue
+        if get_anatomy(line) is not None:
+            continue
+        seed = seeds.get(lid)
+        if seed is not None:
+            anatomy, dropped = seed_to_anatomy(seed, line.get("element_type"))
+            notes.extend(f"{lid}：{d}" for d in dropped)
+            if any(anatomy.get(p) for p in PARTS):
+                line["anatomy"] = anatomy
+                continue
+        line["anatomy"] = _key_shell(line.get("element_type"))
+    return notes
+
+
+def apply_key_selection(lines: List[Dict[str, Any]], key_ids: Iterable[str]) -> List[Dict[str, Any]]:
+    """向导里用户勾选的重点元素 → 返回新的线列表（不改入参）：被选中的标 `key=true`（没有剖面就给空壳），
+    没被选中的把 `key` 置 false（**不删除**已有内容）。领域线与不存在的 id 忽略。"""
+    wanted = {str(k).strip() for k in key_ids}
+    out: List[Dict[str, Any]] = []
+    for line in lines:
+        line = dict(line)
+        lid = str(line.get("id") or "").strip()
+        if er.line_kind(line) == "element" and lid:
+            cur = get_anatomy(line)
+            if lid in wanted:
+                if cur is None:
+                    line["anatomy"] = _key_shell(line.get("element_type"))
+                else:
+                    line["anatomy"] = {**cur, "meta": {**(cur.get("meta") or {}), "key": True}}
+            elif cur is not None and (cur.get("meta") or {}).get("key"):
+                line["anatomy"] = {**cur, "meta": {**cur["meta"], "key": False}}
+        out.append(line)
+    return out
+
+
+REVIEW_ACTIONS = ("keep", "confirm", "reject")
+
+
+def _all_reviewed(anatomy: Dict[str, Any]) -> bool:
+    carriers = list(_basis_carriers(anatomy))
+    return bool(carriers) and all(basis_of(c)["state"] in ("user_confirmed", "user_edited", "sourced") for c in carriers)
+
+
+def apply_review(
+    anatomy: Optional[Dict[str, Any]], decisions: Dict[Tuple[str, str], str],
+) -> Dict[str, Any]:
+    """向导逐字段审阅（计划 §5.4.4）：`decisions[(part, item_id)] ∈ keep/confirm/reject`。返回新剖面（不改入参）。
+
+    - `confirm`：该条目 `basis.state = user_confirmed`（**保留已有证据 id**；指标的 `current` 一并确认）；
+    - `reject`：整条删除（条目没了，引用它的别处会在体检里报悬空，不静默改别处）；
+    - `keep` / 未列出：不动，仍是 `llm_prior`；
+    - 全部条目都已确认/编辑/有出处 → `anatomy_status = reviewed`，否则保持 `draft`。
+    """
+    cur = normalize_anatomy(anatomy)
+    if not cur:
+        return {}
+    out: Dict[str, Any] = {}
+    for part in PARTS:
+        kept = []
+        for item in cur.get(part) or []:
+            action = decisions.get((part, item["id"]), "keep")
+            if action == "reject":
+                continue
+            item = dict(item)
+            if action == "confirm":
+                item["basis"] = {**basis_of(item), "state": "user_confirmed"}
+                if isinstance(item.get("current"), dict):
+                    item["current"] = {**item["current"], "basis": {**basis_of(item["current"]), "state": "user_confirmed"}}
+            kept.append(item)
+        if kept:
+            out[part] = kept
+    meta = dict(cur.get("meta") or {})
+    if any(out.get(p) for p in PARTS):
+        meta["anatomy_status"] = "reviewed" if _all_reviewed(out) else "draft"
+    else:
+        meta["anatomy_status"] = "none"
+    out["meta"] = meta
+    return normalize_anatomy(out)
+
+
+def create_hint(settings: Optional[Dict[str, Any]]) -> str:
+    """创建 prompt 里的剖面段落（拼在 `_element_create_hint` 末尾）。关闭时返回空串（prompt 逐字节不变）。
+    只改"怎么要求 skill 规划"，输出仍是同一个 `causal_lines` 数组，条目多一个可选的 `anatomy_seed`。"""
+    if not creation_enabled(settings):
+        return ""
+    limit = get_params(settings)["key_element_count"]
+    count = "不限个数" if limit is None else f"大约 {limit} 个以内"
+    if limit == 0:
+        return ""
+    slots = "；".join(anatomy_templates.slot_hint(t) for t in ("technology", "project", "policy"))
+    return (
+        f"\n**重点元素拆解（可选）**：对最关键的元素（{count}，优先选与其他元素有先验因果关系的、以及技术类），"
+        "在它的 `causal_lines` 条目里额外给一个 `anatomy_seed` 对象，把它拆开而不是只当成一个整体。`anatomy_seed` 可含以下数组（都可省略）："
+        "`components`（构成/子系统：`id`、`name`、`readiness` 0~1）、"
+        "`metrics`（关键指标：`id`、`name`、`unit`、`current`:{`value`,`as_of`}、`target`:{`op`,`value`}、`trend`:{`kind`,`params`:{名:{`value`,`low`,`high`}}}）、"
+        "`bottlenecks`（瓶颈：`id`、`type`、`severity`、`resolution_paths`:[{`id`,`desc`,`p_success`,`duration_days`:{`low`,`mode`,`high`}}]）、"
+        "`milestones`（里程碑：`id`、`desc`、`criteria`、`maps_to_stage`）、"
+        "`assumptions`（关键假设：`id`、`statement`、`prior_p_true`）、"
+        "`signals`（先行信号：`id`、`watch`、`means`）。"
+        f"不同类型关注的槽位不同，例如：{slots}。"
+        "**不确定的数值就不要给，不要为了填满字段编造**——这些内容会被标成「LLM 先验」（没有外部出处的猜测），"
+        "并由用户逐条审阅；不要在里面写出处、已确认之类的声明，也不要写瓶颈是否已被解决。"
+        "没有把握拆解的元素就不给 `anatomy_seed`。"
+    )
+
+
+def apply_creation_review(
+    lines: List[Dict[str, Any]], key_ids: Optional[Iterable[str]],
+    decisions: Optional[Dict[Tuple[str, str, str], str]],
+) -> List[Dict[str, Any]]:
+    """向导"保存"时一次性落地：先按 `key_ids` 调整重点元素（`None` = 用户没动过，不改），
+    再对每个元素套 `apply_review`。`decisions[(元素 id, part, 条目 id)]`。返回新线列表，不改入参。"""
+    out = apply_key_selection(lines, key_ids) if key_ids is not None else [dict(x) for x in lines]
+    by_element: Dict[str, Dict[Tuple[str, str], str]] = {}
+    for (eid, part, iid), action in (decisions or {}).items():
+        if action in REVIEW_ACTIONS and action != "keep":
+            by_element.setdefault(str(eid), {})[(part, iid)] = action
+    for line in out:
+        lid = str(line.get("id") or "").strip()
+        if lid in by_element and get_anatomy(line) is not None:
+            reviewed = apply_review(line["anatomy"], by_element[lid])
+            if reviewed:
+                line["anatomy"] = reviewed
+            else:
+                line.pop("anatomy", None)
+    return out

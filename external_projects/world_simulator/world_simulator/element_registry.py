@@ -738,7 +738,14 @@ def prepare_created_lines(
             line.setdefault("origin", "seed")
             line.setdefault("born_step", 0)
             line.setdefault("profile_status", "complete")
-    return clip_to_budget(normalized, edges, get_params(settings))
+    kept, cut = clip_to_budget(normalized, edges, get_params(settings))
+    # 第二十四轮 A2：重点元素选择 + `anatomy_seed` 落成剖面草稿（关闭时只摘掉种子键）。
+    from world_simulator import anatomy  # 函数内延迟导入：anatomy 反过来依赖本模块
+
+    anatomy.apply_seeds(kept, edges, settings)
+    for line in cut:
+        line.pop(anatomy.SEED_KEY, None)
+    return kept, cut
 
 
 # ═════════════════════════════════════════════════════════════════════

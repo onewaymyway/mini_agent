@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Sequence
 
-from world_simulator import element_registry, element_tiers
+from world_simulator import anatomy, element_registry, element_tiers
 from world_simulator.causal_tree import suggest_status_transitions
 from world_simulator.state_model import ChoiceOption
 
@@ -209,6 +209,8 @@ def _element_create_hint(lines: "List[Dict[str, Any]]", settings: "Dict[str, Any
         "\"note\": \"一句话说明\"}，端点可以是领域线或元素线的 id（用上面 `causal_lines` 里的 id）；"
         "没有明显的先验关系就不用输出这个字段或给空数组，不要为了填这个字段而牵强地编造。"
     )
+    # 第二十四轮 A2：重点元素拆解（`anatomy_seed`）。关闭或 `key_element_count=0` 时为空串，prompt 逐字节不变。
+    base += anatomy.create_hint(settings)
     return base
 
 
