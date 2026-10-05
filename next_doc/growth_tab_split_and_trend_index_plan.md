@@ -1,6 +1,6 @@
 # 成长顾问 tab 概览超时治理：趋势索引（A）+ 概览拆分与板块独立加载（B）
 
-- **状态**：实施中——阶段一（方案 A：A1–A4 趋势索引）、阶段二（B1–B2 服务端拆分端点）已完成，阶段三起（B3 起，客户端与看板）待实施（见 §10 实施状态表与 §13 实施记录）
+- **状态**：实施中——阶段一（方案 A：A1–A4 趋势索引）、阶段二（B1–B2 服务端拆分端点）、阶段三（B3–B4 客户端）已完成，阶段四起（B5 起，section_loader 与看板）待实施（见 §10 实施状态表与 §13 实施记录）
 - **范围**：本轮只做 A + B。C（HTTP 并发与隔离）已确认单独立项，见 §9
 - **关联文档**：
   - `next_doc/growth_summary_client_timeout_fix.md`（上一次只调客户端超时预算 6s→25s 的修复，本文是它的根治版）
@@ -251,8 +251,8 @@ B 完成后 `section_loader` 已经让看板不再同时发起大量重复请求
 | A4 | 测试 `test_growth_trend_index.py` | `tests/` | ✅ 已完成（阶段一） |
 | B1 | 路由拆出三个内部 payload 函数 + 三个新端点 + summary 改为拼装 | `src/mini_agent/api/routes.py` | ✅ 已完成（阶段二） |
 | B2 | 测试 `test_growth_split_endpoints.py` | `tests/` | ✅ 已完成（阶段二） |
-| B3 | 客户端新方法、`_HTTP_NO_READ_RETRY`、`retry` 参数、成长顾问 GET 关闭读重试 | `apps/mini_agent_kanban/client.py` | 待实施 |
-| B4 | 测试 `test_kanban_client_retry.py` | `tests/` | 待实施 |
+| B3 | 客户端新方法、`_HTTP_NO_READ_RETRY`、`retry` 参数、成长顾问 GET 关闭读重试 | `apps/mini_agent_kanban/client.py` | ✅ 已完成（阶段三） |
+| B4 | 测试 `test_kanban_client_retry.py` | `tests/` | ✅ 已完成（阶段三） |
 | B5 | `section_loader.py`（`SectionCache` + `render_section`） | `apps/mini_agent_kanban/section_loader.py` | 待实施 |
 | B6 | 测试 `test_kanban_section_loader.py` | `tests/` | 待实施 |
 | B7 | `render_growth_tab` 改造：各板块接入 `render_section`、写操作失效、主题地图按需加载 | `apps/mini_agent_kanban/app.py` | 待实施 |
@@ -338,3 +338,27 @@ B 完成后 `section_loader` 已经让看板不再同时发起大量重复请求
 - 看板未改动（仍调用 `/growth/summary`，行为不变）；看板相关测试需 streamlit，本环境未运行。
 
 **注意（新旧版本配套）**：本阶段仅新增服务端端点，`/growth/summary` 响应不变，单独覆盖 daemon 侧不会影响现有看板。
+
+### 阶段三：方案 B 客户端（B3–B4，已完成）
+
+**改动文件**
+
+| 文件 | 内容 |
+|---|---|
+| `apps/mini_agent_kanban/client.py` | 新增 `_build_http_session_no_read_retry()` / `_HTTP_NO_READ_RETRY`；`_get(..., *, retry=True)`；新增 `growth_overview()` / `growth_diagnostics(refresh=)` / `growth_topic_map()`；成长顾问渲染路径上的 GET 传 `retry=False` |
+| `tests/test_kanban_client_retry.py`（新增） | 11 用例 |
+| `docs/kanban-dashboard-guide.md` | "AgentClient 封装的 API 端点"补读超时不重试说明 |
+| `next_doc/growth_summary_client_timeout_fix.md` | 补"局限与后续"小节 |
+
+**实施取舍**
+
+1. 只改了方案 §6.3 列出的方法。各方法的**超时预算未变**（`growth_followups` 等仍用 `_get` 默认 6s），只是不再被重试放大；若实际使用中这些端点在 6s 内也常超时，应另行评估（它们在阶段一之后是毫秒级）。
+2. `retry` 为关键字参数、默认 `True`，其余调用方（含 `_post` 等）行为不变。
+3. `growth_candidate_timeline` 与 `growth_pursuit_saturation_trend` 不在方案列表中，未改。
+
+**验证**
+
+- 本地桩 HTTP server 计数：读超时 `retry=False` 只收到 1 次请求，默认 `retry=True` 收到多次；504 同理（1 次 vs 3 次）；连接失败两种模式都重试（各 3 次连接尝试，通过 patch `HTTPConnection.connect` 计数）；两个 Session 的 `Retry` 配置断言（`read=0`、`status=0`、无 `status_forcelist`）；成长顾问 11 个方法均传 `retry=False`，无关端点保持 `retry=True`；新方法的路径与超时预算符合方案。
+- 把 `retry=False` 路径改回共享 Session 后，读超时与 504 两个用例转红。
+- 回归：workflow editor / phase10 / 本测试共 183 例通过。
+- 看板 `app.py` 未改动，仍调用 `growth_summary()`；本阶段无 UI 变化。

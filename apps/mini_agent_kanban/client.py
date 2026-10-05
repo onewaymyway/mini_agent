@@ -49,8 +49,36 @@ def _build_http_session() -> requests.Session:
     return session
 
 
+def _build_http_session_no_read_retry() -> requests.Session:
+    """[growth_tab_split_and_trend_index_plan.md §6.3] 读超时 / 5xx 不重试的
+    Session：只对"连接失败"重试（`connect=2`），`read=0`、`status=0`。
+
+    背景：慢读超时（`ReadTimeout`）和 `blocking_guard` 返回的 504，说明服务端
+    已经在算、或者已经放弃——客户端再发一次只会让服务端把同一份慢计算再
+    跑一遍（`run_blocking` 超时只是"不再等"，线程池里的计算不会被取消），
+    越慢堆积越多；同时一次失败的加载在客户端要卡 3 个超时预算。成长顾问
+    tab 渲染路径上的 GET 因此改用本 Session（`_get(..., retry=False)`）。
+    """
+    session = requests.Session()
+    retry = Retry(
+        total=2,
+        connect=2,
+        read=0,
+        status=0,
+        backoff_factor=0.4,
+        allowed_methods=frozenset(["GET"]),
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=16, pool_maxsize=16)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+
 # 模块级单例：所有 AgentClient 实例共用同一个连接池 + 同一个后台线程池。
 _HTTP = _build_http_session()
+# 读超时 / 5xx 不重试的 GET 专用 Session（成长顾问 tab 渲染路径）。
+_HTTP_NO_READ_RETRY = _build_http_session_no_read_retry()
 # 供"异步"版本方法（*_async）使用：把实际的阻塞 HTTP 调用丢到后台线程，
 # 调用方立刻拿到一个 concurrent.futures.Future，不必在当前这次 Streamlit
 # 脚本执行里干等 6 秒的 socket 读超时——配合 UI 层的轮询（见
@@ -190,10 +218,13 @@ class AgentClient:
     def _url(self, path: str) -> str:
         return f"{self.base}{path}"
 
-    def _get(self, path, params=None, timeout=6):
+    def _get(self, path, params=None, timeout=6, *, retry=True):
+        """`retry=False` 时改用 `_HTTP_NO_READ_RETRY`：只对连接失败重试，读超时
+        和 5xx（含 504）不重试（见 `_build_http_session_no_read_retry`）。"""
         start = time.monotonic()
+        http = _HTTP if retry else _HTTP_NO_READ_RETRY
         try:
-            r = _HTTP.get(self._url(path), headers=self.headers, params=params, timeout=timeout)
+            r = http.get(self._url(path), headers=self.headers, params=params, timeout=timeout)
             _record_http_call("GET", path, params, (time.monotonic() - start) * 1000,
                                status_code=r.status_code)
             if r.status_code == 200:
@@ -1699,7 +1730,21 @@ class AgentClient:
         # （留出跟 refresh 路径的区分度，明显比默认页面加载体感慢时能
         # 提示用户"点一下🔄刷新诊断数据"）。
         timeout = 50 if refresh_diagnostics else 25
-        return self._get("/growth/summary", params=params, timeout=timeout)
+        # [growth_tab_split_and_trend_index_plan.md] 读超时不重试：单次最坏
+        # 等待就是上面的 timeout，不再被自动重试放大成 3 倍。
+        return self._get("/growth/summary", params=params, timeout=timeout, retry=False)
+
+    # [growth_tab_split_and_trend_index_plan.md 方案 B] 概览拆分后的三个
+    # 独立板块数据源；看板各板块各自加载、各自超时。读超时一律不重试。
+    def growth_overview(self):
+        return self._get("/growth/overview", timeout=15, retry=False)
+
+    def growth_diagnostics(self, refresh: bool = False):
+        params = {"refresh_diagnostics": True} if refresh else None
+        return self._get("/growth/diagnostics", params=params, timeout=50 if refresh else 25, retry=False)
+
+    def growth_topic_map(self):
+        return self._get("/growth/topic_map", timeout=25, retry=False)
 
     def growth_scan(self):
         # [kanban_async_job_mechanism_plan.md] 服务端现在立即返回
@@ -1760,14 +1805,14 @@ class AgentClient:
 
     # [next_doc/growth_advisor_improvement_plan_v2.md P4-3] 采纳后回访
     def growth_followups(self):
-        return self._get("/growth/followups")
+        return self._get("/growth/followups", retry=False)
 
     def growth_followup_record(self, candidate_id: str, outcome: str):
         return self._post(f"/growth/followups/{candidate_id}/{outcome}")
 
     # [next_doc/growth_advisor_improvement_plan_v2.md P4-4] 报告质量分级 / 增量刷新
     def growth_reports_refresh_candidates(self):
-        return self._get("/growth/reports/refresh_candidates")
+        return self._get("/growth/reports/refresh_candidates", retry=False)
 
     def growth_candidate_refresh_report(self, candidate_id: str):
         # [kanban_async_job_mechanism_plan.md] 立即返回 `{"job_id", "key"}`，
@@ -1782,7 +1827,7 @@ class AgentClient:
     # [next_doc/growth_advisor_improvement_plan_v4.md 方向三 N1] 诊断面板
     # 健康度趋势——独立于 growth_summary，看板展开趋势区块时才拉取。
     def growth_health_trend(self, limit: int = 30):
-        return self._get(f"/growth/health_trend?limit={limit}")
+        return self._get(f"/growth/health_trend?limit={limit}", retry=False)
 
     # [next_doc/growth_advisor_active_search_and_lifecycle_plan.md 方向二]
     # 单个候选所属主题的完整成长轨迹时间线——看板展开某个候选/主题详情
@@ -1794,17 +1839,17 @@ class AgentClient:
     # 自主推进的方向"，供成长顾问 tab 直接渲染，不需要用户跳到「🎯 目标」
     # tab 理解 Goal/Cron 机制。
     def growth_pursuits(self):
-        return self._get("/growth/pursuits")
+        return self._get("/growth/pursuits", retry=False)
 
     # [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 4]
     # 跨方向全局视角摘要，按需拉取（展开分区时才请求）。
     def growth_pursuits_portfolio_summary(self):
-        return self._get("/growth/pursuits/portfolio_summary")
+        return self._get("/growth/pursuits/portfolio_summary", retry=False)
 
     # [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 规划维度候选]
     # 调研路径关联信号，按需拉取（展开分区时才请求）。
     def growth_pursuits_related_directions(self):
-        return self._get("/growth/pursuits/related_directions")
+        return self._get("/growth/pursuits/related_directions", retry=False)
 
     # [growth_advisor_ideal_advisor_gap_and_roadmap_plan.md 方向 1]
     # "📄 素材"按钮点击时记一次埋点，供后续 `growth_pursuits()` 的
@@ -1815,7 +1860,7 @@ class AgentClient:
     # [growth_advisor_autonomy_deepening_plan.md 方向 A3] 兴趣方向 ⇄
     # Goal 对齐分析 + 批量落地。
     def growth_align(self):
-        return self._get("/growth/align")
+        return self._get("/growth/align", retry=False)
 
     def growth_align_adopt_all(self):
         return self._post("/growth/align/adopt_all")

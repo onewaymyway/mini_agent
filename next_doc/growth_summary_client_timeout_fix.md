@@ -71,3 +71,11 @@ summary` 一次"正常"（非强制刷新）请求耗时超过 6 秒是很常见
 - `apps/mini_agent_kanban/client.py` — `growth_summary()` 超时调整
 - `src/mini_agent/api/routes.py` — `get_growth_summary()` 同步 I/O
   改为 `run_blocking()`
+
+## 6. 后续（局限与后续）
+
+本文只调了客户端超时预算（6s→25s），没有动耗时本身，也没有处理自动重试
+对慢请求的放大。后续的根治方案见
+`next_doc/growth_tab_split_and_trend_index_plan.md`：趋势文件 N+1 读盘的修复（已
+完成）、概览拆分端点（已完成）、成长顾问 GET 读超时不重试（已完成，
+`client.py` 的 `_HTTP_NO_READ_RETRY`），以及看板按板块独立加载（待实施）。

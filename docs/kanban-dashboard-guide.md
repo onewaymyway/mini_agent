@@ -1132,6 +1132,21 @@ plan.md`）：纯只读快照，回答"P2 公平轮询/P3 老化加成/P4 时间
 | `task_concurrency_status()` | `GET /v1/self/task_concurrency` | 顶栏"⚙️ daemon 正在执行 N 项任务"对应的任务执行并发状态：Objective/Goal 通道、Cron 通道各自的 running/current_cap（只读） |
 | `set_task_concurrency(max_objectives=, max_cron_jobs=)` | `POST /v1/self/task_concurrency` | 运行时热改 Objective/Goal 通道、Cron 通道各自的最大并发执行数，立即生效、不写回配置文件；`max_objectives` 没有上限，只要求 >= 1 |
 
+**成长顾问 tab 的读超时不重试**（`next_doc/growth_tab_split_and_trend_index_plan.md`
+§6.3）：`AgentClient._get(..., retry=True)` 默认沿用共享 Session 的自动重试
+（连接失败 / 读超时 / 502·503·504 各重试最多 2 次）。成长顾问 tab 渲染路径上的
+GET 改传 `retry=False`，使用 `_HTTP_NO_READ_RETRY` Session——**只对连接失败重试**，
+读超时和 5xx（含服务端 `blocking_guard` 的 504）不重试：这些情况下服务端已经在
+算或已放弃，再发一次只会让它把同一份慢计算再跑一遍，同时让一次失败的加载在
+看板脚本线程里卡 3 个超时预算。受影响的方法：`growth_summary` / `growth_overview`
+/ `growth_diagnostics` / `growth_topic_map` / `growth_followups` /
+`growth_reports_refresh_candidates` / `growth_pursuits` /
+`growth_pursuits_portfolio_summary` / `growth_pursuits_related_directions` /
+`growth_align` / `growth_health_trend`；其余端点行为不变。新增的三个方法的超时
+预算：`growth_overview` 15s、`growth_diagnostics` 25s（`refresh=True` 为 50s）、
+`growth_topic_map` 25s，对应服务端 `GET /v1/growth/overview|diagnostics|topic_map`。
+看板各板块按这些方法独立加载属于该方案后续阶段，目前看板仍调用 `growth_summary()`。
+
 上表标了 `session_id=` 的方法都新增了可选的 `session_id` 参数（默认 `None`，
 不传时行为与旧版本完全一致）：传了就会作为 `?session_id=` 查询参数附加到请求上，
 后端 `_bridge()` 在单 token 模式下会优先用它解析出对应 session 的
