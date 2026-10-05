@@ -1145,7 +1145,8 @@ GET 改传 `retry=False`，使用 `_HTTP_NO_READ_RETRY` Session——**只对连
 `growth_align` / `growth_health_trend`；其余端点行为不变。新增的三个方法的超时
 预算：`growth_overview` 15s、`growth_diagnostics` 25s（`refresh=True` 为 50s）、
 `growth_topic_map` 25s，对应服务端 `GET /v1/growth/overview|diagnostics|topic_map`。
-看板各板块按这些方法独立加载属于该方案后续阶段，目前看板仍调用 `growth_summary()`。
+成长顾问 tab 已不再调用 `growth_summary()`，改为各板块通过 `section_loader` 独立加载
+（见下方"板块独立加载（section_loader）"与"成长顾问 tab 的接入"）；`growth_summary()` 保留供其它调用方使用。
 
 上表标了 `session_id=` 的方法都新增了可选的 `session_id` 参数（默认 `None`，
 不传时行为与旧版本完全一致）：传了就会作为 `?session_id=` 查询参数附加到请求上，
@@ -1258,6 +1259,8 @@ Tab 的"关键词管理"板块）最初没有包 `@st.fragment`，导致勾选/�
 `followups`、`alignment`、`pursuits`、`report_refresh_candidates` 等一整
 批互不相关的接口全部重新请求一遍。修复方式是给该函数加上
 `@st.fragment`（详见 `_render_growth_profile_and_keywords` 函数上方注释）。
+（现状：该板块不再自己带 `@st.fragment`，改由 `render_section` 内部的 fragment 承载，
+效果相同——板块内交互只重跑本板块，且每次从 `SectionCache` 取最新数据。）
 
 因此，**今后新增或修改看板里任何"自成一块、内部有 widget 交互"的板块函数
 （渲染 Tab 内某个子区域的 `_render_xxx()` 函数），只要满足以下任一条件，
@@ -1294,7 +1297,7 @@ Tab 的"关键词管理"板块）最初没有包 `@st.fragment`，导致勾选/�
 `apps/mini_agent_kanban/section_loader.py`（`next_doc/growth_tab_split_and_trend_index_plan.md`
 §6.4）让一个 tab 里的每个板块各自后台加载、各自 TTL 缓存、各自展示
 loading / 错误 / 重试，任何一个慢或失败都不影响其它板块。成长顾问 tab 是第一个
-使用者（接入见该方案后续阶段），其它 tab 以后可直接复用。
+使用者（接入见下方"成长顾问 tab 的接入"），其它 tab 以后可直接复用。
 
 **纯逻辑层 `SectionCache(store, submit)`**（不依赖 streamlit，`store` 传
 `st.session_state`，`submit` 传 `client.submit_async`）：
@@ -1306,6 +1309,7 @@ loading / 错误 / 重试，任何一个慢或失败都不影响其它板块。�
 | 有缓存但过期 / 被失效 | 返回旧数据（`stale=True`）并后台刷新，界面不闪空 |
 | 请求失败（异常或返回 `{"_error": ...}`） | 有旧数据则继续展示并带 `error`；无则 `error` 状态。**失败后不自动重试**，要点"🔄 重试"（`refresh`）或写操作后 `invalidate` |
 | 同一 key | 同时只有一个在途请求；多个板块可共享同一 key（如诊断信息与"Agent 对你的了解"） |
+| `refresh(key, fetch_fn)` | 带 `fetch_fn` 时，仅**紧接着的一次**请求改用它（之后恢复普通取数函数），用于"强制刷新诊断"这类带特殊参数的一次性重取 |
 | 请求在途时发生 `invalidate` | 在途结果仍入缓存，但立即判定过期并再刷新一次，不会把写操作前的数据当最新 |
 
 **包装层 `render_section(key, label, fetch_fn, ttl, render_fn, *, submit, ui_key=)`**：
@@ -1314,6 +1318,39 @@ loading 时原地显示"⏳ 正在加载 …"，用 `@st.fragment(run_every=…)
 加载结束后做一次整页 `st.rerun()` 换成不带 `run_every` 的 fragment 以停止轮询；错误时
 本板块显示错误与重试按钮。共享同一 `key` 的多个板块需传不同的 `ui_key`，避免按钮
 widget key 冲突。写操作之后用 `invalidate_sections(submit, *keys)` 使相关板块失效。
+
+### 成长顾问 tab 的接入（B7）
+
+`render_growth_tab()` 不再依赖单次 `/growth/summary`：每个板块各自后台加载、各自 TTL、各自
+错误提示与"🔄 重试"，一个板块慢或失败不影响其它；TTL 内点 tab 里的按钮不重复请求。
+
+| 板块 | section key | TTL | 说明 |
+|---|---|---|---|
+| 概览指标 / 采纳率 / 排行 / 报告质量待改进 | `growth_overview` | 15 s | |
+| 🩺 诊断信息 | `growth_diagnostics` | 30 s | 服务端超时/熔断返回的 `{"_note": ...}` 占位按错误处理（显示重试，而不是缓存空数据） |
+| 🧠 Agent 对你的了解 / 关键词 | `growth_diagnostics` | 30 s | 与诊断信息共用同一份数据（`ui_key` 不同），不额外请求；自成 fragment，勾选关键词只重跑本板块 |
+| 📈 健康度趋势 | `growth_health_trend` | 30 s | 系统 tab 里的同名组件仍是同步版本，不受影响 |
+| 🗺️ 成长主题地图 | `growth_topic_map` | 60 s | **按需**：`st.toggle("🗺️ 显示成长主题地图")` 打开后才请求 |
+| 该回访一下了 | `growth_followups` | 15 s | |
+| 有兴趣但还没建目标 | `growth_align` | 30 s | |
+| 正在自主推进 | `growth_pursuits` | 30 s | 主数据 + 组合摘要 + 关联方向在同一个后台任务里取 |
+| 报告可以更新一下了 | `growth_refresh_candidates` | 30 s | |
+| 调研报告查看器 / 待处理候选 | `growth_overview` | 15 s | 直接读概览已加载的缓存（`peek`），不额外请求；概览未加载完成时显示提示 |
+
+要点：
+
+- **写操作后失效**：采纳/忽略/落地为 Goal → 候选相关全部板块；回访记录、对齐、批量采纳、
+  暂停/恢复自主推进、报告刷新完成、关键词增删/确认/恢复各自失效对应板块；"立即为我看看"
+  扫描完成后失效全部板块。失效不丢旧数据，界面不闪空，后台刷新完成后自动更新。统一入口：
+  `invalidate_growth_sections(client, *keys)` / `_growth_write_rerun(client, *keys)`。
+- **🔄 刷新诊断数据**：不再在按钮回调里同步等最长 50 s，而是 `refresh("growth_diagnostics",
+  fetch_fn=带 refresh_diagnostics=true 的取数)`，后台重建，旧数据继续显示。
+- **首次触达提示**：数据来自概览缓存，`growth_first_touch_ack()` 只调一次（session 标志）。
+  提示在本 session 内保持可见（概览加载完成会触发一次整页重跑，展示后立即消失用户看不到）。
+- **新增板块的写法**：`_growth_section(client, key, label, fetch_fn, render_fn)`，并在
+  `_GROWTH_TTL` 里登记 TTL；渲染函数只接收数据，不要在里面同步请求大接口。
+- **仍是同步的小请求**（只阻塞所在板块的 fragment，不阻塞整页）：自主推进里每个进行中方向的
+  "饱和度走势"、"素材"展开、"我的偏好设置"。数据量大时再按需改成后台加载。
 
 ## 相关文件
 

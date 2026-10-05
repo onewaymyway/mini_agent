@@ -312,14 +312,13 @@ docstring 和 `next_doc/growth_advisor_implementation_record.md` 里）。
   待处理候选等）。此前 `/growth/summary` 概览接口一旦超时/报错（候选、
   报告、Goal 数量稍多时常见，典型报错是 `HTTPConnectionPool(...):
   Read timed out.`），会导致整个 tab 直接中断渲染，后面所有跟这次
-  请求无关、各自独立拉数据的板块一起消失。现在改为：概览接口失败时
-  只在依赖它的候选统计/主题地图等位置显示"暂时无法显示" + 一个
-  "🔄 重试概览"按钮，其它板块正常渲染；任意单个板块内部报错也只在
-  原地提示一行，不影响其它板块。此外，"该回访一下了"/"有兴趣但还没
-  建目标"/"正在自主推进"/"报告可以更新一下了"/"健康度趋势"这几个
-  完全自包含的板块各自独立刷新（`st.fragment`）：点里面的按钮只重跑
-  这个板块本身，不会带着整页（含其它板块已展开的折叠区状态）一起
-  刷新。
+  请求无关、各自独立拉数据的板块一起消失。现在 tab 不再依赖单次
+  `/growth/summary`：每个板块各自后台加载（`section_loader`）、各自
+  TTL 缓存，任一板块超时/失败只在它自己的位置显示错误和"🔄 重试"
+  （只重试这一块），其它板块正常；点 tab 内的按钮不会重复拉取 TTL
+  内的数据；"成长主题地图"默认不请求，打开开关才加载。各板块自带的
+  fragment 让板块内交互只重跑本板块。详见 `docs/kanban-dashboard-guide.md`
+  "成长顾问 tab 的接入"。
 - **候选去重覆盖冷却期内的相似方向**（**修复**，见演进日志 §2.6.1"修复记录"）：
   开启 `duplicate_direction_llm_check_enabled` 后，语义判重现在也会
   覆盖"冷却期内被 dismiss 过的候选"，不再只依赖字面完全一致的标题
@@ -494,7 +493,8 @@ GET  /v1/growth/pursuits                                  # 正在被自主推�
 > "API" 一节：三者各自独立的 `blocking_guard` where（`growth_overview` /
 > `growth_diagnostics` / `growth_topic_map`），熔断互不影响；`/growth/summary`
 > 整个请求先建一份趋势索引供诊断与主题地图共用，趋势文件只读 1 次。看板按
-> 板块独立加载属于方案 B 后续阶段，实施后再补充。
+> 看板已按板块独立加载（不再调用 `/growth/summary`，该端点保留供其它调用方使用）；
+> 加载机制与各板块 TTL 见 `docs/kanban-dashboard-guide.md`。
 
 ## 7. 当前局限（P1 ~ P6 全部完成后的已知边界）
 

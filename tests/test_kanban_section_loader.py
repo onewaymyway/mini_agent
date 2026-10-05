@@ -202,6 +202,57 @@ class TestInvalidate(unittest.TestCase):
         self.assertTrue(self.c.is_pending("a"))
 
 
+class TestRefreshWithOneShotFetch(unittest.TestCase):
+    """`refresh(key, fetch_fn)`：指定仅用于紧接着一次请求的取数函数
+    （B7：诊断板块的"🔄 刷新诊断数据"带 refresh_diagnostics=true 重建一次）。"""
+
+    def setUp(self):
+        self.env = _Env()
+        self.c = self.env.cache
+
+    def _loaded(self):
+        self.c.get("a", _fetch, ttl=10)
+        self.env.complete({"v": 1})
+        self.c.get("a", _fetch, ttl=10)
+
+    def test_next_request_uses_one_shot_fn_then_reverts(self):
+        self._loaded()
+        forced = lambda: {"forced": True}  # noqa: E731
+        self.c.refresh("a", forced)
+        s = self.c.get("a", _fetch, ttl=10)
+        # 旧数据仍可见，且已提交一次后台请求，用的是 forced
+        self.assertEqual((s.status, s.data, s.refreshing), (STATUS_READY, {"v": 1}, True))
+        self.assertIs(self.env.futures[-1]._fn, forced)  # noqa: SLF001
+        self.env.complete({"v": 2})
+        self.c.get("a", _fetch, ttl=10)
+        # 再次失效：恢复使用 get 传入的普通取数函数
+        self.c.invalidate("a")
+        self.c.get("a", _fetch, ttl=10)
+        self.assertIs(self.env.futures[-1]._fn, _fetch)  # noqa: SLF001
+
+    def test_one_shot_fn_waits_for_in_flight_request(self):
+        self.c.get("a", _fetch, ttl=10)  # 在途
+        forced = lambda: {"forced": True}  # noqa: E731
+        self.c.refresh("a", forced)
+        self.assertEqual(self.env.fetch_calls, 1)  # 在途期间不重复提交
+        self.env.complete({"v": 1})
+        s = self.c.get("a", _fetch, ttl=10)
+        # 在途结果早于这次失效 → 过期，再用 forced 刷新一次
+        self.assertEqual(self.env.fetch_calls, 2)
+        self.assertIs(self.env.futures[-1]._fn, forced)  # noqa: SLF001
+        self.assertEqual(s.data, {"v": 1})
+
+    def test_refresh_without_fn_is_unchanged(self):
+        self._loaded()
+        self.c.refresh("a")
+        self.c.get("a", _fetch, ttl=10)
+        self.assertIs(self.env.futures[-1]._fn, _fetch)  # noqa: SLF001
+
+    def test_refresh_unknown_key_is_noop(self):
+        self.c.refresh("nope", lambda: 1)  # 不抛
+        self.assertEqual(self.env.fetch_calls, 0)
+
+
 class TestSharedKeyAndRealThreads(unittest.TestCase):
     def test_shared_key_single_inflight(self):
         """诊断信息 / Agent 对你的了解 共用同一个 key：只发一次请求。"""

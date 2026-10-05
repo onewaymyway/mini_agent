@@ -79,6 +79,7 @@ class SectionCache:
                 "gen": 0,            # 每次 invalidate/refresh +1
                 "fresh_gen": -1,     # 当前缓存数据对应的 gen；与 gen 不等即"已失效"
                 "launch_gen": 0,
+                "next_fetch": None,  # refresh(key, fetch_fn) 指定的一次性取数函数
             }
             entries[key] = e
         return e
@@ -101,8 +102,11 @@ class SectionCache:
 
     def _launch(self, e: dict, fetch_fn: Callable[[], Any]) -> None:
         e["launch_gen"] = e["gen"]
+        # 一次性取数函数（如"强制刷新诊断"）只用于紧接着的这一次请求
+        fn = e.get("next_fetch") or fetch_fn
+        e["next_fetch"] = None
         try:
-            e["future"] = self._submit(fetch_fn)
+            e["future"] = self._submit(fn)
         except Exception as ex:  # noqa: BLE001 - 提交失败（如线程池已关闭）
             e["future"] = None
             e["error"] = str(ex) or ex.__class__.__name__
@@ -139,14 +143,20 @@ class SectionCache:
         e = self._entries().get(key)
         return e["data"] if e and e["has_data"] else None
 
-    def refresh(self, key: str) -> None:
+    def refresh(self, key: str, fetch_fn: Optional[Callable[[], Any]] = None) -> None:
         """用户点"🔄 重试/刷新"：清掉错误并标记失效，下一次 `get` 重新请求。
-        旧数据保留，界面不闪空。"""
+        旧数据保留，界面不闪空。
+
+        `fetch_fn`：可选，仅用于**紧接着的下一次**请求（之后恢复使用 `get`
+        传入的取数函数）。例如诊断板块的"🔄 刷新诊断数据"要带
+        `refresh_diagnostics=true` 重建一次，之后的普通刷新不应再带该参数。"""
         e = self._entries().get(key)
         if e is None:
             return
         e["gen"] += 1
         e["error"] = None
+        if fetch_fn is not None:
+            e["next_fetch"] = fetch_fn
 
     def invalidate(self, *keys: str) -> None:
         """写操作之后使若干板块失效（旧数据仍可见，下一次 `get` 后台刷新）。"""

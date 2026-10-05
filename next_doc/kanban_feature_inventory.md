@@ -179,7 +179,7 @@
   素材生成
 - 报告刷新候选列表
 - 画像与关键词（growth profile & keywords）：技术栈/习惯特征展示，过期特征提示，隐藏内置主题
-- 对应端点（节选，共 ~30 个）：`GET /growth/summary`（兼容聚合）、`GET /growth/overview|diagnostics|topic_map`（拆分端点，看板接入见方案 B 后续阶段）、`POST /growth/first_touch_ack`、
+- 对应端点（节选，共 ~30 个）：`GET /growth/summary`（兼容聚合）、`GET /growth/overview|diagnostics|topic_map`（拆分端点；成长顾问 tab 已改为按板块独立加载，见 `docs/kanban-dashboard-guide.md`）、`POST /growth/first_touch_ack`、
   `POST /growth/scan`、`POST /growth/candidates/{id}/{action}`、
   `GET/POST /growth/followups*`、`POST /growth/keywords*`、
   `GET /growth/reports/refresh_candidates`、`GET /growth/reports/{id}`、

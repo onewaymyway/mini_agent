@@ -1,6 +1,6 @@
 # 成长顾问 tab 概览超时治理：趋势索引（A）+ 概览拆分与板块独立加载（B）
 
-- **状态**：实施中——阶段一（方案 A：A1–A4 趋势索引）、阶段二（B1–B2 服务端拆分端点）、阶段三（B3–B4 客户端）、阶段四（B5–B6 section_loader）已完成，阶段五起（B7 看板接入起）待实施（见 §10 实施状态表与 §13 实施记录）
+- **状态**：实施中——阶段一（方案 A：A1–A4 趋势索引）、阶段二（B1–B2 服务端拆分端点）、阶段三（B3–B4 客户端）、阶段四（B5–B6 section_loader）、阶段五（B7 看板接入）已完成，阶段六起（B8 压测脚本、D 收尾）待实施（见 §10 实施状态表与 §13 实施记录）
 - **范围**：本轮只做 A + B。C（HTTP 并发与隔离）已确认单独立项，见 §9
 - **关联文档**：
   - `next_doc/growth_summary_client_timeout_fix.md`（上一次只调客户端超时预算 6s→25s 的修复，本文是它的根治版）
@@ -255,9 +255,10 @@ B 完成后 `section_loader` 已经让看板不再同时发起大量重复请求
 | B4 | 测试 `test_kanban_client_retry.py` | `tests/` | ✅ 已完成（阶段三） |
 | B5 | `section_loader.py`（`SectionCache` + `render_section`） | `apps/mini_agent_kanban/section_loader.py` | ✅ 已完成（阶段四） |
 | B6 | 测试 `test_kanban_section_loader.py` | `tests/` | ✅ 已完成（阶段四） |
-| B7 | `render_growth_tab` 改造：各板块接入 `render_section`、写操作失效、主题地图按需加载 | `apps/mini_agent_kanban/app.py` | 待实施 |
+| B7 | `render_growth_tab` 改造：各板块接入 `render_section`、写操作失效、主题地图按需加载（另：`SectionCache.refresh(key, fetch_fn)`） | `apps/mini_agent_kanban/app.py`、`section_loader.py` | ✅ 已完成（阶段五） |
+| B7t | 测试 `test_kanban_growth_tab_sections.py`（方案 §8 未单列，B7 实施时补充） | `tests/` | ✅ 已完成（阶段五） |
 | B8 | 压测脚本 | `scripts/bench_growth_summary.py` | 待实施 |
-| D1 | 文档（阶段一已先行更新 `docs/growth-advisor-guide.md` 趋势索引小节，其余随各阶段补）：成长顾问指南（端点、性能说明）、看板指南（加载行为）、旧修复文档补"局限与后续"、端点清单 | `docs/growth-advisor-guide.md`、`docs/kanban-dashboard-guide.md`、`next_doc/growth_summary_client_timeout_fix.md`、`next_doc/kanban_feature_inventory.md`、`docs/architecture_v2/phase10-entrypoint-inventory.md` | 待实施 |
+| D1 | 文档（随各阶段补；阶段五已更新 `docs/kanban-dashboard-guide.md` 接入小节、`docs/growth-advisor-guide.md`、`next_doc/kanban_feature_inventory.md`、`next_doc/growth_summary_client_timeout_fix.md`）：成长顾问指南（端点、性能说明）、看板指南（加载行为）、旧修复文档补"局限与后续"、端点清单 | `docs/growth-advisor-guide.md`、`docs/kanban-dashboard-guide.md`、`next_doc/growth_summary_client_timeout_fix.md`、`next_doc/kanban_feature_inventory.md`、`docs/architecture_v2/phase10-entrypoint-inventory.md` | 待实施 |
 | D2 | 本文状态表更新为实施记录 | 本文 | 待实施 |
 | D3 | 打包：仅改动与新增文件，保留目录结构，便于直接覆盖 | — | 待实施 |
 
@@ -388,3 +389,43 @@ B 完成后 `section_loader` 已经让看板不再同时发起大量重复请求
 - 变异检查：让失败后自动重试 → 对应用例转红；让在途失效不触发再刷新 → 对应用例转红。
 - Streamlit 包装层用 `streamlit.testing.v1.AppTest` 烟雾测试（Streamlit 1.65 下）：ready 渲染；loading 时不阻塞页面其余内容；error 显示错误与重试按钮、点击不抛异常；`@st.fragment` 外层 + 循环内多个板块嵌套时各板块独立渲染。
 - **未验证**：`AppTest` 不会触发 `run_every` 定时重跑，也不是真实浏览器，所以"loading → 自动出现数据 → 轮询停止"的完整链路没有在真实 Streamlit 服务里跑过；也只在 Streamlit 1.65 上测过，`requirements.txt` 的最低版本是 1.39。若真实环境发现问题，方案 §12 的回退是"板块内 `time.sleep` 短轮询 + 整页 `st.rerun()`"，`SectionCache` 不受影响。B7 接入后需要在真实页面点一遍。
+
+### 阶段五：方案 B 看板接入（B7，已完成）
+
+**改动文件**
+
+| 文件 | 内容 |
+|---|---|
+| `apps/mini_agent_kanban/app.py` | `render_growth_tab` 改为各板块独立加载；新增 `_GROWTH_TTL`、`_growth_section`、`invalidate_growth_sections`、`_growth_write_rerun`、`_fetch_growth_diagnostics` / `_fetch_growth_topic_map` / `_fetch_growth_pursuits_bundle`、`_render_growth_overview_block`、`_render_growth_topic_map`、`_render_growth_pending_candidates`、`_render_growth_first_touch_notice`、`_render_growth_health_trend_section`；followups / align / pursuits / refresh_candidates 拆成"包装 + `_body`"；写操作处统一失效 |
+| `apps/mini_agent_kanban/section_loader.py` | `SectionCache.refresh(key, fetch_fn=None)`：`fetch_fn` 仅用于紧接着的一次请求 |
+| `tests/test_kanban_growth_tab_sections.py`（新增） | 12 用例（`AppTest` + 带调用计数的假 client） |
+| `tests/test_kanban_section_loader.py` | 新增 4 用例（`refresh(key, fetch_fn)`），共 24 例 |
+| `docs/kanban-dashboard-guide.md`、`docs/growth-advisor-guide.md`、`next_doc/kanban_feature_inventory.md`、`next_doc/growth_summary_client_timeout_fix.md` | 同步更新加载行为说明 |
+
+**板块与数据源**：按 §6.5 接入，TTL 取方案值（见 `docs/kanban-dashboard-guide.md` "成长顾问 tab 的接入"）。原来整行的"概览数据加载失败"警告和"🔄 重试概览"按钮已删除，由各板块自己的错误提示取代。看板不再调用 `growth_summary()`。布局顺序与改动前一致（诊断 → 健康度趋势 → 画像/关键词 → 概览指标 → 主题地图 → 回访 → 对齐 → 自主推进 → 报告刷新 → 报告查看器 → 待处理候选）。
+
+**实施取舍（与方案文字的差异）**
+
+1. **只有"拥有者"板块用 `render_section`，共享数据的依赖板块读缓存**：报告查看器、待处理候选与概览共用 `growth_overview`，但它们直接 `peek` 概览已加载的缓存，不再各自 `render_section`——否则概览失败时同一条错误会出现 3 次（指标、查看器、待处理）。代价：这两块依赖"概览板块每次渲染都先跑"（它负责拉取/刷新），概览未加载完成时显示一行提示。诊断信息与"画像/关键词"仍各自 `render_section`（共享 key、不同 `ui_key`），因为后者有大量 widget 交互，必须自成 fragment（防止回到"勾一下关键词整页重跑"的旧问题），所以诊断失败时会出现两条错误提示。
+2. **`{"_note": ...}` 占位按错误处理**：服务端诊断/主题地图超时降级返回的占位，不当作成功数据缓存（否则会在 TTL 内一直显示空数据），而是转成 `{"_error": ...}`，板块显示错误与重试。概览的降级结果是空列表/空字典，与"确实没有数据"无法区分，仍按原行为显示 0。
+3. **首次触达提示在本 session 内保持可见**：方案要求"展示后仍调 ack、且只调一次"。但概览加载完成会触发一次整页重跑，如果提示只在当次渲染显示，用户会看不到。实现为 session 标志：`ack` 成功才置位（失败下次渲染重试），`ack` 后失效概览缓存；提示在同一 session 内一直显示，刷新页面后消失（此时后端已记为已展示）。
+4. **`SectionCache.refresh` 增加可选 `fetch_fn`**（方案未写）：为"🔄 刷新诊断数据"服务——该按钮需要带 `refresh_diagnostics=true` 重取一次，之后的普通刷新不能再带。
+5. **移除了板块函数上的 `@st.fragment`**：followups / align / pursuits / refresh_candidates / 画像与关键词现在由 `render_section` 内部的 fragment 承载，效果相同（板块内交互只重跑本板块）；而且数据每次从缓存取最新，`_render_growth_profile_and_keywords` 旧注释里"diagnostics 是首次渲染快照"的滞后问题随之消失（已改注释）。系统 tab 里的 `_render_growth_health_trend` 保持原来的同步版本，另加 `_render_growth_health_trend_section` 供成长顾问 tab 使用。
+6. **主题地图**：由默认折叠的 expander 改为 `st.toggle`（方案 §6.5 的"按需"写法），打开才请求；展示内容不变。切换开关会触发一次整页重跑。
+7. **自主推进板块的组合摘要、关联方向**与主数据在同一个后台任务里顺序取（`_fetch_growth_pursuits_bundle`），后两项失败静默降级，与改动前一致。
+8. **失效策略**：`_GROWTH_AFTER_CANDIDATE_CHANGE`（候选状态/Goal 变化）= overview、diagnostics、topic_map、followups、align、pursuits、refresh_candidates；回访记录、对齐、暂停/恢复、报告刷新完成、关键词操作各自只失效相关板块；"立即为我看看"完成后失效全部。方案 §6.5 写的是"按现有 `st.rerun()` 调用点逐个核对"，这里按调用点逐个归类，未在代码里做自动推导。
+
+**验证**
+
+- `test_kanban_growth_tab_sections.py` 12 用例全过：各板块独立出现；一个板块失败（followups 返回 `_error`）只有它显示错误与重试，其余正常；多次重跑后每个端点只请求 1 次（TTL 内不重复拉取）；诊断与画像共用 1 次请求；主题地图未打开时 0 次请求、打开后 1 次；主题地图/诊断的 `_note` 占位显示错误；首次触达提示展示且 `ack` 只调 1 次、已展示过则不弹；强制刷新诊断请求序列为 `[False, True]` 且之后不再带 `True`；自主推进的组合摘要与关联方向各取 1 次。
+- 变异检查：取消 `_note` 转错误、去掉 `ack` 的 session 标志、让主题地图不按需、把概览 TTL 置 0、让 `refresh` 忽略 `fetch_fn`，各自让对应用例转红。
+- 回归：`test_kanban_section_loader.py` 24 例、`test_kanban_client_retry.py` 11 例、`test_kanban_cron_detail_dialog_delete.py` 等其它看板测试通过。`test_kanban_growth_dragdrop.py` 有 2 个用例失败，**在未改动的原始代码上同样失败**（测试里的假 client 缺少 `get_latest_async_job` / `get_user_profile_preferences`），错误信息与原始代码逐字一致，与本阶段无关，未处理。`test_kanban_config_routes.py`、`test_kanban_realtime_and_status_bugfix.py` 在本环境因缺少 `fastapi` 无法收集，未运行。
+- 本阶段没有改服务端；`test_growth_*` 服务端测试同样因缺依赖未在本环境重跑（阶段一、二已通过）。
+
+**未验证 / 已知局限**
+
+- **真实浏览器未验证**：`AppTest` 不触发 `run_every`，所以"loading → 自动出现数据 → 轮询停止"的完整链路、板块加载完成时的整页重跑体验、nested fragment 在真实页面里的表现，都没有在真实 Streamlit 服务里跑过；只在 Streamlit 1.65 上测过，`requirements.txt` 最低版本是 1.39。**需要人工在真实页面点一遍**；若有问题，回退方案仍是 §12 风险 2 的"板块内 `time.sleep` 短轮询 + 整页 `st.rerun()`"（`SectionCache` 不受影响）。
+- **首屏并发 7 个后台任务**（overview、diagnostics、health_trend、followups、align、pursuits、refresh_candidates；打开主题地图再加 1 个），占用共享 `_EXECUTOR`（8 个 worker）中的 7 个，会与其它 tab（如会话列表）竞争。没有实现分批提交，上线后观察；需要时先 overview/diagnostics、其余延后。
+- 板块内仍有少量同步小请求（只阻塞所在板块的 fragment）：自主推进里每个进行中方向的"饱和度走势"（expander 折叠时也会执行）、"素材"展开里的执行规范、"我的偏好设置"。
+- 写操作后的失效范围靠人工归类，新增写操作时需要自己补 `_growth_write_rerun(...)`，否则最多显示一个 TTL 的旧数据。
+- 报告查看器 / 待处理候选在写操作之后会短暂显示旧状态，直到概览后台刷新完成（毫秒到秒级）。

@@ -78,4 +78,4 @@ summary` 一次"正常"（非强制刷新）请求耗时超过 6 秒是很常见
 对慢请求的放大。后续的根治方案见
 `next_doc/growth_tab_split_and_trend_index_plan.md`：趋势文件 N+1 读盘的修复（已
 完成）、概览拆分端点（已完成）、成长顾问 GET 读超时不重试（已完成，
-`client.py` 的 `_HTTP_NO_READ_RETRY`），以及看板按板块独立加载（待实施）。
+`client.py` 的 `_HTTP_NO_READ_RETRY`），以及看板按板块独立加载（已完成，见该方案 §13 阶段五）。
