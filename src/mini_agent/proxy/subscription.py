@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
+import yaml
 
 
 @dataclass
@@ -252,9 +253,68 @@ def parse_json_subscription(data: list | dict) -> list[ProxyNode]:
     return nodes
 
 
+def parse_clash_yaml(text: str) -> list[ProxyNode]:
+    """解析 Clash 格式的 YAML 订阅文件,提取 proxies 列表中的节点。
+
+    Clash YAML 结构:
+        proxies:
+          - name: xxx
+            type: vmess / vless / ss / trojan / hysteria2 / ...
+            server: x.x.x.x
+            port: 443
+            ...
+    返回 ProxyNode 列表;解析失败或不是 Clash 格式时返回空列表。
+    """
+    nodes: list[ProxyNode] = []
+    try:
+        data = yaml.safe_load(text)
+        if not isinstance(data, dict):
+            return []
+        proxy_list = data.get("proxies")
+        if not isinstance(proxy_list, list):
+            return []
+        for item in proxy_list:
+            if not isinstance(item, dict):
+                continue
+            try:
+                proto = str(item.get("type", "")).strip().lower()
+                if proto not in ("vmess", "vless", "ss", "trojan", "hysteria2", "hy2", "snell", "socks5", "http"):
+                    # 忽略非代理类型(如 relay 等)
+                    continue
+                server = str(item.get("server", ""))
+                port_raw = item.get("port")
+                if not server or port_raw is None:
+                    continue
+                port = int(port_raw)
+                name = str(item.get("name", f"{server}:{port}"))
+                # 将 Clash 字段映射到 params
+                skip_fields = {"name", "type", "server", "port"}
+                params = {k: v for k, v in item.items() if k not in skip_fields and v is not None}
+                # hysteria2 在 Clash 里 type=hysteria2, 也接受 hy2
+                if proto == "hy2":
+                    proto = "hysteria2"
+                nodes.append(ProxyNode(
+                    protocol=proto,
+                    name=name,
+                    server=server,
+                    port=port,
+                    raw=yaml.dump(item, allow_unicode=True, default_flow_style=False),
+                    params=params,
+                ))
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.proxy.subscription.parse_clash_yaml')
+                continue
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.proxy.subscription.parse_clash_yaml')
+    return nodes
+
+
 def parse_subscription_text(text: str) -> list[ProxyNode]:
     """subscription 内容可能整体是 base64,也可能是明文,每行一个节点链接;
-    也支持 JSON 数组格式(Stormsia / Proxio-io 等平台)。"""
+    也支持 JSON 数组格式(Stormsia / Proxio-io 等平台)。
+    也支持 Clash 格式的 YAML 订阅文件。"""
     text = text.strip()
     if not text:
         return []
