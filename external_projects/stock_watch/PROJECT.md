@@ -407,6 +407,31 @@ mini_agent 看板（`apps/mini_agent_kanban/app.py`）的 `🗂️ 外部项目`
 至此 `next_doc/stock_watch_pool_state_tracking_and_kanban_plan.md` 规划
 的四个阶段全部完成。
 
+### Streamlit 独立看板启动
+
+`app.py` 是独立的 Streamlit 应用，不依赖 mini_agent daemon，可直接启动：
+
+```bash
+cd external_projects/stock_watch
+pip install streamlit plotly  # 首次运行需要安装
+streamlit run app.py --server.port 8501
+```
+
+浏览器访问 `http://localhost:8501` 即可查看。
+
+如需后台常驻运行（Linux/macOS）：
+
+```bash
+cd external_projects/stock_watch
+nohup streamlit run app.py --server.port 8501 > streamlit.log 2>&1 &
+```
+
+Windows 下直接前台运行即可，或用 `start cmd /k "cd /d external_projects\stock_watch && streamlit run app.py --server.port 8501"`。
+
+数据刷新方式：
+- 手动刷新页面（Ctrl+R 或点击刷新按钮）
+- 先跑 `python entrypoints/run_hotlist_scan.py` 等 entrypoint 更新数据，再刷新看板
+
 ## 如何接入 daemon（可选）
 
 ```bash
