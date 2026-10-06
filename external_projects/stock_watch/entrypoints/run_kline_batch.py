@@ -111,6 +111,11 @@ def main() -> int:
         default=2,
         help="测试模式下处理的标的数量（默认 2）",
     )
+    parser.add_argument(
+        "--manual-only",
+        action="store_true",
+        help="只生成 manual_pool 的 K 线图，跳过 algo_pool",
+    )
     args = parser.parse_args()
 
     ensure_dirs()
@@ -126,12 +131,14 @@ def main() -> int:
 
     today_str = datetime.now().strftime("%Y%m%d")
 
-    # 算法池 K 线图
-    algo_out_dir = REPORTS_DIR / "kline" / "algo" / today_str
-    algo_ok, algo_failed, algo_failures = _generate_klines(
-        ALGO_POOL_PATH, algo_out_dir, cfg, "算法池",
-        test_mode=args.test, test_count=args.test_count,
-    )
+    # 算法池 K 线图（除非指定 --manual-only）
+    algo_ok, algo_failed, algo_failures = 0, [], []
+    if not args.manual_only:
+        algo_out_dir = REPORTS_DIR / "kline" / "algo" / today_str
+        algo_ok, algo_failed, algo_failures = _generate_klines(
+            ALGO_POOL_PATH, algo_out_dir, cfg, "算法池",
+            test_mode=args.test, test_count=args.test_count,
+        )
 
     # 手动池 K 线图
     manual_out_dir = REPORTS_DIR / "kline" / "manual" / today_str
