@@ -25,7 +25,7 @@ from world_simulator.engine.background_entities import (
     _normalize_background_entities,
 )
 from world_simulator import causal_tree, relationship
-from world_simulator import causal_engine, consistency_guard, dynamic_state, element_discovery, element_registry, event_sampler, tech_model, tree_effects, tree_grounding
+from world_simulator import anatomy_engine, causal_engine, consistency_guard, dynamic_state, element_discovery, element_registry, event_sampler, tech_model, tree_effects, tree_grounding
 from world_simulator.engine.causal_lines import _apply_tree_updates, _auto_register_causal_lines, _update_element_registry
 from world_simulator.engine import mechanisms
 from world_simulator.engine.errors import SimAlreadyEndedError, SimEngineError, SimPausedError
@@ -434,6 +434,12 @@ def advance(
         # 协议喂给 LLM；未开启返回空字符串（prompt 与之前等价）。
         "tech_state_hint": tech_model.safe_build_hint(manifest.settings),
         "sampled_events_hint": event_sampler.safe_build_hint(manifest.settings, sampled_events),
+        # 第二十四轮 A4：元素剖面开启且有可结算的元素时，把引擎持有的指标/瓶颈/里程碑状态与"预计本步发生"的
+        # 事项喂给 LLM（既成事实）；未开启返回空字符串（prompt 与之前等价）。
+        "anatomy_hint": anatomy_engine.safe_build_hint(
+            manifest.settings, history_for_prompt, current.step + 1,
+            sim_id=sim_id, branch=branch, vars_=current.vars, sampled_events=sampled_events,
+        ),
         # 第二十二轮 WP3 / P5a：因果引擎开启且有到期的待兑现因果时，把它们连同输出协议
         # （`effect_dispositions`）喂给 LLM；未开启或无到期项返回空字符串。
         "causal_pending_hint": causal_engine.safe_build_hint(
@@ -837,6 +843,8 @@ def advance(
     mechanisms.apply_post_llm(
         cfg, workspace_root, manifest, next_state, data,
         history=history_for_prompt, tg_before=_tg_before, sampled_events=sampled_events,
+        sim_id=sim_id, branch=branch,
+        evidence_records=mechanisms.load_evidence_if_needed(store, manifest.settings),
     )
 
     # 4.10 节（阶段三十三第五批）：把这一批 options 共享的决策背景

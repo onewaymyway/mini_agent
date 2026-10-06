@@ -1,8 +1,8 @@
 # 元素剖面（anatomy）指南
 
 > 第二十四轮。设计依据：`next_doc/world_simulator_element_anatomy_evidence_and_forecast_plan.md`。
-> **本文只写已落地的行为**，随阶段增补。当前已落地：**A1（数据模型、存取层、兼容、只读档案）、A2（创建期拆解 + 向导审阅）、A3（联网证据研究 + 出处）**。
-> A4 引擎骨架、A5 推进期深化、A6 蒙特卡洛、A7 预测简报、A8 指标回测尚未实施。
+> **本文只写已落地的行为**，随阶段增补。当前已落地：**A1（数据模型、存取层、兼容、只读档案）、A2（创建期拆解 + 向导审阅）、A3（联网证据研究 + 出处）、A4（引擎定量骨架）**。
+> A5 推进期深化、A6 蒙特卡洛、A7 预测简报、A8 指标回测尚未实施。
 
 ## 1. 它是什么
 
@@ -86,9 +86,9 @@ technology / project / organization / person / asset / policy / market / resourc
 ## 9. 已知边界（A1）
 
 - （A1 当时）没有生成剖面的路径；A2 起创建期会产生草稿，见 §11。
-- `maps_to_stage` 只当字符串保存，不校验是否是 `tech_model.STAGES` 之一（A4 判定时处理）。
+- `maps_to_stage` 只当字符串保存，不校验是否是 `tech_model.STAGES` 之一（A4 起由引擎判定，不合法的记 `A5` 并忽略，见 §13）。
 - `adoption_gates.unlocks` 只认 `adoption_cap`，其余键被丢弃，A4 定义更多解锁项时再放开。
-- 跨元素引用（`元素#子项`）A1 不解析；解析复用 `element_registry.resolve`，在 A4 条件求值时接入。
+- 跨元素引用（`元素#子项`）A1 不解析；A4 起条件求值时按 `element_registry.resolve` 解析（见 §13.7）。
 - 设置页勾选与档案折叠区只做了静态检查（`py_compile`），没有在真实 Streamlit 页面点过。
 - 全部为纯逻辑，未在真实 LLM 下验证（A1 本身也不调用 LLM）。
 
@@ -216,3 +216,120 @@ LLM 只提供**草稿与证据**，下面由引擎裁决，LLM 写什么都不�
 `tests/test_evidence.py`（14）：URL 协议白名单、要点/链接必填、日期与数值清洗、id 规则、追加写不改写已有行、状态事件折叠、坏行/孤儿事件/重复 id 容错、按现实天数的过期判定、`SimStore` 封装不在分支目录下。
 `tests/test_element_research.py`（45）：目标选择与开关/来源门控、输入构造与摘要预算、输出解析、LLM 无权声明来源/引擎状态/meta、现值出处四种不成立情形与容差、合并各规则（用户确认保护/先验不被覆盖/有出处替换/继承引擎状态/状态不因有出处变已审阅）、证据去重与取代、入参不被修改且畸形线原样保留、注入文本只是数据且展示转义、workflow 桩（围栏 JSON、各种失败）、落盘与失败不写入、批量研究逐个隔离、驳回证据、`set_key`/`strip_evidence`/`derive_status`、档案证据视图与过期。
 **14 个变异**（单位/数值核对被删、LLM 自带 basis 不清、用户确认保护被删、无出处覆盖旧猜测、引擎状态不剥、sourced 算已审阅、URL 放开协议、重建 `causal_lines` 丢畸形条目、旧证据不标取代、未引用证据入库、过期恒假、状态事件不折叠、驳回不摘引用）全部转红。全量 1677 个用例通过（A3 前基线 1618）。
+
+## 13. 引擎定量骨架（A4）
+
+> 代码：`world_simulator/anatomy_engine.py`（纯 Python、不调 LLM）。设计依据：计划 §5.3。**A4 之前剖面在推进时不读不写；A4 起，剖面开着且元素带可结算内容（指标/组件/瓶颈/里程碑/门槛）时，引擎每步结算它。**
+
+### 13.1 开关与"什么时候有事可做"
+
+- `anatomy_engine.is_active(settings)`：`anatomy_enabled` 且至少一个存活的非领域元素带引擎能结算的内容。只有 `meta`/假设/信号的壳**不算**。
+- 不 active 时：`{anatomy_hint}` 为空串、`SimState` 不输出 `anatomy_trace`/`anatomy_violations`、不写任何引擎字段、`elapsed_days` 也不额外索要（旧实例与没有剖面的实例行为不变，测试覆盖）。
+- 注意：`advance_step.yaml` / `world_evolve.yaml` 里新增的是一段**固定说明 + `{anatomy_hint}` 占位符**（与此前各轮机制一样），所以"逐字节一致"指的是**解析后的输入与落盘数据**，不包括 yaml 里那段静态说明文字。
+
+### 13.2 每步结算顺序（`apply_step`）
+
+①初始化/重新锚定 → ②在**步初**启动可启动的路径 → ③推进指标与组件 → ④LLM 偏离 → ⑤到期日平移 → ⑥结算到期路径 → ⑦在**步末**启动新可启动的路径 → ⑧里程碑与门槛 → ⑨阶段（A3）与采用率（A7）→ ⑩记账、自洽核对、一次性写回。
+
+所有计算在**工作副本**上完成，最后才写回；任何异常不留半改状态（`safe_apply_step` 再包一层，失败只记 `A0`，不影响本次推进）。同一步不会重复结算（`meta.last_step`）。
+
+引擎状态存在剖面自己身上（随 `causal_lines` 快照/分叉，分叉即回滚，测试覆盖真实 `fork_branch`）：指标/组件的 `engine {v,t,a,off,src,dq,na,sf}`、路径的 `status/outcome/started_day/started_step/resolve_at_day`、瓶颈的 `resolved_step/resolved_day/resolved_by`、里程碑的 `reached_step/reached_sim_day`、门槛的 `open/opened_step`、`meta.clock_day/last_step`。这些字段 A1 的规整层都保留；**LLM 种子与研究草稿里的会被剥掉**（瓶颈 `status` 除外——创建/研究期可以如实声明"现实里已解决"，仍标 `llm_prior`）。
+
+### 13.3 指标趋势（`trend`）
+
+不设白名单，三层：**推荐库**（有引擎模型）/ **`custom_expr`**（白名单 AST 求值）/ **未知或 `llm_reported`**（不拒绝，引擎不推算，只记录 LLM 报告的值，记一次 `A10`，界面标"无引擎模型"）。
+
+| `kind` | 必需参数（`params.<名>.value`） | 一步的推进（`dy` = 天数 / 365.25） |
+|---|---|---|
+| `linear` | `slope_per_year` | `v + slope·dy` |
+| `exponential` | `rate_per_year`（年增长率，需 > -1） | `v·(1+g)^dy` |
+| `saturating` | `cap`、`rate_per_year` | `cap − (cap−v)·e^(−k·dy)` |
+| `mean_reversion` | `mean`、`rate_per_year` | 同上，目标是 `mean` |
+| `logistic` | `cap`、`rate_per_year`（要求 0 < v < cap，否则保持不变） | 以 v 为起点的逻辑斯蒂 |
+| `learning_curve` | `b`，加 `driver`（同元素或 `元素#指标` 的驱动量，如累计产量） | `v·(Q₁/Q₀)^(−b)`；驱动指标先于被驱动指标推进 |
+| `random_walk_drift` | `drift_per_year`，可选 `vol_per_sqrt_year` | `v + drift·dy + σ·√dy·z`，`z` 由 `event_sampler.draw` 确定性产生（种子复现）；无 σ = 纯漂移 |
+| `piecewise_table` | `trend.table = [[距锚点天数, 值], ...]`（天数严格递增） | 线性插值，两端保持 |
+| `step_events` | `trend.events = [{event, delta?/factor?}]` | 平时保持；本步**命中**的事件（未被上限压掉）触发跳变 |
+| `custom_expr` | `trend.expr`（+ 可选 `params`） | `expr(t, v0, params.*, metric.<id>)`，`t` = 距锚点天数 |
+
+- 自治流（前几种）增量推进与一次推进**等价**（步长不影响结果，测试覆盖）；`piecewise_table`/`custom_expr` 是时间的绝对函数，rebase 时加偏移 `off`。
+- **表达式只用白名单 AST 求值，不用 `eval`/`compile`**：只允许数字常量、`+ - * / % **`、比较、`and/or/not`、三元、`min/max/abs/exp/log/sqrt`（1–3 个参数、无关键字）、变量名、`params.<名>` 与 `metric.<id>`；禁止其他属性访问、下标、lambda、推导式、字符串……表达式长度 ≤ 300 字、节点 ≤ 64、嵌套 ≤ 24、指数绝对值 ≤ 64、结果必须是有限数。非法表达式 → 该指标退化为"不推算"+ `A10`，**不报错、不拖垮推进**。
+- 组件的 `readiness_trend`（计划外新增，见 §13.9）用同一套趋势库，结果夹在 [0, 1]。
+- 现值被用户编辑或联网研究更新后（`current.value` 变了），引擎**重新锚定**到新值并在流水里留一条 `source: anchor`。
+
+### 13.4 瓶颈、里程碑、阶段、门槛
+
+- **瓶颈路径**：路径**启动时**由引擎抽样——是否成功（`p_success`，缺省 = 必成功）与耗时（`duration_days` 三角分布，只给部分参数时：只有 mode = 定值、low+high = 中点为 mode），记下绝对到期日 `resolve_at_day`。种子 = `event_sampler.draw(sim_id, branch, step, "anatomy|<salt>", "<元素>/<瓶颈>/<路径>/ok|dur")`：同一输入逐位一致、分支之间独立、`event_sampling_common_random_numbers` 开启时分支共享。到期成功 → 瓶颈 `resolved`（记 `resolved_day` 为**精确到期日**）；到期失败 → 该路径 `failed`，按 `fallback` 顺序（再按声明顺序）在**到期日**启动下一条；全部失败 = `exhausted`。路径有 `requires` 判据时，满足才启动。缺 `duration_days` 的路径引擎无法调度（`A10`）。**路径启动后抽好的成败不会写进流水，也不会给用户看，只有到期那一刻才揭晓**；但"预计本步到期"的路径会通过 `{anatomy_hint}` 告诉 LLM（见 §13.8）。
+- **里程碑**：判据满足即 `reached`（记步号与模拟日），**只增不减**，已达成的不会被重新达成或改写步号。没有判据的里程碑引擎无法判定，只能采纳 LLM 的 `milestone_claims`（体检里已有 `no_criteria` 提示）。
+- **阶段派生**（仅技术元素，即有 `lifecycle`；要求技术模型已开启、`anatomy_drives_stage`（默认开）、且至少一个里程碑带合法的 `maps_to_stage`）：阶段 = 已达成里程碑里最高的一档，可一次跨多档；`progress` 变成**派生显示值**——下一档里最接近达成的那个里程碑已满足的叶子判据占比（上限 0.99）。这与计划写的"该档内已达成里程碑占比"不同，见 §13.9。
+- **与 T 码的优先级（契约）**：LLM 声明的阶段迁移**先**过 `tech_model` 的 T1–T11，**再**过 A3；没有剖面/没有 `maps_to_stage` 里程碑的节点完全走旧逻辑。T 码放行的**上升**声明没有对应里程碑 → `A3` 驳回并**回滚**本步迁移写下的 `stage/progress/dwell_days/last_transition_step/stalled_steps`；T4 放行的**倒退**同样 `A3` 驳回（里程碑只增不减；要倒退请改剖面）。
+- **采用门槛**：判据满足 = 门槛 `open`（可再关闭，`opened_step` 记首次打开）；`unlocks.adoption_cap` 约束技术节点的 `adoption`：只考虑 `market` 与节点 `market` 相同（忽略大小写）或没写 `market` 的门槛；有相关门槛但都没开 → 上限 0。**只夹"本步新增的超限部分"**：门槛前就已有的采用率不追溯（`A7` 夹到 `max(上限, 本步前的值)`）。
+
+### 13.5 LLM 提议与裁决（`anatomy_updates`，A4 只实现裁决侧）
+
+引擎持有结构，LLM 只能**提议**，且 **A4 还不向 LLM 索要这个输出**（提示词协议是 A5）——`data` 里没有 `anatomy_updates` 就是空操作；有就按下表裁决。形状：
+
+```
+{"metric_deviations":   [{"element", "metric", "value", "reason", "cause_ref"}],
+ "bottleneck_proposals":[{"element", "bottleneck", "status": "resolved", "shift_days", "reason", "cause_ref"}],
+ "milestone_claims":    [{"element", "milestone", "reason"}],
+ "engine_edits":        [{"element", "ref", "field"}]}
+```
+
+`element` 省略时，只在**唯一**含该 id 的元素里解析，不唯一就不猜（`A5`）。
+
+| 码 | 触发 | 结果 |
+|---|---|---|
+| A0 | 引擎本步出错 | 整步跳过、状态不变（info） |
+| A1 | 报告值与模型值相对偏差 > 20%（`DEVIATION_THRESHOLD`）且没有 `reason`/`cause_ref` | 保留引擎值（warn） |
+| A2 | 声称瓶颈已解决但路径未到期；要求平移到期日却没有进行中的路径或没有原因 | 驳回（warn） |
+| A3 | 声称里程碑达成但判据未满足；T 码放行的阶段上升/倒退没有里程碑支撑 | 驳回（warn） |
+| A4 | 指标/组件超出 `bounds`（组件固定 [0,1]） | 夹值（模型越界 info，LLM 报告越界 warn） |
+| A5 | 引用了不存在的元素/指标/组件/瓶颈/里程碑，或 `maps_to_stage` 不是合法阶段名 | 仅记录，不阻断（info） |
+| A6 | `engine_edits`：想改引擎持有的参数/路径概率/到期日 | 忽略（info） |
+| A7 | 采用率本步新增部分超过已打开门槛的上限 | 夹值（warn） |
+| A8 | 深度调用失败/降级 | A5 阶段才会产生 |
+| A9 | 指标现值的证据已过期仍在驱动引擎 | info，每次锚定只提示一次（过期按现实天数，`research_ttl_days`） |
+| A10 | 引擎缺少推算所需数据：趋势 `llm_reported`/未知/缺参数/表达式非法、路径缺 `duration_days`、本步没有 `elapsed_days` | info |
+| A11 | 流水自洽核对失败；流水超过每步 120 条被截断（计划之外新增） | warn |
+
+偏离被接受后默认 **rebase**（保持趋势斜率、把当前值平移到报告值；`deviation_policy: keep_model` 则只记录不采纳）。偏差在阈值内且没给原因也接受（记为小幅偏离）；没有引擎模型的指标，LLM 报告值直接被采纳（`source: llm_reported`）。`shift_days` 不能把到期日拉到"现在"之前。
+
+### 13.6 流水与自洽核对（`SimState.anatomy_trace`）
+
+每步一份流水，条目 `{element, kind, ref, field, value_before, value_after, reason, source, ...}`：`kind` ∈ `time`（本步时间来源，恒有一条）/`metric`/`component`/`bottleneck`/`milestone`/`gate`/`stage`/`adoption`；`source` ∈ `model`/`event`/`deviation`/`llm_reported`/`anchor`/`clamp`/`milestone`/`rejected`/`reported`/`fallback`。偏离条目带 `cause_ref`，指标条目带证据 id。**同一指标的数值流水必须首尾衔接**，且终点等于引擎当前值；不一致写 `A11`，**不静默修正**（测试里故意篡改流水/状态验证）。
+
+时间：开启剖面的实例每步需要 `elapsed_days`；LLM 没给时按 `tech_params.fallback_days_per_step` 结算，流水里 `time.source = fallback` 并记 `A10`（后续 A6 的预测区间会据此标"时间精度降级"）。
+
+### 13.7 条件语法扩展（事件先验 / 树分支 / 门槛共用一套求值器）
+
+`event_sampler.evaluate_condition` 现在额外认 `{"metric": "<元素>#<指标>", "op", "value"}`、`{"component": ..., "min_readiness": ...}`、`{"bottleneck": ..., "status": ...}` 以及 `all`/`any`/`not` 组合节点，**委托给 `anatomy_engine.evaluate_leaf`**。树接地（`tree_grounding`）本来就调用 `event_sampler.evaluate_condition`，所以事件先验的 `condition` 与树分支的 `trigger_condition` 自动获得新写法，没有出现第三套求值器（计划要求"先核对两处再统一"——核对结论：只有这一处）。读的是**已落盘**的剖面；没写元素前缀时找唯一含该 id 的元素，找不到/不唯一/写法非法一律**不满足**并给原因，不抛异常。旧写法（`var`/`tech`/`element`）行为不变。
+
+### 13.8 提示词 `{anatomy_hint}` 与"预计本步发生"
+
+`advance_step.yaml`、`world_evolve.yaml` 新增 `{anatomy_hint}`；独立推进路径（`advance_lines`）的每条线提示里也会带上同一份（并让 `mechanisms.needs_elapsed` / `any_mechanism_enabled` 认识剖面）。内容：协议（引擎是权威、不要自行宣布瓶颈解决/里程碑达成/阶段跃迁；偏离请在叙事里写明原因）+ 每个元素的精简摘要（指标现值与趋势、瓶颈状态与进行中路径、已达成/待达成里程碑；受 `light_digest_chars` 约束、重点元素优先、最多 8 个）+ **"预计本步发生"**——引擎在**副本**上按估计跨度（最近几步 `elapsed_days` 的中位数，没有则占位天数）空跑一步（`preview_step`），把会发生的瓶颈解决/失败、里程碑、阶段变化、门槛打开作为既成事实喂给 LLM。抽样是确定性的：本步实际跨度等于估计值时，真实结算与预览逐项一致（测试覆盖）；不一致时以真实跨度重新结算，提示里已写明"到期的顺延、未到期的不会发生"。需要时在末尾索要 `elapsed_days`（技术模型/事件采样/因果引擎任一已开启则不重复索要）。提示词构造出错只退化为空串。
+
+### 13.9 与计划的偏差（如实记录）
+
+1. **组件 `readiness_trend`（计划外新增）**：计划只有指标有趋势，但里程碑判据常引用组件就绪度，没有它就永远只能靠用户手改。复用同一套趋势库，夹在 [0, 1]。
+2. **`progress` 的派生口径不同**：计划写"该档内已达成里程碑占比"，但"阶段 = 最高已达成里程碑"下该档里几乎总是 1 个，占比没有信息量；改为"下一档里最接近达成的里程碑已满足的叶子判据占比"。
+3. **下降声明也 `A3` 驳回**（计划只写了"迁移须有里程碑"）：里程碑只增不减，否则阶段会在下一步被重新抬回去。
+4. **`A11`（流水自洽/截断）是新增码**，计划的 A0–A10 里没有对应项。
+5. **`anatomy_updates` 只做了裁决侧，提示词协议留给 A5**（计划把协议归在 A5，而 A2/A3 验收又要求 A4 里 LLM 声明不能绕过 `A2/A3`——所以 A4 实现裁决函数并用测试直接喂提议验证；阶段声明走既有 `tech_updates`，那条路径 A4 就真实生效）。
+6. **路径"投入允许"未做**：计划 §5.3.2 提了这个启动条件，但没有定义投入如何影响路径，A4 不猜。
+7. **`custom_expr` 参数的 `low/high`、蒙特卡洛** 属于 A6，A4 只用 `value`。
+8. **同一步里不同元素之间的 `driver` 是"先到先读"**：跨元素驱动量读的是该元素在本步推进之前或之后的值（取决于元素顺序）；同元素内按依赖顺序，不受影响。
+
+### 13.10 已知边界（A4）
+
+- 全程**未在真实 LLM 下验证**：LLM 是否会把"预计本步发生"的事项如实写进叙事、是否在没有 `anatomy_updates` 协议时仍擅自改写数值（A4 只靠提示词约束 + `next_vars` 本来就由 LLM 整体重写，**引擎的指标值不会写回 `vars.*`**，计划 §9 风险 11 的"不镜像"结论沿用）。
+- 趋势参数大多来自 LLM 先验或创建期草稿，引擎结算得再精确也只是"在这些假设下的推演"，不是预测；区间与置信等级是 A6/A7 的事。
+- 界面新增的「⚙️ 引擎推进」区（曲线/瓶颈/里程碑/逐步变化）只做了静态检查与视图函数单测，**没有在真实 Streamlit 页面点过**。
+- 组件就绪度没有 LLM 提议入口；新增子项发现（`new_subitems`）、深度模式在 A5。
+- 事件触发的趋势（`step_events`）依赖事件采样已开启并抽中对应 id。
+- `deviation` 的小幅容忍（≤ 20% 不需要原因）理论上可被反复利用来缓慢拉偏数值；A4 没有协议向 LLM 索要偏离，真实风险要到 A5 才出现，届时再评估是否改成"一律要原因"。
+
+### 13.11 测试（A4）
+
+`tests/test_anatomy_engine.py`（110）：表达式（合法/恶意输入/运行时护栏/不用 `eval`）、每种趋势的数值与"步长无关"、学习曲线驱动顺序、随机游走种子复现与分支敏感、重新锚定、同一步只结算一次、瓶颈路径（精确到期日、`fallback` 顺序、耗尽、`requires`、缺时长、成功概率与三角分布的统计、种子隔离）、`A1`–`A11` 各码、偏离 rebase/keep_model/绝对函数偏移、里程碑只增不减与组合判据/跨元素引用、阶段派生/`progress`/A3 回滚/下降驳回/关闭与无映射时旧逻辑不变、门槛与 A7（含"不追溯"）、`require_review_to_drive`、时间降级、A9、流水自洽与篡改检测、原子写回与 `A0`、引擎输出被 A1 规整层原样保留、引擎状态不被种子/草稿带入、条件语法扩展（事件先验与树分支）、提示词与预览一致、`advance()` 端到端（持久化/快照/真实分叉回滚/可复现/LLM 无法绕过/失败不影响推进/开关关闭与无剖面实例不变）、档案推进视图。
+**24 个变异**（A2/A3 驳回被删、阶段声明不回滚、里程碑可重复达成、`fallback` 顺序被忽略、成功概率被忽略、种子不含分支、A1 阈值被删、rebase 偏移被删、夹值被删、A7 夹值/不追溯被删、不重新锚定、同一步重复结算、被压掉的事件算命中、驱动顺序被删、非原子写回、A9 不去重、表达式属性检查/幂护栏被删、审阅开关被忽略、流水衔接核对被删、平移可到过去、预览改了真实状态）全部转红。全量 1787 个用例通过（A4 前基线 1677）。

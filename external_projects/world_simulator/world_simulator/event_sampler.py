@@ -288,6 +288,12 @@ def evaluate_condition(
         return True, ""
     if not isinstance(condition, dict):
         return False, "条件写法非法"
+    if any(k in condition for k in ("metric", "component", "bottleneck", "all", "any", "not")):
+        # 第二十四轮 A4（计划 §5.3.4）：元素剖面子项引用（指标/组件/瓶颈）与 all/any/not 组合节点，
+        # 委托给剖面引擎的求值器——事件先验、树分支触发条件、采用门槛/里程碑判据共用这一套（不另起第三套）。
+        from world_simulator import anatomy_engine  # 延迟导入：anatomy_engine 反过来依赖本模块
+
+        return anatomy_engine.evaluate_leaf(settings, condition, vars_)
     if "tech" in condition or "element" in condition:
         # `element` 是第二十三轮新增的同义写法（统一元素模型，方案 §4.2）；两者都写时以 `tech` 为准。
         ref = condition["tech"] if "tech" in condition else condition["element"]

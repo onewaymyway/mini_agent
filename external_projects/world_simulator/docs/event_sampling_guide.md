@@ -79,6 +79,8 @@ LLM 不给时基准退回占位天数，精度降低。
 - 变量比较：`{"var": "a.b", "op": ">=", "value": 5}`，`op` ∈ `< <= > >= == !=`；
   `var` 是 `vars` 里的点路径。大小比较要求两边都是数字。
 - 技术阶段：`{"tech": "<技术 id>", "min_stage": "developer"}`（需开启技术模型并登记该技术）。
+- 元素剖面子项（第二十四轮 A4）：`{"metric": "<元素>#<指标 id>", "op": ">=", "value": 400}`、`{"component": ..., "min_readiness": 0.5}`、`{"bottleneck": ..., "status": "resolved"}`，以及 `all`/`any`/`not` 组合节点；
+  写法与语义见 [`anatomy_guide.md`](./anatomy_guide.md) §13.7（树分支的 `trigger_condition` 共用同一套求值器）。
 - 数组 = 全部满足（AND）。
 - **变量不存在、技术未登记、写法非法 → 一律视为不满足**（保守：宁可不发生，也不在错误条件下发生）。
 

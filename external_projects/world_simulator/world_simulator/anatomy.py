@@ -56,6 +56,7 @@ ANATOMY_STATUSES = ("none", "draft", "reviewed", "verified")
 SEVERITIES = ("low", "medium", "high")
 BOTTLENECK_STATUSES = ("open", "resolved", "exhausted")
 PATH_STATUSES = ("pending", "running", "succeeded", "failed")
+PATH_OUTCOMES = ("success", "fail")
 DISTS = ("triangular", "uniform", "lognormal")
 OPS = (">=", ">", "<=", "<", "==", "!=")
 REF_KINDS = ("component", "metric", "bottleneck", "milestone", "assumption", "approach", "signal")
@@ -72,6 +73,8 @@ MAX_PATHS = 8             # 单个瓶颈的解决路径数
 MAX_REFS = 12             # 单个条目的引用数
 MAX_EVIDENCE_IDS = 8      # 单个 basis 的证据 id 数
 MAX_TREND_PARAMS = 12     # 单个趋势的参数数
+MAX_TABLE_POINTS = 24     # `piecewise_table` 的分段点数
+MAX_TREND_EVENTS = 12     # `step_events` 的事件数
 MAX_OVERRIDES = 8         # 单个假设 `if_false.overrides` 条数
 MAX_OVERRIDE_KEYS = 8
 MAX_CRITERIA_DEPTH = 4
@@ -428,6 +431,12 @@ def _norm_components(raw: Any, rep: _Report) -> List[Dict[str, Any]]:
         desc = _text(item.get("desc"), MAX_TEXT_LEN)
         if desc:
             comp["desc"] = desc
+        rtrend = _norm_trend(item.get("readiness_trend"))  # A4：就绪度可以挂趋势（同指标的趋势库），引擎按它推进
+        if rtrend:
+            comp["readiness_trend"] = rtrend
+        eng = _norm_engine(item.get("engine"))
+        if eng:
+            comp["engine"] = eng
         _put_basis(comp, item.get("basis"))
         out.append(comp)
     return out
@@ -457,6 +466,53 @@ def _norm_trend(raw: Any) -> Optional[Dict[str, Any]]:
     expr = _text(raw.get("expr"), MAX_TEXT_LEN)
     if expr:
         out["expr"] = expr
+    # A4：`piecewise_table`（`[[距锚点天数, 值], ...]`，天数严格递增）与 `step_events`（事件命中时的跳变）。
+    table: List[List[Any]] = []
+    for row in raw.get("table") if isinstance(raw.get("table"), (list, tuple)) else []:
+        if not isinstance(row, (list, tuple)) or len(row) != 2 or len(table) >= MAX_TABLE_POINTS:
+            continue
+        t, v = _nonneg(row[0]), _num(row[1])
+        if t is not None and v is not None and (not table or t > table[-1][0]):
+            table.append([t, v])
+    if table:
+        out["table"] = table
+    events: List[Dict[str, Any]] = []
+    for ev in raw.get("events") if isinstance(raw.get("events"), (list, tuple)) else []:
+        if not isinstance(ev, dict) or len(events) >= MAX_TREND_EVENTS:
+            continue
+        eid = _text(ev.get("event"), MAX_ID_LEN)
+        delta, factor = _num(ev.get("delta")), _num(ev.get("factor"))
+        if not eid or (delta is None and (factor is None or factor <= 0)):
+            continue
+        entry: Dict[str, Any] = {"event": eid}
+        if delta is not None:
+            entry["delta"] = delta
+        if factor is not None and factor > 0:
+            entry["factor"] = factor
+        events.append(entry)
+    if events:
+        out["events"] = events
+    return out
+
+
+def _norm_engine(raw: Any) -> Optional[Dict[str, Any]]:
+    """A4 引擎对一个数值序列（指标现值 / 组件就绪度）的推进状态 `{v, t, a, off, src, dq, na, sf}`：
+    `v` 引擎当前值、`t` 距锚点天数、`a` 锚点值、`off` 偏移（绝对函数类趋势 rebase 用）、`src` 上次见到的源值
+    （源值被用户/研究改了就重新锚定）、`dq` 驱动量上一步的值（学习曲线用）、`na`/`sf` 是\"已提示过\"的标记。
+    没有有限的 `v` 就整个丢弃。引擎状态由 A4 写入；LLM 种子与研究草稿里的会被剥掉（见 `strip_engine_state`）。"""
+    if not isinstance(raw, dict):
+        return None
+    v = _num(raw.get("v"))
+    if v is None:
+        return None
+    out: Dict[str, Any] = {"v": v}
+    for key in ("t", "a", "off", "src", "dq"):
+        n = _num(raw.get(key))
+        if n is not None and (key != "t" or n >= 0):
+            out[key] = n
+    for key in ("na", "sf"):
+        if raw.get(key) is True:
+            out[key] = True
     return out
 
 
@@ -494,6 +550,9 @@ def _norm_metrics(raw: Any, rep: _Report) -> List[Dict[str, Any]]:
         trend = _norm_trend(item.get("trend"))
         if trend:
             met["trend"] = trend
+        eng = _norm_engine(item.get("engine"))
+        if eng:
+            met["engine"] = eng
         _put_basis(met, item.get("basis"))
         out.append(met)
     return out
@@ -537,6 +596,15 @@ def _norm_path(raw: Any, seen: set) -> Optional[Dict[str, Any]]:
     due = _nonneg(raw.get("resolve_at_day"))
     if due is not None:
         out["resolve_at_day"] = due
+    # A4：路径启动时引擎抽好的结果（成败）与启动时刻。
+    if raw.get("outcome") in PATH_OUTCOMES:
+        out["outcome"] = raw["outcome"]
+    sd = _nonneg(raw.get("started_day"))
+    if sd is not None:
+        out["started_day"] = sd
+    ss = er._int_or_none(raw.get("started_step"))
+    if ss is not None and ss >= 0:
+        out["started_step"] = ss
     return out
 
 
@@ -557,6 +625,15 @@ def _norm_bottlenecks(raw: Any, rep: _Report) -> List[Dict[str, Any]]:
             bn["severity"] = item["severity"]
         if item.get("status") in BOTTLENECK_STATUSES:
             bn["status"] = item["status"]
+        rstep = er._int_or_none(item.get("resolved_step"))
+        if rstep is not None and rstep >= 0:  # A4 引擎状态：解决于哪一步/哪一天/哪条路径
+            bn["resolved_step"] = rstep
+        rday = _nonneg(item.get("resolved_day"))
+        if rday is not None:
+            bn["resolved_day"] = rday
+        rby = _clean_id(item.get("resolved_by"))
+        if rby:
+            bn["resolved_by"] = rby
         paths, pseen = [], set()
         for p in item.get("resolution_paths") if isinstance(item.get("resolution_paths"), (list, tuple)) else []:
             norm = _norm_path(p, pseen)
@@ -608,8 +685,13 @@ def _norm_gates(raw: Any, rep: _Report) -> List[Dict[str, Any]]:
             gate["criteria"] = crit
         unlocks = item.get("unlocks")
         cap = _unit(unlocks.get("adoption_cap")) if isinstance(unlocks, dict) else None
-        if cap is not None:  # A1 只认计划里给出的这一个解锁项，其余留给 A4 定义
+        if cap is not None:  # 解锁项目前只有计划里给出的这一个（A4 沿用）
             gate["unlocks"] = {"adoption_cap": cap}
+        if isinstance(item.get("open"), bool):  # A4 引擎状态：门槛当前是否已打开
+            gate["open"] = item["open"]
+        ostep = er._int_or_none(item.get("opened_step"))
+        if ostep is not None and ostep >= 0:
+            gate["opened_step"] = ostep
         _put_basis(gate, item.get("basis"))
         out.append(gate)
     return out
@@ -722,6 +804,12 @@ def _norm_meta(raw: Any) -> Dict[str, Any]:
     template = _text(raw.get("template"), 24)
     if template:
         out["template"] = template
+    clock = _nonneg(raw.get("clock_day"))  # A4：引擎累计推进的模拟天数 / 最后结算的步（防同一步重复结算）
+    if clock is not None:
+        out["clock_day"] = clock
+    last = er._int_or_none(raw.get("last_step"))
+    if last is not None and last >= 0:
+        out["last_step"] = last
     return out
 
 
@@ -950,8 +1038,15 @@ def validate_anatomy(
 
 SEED_KEY = "anatomy_seed"
 # 创建期 LLM 不得写入的引擎状态字段（A4 引擎才拥有它们）。
-_ENGINE_PATH_FIELDS = ("status", "resolve_at_day")
+_ENGINE_PATH_FIELDS = ("status", "resolve_at_day", "outcome", "started_day", "started_step")
 _ENGINE_MILESTONE_FIELDS = ("reached_step", "reached_sim_day")
+# A4：各部分条目上的引擎状态（瓶颈 `status` 不在其中：创建/研究期可以如实声明\"现实里已解决\"，见 `docs/anatomy_guide.md`）。
+_ENGINE_ITEM_FIELDS = {
+    "metrics": ("engine",), "components": ("engine",),
+    "bottlenecks": ("resolved_step", "resolved_day", "resolved_by"),
+    "adoption_gates": ("open", "opened_step"),
+}
+_ENGINE_META_FIELDS = ("clock_day", "last_step")
 
 
 def creation_enabled(settings: Optional[Dict[str, Any]]) -> bool:
@@ -1007,6 +1102,8 @@ def seed_to_anatomy(seed: Any, element_type: Any) -> Tuple[Dict[str, Any], List[
             if part == "milestones":
                 for f in _ENGINE_MILESTONE_FIELDS:
                     item.pop(f, None)
+            for f in _ENGINE_ITEM_FIELDS.get(part, ()):
+                item.pop(f, None)
     anatomy["meta"] = {
         "anatomy_status": "draft", "key": True, "template": anatomy_templates.template_name(element_type),
     }
@@ -1140,7 +1237,8 @@ def derive_status(anatomy: Optional[Dict[str, Any]]) -> str:
 
 
 def strip_engine_state(anatomy: Dict[str, Any]) -> Dict[str, Any]:
-    """**就地**剥掉引擎状态字段（路径 `status`/`resolve_at_day`、里程碑 `reached_*`），返回同一个对象。
+    """**就地**剥掉引擎状态字段（路径 `status`/`resolve_at_day`/`outcome`/`started_*`、里程碑 `reached_*`、指标与组件的
+    `engine`、瓶颈 `resolved_*`、门槛 `open`/`opened_step`、`meta.clock_day`/`last_step`），返回同一个对象。
 
     联网研究的 LLM 输出和创建期种子一样，**无权**声明"某条路径已成功/某个里程碑已达成"——这些是 A4 引擎的状态。
     """
@@ -1152,6 +1250,12 @@ def strip_engine_state(anatomy: Dict[str, Any]) -> Dict[str, Any]:
             if part == "milestones":
                 for f in _ENGINE_MILESTONE_FIELDS:
                     item.pop(f, None)
+            for f in _ENGINE_ITEM_FIELDS.get(part, ()):
+                item.pop(f, None)
+    meta = anatomy.get("meta")
+    if isinstance(meta, dict):
+        for f in _ENGINE_META_FIELDS:
+            meta.pop(f, None)
     return anatomy
 
 

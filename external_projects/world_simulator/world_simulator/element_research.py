@@ -355,17 +355,27 @@ def _carry_engine_state(old: Dict[str, Any], new: Dict[str, Any], part: str) -> 
     if part == "bottlenecks":
         if old.get("status") in ("resolved", "exhausted"):
             new["status"] = old["status"]
+        for f in ("resolved_step", "resolved_day", "resolved_by"):  # A4：解决记录跟着状态一起带
+            if f in old:
+                new[f] = old[f]
         old_paths = {p["id"]: p for p in old.get("resolution_paths") or [] if isinstance(p, dict) and "id" in p}
         for p in new.get("resolution_paths") or []:
             prev = old_paths.get(p.get("id"))
             if prev:
-                for f in ("status", "resolve_at_day"):
+                for f in ("status", "resolve_at_day", "outcome", "started_day", "started_step"):
                     if f in prev:
                         p[f] = prev[f]
     elif part == "milestones":
         for f in ("reached_step", "reached_sim_day"):
             if f in old:
                 new[f] = old[f]
+    elif part == "adoption_gates":
+        for f in ("open", "opened_step"):
+            if f in old:
+                new[f] = old[f]
+    elif part == "components":
+        if "engine" in old:  # 就绪度的推进状态；指标的 engine 故意不带（新的有出处现值 = 重新锚定）
+            new["engine"] = old["engine"]
 
 
 def merge_draft(

@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from world_simulator import (
+    anatomy_engine,
     causal_engine,
     consistency_guard,
     dynamic_state,
@@ -42,6 +43,7 @@ def needs_elapsed(settings: Optional[Dict[str, Any]]) -> bool:
         or event_sampler.is_enabled(settings)
         or causal_engine.needs_elapsed(settings)
         or relationship.needs_elapsed((settings or {}).get("relationships"))
+        or anatomy_engine.needs_elapsed(settings)
     )
 
 
@@ -53,7 +55,18 @@ def any_mechanism_enabled(settings: Optional[Dict[str, Any]]) -> bool:
         or event_sampler.is_enabled(settings)
         or causal_engine.is_enabled(settings)
         or tree_grounding.is_enabled(settings)
+        or anatomy_engine.is_active(settings)
     )
+
+
+def load_evidence_if_needed(store: Any, settings: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """A9 要用证据时效：只在剖面引擎有事可做时才读证据文件，读失败当作没有。"""
+    if not anatomy_engine.is_active(settings):
+        return []
+    try:
+        return store.load_evidence()
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def anchor_tech_seed(store: Any, manifest: Any, branch: str, history: List[Any], current: Any) -> Tuple[List[Any], Any]:
@@ -100,6 +113,9 @@ def apply_post_llm(
     tg_before: Optional[Dict[str, Any]],
     sampled_events: List[Dict[str, Any]],
     hold_out_pending: Optional[Callable[[Dict[str, Any]], bool]] = None,
+    sim_id: str = "",
+    branch: str = "",
+    evidence_records: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
     """LLM 返回之后的机制链（就地修改 `manifest.settings` 与 `next_state`）。
 
@@ -123,8 +139,11 @@ def apply_post_llm(
         or event_sampler.is_enabled(manifest.settings)
         or causal_engine.needs_elapsed(manifest.settings)
         or relationship.needs_elapsed(manifest.settings.get("relationships"))
+        or anatomy_engine.needs_elapsed(manifest.settings)
     ):
         next_state.elapsed_days = tech_model.normalize_reported_elapsed(data.get("elapsed_days"))
+    # 第二十四轮 A4：技术裁决之前留一份生命周期快照（剖面引擎的 A3 回滚 / A7 增量判断用；未开启时为空，零开销）。
+    _anatomy_pre = anatomy_engine.capture_pre(manifest.settings) if anatomy_engine.is_active(manifest.settings) else None
     if tech_model.is_enabled(manifest.settings):
         # 修复调用（P5b，独立 opt-in `tech_repair_enabled`）需要"本步开始前"的技术状态用来回滚重裁，
         # 所以只在开启时才拷贝，关闭时零开销、不走任何新分支。
@@ -156,6 +175,17 @@ def apply_post_llm(
                 violations=next_state.tech_violations,
                 narrative_hint=str(data.get("narrative", "") or data.get("next_summary", "") or ""),
             )
+
+    # 第二十四轮 A4：元素剖面引擎。必须在技术裁决之后（要裁决 T 码放行的阶段声明）、树接地之前（条件可能读阶段/剖面子项）、
+    # 快照之前（`causal_lines` 是分支作用域动态状态）。未开启或没有可结算的元素时是空操作，不产生任何新字段。
+    if _anatomy_pre is not None:
+        _stale = anatomy_engine.stale_evidence_ids(manifest.settings, evidence_records)
+        next_state.anatomy_trace, next_state.anatomy_violations = anatomy_engine.safe_apply_step(
+            manifest.settings, data.get("anatomy_updates"),
+            step=next_state.step, elapsed_days_raw=data.get("elapsed_days"), pre=_anatomy_pre,
+            sim_id=sim_id, branch=branch, vars_=next_state.vars, sampled_events=sampled_events,
+            stale_evidence_ids=_stale,
+        )
 
     # 第二十二轮 WP3 / P5c：因果树接地（前置强制 / 互斥组 / 结构化触发条件）。必须在技术裁决之后
     # （条件可能读 `tech_state`）、因果引擎入队之前（自动迁移要能被\"树分支 active\"触发源看到）、
@@ -309,6 +339,8 @@ def build_line_hint(
     line: Dict[str, Any],
     events: List[Dict[str, Any]],
     owned_ids: set,
+    sim_id: str = "",
+    branch: str = "",
 ) -> str:
     """给**一条**到点线的机制提示词（`line_evolve.yaml` 的 `{line_mechanism_hint}`）。
     机制全关时返回空字符串。各段都有旁路兜底：出错只丢那一段，不拖垮推进。"""
@@ -342,6 +374,14 @@ def build_line_hint(
         hint = tech_model.safe_build_hint(settings)
         if hint:
             parts.append(hint + "\n" + _LINE_TECH_NOTE)
+
+    if anatomy_engine.is_active(settings):
+        hint = anatomy_engine.safe_build_hint(
+            settings, history, step, sim_id=sim_id, branch=branch,
+            sampled_events=events, ask_elapsed_override=False,
+        )
+        if hint:
+            parts.append(hint)
 
     if causal_engine.is_enabled(settings):
         pending = [

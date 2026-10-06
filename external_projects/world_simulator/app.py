@@ -3232,6 +3232,38 @@ def _research_summary_text(report: Dict[str, Any]) -> str:
     return text
 
 
+def _render_anatomy_progress(manifest: Any, history: Any, line_id: str) -> None:
+    """第二十四轮 A4：元素档案里的\"引擎推进\"——已发生的指标曲线、瓶颈状态、里程碑进度、逐步变化及原因。
+    引擎从未结算过（旧实例 / 刚创建 / 开关未开）时什么都不画。"""
+    prog = element_view_mod.build_progress(manifest.settings if manifest is not None else None, history, line_id)
+    if not prog.get("has_progress"):
+        return
+    st.markdown("**⚙️ 引擎推进**")
+    st.caption(
+        f"引擎已结算到第 {prog['last_step']} 步，累计模拟 {prog['clock_day']:g} 天。数值由引擎按趋势模型推进；"
+        "LLM 只能带原因地提出偏离，不能宣布瓶颈解决 / 里程碑达成。"
+    )
+    for _name, _pts in prog["series"].items():
+        if len(_pts) >= 2:
+            st.line_chart({_name: {step: val for step, val in _pts}}, height=140)
+    for _b in prog["bottlenecks"]:
+        _line = f"- 瓶颈 {_html_text(_b['name'])}：{_b['status']}"
+        if _b["running_path"]:
+            _line += f"（路径「{_html_text(_b['running_path'])}」进行中，预计模拟第 {_b['due_day']} 天到期）"
+        st.markdown(_line, unsafe_allow_html=True)
+    for _m in prog["milestones"]:
+        _done = f"第 {_m['reached_step']} 步达成" if _m["reached_step"] is not None else "未达成"
+        st.markdown(f"- 里程碑 {_html_text(_m['name'])}{('（→ ' + _html_text(_m['stage']) + '）') if _m['stage'] else ''}：{_done}", unsafe_allow_html=True)
+    if prog["rows"]:
+        with st.expander(f"逐步变化及原因（{len(prog['rows'])} 条）"):
+            for _r in prog["rows"][-60:]:
+                st.markdown(
+                    f"- 第 {_r['step']} 步 · {_html_text(str(_r['ref']))}：{_html_text(_r['change'])}"
+                    f"（{_html_text(_r['source'])}）{_html_text(_r['reason'])}",
+                    unsafe_allow_html=True,
+                )
+
+
 def _render_anatomy_evidence(manifest: Any, sim_id: str, line_id: str, label: str, prof: Dict[str, Any]) -> None:
     """元素档案里的证据区 + 审阅 + 研究按钮（第二十四轮 A3）。没有剖面的元素只给"设为重点并联网研究"。"""
     line = element_mod.resolve(manifest.settings, line_id)
@@ -3574,6 +3606,7 @@ def _render_causal_lines_overview(
                         st.markdown(f"- {_html_text(_r['name'])} `{_r['basis']}` {_html_text(_r['detail'])}", unsafe_allow_html=True)
                 if _prof["problems"]:
                     st.warning("体检提示（不影响使用）：" + "；".join(f"{p['where']}：{p['message']}" for p in _prof["problems"][:8]))
+                _render_anatomy_progress(manifest, history, line_id)
                 if sim_id and "evidence" in _prof:
                     _render_anatomy_evidence(manifest, sim_id, line_id, label, _prof)
         elif _prof.get("enabled") and sim_id:

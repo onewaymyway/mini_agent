@@ -479,6 +479,8 @@ def _rows_for(part: str, items: List[Dict[str, Any]]) -> List[Dict[str, str]]:
         if part == "components":
             if "readiness" in it:
                 detail = f"就绪度 {_fmt_num(it['readiness'])}"
+                if isinstance(it.get("engine"), dict) and it["engine"]["v"] != it["readiness"]:
+                    detail += f"（引擎推进到 {_fmt_num(round(it['engine']['v'], 4))}）"
             if it.get("requires"):
                 detail += ("；" if detail else "") + "依赖 " + "、".join(it["requires"])
         elif part == "metrics":
@@ -492,6 +494,11 @@ def _rows_for(part: str, items: List[Dict[str, Any]]) -> List[Dict[str, str]]:
             trend = it.get("trend") or {}
             if trend:
                 detail += f"；趋势 {trend['kind']}" + ("" if trend['kind'] in an.RECOMMENDED_TRENDS else "（非推荐库）")
+            eng = it.get("engine")
+            if isinstance(eng, dict):  # A4：引擎当前值；趋势没有引擎模型时明说
+                detail += f"；**引擎当前值 {_fmt_num(round(eng['v'], 4))}{it.get('unit', '')}**"
+                if eng.get("na"):
+                    detail += "（无引擎模型，只记录 LLM 报告值）"
         elif part == "bottlenecks":
             detail = BOTTLENECK_STATUS_LABELS.get(it.get("status", "open"), "未解决")
             if it.get("severity"):
@@ -499,6 +506,11 @@ def _rows_for(part: str, items: List[Dict[str, Any]]) -> List[Dict[str, str]]:
             paths = it.get("resolution_paths") or []
             if paths:
                 detail += f"；{len(paths)} 条解决路径"
+            run = next((p for p in paths if p.get("status") == "running"), None)
+            if run:  # A4：进行中的路径与预计到期日（引擎模拟日；不显示预先抽好的成败）
+                detail += f"；路径「{run['id']}」进行中，预计模拟第 {_fmt_num(round(run['resolve_at_day']))} 天到期"
+            if it.get("resolved_step") is not None:
+                detail += f"；第 {it['resolved_step']} 步由路径「{it.get('resolved_by', '?')}」解决"
         elif part in ("approaches", "signals", "assumptions"):
             detail = it.get("desc") or it.get("statement") or it.get("watch") or ""
             if part == "assumptions" and "prior_p_true" in it:
@@ -510,6 +522,8 @@ def _rows_for(part: str, items: List[Dict[str, Any]]) -> List[Dict[str, str]]:
                 detail += ("；" if detail else "") + "判据 " + crit
             if it.get("reached_step") is not None:
                 detail += f"；第 {it['reached_step']} 步达成"
+            if part == "adoption_gates" and isinstance(it.get("open"), bool):
+                detail += "；当前已打开" if it["open"] else "；当前未打开"
         rows.append({"id": it["id"], "name": str(name), "detail": detail, "basis": _badge(it)})
     return rows
 
@@ -551,6 +565,46 @@ def build_profile(
         result["evidence"] = build_evidence_view(settings, line, evidence, now=now)
         result["problems"] = an.validate_anatomy(anatomy, known_evidence_ids=evm.known_ids(evidence))
     return result
+
+
+def build_progress(settings: Optional[Dict[str, Any]], history: Any, element_ref: Any) -> Dict[str, Any]:
+    """元素档案的\"引擎推进\"视图（A4，只读）：已发生的指标/组件取值序列、瓶颈与里程碑当前状态、逐步变化及原因。
+
+    - 剖面总开关未开 / 元素没有剖面 / 引擎从未结算过（没有 `meta.last_step`）→ `{"has_progress": False}`；
+    - `series` 是 `{展示名: [(步号, 值), ...]}`（只含有变化的步，界面按步画折线）；`rows` 是逐步流水的可读形式。
+    """
+    if not an.is_enabled(settings):
+        return {"has_progress": False}
+    line = er.resolve(settings or {}, element_ref)
+    anatomy = an.get_anatomy(line)
+    if line is None or anatomy is None or (anatomy.get("meta") or {}).get("last_step") is None:
+        return {"has_progress": False}
+    from world_simulator import anatomy_engine as ae
+
+    lid = str(line["id"]).strip()
+    traj = ae.trajectory(history, lid)
+    names = {f"metric:{m['id']}": str(m.get("name") or m["id"]) for m in anatomy.get("metrics") or []}
+    names.update({f"component:{c['id']}": f"{c.get('name') or c['id']}（就绪度）" for c in anatomy.get("components") or []})
+    meta = anatomy.get("meta") or {}
+    bottlenecks = []
+    for b in anatomy.get("bottlenecks") or []:
+        run = next((p for p in b.get("resolution_paths") or [] if p.get("status") == "running"), None)
+        bottlenecks.append({
+            "id": b["id"], "name": str(b.get("name") or b["id"]),
+            "status": BOTTLENECK_STATUS_LABELS.get(b.get("status", "open"), "未解决"),
+            "running_path": run["id"] if run else "", "due_day": round(run["resolve_at_day"]) if run else None,
+            "paths": [{"id": p["id"], "status": p.get("status") or "pending"} for p in b.get("resolution_paths") or []],
+        })
+    milestones = [
+        {"id": m["id"], "name": str(m.get("name") or m["id"]), "reached_step": m.get("reached_step"),
+         "stage": m.get("maps_to_stage") or ""}
+        for m in anatomy.get("milestones") or []
+    ]
+    return {
+        "has_progress": True, "clock_day": meta.get("clock_day", 0), "last_step": meta.get("last_step"),
+        "series": {names.get(ref, ref): pts for ref, pts in traj["series"].items()},
+        "rows": traj["rows"], "bottlenecks": bottlenecks, "milestones": milestones,
+    }
 
 
 CONFIDENCE_LABELS = {"high": "高", "medium": "中", "low": "低"}

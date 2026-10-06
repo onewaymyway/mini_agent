@@ -158,3 +158,5 @@ workflow、不额外调用 LLM，行为与之前逐字节一致。
 - 设计/记录：`next_doc/world_simulator_realism_tech_and_causal_engine_plan.md` §4 WP1、§9 P3
 
 > **第二十三轮 E3 补充**：元素模式下，推进中新登记的技术（`tech_updates` 里的新 id）会同时建一条 `pending_enrichment` 的元素线，并走 `element_enrichments` 补全流程；`discovered_elements[].lifecycle_seed` 会被转成合成的 `tech_updates` 登记提议交给同一套裁决（T5 等规则只有一个出口）。`tech_updates` 的 id 先经别名解析（`gpt_5` → 已登记的 `gpt5`）。详见 [`element_model_guide.md`](./element_model_guide.md)。
+
+> **第二十四轮 A4 补充**：带元素剖面且有 `maps_to_stage` 里程碑的技术元素，阶段由里程碑派生（`progress` 变成派生显示值）；T 码放行的阶段声明还要过 `A3`（没有里程碑支撑则驳回并回滚）。没有剖面的节点完全不受影响。详见 [`anatomy_guide.md`](./anatomy_guide.md) §13.4。

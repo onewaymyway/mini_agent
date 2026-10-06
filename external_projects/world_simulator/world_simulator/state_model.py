@@ -1024,6 +1024,20 @@ id 被改写成规范 id）/`alias_collision`（同一步两个 key 规范到同
 `dynamic_snapshot[\"causal_lines\"]`。空列表 = 未开启或本步没有动作；`to_dict()` 空时不输出，旧格式逐字节不变。
     """
 
+    anatomy_trace: List[Dict[str, Any]] = field(default_factory=list)
+    """元素剖面引擎（`anatomy_engine.py`，第二十四轮 A4）在*本步*的结算流水，每项
+`{element, kind, ref, field, value_before, value_after, reason, source, ...}`。`kind`：`time`（本步时间来源，恒有一条）/
+`metric`/`component`（数值推进，同一指标的流水首尾衔接）/`bottleneck`（路径启动/到期/失败/耗尽/解决）/`milestone`/`gate`/
+`stage`/`adoption`；`source`：`model`（趋势模型）/`event`（事件跳变）/`deviation`（被接受的 LLM 偏离）/`llm_reported`/
+`anchor`（现值被改后重新锚定）/`clamp`（夹值）/`milestone`（阶段由里程碑派生）/`rejected`/`fallback`/`reported`（仅 `time`）。
+剖面的*当前状态*在 `dynamic_snapshot[\"causal_lines\"]`。空列表 = 未开启或本步没有可结算的元素；`to_dict()` 空时不输出，旧格式逐字节不变。
+    """
+
+    anatomy_violations: List[Dict[str, Any]] = field(default_factory=list)
+    """剖面引擎本步的裁决/提示（`A0`–`A11`，见 `anatomy_engine.py` docstring），每项 `{code, severity, message, detail}`。
+**透明记录**（沿用 `tech_violations` 的做法）：被驳回的声明已经体现在状态里（没生效），这里说明为什么。`to_dict()` 空时不输出。
+    """
+
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         d["options"] = [o.to_dict() if isinstance(o, ChoiceOption) else o for o in self.options]
@@ -1043,7 +1057,7 @@ id 被改写成规范 id）/`alias_collision`（同一步两个 key 规范到同
             d.pop("element_audit", None)
         if not d.get("sampled_events"):
             d.pop("sampled_events", None)
-        for _key in ("causal_queued", "effect_dispositions", "causal_violations", "tree_grounding"):
+        for _key in ("causal_queued", "effect_dispositions", "causal_violations", "tree_grounding", "anatomy_trace", "anatomy_violations"):
             if not d.get(_key):
                 d.pop(_key, None)
         return d
@@ -1163,6 +1177,12 @@ id 被改写成规范 id）/`alias_collision`（同一步两个 key 规范到同
             ],
             tree_grounding=[
                 copy.deepcopy(x) for x in (data.get("tree_grounding") or []) if isinstance(x, dict)
+            ],
+            anatomy_trace=[
+                copy.deepcopy(x) for x in (data.get("anatomy_trace") or []) if isinstance(x, dict)
+            ],
+            anatomy_violations=[
+                copy.deepcopy(x) for x in (data.get("anatomy_violations") or []) if isinstance(x, dict)
             ],
         )
 

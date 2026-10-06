@@ -223,6 +223,7 @@ def advance_lines(cfg, workspace_root: Path, data_dir: Path, sim_id: str) -> Sim
                 "line_mechanism_hint": mechanisms.build_line_hint(
                     manifest.settings, history, current.step + 1,
                     line=line, events=sampled_events, owned_ids=owned_ids,
+                    sim_id=sim_id, branch=branch,
                 ) if (mech_on or elem_on) else "",
             }
 
@@ -334,6 +335,8 @@ def advance_lines(cfg, workspace_root: Path, data_dir: Path, sim_id: str) -> Sim
             cfg, workspace_root, manifest, next_state, merged,
             history=history, tg_before=_tg_before, sampled_events=sampled_events,
             hold_out_pending=mechanisms.hold_out_predicate(owned_ids, due_ids),
+            sim_id=sim_id, branch=branch,
+            evidence_records=mechanisms.load_evidence_if_needed(store, manifest.settings),
         )
         if merge_notes and tech_model.is_enabled(manifest.settings):
             next_state.tech_violations = list(next_state.tech_violations or []) + merge_notes

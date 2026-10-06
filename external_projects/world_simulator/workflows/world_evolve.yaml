@@ -119,6 +119,10 @@ steps:
       叙事与状态，不要否认/替换；没有列出事件=本步抽样结果为空，
       可以写平静的一步）：
       {sampled_events_hint}
+      元素剖面（第二十四轮 A4，`next_doc/world_simulator_element_anatomy_evidence_and_forecast_plan.md`；
+      为空说明没有开启，忽略这一项；非空时其中列出的指标数值、瓶颈状态与"预计本步发生"的事项是
+      **引擎的既成事实**，按说明写进叙事，不要否认/替换，也不要自行宣布瓶颈解决或里程碑达成）：
+      {anatomy_hint}
       因果引擎（第二十二轮 WP3，`next_doc/world_simulator_realism_tech_and_
       causal_engine_plan.md`；为空说明没有开启或没有到期的待兑现因果，
       忽略这一项，也不要输出 `effect_dispositions`；非空时其中列出的是
