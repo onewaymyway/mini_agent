@@ -1,8 +1,8 @@
 # 元素剖面（anatomy）指南
 
 > 第二十四轮。设计依据：`next_doc/world_simulator_element_anatomy_evidence_and_forecast_plan.md`。
-> **本文只写已落地的行为**，随阶段增补。当前已落地：**A1（数据模型、存取层、兼容、只读档案）、A2（创建期拆解 + 向导审阅）**。
-> A3 联网证据、A4 引擎骨架、A5 推进期深化、A6 蒙特卡洛、A7 预测简报、A8 指标回测尚未实施。
+> **本文只写已落地的行为**，随阶段增补。当前已落地：**A1（数据模型、存取层、兼容、只读档案）、A2（创建期拆解 + 向导审阅）、A3（联网证据研究 + 出处）**。
+> A4 引擎骨架、A5 推进期深化、A6 蒙特卡洛、A7 预测简报、A8 指标回测尚未实施。
 
 ## 1. 它是什么
 
@@ -125,7 +125,7 @@ technology / project / organization / person / asset / policy / market / resourc
 - 「重点元素拆解（A2）」折叠区：开关 + 重点元素个数（含"不限"），写入 `settings.anatomy_enabled` / `anatomy_params.key_element_count`；
 - 生成草稿后新增审阅区（只有线里确实有剖面才出现）：重点元素多选（取消勾选**不删除**内容，只把 `key` 置 false；新勾选的无剖面元素得到空壳）、
   每个重点元素一个折叠区，**每条拆解各一个"保持/确认/驳回"**；确认 → `user_confirmed`（保留已有证据 id，指标现值一并确认），驳回 → 删除该条，保持 → 仍是 `llm_prior`。
-  全部条目都已确认/有出处 → `anatomy_status = reviewed`，否则 `draft`。
+  全部条目都经**用户**确认 → `anatomy_status = reviewed`，否则 `draft`（A3 修订：A2 时"有出处"也算已审阅，A3 起联网出处是 LLM 声称的、用户没看过，不再算，见 §12.6）。
 - 落盘时一次性套用（`anatomy.apply_creation_review`）；用户没动过重点元素多选时（`None`）不改动。
 - **编辑内容**请直接改向导里的因果线 JSON（改过的内容仍标 `llm_prior`）；A2 不提供逐字段编辑控件。
 
@@ -139,4 +139,80 @@ technology / project / organization / person / asset / policy / market / resourc
 5. 向导的"重点元素个数"没有走 `element_params`，而是独立的 `anatomy_params`，与计划 §7 一致。
 
 **已知边界（A2）**：未在真实 LLM 下验证 LLM 是否遵守 `anatomy_seed` 格式（解析失败/不合规时降级为空壳，不阻断创建）；
-向导新控件只做了静态检查（`py_compile`），没有在真实页面点过；创建期拆解尚未联网（A3）。
+向导新控件只做了静态检查（`py_compile`），没有在真实页面点过；创建期拆解本身不联网；联网研究是创建**之后**的独立步骤（A3，§12）。
+
+## 12. 联网证据研究与出处（A3）
+
+设计依据：计划 §5.4、§8 A3、§9 风险 1。代码：`evidence.py`（证据层）、`element_research.py`（研究流程）、`workflows/element_research.yaml`。
+
+### 12.1 联网能力实测边界（A3 前置核实，风险 1）
+
+- 宿主 workflow 的 `type: agent` 步骤用 `get_default_registry()` 起 Agent，默认工具里**有内置 `web_search`**（`requires_approval=False`，Agent 初始化时注入搜索配置，默认 DuckDuckGo，可换 brave/serper/tavily）。
+- `web_search` **只返回标题 / 链接 / 摘要**；全部内置工具里**没有网页抓取/读取工具**。所以证据**只能基于搜索摘要**，研究提示词明确要求"不要声称读过全文、不要用 bash 抓取"，界面也写明"仅基于搜索摘要，请点链接核对"。
+- 这是**读代码的静态核实**，没有在真实网络/真实 LLM 下跑过：搜索结果质量、LLM 是否遵守"最多检索 N 次"（只能靠提示词约束，引擎无法计数）、实际耗时均未验证。
+
+### 12.2 流程与触发
+
+`research_element()` 调一次 workflow → `parse_output()` → `apply_research()`（**纯函数**）→ `research_and_save()`（先追加证据、再保存 manifest；失败时不写任何东西）。触发只有三处：
+1. **创建后**：向导落盘后对"待研究的重点元素"逐个研究（`research_pending`），失败不阻断创建，没研究成的留在待研究里；
+2. **设置页「补做联网研究」**（待研究列表 + 按钮）与两个开关（`research_on_create` / `research_on_register`）；
+3. **元素档案里**：「🔎 刷新联网研究」，以及对非重点元素的「设为重点元素并联网研究」。
+
+**不会**在 `advance()` 里自动联网（见 §12.8 偏差 1）。`pending_targets`：重点元素 ∧ 没有 `meta.researched_at`；`origin=discovered` 的受 `research_on_register` 控制，其余受 `research_on_create` 控制。研究失败不写 `researched_at`，所以失败的继续待研究；"成功但没找到出处"也写（不会反复重试），报告 `no_evidence=True`。
+
+### 12.3 谁说了算（核心约束）
+
+LLM 只提供**草稿与证据**，下面由引擎裁决，LLM 写什么都不算数：
+- **来源状态**：草稿里的 `basis` / 状态声明一律丢弃；一个字段标 `sourced` 只看它引用的证据是否被接纳（非空要点 + 合法 `http(s)` 链接）；引用不存在/被拒的证据 → `llm_prior`；置信度取所引证据中**最低**的一档；
+- **指标现值的出处要对得上**：现值要标 `sourced`，所引证据必须 ① 带数值 ② 指标有单位时证据也给同单位（大小写/空白不敏感）③ 数值相对误差 ≤ 1%。不满足任一条 → 现值仍是 `llm_prior`（报告里写原因；单位/数值不一致还会在证据上打 `unit_mismatch`/`value_mismatch` 标记）。证据数值超出指标声明的 `bounds` → 仍算有出处，但打 `out_of_bounds`（待审）并由体检的 `current_out_of_bounds` 提示；
+- **引擎状态**：路径 `status`/`resolve_at_day`、里程碑 `reached_*` 一律剥掉；`meta`（重点/状态/研究时间）由引擎写；
+- **用户的决定**：`user_confirmed` / `user_edited` 的条目**永不被研究覆盖**。
+
+### 12.4 合并规则
+
+草稿里**新 id** → 加入；**同 id** 的已有条目：仅当新条目是 `sourced` 且已有条目不是用户确认过的，才整条替换（继承已有的瓶颈 `resolved/exhausted`、路径 `status/resolve_at_day`、里程碑 `reached_*`，A4 起这些由引擎产生）；其余保留已有条目——研究的作用是**补出处**，不是用无出处的新猜测覆盖旧猜测，也不会冲掉向导里用户手改的内容。已有但草稿没提的条目原样保留。合并后 `anatomy_status` 由 `anatomy.derive_status` 重算。
+
+### 12.5 证据库（`evidence.py`）
+
+- 存放：`data/<sim_id>/evidence.jsonl`（`sim_dir` 根下，**不在 `branches/` 里**，不随分叉/回滚变化；`SimStore.evidence_path/load_evidence/append_evidence/set_evidence_status` 是薄封装）。
+- **追加写**：记录一行一条；状态变更（`superseded`/`rejected`）也是追加一条 `{"_op":"status"}` 事件，读取时折叠，**不改写任何已有行**；坏行、孤儿事件、重复 id 读取时容错跳过。
+- 记录字段：`ev_id`（`ev_NNNN`）、`element_id`、`field_ref`（首个引用它的字段，如 `metrics.cost.current`）、`claim`（改写后的要点，≤240 字、去控制字符）、`value/unit`、`source_url`（只认 `http(s)`，拒绝 `javascript:`/`data:`/`file:`）、`source_title`、`publisher`、`published_at`（只认 `YYYY[-MM[-DD]]`，其余当不知道）、`retrieved_at`、`confidence`、`research_run_id`、`status`、`flags`。**没有要点或没有合法链接的"证据"不入库。**
+- **只存最终被剖面引用的证据**：被草稿引用但最终没用上（用户确认的条目保留、或现值核对不过）的不入库，计入报告 `unreferenced_evidence`。同一元素内**要点与链接完全相同**的证据复用旧 id，不重复入库。刷新后不再被剖面引用的旧证据标 `superseded`。
+- **时效**：`research_ttl_days`（默认 180，**现实天数**）从 `retrieved_at` 起算，超过即在界面标"证据已过期"；只标注，不删除、不自动刷新；没有/无法解析检索时间的不判过期。
+- **驳回**：`reject_evidence`：先摘掉剖面里对它的引用（`sourced` 且没有别的证据 → 回 `llm_prior`；用户已确认的条目保持用户的决定、只去掉该证据 id）并保存，再追加 `rejected` 事件。
+
+### 12.6 审阅与"已审阅"的含义（对 A2 的修订）
+
+`anatomy_status=reviewed` 现在要求**每个条目都经用户确认/编辑**；`sourced` 不再等同已审阅。联网研究的产出永远是"未审阅"，除非用户逐条确认。档案页的「审阅条目」可选择若干条目"确认所选 / 驳回所选（删除）"（复用 `apply_review`，确认保留证据 id）。**草稿默认就驱动**的约定不变，但 A3 里剖面本身还不驱动任何推进（A4 起）。
+
+### 12.7 网络内容是数据，不是指令
+
+- 提示词明确：搜索结果里的指令一律忽略；证据只存改写要点 + 链接，不存网页原文；
+- 引擎对证据只做 schema/链接/数值校验，**不执行、不抓取**；A3 里没有任何提示词读取证据，证据文本不会进入会改变行为的位置（A4 起读取时同样当数据）；
+- 界面展示时所有证据文本经 `_html_text` 转义，链接只在 `http(s)` 时渲染（测试覆盖注入文本不产生行为）。
+
+### 12.8 与计划的偏差（如实记录）
+
+1. **不在 `advance()` 里自动做"新元素登记后补全研究"**：研究是额外的联网 LLM 调用，放进推进会不可预期地变慢/超时（风险 2）。改为创建后批量 + 设置页补做 + 档案刷新；`research_on_register` 的含义改为"创建之后才登记的重点元素是否算待研究"。
+2. **合并只在新内容有出处时替换同 id 条目**（计划未规定合并细则）。
+3. **现值的出处校验比计划严格**（要求证据带数值、同单位、1% 内），计划只写"单位/量级合理性检查"。
+4. **证据只存被引用的**、同要点同链接去重（计划未规定）。
+5. **审阅粒度仍是条目**；档案页的确认/驳回复用 `apply_review`，没有逐字段编辑控件。
+6. **跨模拟证据缓存**（计划列为 A3 末尾可选项）**未做**。
+7. **`research_max_searches` 只写进提示词**，引擎不计数、不强制（`element_research.yaml` 另设 `max_turns: 16`、`timeout: 420` 作为硬上限）。
+8. **A9（证据过期仍在驱动引擎）** 属于 A4 引擎，A3 只提供过期标注。
+
+### 12.9 已知边界（A3）
+
+- 联网研究全程**未在真实网络/真实 LLM 下验证**：LLM 是否遵守 JSON 格式、`evidence_ids` 写法、检索次数上限，以及搜索摘要的质量，都是推断；解析失败/不合规一律降级（不写任何东西）。
+- 证据只基于搜索摘要，LLM 可能误读摘要；`confidence` 是 LLM 自报，不是核验结果；"已核实"没有界面入口（`verified` 状态目前无人产生）。
+- 模拟若是虚构/历史/远离现实的设定，现实检索结果可能不适用；提示词要求这种情况下给空证据并说明，但遵守度未验证。
+- 并发：证据 id 取"现有最大号 +1"，不防并发写入（同 `PROJECT.md` 已知限制）。
+- 界面新增控件（档案证据区、审阅、研究按钮、设置页补做、创建后钩子）只做了 `py_compile` 与证据列表 HTML 的单测，**没有在真实 Streamlit 页面点过**。
+- 编号可能出现空洞（被分配了 id 但最终未入库的证据），无害。
+
+### 12.10 测试（A3）
+
+`tests/test_evidence.py`（14）：URL 协议白名单、要点/链接必填、日期与数值清洗、id 规则、追加写不改写已有行、状态事件折叠、坏行/孤儿事件/重复 id 容错、按现实天数的过期判定、`SimStore` 封装不在分支目录下。
+`tests/test_element_research.py`（45）：目标选择与开关/来源门控、输入构造与摘要预算、输出解析、LLM 无权声明来源/引擎状态/meta、现值出处四种不成立情形与容差、合并各规则（用户确认保护/先验不被覆盖/有出处替换/继承引擎状态/状态不因有出处变已审阅）、证据去重与取代、入参不被修改且畸形线原样保留、注入文本只是数据且展示转义、workflow 桩（围栏 JSON、各种失败）、落盘与失败不写入、批量研究逐个隔离、驳回证据、`set_key`/`strip_evidence`/`derive_status`、档案证据视图与过期。
+**14 个变异**（单位/数值核对被删、LLM 自带 basis 不清、用户确认保护被删、无出处覆盖旧猜测、引擎状态不剥、sourced 算已审阅、URL 放开协议、重建 `causal_lines` 丢畸形条目、旧证据不标取代、未引用证据入库、过期恒假、状态事件不折叠、驳回不摘引用）全部转红。全量 1677 个用例通过（A3 前基线 1618）。

@@ -31,6 +31,7 @@ from world_simulator import anatomy as an
 from world_simulator import anatomy_templates as at
 from world_simulator import element_registry as er
 from world_simulator import element_tiers as et
+from world_simulator import evidence as evm
 
 _UNSET: Any = object()
 
@@ -513,7 +514,10 @@ def _rows_for(part: str, items: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     return rows
 
 
-def build_profile(settings: Optional[Dict[str, Any]], element_ref: Any) -> Dict[str, Any]:
+def build_profile(
+    settings: Optional[Dict[str, Any]], element_ref: Any, *, evidence: Optional[List[Dict[str, Any]]] = None,
+    now: Any = None,
+) -> Dict[str, Any]:
     """元素档案视图（只读）。纯函数，界面与后续导出共用。
 
     - 剖面总开关未开启（含旧实例）→ `{"enabled": False}`，调用方什么都不画；
@@ -533,7 +537,7 @@ def build_profile(settings: Optional[Dict[str, Any]], element_ref: Any) -> Dict[
         {"part": p, "label": at.SLOT_LABELS[p], "rows": _rows_for(p, anatomy[p])}
         for p in an.PARTS if anatomy.get(p)
     ]
-    return {
+    result = {
         "enabled": True, "has_anatomy": True,
         "id": str(line["id"]).strip(), "label": str(line.get("label") or line["id"]),
         "type_label": type_label(line.get("element_type")), "template": tpl["name"], "template_label": tpl["label"],
@@ -542,4 +546,73 @@ def build_profile(settings: Optional[Dict[str, Any]], element_ref: Any) -> Dict[
         "key": bool(meta.get("key")),
         "stats": stats, "counts": an.counts(anatomy), "sections": sections,
         "problems": an.validate_anatomy(anatomy),
+    }
+    if evidence is not None:  # A3：传了证据库才多出证据视图与证据 id 体检；不传则与 A1 输出完全一致
+        result["evidence"] = build_evidence_view(settings, line, evidence, now=now)
+        result["problems"] = an.validate_anatomy(anatomy, known_evidence_ids=evm.known_ids(evidence))
+    return result
+
+
+CONFIDENCE_LABELS = {"high": "高", "medium": "中", "low": "低"}
+FLAG_LABELS = {"out_of_bounds": "数值超出声明边界，待审", "unit_mismatch": "单位不一致", "value_mismatch": "数值不一致"}
+
+
+def _field_label(anatomy: Dict[str, Any], field_ref: str) -> str:
+    """`metrics.cost.current` → `关键指标「单位成本」现值`；找不到条目就原样返回。"""
+    bits = str(field_ref or "").split(".")
+    if len(bits) < 2 or bits[0] not in at.SLOT_LABELS:
+        return str(field_ref or "")
+    item = next((x for x in anatomy.get(bits[0]) or [] if x["id"] == bits[1]), None)
+    name = (item or {}).get("name") or bits[1]
+    return f"{at.SLOT_LABELS[bits[0]]}「{name}」" + ("现值" if len(bits) > 2 and bits[2] == "current" else "")
+
+
+def build_evidence_view(
+    settings: Optional[Dict[str, Any]], element_ref: Any, records: Iterable[Dict[str, Any]], *, now: Any = None,
+) -> Dict[str, Any]:
+    """一个元素的证据视图（纯函数）。`element_ref` 可传线 dict 或引用。
+
+    - `items`：有效（active）证据，每条带人读字段、`stale`（按 `research_ttl_days` 现实天数）、待审标记、被哪些字段引用；
+    - `prior`：仍是 LLM 先验（没有外部出处）的条目，与有出处的**分开列**；
+    - 另给取代/驳回/过期的计数。没有剖面 → 空视图。
+    """
+    line = element_ref if isinstance(element_ref, dict) else er.resolve(settings or {}, element_ref)
+    anatomy = an.get_anatomy(line) or {}
+    lid = str(line["id"]).strip() if isinstance(line, dict) and line.get("id") else ""
+    ttl = an.get_params(settings)["research_ttl_days"]
+    records = list(records or [])
+    mine = [r for r in records if r.get("element_id") == lid]
+    used: Dict[str, List[str]] = {}
+    for part in an.PARTS:
+        for it in anatomy.get(part) or []:
+            for ref, carrier in ((f"{part}.{it['id']}", it), (f"{part}.{it['id']}.current", it.get("current"))):
+                for e in (an.basis_of(carrier).get("evidence_ids") or []) if isinstance(carrier, dict) else []:
+                    used.setdefault(e, []).append(_field_label(anatomy, ref))
+    items = []
+    for r in evm.annotate_stale([x for x in mine if x.get("status") == "active"], now=now, ttl=ttl):
+        host = r["source_url"].split("/")[2] if r["source_url"].count("/") >= 2 else r["source_url"]
+        value = f"{_fmt_num(r['value'])}{r.get('unit', '')}" if "value" in r else ""
+        items.append({
+            "ev_id": r["ev_id"], "claim": r["claim"], "value_text": value, "url": r["source_url"],
+            "title": r.get("source_title") or host, "publisher": r.get("publisher", ""),
+            "published_at": r.get("published_at", ""), "retrieved_at": r.get("retrieved_at", ""),
+            "confidence": r["confidence"], "confidence_label": CONFIDENCE_LABELS[r["confidence"]],
+            "stale": r["stale"], "flags": [FLAG_LABELS[f] for f in r.get("flags") or [] if f in FLAG_LABELS],
+            "field_label": _field_label(anatomy, r.get("field_ref", "")), "used_by": used.get(r["ev_id"], []),
+        })
+    prior = []
+    for part in an.PARTS:
+        for it in anatomy.get(part) or []:
+            if an.basis_of(it)["state"] == "llm_prior":
+                prior.append({"part": part, "label": at.SLOT_LABELS[part], "id": it["id"], "name": it.get("name") or it["id"]})
+            cur = it.get("current")
+            if part == "metrics" and isinstance(cur, dict) and an.basis_of(cur)["state"] == "llm_prior":
+                prior.append({"part": part, "label": at.SLOT_LABELS[part], "id": it["id"], "name": f"{it.get('name') or it['id']}（现值）"})
+    meta = anatomy.get("meta") or {}
+    return {
+        "items": items, "prior": prior, "ttl_days": ttl,
+        "stale_count": sum(1 for i in items if i["stale"]),
+        "superseded_count": sum(1 for r in mine if r.get("status") == "superseded"),
+        "rejected_count": sum(1 for r in mine if r.get("status") == "rejected"),
+        "researched_at": meta.get("researched_at", ""), "researched": bool(meta.get("researched_at")),
     }

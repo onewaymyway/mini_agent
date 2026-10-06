@@ -49,6 +49,7 @@ from world_simulator import hypothesis as hyp_mod
 from world_simulator import reality_check as rc_mod
 from world_simulator import element_discovery as element_discovery_mod
 from world_simulator import anatomy as anatomy_mod
+from world_simulator import element_research as research_mod
 from world_simulator import element_registry as element_mod
 from world_simulator import element_view as element_view_mod
 from world_simulator import tech_model as tech_mod
@@ -2482,6 +2483,14 @@ def page_create() -> None:
                 beliefs=draft.beliefs,
             )
             sim_id = manifest.sim_id
+            # 第二十四轮 A3：创建后对重点元素联网研究。失败只是不补出处（剖面保持 LLM 先验），不阻断创建；
+            # 没研究成的元素仍留在"待研究"里，可在设置页补做。
+            if research_mod.pending_targets(manifest.settings):
+                with st.spinner("正在联网研究重点元素（每个元素会调用一次 AI 并检索，可能需要几分钟）..."):
+                    try:
+                        research_mod.research_pending(_load_cfg(), PROJECT_ROOT, DATA_DIR, sim_id)
+                    except Exception:  # noqa: BLE001 — research_pending 本身不抛，这里兜底 _load_cfg 等
+                        pass
             if advance_after_create and chosen_option_id is not None:
                 with st.spinner("正在按选定方向推进第一步..."):
                     try:
@@ -3179,6 +3188,128 @@ def _render_anatomy_review(draft: Any, causal_lines_text: str) -> Tuple[Optional
     return key_pick, decisions
 
 
+def _evidence_list_html(view: Dict[str, Any]) -> str:
+    """证据列表的 HTML 片段（第二十四轮 A3）。所有来自联网研究的文本都经 `_html_text` 转义——它们是不可信数据；
+    链接只在 http(s) 时才渲染成 <a>（`evidence.clean_url` 已在入库时保证，这里再兜一层）。"""
+    rows = []
+    for it in view.get("items") or []:
+        url = it["url"] if str(it.get("url", "")).lower().startswith(("http://", "https://")) else ""
+        title = _html_text(it["title"])
+        link = f'<a href="{_html_text(url)}" target="_blank" rel="noopener noreferrer">{title}</a>' if url else title
+        meta = [f"可信度 {it['confidence_label']}"]
+        if it.get("published_at"):
+            meta.append(f"发表 {_html_text(it['published_at'])}")
+        if it.get("retrieved_at"):
+            meta.append(f"检索 {_html_text(it['retrieved_at'][:10])}")
+        if it.get("publisher"):
+            meta.append(_html_text(it["publisher"]))
+        badges = ""
+        if it.get("stale"):
+            badges += " ⏳<b>证据已过期</b>"
+        for f in it.get("flags") or []:
+            badges += f" ⚠️{_html_text(f)}"
+        used = "、".join(_html_text(x) for x in it.get("used_by") or [])
+        value = f"（{_html_text(it['value_text'])}）" if it.get("value_text") else ""
+        rows.append(
+            f'<div class="ws-chapter-choice"><code>{_html_text(it["ev_id"])}</code> {_html_text(it["claim"])}{value}'
+            f'<br><span class="ws-muted">{link} · {" · ".join(meta)}{badges}'
+            + (f" · 支撑：{used}" if used else "") + "</span></div>"
+        )
+    return "".join(rows)
+
+
+def _research_summary_text(report: Dict[str, Any]) -> str:
+    """一次研究的报告 → 一两句人话（只描述事实，不夸大）。"""
+    text = (
+        f"新增证据 {report.get('new_evidence', 0)} 条（复用 {report.get('reused_evidence', 0)}、取代旧证据 {report.get('superseded', 0)}）；"
+        f"新增条目 {report.get('added', 0)}、用有出处的内容替换 {report.get('replaced', 0)}；"
+        f"仍是 LLM 先验的条目占 {report.get('stats', {}).get('llm_prior_ratio') or 0:.0%}。"
+    )
+    if report.get("no_evidence"):
+        text += " 这次没有找到可核对的出处，所有字段仍标「LLM 先验」。"
+    if report.get("kept_user"):
+        text += f" 用户确认过的 {len(report['kept_user'])} 项未被覆盖。"
+    return text
+
+
+def _render_anatomy_evidence(manifest: Any, sim_id: str, line_id: str, label: str, prof: Dict[str, Any]) -> None:
+    """元素档案里的证据区 + 审阅 + 研究按钮（第二十四轮 A3）。没有剖面的元素只给"设为重点并联网研究"。"""
+    line = element_mod.resolve(manifest.settings, line_id)
+    if line is None or element_mod.line_kind(line) == "domain" or not element_mod.is_alive(line):
+        return
+    key = f"{sim_id}_{line_id}"
+    store = SimStore.for_root(DATA_DIR, sim_id)
+
+    def _run(set_key: bool) -> None:
+        try:
+            if set_key:
+                _s = dict(manifest.settings)
+                _s["causal_lines"] = [dict(x) if x is line else x for x in _s.get("causal_lines") or []]
+                anatomy_mod.set_key(_s, line_id, True)
+                update_settings(DATA_DIR, sim_id, causal_lines=_s["causal_lines"])
+            with st.spinner("正在联网检索并整理（会调用一次 AI，内含若干次搜索，可能需要几分钟）..."):
+                rep = research_mod.research_and_save(_load_cfg(), PROJECT_ROOT, DATA_DIR, sim_id, line_id)
+            st.session_state[f"research_msg_{key}"] = ("ok", _research_summary_text(rep), rep.get("unresolved") or [])
+        except ImportError as exc:
+            st.session_state[f"research_msg_{key}"] = ("err", f"未检测到 mini_agent 框架，无法联网研究：{exc}", [])
+        except Exception as exc:  # noqa: BLE001 — 研究失败不影响其它功能，剖面保持原状
+            st.session_state[f"research_msg_{key}"] = ("err", f"研究失败，剖面保持原状（仍是 LLM 先验）：{exc}", [])
+        st.rerun()
+
+    if not prof.get("has_anatomy"):
+        if st.button(f"设为重点元素并联网研究「{label}」", key=f"set_key_research_{key}"):
+            _run(True)
+        return
+    view = prof.get("evidence") or {}
+    msg = st.session_state.pop(f"research_msg_{key}", None)
+    if msg:
+        (st.success if msg[0] == "ok" else st.error)(msg[1])
+        if msg[2]:
+            st.caption("没找到出处、需要你自己核对：" + "；".join(msg[2]))
+    st.markdown("**证据（联网研究，仅基于搜索摘要）**")
+    st.caption(
+        "证据来自搜索结果的标题/链接/摘要，**没有读过网页全文**；AI 可能误读，请点链接核对。"
+        f"证据 {view.get('ttl_days', 180)} 天后标为过期（只标注，不自动刷新）。区间/结论的可信度取决于这里。"
+    )
+    if view.get("items"):
+        st.markdown(_evidence_list_html(view), unsafe_allow_html=True)
+        _rej = st.selectbox("驳回某条证据（引用它的字段会退回 LLM 先验）", options=[""] + [i["ev_id"] for i in view["items"]],
+                            key=f"reject_pick_{key}")
+        if _rej and st.button(f"驳回 {_rej}", key=f"reject_btn_{key}"):
+            try:
+                research_mod.reject_evidence(DATA_DIR, sim_id, _rej)
+                st.rerun()
+            except research_mod.ElementResearchError as exc:
+                st.error(str(exc))
+    else:
+        st.caption("还没有任何带出处的证据" + ("（已研究过，但没找到可核对的出处）。" if view.get("researched") else "。"))
+    if view.get("prior"):
+        with st.expander(f"仍是 LLM 先验、没有外部出处的条目（{len(view['prior'])}）"):
+            for it in view["prior"]:
+                st.markdown(f"- {_html_text(it['label'])}：{_html_text(it['name'])}", unsafe_allow_html=True)
+    # 审阅：只有用户操作才会把条目标成已确认；确认不改变内容
+    anatomy = anatomy_mod.get_anatomy(line) or {}
+    options = [(sec["part"], row["id"], f"{sec['label']}：{row['name']}（{row['basis']}）")
+               for sec in prof.get("sections", []) for row in sec["rows"]]
+    if options:
+        with st.expander("审阅条目：确认 / 驳回（只有你确认过的才算已审阅）"):
+            pick = st.multiselect("选择条目", options=list(range(len(options))), format_func=lambda i: options[i][2], key=f"review_pick_{key}")
+            c1, c2 = st.columns(2)
+            for col, action, text in ((c1, "confirm", "确认所选"), (c2, "reject", "驳回所选（删除）")):
+                with col:
+                    if pick and st.button(text, key=f"review_{action}_{key}"):
+                        new = anatomy_mod.apply_review(anatomy, {(options[i][0], options[i][1]): action for i in pick})
+                        _s = dict(manifest.settings)
+                        _s["causal_lines"] = [dict(x) if x is line else x for x in _s.get("causal_lines") or []]
+                        if new:
+                            line_copy = next(x for x in _s["causal_lines"] if str(x.get("id")) == str(line.get("id")))
+                            line_copy["anatomy"] = new
+                        update_settings(DATA_DIR, sim_id, causal_lines=_s["causal_lines"])
+                        st.rerun()
+    if st.button(f"🔎 刷新联网研究「{label}」", key=f"refresh_research_{key}"):
+        _run(False)
+
+
 def _render_causal_lines_overview(
     history: List,
     causal_lines_meta: List[Dict[str, Any]],
@@ -3419,7 +3550,11 @@ def _render_causal_lines_overview(
                     )
 
         # 第二十四轮 A1：元素档案（只读骨架版）。剖面开关未开/元素没有剖面 = 什么都不画。
-        _prof = element_view_mod.build_profile(manifest.settings, line_id) if manifest is not None else {"enabled": False}
+        _prof = (
+            element_view_mod.build_profile(manifest.settings, line_id, evidence=SimStore.for_root(DATA_DIR, sim_id).load_evidence())
+            if manifest is not None and sim_id else
+            (element_view_mod.build_profile(manifest.settings, line_id) if manifest is not None else {"enabled": False})
+        )
         if _prof.get("has_anatomy"):
             _st = _prof["stats"]
             with st.expander(
@@ -3439,6 +3574,10 @@ def _render_causal_lines_overview(
                         st.markdown(f"- {_html_text(_r['name'])} `{_r['basis']}` {_html_text(_r['detail'])}", unsafe_allow_html=True)
                 if _prof["problems"]:
                     st.warning("体检提示（不影响使用）：" + "；".join(f"{p['where']}：{p['message']}" for p in _prof["problems"][:8]))
+                if sim_id and "evidence" in _prof:
+                    _render_anatomy_evidence(manifest, sim_id, line_id, label, _prof)
+        elif _prof.get("enabled") and sim_id:
+            _render_anatomy_evidence(manifest, sim_id, line_id, label, _prof)
 
         # 阶段二十六（`next_doc/world_simulator_causal_line_future_tree_
         # plan.md`）：因果树——创建模拟时就已经落盘（见
@@ -5714,7 +5853,7 @@ def page_detail() -> None:
                         st.rerun()
 
             _an_on = st.checkbox(
-                "启用元素剖面（第二十四轮 A1，目前只是只读骨架：能存、能看，推进时不会自动使用）",
+                "启用元素剖面（第二十四轮：创建期拆解 + 联网证据研究；推进时仍不会自动使用剖面）",
                 value=bool(cur_settings.get("anatomy_enabled")), key=f"anatomy_enabled_{sim_id}",
                 help="旧实例默认关闭；开启只影响之后新增/编辑的剖面，不回填历史。",
             )
@@ -5724,6 +5863,36 @@ def page_detail() -> None:
             _an_bad = anatomy_mod.invalid_param_keys(cur_settings)
             if _an_bad:
                 st.warning("anatomy_params 里下列取值非法，已回退默认值：" + "、".join(_an_bad))
+            if anatomy_mod.is_enabled(cur_settings):
+                _pend = research_mod.pending_targets(cur_settings)
+                _rp = anatomy_mod.get_params(cur_settings)
+                st.caption(
+                    "联网研究（A3）：只在创建后和你手动点击时发生，**不会在每步推进里自动联网**。"
+                    f"当前每次研究最多检索 {_rp['research_max_searches']} 次，证据 {_rp['research_ttl_days']} 天后标过期。"
+                )
+                _rc1, _rc2 = st.columns(2)
+                with _rc1:
+                    _on_c = st.checkbox("创建后自动研究重点元素", value=bool(_rp["research_on_create"]), key=f"research_on_create_{sim_id}")
+                with _rc2:
+                    _on_r = st.checkbox("创建之后才登记的重点元素也算待研究", value=bool(_rp["research_on_register"]), key=f"research_on_register_{sim_id}")
+                if _on_c != bool(_rp["research_on_create"]) or _on_r != bool(_rp["research_on_register"]):
+                    update_settings(DATA_DIR, sim_id, anatomy_params={
+                        **(cur_settings.get("anatomy_params") if isinstance(cur_settings.get("anatomy_params"), dict) else {}),
+                        "research_on_create": bool(_on_c), "research_on_register": bool(_on_r),
+                    })
+                    st.rerun()
+                if _pend:
+                    st.info(f"有 {len(_pend)} 个重点元素还没做联网研究：{'、'.join(_pend)}")
+                    if st.button("补做联网研究", key=f"research_pending_btn_{sim_id}"):
+                        with st.spinner("正在联网研究..."):
+                            try:
+                                _res = research_mod.research_pending(_load_cfg(), PROJECT_ROOT, DATA_DIR, sim_id)
+                                _bad = [f"{r['element_id']}：{r['error']}" for r in _res if not r["ok"]]
+                                (st.warning if _bad else st.success)(
+                                    f"完成 {sum(1 for r in _res if r['ok'])}/{len(_res)} 个" + ("；失败：" + "；".join(_bad) if _bad else "。")
+                                )
+                            except Exception as exc:  # noqa: BLE001
+                                st.error(f"研究失败：{exc}")
 
             st.markdown("**编辑单个元素**（所属领域 / 别名 / 钉住为活跃 / 状态）")
             _all_lines = element_mod.get_lines(cur_settings)

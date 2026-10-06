@@ -1080,8 +1080,14 @@ REVIEW_ACTIONS = ("keep", "confirm", "reject")
 
 
 def _all_reviewed(anatomy: Dict[str, Any]) -> bool:
+    """所有条目都经**用户**确认/编辑才算已审阅。
+
+    A3 修订：A2 时曾把 `sourced`（有出处）也算作已审阅，那时证据库还不存在、`sourced` 不可能出现。
+    A3 起 `sourced` 来自联网研究（LLM 声称的出处，用户没看过），不能因此就显示成"已审阅"——
+    计划 §3.3"不自动把联网研究结果标成已核实（核实只能由用户操作）"。
+    """
     carriers = list(_basis_carriers(anatomy))
-    return bool(carriers) and all(basis_of(c)["state"] in ("user_confirmed", "user_edited", "sourced") for c in carriers)
+    return bool(carriers) and all(basis_of(c)["state"] in ("user_confirmed", "user_edited") for c in carriers)
 
 
 def apply_review(
@@ -1119,6 +1125,110 @@ def apply_review(
         meta["anatomy_status"] = "none"
     out["meta"] = meta
     return normalize_anatomy(out)
+
+
+# ── A3：联网研究 / 证据支撑（纯函数，不读写磁盘）──────────────────────
+
+
+def derive_status(anatomy: Optional[Dict[str, Any]]) -> str:
+    """按内容重算 `anatomy_status`：没有任何条目 → `none`；全部条目都经用户确认/编辑 → `reviewed`；否则 `draft`。
+    （`verified` 是为"用户逐项核实"预留的状态，目前没有界面入口，本函数不产生它。）"""
+    a = normalize_anatomy(anatomy)
+    if not any(a.get(p) for p in PARTS):
+        return "none"
+    return "reviewed" if _all_reviewed(a) else "draft"
+
+
+def strip_engine_state(anatomy: Dict[str, Any]) -> Dict[str, Any]:
+    """**就地**剥掉引擎状态字段（路径 `status`/`resolve_at_day`、里程碑 `reached_*`），返回同一个对象。
+
+    联网研究的 LLM 输出和创建期种子一样，**无权**声明"某条路径已成功/某个里程碑已达成"——这些是 A4 引擎的状态。
+    """
+    for part in PARTS:
+        for item in anatomy.get(part) or []:
+            for path in item.get("resolution_paths") or []:
+                for f in _ENGINE_PATH_FIELDS:
+                    path.pop(f, None)
+            if part == "milestones":
+                for f in _ENGINE_MILESTONE_FIELDS:
+                    item.pop(f, None)
+    return anatomy
+
+
+def evidence_refs(anatomy: Optional[Dict[str, Any]]) -> List[str]:
+    """剖面里所有被引用的证据 id（去重、保持首次出现顺序）。"""
+    seen: Dict[str, None] = {}
+    for carrier in _basis_carriers(anatomy or {}):
+        for ev in basis_of(carrier).get("evidence_ids") or []:
+            seen.setdefault(ev, None)
+    return list(seen)
+
+
+def strip_evidence(anatomy: Optional[Dict[str, Any]], ev_ids: Iterable[str]) -> Dict[str, Any]:
+    """从剖面里摘掉对若干证据的引用（用户驳回证据时用）。返回新剖面，不改入参。
+
+    - 摘掉 `evidence_ids` 里的这些 id；
+    - 一个 `sourced` 条目摘完后没有剩余证据 → 回到 `llm_prior`（计划 §5.4.4"驳回后回到 llm_prior"，并清掉过时的 `confidence`）；
+    - `user_confirmed`/`user_edited` 的条目**保持用户的决定**，只是不再带这条证据 id。
+    """
+    gone = {str(e) for e in ev_ids}
+    cur = normalize_anatomy(anatomy)
+    if not cur or not gone:
+        return cur
+
+    def fix(carrier: Dict[str, Any]) -> None:
+        basis = basis_of(carrier)
+        kept = [e for e in basis.get("evidence_ids") or [] if e not in gone]
+        if kept == (basis.get("evidence_ids") or []):
+            return
+        if basis["state"] == "sourced" and not kept:
+            carrier.pop("basis", None)
+            return
+        new = {k: v for k, v in basis.items() if k != "evidence_ids"}
+        if kept:
+            new["evidence_ids"] = kept
+        if new == {"state": DEFAULT_BASIS_STATE}:
+            carrier.pop("basis", None)
+        else:
+            carrier["basis"] = new
+
+    for part in PARTS:
+        for item in cur.get(part) or []:
+            fix(item)
+            if isinstance(item.get("current"), dict):
+                fix(item["current"])
+    return normalize_anatomy(cur)
+
+
+def set_key(settings: Dict[str, Any], element_ref: Any, key: bool) -> Tuple[bool, str]:
+    """把一个元素设为/取消重点元素（**就地改 `settings`**，同 `set_anatomy` 的约定）。返回 `(是否改动, 错误)`。
+
+    - 设为重点：没有剖面就写一个空壳（`anatomy_status=none`），已有剖面只改 `meta.key`；
+    - 取消重点：只把 `meta.key` 置 false，**不删除**已有内容；没有剖面的元素什么都不做；
+    - 领域线 / 已退场 / 找不到 → 不改，返回错误。
+    不检查 `anatomy_enabled`（底层存取，开关由调用方决定）。
+    """
+    line = er.resolve(settings or {}, element_ref, follow_merged=False)
+    if line is None:
+        return False, f"找不到元素「{element_ref}」"
+    lid = str(line.get("id")).strip()
+    if er.line_kind(line) == "domain":
+        return False, f"「{lid}」是领域线，不能设为重点元素"
+    if not er.is_alive(line):
+        return False, f"「{lid}」已退场或已被合并"
+    cur = get_anatomy(line)
+    if key:
+        if cur is None:
+            line["anatomy"] = _key_shell(line.get("element_type"))
+            return True, ""
+        if (cur.get("meta") or {}).get("key") is True:
+            return False, ""
+        line["anatomy"] = {**cur, "meta": {**(cur.get("meta") or {}), "key": True}}
+        return True, ""
+    if cur is None or not (cur.get("meta") or {}).get("key"):
+        return False, ""
+    line["anatomy"] = {**cur, "meta": {**cur["meta"], "key": False}}
+    return True, ""
 
 
 def create_hint(settings: Optional[Dict[str, Any]]) -> str:

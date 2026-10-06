@@ -224,6 +224,31 @@ class SimStore:
     def save_branch_meta(self, branch: str, meta: Dict[str, Any]) -> None:
         atomic_write_json(self.branch_meta_path(branch), dict(meta))
 
+    # ── 证据库（第二十四轮 A3）────────────────────────────────────────
+    # 证据放在 `sim_dir` 根下（不在 `branches/<branch>/` 里）：它是"研究时的外部事实"，不属于分支状态，
+    # 分叉/回滚不应让它消失；追加写、状态变更也是追加（见 `evidence.py`）。薄封装，逻辑都在 `evidence.py`。
+
+    @property
+    def evidence_path(self) -> Path:
+        from world_simulator import evidence as _ev
+
+        return _ev.evidence_path(self.sim_dir)
+
+    def load_evidence(self) -> List[Dict[str, Any]]:
+        from world_simulator import evidence as _ev
+
+        return _ev.load_records(self.evidence_path)
+
+    def append_evidence(self, records: List[Dict[str, Any]]) -> int:
+        from world_simulator import evidence as _ev
+
+        return _ev.append_records(self.evidence_path, records)
+
+    def set_evidence_status(self, ev_id: str, status: str) -> bool:
+        from world_simulator import evidence as _ev
+
+        return _ev.append_status(self.evidence_path, ev_id, status)
+
     def delete_branch_dir(self, branch: str) -> None:
         """删除某条分支在磁盘上的目录（`branches/<branch>/`）。
 
