@@ -973,43 +973,15 @@ def fetch_etf_kline(code: str, days: int, adjust: str = "qfq"):
       5. akshare.fund_etf_hist_em
     """
     import re
-    market = "sh" if code.startswith(("5", "1")) else "sz"
+    # 正确判断市场：51xxxx/58xxxx 是上交所，159xxx 是深交所
+    market = "sh" if code.startswith(("5",)) else "sz"
     try:
         df = _eastmoney_kline_direct(code, market, days, adjust)
         return df
     except Exception as exc:
         logger.warning("东方财富直连失败 (%s)，降级到 baostock", exc)
 
-    # 3. baostock（TCP 直连，最稳兜底）
-    try:
-        import datetime as _dt
-        end = _dt.date.today()
-        start = end - _dt.timedelta(days=int(days * 1.7) + 30)
-        bs = _import_baostock()
-        _bs_compat_patch()
-        bs_code = f"{market}.{code}"
-        adjustflag = "3" if adjust == "none" else "2" if adjust == "hfq" else "1"
-        lg = bs.login()
-        if lg.error_code == "0":
-            rs = bs.query_history_k_data_plus(
-                bs_code,
-                "date,open,high,low,close,volume",
-                start_date=start.strftime("%Y-%m-%d"),
-                end_date=end.strftime("%Y-%m-%d"),
-                frequency="d",
-                adjustflag=adjustflag,
-            )
-            bs_df = rs.get_data()
-            bs.logout()
-            if bs_df is not None and not bs_df.empty:
-                bs_df.columns = ["date", "open", "high", "low", "close", "volume"]
-                bs_df["date"] = pd.to_datetime(bs_df["date"])
-                logger.info("baostock ETF K 线成功: %s (%d 行)", code, len(bs_df))
-                return bs_df.tail(days).reset_index(drop=True)
-    except Exception as exc2:
-        logger.debug("baostock ETF K 线失败 (%s)，降级到新浪", exc2)
-
-    # 4. 新浪财经兜底
+    # 3. 新浪财经（HTTP 直连，最可靠且无需登录）
     try:
         sina_symbol = f"{'sh' if market == 'sh' else 'sz'}{code}"
         sina_df = _sina_kline_fetch(sina_symbol, datalen=days + 10)
@@ -1017,6 +989,48 @@ def fetch_etf_kline(code: str, days: int, adjust: str = "qfq"):
             return sina_df.tail(days).reset_index(drop=True)
     except Exception as exc3:
         logger.debug("新浪 ETF K 线失败: %s", exc3)
+
+    # 4. baostock（TCP 直连，最稳兜底，但需加超时避免卡死）
+    try:
+        import datetime as _dt
+        import signal
+
+        def _timeout_handler(signum, frame):
+            raise TimeoutError("baostock 查询超时")
+
+        old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+        signal.alarm(15)  # 15 秒超时
+        try:
+            end = _dt.date.today()
+            start = end - _dt.timedelta(days=int(days * 1.7) + 30)
+            bs = _import_baostock()
+            _bs_compat_patch()
+            bs_code = f"{market}.{code}"
+            adjustflag = "3" if adjust == "none" else "2" if adjust == "hfq" else "1"
+            lg = bs.login()
+            if lg.error_code == "0":
+                rs = bs.query_history_k_data_plus(
+                    bs_code,
+                    "date,open,high,low,close,volume",
+                    start_date=start.strftime("%Y-%m-%d"),
+                    end_date=end.strftime("%Y-%m-%d"),
+                    frequency="d",
+                    adjustflag=adjustflag,
+                )
+                bs_df = rs.get_data()
+                bs.logout()
+                if bs_df is not None and not bs_df.empty:
+                    bs_df.columns = ["date", "open", "high", "low", "close", "volume"]
+                    bs_df["date"] = pd.to_datetime(bs_df["date"])
+                    logger.info("baostock ETF K 线成功: %s (%d 行)", code, len(bs_df))
+                    return bs_df.tail(days).reset_index(drop=True)
+        except TimeoutError:
+            logger.debug("baostock ETF K 线超时 (%s)，跳过", code)
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old_handler)
+    except Exception as exc2:
+        logger.debug("baostock ETF K 线失败 (%s)，降级到 akshare", exc2)
 
     # 5. akshare 最后备选
     import datetime
