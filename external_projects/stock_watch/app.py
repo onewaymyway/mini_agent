@@ -448,24 +448,95 @@ def render_kline_viewer(algo: Dict, manual: Dict):
     st.header("📈 K线图查看")
 
     all_codes = {**algo, **manual}
-    if not all_codes:
+
+    # ── 模式切换：单股查看 / 按日期浏览 ────────────────────────────
+    view_mode = st.radio(
+        "查看模式",
+        [
+            "📊 单股查看（选标的，看最新一张）",
+            "📁 按日期浏览（选池 + 日期，看当天所有）",
+        ],
+        key="kline_view_mode",
+        horizontal=True,
+    )
+
+    if "浏览" in view_mode:
+        # ── 按日期浏览模式 ──────────────────────────────────────────
+        pool_type = st.selectbox(
+            "选择池",
+            ["algo", "manual"],
+            key="kline_browse_pool",
+            format_func=lambda x: "🤖 算法池" if x == "algo" else "✋ 手动池",
+        )
+        kline_base = REPORTS_DIR / "kline" / pool_type
+        if not kline_base.exists():
+            st.info(f"K 线图目录不存在：{kline_base}")
+            return
+
+        date_folders = sorted(
+            [d.name for d in kline_base.iterdir() if d.is_dir()],
+            reverse=True,
+        )
+        if not date_folders:
+            st.info(f"{pool_type} 池暂无 K 线图数据，请先运行 K 线批量生成")
+            return
+
+        selected_date = st.selectbox(
+            "选择日期",
+            date_folders,
+            key="kline_browse_date",
+            format_func=lambda d: f"{d[:4]}-{d[4:6]}-{d[6:8]}",
+        )
+        date_dir = kline_base / selected_date
+        png_files = sorted(date_dir.glob("*.png"), key=lambda p: p.name)
+        if not png_files:
+            st.info(f"该日期下暂无 K 线图：{date_dir}")
+            return
+
+        code_options = [p.stem for p in png_files]
+        selected_code = st.selectbox(
+            "选择标的",
+            code_options,
+            key="kline_browse_code",
+        )
+        if not selected_code:
+            return
+        kline_file = date_dir / f"{selected_code}.png"
+        if kline_file.exists():
+            st.image(str(kline_file), use_container_width=True)
+            st.caption(f"来源: {pool_type} 池 | 日期: {selected_date} | 文件: {kline_file.name}")
+        else:
+            st.info(f"未找到 {selected_code} 的 K 线图")
+
+        # 列出当天所有 K 线图缩略图
+        st.markdown("---")
+        st.subheader(f"📷 {selected_date} 所有 K 线图")
+        cols = st.columns(min(4, len(png_files)))
+        for i, pf in enumerate(png_files):
+            with cols[i % 4]:
+                st.image(str(pf), use_container_width=True)
+                st.caption(pf.stem)
+
+    elif not all_codes:
         st.info("池中无标的，无法查看 K 线图")
         return
 
-    code_options = [f"{code} ({all_codes[code].name})" for code in all_codes]
-    selected = st.selectbox("选择标的", code_options, key="kline_select")
-    if not selected:
-        return
-    code = selected.split(" (")[0]
-
-    pool_type = "manual" if code in manual else "algo"
-    kline_file = get_kline_file(code, pool_type)
-
-    if kline_file and kline_file.exists():
-        st.image(str(kline_file), use_container_width=True)
-        st.caption(f"来源: {pool_type} 池 | 文件: {kline_file.name}")
     else:
-        st.info(f"未找到 {code} 的 K 线图，请先运行 K 线批量生成")
+        # ── 原有单股查看模式 ──────────────────────────────────────────
+        code_options = [f"{code} ({all_codes[code].name})" for code in all_codes]
+        selected = st.selectbox("选择标的", code_options, key="kline_select")
+        if not selected:
+            return
+        code = selected.split(" (")[0]
+
+        pool_type = "manual" if code in manual else "algo"
+        kline_file = get_kline_file(code, pool_type)
+
+        if kline_file and kline_file.exists():
+            st.image(str(kline_file), use_container_width=True)
+            st.caption(f"来源: {pool_type} 池 | 文件: {kline_file.name}")
+        else:
+            st.info(f"未找到 {code} 的 K 线图，请先运行 K 线批量生成")
 
     # 提供执行按钮
     st.markdown("---")
