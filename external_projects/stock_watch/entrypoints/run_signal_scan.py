@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 
 import _common  # noqa: F401 - 引导 sys.path + 提供 tracked_run
 
@@ -42,6 +43,7 @@ from stock_watch.data_sources import (
 from stock_watch.indicators import compute_price_signals
 from stock_watch.news_signals import compute_news_signals
 from stock_watch.report import render_candidate_pool_report
+from stock_watch.signals import Signal
 
 logger = logging.getLogger("stock_watch.signal_scan")
 
@@ -92,6 +94,38 @@ def _scan_news_signals(pool, entry, failures):
     merge_signals(pool, entry.code, entry.name, signals, entry_type=entry.type)
 
 
+def _write_signal_results(pool, reports_dir: Path) -> None:
+    """将算法池中带有信号的标的写入 reports/signals/latest.json 供看板读取。"""
+    import json
+    from datetime import datetime
+    signals_dir = reports_dir / "signals"
+    signals_dir.mkdir(parents=True, exist_ok=True)
+    results = []
+    for code, entry in pool.items():
+        # 只输出有信号来源的标的
+        signal_sources = [s for s in entry.sources if s.startswith("signal:")]
+        if not signal_sources:
+            continue
+        # 只保留信号相关的理由
+        signal_reasons = [r for r in entry.reasons if any(src in r for src in ["MA", "MACD", "RSI", "KDJ", "放量", "布林", "业绩", "回购", "激励", "重组", "风险", "减持", "新闻", "关键词"])]
+        results.append({
+            "code": code,
+            "name": entry.name,
+            "type": entry.type,
+            "score": round(entry.score, 2),
+            "state": entry.state,
+            "signal_sources": signal_sources,
+            "signal_reasons": signal_reasons,
+            "last_seen": entry.last_seen,
+            "updated_at": datetime.now().isoformat(),
+        })
+    # 按分数降序排序
+    results.sort(key=lambda x: x["score"], reverse=True)
+    output_file = signals_dir / "latest.json"
+    output_file.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+    logger.info("信号扫描结果已写入: %s (%d 只标的)", output_file, len(results))
+
+
 def main() -> int:
     ensure_dirs()
     cfg = load_config()
@@ -124,6 +158,9 @@ def main() -> int:
                     _scan_news_signals(algo_pool, entry, failures)
             save_pool(ALGO_POOL_PATH, algo_pool)
             logger.info("算法池信号扫描完成: 分析 %d 只标的，%d 次抓取失败", len(targets), len(failures))
+
+            # 写入信号扫描结果供看板读取
+            _write_signal_results(algo_pool, REPORTS_DIR)
 
             # 只有"分析对象数 > 0 但每一次抓取都失败"才判整体失败
             total_attempts = len(targets) * sum(1 for v in categories.values() if v)

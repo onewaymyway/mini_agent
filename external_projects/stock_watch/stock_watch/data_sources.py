@@ -958,7 +958,7 @@ def fetch_kline(code: str, market: str, days: int, adjust: str = "qfq"):
         return df.tail(days)
     except Exception as exc2:
         raise DataSourceError(
-            f"所有数据源均失败 ({code}): CDP={exc}, baostock, sina, akshare={exc2}"
+            f"所有数据源均失败 ({code}): CDP, baostock, sina, akshare={exc2}"
         ) from exc2
 
 

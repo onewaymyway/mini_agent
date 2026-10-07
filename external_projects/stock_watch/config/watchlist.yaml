@@ -43,9 +43,9 @@ outcomes:
 # plan.md 阶段3）：不依赖外部网站结论，自己分析历史行情/公告/新闻。
 # 默认全部关闭，需要显式打开，避免候选池分数/理由的语义突然变化。
 signals:
-  price_enabled: false          # 历史行情技术指标（MA金叉死叉/放量突破/布林带突破）
-  announcement_enabled: false   # 公告结构化分类（业绩预增/回购/减持等关键词分类）
-  news_enabled: false           # 新闻舆情统计（关键词词频 + 新闻数量突增）
+  price_enabled: true          # 历史行情技术指标（MA金叉死叉/放量突破/布林带突破）
+  announcement_enabled: true   # 公告结构化分类（业绩预增/回购/减持等关键词分类）
+  news_enabled: true           # 新闻舆情统计（关键词词频 + 新闻数量突增）
   scan_max_targets: 20          # run_signal_scan.py 每次最多分析多少只标的
   announcement_weights: {}
     # 示例：earnings_beat: 8.0

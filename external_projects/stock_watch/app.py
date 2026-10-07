@@ -435,9 +435,32 @@ def render_signals(algo: Dict, manual: Dict):
     st.header("📡 信号扫描结果")
     st.caption("算法池自动扫描的技术/基本面信号，手动池由用户管理不自动扫描。")
 
+    # 执行按钮区域
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.markdown("**操作**")
+    with col2:
+        if st.button("🔍 运行信号扫描", key="run_signal_scan", use_container_width=True, type="primary"):
+            with st.spinner("正在执行信号扫描，请稍候..."):
+                import subprocess
+                import sys
+                result = subprocess.run(
+                    [sys.executable, "entrypoints/run_signal_scan.py"],
+                    cwd=Path(__file__).parent,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                )
+                if result.returncode == 0:
+                    st.success("信号扫描完成！正在刷新结果...")
+                    st.rerun()
+                else:
+                    st.error(f"信号扫描失败 (退出码 {result.returncode}):\n{result.stderr}")
+    st.divider()
+
     sig_df = get_signal_scan_results()
     if sig_df.empty:
-        st.info("暂无信号扫描结果，请先运行信号扫描")
+        st.info("暂无信号扫描结果，请点击上方按钮运行信号扫描")
         return
 
     st.dataframe(sig_df, use_container_width=True, hide_index=True)
