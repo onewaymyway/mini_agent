@@ -440,31 +440,53 @@ def render_signals(algo: Dict, manual: Dict):
     with col1:
         st.markdown("**操作**")
     with col2:
-        if st.button("🔍 运行信号扫描", key="run_signal_scan", use_container_width=True, type="primary"):
-            with st.spinner("正在执行信号扫描，请稍候..."):
-                import subprocess
-                import sys
-                result = subprocess.run(
-                    [sys.executable, "entrypoints/run_signal_scan.py"],
-                    cwd=Path(__file__).parent,
-                    capture_output=True,
-                    text=True,
-                    timeout=300,
-                )
-                if result.returncode == 0:
-                    st.success("信号扫描完成！正在刷新结果...")
-                    st.rerun()
-                else:
-                    st.error(f"信号扫描失败 (退出码 {result.returncode}):\n{result.stderr}")
-    st.divider()
 
-    sig_df = get_signal_scan_results()
-    if sig_df.empty:
-        st.info("暂无信号扫描结果，请点击上方按钮运行信号扫描")
-        return
+        if st.button("\U0001f50d\U0001f70b \u8fd0\u884c\u4fe1\u53f7\u626b\u63cf", key="run_signal_scan", use_container_width=True, type="primary"):
+            output_container = st.empty()
+            status_container = st.empty()
 
-    st.dataframe(sig_df, use_container_width=True, hide_index=True)
+            import subprocess, sys, time, threading
 
+            all_lines = []
+            start_time = time.time()
+
+            def drain(stream, tag):
+                for line in iter(stream.readline, ""):
+                    if line:
+                        all_lines.append(f"[{tag}] {line.rstrip()}")
+
+            with output_container:
+                status_container.info("\u6b63\u5728\u542f\u52a8\u4fe1\u53f7\u626b\u63cf...")
+
+            proc = subprocess.Popen(
+                [sys.executable, "entrypoints/run_signal_scan.py"],
+                cwd=Path(__file__).parent,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+            )
+
+            threading.Thread(target=drain, args=(proc.stdout, "OUT"), daemon=True).start()
+            threading.Thread(target=drain, args=(proc.stderr, "ERR"), daemon=True).start()
+
+            while proc.poll() is None:
+                time.sleep(0.3)
+                if all_lines:
+                    output_container.code("\n".join(all_lines[-80:]), language="text")
+                elapsed = int(time.time() - start_time)
+                status_container.info(f"\u6b63\u5728\u6267\u884c\u4fe1\u53f7\u626b\u63cf... (\u5df2\u8fd0\u884c {elapsed} \u79d2)")
+
+            time.sleep(0.2)
+            if all_lines:
+                output_container.code("\n".join(all_lines), language="text")
+
+            elapsed = int(time.time() - start_time)
+            if proc.returncode == 0:
+                status_container.success(f"\u2705 \u4fe1\u53f7\u626b\u63cf\u5b8c\u6210\uff01\u8017\u65f6 {elapsed} \u79d2")
+                st.rerun()
+            else:
+                status_container.error(f"\u274c \u4fe1\u53f7\u626b\u63cf\u5931\u8d25 (\u8017\u65f6 {elapsed} \u79d2)\uff0c\u9000\u51fa\u7801: {proc.returncode}")
 
 def render_kline_viewer(algo: Dict, manual: Dict):
     """K线图查看页。"""
