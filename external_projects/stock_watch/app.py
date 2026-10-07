@@ -446,6 +446,21 @@ def render_signals(algo: Dict, manual: Dict):
     output_container = st.empty()
     status_container = st.empty()
 
+    # 恢复上次扫描日志
+    if st.session_state.get("last_scan_done"):
+        with output_container:
+            st.markdown(f"**📋 上次信号扫描结果（{datetime.fromisoformat(st.session_state.get('last_scan_time', '')).strftime('%Y-%m-%d %H:%M')}）**")
+            if st.session_state.get("last_scan_lines"):
+                st.code("\n".join(st.session_state["last_scan_lines"]), language="text")
+            st.caption(f"日志文件：{st.session_state.get('last_scan_log', 'N/A')}")
+            if st.button("🗑️ 清除历史日志", key="clear_scan_log", use_container_width=False):
+                st.session_state.pop("last_scan_done", None)
+                st.session_state.pop("last_scan_lines", None)
+                st.session_state.pop("last_scan_log", None)
+                st.session_state.pop("last_scan_time", None)
+                st.rerun()
+        st.markdown("---")
+
     if run_clicked:
         import subprocess, sys, time, threading
 
@@ -483,10 +498,25 @@ def render_signals(algo: Dict, manual: Dict):
         if all_lines:
             output_container.code("\n".join(all_lines), language="text")
 
+            # 持久化日志到文件，防止页面刷新后丢失
+            scan_log_path = REPORTS_DIR / "scan_logs"
+            scan_log_path.mkdir(parents=True, exist_ok=True)
+            log_filename = f"signal_scan_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            log_filepath = scan_log_path / log_filename
+            log_filepath.write_text("\n".join(all_lines), encoding="utf-8")
+            # 只保留最近 20 条日志，避免文件堆积
+            existing_logs = sorted(scan_log_path.glob("signal_scan_*.txt"), key=lambda x: x.stat().st_mtime, reverse=True)
+            for old_log in existing_logs[20:]:
+                old_log.unlink(missing_ok=True)
+            st.session_state["last_scan_log"] = str(log_filepath)
+            st.session_state["last_scan_lines"] = all_lines
+            st.session_state["last_scan_done"] = True
+            st.session_state["last_scan_time"] = datetime.now().isoformat()
+            st.session_state["last_scan_returncode"] = proc.returncode
+
         elapsed = int(time.time() - start_time)
         if proc.returncode == 0:
-            status_container.success(f"✅ 信号扫描完成！耗时 {elapsed} 秒")
-            st.rerun()
+            status_container.success(f"✅ 信号扫描完成！耗时 {elapsed} 秒 | 日志已保存")
         else:
             status_container.error(f"❌ 信号扫描失败 (耗时 {elapsed} 秒)，退出码: {proc.returncode}")
 
