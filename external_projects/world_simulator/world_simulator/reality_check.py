@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -96,7 +96,17 @@ class RealityCheck:
     （`settings` 里没有 `model_version`）或旧数据。
     """
 
+    signals_observed: List[str] = field(default_factory=list)
+    """第二十四轮 A6：回填时用户勾选的\"先行信号\"（`forecast.build_watchlist` 的 `key`）。空列表 = 没勾选/旧数据，
+    `to_dict` 此时**不输出该键**（旧记录逐字节不变）。只记录\"观察到了\"，不做任何自动判定。"""
+
     def to_dict(self) -> Dict[str, Any]:
+        out = self._base_dict()
+        if self.signals_observed:
+            out["signals_observed"] = list(self.signals_observed)
+        return out
+
+    def _base_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,
             "sim_id": self.sim_id,
@@ -131,10 +141,24 @@ class RealityCheck:
             verdict=verdict,
             error_category=error_category,
             model_version=str(data.get("model_version") or ""),
+            signals_observed=_norm_signals(data.get("signals_observed")),
         )
 
 
 # ── 落盘路径与读写 ───────────────────────────────────────────────────
+
+
+MAX_SIGNALS_OBSERVED = 24
+
+
+def _norm_signals(raw: Any) -> List[str]:
+    """勾选的信号 key：字符串、去重保序、最多 24 个；其它一律丢弃。"""
+    out: List[str] = []
+    for x in raw if isinstance(raw, (list, tuple)) else []:
+        k = str(x).strip() if isinstance(x, str) else ""
+        if k and len(k) <= 200 and k not in out and len(out) < MAX_SIGNALS_OBSERVED:
+            out.append(k)
+    return out
 
 
 def reality_checks_path(data_dir: Path, sim_id: str) -> Path:
@@ -175,6 +199,7 @@ def record_reality_check(
     verdict: str,
     error_category: str = "",
     model_version: str = "",
+    signals_observed: Optional[List[str]] = None,
 ) -> RealityCheck:
     """记录一条"某一步的预测 vs 后来实际发生了什么"（4.16 节 2.）。
 
@@ -220,6 +245,7 @@ def record_reality_check(
         verdict=verdict,
         error_category=category,
         model_version=str(model_version or ""),
+        signals_observed=_norm_signals(signals_observed),
     )
     existing = load_all(data_dir, sim_id)
     existing.append(item)
@@ -252,6 +278,7 @@ def record_and_apply(
     causal_links: Optional[List[Dict[str, Any]]] = None,
     error_category: str = "",
     model_version: str = "",
+    signals_observed: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """`record_reality_check()` + "反向影响知识库可信度" 的组合快捷方式
     （4.16 节 3.）。
@@ -284,6 +311,7 @@ def record_and_apply(
         verdict=verdict,
         error_category=error_category,
         model_version=model_version,
+        signals_observed=signals_observed,
     )
 
     contradicted_ids: List[str] = []

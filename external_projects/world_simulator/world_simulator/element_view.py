@@ -710,3 +710,42 @@ def build_evidence_view(
         "rejected_count": sum(1 for r in mine if r.get("status") == "rejected"),
         "researched_at": meta.get("researched_at", ""), "researched": bool(meta.get("researched_at")),
     }
+
+
+# ── 第二十四轮 A6：预测视图 ──────────────────────────────────────────
+
+
+def build_forecast_view(
+    forecast: Optional[Dict[str, Any]], element_id: str, sens: Optional[Dict[str, Any]] = None,
+    watch: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """把 `forecast.run_forecast` / `sensitivity` / `build_watchlist` 的结果切成**一个元素**的展示数据（纯函数，不重算）。
+    预测没跑 / 失败 → `{"has_forecast": False, "reason": ...}`。里程碑/瓶颈/门槛/分支/阶段/指标只留属于该元素的行；
+    假设条件化只留该元素的假设；监测清单留该元素的项（含\"全局\"项之外的所有 anatomy 信号与预测生成项）。"""
+    if not forecast or not forecast.get("ok"):
+        return {"has_forecast": False, "reason": (forecast or {}).get("reason") or "还没有运行预测"}
+    mine = lambda rows: [r for r in rows or [] if r.get("element") == element_id]  # noqa: E731
+    meta = forecast["meta"]
+    out: Dict[str, Any] = {
+        "has_forecast": True, "meta": meta, "honesty": meta["honesty"],
+        "milestones": mine(forecast.get("milestones")), "bottlenecks": mine(forecast.get("bottlenecks")),
+        "gates": mine(forecast.get("gates")), "branches": mine(forecast.get("branches")),
+        "stages": mine(forecast.get("stages")), "conditional": mine(forecast.get("conditional")),
+        "metrics": [m for m in mine(forecast.get("metrics")) if m.get("p50") and any(v is not None for v in m["p50"])],
+        "watch": mine(watch),
+        "banners": [],
+    }
+    if meta.get("truncated"):
+        out["banners"].append(f"时间预算用尽，只跑了 {meta['runs_done']}/{meta['runs_requested']} 次——区间噪声更大。")
+    if meta.get("time_precision_degraded"):
+        out["banners"].append(meta.get("time_precision_note") or "时间精度降级")
+    share = (meta.get("params") or {}).get("llm_prior_share")
+    if share:
+        out["banners"].append(f"参数里有 {share:.0%} 仍是 LLM 先验（没有出处/未经你确认）。")
+    sens_rows: List[Dict[str, Any]] = []
+    if sens and sens.get("ok"):
+        for t in sens.get("targets") or []:
+            if t.get("element") == element_id:
+                sens_rows.append({"milestone": t["name"], "baseline": t["baseline"], "rows": t["rows"][:10]})
+    out["sensitivity"] = sens_rows
+    return out

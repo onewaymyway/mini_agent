@@ -52,6 +52,7 @@ from world_simulator import anatomy as anatomy_mod
 from world_simulator import element_research as research_mod
 from world_simulator import element_registry as element_mod
 from world_simulator import element_view as element_view_mod
+from world_simulator import forecast as forecast_mod
 from world_simulator import tech_model as tech_mod
 from world_simulator import event_sampler as event_mod
 from world_simulator import causal_engine as causal_mod
@@ -3018,6 +3019,12 @@ def _render_timeline(
                         }[v],
                         key=f"reality_error_category_{sim_id}_{source_branch}_{state.step}_{_idx}",
                     )
+                    _wl = forecast_mod.build_watchlist(manifest.settings) if forecast_mod.an.is_enabled(manifest.settings) else []
+                    signals_input = st.multiselect(
+                        "（可选）这次观察到了哪些先行信号？", options=[w["key"] for w in _wl],
+                        format_func=lambda k, _wl=_wl: next((w["watch"] for w in _wl if w["key"] == k), k),
+                        key=f"reality_signals_{sim_id}_{source_branch}_{state.step}_{_idx}",
+                    ) if _wl else []
                     if st.form_submit_button("记录"):
                         try:
                             result = rc_mod.record_and_apply(
@@ -3031,6 +3038,7 @@ def _render_timeline(
                                     error_category_input if verdict_input == "diverged" else "none"
                                 ),
                                 model_version=str(manifest.settings.get("model_version") or ""),
+                                signals_observed=signals_input,
                             )
                         except rc_mod.RealityCheckError as exc:
                             st.error(str(exc))
@@ -3279,6 +3287,120 @@ def _render_anatomy_progress(manifest: Any, history: Any, line_id: str) -> None:
                     f"（{_html_text(_r['source'])}）{_html_text(_r['reason'])}",
                     unsafe_allow_html=True,
                 )
+
+
+def _fmt_days(v: Any) -> str:
+    return "视野外" if v is None else f"{v:.0f}"
+
+
+def _render_anatomy_forecast(manifest: Any, history: Any, sim_id: str, line_id: str, label: str) -> None:
+    """第二十四轮 A6：元素档案里的\"🎲 预测\"——蒙特卡洛分布、假设条件化、敏感性、what-if、先行信号监测清单。
+    结果只放在本次会话里（不落盘）；区间旁固定标注\"不是校准过的概率\"。"""
+    if not forecast_mod.ae.is_active(manifest.settings):
+        return
+    key = f"{sim_id}_{line_id}"
+    sk = f"forecast_{key}"
+    st.markdown("**🎲 预测（蒙特卡洛）**")
+    st.caption(forecast_mod.HONEST_NOTE + "不调用 AI，只对引擎骨架反复推演；耗时取决于元素数与运行次数。")
+    c1, c2, c3 = st.columns(3)
+    runs = c1.number_input("运行次数", min_value=50, max_value=20000, value=int(anatomy_mod.get_params(manifest.settings)["mc_runs"]), step=50, key=f"fc_runs_{key}")
+    years = c2.number_input("预测视野（年）", min_value=0.5, max_value=100.0, value=5.0, step=0.5, key=f"fc_years_{key}")
+    budget = c3.number_input("时间预算（秒，0=不限）", min_value=0, max_value=3600, value=int(forecast_mod.DEFAULT_TIME_BUDGET_SEC), step=10, key=f"fc_budget_{key}")
+    only_this = st.checkbox("只模拟本元素及其引用的元素（更快）", value=True, key=f"fc_scope_{key}")
+    scope = line_id if only_this else None
+    kw = dict(runs=int(runs), horizon_days=float(years) * 365.25, time_budget_sec=float(budget), sim_id=sim_id, element=scope)
+    b1, b2 = st.columns(2)
+    if b1.button("运行预测", key=f"fc_run_{key}"):
+        with st.spinner("正在做蒙特卡洛..."):
+            fc = forecast_mod.run_forecast(manifest.settings, history, **kw)
+        st.session_state[sk] = {"fc": fc, "kw": kw, "sens": None}
+    if b2.button("运行敏感性分析", key=f"fc_sens_{key}"):
+        with st.spinner("正在逐项改参数重跑（较慢）..."):
+            sens = forecast_mod.sensitivity(manifest.settings, history, element=line_id, horizon_days=kw["horizon_days"], time_budget_sec=kw["time_budget_sec"], sim_id=sim_id)
+        cur = st.session_state.get(sk) or {"fc": None, "kw": kw}
+        st.session_state[sk] = {**cur, "sens": sens}
+    cur = st.session_state.get(sk)
+    if not cur:
+        return
+    if cur["fc"] is not None and not cur["fc"].get("ok"):
+        st.warning(cur["fc"].get("reason") or "无法预测")
+    watch = forecast_mod.build_watchlist(manifest.settings, cur["fc"], cur.get("sens"))
+    view = element_view_mod.build_forecast_view(cur["fc"], line_id, cur.get("sens"), watch)
+    if not view.get("has_forecast"):
+        return
+    meta = view["meta"]
+    st.caption(
+        f"{meta['runs_done']}/{meta['runs_requested']} 次 · 视野 {meta['horizon_days']:.0f} 天 · 时间分辨率约 {meta['time_resolution_days']:.0f} 天 · 种子 {meta['seed']}。"
+        "以下天数都是\"从现在起\"。"
+    )
+    for _b in view["banners"]:
+        st.warning(_b)
+    if meta.get("warnings"):
+        with st.expander(f"预测的已知限制（{len(meta['warnings'])}）"):
+            for _w in meta["warnings"]:
+                st.markdown(f"- {_html_text(_w)}", unsafe_allow_html=True)
+    for _m in view["milestones"]:
+        if _m["status"] == "pending":
+            st.markdown(f"- 里程碑 **{_html_text(_m['name'])}**：视野内达成概率 {_m['p_reached']:.0%}；P10 / P50 / P90 = {_fmt_days(_m['p10'])} / {_fmt_days(_m['p50'])} / {_fmt_days(_m['p90'])} 天", unsafe_allow_html=True)
+        elif _m["status"] == "reached":
+            st.markdown(f"- 里程碑 {_html_text(_m['name'])}：已达成", unsafe_allow_html=True)
+    for _b in view["bottlenecks"]:
+        if _b["status"] == "open":
+            _paths = "、".join(f"{k} {v:.0%}" for k, v in (_b.get("by_path_share") or {}).items())
+            st.markdown(f"- 瓶颈 **{_html_text(_b['name'])}**：视野内解决概率 {_b['p_resolved']:.0%}；P50 {_fmt_days(_b['p50'])} 天" + (f"；解决时的路径占比：{_paths}" if _paths else "") + f"；全部路径失败 {_b['exhausted']:.0%}", unsafe_allow_html=True)
+    for _g in view["gates"]:
+        if _g["status"] == "closed":
+            st.markdown(f"- 采用门槛 {_html_text(_g['name'])}：视野内打开概率 {_g['p_ever_open']:.0%}；P50 {_fmt_days(_g['p50'])} 天", unsafe_allow_html=True)
+    for _br in view["branches"]:
+        st.markdown(f"- 未来树分支 {_html_text(str(_br['label']))}：" + (f"触发条件首次满足的概率 {_br['p_active']:.0%}，P50 {_fmt_days(_br['p50'])} 天" if _br["evaluable"] else f"预测里无法求值（{_html_text(_br['reason'])}）"), unsafe_allow_html=True)
+    for _mt in view["metrics"]:
+        st.markdown(f"指标 **{_html_text(_mt['name'])}** {_html_text(_mt['unit'])}（P10 / P50 / P90 分位带）")
+        st.line_chart({"P10": _mt["p10"], "P50": _mt["p50"], "P90": _mt["p90"]}, height=140)
+    for _a in view["conditional"]:
+        if not _a["sufficient"]:
+            st.caption(f"假设「{_a['statement']}」：样本不足（成立 {_a['n_true']}、不成立 {_a['n_false']}），不给条件化结果。")
+            continue
+        with st.expander(f"假设「{_a['statement']}」成立 vs 不成立（先验成立概率 {_a['prior_p_true']:.0%}）"):
+            if not _a["has_overrides"]:
+                st.caption("这条假设没有声明 if_false 覆盖项，不成立时骨架不变，所以两侧没有差别。")
+            for _e in _a["effects"]:
+                st.markdown(f"- {_html_text(_e['name'])}：成立 → P50 {_fmt_days(_e['p50_true'])} 天（{_e['p_reached_true']:.0%}）；不成立 → {_fmt_days(_e['p50_false'])} 天（{_e['p_reached_false']:.0%}）", unsafe_allow_html=True)
+    for _s in view["sensitivity"]:
+        with st.expander(f"敏感性（龙卷风）：{_s['milestone']}（基线 P50 {_fmt_days(_s['baseline']['p50'])} 天，达成 {_s['baseline']['p_reached']:.0%}）"):
+            st.dataframe([{"项": r["label"], "低端": f"{r['low']['value']} → P50 {_fmt_days(r['low']['p50'])}", "高端": f"{r['high']['value']} → P50 {_fmt_days(r['high']['p50'])}", "P50 摆幅(天)": r["swing_days"], "概率摆幅": r["swing_p"]} for r in _s["rows"]], use_container_width=True)
+    if cur.get("sens") and not cur["sens"].get("ok"):
+        st.warning(cur["sens"].get("reason") or "敏感性分析失败")
+    if cur.get("sens") and cur["sens"].get("ok") and cur["sens"]["meta"]["skipped"]:
+        st.caption("时间预算用尽，以下情景没跑完：" + "；".join(cur["sens"]["meta"]["skipped"][:6]))
+    if view["watch"]:
+        with st.expander(f"先行信号监测清单（{len(view['watch'])}）"):
+            for _w in view["watch"]:
+                st.markdown(f"- **{_html_text(_w['watch'])}**（{'已有' if _w['source'] == 'anatomy' else '预测生成'}）：{_html_text(_w['means'])}", unsafe_allow_html=True)
+            st.caption("在上方\"时间线\"的现实回填里可勾选\"观察到了哪些信号\"。")
+    # what-if
+    with st.expander("what-if：改一个假设 / 参数后重跑（同一种子，逐项对比）"):
+        _ln = element_mod.resolve(manifest.settings, line_id)
+        asms = [a for a in ((anatomy_mod.get_anatomy(_ln) or {}).get("assumptions") or []) if a.get("prior_p_true") is not None] if _ln else []
+        if not asms:
+            st.caption("本元素没有带先验概率的假设可改；参数/路径/事件频率的 what-if 可通过 `forecast.what_if(edits=...)` 或服务接口使用。")
+        else:
+            pick = st.selectbox("假设", options=list(range(len(asms))), format_func=lambda i: asms[i]["statement"], key=f"fc_wi_pick_{key}")
+            ptrue = st.slider("改成成立概率", 0.0, 1.0, float(asms[pick]["prior_p_true"]), 0.05, key=f"fc_wi_p_{key}")
+            if st.button("重跑对比", key=f"fc_wi_run_{key}"):
+                with st.spinner("正在重跑..."):
+                    wi = forecast_mod.what_if(manifest.settings, history, [{"kind": "assumption", "element": line_id, "id": asms[pick]["id"], "p_true": ptrue}], base=cur["fc"], sim_id=sim_id, element=scope)
+                st.session_state[f"fc_wi_{key}"] = wi
+            wi = st.session_state.get(f"fc_wi_{key}")
+            if wi:
+                if not wi.get("ok"):
+                    st.warning(wi.get("reason") or "无法重跑")
+                else:
+                    if wi.get("note"):
+                        st.caption(wi["note"])
+                    if not any(wi["diff"].values()):
+                        st.caption("没有任何项发生变化。")
+                    for _d in wi["diff"]["milestones"][:8] + wi["diff"]["bottlenecks"][:8]:
+                        st.markdown(f"- {_html_text(_d['name'])}：概率 {_d['p_before']:.0%} → {_d['p_after']:.0%}；P50 {_fmt_days(_d['p50_before'])} → {_fmt_days(_d['p50_after'])} 天", unsafe_allow_html=True)
 
 
 def _render_anatomy_evidence(manifest: Any, sim_id: str, line_id: str, label: str, prof: Dict[str, Any]) -> None:
@@ -3624,6 +3746,8 @@ def _render_causal_lines_overview(
                 if _prof["problems"]:
                     st.warning("体检提示（不影响使用）：" + "；".join(f"{p['where']}：{p['message']}" for p in _prof["problems"][:8]))
                 _render_anatomy_progress(manifest, history, line_id)
+                if sim_id:
+                    _render_anatomy_forecast(manifest, history, sim_id, line_id, label)
                 if sim_id and "evidence" in _prof:
                     _render_anatomy_evidence(manifest, sim_id, line_id, label, _prof)
         elif _prof.get("enabled") and sim_id:

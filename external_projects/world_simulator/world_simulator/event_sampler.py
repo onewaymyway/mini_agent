@@ -130,13 +130,43 @@ def get_params(settings: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def _norm_rate_range(raw: Any) -> Optional[Dict[str, float]]:
-    """`{"low": a, "high": b}`（均为非负数且 low <= high）；否则 None。仅作展示，不参与抽样。"""
+    """`{"low": a, "high": b}`（均为非负数且 low <= high）；否则 None。**真实推进的抽样不用它**（只作展示）；
+    A6 的蒙特卡洛把它当作频率的不确定性区间。"""
     if not isinstance(raw, dict):
         return None
     low, high = _num(raw.get("low")), _num(raw.get("high"))
     if low is None or high is None or low < 0 or high < low:
         return None
     return {"low": low, "high": high}
+
+
+EFFECT_OPS = ("add", "mul", "set")
+MAX_EFFECTS = 8  # 单条先验的 effects 条数上限（占位值）
+
+
+def _norm_effects(raw: Any) -> List[Dict[str, Any]]:
+    """第二十四轮 A6（计划 §5.6）：先验可选的结构化 `effects`——事件命中时对元素剖面骨架的**数值影响**，
+    **只有预测（`forecast.py` 的蒙特卡洛）读它**；真实推进里事件仍只是喂给 LLM 的既成事实，引擎不据此改任何数。
+
+    两种写法（写法非法的条目静默丢弃，不影响先验本身）：
+    - `{"ref": "[元素#]metric:<id>" / "component:<id>", "op": "add|mul|set", "value": 数}`——对指标/组件当前值做加/乘/设；
+    - `{"ref": "[元素#]bottleneck:<id>", "shift_days": 数}`——把该瓶颈**进行中**路径的到期日推迟（正）/提前（负）若干天。
+    """
+    out: List[Dict[str, Any]] = []
+    for item in raw if isinstance(raw, (list, tuple)) else []:
+        if not isinstance(item, dict) or len(out) >= MAX_EFFECTS:
+            continue
+        ref = str(item.get("ref") or "").strip()
+        if not ref or len(ref) > 120:
+            continue
+        shift = _num(item.get("shift_days"))
+        if shift is not None and shift != 0 and "op" not in item:
+            out.append({"ref": ref, "shift_days": shift})
+            continue
+        op, value = item.get("op"), _num(item.get("value"))
+        if op in EFFECT_OPS and value is not None:
+            out.append({"ref": ref, "op": op, "value": value})
+    return out
 
 
 def normalize_prior(raw: Any) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
@@ -157,7 +187,8 @@ def normalize_prior(raw: Any) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     raw_confirmed = raw.get("confirmed")
     confirmed = raw_confirmed if isinstance(raw_confirmed, bool) else (source != PROPOSAL_SOURCE)
     rate_range = _norm_rate_range(raw.get("rate_range"))
-    return {
+    effects = _norm_effects(raw.get("effects"))
+    prior = {
         "id": pid,
         "description": description or pid,
         "rate_per_year": rate,
@@ -172,7 +203,10 @@ def normalize_prior(raw: Any) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         "confirmed": confirmed,
         "rationale": str(raw.get("rationale") or "").strip(),
         "rate_range": rate_range,
-    }, None
+    }
+    if effects:  # 没有 effects 时不输出该键：旧先验规整结果逐字节不变
+        prior["effects"] = effects
+    return prior, None
 
 
 def get_priors(settings: Optional[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[str]]:

@@ -392,9 +392,10 @@ class _Ctx:
 
     def __init__(
         self, settings: Dict[str, Any], *, step: int, sim_id: str, branch: str, vars_: Optional[Dict[str, Any]],
-        events: Iterable[Any], stale_ids: Iterable[str], max_trace: Optional[int] = None,
+        events: Iterable[Any], stale_ids: Iterable[str], max_trace: Optional[int] = None, lean: bool = False,
     ) -> None:
         self.settings = settings
+        self.lean = bool(lean)  # A6：蒙特卡洛精简模式——不记流水（只为速度，结算规则不变）
         self.max_trace = MAX_TRACE if max_trace is None else int(max_trace)  # A5：二次裁决只能用掉本步剩余的流水额度
         self.params = an.get_params(settings)
         self.step = int(step)
@@ -429,6 +430,8 @@ class _Ctx:
         self.violations.append({"code": code, "severity": severity, "message": message, "detail": detail})
 
     def add(self, element: str, kind: str, ref: str, field: str, before: Any, after: Any, reason: str, source: str, **extra: Any) -> None:
+        if self.lean:
+            return
         if len(self.trace) >= self.max_trace:
             self._dropped += 1
             return
@@ -736,6 +739,24 @@ def _order_metrics(metrics: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
+def set_series_value(holder: Dict[str, Any], kind: str, value: float) -> Optional[Tuple[float, float]]:
+    """把一个指标/组件的**引擎当前值**直接设为 `value`（A6：事件 `effects` / 假设 `if_false` 覆盖用）。
+
+    与 `_apply_deviations` 的 rebase 同一口径：夹在声明的边界内；绝对函数型趋势（`custom_expr`/`piecewise_table`）
+    同步平移偏移 `off`，这样之后的推进保持斜率。没有引擎状态（还没锚定且没有声明现值）返回 `None`；
+    否则返回 `(旧值, 新值)`。只改 `engine` 状态，不碰声明的现值，所以不会触发\"重新锚定\"。"""
+    eng, _old = _ensure_state(holder, kind)
+    if eng is None or "v" not in eng:
+        return None
+    lo, hi = _bounds_of(holder, kind)
+    new = _clamp(float(value), lo, hi)
+    before = float(eng["v"])
+    if (_trend_of(holder, kind) or {}).get("kind") in _ABSOLUTE_KINDS:
+        eng["off"] = eng.get("off", 0) + (new - before)
+    eng["v"] = new
+    return before, new
+
+
 def _advance_series(ctx: _Ctx, el: str, holder: Dict[str, Any], kind: str, dt: float, eng: Dict[str, Any]) -> None:
     trend = _trend_of(holder, kind)
     ref = f"{kind}:{holder['id']}"
@@ -745,7 +766,8 @@ def _advance_series(ctx: _Ctx, el: str, holder: Dict[str, Any], kind: str, dt: f
     if not trend or not _drives(holder, ctx.params):
         eng["t"] = eng.get("t", 0) + dt
         return
-    evidence = (an.basis_of(holder.get("current") if kind == "metric" else holder).get("evidence_ids") or [])
+    # 精简模式（A6）且没有过期证据时，证据 id 既不用于 A9 也不进流水，省掉一次 basis 规整
+    evidence = [] if (ctx.lean and not ctx.stale_ids) else (an.basis_of(holder.get("current") if kind == "metric" else holder).get("evidence_ids") or [])
     if kind == "metric" and evidence and ctx.stale_ids.intersection(evidence) and not eng.get("sf"):
         eng["sf"] = True
         ctx.viol("A9", f"指标「{holder.get('name') or holder['id']}」的现值证据已过期，仍在驱动引擎", "info", ref=ref)
@@ -1294,7 +1316,7 @@ def _find_series(ctx: _Ctx, el: str, ref: str) -> Optional[Tuple[Dict[str, Any],
     return None
 
 
-def _load_lines(ctx: _Ctx, settings: Dict[str, Any], days: float, *, skip_settled: bool) -> None:
+def _load_lines(ctx: _Ctx, settings: Dict[str, Any], days: float, *, skip_settled: bool, inplace: bool = False) -> None:
     """把带可结算内容的元素线装进工作副本。`skip_settled=True`（`apply_step`）跳过本步已结算过的线（防同一步重复结算）；
     `False`（`apply_adjudication`）装全部——二次裁决要看到完整的世界（跨元素判据、门槛），不能只装一个元素。"""
     for line in _engine_lines(settings):
@@ -1303,9 +1325,10 @@ def _load_lines(ctx: _Ctx, settings: Dict[str, Any], days: float, *, skip_settle
         if skip_settled and meta.get("last_step") == ctx.step:
             continue  # 同一步已结算过（两条推进路径不会重复结算）
         ctx.lines[lid] = line
-        ctx.work[lid] = copy.deepcopy(an.get_anatomy(line))
+        # `inplace`（仅 `simulate_step`）：调用方保证 settings 是一次性副本，省掉整份深拷贝（那是"异常不留半改状态"的代价）
+        ctx.work[lid] = an.get_anatomy(line) if inplace else copy.deepcopy(an.get_anatomy(line))
         if isinstance(line.get("lifecycle"), dict):
-            ctx.life[lid] = copy.deepcopy(line["lifecycle"])
+            ctx.life[lid] = line["lifecycle"] if inplace else copy.deepcopy(line["lifecycle"])
         ctx.order.append(lid)
         ctx.clock0[lid] = float(meta.get("clock_day") or 0.0)
         ctx.clock1[lid] = ctx.clock0[lid] + days
@@ -1408,6 +1431,50 @@ def safe_apply_step(*args: Any, **kwargs: Any) -> Tuple[List[Dict[str, Any]], Li
         return apply_step(*args, **kwargs)
     except Exception as exc:  # noqa: BLE001 — 旁路功能，绝不让它中断推进
         return [], [{"code": "A0", "severity": "info", "message": f"剖面引擎本步出错，已跳过（状态未改动）：{exc}", "detail": {}}]
+
+
+def simulate_step(
+    settings: Dict[str, Any],
+    *,
+    step: int,
+    days: float,
+    sim_id: str = "",
+    branch: str = "",
+    sampled_events: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """**精简模式**的一步结算（A6 蒙特卡洛用）：与 `apply_step` 走**同一批**内部结算函数（①锚定 → ②–⑧ → ⑨阶段），
+    区别只有为速度做的几处取舍：
+
+    - **原地**修改 `settings`——调用方必须传一次性副本（没有"全部算完才写回"的原子性，也不做 `meta.last_step` 防重复结算）；
+    - 不记流水、不做流水自洽核对（没有流水可核）；
+    - 没有 LLM 提议（偏离/平移/声称/新增子项/信号）；
+    - 不结算采用率（`_settle_adoption`）：没有 LLM 在推进采用率，门槛本身（`gate.open`）照常结算；
+    - `days` 直接当作本步跨度，不经 `elapsed_days` 规整。
+
+    返回违规列表（只有 `A10`/`A9` 一类"缺数据"提示，调用方通常只看第一次）。未开启/没有可结算元素返回 `[]`。
+    等价性由测试保证：同一份输入、同一 `sim_id/branch/step`，里程碑日、指标值、瓶颈状态与 `apply_step` 逐位一致。"""
+    if not is_active(settings):
+        return []
+    ctx = _Ctx(
+        settings, step=step, sim_id=sim_id, branch=branch, vars_=None, events=sampled_events or [],
+        stale_ids=[], lean=True,
+    )
+    _load_lines(ctx, settings, float(days), skip_settled=False, inplace=True)
+    if not ctx.order:
+        return []
+    _anchor_all(ctx)
+    _start_all(ctx, lambda el: ctx.clock0[el])
+    _advance_all(ctx, float(days))
+    _settle_paths(ctx)
+    _start_all(ctx, lambda el: ctx.clock1[el])
+    _settle_milestones(ctx)
+    _settle_gates(ctx)
+    _settle_stage(ctx, {})
+    for el in ctx.order:
+        meta = dict(ctx.work[el].get("meta") or {})
+        meta["clock_day"] = ctx.clock1[el]
+        ctx.work[el]["meta"] = meta
+    return ctx.violations
 
 
 def apply_adjudication(
