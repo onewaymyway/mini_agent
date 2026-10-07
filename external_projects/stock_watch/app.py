@@ -440,7 +440,7 @@ def render_signals(algo: Dict, manual: Dict):
     with btn_col1:
         st.markdown("**操作**")
     with btn_col2:
-        run_clicked = st.button("\U0001f50d\U0001f70b \u8fd0\u884c\u4fe1\u53f7\u626b\u63cf", key="run_signal_scan", use_container_width=True, type="primary")
+        run_clicked = st.button("🔍 运行信号扫描", key="run_signal_scan", use_container_width=True, type="primary")
 
     # 输出容器放在列外，占据完整宽度
     output_container = st.empty()
@@ -458,7 +458,7 @@ def render_signals(algo: Dict, manual: Dict):
                     all_lines.append(f"[{tag}] {line.rstrip()}")
 
         with output_container:
-            status_container.info("\u6b63\u5728\u542f\u52a8\u4fe1\u53f7\u626b\u63cf...")
+            status_container.info("正在启动信号扫描...")
 
         proc = subprocess.Popen(
             [sys.executable, "entrypoints/run_signal_scan.py"],
@@ -477,7 +477,7 @@ def render_signals(algo: Dict, manual: Dict):
             if all_lines:
                 output_container.code("\n".join(all_lines[-80:]), language="text")
             elapsed = int(time.time() - start_time)
-            status_container.info(f"\u6b63\u5728\u6267\u884c\u4fe1\u53f7\u626b\u63cf... (\u5df2\u8fd0\u884c {elapsed} \u79d2)")
+            status_container.info(f"正在执行信号扫描... (已运行 {elapsed} 秒)")
 
         time.sleep(0.2)
         if all_lines:
@@ -485,10 +485,10 @@ def render_signals(algo: Dict, manual: Dict):
 
         elapsed = int(time.time() - start_time)
         if proc.returncode == 0:
-            status_container.success(f"\u2705 \u4fe1\u53f7\u626b\u63cf\u5b8c\u6210\uff01\u8017\u65f6 {elapsed} \u79d2")
+            status_container.success(f"✅ 信号扫描完成！耗时 {elapsed} 秒")
             st.rerun()
         else:
-            status_container.error(f"\u274c \u4fe1\u53f7\u626b\u63cf\u5931\u8d25 (\u8017\u65f6 {elapsed} \u79d2)\uff0c\u9000\u51fa\u7801: {proc.returncode}")
+            status_container.error(f"❌ 信号扫描失败 (耗时 {elapsed} 秒)，退出码: {proc.returncode}")
 
 def render_kline_viewer(algo: Dict, manual: Dict):
     """K线图查看页。"""
