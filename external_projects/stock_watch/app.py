@@ -560,24 +560,42 @@ def render_source_health():
         return
 
     df = pd.DataFrame(records)
-    # 取每个数据源的最新一条
-    latest = df.drop_duplicates(subset=["source"], keep="latest")
-    latest = latest.sort_values("last_updated", ascending=False)
+    # 取每个数据源的最新一条：先按时间排序，再去重保留最后一条
+    time_col = "recorded_at" if "recorded_at" in df.columns else ("last_updated" if "last_updated" in df.columns else None)
+    if time_col:
+        df = df.sort_values(time_col)
+    latest = df.drop_duplicates(subset=["source"], keep="last")
+    if time_col:
+        latest = latest.sort_values(time_col, ascending=False)
 
-    st.dataframe(latest[["source", "last_status", "last_error", "last_updated"]], use_container_width=True, hide_index=True)
+    # 兼容字段名：last_status/last_error 可能不存在，用 ok/error 替代
+    display_cols = ["source"]
+    if "last_status" in latest.columns:
+        display_cols += ["last_status", "last_error", time_col]
+    elif "ok" in latest.columns:
+        display_cols += ["ok", "error", time_col]
+    else:
+        display_cols += [time_col]
+    st.dataframe(latest[display_cols], use_container_width=True, hide_index=True)
 
     # 近期错误趋势
     st.subheader("📉 近期错误趋势（最近24小时）")
-    if "last_updated" in df.columns:
-        df["last_updated"] = pd.to_datetime(df["last_updated"])
-        today = df["last_updated"].max().date()
-        yesterday = today - pd.Timedelta(days=1)
-        today_df = df[df["last_updated"].dt.date == today]
-        errors_today = (today_df["last_status"] == "error").sum()
-        success_today = (today_df["last_status"] == "ok").sum()
+    if time_col:
+        df[time_col] = pd.to_datetime(df[time_col])
+        today = df[time_col].max().date()
+        today_df = df[df[time_col].dt.date == today]
+        if "last_status" in today_df.columns:
+            errors_today = (today_df["last_status"] == "error").sum()
+            success_today = (today_df["last_status"] == "ok").sum()
+        elif "ok" in today_df.columns:
+            errors_today = (~today_df["ok"]).sum()
+            success_today = today_df["ok"].sum()
+        else:
+            errors_today = 0
+            success_today = 0
         c1, c2 = st.columns(2)
-        c1.metric("今日成功", success_today)
-        c2.metric("今日失败", errors_today)
+        c1.metric("今日成功", int(success_today))
+        c2.metric("今日失败", int(errors_today))
 
 
 def render_exec_dashboard():
