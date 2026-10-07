@@ -12,7 +12,7 @@
 
 启动方式：
     cd E:/codes/mini_claude_code/external_projects/stock_watch
-    streamlit run app.py --server.port 8501
+    streamlit run app.py --server.port 8503
 """
 
 from __future__ import annotations
