@@ -40,6 +40,7 @@ from world_simulator import causal_graph as cg_mod
 from world_simulator import causal_tree as causal_tree_mod
 from world_simulator import element_view as element_view_mod
 from world_simulator import hypothesis as hyp_mod
+from world_simulator import html_export_anatomy as anat_mod
 from world_simulator import html_export_mechanisms as mech_mod
 from world_simulator import retrospective as retrospective_mod
 from world_simulator.state_model import SimManifest, SimState
@@ -1062,7 +1063,10 @@ ul { margin: 0.3rem 0 0.3rem 1.2rem; }
 """
 
 
-def export_simulation_html(data_dir: Path, sim_id: str, branch: str = "main") -> str:
+def export_simulation_html(
+    data_dir: Path, sim_id: str, branch: str = "main", *, with_forecast: bool = True,
+    forecast_runs: Any = None, forecast_budget_sec: float = 30.0,
+) -> str:
     """导出入口。返回完整的 HTML 字符串，不写任何文件。
 
     Args:
@@ -1070,6 +1074,10 @@ def export_simulation_html(data_dir: Path, sim_id: str, branch: str = "main") ->
         sim_id: 模拟实例 id。
         branch: 要导出的分支，默认 `main`。只导出这一条分支的时间线，
             不在一次导出里塞进所有分支（见规划文档第 5 节）。
+        with_forecast: A7——开启了元素剖面的实例，导出时是否现算并写入「预测简报」（蒙特卡洛不落盘）。
+            关掉则只导出元素档案。没开剖面的实例两个开关都不影响输出。
+        forecast_runs: 预测推演次数（缺省用实例的 `anatomy_params.mc_runs`）。
+        forecast_budget_sec: 预测总墙钟预算（秒，`<= 0` 不限）；被截断会在页面上明示。
 
     Raises:
         SimNotFoundError: `sim_id` 不存在（沿用 `store.py` 的异常
@@ -1092,17 +1100,28 @@ def export_simulation_html(data_dir: Path, sim_id: str, branch: str = "main") ->
     mechanisms_html = mech_mod.mechanisms_sections_html(manifest, history, branch)
     uses_mechanisms = bool(mechanisms_html) or mech_mod.any_step_notes(history)
 
+    # A7：元素档案 + 预测简报。剖面总开关未开 / 没有带剖面的元素 → 空串且不追加 CSS（旧实例导出逐字节不变）。
+    try:
+        evidence = store.load_evidence()
+    except Exception:  # noqa: BLE001 — 证据库读取失败：档案照出，只是不带证据
+        evidence = None
+    anatomy_html = anat_mod.sections_html(
+        manifest, history, branch, evidence=evidence, with_forecast=with_forecast,
+        runs=forecast_runs, time_budget_sec=forecast_budget_sec, sens_budget_sec=forecast_budget_sec / 3 if forecast_budget_sec > 0 else 0,
+    )
+
     body = "".join(
         [
             _render_header(manifest, branch, branches_detailed),
             _render_input_and_background(manifest, state0),
             _render_causal_overview(manifest, history),
             mechanisms_html,
+            anatomy_html,
             _render_timeline(history, (manifest.settings or {}).get("resource_fields")),
             _render_retrospectives(data_dir, sim_id, branch),
         ]
     )
-    extra_css = mech_mod.EXTRA_CSS if uses_mechanisms else ""
+    extra_css = (mech_mod.EXTRA_CSS if uses_mechanisms else "") + (anat_mod.EXTRA_CSS if anatomy_html else "")
 
     title = _esc(manifest.title or manifest.sim_id)
     return f"""<!DOCTYPE html>

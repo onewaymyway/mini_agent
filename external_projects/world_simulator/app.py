@@ -53,6 +53,7 @@ from world_simulator import element_research as research_mod
 from world_simulator import element_registry as element_mod
 from world_simulator import element_view as element_view_mod
 from world_simulator import forecast as forecast_mod
+from world_simulator import forecast_brief as forecast_brief_mod
 from world_simulator import tech_model as tech_mod
 from world_simulator import event_sampler as event_mod
 from world_simulator import causal_engine as causal_mod
@@ -2855,6 +2856,21 @@ def _tree_updates_html(state, causal_lines_meta: Optional[List[Dict[str, Any]]] 
     return f'<div class="ws-key-drivers"><span class="ws-key-driver-tag">{_html_text(text)}</span></div>'
 
 
+def _reality_watchlist(sim_id: Optional[str]) -> List[Dict[str, Any]]:
+    """现实回填表单里\"这次观察到了哪些先行信号\"的候选清单（A6 的监测清单里剖面自带的信号）。
+
+    `_render_timeline` 没有 `manifest` 参数，所以自己按 `sim_id` 读一次 manifest（体积恒定的小文件）；
+    读不到 / 没开剖面 → 空清单（表单里就不出现这个多选框），不让任何异常拖垮时间线。
+    （修复：A6 原先在这里直接引用了不存在的 `manifest`，导致详情页的时间线对所有实例抛 NameError。）"""
+    if not sim_id:
+        return []
+    try:
+        settings = SimStore.for_root(DATA_DIR, sim_id).load_manifest().settings
+        return forecast_mod.build_watchlist(settings) if anatomy_mod.is_enabled(settings) else []
+    except Exception:  # noqa: BLE001 — 展示层兜底
+        return []
+
+
 def _render_timeline(
     history: List,
     *,
@@ -3019,7 +3035,7 @@ def _render_timeline(
                         }[v],
                         key=f"reality_error_category_{sim_id}_{source_branch}_{state.step}_{_idx}",
                     )
-                    _wl = forecast_mod.build_watchlist(manifest.settings) if forecast_mod.an.is_enabled(manifest.settings) else []
+                    _wl = _reality_watchlist(sim_id)
                     signals_input = st.multiselect(
                         "（可选）这次观察到了哪些先行信号？", options=[w["key"] for w in _wl],
                         format_func=lambda k, _wl=_wl: next((w["watch"] for w in _wl if w["key"] == k), k),
@@ -4841,6 +4857,112 @@ def _persist_pending_autorun(sim_id: str, auto_run: Optional[Dict[str, Any]]) ->
         pass
 
 
+_BRIEF_ICON = {"high": "🟢", "medium": "🟡", "low": "🔴"}
+
+
+def _brief_confidence_md(conf: Dict[str, Any], title: str) -> None:
+    """置信等级 + 每条扣分/封顶原因（规则由引擎计算，不是 AI 的评价）。"""
+    lines = [f"**{title}：{_BRIEF_ICON.get(conf['level'], '')} {conf['level_label']}**（{conf['score']} 分）"]
+    lines += [f"- {d['label']}（−{d['points']}）：{d['detail']}" for d in conf.get("deductions") or []]
+    lines += [f"- 封顶「{forecast_brief_mod.LEVEL_LABELS[c['level']]}」：{c['detail']}" for c in conf.get("caps") or []]
+    st.markdown("\n".join(lines))
+
+
+def _render_brief_element(e: Dict[str, Any]) -> None:
+    """简报里一个元素的一节。只用普通 markdown/表格/图，不再嵌 expander。"""
+    st.markdown(f"##### {e['label']}")
+    st.markdown(e["headline"])
+    _brief_confidence_md(e["confidence"], "本元素置信等级")
+    for b in e.get("banners") or []:
+        st.warning(b)
+    ans = e.get("answers")
+    if not ans:
+        return
+    if ans["blockers"]:
+        st.markdown("**卡在哪**")
+        for b in ans["blockers"]:
+            st.markdown(f"- {b['name']}：{b['text']}")
+    if ans["assumptions"]:
+        st.markdown("**靠什么假设**")
+        for a in ans["assumptions"]:
+            st.markdown(f"- {a['statement']}（先验成立概率 {a['prior_p_true']:.0%}）：{a['text']}")
+    if e["uncertainties"]:
+        st.markdown("**前三个关键不确定性**")
+        for i, u in enumerate(e["uncertainties"], 1):
+            st.markdown(f"{i}. {u['label']}：{u['detail']}（{'敏感性分析' if u['source'] == 'sensitivity' else '预测信号'}）")
+    if ans["signals"]:
+        st.markdown("**该盯的先行信号**")
+        for sg in ans["signals"]:
+            st.markdown(f"- {sg['watch']}：{sg['means']}")
+    pend = [m for m in e["milestones"] if m.get("status") == "pending"]
+    if pend:
+        fd = forecast_brief_mod.fmt_days
+        st.markdown("**里程碑时间分布**（从现在起）")
+        st.dataframe(
+            [{"里程碑": m["name"], "视野内达成": f"{m['p_reached']:.0%}", "P10": fd(m["p10"]), "P50": fd(m["p50"]), "P90": fd(m["p90"])} for m in pend],
+            use_container_width=True,
+        )
+    for mt in e["metrics"]:
+        st.markdown(f"指标 **{mt['name']}** {mt.get('unit') or ''}（P10 / P50 / P90 分位带）")
+        st.line_chart({"P10": mt["p10"], "P50": mt["p50"], "P90": mt["p90"]}, height=140)
+    if e.get("sensitivity_rows"):
+        st.markdown(f"**敏感性（龙卷风）**：{e.get('sensitivity_target')}")
+        st.dataframe(
+            [{"项": r["label"], "低端": f"{r['low']['value']} → P50 {forecast_brief_mod.fmt_days(r['low']['p50'])}",
+              "高端": f"{r['high']['value']} → P50 {forecast_brief_mod.fmt_days(r['high']['p50'])}"} for r in e["sensitivity_rows"]],
+            use_container_width=True,
+        )
+
+
+def _render_forecast_brief(manifest: Any, history: Any, sim_id: str) -> None:
+    """第二十四轮 A7：整个模拟的「🔮 预测简报」——能不能成 / 何时 / 卡在哪 / 靠什么假设 / 盯什么信号 + 引擎计算的置信等级。
+    只在开启剖面且引擎有可结算内容时出现；现算、不落盘，结果只放在本次会话里（推进一步后自动失效）。"""
+    if manifest is None or not sim_id:
+        return
+    s = manifest.settings
+    if not (anatomy_mod.is_enabled(s) and forecast_mod.ae.is_active(s)):
+        return
+    last_step = history[-1].step if history else 0
+    sk = f"brief_{sim_id}_{manifest.branch}_{last_step}"
+    st.markdown("#### 🔮 预测简报")
+    st.caption(
+        forecast_brief_mod.HONEST_NOTE + "不调用 AI，只对引擎骨架反复推演；耗时取决于重点元素数与运行次数。"
+        + forecast_brief_mod.CONFIDENCE_NOTE
+    )
+    c1, c2, c3 = st.columns(3)
+    runs = c1.number_input("运行次数", min_value=50, max_value=20000, value=int(anatomy_mod.get_params(s)["mc_runs"]), step=50, key=f"brief_runs_{sim_id}")
+    years = c2.number_input("预测视野（年）", min_value=0.5, max_value=100.0, value=5.0, step=0.5, key=f"brief_years_{sim_id}")
+    budget = c3.number_input("总时间预算（秒，0=不限）", min_value=0, max_value=3600, value=int(forecast_brief_mod.DEFAULT_BRIEF_BUDGET_SEC), step=10, key=f"brief_budget_{sim_id}")
+    with_sens = st.checkbox("同时做敏感性分析（更慢，但「关键不确定性」更准）", value=True, key=f"brief_sens_{sim_id}")
+    if st.button("生成预测简报", key=f"brief_run_{sim_id}"):
+        with st.spinner("正在对重点元素做蒙特卡洛..."):
+            st.session_state[sk] = forecast_brief_mod.run_brief(
+                s, history, evidence=SimStore.for_root(DATA_DIR, sim_id).load_evidence(), runs=int(runs),
+                horizon_days=float(years) * 365.25, time_budget_sec=float(budget), with_sensitivity=bool(with_sens),
+                sens_budget_sec=(float(budget) / 2 if budget else 0.0), sim_id=sim_id,
+            )
+    brief = st.session_state.get(sk)
+    if not brief:
+        st.caption("点击上方按钮生成；结果不会保存，推进一步后需要重新生成。")
+        return
+    if not brief.get("ok"):
+        st.warning(brief.get("reason") or "无法生成预测简报")
+        return
+    for b in brief.get("banners") or []:
+        st.info(b)
+    if brief["meta"].get("truncated"):
+        st.warning("至少有一个元素的预测被时间预算截断，区间噪声更大。")
+    _brief_confidence_md(brief["overall"], f"整体置信等级（{brief['overall']['rule']}）")
+    for line in brief["summary"]:
+        st.markdown(f"- {line}")
+    if len(brief["elements"]) == 1:
+        _render_brief_element(brief["elements"][0])
+    else:
+        for tab, e in zip(st.tabs([e["label"] for e in brief["elements"]]), brief["elements"]):
+            with tab:
+                _render_brief_element(e)
+
+
 def page_detail() -> None:
     sim_id = st.session_state.get("sim_id")
     if not sim_id:
@@ -4985,164 +5107,174 @@ def page_detail() -> None:
             _render_vars_display(current.vars, bool(manifest.settings.get("multi_entity_mode")))
             _render_entity_relationship_path_tool(current.vars, manifest)
 
-    _render_attribution_section(history, manifest)
+    # 第二十四轮 A7：开启了元素剖面的实例，页面主线是「预测简报」；原有机制面板（归因/质量信号/技术树/事件先验/
+    # 因果引擎/树接地/体检…）一个不删、行为不变，只是收进「高级机制」开关，默认折起。没开剖面的旧实例页面与之前完全一致。
+    _show_advanced = True
+    if anatomy_mod.is_enabled(manifest.settings):
+        _render_forecast_brief(manifest, history, sim_id)
+        _show_advanced = st.toggle(
+            "⚙️ 显示高级机制面板（归因 / 质量信号 / 技术树 / 事件先验 / 因果引擎 / 树接地 / 体检）",
+            value=False, key=f"show_advanced_mech_{sim_id}",
+        )
+    if _show_advanced:
+        _render_attribution_section(history, manifest)
 
-    # 阶段三十三（4.4 节）：按错误分类/模型版本统计——帮用户判断"预测
-    # 有没有变准"、该往哪个方向改进。只在这个分支已经有过至少一条现实
-    # 回填记录时才展示，避免给从没用过 Reality Check 功能的实例增加
-    # 一个空落落的入口。
-    all_checks = [
-        c for c in rc_mod.load_all(DATA_DIR, sim_id) if c.branch == manifest.branch
-    ]
-    if all_checks:
-        with st.expander(f"📊 预测准确性统计（共 {len(all_checks)} 条现实回填记录）"):
-            stats = rc_mod.stats_by_error_category(all_checks)
+        # 阶段三十三（4.4 节）：按错误分类/模型版本统计——帮用户判断"预测
+        # 有没有变准"、该往哪个方向改进。只在这个分支已经有过至少一条现实
+        # 回填记录时才展示，避免给从没用过 Reality Check 功能的实例增加
+        # 一个空落落的入口。
+        all_checks = [
+            c for c in rc_mod.load_all(DATA_DIR, sim_id) if c.branch == manifest.branch
+        ]
+        if all_checks:
+            with st.expander(f"📊 预测准确性统计（共 {len(all_checks)} 条现实回填记录）"):
+                stats = rc_mod.stats_by_error_category(all_checks)
+                st.markdown(
+                    f"共 {stats['total']} 条记录，其中 {stats['diverged_total']} 条与预测不符。"
+                )
+                if stats["by_category"]:
+                    _ERROR_CATEGORY_LABELS = {
+                        "data_error": "状态判断错",
+                        "causal_error": "因果机制错",
+                        "agent_behavior_error": "Agent 行为预测错",
+                        "random_event": "纯随机事件",
+                        "unknown_variable": "模型没考虑到的变量",
+                        "uncategorized": "未分类",
+                    }
+                    st.caption("按错误分类：" + "，".join(
+                        f"{_ERROR_CATEGORY_LABELS.get(k, k)} {v} 次"
+                        for k, v in stats["by_category"].items()
+                    ))
+                if len(stats["by_model_version"]) > 1:
+                    st.caption("按模型/Skill 版本：" + "，".join(
+                        f"{ver}（{b['total']} 条，{b['diverged']} 条不符）"
+                        for ver, b in stats["by_model_version"].items()
+                    ))
+
+        # 第五轮方案 5.7 节（`next_doc/world_simulator_decision_engine_
+        # round2_gap_analysis_plan.md`，阶段三十四第四批）：评估标准的
+        # 轻量自评模块——纯统计代理指标，不是质量评分，默认折叠避免
+        # 信息过载。
+        with st.expander("📐 质量信号（统计代理指标，非评分）"):
             st.markdown(
-                f"共 {stats['total']} 条记录，其中 {stats['diverged_total']} 条与预测不符。"
+                '<span class="ws-muted">这些是基于已有字段的客观计数统计，'
+                "用来反映决策引擎设计在几个维度上的信息密度——数字高不代表"
+                "这次模拟一定更好，只是反映了某个维度用得多不多；不是给这次"
+                "模拟打分。</span>",
+                unsafe_allow_html=True,
             )
-            if stats["by_category"]:
-                _ERROR_CATEGORY_LABELS = {
-                    "data_error": "状态判断错",
-                    "causal_error": "因果机制错",
-                    "agent_behavior_error": "Agent 行为预测错",
-                    "random_event": "纯随机事件",
-                    "unknown_variable": "模型没考虑到的变量",
-                    "uncategorized": "未分类",
-                }
-                st.caption("按错误分类：" + "，".join(
-                    f"{_ERROR_CATEGORY_LABELS.get(k, k)} {v} 次"
-                    for k, v in stats["by_category"].items()
-                ))
-            if len(stats["by_model_version"]) > 1:
-                st.caption("按模型/Skill 版本：" + "，".join(
-                    f"{ver}（{b['total']} 条，{b['diverged']} 条不符）"
-                    for ver, b in stats["by_model_version"].items()
-                ))
+            signals = quality_signals_mod.summarize_quality_signals(
+                history, causal_lines=manifest.settings.get("causal_lines")
+            )
 
-    # 第五轮方案 5.7 节（`next_doc/world_simulator_decision_engine_
-    # round2_gap_analysis_plan.md`，阶段三十四第四批）：评估标准的
-    # 轻量自评模块——纯统计代理指标，不是质量评分，默认折叠避免
-    # 信息过载。
-    with st.expander("📐 质量信号（统计代理指标，非评分）"):
-        st.markdown(
-            '<span class="ws-muted">这些是基于已有字段的客观计数统计，'
-            "用来反映决策引擎设计在几个维度上的信息密度——数字高不代表"
-            "这次模拟一定更好，只是反映了某个维度用得多不多；不是给这次"
-            "模拟打分。</span>",
-            unsafe_allow_html=True,
-        )
-        signals = quality_signals_mod.summarize_quality_signals(
-            history, causal_lines=manifest.settings.get("causal_lines")
-        )
+            def _pct(ratio: Optional[float]) -> str:
+                return f"{ratio:.0%}" if ratio is not None else "暂无数据"
 
-        def _pct(ratio: Optional[float]) -> str:
-            return f"{ratio:.0%}" if ratio is not None else "暂无数据"
-
-        exp = signals["explainability"]
-        st.caption(
-            f"可解释性密度：{_pct(exp['ratio'])}"
-            f"（{exp['decision_points']} 个决策点中 {exp['with_reason']} 个"
-            "标注了决策/行动理由）"
-        )
-        cross = signals["cross_line_influence"]
-        st.caption(
-            f"跨线影响密度：{_pct(cross['ratio'])}"
-            f"（{cross['total_causal_links']} 条因果链中 "
-            f"{cross['with_source_line']} 条标注了发起线）"
-        )
-        div = signals["branch_diversity"]
-        st.caption(
-            f"分支差异性：{_pct(div['ratio'])}"
-            f"（{div['decision_points']} 个决策点中 {div['multi_option']} 个"
-            "给出了 2 个以上选项）"
-        )
-        exp_use = signals["expansion_usage"]
-        st.caption(
-            f"渐进展开使用率：{_pct(exp_use['ratio'])}"
-            f"（{exp_use['total_branches']} 个未来树分支中 "
-            f"{exp_use['expanded']} 个已展开）"
-        )
-        unc = signals["uncertainty_coverage"]
-        st.caption(
-            f"不确定性标注覆盖率：{_pct(unc['ratio'])}"
-            f"（{unc['total_steps']} 步中 {unc['with_uncertain_fields']} 步"
-            "标注了不确定字段）"
-        )
-        st.caption(
-            "因果一致性、决策真实性这两条评价标准需要理解语义内容才能"
-            "判断，暂时没有自动化的衡量方式，仍需自行阅读叙事/因果图判断。"
-        )
-
-    # 第二十二轮 WP1：技术树面板（只读；未开启技术模型时不渲染）。
-    _render_tech_panel(manifest.settings)
-    _render_event_panel(manifest, current, history)
-    _render_causal_panel(manifest, current, history)
-    _render_tree_grounding_panel(manifest, current)
-
-    # 第二十二轮 WP4：真实性体检（结构性检查，不是语义真实性评分）。
-    # 每次渲染都从历史现算，纯 Python、不调 LLM；默认折叠。
-    with st.expander("🩺 真实性体检（结构性检查，非真实性评分）"):
-        health = quality_signals_mod.summarize_realism_health(
-            history,
-            causal_lines=manifest.settings.get("causal_lines"),
-            declared_causal_graph=manifest.settings.get("declared_causal_graph"),
-            config={"likelihood_nominal": manifest.settings.get("likelihood_nominal") or None},
-            settings=manifest.settings,
-        )
-        st.markdown(
-            f'<span class="ws-muted">{_html_text(health["disclaimer"])}'
-            "能力成熟度、因果树状态迁移、数值波动等只看结构，语义上是否合理仍需自行判断；"
-            "存在误报。</span>",
-            unsafe_allow_html=True,
-        )
-        counts = health["warning_counts"]
-        st.caption(
-            "结构性告警："
-            + ("，".join(f"{code} × {n}" for code, n in sorted(counts.items())) if counts else "暂无")
-        )
-        cov = health["coverage"]
-        st.caption(
-            f"分支状态检查（C2/C3/C4）覆盖 {cov['tree_transition_pairs_checked']} 处快照变化——"
-            "只覆盖新版本之后写入的步，旧步无法核验。"
-        )
-        dens = health["c5_event_density"]
-        if dens["ratio"] is not None:
+            exp = signals["explainability"]
             st.caption(
-                f"事件密度（C5）：{dens['advanced_steps']} 步中 {dens['dramatic_steps']} 步有重大决策/"
-                f"结构性变化/新能力（{dens['ratio']:.0%}），最长连续 {dens['longest_run']} 步。"
+                f"可解释性密度：{_pct(exp['ratio'])}"
+                f"（{exp['decision_points']} 个决策点中 {exp['with_reason']} 个"
+                "标注了决策/行动理由）"
             )
-        edge = health["c7_edge_coverage"]
-        if edge["ratio"] is not None:
+            cross = signals["cross_line_influence"]
             st.caption(
-                f"跨线因果链未在先验因果图声明的占比（C7）：{edge['ratio']:.0%}"
-                f"（{edge['cross_line_links']} 条中 {edge['undeclared']} 条）"
+                f"跨线影响密度：{_pct(cross['ratio'])}"
+                f"（{cross['total_causal_links']} 条因果链中 "
+                f"{cross['with_source_line']} 条标注了发起线）"
             )
-        calib = health["c8_tree_calibration"]
-        for level, label in (("high", "高"), ("medium", "中"), ("low", "低")):
-            g = calib[level]
-            if g["terminal"]:
+            div = signals["branch_diversity"]
+            st.caption(
+                f"分支差异性：{_pct(div['ratio'])}"
+                f"（{div['decision_points']} 个决策点中 {div['multi_option']} 个"
+                "给出了 2 个以上选项）"
+            )
+            exp_use = signals["expansion_usage"]
+            st.caption(
+                f"渐进展开使用率：{_pct(exp_use['ratio'])}"
+                f"（{exp_use['total_branches']} 个未来树分支中 "
+                f"{exp_use['expanded']} 个已展开）"
+            )
+            unc = signals["uncertainty_coverage"]
+            st.caption(
+                f"不确定性标注覆盖率：{_pct(unc['ratio'])}"
+                f"（{unc['total_steps']} 步中 {unc['with_uncertain_fields']} 步"
+                "标注了不确定字段）"
+            )
+            st.caption(
+                "因果一致性、决策真实性这两条评价标准需要理解语义内容才能"
+                "判断，暂时没有自动化的衡量方式，仍需自行阅读叙事/因果图判断。"
+            )
+
+        # 第二十二轮 WP1：技术树面板（只读；未开启技术模型时不渲染）。
+        _render_tech_panel(manifest.settings)
+        _render_event_panel(manifest, current, history)
+        _render_causal_panel(manifest, current, history)
+        _render_tree_grounding_panel(manifest, current)
+
+        # 第二十二轮 WP4：真实性体检（结构性检查，不是语义真实性评分）。
+        # 每次渲染都从历史现算，纯 Python、不调 LLM；默认折叠。
+        with st.expander("🩺 真实性体检（结构性检查，非真实性评分）"):
+            health = quality_signals_mod.summarize_realism_health(
+                history,
+                causal_lines=manifest.settings.get("causal_lines"),
+                declared_causal_graph=manifest.settings.get("declared_causal_graph"),
+                config={"likelihood_nominal": manifest.settings.get("likelihood_nominal") or None},
+                settings=manifest.settings,
+            )
+            st.markdown(
+                f'<span class="ws-muted">{_html_text(health["disclaimer"])}'
+                "能力成熟度、因果树状态迁移、数值波动等只看结构，语义上是否合理仍需自行判断；"
+                "存在误报。</span>",
+                unsafe_allow_html=True,
+            )
+            counts = health["warning_counts"]
+            st.caption(
+                "结构性告警："
+                + ("，".join(f"{code} × {n}" for code, n in sorted(counts.items())) if counts else "暂无")
+            )
+            cov = health["coverage"]
+            st.caption(
+                f"分支状态检查（C2/C3/C4）覆盖 {cov['tree_transition_pairs_checked']} 处快照变化——"
+                "只覆盖新版本之后写入的步，旧步无法核验。"
+            )
+            dens = health["c5_event_density"]
+            if dens["ratio"] is not None:
                 st.caption(
-                    f"未来树校准（C8）· 可能性「{label}」：已终结 {g['terminal']} 个，"
-                    f"命中 {g['resolved']} 个（{g['hit_rate']:.0%}）——样本少时不具统计意义。"
+                    f"事件密度（C5）：{dens['advanced_steps']} 步中 {dens['dramatic_steps']} 步有重大决策/"
+                    f"结构性变化/新能力（{dens['ratio']:.0%}），最长连续 {dens['longest_run']} 步。"
                 )
-        ledger = health.get("c8_likelihood_ledger") or {}
-        for level, label in (("high", "高"), ("medium", "中"), ("low", "低")):
-            g = (ledger.get("by_likelihood") or {}).get(level) or {}
-            if g.get("n"):
-                gap = f"，与你给的名义值相差 {g['gap']:+.0%}" if g.get("gap") is not None else ""
+            edge = health["c7_edge_coverage"]
+            if edge["ratio"] is not None:
                 st.caption(
-                    f"校准账本（终结时刻的可能性）·「{label}」：{g['n']} 个，命中 {g['resolved']} 个"
-                    f"（{g['hit_rate']:.0%}）{gap}"
-                    + ("" if g.get("enough_samples") else "——样本不足")
+                    f"跨线因果链未在先验因果图声明的占比（C7）：{edge['ratio']:.0%}"
+                    f"（{edge['cross_line_links']} 条中 {edge['undeclared']} 条）"
                 )
-        for inv in ledger.get("inversions") or []:
-            st.caption(f"⚠️ 档位倒挂：{inv['message']}（可能性档位没有区分度，或样本偶然）")
-        c9 = health.get("c9_element_health")
-        if c9 and c9.get("notes"):
-            for note in c9["notes"]:
-                st.caption(f"🧩 元素（C9，只读提示）：{note}")
-        for w in health["warnings"][-20:]:
-            st.caption(f"第 {w['step']} 步 · {w['code']}：{w['message']}")
+            calib = health["c8_tree_calibration"]
+            for level, label in (("high", "高"), ("medium", "中"), ("low", "低")):
+                g = calib[level]
+                if g["terminal"]:
+                    st.caption(
+                        f"未来树校准（C8）· 可能性「{label}」：已终结 {g['terminal']} 个，"
+                        f"命中 {g['resolved']} 个（{g['hit_rate']:.0%}）——样本少时不具统计意义。"
+                    )
+            ledger = health.get("c8_likelihood_ledger") or {}
+            for level, label in (("high", "高"), ("medium", "中"), ("low", "低")):
+                g = (ledger.get("by_likelihood") or {}).get(level) or {}
+                if g.get("n"):
+                    gap = f"，与你给的名义值相差 {g['gap']:+.0%}" if g.get("gap") is not None else ""
+                    st.caption(
+                        f"校准账本（终结时刻的可能性）·「{label}」：{g['n']} 个，命中 {g['resolved']} 个"
+                        f"（{g['hit_rate']:.0%}）{gap}"
+                        + ("" if g.get("enough_samples") else "——样本不足")
+                    )
+            for inv in ledger.get("inversions") or []:
+                st.caption(f"⚠️ 档位倒挂：{inv['message']}（可能性档位没有区分度，或样本偶然）")
+            c9 = health.get("c9_element_health")
+            if c9 and c9.get("notes"):
+                for note in c9["notes"]:
+                    st.caption(f"🧩 元素（C9，只读提示）：{note}")
+            for w in health["warnings"][-20:]:
+                st.caption(f"第 {w['step']} 步 · {w['code']}：{w['message']}")
 
     # 阶段三十二（4.6 节，用户本次明确要求）：模拟复盘 / 经验教训总结。
     # 不自动触发——LLM 调用有成本，且复盘本身应该是用户主动想回顾时
@@ -6070,6 +6202,23 @@ def page_detail() -> None:
                     update_settings(DATA_DIR, sim_id, anatomy_params={
                         **(cur_settings.get("anatomy_params") if isinstance(cur_settings.get("anatomy_params"), dict) else {}),
                         "deep_enabled": bool(_d_on), "deep_max_calls_per_step": int(_d_cap), "deep_time_budget_sec": int(_d_bud),
+                    })
+                    st.rerun()
+                st.caption(
+                    "预测简报的置信等级（A7）：由引擎按固定规则扣分计算（不是 AI 评价）。下面是规则的阈值，改了立即对之后生成的简报生效；"
+                    "分数低于「中」的最低分 → 低；有依据的关键条目比例低于「重扣线」→ 最高只给「低」。"
+                )
+                _cc = st.columns(5)
+                _c_hi = _cc[0].number_input("「高」最低分", min_value=1, max_value=100, value=int(_rp["conf_high_min"]), step=5, key=f"conf_hi_{sim_id}")
+                _c_md = _cc[1].number_input("「中」最低分", min_value=1, max_value=100, value=int(_rp["conf_medium_min"]), step=5, key=f"conf_md_{sim_id}")
+                _c_ok = _cc[2].number_input("有依据比例·不扣分线", min_value=0.0, max_value=1.0, value=float(_rp["conf_grounded_ok"]), step=0.05, key=f"conf_ok_{sim_id}")
+                _c_lo = _cc[3].number_input("有依据比例·重扣线", min_value=0.0, max_value=1.0, value=float(_rp["conf_grounded_low"]), step=0.05, key=f"conf_lo_{sim_id}")
+                _c_wd = _cc[4].number_input("区间过宽（high/low）", min_value=1.1, max_value=1000.0, value=float(_rp["conf_wide_ratio"]), step=0.5, key=f"conf_wd_{sim_id}")
+                _c_new = {"conf_high_min": int(_c_hi), "conf_medium_min": int(_c_md), "conf_grounded_ok": float(_c_ok), "conf_grounded_low": float(_c_lo), "conf_wide_ratio": float(_c_wd)}
+                if any(_c_new[k] != _rp[k] for k in _c_new):
+                    update_settings(DATA_DIR, sim_id, anatomy_params={
+                        **(cur_settings.get("anatomy_params") if isinstance(cur_settings.get("anatomy_params"), dict) else {}),
+                        **_c_new,
                     })
                     st.rerun()
                 if _pend:

@@ -81,7 +81,7 @@ python -m world_simulator.server --host 0.0.0.0 --port 8731
 | PATCH | `/simulations/{sim_id}/settings` | 更新 settings |
 | PUT | `/simulations/{sim_id}/title` | 重命名 |
 | DELETE | `/simulations/{sim_id}` | 删除（不可逆） |
-| GET | `/simulations/{sim_id}/export.html` | 直接返回渲染好的网页 |
+| GET | `/simulations/{sim_id}/export.html` | 直接返回渲染好的网页（开启元素剖面的实例含档案与预测简报，见下） |
 
 失败时用 HTTP 状态码表达大致类别（400 参数错误 / 404 找不到实例 /
 409 引擎业务错误 / 502 场景生成失败 / 503 环境未就绪 / 500 未预期
@@ -90,6 +90,41 @@ python -m world_simulator.server --host 0.0.0.0 --port 8731
 
 服务启动后可以访问 `/docs`（FastAPI 自带的交互式文档）直接试调用，
 不需要额外配置。
+
+## 元素档案 / 证据 / 预测（第二十四轮 A7）
+
+开启了元素剖面（`anatomy_enabled`）的实例可以用下面五组接口读取档案、证据，并**重跑**预测。它们都是**只读 + 现算**：
+不写盘、不调 LLM；耗时与 `runs` 成正比，用 `time_budget_sec`（总墙钟预算，`<= 0` 不限）控制，被截断会体现在返回的
+`meta.truncated`。`branch` 缺省取实例当前分支，动态状态取该分支最近快照（与导出一致）。
+
+| `tool_api` 函数 | HTTP | CLI 子命令 | 说明 |
+|---|---|---|---|
+| `get_anatomy_profile(sim_id, element)` | `GET /simulations/{sim_id}/elements/{element}/anatomy` | `get-anatomy --element` | 档案视图（来源状态/统计/体检）+ 引擎推进情况 |
+| `get_evidence(sim_id, element=None)` | `GET /simulations/{sim_id}/evidence?element=` | `get-evidence [--element]` | 给 `element` → 该元素的证据视图；不给 → 全部记录与按元素计数 |
+| `run_forecast(sim_id, element=, runs=, seed=, horizon_days=, steps=, time_budget_sec=, point=)` | `POST /simulations/{sim_id}/forecast` | `forecast` | 蒙特卡洛预测 + 先行信号清单（`data.forecast`、`data.watch`） |
+| `run_what_if(sim_id, edits, ...)` | `POST /simulations/{sim_id}/forecast/what-if` | `what-if --edits '<JSON 数组>'` | 改参数/假设/路径耗时/事件频率，同种子重跑并与基线比较；`edits` 写法见 `forecast.apply_edits` |
+| `get_forecast_brief(sim_id, elements=, runs=, seed=, horizon_days=, time_budget_sec=, with_sensitivity=)` | `POST /simulations/{sim_id}/forecast/brief` | `forecast-brief [--element ...] [--no-sensitivity]` | 预测简报（五个问题的回答 + 引擎计算的置信等级 + 每条扣分原因） |
+
+错误分流：实例不存在 → `not_found`；**用户可纠正的状态**（元素不存在/没有剖面、剖面功能未开启而要预测、没有可结算内容、
+`edits` 为空或全部无效、`elements` 不是字符串数组）→ `validation_error`，`message` 里带原因（what-if 会带上每条无效编辑的原因）。
+唯一的例外：`get_anatomy_profile` 在剖面总开关关闭时返回 `ok: true` 且 `data.profile == {"enabled": false}`（不是错误）。
+
+```bash
+python -m world_simulator.service_cli get-anatomy --sim-id life_sim_xxxx --element solid_state_battery
+python -m world_simulator.service_cli forecast-brief --sim-id life_sim_xxxx --time-budget-sec 60
+python -m world_simulator.service_cli what-if --sim-id life_sim_xxxx --seed 7 \
+  --edits '[{"kind":"assumption","element":"solid_state_battery","id":"a1","p_true":0}]'
+```
+
+**导出**：`export_html` / `GET .../export.html` / `export-html` 多了三个可选参数，只在开启剖面的实例上起作用：
+
+| 参数 | HTTP query | CLI | 默认 |
+|---|---|---|---|
+| `with_forecast` | `with_forecast` | `--no-forecast` | `true`：导出时现算并写入「预测简报」；`false` 只导出元素档案（快） |
+| `forecast_runs` | `forecast_runs` | `--forecast-runs` | 实例的 `anatomy_params.mc_runs` |
+| `forecast_budget_sec` | `forecast_budget_sec` | `--forecast-budget-sec` | 30（总预算，敏感性再占其 1/3；`<= 0` 不限）；被截断会在页面上明示 |
+
+未开启剖面的实例导出与之前逐字节相同。行为细节见 `anatomy_guide.md` §16。
 
 ## 鉴权与部署边界
 

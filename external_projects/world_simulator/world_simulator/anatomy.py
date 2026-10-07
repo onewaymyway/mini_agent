@@ -125,6 +125,12 @@ DEFAULT_PARAMS: Dict[str, Any] = {
     "mc_runs": 1000,
     "mc_seed": 20260101,
     "trend_recommended": list(RECOMMENDED_TRENDS),
+    # A7：预测简报的置信等级规则（`forecast_brief.confidence`）。阈值开放配置，规则本身由引擎计算、不由 LLM 评判。
+    "conf_high_min": 75,               # 分数 ≥ 此值 → 高
+    "conf_medium_min": 45,             # 分数 ≥ 此值 → 中，否则低
+    "conf_grounded_ok": 0.6,           # 关键条目里「有出处/已确认/已编辑」的比例 ≥ 此值 → 不扣分
+    "conf_grounded_low": 0.25,         # 比例 < 此值 → 重扣并把等级封顶在「低」
+    "conf_wide_ratio": 3.0,            # 带区间的参数 high/low 的中位数 ≥ 此值 → 视为区间很宽
 }
 # `deep_time_budget_sec`：计划 §7 标"待 A5 定"，A5 定为 120 秒（见 `docs/anatomy_guide.md` §14.2）。
 
@@ -154,6 +160,26 @@ def _is_str_list(value: Any) -> Tuple[bool, Any]:
     return (True, items) if items else (False, None)
 
 
+def _is_unit_float(value: Any) -> Tuple[bool, Any]:
+    """0–1 的有限小数（不含布尔）。"""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False, None
+    return (True, float(value)) if math.isfinite(value) and 0.0 <= value <= 1.0 else (False, None)
+
+
+def _is_ratio_above_one(value: Any) -> Tuple[bool, Any]:
+    """> 1 的有限数（宽度比 high/low 至少要大于 1 才有意义）。"""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False, None
+    return (True, float(value)) if math.isfinite(value) and value > 1.0 else (False, None)
+
+
+def _is_score(value: Any) -> Tuple[bool, Any]:
+    """1–100 的整数分数阈值。"""
+    ok, val = er._valid_int_at_least(value, 1)
+    return (True, val) if ok and val <= 100 else (False, None)
+
+
 _VALIDATORS = {
     "key_element_count": er._valid_limit,
     "research_on_create": _is_bool,
@@ -173,6 +199,11 @@ _VALIDATORS = {
     "mc_runs": lambda v: er._valid_int_at_least(v, 1),
     "mc_seed": _is_int,
     "trend_recommended": _is_str_list,
+    "conf_high_min": _is_score,
+    "conf_medium_min": _is_score,
+    "conf_grounded_ok": _is_unit_float,
+    "conf_grounded_low": _is_unit_float,
+    "conf_wide_ratio": _is_ratio_above_one,
 }
 
 

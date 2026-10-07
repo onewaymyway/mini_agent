@@ -156,7 +156,14 @@ def _cmd_reject_causal_line(args: argparse.Namespace) -> Dict[str, Any]:
 
 
 def _cmd_export_html(args: argparse.Namespace) -> Dict[str, Any]:
-    result = tool_api.export_html(args.sim_id, branch=args.branch)
+    extra: Dict[str, Any] = {}  # 只在偏离默认值时才传，保持旧调用形状不变
+    if args.no_forecast:
+        extra["with_forecast"] = False
+    if args.forecast_runs is not None:
+        extra["forecast_runs"] = args.forecast_runs
+    if args.forecast_budget_sec is not None:
+        extra["forecast_budget_sec"] = args.forecast_budget_sec
+    result = tool_api.export_html(args.sim_id, branch=args.branch, **extra)
     if not result.get("ok"):
         return result
     if args.output:
@@ -173,6 +180,36 @@ def _cmd_export_html(args: argparse.Namespace) -> Dict[str, Any]:
     return result
 
 
+def _cmd_get_anatomy(args: argparse.Namespace) -> Dict[str, Any]:
+    return tool_api.get_anatomy_profile(args.sim_id, args.element, branch=args.branch)
+
+
+def _cmd_get_evidence(args: argparse.Namespace) -> Dict[str, Any]:
+    return tool_api.get_evidence(args.sim_id, args.element, branch=args.branch)
+
+
+def _cmd_forecast(args: argparse.Namespace) -> Dict[str, Any]:
+    return tool_api.run_forecast(
+        args.sim_id, element=args.element, runs=args.runs, seed=args.seed, horizon_days=args.horizon_days,
+        steps=args.steps, time_budget_sec=args.time_budget_sec, point=args.point, branch=args.branch,
+    )
+
+
+def _cmd_what_if(args: argparse.Namespace) -> Dict[str, Any]:
+    edits = _parse_json_arg(args.edits, arg_name="edits")
+    return tool_api.run_what_if(
+        args.sim_id, edits, runs=args.runs, seed=args.seed, horizon_days=args.horizon_days,
+        time_budget_sec=args.time_budget_sec, element=args.element, branch=args.branch,
+    )
+
+
+def _cmd_forecast_brief(args: argparse.Namespace) -> Dict[str, Any]:
+    return tool_api.get_forecast_brief(
+        args.sim_id, elements=args.element or None, runs=args.runs, seed=args.seed, horizon_days=args.horizon_days,
+        time_budget_sec=args.time_budget_sec, with_sensitivity=not args.no_sensitivity, branch=args.branch,
+    )
+
+
 _SUBCOMMANDS = {
     "create-simulation": (_cmd_create_simulation, "创建一个新的模拟实例"),
     "advance": (_cmd_advance, "推进一个模拟实例一步"),
@@ -187,7 +224,12 @@ _SUBCOMMANDS = {
     "apply-structural-change": (_cmd_apply_structural_change, "采纳某一步报告的结构性变化"),
     "accept-causal-line": (_cmd_accept_causal_line, "接受一条因果线建议"),
     "reject-causal-line": (_cmd_reject_causal_line, "拒绝一条因果线建议"),
-    "export-html": (_cmd_export_html, "导出某条分支的完整时间线网页"),
+    "export-html": (_cmd_export_html, "导出某条分支的完整时间线网页（开启元素剖面的实例含档案与预测简报）"),
+    "get-anatomy": (_cmd_get_anatomy, "查询一个元素的档案（来源状态/统计/体检/引擎进展）"),
+    "get-evidence": (_cmd_get_evidence, "查询证据库（给 --element 则返回该元素的证据视图）"),
+    "forecast": (_cmd_forecast, "重跑蒙特卡洛预测（现算、不落盘）"),
+    "what-if": (_cmd_what_if, "What-if：改参数/假设/路径耗时后同种子重跑并与基线比较"),
+    "forecast-brief": (_cmd_forecast_brief, "生成预测简报（含引擎计算的置信等级）"),
 }
 
 
@@ -267,6 +309,45 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--sim-id", required=True)
     p.add_argument("--branch", default="main")
     p.add_argument("--output", default=None, help="写入的文件路径；不传则把 html 正文放进 JSON 输出")
+    p.add_argument("--no-forecast", action="store_true", help="不在导出里现算预测简报（只导出元素档案）")
+    p.add_argument("--forecast-runs", type=int, default=None, help="预测推演次数（缺省用实例的 mc_runs）")
+    p.add_argument("--forecast-budget-sec", type=float, default=None, help="预测总墙钟预算秒数（<=0 不限；缺省 30）")
+
+    def _common(sp, *, element_required=False, many=False):
+        sp.add_argument("--sim-id", required=True)
+        if many:
+            sp.add_argument("--element", action="append", default=None, help="元素 id；可重复；缺省 = 重点元素")
+        else:
+            sp.add_argument("--element", required=element_required, default=None)
+        sp.add_argument("--branch", default=None, help="分支；缺省 = 实例当前分支")
+
+    def _fc_args(sp):
+        sp.add_argument("--runs", type=int, default=None)
+        sp.add_argument("--seed", type=int, default=None)
+        sp.add_argument("--horizon-days", type=float, default=None)
+        sp.add_argument("--time-budget-sec", type=float, default=None, help="总墙钟预算秒数（<=0 不限）")
+
+    p = sub.add_parser("get-anatomy", help=_SUBCOMMANDS["get-anatomy"][1])
+    _common(p, element_required=True)
+
+    p = sub.add_parser("get-evidence", help=_SUBCOMMANDS["get-evidence"][1])
+    _common(p)
+
+    p = sub.add_parser("forecast", help=_SUBCOMMANDS["forecast"][1])
+    _common(p)
+    _fc_args(p)
+    p.add_argument("--steps", type=int, default=None)
+    p.add_argument("--point", action="store_true", help="点估计模式（只用 value/mode，不采样区间）")
+
+    p = sub.add_parser("what-if", help=_SUBCOMMANDS["what-if"][1])
+    _common(p)
+    _fc_args(p)
+    p.add_argument("--edits", required=True, help='编辑数组的 JSON，写法见 forecast.apply_edits，例如 \'[{"kind":"assumption","element":"x","id":"a1","p_true":0}]\'')
+
+    p = sub.add_parser("forecast-brief", help=_SUBCOMMANDS["forecast-brief"][1])
+    _common(p, many=True)
+    _fc_args(p)
+    p.add_argument("--no-sensitivity", action="store_true", help="不跑敏感性分析（更快，但「关键不确定性」只能取预测自带信号）")
 
     return parser
 

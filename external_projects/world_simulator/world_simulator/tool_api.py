@@ -424,21 +424,186 @@ def reject_causal_line_suggestion(sim_id: str, suggestion_id: str) -> Dict[str, 
 
 # ── 导出 ─────────────────────────────────────────────────────────────
 
-def export_html(sim_id: str, *, branch: str = "main") -> Dict[str, Any]:
+def export_html(
+    sim_id: str, *, branch: str = "main", with_forecast: bool = True,
+    forecast_runs: Optional[int] = None, forecast_budget_sec: float = 30.0,
+) -> Dict[str, Any]:
     """导出某条分支的完整时间线网页，返回 HTML 字符串本体
     （`data.html`）。CLI 侧默认把它写到一个文件而不是打到 stdout
     （见 `service_cli.py`）；HTTP 侧另有一个直接返回
     `text/html` 的路由，这个 JSON 版本主要给"主 agent 想先拿到 html
-    自己再处理"（比如再传给别的渲染/上传工具）的场景用。"""
+    自己再处理"（比如再传给别的渲染/上传工具）的场景用。
+
+    A7：开启了元素剖面的实例，导出会现算一份「预测简报」（不落盘）；`with_forecast=False` 只导出元素档案，
+    `forecast_runs` / `forecast_budget_sec`（总墙钟预算，`<= 0` 不限）控制耗时。没开剖面的实例这三个参数不起作用。"""
     if not sim_id:
         return _err("validation_error", "sim_id 不能为空")
     try:
         from world_simulator.html_export import export_simulation_html
 
-        html = export_simulation_html(_DATA_DIR, sim_id, branch=branch)
+        html = export_simulation_html(
+            _DATA_DIR, sim_id, branch=branch, with_forecast=with_forecast,
+            forecast_runs=forecast_runs, forecast_budget_sec=forecast_budget_sec,
+        )
         return _ok({"sim_id": sim_id, "branch": branch, "html": html})
     except SimNotFoundError as exc:
         return _err("not_found", str(exc))
     except Exception as exc:  # noqa: BLE001
         logger.exception("export_html 未预期的异常")
         return _err("internal_error", str(exc))
+
+
+# ── 元素档案 / 证据 / 预测（A7）──────────────────────────────────────
+#
+# 这组接口都是**只读 + 现算**：不写盘、不调 LLM。预测的蒙特卡洛耗时与 `runs` 成正比，调用方用
+# `time_budget_sec`（总墙钟预算，`<= 0` 不限）控制；被截断会体现在返回的 `meta.truncated` 里。
+# 档案功能未开启 / 元素不存在 / 没有可预测内容这类"用户可纠正"的状态一律返回 `validation_error`（带原因），
+# 而不是 `internal_error`。
+
+
+def _anatomy_context(sim_id: str, branch: Optional[str]):
+    """`(manifest, history, settings, branch)`：settings 取该分支最近快照的动态状态（与导出一致）。"""
+    from world_simulator import html_export_mechanisms as _mech
+    from world_simulator.store import SimStore as _SimStore
+
+    store = _SimStore.for_root(_DATA_DIR, sim_id)
+    manifest = store.load_manifest()
+    br = (branch or "").strip() or manifest.branch
+    history = store.load_history(br)
+    return store, manifest, history, _mech.branch_settings(manifest, history, br), br
+
+
+def get_anatomy_profile(sim_id: str, element: str, *, branch: Optional[str] = None) -> Dict[str, Any]:
+    """元素档案：档案视图（各部分来源状态/统计/体检）+ 引擎推进情况 + 证据视图。
+    剖面总开关未开 → `data.profile.enabled == False`（不是错误）；元素不存在/没有剖面 → `validation_error`。"""
+    if not sim_id:
+        return _err("validation_error", "sim_id 不能为空")
+    if not isinstance(element, str) or not element.strip():
+        return _err("validation_error", "element 不能为空")
+    try:
+        from world_simulator import element_view as _ev
+
+        store, _m, history, settings, br = _anatomy_context(sim_id, branch)
+        profile = _ev.build_profile(settings, element.strip(), evidence=store.load_evidence())
+        if profile.get("enabled") and not profile.get("has_anatomy"):
+            return _err("validation_error", f"元素 {element!r} 不存在或没有剖面")
+        data: Dict[str, Any] = {"sim_id": sim_id, "branch": br, "profile": profile}
+        if profile.get("has_anatomy"):
+            data["progress"] = _ev.build_progress(settings, history, element.strip())
+        return _ok(data)
+    except SimNotFoundError as exc:
+        return _err("not_found", str(exc))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("get_anatomy_profile 未预期的异常")
+        return _err("internal_error", str(exc))
+
+
+def get_evidence(sim_id: str, element: Optional[str] = None, *, branch: Optional[str] = None) -> Dict[str, Any]:
+    """证据库。给 `element` → 该元素的证据视图（有效证据、仍是 LLM 先验的条目、过期/取代/驳回计数）；
+    不给 → 全部证据记录与按元素的计数。"""
+    if not sim_id:
+        return _err("validation_error", "sim_id 不能为空")
+    try:
+        from world_simulator import element_view as _ev
+
+        store, _m, _h, settings, br = _anatomy_context(sim_id, branch)
+        records = store.load_evidence()
+        if element is not None and str(element).strip():
+            view = _ev.build_evidence_view(settings, str(element).strip(), records)
+            return _ok({"sim_id": sim_id, "branch": br, "element": str(element).strip(), "evidence": view})
+        counts: Dict[str, int] = {}
+        for r in records:
+            counts[str(r.get("element_id") or "")] = counts.get(str(r.get("element_id") or ""), 0) + 1
+        return _ok({"sim_id": sim_id, "branch": br, "total": len(records), "by_element": counts, "records": records})
+    except SimNotFoundError as exc:
+        return _err("not_found", str(exc))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("get_evidence 未预期的异常")
+        return _err("internal_error", str(exc))
+
+
+def run_forecast(
+    sim_id: str, *, element: Optional[str] = None, runs: Optional[int] = None, seed: Optional[int] = None,
+    horizon_days: Optional[float] = None, steps: Optional[int] = None, time_budget_sec: Optional[float] = None,
+    point: bool = False, branch: Optional[str] = None,
+) -> Dict[str, Any]:
+    """重跑蒙特卡洛预测（不落盘）。返回预测结果 + 先行信号清单（`watch`）。`point=True` 为点估计模式（只用 value/mode）。"""
+    if not sim_id:
+        return _err("validation_error", "sim_id 不能为空")
+    try:
+        from world_simulator import forecast as _fc
+
+        _s, _m, history, settings, br = _anatomy_context(sim_id, branch)
+        result = _fc.run_forecast(
+            settings, history, runs=runs, seed=seed, horizon_days=horizon_days, steps=steps,
+            time_budget_sec=time_budget_sec, sim_id=sim_id, element=element, point=bool(point),
+        )
+        if not result.get("ok"):
+            return _err("validation_error", str(result.get("reason") or "无法预测"))
+        return _ok({"sim_id": sim_id, "branch": br, "forecast": result, "watch": _fc.build_watchlist(settings, result)})
+    except SimNotFoundError as exc:
+        return _err("not_found", str(exc))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("run_forecast 未预期的异常")
+        return _err("internal_error", str(exc))
+
+
+def run_what_if(
+    sim_id: str, edits: List[Dict[str, Any]], *, runs: Optional[int] = None, seed: Optional[int] = None,
+    horizon_days: Optional[float] = None, time_budget_sec: Optional[float] = None, element: Optional[str] = None,
+    branch: Optional[str] = None,
+) -> Dict[str, Any]:
+    """What-if：改几个参数/假设/路径耗时/事件频率，用同一种子与视野重跑并与基线比较（不改实例数据）。
+    `edits` 的写法见 `forecast.apply_edits`。编辑全部无效 → `validation_error`（带每条原因）。"""
+    if not sim_id:
+        return _err("validation_error", "sim_id 不能为空")
+    if not isinstance(edits, list) or not edits or not all(isinstance(e, dict) for e in edits):
+        return _err("validation_error", "edits 必须是非空的 JSON 对象数组")
+    try:
+        from world_simulator import forecast as _fc
+
+        _s, _m, history, settings, br = _anatomy_context(sim_id, branch)
+        out = _fc.what_if(
+            settings, history, edits, runs=runs, seed=seed, horizon_days=horizon_days,
+            time_budget_sec=time_budget_sec, sim_id=sim_id, element=element,
+        )
+        if not out.get("ok"):
+            errs = [str(e) for e in (out.get("errors") or [])]
+            reason = str(out.get("reason") or "what-if 无法运行")
+            return _err("validation_error", reason + (f"：{'；'.join(errs)}" if errs else ""))
+        return _ok({"sim_id": sim_id, "branch": br, **out})
+    except SimNotFoundError as exc:
+        return _err("not_found", str(exc))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("run_what_if 未预期的异常")
+        return _err("internal_error", str(exc))
+
+
+def get_forecast_brief(
+    sim_id: str, *, elements: Optional[List[str]] = None, runs: Optional[int] = None, seed: Optional[int] = None,
+    horizon_days: Optional[float] = None, time_budget_sec: Optional[float] = None, with_sensitivity: bool = True,
+    branch: Optional[str] = None,
+) -> Dict[str, Any]:
+    """预测简报（能不能成 / 何时 / 卡在哪 / 靠什么假设 / 盯什么信号 + 引擎计算的置信等级）。现算、不落盘。
+    `elements` 缺省 = 重点元素。"""
+    if not sim_id:
+        return _err("validation_error", "sim_id 不能为空")
+    if elements is not None and (not isinstance(elements, list) or not all(isinstance(e, str) for e in elements)):
+        return _err("validation_error", "elements 必须是字符串数组")
+    try:
+        from world_simulator import forecast_brief as _fb
+
+        store, _m, history, settings, br = _anatomy_context(sim_id, branch)
+        brief = _fb.run_brief(
+            settings, history, evidence=store.load_evidence(), elements=elements, runs=runs, seed=seed,
+            horizon_days=horizon_days, time_budget_sec=time_budget_sec, with_sensitivity=bool(with_sensitivity), sim_id=sim_id,
+        )
+        if not brief.get("ok"):
+            return _err("validation_error", str(brief.get("reason") or "无法生成预测简报"))
+        return _ok({"sim_id": sim_id, "branch": br, "brief": brief})
+    except SimNotFoundError as exc:
+        return _err("not_found", str(exc))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("get_forecast_brief 未预期的异常")
+        return _err("internal_error", str(exc))
+

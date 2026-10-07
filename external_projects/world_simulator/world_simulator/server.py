@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 try:
     from fastapi import FastAPI, HTTPException, Response
@@ -114,6 +114,38 @@ class RenameRequest(BaseModel):
 
 class CausalLineSuggestionRequest(BaseModel):
     suggestion_id: str
+
+
+class ForecastRequest(BaseModel):
+    """A7：预测重跑参数。全部可选，缺省沿用实例的 `anatomy_params`。"""
+    element: Optional[str] = None
+    runs: Optional[int] = None
+    seed: Optional[int] = None
+    horizon_days: Optional[float] = None
+    steps: Optional[int] = None
+    time_budget_sec: Optional[float] = None
+    point: bool = False
+    branch: Optional[str] = None
+
+
+class WhatIfRequest(BaseModel):
+    edits: List[Dict[str, Any]]
+    element: Optional[str] = None
+    runs: Optional[int] = None
+    seed: Optional[int] = None
+    horizon_days: Optional[float] = None
+    time_budget_sec: Optional[float] = None
+    branch: Optional[str] = None
+
+
+class ForecastBriefRequest(BaseModel):
+    elements: Optional[List[str]] = None
+    runs: Optional[int] = None
+    seed: Optional[int] = None
+    horizon_days: Optional[float] = None
+    time_budget_sec: Optional[float] = None
+    with_sensitivity: bool = True
+    branch: Optional[str] = None
 
 
 # ── 路由 ─────────────────────────────────────────────────────────────
@@ -205,12 +237,53 @@ def reject_causal_line(sim_id: str, body: CausalLineSuggestionRequest):
     return _respond(tool_api.reject_causal_line_suggestion(sim_id, body.suggestion_id))
 
 
+@app.get("/simulations/{sim_id}/elements/{element}/anatomy")
+def get_anatomy_profile(sim_id: str, element: str, branch: Optional[str] = None):
+    """元素档案（来源状态/统计/体检）+ 引擎推进情况。"""
+    return _respond(tool_api.get_anatomy_profile(sim_id, element, branch=branch))
+
+
+@app.get("/simulations/{sim_id}/evidence")
+def get_evidence(sim_id: str, element: Optional[str] = None, branch: Optional[str] = None):
+    """证据库；给 `element` 则返回该元素的证据视图。"""
+    return _respond(tool_api.get_evidence(sim_id, element, branch=branch))
+
+
+@app.post("/simulations/{sim_id}/forecast")
+def run_forecast(sim_id: str, body: ForecastRequest):
+    """重跑蒙特卡洛预测（现算、不落盘；耗时随 `runs` 增长，用 `time_budget_sec` 限制）。"""
+    return _respond(tool_api.run_forecast(sim_id, **body.model_dump() if hasattr(body, "model_dump") else body.dict()))
+
+
+@app.post("/simulations/{sim_id}/forecast/what-if")
+def run_what_if(sim_id: str, body: WhatIfRequest):
+    """What-if：改参数/假设/路径耗时/事件频率，同种子重跑并与基线比较。"""
+    data = body.model_dump() if hasattr(body, "model_dump") else body.dict()
+    return _respond(tool_api.run_what_if(sim_id, data.pop("edits"), **data))
+
+
+@app.post("/simulations/{sim_id}/forecast/brief")
+def get_forecast_brief(sim_id: str, body: ForecastBriefRequest):
+    """预测简报 + 引擎计算的置信等级。"""
+    return _respond(tool_api.get_forecast_brief(sim_id, **body.model_dump() if hasattr(body, "model_dump") else body.dict()))
+
+
 @app.get("/simulations/{sim_id}/export.html", response_class=HTMLResponse)
-def export_html(sim_id: str, branch: str = "main"):
+def export_html(
+    sim_id: str, branch: str = "main", with_forecast: bool = True,
+    forecast_runs: Optional[int] = None, forecast_budget_sec: Optional[float] = None,
+):
     """直接返回渲染好的 HTML（`text/html`），适合浏览器直接打开或者
     调用方要嵌进 iframe；想要 JSON 包一层（比如再转发给别的工具）用
     `tool_api.export_html()`/CLI 的 `export-html` 子命令。"""
-    result = tool_api.export_html(sim_id, branch=branch)
+    extra: Dict[str, Any] = {}  # 只在偏离默认值时才传，保持旧调用形状不变
+    if not with_forecast:
+        extra["with_forecast"] = False
+    if forecast_runs is not None:
+        extra["forecast_runs"] = forecast_runs
+    if forecast_budget_sec is not None:
+        extra["forecast_budget_sec"] = forecast_budget_sec
+    result = tool_api.export_html(sim_id, branch=branch, **extra)
     if not result.get("ok"):
         error_type = (result.get("error") or {}).get("type", "internal_error")
         status_code = 404 if error_type == "not_found" else 500
