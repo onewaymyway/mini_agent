@@ -42,25 +42,30 @@ LLM 声明的阶段迁移**先**过 `tech_model.apply_step` 的 T1–T11，**再
 | A5 | 引用了不存在的 id / 阶段名 | 不阻断，仅记录（info） |
 | A6 | 试图修改引擎持有的参数/路径概率/到期日 | 忽略（info） |
 | A7 | 采用率超过门槛允许的上限 | 夹值（叠加既有 T6） |
-| A8 | 深度调用失败 / 降级为轻量 | A5 阶段才产生 |
+| A8 | 深度调用失败 / 降级为轻量（`anatomy_deepen.py` 产生，本模块不产生） | info |
 | A9 | 关键指标的证据已过期仍在驱动引擎 | info |
 | A10 | 引擎缺少推算所需数据（趋势 `llm_reported`/未知/缺参数、路径缺时长） | info |
 | A11 | 流水自洽核对失败 / 流水超上限被截断（计划之外新增） | warn |
+| A12 | 提议被忽略：新增子项缺依据/形状非法/id 重复/超上限、先行信号重复/超上限、深度调用越权提议其他元素、多条线重复提议（A5 新增） | info/warn |
 
 ## 提议的形状（`anatomy_updates`）
 
-A4 只实现**引擎侧的裁决接口**，**还不向 LLM 索要**这个输出（提示词协议是 A5）；`data` 里没有这个键就是空操作。形状：
+A4 实现**引擎侧的裁决接口**，A5 起 `{anatomy_hint}` 向 LLM 索要这个可选输出，并新增 `new_subitems`/`signals` 两类；`data` 里没有这个键就是空操作。形状：
 
 ```
 {"metric_deviations":   [{"element", "metric", "value", "reason", "cause_ref"}],
  "bottleneck_proposals":[{"element", "bottleneck", "status": "resolved", "shift_days", "reason", "cause_ref"}],
- "milestone_claims":    [{"element", "milestone", "reason"}],
+ "milestone_claims":    [{"element", "milestone", "reason"}],          # 协议不邀请 LLM 写这个；写了也按 A3 裁决
+ "new_subitems":        [{"element", "part": "component|metric|bottleneck", "reason", "cause_ref", "item": {...剖面格式}}],
+ "signals":             [{"element", "watch", "means"}],
  "engine_edits":        [{"element", "ref", "field"}]}      # 任何想改引擎参数的企图 → A6 忽略
 ```
 
+`apply_adjudication()`（A5）是**二次裁决**：本步 `apply_step` 结算之后，对一份提议（深度调用的产出）再裁决一遍，不推进时间，规则与 A 码完全共用。
+
 ## 刻意不做
 
-- 组件就绪度的 LLM 提议、新增子项发现（A5）；蒙特卡洛 / 敏感性（A6）；
+- 组件就绪度的 LLM 提议（A5 的 `new_subitems` 只能新增，不能改已有组件的就绪度）；蒙特卡洛 / 敏感性（A6）；
 - 路径\"投入允许\"（计划 §5.3.2 提到，但没有定义投入如何影响路径，A4 不做）；
 - `custom_expr` 的参数不确定性（A6 才用 `low/high`）。
 
@@ -86,6 +91,8 @@ MAX_TRACE = 120                  # 每步流水条数上限（风险 10）
 MAX_HINT_ELEMENTS = 8
 DAYS_PER_YEAR = 365.25
 TRACE_TOL = 1e-6                 # 流水自洽核对的相对容差
+MAX_NEW_SUBITEMS = 3             # A5：每个元素每次裁决最多接受的新增子项（组件/指标/瓶颈）数
+MAX_NEW_SIGNALS = 3              # A5：每个元素每次裁决最多接受的新增先行信号数
 
 _PART_OF_KIND = {
     "component": "components", "metric": "metrics", "bottleneck": "bottlenecks",
@@ -385,9 +392,10 @@ class _Ctx:
 
     def __init__(
         self, settings: Dict[str, Any], *, step: int, sim_id: str, branch: str, vars_: Optional[Dict[str, Any]],
-        events: Iterable[Any], stale_ids: Iterable[str],
+        events: Iterable[Any], stale_ids: Iterable[str], max_trace: Optional[int] = None,
     ) -> None:
         self.settings = settings
+        self.max_trace = MAX_TRACE if max_trace is None else int(max_trace)  # A5：二次裁决只能用掉本步剩余的流水额度
         self.params = an.get_params(settings)
         self.step = int(step)
         self.sim_id = str(sim_id or "")
@@ -421,7 +429,7 @@ class _Ctx:
         self.violations.append({"code": code, "severity": severity, "message": message, "detail": detail})
 
     def add(self, element: str, kind: str, ref: str, field: str, before: Any, after: Any, reason: str, source: str, **extra: Any) -> None:
-        if len(self.trace) >= MAX_TRACE:
+        if len(self.trace) >= self.max_trace:
             self._dropped += 1
             return
         entry: Dict[str, Any] = {
@@ -1107,6 +1115,125 @@ def _check_claims(ctx: _Ctx, raw: Any) -> None:
         ctx.viol("A6", f"试图修改引擎持有的字段 {prop.get('ref')!r}/{prop.get('field')!r}，已忽略", "info", ref=prop.get("ref"), field=prop.get("field"))
 
 
+_SUBITEM_PARTS = {"component": "components", "metric": "metrics", "bottleneck": "bottlenecks"}
+
+
+def _norm_text(text: Any) -> str:
+    return " ".join(str(text or "").split()).casefold()
+
+
+def _el_of(ctx: _Ctx, ref: Any) -> str:
+    """提议里的 `element` 解析成线 id；解析不了或不在本次结算范围内返回空串。"""
+    line = er.resolve(ctx.settings, ref) if ref else None
+    eid = str(line.get("id") or "").strip() if line else ""
+    return eid if eid in ctx.work else ""
+
+
+def _downgrade_review(ctx: _Ctx, el: str) -> None:
+    """元素里多了一条没人审阅过的新条目：原来的 `reviewed`/`verified` 不再成立，退回 `draft`。"""
+    meta = dict(ctx.work[el].get("meta") or {})
+    if meta.get("anatomy_status") in ("reviewed", "verified"):
+        meta["anatomy_status"] = "draft"
+        ctx.work[el]["meta"] = meta
+
+
+def _apply_new_subitems(ctx: _Ctx, raw: Any) -> None:
+    """A5：LLM 在推进中发现了剖面里没有的组件/指标/瓶颈（`new_subitems`）。**引擎持有结构**，所以只有同时满足下面这些才接受：
+    元素存在、类型在 component/metric/bottleneck 之内、带 `item` 与 `reason`/`cause_ref`、规整后形状合法、id 不与已有的重复
+    （**不覆盖**）、没超过该部分的条数上限、没超过每元素每次 `MAX_NEW_SUBITEMS`。接受后：来源一律 `llm_prior`（没有出处），
+    引擎状态一律剥掉，瓶颈一律 `open`；原来是 `reviewed` 的元素退回 `draft`。不满足的写 `A12`（引用错误是 `A5`），不阻断。"""
+    accepted: Dict[str, int] = {}
+    for prop in _items(raw, "new_subitems"):
+        kind = str(prop.get("part") or prop.get("kind") or "").strip().lower()
+        part = _SUBITEM_PARTS.get(kind)
+        el = _el_of(ctx, prop.get("element"))
+        if part is None or not el:
+            ctx.viol("A5", f"new_subitems 引用了不存在的元素或不支持的类型 {prop.get('element')!r}/{kind!r}（只支持 component/metric/bottleneck）", "info")
+            continue
+        name = _label(ctx, el)
+        item = prop.get("item")
+        reason, cause = str(prop.get("reason") or "").strip(), str(prop.get("cause_ref") or "").strip()
+        label = (item.get("id") or item.get("name")) if isinstance(item, dict) else None
+        if not isinstance(item, dict):
+            ctx.viol("A12", f"{name}：新增{kind}缺少 item，已忽略", "info")
+            continue
+        if not (reason or cause):
+            ctx.viol("A12", f"{name}：新增{kind}「{label}」没有 reason/cause_ref（新结构必须说明依据），已忽略", "warn", part=part)
+            continue
+        if accepted.get(el, 0) >= MAX_NEW_SUBITEMS:
+            ctx.viol("A12", f"{name}：本次新增子项已达上限 {MAX_NEW_SUBITEMS} 个，「{label}」已忽略", "info", part=part)
+            continue
+        norm, notes = an.normalize_anatomy_report({part: [item]})
+        got = norm.get(part) or []
+        if not got:
+            ctx.viol("A12", f"{name}：新增{kind}「{label}」形状不合法（{notes[0] if notes else '规整后为空'}），已忽略", "warn", part=part)
+            continue
+        new = got[0]
+        existing = ctx.work[el].setdefault(part, [])
+        if any(x.get("id") == new["id"] for x in existing):
+            ctx.viol("A12", f"{name}：新增{kind}的 id「{new['id']}」已存在，不覆盖，已忽略", "info", part=part)
+            continue
+        if len(existing) >= an.MAX_ITEMS[part]:
+            ctx.viol("A12", f"{name}：{part} 已达条数上限 {an.MAX_ITEMS[part]}，「{new['id']}」已忽略", "info", part=part)
+            continue
+        tmp = {part: [new]}
+        for carrier in an._basis_carriers(tmp):  # 没有出处：来源一律回到默认的 llm_prior
+            carrier.pop("basis", None)
+        an.strip_engine_state(tmp)
+        if part == "bottlenecks":
+            if item.get("status") not in (None, "open"):
+                ctx.viol("A12", f"{name}：新增瓶颈「{new['id']}」声明了状态 {item.get('status')!r}，新瓶颈只能是 open", "info", part=part)
+            new["status"] = "open"
+        existing.append(new)
+        accepted[el] = accepted.get(el, 0) + 1
+        if part in ("metrics", "components"):
+            eng, _old = _ensure_state(new, "metric" if part == "metrics" else "component")
+            if eng is not None:
+                ctx.before[(el, f"{'metric' if part == 'metrics' else 'component'}:{new['id']}")] = eng["v"]
+        _downgrade_review(ctx, el)
+        ctx.add(el, "subitem", f"{kind}:{new['id']}", "created", None, new.get("name") or new["id"],
+                reason or "LLM 提议新增（依据见 cause_ref）", "proposed", cause_ref=cause)
+
+
+def _apply_signals(ctx: _Ctx, raw: Any) -> None:
+    """A5：LLM 提议的先行信号（`signals`：现实里该盯什么 / 先发生什么意味着什么）。只追加，同样的 `watch` 不重复，
+    来源 `llm_prior`；每元素每次最多 `MAX_NEW_SIGNALS` 条、总数不超过 `MAX_ITEMS["signals"]`。"""
+    accepted: Dict[str, int] = {}
+    for prop in _items(raw, "signals"):
+        el = _el_of(ctx, prop.get("element"))
+        if not el:
+            ctx.viol("A5", f"signals 引用了不存在的元素 {prop.get('element')!r}", "info")
+            continue
+        name = _label(ctx, el)
+        watch = " ".join(str(prop.get("watch") or "").split())[: an.MAX_TEXT_LEN]
+        if not watch:
+            ctx.viol("A12", f"{name}：信号缺少 watch（现实里该盯什么），已忽略", "info")
+            continue
+        sigs = ctx.work[el].setdefault("signals", [])
+        if any(_norm_text(x.get("watch")) == _norm_text(watch) for x in sigs):
+            ctx.viol("A12", f"{name}：已有同样的先行信号「{watch[:30]}」，已忽略", "info")
+            continue
+        if accepted.get(el, 0) >= MAX_NEW_SIGNALS or len(sigs) >= an.MAX_ITEMS["signals"]:
+            ctx.viol("A12", f"{name}：先行信号已达本次上限或总数上限，「{watch[:30]}」已忽略", "info")
+            continue
+        used = {x.get("id") for x in sigs}
+        n = 1
+        while f"sig_{n}" in used:
+            n += 1
+        obj: Dict[str, Any] = {"id": f"sig_{n}", "watch": watch}
+        if prop.get("means"):
+            obj["means"] = prop.get("means")
+        norm, _notes = an.normalize_anatomy_report({"signals": [obj]})
+        got = norm.get("signals") or []
+        if not got:
+            ctx.viol("A12", f"{name}：先行信号「{watch[:30]}」规整后为空，已忽略", "info")
+            continue
+        sigs.append(got[0])
+        accepted[el] = accepted.get(el, 0) + 1
+        _downgrade_review(ctx, el)
+        ctx.add(el, "subitem", f"signal:{got[0]['id']}", "created", None, watch, "LLM 提议的先行信号", "proposed")
+
+
 # ═════════════════════════════════════════════════════════════════════
 # 每步结算
 # ═════════════════════════════════════════════════════════════════════
@@ -1167,6 +1294,41 @@ def _find_series(ctx: _Ctx, el: str, ref: str) -> Optional[Tuple[Dict[str, Any],
     return None
 
 
+def _load_lines(ctx: _Ctx, settings: Dict[str, Any], days: float, *, skip_settled: bool) -> None:
+    """把带可结算内容的元素线装进工作副本。`skip_settled=True`（`apply_step`）跳过本步已结算过的线（防同一步重复结算）；
+    `False`（`apply_adjudication`）装全部——二次裁决要看到完整的世界（跨元素判据、门槛），不能只装一个元素。"""
+    for line in _engine_lines(settings):
+        lid = str(line.get("id") or "").strip()
+        meta = (an.get_anatomy(line) or {}).get("meta") or {}
+        if skip_settled and meta.get("last_step") == ctx.step:
+            continue  # 同一步已结算过（两条推进路径不会重复结算）
+        ctx.lines[lid] = line
+        ctx.work[lid] = copy.deepcopy(an.get_anatomy(line))
+        if isinstance(line.get("lifecycle"), dict):
+            ctx.life[lid] = copy.deepcopy(line["lifecycle"])
+        ctx.order.append(lid)
+        ctx.clock0[lid] = float(meta.get("clock_day") or 0.0)
+        ctx.clock1[lid] = ctx.clock0[lid] + days
+
+
+def _anchor_all(ctx: _Ctx) -> None:
+    """① 初始化 / 重新锚定：保证每个指标/组件都有引擎状态；现值被用户/研究改过则重新锚定并留一条 `anchor` 流水。"""
+    for el in ctx.order:
+        a = ctx.work[el]
+        for part, kind in (("components", "component"), ("metrics", "metric")):
+            for holder in a.get(part) or []:
+                eng, old = _ensure_state(holder, kind)
+                if eng is None:
+                    continue
+                ref = f"{kind}:{holder['id']}"
+                if old is not None and not _close(old, eng["v"]):
+                    ctx.add(el, kind, ref, "value" if kind == "metric" else "readiness", old, eng["v"],
+                            "声明的现值被更新（用户编辑 / 联网研究），引擎重新锚定", "anchor")
+                    ctx.before[(el, ref)] = old
+                else:
+                    ctx.before[(el, ref)] = eng["v"]
+
+
 def apply_step(
     settings: Dict[str, Any],
     proposals: Any = None,
@@ -1199,18 +1361,7 @@ def apply_step(
         "value_after": _r(days), "reason": note or ("LLM 报告的跨度" if source == "reported" else "LLM 没有给 elapsed_days，按占位天数估计，时间精度降级"),
         "source": source,
     }
-    for line in _engine_lines(settings):
-        lid = str(line.get("id") or "").strip()
-        meta = (an.get_anatomy(line) or {}).get("meta") or {}
-        if meta.get("last_step") == ctx.step:
-            continue  # 同一步已结算过（两条推进路径不会重复结算）
-        ctx.lines[lid] = line
-        ctx.work[lid] = copy.deepcopy(an.get_anatomy(line))
-        if isinstance(line.get("lifecycle"), dict):
-            ctx.life[lid] = copy.deepcopy(line["lifecycle"])
-        ctx.order.append(lid)
-        ctx.clock0[lid] = float(meta.get("clock_day") or 0.0)
-        ctx.clock1[lid] = ctx.clock0[lid] + days
+    _load_lines(ctx, settings, days, skip_settled=True)
     if not ctx.order:
         return [], []
     ctx.trace.append(time_entry)
@@ -1218,20 +1369,7 @@ def apply_step(
         ctx.viol("A10", "本步没有可用的 elapsed_days，按占位天数结算，预测区间会标注时间精度降级", "info", elapsed_source=source)
 
     # ① 初始化 / 重新锚定
-    for el in ctx.order:
-        a = ctx.work[el]
-        for part, kind in (("components", "component"), ("metrics", "metric")):
-            for holder in a.get(part) or []:
-                eng, old = _ensure_state(holder, kind)
-                if eng is None:
-                    continue
-                ref = f"{kind}:{holder['id']}"
-                if old is not None and not _close(old, eng["v"]):
-                    ctx.add(el, kind, ref, "value" if kind == "metric" else "readiness", old, eng["v"],
-                            "声明的现值被更新（用户编辑 / 联网研究），引擎重新锚定", "anchor")
-                    ctx.before[(el, ref)] = old
-                else:
-                    ctx.before[(el, ref)] = eng["v"]
+    _anchor_all(ctx)
     # ② – ⑧
     _start_all(ctx, lambda el: ctx.clock0[el])
     _advance_all(ctx, days)
@@ -1245,6 +1383,8 @@ def apply_step(
     _settle_stage(ctx, pre)
     _settle_adoption(ctx, pre)
     _check_claims(ctx, proposals)
+    _apply_new_subitems(ctx, proposals)   # A5：新增子项 / 先行信号只追加，不改已有结构
+    _apply_signals(ctx, proposals)
     # ⑩
     for el in ctx.order:
         meta = dict(ctx.work[el].get("meta") or {})
@@ -1270,6 +1410,58 @@ def safe_apply_step(*args: Any, **kwargs: Any) -> Tuple[List[Dict[str, Any]], Li
         return [], [{"code": "A0", "severity": "info", "message": f"剖面引擎本步出错，已跳过（状态未改动）：{exc}", "detail": {}}]
 
 
+def apply_adjudication(
+    settings: Dict[str, Any],
+    proposals: Any = None,
+    *,
+    step: int,
+    sim_id: str = "",
+    branch: str = "",
+    vars_: Optional[Dict[str, Any]] = None,
+    sampled_events: Optional[List[Dict[str, Any]]] = None,
+    trace_limit: Optional[int] = None,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """**二次裁决**（A5 深度调用用）：本步已经 `apply_step` 结算过之后，再对一份提议做一遍**同样的裁决**，**不推进时间**。
+
+    和 `apply_step` 的区别只有两处：① 时间跨度为 0（不推进指标/组件）；② 不写 `meta.last_step`/`clock_day`（时间已经由 `apply_step` 推进过了）。
+    裁决规则、`A` 码、流水自洽核对完全共用——**深度模式没有特权**（计划 §5.5.2）。提议里的偏离/平移/声称/新增子项/信号被裁决后，
+    再把由此引起的后果（到期的路径、里程碑、门槛、阶段、采用率）重新结算一遍。装进工作副本的是**全部**可结算元素（跨元素判据、
+    门槛需要完整的世界），所以对没有被提议触及的元素这是空操作。
+
+    `trace_limit`：本次可用的流水额度（调用方传 `MAX_TRACE - 本步已有流水数`，保证同一步总流水不超上限）。所有计算在副本上完成，最后才写回。
+    返回 `(新增流水, 违规)`。"""
+    if not is_active(settings):
+        return [], []
+    ctx = _Ctx(
+        settings, step=step, sim_id=sim_id, branch=branch, vars_=vars_, events=sampled_events or [], stale_ids=[],
+        max_trace=trace_limit,
+    )
+    _load_lines(ctx, settings, 0.0, skip_settled=False)
+    if not ctx.order:
+        return [], []
+    pre = capture_pre(settings)
+    _anchor_all(ctx)
+    _apply_deviations(ctx, proposals)
+    _apply_shifts(ctx, proposals)
+    _settle_paths(ctx)
+    _start_all(ctx, lambda el: ctx.clock1[el])
+    _settle_milestones(ctx)
+    _settle_gates(ctx)
+    _settle_stage(ctx, pre)
+    _settle_adoption(ctx, pre)
+    _check_claims(ctx, proposals)
+    _apply_new_subitems(ctx, proposals)
+    _apply_signals(ctx, proposals)
+    _check_trace(ctx)
+    if ctx._dropped:
+        ctx.viol("A11", f"本次流水超过剩余额度，多出的 {ctx._dropped} 条未记录", "warn")
+    for el in ctx.order:
+        ctx.lines[el]["anatomy"] = ctx.work[el]
+        if el in ctx.life:
+            ctx.lines[el]["lifecycle"] = ctx.life[el]
+    return ctx.trace, ctx.violations
+
+
 # ═════════════════════════════════════════════════════════════════════
 # 提示词（`{anatomy_hint}`）与预览
 # ═════════════════════════════════════════════════════════════════════
@@ -1284,6 +1476,19 @@ _PROTOCOL = (
     "其中给出的数值与\"预计本步发生\"的事项是**引擎的既成事实，不是你的选择**：请把它们自然地写进叙事，不要否认或替换；"
     "也**不要自行宣布**瓶颈已解决、里程碑已达成或阶段跃迁——引擎按判据裁决，无据的声明会被驳回。"
     "如果叙事里确有偏离引擎数值的事件（外部冲击、决策后果），请在叙事里写明原因。"
+)
+
+
+_UPDATES_PROTOCOL = (
+    "【可选输出 `anatomy_updates`】只有当叙事里**确有**偏离引擎数值的事件、或发现了剖面里还没有的关键子项/信号时，才在输出里加一个 "
+    "`anatomy_updates` 对象（各键都可省略；没有就整个不要输出）。引擎裁决，越权或无据的会被驳回并记录：\n"
+    "- `metric_deviations`：`[{\"element\", \"metric\", \"value\", \"reason\"（必填：是哪件事造成了偏离）, \"cause_ref\"（可选：事件/决策 id）}]`——"
+    "只报叙事里**真的发生了偏离**的指标，不要每步都顺手校准；\n"
+    "- `bottleneck_proposals`：`[{\"element\", \"bottleneck\", \"shift_days\"（把进行中路径的到期日提前（负）/推迟（正）的天数）, \"reason\"}]`——"
+    "只能申请平移到期日，**不要**写\"已解决\"，是否解决由引擎按到期裁决；\n"
+    "- `new_subitems`：`[{\"element\", \"part\": \"component|metric|bottleneck\", \"reason\"（必填）, \"item\": {与剖面相同格式的一条}}]`——"
+    "只能新增，不能改已有条目；新增的一律视为\"LLM 先验\"；\n"
+    "- `signals`：`[{\"element\", \"watch\"（现实里该盯什么）, \"means\"（先发生什么意味着走向哪条分支）}]`。"
 )
 
 
@@ -1380,6 +1585,7 @@ def build_hint(
         parts.append(_digest(line, trace, int(params["light_digest_chars"]), float(meta.get("clock_day") or 0.0)))
     if len(lines) > MAX_HINT_ELEMENTS:
         parts.append(f"（另有 {len(lines) - MAX_HINT_ELEMENTS} 个带剖面的元素本步不展示摘要，引擎照常结算。）")
+    parts.append(_UPDATES_PROTOCOL)
     ask = ask_elapsed_override
     if ask is None:
         from world_simulator import causal_engine  # 延迟导入：与 `mechanisms` 一致，避免循环
@@ -1406,7 +1612,7 @@ def safe_build_hint(*args: Any, **kwargs: Any) -> str:
 def trajectory(history: Iterable[Any], element_id: str) -> Dict[str, Any]:
     """从分支历史的 `anatomy_trace` 还原一个元素各指标/组件**已发生**的取值序列，以及逐步变化流水。
 
-    返回 `{"series": {ref: [(step, value), ...]}, "rows": [{step, kind, ref, change, reason, source}]}`。
+    返回 `{"series": {ref: [(step, value), ...]}, "rows": [{step, kind, ref, change, reason, source}]}`（`kind=subitem` 是 A5 新增的子项/信号）。
     只含有变化的步（没有变化的步不写流水）；界面按步号画折线，缺的步沿用上一个值。"""
     series: Dict[str, List[Tuple[int, float]]] = {}
     rows: List[Dict[str, Any]] = []
@@ -1423,9 +1629,13 @@ def trajectory(history: Iterable[Any], element_id: str) -> Dict[str, Any]:
                     pts[-1] = (step, float(e["value_after"]))
                 else:
                     pts.append((step, float(e["value_after"])))
+            change = (
+                f"新增「{e.get('value_after')}」" if e.get("kind") == "subitem"
+                else f"{_fmt_val(e.get('value_before'))} → {_fmt_val(e.get('value_after'))}"
+            )
             rows.append({
                 "step": step, "kind": e.get("kind"), "ref": e.get("ref"),
-                "change": f"{_fmt_val(e.get('value_before'))} → {_fmt_val(e.get('value_after'))}",
+                "change": change,
                 "reason": e.get("reason") or "", "source": e.get("source") or "",
             })
     return {"series": series, "rows": rows}

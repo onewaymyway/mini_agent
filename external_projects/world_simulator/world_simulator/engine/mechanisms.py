@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from world_simulator import (
+    anatomy_deepen,
     anatomy_engine,
     causal_engine,
     consistency_guard,
@@ -186,6 +187,13 @@ def apply_post_llm(
             sim_id=sim_id, branch=branch, vars_=next_state.vars, sampled_events=sampled_events,
             stale_evidence_ids=_stale,
         )
+
+    # 第二十四轮 A5：深度模式。紧跟在轻量结算之后（深度提议走同一套裁决，要在其结果之上叠加）、树接地之前。
+    # 默认关闭（`deep_enabled=false`）时是空操作；任何失败只降级为 A8，不影响本步推进。
+    anatomy_deepen.safe_run_in_step(
+        cfg, workspace_root, manifest, next_state, history=history,
+        sampled_events=sampled_events, sim_id=sim_id, branch=branch,
+    )
 
     # 第二十二轮 WP3 / P5c：因果树接地（前置强制 / 互斥组 / 结构化触发条件）。必须在技术裁决之后
     # （条件可能读 `tech_state`）、因果引擎入队之前（自动迁移要能被\"树分支 active\"触发源看到）、
@@ -459,3 +467,50 @@ def merge_line_outputs(
     if discovered:  # 只有真的有才加键：没有时 `merged` 与 E6 之前逐字节一致
         merged["discovered_elements"] = discovered
     return merged, notes, reported
+
+
+_AU_KEYS = {
+    # 键 → 取"同一件事"身份的字段（先到先采纳，后到的重复项记 A12）
+    "metric_deviations": ("element", "metric"),
+    "bottleneck_proposals": ("element", "bottleneck"),
+    "new_subitems": ("element", "part", "_item_id"),
+    "signals": ("element", "watch"),
+}
+
+
+def merge_anatomy_updates(
+    outputs: List[Tuple[str, Dict[str, Any]]],
+) -> Tuple[Dict[str, List[Any]], List[Dict[str, Any]]]:
+    """第二十四轮 A5：把各线输出里的 `anatomy_updates` 并成一份（**先到先采纳**，按线声明顺序）。
+
+    同一件事（同元素同指标/瓶颈/新子项/信号）被多条线提议时，只采纳先到的，后到的记 `A12`（info）。
+    返回 `(合并后的 anatomy_updates（没有任何提议则为空 dict）, 合并说明)`。不改 `merge_line_outputs` 的返回签名。"""
+    merged: Dict[str, List[Any]] = {}
+    notes: List[Dict[str, Any]] = []
+    seen: Dict[str, Dict[Tuple[str, ...], str]] = {k: {} for k in _AU_KEYS}
+    for line_id, data in outputs:
+        au = data.get("anatomy_updates") if isinstance(data, dict) else None
+        if not isinstance(au, dict):
+            continue
+        for key, fields in _AU_KEYS.items():
+            block = au.get(key)
+            for prop in block if isinstance(block, list) else []:
+                if not isinstance(prop, dict):
+                    continue
+                item = prop.get("item") if isinstance(prop.get("item"), dict) else {}
+                ident = tuple(
+                    str(item.get("id") or item.get("name") or "") if f == "_item_id" else str(prop.get(f) or "")
+                    for f in fields
+                )
+                if all(ident):
+                    first = seen[key].get(ident)
+                    if first is not None:
+                        notes.append({
+                            "code": "A12", "severity": "info",
+                            "message": f"{key} 中「{'/'.join(ident)}」被多条线提议，只采纳线「{first}」的那条，已忽略线「{line_id}」的",
+                            "detail": {"lines": [first, line_id], "key": key},
+                        })
+                        continue
+                    seen[key][ident] = line_id
+                merged.setdefault(key, []).append(prop)
+    return merged, notes

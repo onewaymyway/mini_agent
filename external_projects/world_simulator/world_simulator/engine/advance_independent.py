@@ -316,8 +316,13 @@ def advance_lines(cfg, workspace_root: Path, data_dir: Path, sim_id: str) -> Sim
     # （树的状态迁移只来自树接地的结构化触发条件），也不处理 `triggered_relationships`。
     merged: Dict[str, Any] = {}
     merge_notes: List[Dict[str, Any]] = []
+    _au_notes: List[Dict[str, Any]] = []
     if mech_on or elem_on:
         merged, merge_notes, _reported = mechanisms.merge_line_outputs(line_outputs)
+        # 第二十四轮 A5：各线的 `anatomy_updates` 先到先采纳；只有真的有提议才加键（保持旧行为逐字节一致）。
+        _au, _au_notes = mechanisms.merge_anatomy_updates(line_outputs)
+        if _au:
+            merged["anatomy_updates"] = _au
     # 第二十三轮 E6：元素模式下，各线的 `discovered_elements`（已拼接）与线上 id 引用走注册表登记/规范化。
     # 顺序与 `advance()` 一致：先于技术裁决（`lifecycle_seed` 转成的合成提议写回 `merged["tech_updates"]`，
     # 由同一套裁决处理）、先于 `tree_before` 的深拷贝。本路径的线不产出 `tree_updates`/`causal_links`。
@@ -340,6 +345,8 @@ def advance_lines(cfg, workspace_root: Path, data_dir: Path, sim_id: str) -> Sim
         )
         if merge_notes and tech_model.is_enabled(manifest.settings):
             next_state.tech_violations = list(next_state.tech_violations or []) + merge_notes
+        if _au_notes:
+            next_state.anatomy_violations = list(next_state.anatomy_violations or []) + _au_notes
 
     # 第二十二轮 WP0：`local_step` 推进改动了 `causal_lines`、机制又改了技术/待兑现状态，同样按分支写快照
     # （见 `dynamic_state.py`），随后跑一致性守卫（P8 起独立推进路径也有）。

@@ -607,6 +607,46 @@ def build_progress(settings: Optional[Dict[str, Any]], history: Any, element_ref
     }
 
 
+DEEP_STATUS_LABELS = {"ok": "已深度分析", "failed": "深度调用失败（已降级为轻量）", "deferred": "顺延到下一步", "skipped": "已达总上限，跳过"}
+
+
+def build_deep_view(settings: Optional[Dict[str, Any]], history: Any, element_ref: Any = None) -> Dict[str, Any]:
+    """第二十四轮 A5：深度模式的只读展示数据。
+
+    - L1（每步一行）：`steps = [{step, calls, ok, failed, deferred, skipped, cap}]`，只含有深度记录的步；
+    - L2（该元素的变化卡片）：`cards = [{step, status, status_label, reasons, narrative_short, accepted}]`；
+    - L3（完整叙述）：`cards[i]["narrative"]`（界面折叠展示，**一律按文本处理、由界面转义**）。
+    没有任何深度记录 → `{"has_deep": False}`。`element_ref=None` 时只给 L1。"""
+    from world_simulator import anatomy_deepen as ad
+
+    steps: List[Dict[str, Any]] = []
+    cards: List[Dict[str, Any]] = []
+    lid = ""
+    if element_ref is not None:
+        line = er.resolve(settings or {}, element_ref)
+        lid = str(line["id"]).strip() if line else ""
+    for state in history or []:
+        recs = getattr(state, "anatomy_deep", None) or []
+        if not recs:
+            continue
+        step = getattr(state, "step", None)
+        steps.append({"step": step, **ad.step_summary(recs, settings)})
+        for r in recs:
+            if not isinstance(r, dict) or (lid and r.get("element") != lid):
+                continue
+            nar = str(r.get("narrative") or "")
+            cards.append({
+                "step": step, "element": r.get("element"), "status": r.get("status"),
+                "status_label": DEEP_STATUS_LABELS.get(r.get("status"), str(r.get("status") or "")),
+                "reasons": list(r.get("reasons") or []), "narrative": nar,
+                "narrative_short": nar if len(nar) <= 120 else nar[:120] + "…",
+                "accepted": r.get("accepted") or {},
+            })
+    if not steps:
+        return {"has_deep": False}
+    return {"has_deep": True, "steps": steps, "cards": cards if element_ref is not None else []}
+
+
 CONFIDENCE_LABELS = {"high": "高", "medium": "中", "low": "低"}
 FLAG_LABELS = {"out_of_bounds": "数值超出声明边界，待审", "unit_mismatch": "单位不一致", "value_mismatch": "数值不一致"}
 

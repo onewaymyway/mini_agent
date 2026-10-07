@@ -1,6 +1,6 @@
 # world_simulator 第二十四轮：元素剖面（anatomy）、证据层、定量骨架与预测呈现
 
-> 状态：**实施中**。第 10 节取值按推荐值执行（用户回复"继续"）。**A1、A2、A3、A4 已完成（2026-10-06）**；A5–A8 未开始。
+> 状态：**实施中**。第 10 节取值按推荐值执行（用户回复"继续"）。**A1、A2、A3、A4 已完成（2026-10-06），A5 已完成（2026-10-07）**；A6–A8 未开始。
 > 实施进度见文末"实施进度"。
 > 前置文档：
 > - `world_simulator_realism_tech_and_causal_engine_plan.md`（第二十二轮：技术模型 / 事件采样 / 因果引擎）
@@ -508,7 +508,7 @@ LLM 每步只需要报告"**偏离引擎模型的事件 + 原因**"。引擎记�
 | `deep_max_calls_total` | null | 整个实例的深度调用总上限 |
 | `deep_cadence_steps` | 3 | 保底节奏（无触发时每 N 步深化一次） |
 | `deep_allow_search` | false | 深度调用是否允许联网 |
-| `deep_time_budget_sec` | 待 A5 定 | 单步深度调用总耗时预算 |
+| `deep_time_budget_sec` | 120（A5 已定） | 单步深度调用总耗时预算 |
 | `mc_runs` | 1000 | 蒙特卡洛次数 |
 | `mc_seed` | 固定 | 可复现 |
 | `trend_recommended` | 推荐库列表 | 仅影响下拉与提示词偏好，**不限制可用类型** |
@@ -641,8 +641,7 @@ LLM 每步只需要报告"**偏离引擎模型的事件 + 原因**"。引擎记�
 | A2 创建期拆解 + 向导审阅 | ✅ 2026-10-06 | 创建提示（两条路径共用）、重点元素选择、`anatomy_seed` 落成草稿（引擎强制 `llm_prior`、剥引擎状态）、空壳、向导设置/勾选/逐条审阅；17 个新用例、9 个变异全转红，既有测试零修改。详见 `docs/anatomy_guide.md` §11 |
 | A3 联网证据研究 + 出处 | ✅ 2026-10-06 | `evidence.py`、`element_research.py`、`element_research.yaml`、证据追加写存储与过期标注、来源由引擎裁决、档案证据区/审阅/刷新研究、设置页补做、创建后批量研究；59 个新用例、14 个变异全转红，全量 1677 通过。联网能力已核实（只有 `web_search` 摘要，无抓取工具）。详见 `docs/anatomy_guide.md` §12 |
 | A4 引擎定量骨架 | ✅ 2026-10-06 | `anatomy_engine.py`（趋势库 + 白名单表达式、路径种子抽样/回退/耗尽、里程碑只增不减、阶段派生 + `A3` 回滚、采用门槛 + `A7`、`A0–A11`、自洽流水）；接入 `apply_post_llm`/两条推进路径/`{anatomy_hint}`（含"预计本步发生"）；条件语法扩展（事件先验/树分支共用）；档案「⚙️ 引擎推进」；110 个新用例、24 个变异全转红，既有测试零修改（全量 1787 通过）。偏差见 `docs/anatomy_guide.md` §13.9：组件 `readiness_trend`、`progress` 口径、倒退也 `A3` 驳回、新增 `A11`、`anatomy_updates` 只做裁决侧（协议留 A5）、路径"投入允许"未做。 |
-| A4 引擎定量骨架 | ⏳ 未开始 | |
-| A5 推进期深化 | ⏳ 未开始 | |
+| A5 推进期深化 | ✅ 2026-10-07 | `anatomy_updates` 协议（`new_subitems`/`signals`，引擎二次裁决 `apply_adjudication`）、深度模式 `anatomy_deepen.py` + `element_deepen.yaml`（触发排序、每步/总量/耗时三道上限、顺延、失败降级 `A8`、越权 `A12`）、多线 `anatomy_updates` 先到先采纳、`SimState.anatomy_deep`、档案「🔬 深度分析」与设置页开关、超时放宽；40 个新用例 + 变异检查，全量 1827 通过。`deep_time_budget_sec` 定为 120。偏差与边界（未在真实 LLM 验证、保持 20% 容忍）见 `docs/anatomy_guide.md` §14.5/§14.6。 |
 | A6 蒙特卡洛 / 敏感性 / 监测清单 | ⏳ 未开始 | |
 | A7 预测简报与导出收尾 | ⏳ 未开始 | |
 | A8 指标级回测 | ⏳ 未开始 | |

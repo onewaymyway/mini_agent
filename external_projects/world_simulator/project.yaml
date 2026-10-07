@@ -15,11 +15,11 @@ entrypoints:
   advance_simulation:
     cmd: "python entrypoints/advance_simulation.py"
     # schedule: "cron: 0 9 * * 1-5"  # 按需取消注释
-    timeout_sec: 300
+    timeout_sec: 600   # A5：深度模式每步最多多几次调用，放宽
   batch_advance_daily:
     cmd: "python entrypoints/advance_simulation.py --all-autopilot --steps 1"
     schedule: "cron: 0 6 * * *"   # 每天自动推进所有开启"自动挡"的实例一步
-    timeout_sec: 900
+    timeout_sec: 1800
   list_simulations:
     cmd: "python entrypoints/list_simulations.py"
     # schedule: "cron: 0 9 * * 1-5"  # 按需取消注释

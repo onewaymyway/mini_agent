@@ -3254,6 +3254,23 @@ def _render_anatomy_progress(manifest: Any, history: Any, line_id: str) -> None:
     for _m in prog["milestones"]:
         _done = f"第 {_m['reached_step']} 步达成" if _m["reached_step"] is not None else "未达成"
         st.markdown(f"- 里程碑 {_html_text(_m['name'])}{('（→ ' + _html_text(_m['stage']) + '）') if _m['stage'] else ''}：{_done}", unsafe_allow_html=True)
+    deep = element_view_mod.build_deep_view(manifest.settings, history, line_id)
+    if deep.get("has_deep"):
+        _last = deep["steps"][-1]
+        st.caption(
+            f"🔬 深度分析：最近一次在第 {_last['step']} 步，本步调用 {_last['calls']}/{_last.get('cap', '?')} 次"
+            + (f"，顺延 {_last['deferred']} 个元素到下一步" if _last["deferred"] else "")
+            + (f"，失败 {_last['failed']} 次（已降级为轻量）" if _last["failed"] else "") + "。"
+        )
+        for _c in deep["cards"][-10:]:
+            with st.expander(f"第 {_c['step']} 步 · {_c['status_label']}" + (f"：{_c['narrative_short']}" if _c["narrative_short"] else "")):
+                if _c["reasons"]:
+                    st.caption("触发原因：" + "、".join(str(x) for x in _c["reasons"]))
+                if _c["narrative"]:
+                    st.text(_c["narrative"])  # 纯文本，不解析 HTML
+                _a = _c["accepted"]
+                if _a:
+                    st.caption(f"引擎裁决：提议 {_a.get('proposed', 0)}、采纳变化 {_a.get('changes', 0)}、新增子项 {_a.get('new_subitems', 0)}、被驳回 {_a.get('flagged', 0)}")
     if prog["rows"]:
         with st.expander(f"逐步变化及原因（{len(prog['rows'])} 条）"):
             for _r in prog["rows"][-60:]:
@@ -5912,6 +5929,23 @@ def page_detail() -> None:
                     update_settings(DATA_DIR, sim_id, anatomy_params={
                         **(cur_settings.get("anatomy_params") if isinstance(cur_settings.get("anatomy_params"), dict) else {}),
                         "research_on_create": bool(_on_c), "research_on_register": bool(_on_r),
+                    })
+                    st.rerun()
+                st.caption(
+                    "深度模式（A5）：触发条件满足的重点元素，推进时会额外调用一次 AI 做深度分析；提议仍由引擎裁决。"
+                    "关闭即“快速模式”。"
+                )
+                _dc1, _dc2, _dc3 = st.columns(3)
+                with _dc1:
+                    _d_on = st.checkbox("启用深度模式", value=bool(_rp["deep_enabled"]), key=f"deep_enabled_{sim_id}")
+                with _dc2:
+                    _d_cap = st.number_input("每步最多深度调用次数", min_value=0, value=int(_rp["deep_max_calls_per_step"]), step=1, key=f"deep_cap_{sim_id}")
+                with _dc3:
+                    _d_bud = st.number_input("单步深度调用耗时预算（秒）", min_value=1, value=int(_rp["deep_time_budget_sec"]), step=10, key=f"deep_budget_{sim_id}")
+                if (bool(_d_on), int(_d_cap), int(_d_bud)) != (bool(_rp["deep_enabled"]), int(_rp["deep_max_calls_per_step"]), int(_rp["deep_time_budget_sec"])):
+                    update_settings(DATA_DIR, sim_id, anatomy_params={
+                        **(cur_settings.get("anatomy_params") if isinstance(cur_settings.get("anatomy_params"), dict) else {}),
+                        "deep_enabled": bool(_d_on), "deep_max_calls_per_step": int(_d_cap), "deep_time_budget_sec": int(_d_bud),
                     })
                     st.rerun()
                 if _pend:

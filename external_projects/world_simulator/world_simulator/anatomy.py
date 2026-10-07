@@ -82,6 +82,8 @@ MAX_CRITERIA_NODES = 16
 MAX_ID_LEN = 64
 MAX_NAME_LEN = 80
 MAX_TEXT_LEN = 300        # desc / statement / watch / means / expr 等
+MAX_DEEP_PENDING = 4      # A5：因超限顺延的触发原因条数 / 每条长度
+MAX_DEEP_REASON_LEN = 60
 
 CRITERIA_LEAF_KEYS = ("metric", "component", "bottleneck", "var", "tech", "element")
 
@@ -119,11 +121,12 @@ DEFAULT_PARAMS: Dict[str, Any] = {
     "deep_max_calls_total": None,      # None = 不限
     "deep_cadence_steps": 3,
     "deep_allow_search": False,
+    "deep_time_budget_sec": 120,       # A5：单步深度调用的总耗时预算（秒，现实时间）；预算用尽后剩余元素顺延
     "mc_runs": 1000,
     "mc_seed": 20260101,
     "trend_recommended": list(RECOMMENDED_TRENDS),
 }
-# 计划 §7 还列了 `deep_time_budget_sec`（"待 A5 定"）——A5 才有深度调用，默认值到那时再定，A1 不预设。
+# `deep_time_budget_sec`：计划 §7 标"待 A5 定"，A5 定为 120 秒（见 `docs/anatomy_guide.md` §14.2）。
 
 DEVIATION_POLICIES = ("rebase", "keep_model")
 
@@ -166,6 +169,7 @@ _VALIDATORS = {
     "deep_max_calls_total": er._valid_limit,
     "deep_cadence_steps": lambda v: er._valid_int_at_least(v, 1),
     "deep_allow_search": _is_bool,
+    "deep_time_budget_sec": lambda v: er._valid_int_at_least(v, 1),
     "mc_runs": lambda v: er._valid_int_at_least(v, 1),
     "mc_seed": _is_int,
     "trend_recommended": _is_str_list,
@@ -810,6 +814,19 @@ def _norm_meta(raw: Any) -> Dict[str, Any]:
     last = er._int_or_none(raw.get("last_step"))
     if last is not None and last >= 0:
         out["last_step"] = last
+    # A5：深度调用的状态（最近一次深度调用的步 / 因超限顺延的触发原因及其首次触发的步）。引擎状态，种子与研究草稿里的会被剥掉。
+    deep_last = er._int_or_none(raw.get("deep_last_step"))
+    if deep_last is not None and deep_last >= 0:
+        out["deep_last_step"] = deep_last
+    pending = raw.get("deep_pending")
+    if isinstance(pending, (list, tuple)):
+        reasons = [_text(x, MAX_DEEP_REASON_LEN) for x in pending if isinstance(x, str)]
+        reasons = [x for x in reasons if x][:MAX_DEEP_PENDING]
+        if reasons:
+            out["deep_pending"] = reasons
+            since = er._int_or_none(raw.get("deep_pending_step"))
+            if since is not None and since >= 0:
+                out["deep_pending_step"] = since
     return out
 
 
@@ -1046,7 +1063,7 @@ _ENGINE_ITEM_FIELDS = {
     "bottlenecks": ("resolved_step", "resolved_day", "resolved_by"),
     "adoption_gates": ("open", "opened_step"),
 }
-_ENGINE_META_FIELDS = ("clock_day", "last_step")
+_ENGINE_META_FIELDS = ("clock_day", "last_step", "deep_last_step", "deep_pending", "deep_pending_step")
 
 
 def creation_enabled(settings: Optional[Dict[str, Any]]) -> bool:
@@ -1238,7 +1255,7 @@ def derive_status(anatomy: Optional[Dict[str, Any]]) -> str:
 
 def strip_engine_state(anatomy: Dict[str, Any]) -> Dict[str, Any]:
     """**就地**剥掉引擎状态字段（路径 `status`/`resolve_at_day`/`outcome`/`started_*`、里程碑 `reached_*`、指标与组件的
-    `engine`、瓶颈 `resolved_*`、门槛 `open`/`opened_step`、`meta.clock_day`/`last_step`），返回同一个对象。
+    `engine`、瓶颈 `resolved_*`、门槛 `open`/`opened_step`、`meta.clock_day`/`last_step`/`deep_*`），返回同一个对象。
 
     联网研究的 LLM 输出和创建期种子一样，**无权**声明"某条路径已成功/某个里程碑已达成"——这些是 A4 引擎的状态。
     """

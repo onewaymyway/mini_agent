@@ -1038,6 +1038,14 @@ id 被改写成规范 id）/`alias_collision`（同一步两个 key 规范到同
 **透明记录**（沿用 `tech_violations` 的做法）：被驳回的声明已经体现在状态里（没生效），这里说明为什么。`to_dict()` 空时不输出。
     """
 
+    anatomy_deep: List[Dict[str, Any]] = field(default_factory=list)
+    """元素剖面的**深度调用**记录（`anatomy_deepen.py`，第二十四轮 A5）：本步每个被考虑的重点元素一条
+`{element, status, reasons, why?, elapsed_sec?, narrative?, accepted?, error?}`。`status`：`ok`（调用成功，`narrative` 是该元素本步的细节叙事，
+`accepted` 是裁决后被接受/驳回的提议计数）/`failed`（调用失败或回复无法解析，降级为轻量，同时写一条 `A8`，`error` 是原因）/
+`deferred`（本步没轮到——每步上限或耗时预算用尽——顺延到下一步，`why` ∈ `step_cap`/`time_budget`）/`skipped`（整个实例的总上限已用完，不再顺延）。
+`ok` 与 `failed` 都计入调用次数。空列表 = 深度模式未开启或本步没有触发；`to_dict()` 空时不输出，旧格式逐字节不变。
+    """
+
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         d["options"] = [o.to_dict() if isinstance(o, ChoiceOption) else o for o in self.options]
@@ -1057,7 +1065,7 @@ id 被改写成规范 id）/`alias_collision`（同一步两个 key 规范到同
             d.pop("element_audit", None)
         if not d.get("sampled_events"):
             d.pop("sampled_events", None)
-        for _key in ("causal_queued", "effect_dispositions", "causal_violations", "tree_grounding", "anatomy_trace", "anatomy_violations"):
+        for _key in ("causal_queued", "effect_dispositions", "causal_violations", "tree_grounding", "anatomy_trace", "anatomy_violations", "anatomy_deep"):
             if not d.get(_key):
                 d.pop(_key, None)
         return d
@@ -1183,6 +1191,9 @@ id 被改写成规范 id）/`alias_collision`（同一步两个 key 规范到同
             ],
             anatomy_violations=[
                 copy.deepcopy(x) for x in (data.get("anatomy_violations") or []) if isinstance(x, dict)
+            ],
+            anatomy_deep=[
+                copy.deepcopy(x) for x in (data.get("anatomy_deep") or []) if isinstance(x, dict)
             ],
         )
 
