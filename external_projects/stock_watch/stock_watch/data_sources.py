@@ -31,6 +31,25 @@ import ssl
 
 logger = logging.getLogger("stock_watch.data_sources")
 
+
+def _normalize_stock_code(code: str) -> str:
+    """将股票代码统一为纯6位数字格式。
+
+    输入可以是：
+      - 纯6位数字（如 "600519"）
+      - 带交易所前缀（如 "SZ300308" / "SH600519" / "BJ920000"）
+
+    输出始终是纯6位数字字符串。
+    """
+    import re
+    # 去掉常见前缀：SH、SZ、BJ（大小写不敏感）
+    normalized = re.sub(r"^(SH|SZ|BJ)", "", code.strip().upper())
+    # 确保是6位数字
+    if len(normalized) != 6 or not normalized.isdigit():
+        raise ValueError(f"无效股票代码: {code!r}（规范化后: {normalized!r}）")
+    return normalized
+
+
 # ── 新浪财经 K 线封装（可靠，不受系统代理影响）────────────────────────────
 
 _SINA_KLINE_CTX = ssl.create_default_context()
@@ -1056,6 +1075,7 @@ def fetch_announcements(code: str, top_n: int = 20):
     使用 akshare 的 `stock_zh_a_disclosure_report_cninfo` 接口，
     该接口直接从巨潮资讯网抓取，支持按股票代码精确筛选。
     """
+    code = _normalize_stock_code(code)
     ak = _import_akshare()
     today = datetime.now()
     one_year_ago = today - timedelta(days=365)
@@ -1072,6 +1092,7 @@ def fetch_announcements(code: str, top_n: int = 20):
 
 def fetch_news(code: str, top_n: int = 20):
     """个股相关新闻（`ak.stock_news_em`）。"""
+    code = _normalize_stock_code(code)
     ak = _import_akshare()
     try:
         df = ak.stock_news_em(symbol=code)
@@ -1088,6 +1109,7 @@ def fetch_guba_posts(code: str, top_n: int = 30) -> List[Dict[str, Any]]:
     解析失败，是"维护类交互标准化"（阶段 5 `propose_fix`）要处理的
     典型场景。
     """
+    code = _normalize_stock_code(code)
     ak = _import_akshare()
     fn = getattr(ak, "stock_guba_em", None)
     if fn is not None:
