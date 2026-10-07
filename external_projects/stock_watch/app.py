@@ -435,6 +435,28 @@ def render_signals(algo: Dict, manual: Dict):
     st.header("📡 信号扫描结果")
     st.caption("算法池自动扫描的技术/基本面信号，手动池由用户管理不自动扫描。")
 
+    # 显示历史信号结果
+    signal_results = get_signal_scan_results()
+    if not signal_results.empty:
+        st.subheader("📊 最新信号结果")
+        # 选择要显示的列
+        display_cols = ["code", "name", "type", "score", "state", "signal_sources", "signal_reasons", "updated_at"]
+        available_cols = [c for c in display_cols if c in signal_results.columns]
+        st.dataframe(signal_results[available_cols], use_container_width=True, hide_index=True)
+
+        # 信号来源统计
+        if "signal_sources" in signal_results.columns:
+            all_sources = []
+            for sources in signal_results["signal_sources"].dropna():
+                all_sources.extend(sources if isinstance(sources, list) else [sources])
+            if all_sources:
+                source_counts = pd.Series(all_sources).value_counts()
+                st.caption(f"信号来源统计：{len(all_sources)} 个信号触发")
+    else:
+        st.info("暂无信号扫描结果，请点击「运行信号扫描」执行扫描")
+
+    st.markdown("---")
+
     # 执行按钮区域
     btn_col1, btn_col2 = st.columns([3, 1])
     with btn_col1:
