@@ -121,6 +121,9 @@ class CronJobRunner:
         # [阶段三·顺带做] 被 reap_stale_jobs() 强制回收过的 job 次数，
         # 进程内累计，不持久化——只用于观测"卡死回收发生的频率"。
         self._reaped_job_count: int = 0
+        # 槽位账实核对：`_held_slots` 与 `len(_sem_acquired)` 长时间不一致 = 槽位泄漏（见 reap_stale_jobs）。
+        self._slot_mismatch_since: float = 0.0
+        self._slot_reconciled_count: int = 0
         # [next_doc/scheduling_unification_and_kanban_visibility_improvement_plan.md
         # P1] 因 ResourceArbiter 仲裁未通过而被跳过本次触发的次数，进程内
         # 累计，不持久化——只用于观测"cron 通道有多少次因为仲裁被挡"，
@@ -417,7 +420,52 @@ class CronJobRunner:
                     _mini_agent_exc,
                     where="mini_agent.evolution.cron_job_runner.CronJobRunner.reap_stale_jobs",
                 )
+        try:
+            self._reconcile_slots(now)
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(
+                _mini_agent_exc,
+                where="mini_agent.evolution.cron_job_runner.CronJobRunner._reconcile_slots",
+            )
         return reaped
+
+    SLOT_MISMATCH_GRACE_SECONDS = 60.0
+
+    def _reconcile_slots(self, now: float) -> None:
+        """槽位账实核对：`_held_slots`（已占用槽位数）应当恰好等于"已开始执行"的 job 数
+        （`_sem_acquired`）。比后者多、并且持续超过 60s（排除"刚拿到槽位、还没登记"的瞬间窗口），
+        说明有槽位泄漏（历史上排队期间被回收的孤儿线程就会造成），表现就是 job 一直"排队中（等待并发槽位）"。
+        此时按实际数校正并留下恢复事件。"""
+        with self._lock:
+            running = len(self._sem_acquired)
+        with self._slot_cond:
+            held = self._held_slots
+            if held <= running:
+                self._slot_mismatch_since = 0.0
+                return
+            if self._slot_mismatch_since <= 0.0:
+                self._slot_mismatch_since = now
+                return
+            if (now - self._slot_mismatch_since) < self.SLOT_MISMATCH_GRACE_SECONDS:
+                return
+            self._held_slots = running
+            self._slot_mismatch_since = 0.0
+            self._slot_reconciled_count += 1
+            self._slot_cond.notify_all()
+        import logging
+        logging.getLogger(__name__).warning(
+            "CronJobRunner: 槽位泄漏已校正（held=%d, 实际在跑=%d）", held, running,
+        )
+        try:
+            from mini_agent.evolution.recovery_event_log import record_recovery_event
+            record_recovery_event(
+                "cron_job", "_slots",
+                f"槽位泄漏已校正：占用 {held} → 实际在跑 {running}",
+                now=now, paths=self._paths,
+            )
+        except Exception:
+            pass
 
     def _effective_timeout_seconds(self, job_id: str) -> float:
         """job 自己 config.json 的 timeout_seconds（读不到则回退全局
@@ -458,6 +506,7 @@ class CronJobRunner:
                 return False
             if self._tokens.get(job_id) != token:
                 return False
+            held_a_slot = job_id in self._sem_acquired
             self._running_job_ids.discard(job_id)
             self._threads.pop(job_id, None)
             self._started_at.pop(job_id, None)
@@ -468,7 +517,12 @@ class CronJobRunner:
         # 代替永远不会执行到的 finally 释放一个槽位——线程体收尾时
         # 会发现自己的 token 已经不是当前合法 token（上面已经 pop 掉），
         # 从而跳过它自己的 release()，两者互斥，不会重复释放。
-        self._release_slot()
+        # 只有**真正持有槽位**（已开始执行）的 job 才替它还槽位；还在排队、根本没拿到槽位的 job
+        # 若也还一次，就是把别的 job 的槽位还掉了。排队孤儿线程之后排到槽位时会自己还（见 _run_job_thread）。
+        if held_a_slot:
+            self._release_slot()
+        with self._slot_cond:
+            held_now, cap_now = self._held_slots, self.effective_max_concurrent()
 
         try:
             from mini_agent.evolution.cron_job_workspace import (
@@ -478,10 +532,16 @@ class CronJobRunner:
             ws.ensure()
             state = ws.read_state()
             state.status = STATUS_NEEDS_REVIEW
-            state.last_error = (
-                f"cron job 判定为卡死（超过 {effective_timeout:.0f}s 未收到执行结果），"
-                "已被 watchdog 强制回收，可重新触发"
-            )
+            if held_a_slot:
+                state.last_error = (
+                    f"cron job 判定为卡死（超过 {effective_timeout:.0f}s 未收到执行结果），"
+                    "已被 watchdog 强制回收，可重新触发"
+                )
+            else:
+                state.last_error = (
+                    f"cron job 排队超过 {effective_timeout:.0f}s 仍未拿到并发槽位（当前占用 {held_now}/{cap_now}），"
+                    "本次触发已放弃（没有执行过），可重新触发；若反复出现请检查是否有 job 长期占着槽位"
+                )
             state.last_run_finished_at = now
             ws.write_state(state)
         except Exception:
@@ -489,8 +549,8 @@ class CronJobRunner:
 
         import logging
         logging.getLogger(__name__).warning(
-            "CronJobRunner.reap_stale_jobs: job_id=%s 判定为卡死（超过 %.0fs），已强制回收",
-            job_id, effective_timeout,
+            "CronJobRunner.reap_stale_jobs: job_id=%s 判定为%s（超过 %.0fs），已强制回收（槽位 %d/%d）",
+            job_id, "卡死" if held_a_slot else "排队超时未拿到槽位", effective_timeout, held_now, cap_now,
         )
         try:
             from mini_agent.evolution.recovery_event_log import record_recovery_event
@@ -511,8 +571,17 @@ class CronJobRunner:
         with self._lock:
             # 迟到的孤儿线程（已经被 reap_stale_jobs() 回收过）不应该
             # 把自己标记为"正在运行"——只有仍持有当前合法 token 才标记。
-            if self._tokens.get(job.id) == token:
+            token_valid = self._tokens.get(job.id) == token
+            if token_valid:
                 self._sem_acquired.add(job.id)
+                # 执行超时从"真正拿到槽位开始跑"算起，排队等待的时间不挤占执行预算
+                # （排队时长另有判定，见 _reap_one_if_stale）。
+                self._started_at[job.id] = time.time()
+        if not token_valid:
+            # 排队期间就已被 watchdog 回收的孤儿：此刻才排到槽位，**不能再去执行**（否则回收之后
+            # 又偷偷跑一遍，且 finally 因 token 不符不会释放槽位 = 永久泄漏一个槽位），立刻把槽位还回去。
+            self._release_slot()
+            return
         try:
             if job.run_mode == "external_entrypoint":
                 # [external_projects_cron_dispatch_plan.md 3.2] 外部项目
