@@ -8,7 +8,7 @@ entrypoints:
   kline_batch:
     cmd: "python entrypoints/run_kline_batch.py"
     schedule: "cron: 30 15 * * 1-5"  # 盘后 15:30，交易日
-    timeout_sec: 900
+    timeout_sec: 3600
   screener:
     cmd: "python entrypoints/run_screener.py"
     schedule: "cron: 0 9 * * 1-5"    # 开盘前 09:00，跑一遍默认条件集
