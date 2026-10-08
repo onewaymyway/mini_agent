@@ -151,9 +151,10 @@ def _profile_html(settings: Dict[str, Any], line: Dict[str, Any], evidence: Opti
         return ""
     st = prof["stats"]
     ratio = f"（占 {st['llm_prior_ratio']:.0%}）" if st["llm_prior_ratio"] is not None else ""
+    key_tag = '<span class="ws-anat-tag">重点</span>' if prof["key"] else ""
     head = (
         f'<h3 class="ws-serif">🧬 {_esc(prof["label"])} <span class="ws-anat-tag">{_esc(prof["template_label"])}模板</span>'
-        f'<span class="ws-anat-tag">{_esc(prof["status_label"])}</span>{"<span class=\"ws-anat-tag\">重点</span>" if prof["key"] else ""}</h3>'
+        f'<span class="ws-anat-tag">{_esc(prof["status_label"])}</span>{key_tag}</h3>'
         f'<p class="ws-muted">共 {st["total"]} 项；有出处 {st["sourced"]}，已确认 {st["user_confirmed"]}，已编辑 {st["user_edited"]}，'
         f'LLM 先验 {st["llm_prior"]}{ratio}。LLM 先验 = 没有外部出处，仅是模型的猜测。</p>'
     )
