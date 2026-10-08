@@ -49,7 +49,6 @@ logger = logging.getLogger("stock_watch.kline_batch")
 def _generate_klines(
     pool_path,
     out_dir,
-    data_dir,
     cfg,
     pool_name="候选池",
     test_mode: bool = False,
@@ -83,7 +82,6 @@ def _generate_klines(
             plot_kline(
                 entry.code, entry.name, entry.type, out_dir,
                 days=cfg.kline_days, adjust=cfg.kline_adjust,
-                data_dir=data_dir,
             )
             ok += 1
         except DataSourceError as exc:
@@ -137,17 +135,15 @@ def main() -> int:
     algo_ok, algo_failed, algo_failures = 0, [], []
     if not args.manual_only:
         algo_out_dir = REPORTS_DIR / "kline" / "algo" / today_str
-        algo_data_dir = REPORTS_DIR / "kline_data" / "algo"
         algo_ok, algo_failed, algo_failures = _generate_klines(
-            ALGO_POOL_PATH, algo_out_dir, algo_data_dir, cfg, "算法池",
+            ALGO_POOL_PATH, algo_out_dir, cfg, "算法池",
             test_mode=args.test, test_count=args.test_count,
         )
 
     # 手动池 K 线图
     manual_out_dir = REPORTS_DIR / "kline" / "manual" / today_str
-    manual_data_dir = REPORTS_DIR / "kline_data" / "manual"
     manual_ok, manual_failed, manual_failures = _generate_klines(
-        MANUAL_POOL_PATH, manual_out_dir, manual_data_dir, cfg, "手动池",
+        MANUAL_POOL_PATH, manual_out_dir, cfg, "手动池",
         test_mode=args.test, test_count=args.test_count,
     )
 

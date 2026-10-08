@@ -107,12 +107,9 @@ def plot_kline(
     out_dir: Path,
     days: int = 120,
     adjust: str = "qfq",
-    data_dir: Optional[Path] = None,
 ) -> Optional[Path]:
     """生成并保存单个标的的 K 线图，返回图片路径；失败抛 DataSourceError。
-
-    data_dir: 可选，K 线原始数据（CSV）保存目录。
-    """
+    K 线原始数据（CSV）与 PNG 图片保存在同一目录。"""
     _configure_chinese_font()
     import mplfinance as mpf
     from matplotlib import font_manager
@@ -153,11 +150,9 @@ def plot_kline(
     fig.savefig(str(out_path), dpi=150, bbox_inches="tight")
     logger.info("K 线图已生成: %s", out_path)
 
-    # 保存原始数据到 data_dir
-    if data_dir is not None:
-        data_dir.mkdir(parents=True, exist_ok=True)
-        data_path = data_dir / f"{code}_{safe_name}.csv"
-        df.to_csv(str(data_path))
-        logger.info("K 线数据已保存: %s", data_path)
+    # 同步保存原始数据（同目录）
+    data_path = out_dir / f"{code}_{safe_name}.csv"
+    df.to_csv(str(data_path))
+    logger.info("K 线数据已保存: %s", data_path)
 
     return out_path
