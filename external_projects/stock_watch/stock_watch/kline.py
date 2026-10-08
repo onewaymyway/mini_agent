@@ -133,6 +133,8 @@ def plot_kline(
         type="candle",
         volume=True,
         style="charles",
+        up_color="red",    # 中国风格：涨红
+        down_color="green",  # 中国风格：跌绿
         title="",  # 不设置标题，手动添加
         returnfig=True,
     )
