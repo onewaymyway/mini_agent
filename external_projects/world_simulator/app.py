@@ -3598,7 +3598,8 @@ def _render_causal_lines_overview(
         _c = overview["counts"]
         st.caption(
             f"🧩 元素 {_c['elements']} 个（存活 {_c['alive']}，待补全 {_c['pending_enrichment']}，"
-            f"兜底 {_c['fallback']}，已退场 {_c['retired']}），领域 {_c['domains']} 个。"
+            f"兜底 {_c['fallback']}，已退场 {_c['retired']}），领域 {_c['domains']} 个"
+            + (f"（未声明领域，已按元素类型归成 {_c['virtual_groups']} 组展示）。" if _c.get("virtual_groups") else "。")
         )
         _fcols = st.columns([3, 1])
         with _fcols[0]:

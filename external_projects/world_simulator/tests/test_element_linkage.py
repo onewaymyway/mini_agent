@@ -625,3 +625,51 @@ def test_realism_health_export_shows_c9_notes():
     assert "元素（C9" in out and "兜底" in out
     legacy = {k: v for k, v in s.items() if k != "element_modeling_enabled"}
     assert "元素（C9" not in hm.health_html(_manifest(legacy), h, legacy)
+
+
+# ── 没有任何领域线时：按元素类型做展示层虚拟分组（不再全堆进“未归类”）──────────────────────
+
+
+def _no_domain_world():
+    s = _world()
+    s["causal_lines"] = [x for x in s["causal_lines"] if x.get("kind") != "domain"]
+    for x in s["causal_lines"]:
+        x.pop("parent", None)
+    return s
+
+
+def test_overview_without_domains_groups_by_element_type():
+    s = _no_domain_world()
+    s["causal_lines"].append(_line("loose", "游离线"))  # 无类型 → 仍是“未归类”
+    o = ev.build_overview(s, [])
+    labels = [g["domain_label"] for g in o["groups"]]
+    assert labels[-1] == "未归类" and all(l.endswith("（按类型）") for l in labels[:-1])
+    assert all(g.get("virtual") for g in o["groups"][:-1]) and not o["groups"][-1].get("virtual")
+    assert o["counts"]["domains"] == 0 and o["counts"]["virtual_groups"] == len(labels) - 1
+    assert all(g["domain_row"] is None for g in o["groups"])
+    # 每个元素恰好出现一次，登记顺序保持
+    ids = [r["id"] for g in o["groups"] for r in g["rows"]]
+    assert sorted(ids) == sorted(str(x["id"]) for x in s["causal_lines"]) and len(ids) == len(set(ids))
+
+
+def test_overview_without_domains_extras_go_to_ungrouped_not_type_group():
+    s = _no_domain_world()
+    o = ev.build_overview(s, [], extra_ids=["ghost"])
+    last = o["groups"][-1]
+    assert last["domain_label"] == "未归类" and not last.get("virtual")
+    assert [r["id"] for r in last["rows"]] == ["ghost"]
+    assert all("ghost" not in [r["id"] for r in g["rows"]] for g in o["groups"][:-1])
+
+
+def test_overview_with_real_domains_keeps_ungrouped_semantics():
+    o = ev.build_overview(_world(), [])
+    assert o["counts"]["virtual_groups"] == 0
+    assert not any(g.get("virtual") for g in o["groups"])
+
+
+def test_filter_and_ordered_ids_work_with_virtual_groups():
+    s = _no_domain_world()
+    o = ev.build_overview(s, [])
+    f = ev.filter_overview(o, ["technology"])
+    assert f["groups"] and all(r["element_type"] == "technology" for g in f["groups"] for r in g["rows"])
+    assert ev.ordered_ids(o) == [r["id"] for g in o["groups"] for r in g["rows"]]

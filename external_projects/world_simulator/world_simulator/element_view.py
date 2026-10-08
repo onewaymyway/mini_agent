@@ -91,6 +91,23 @@ def _row(line: Dict[str, Any], tier: Optional[str], lines: List[Dict[str, Any]])
     }
 
 
+def _virtual_type_groups(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """没有任何领域线时的展示层分组：按 `element_type` 归组（保持首次出现的顺序与组内登记顺序）；
+    没有类型的行归“未归类”（放最后）。`virtual=True` 标记它不是真实领域线（没有 `domain_row`，不可当 `parent` 用）。"""
+    typed: Dict[str, List[Dict[str, Any]]] = {}
+    untyped: List[Dict[str, Any]] = []
+    for r in rows:
+        key = str(r.get("element_type") or "").strip()
+        (typed.setdefault(key, []) if key else untyped).append(r)
+    out = [
+        {"domain_id": "", "domain_label": f"{type_label(k)}（按类型）", "domain_row": None, "rows": v, "virtual": True}
+        for k, v in typed.items()
+    ]
+    if untyped:
+        out.append({"domain_id": "", "domain_label": UNGROUPED_LABEL, "domain_row": None, "rows": untyped})
+    return out
+
+
 def build_overview(
     settings: Optional[Dict[str, Any]], history: Sequence[Any] = (), *, extra_ids: Iterable[str] = ()
 ) -> Dict[str, Any]:
@@ -137,6 +154,7 @@ def build_overview(
             counts["fallback"] += 1
 
     sources = merged_sources(settings)
+    has_real_domains = bool(er.domains(lines))
     for dom, kids in er.group_by_domain(lines):
         # 已合并的元素不再单独占行：它的历史按“读取时重定向”并入合并目标那一行（见 `merged_sources`），
         # 目标行用徽标注明并入了谁。
@@ -146,8 +164,13 @@ def build_overview(
             if sources.get(r["id"]):
                 r["badges"].append("并入：" + "、".join(sources[r["id"]]))
         if dom is None:
-            # 没有任何领域线时 group_by_domain 返回单个 (None, 全部线)：此时也算作“未归类”，展示等价于平铺。
-            groups.append({"domain_id": "", "domain_label": UNGROUPED_LABEL, "domain_row": None, "rows": rows})
+            if not has_real_domains:
+                # 没有任何领域线（LLM 创建时没划领域 / 旧实例 / 推进中发现的元素）：不再把所有元素堆进“未归类”，
+                # 改按 `element_type` 做**展示层**虚拟分组（不写盘、不改 prompt、不创建领域线、不影响预算）。
+                # 没有 `element_type` 的仍归“未归类”。有真实领域线时这里保持原样（散线仍是“未归类”，不猜）。
+                groups.extend(_virtual_type_groups(rows))
+            else:
+                groups.append({"domain_id": "", "domain_label": UNGROUPED_LABEL, "domain_row": None, "rows": rows})
         else:
             groups.append({
                 "domain_id": str(dom["id"]).strip(), "domain_label": str(dom.get("label") or dom["id"]),
@@ -167,12 +190,13 @@ def build_overview(
             "status": "alive", "profile_status": "", "tier_pin": "", "parent": "", "aliases": [], "badges": [UNTYPED_LABEL],
         } for x in extras]
         for g in groups:
-            if g["domain_id"] == "":
+            if g["domain_id"] == "" and not g.get("virtual"):
                 g["rows"].extend(rows)
                 break
         else:
             groups.append({"domain_id": "", "domain_label": UNGROUPED_LABEL, "domain_row": None, "rows": rows})
         types.setdefault("", UNTYPED_LABEL)
+    counts["virtual_groups"] = sum(1 for g in groups if g.get("virtual"))
     return {
         "enabled": True, "groups": groups, "counts": counts,
         "types": sorted(({"value": k, "label": v} for k, v in types.items()), key=lambda d: d["label"]),
