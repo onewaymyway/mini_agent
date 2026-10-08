@@ -836,6 +836,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - [关注对象·通知系统指南](docs/watchlist-notification-guide.md) — 关注对象匹配 + 分级汇报 + 多通道通知分发（`NotificationDispatcher`），看板"🔔 关注与通知"tab
 - [成长顾问指南](docs/growth-advisor-guide.md) — 信号扫描→候选→backlog→反馈台账，周报/专题地图/月度回顾，看板"🌱 成长顾问"tab
 - [Goal 来源追溯指南](docs/goal-provenance-guide.md) — 外部输入到 Goal 的全部创建链路、`source_initiator` 追溯、cron 触发 `enqueue_turn` 不受 `autonomy_level` 门控的排查记录
+- [cron 专属执行指南](docs/cron-dedicated-execution-guide.md) §3.5 — 外部项目 entrypoint 的 `concurrency: unmanaged` 档位：不调 LLM 的脚本不占 cron 并发槽位、不过资源仲裁（设计见 [next_doc/cron_unmanaged_concurrency_plan.md](next_doc/cron_unmanaged_concurrency_plan.md)）
 - [Goal 执行公平性配置](docs/goal-execution-fairness-config.md) — P1-P5 公平调度配置项与只读诊断快照
 - [脚本/LLM/Agent 混合执行系统指南](docs/hybrid-exec-guide.md) — **新增**：独立于 workflow 的 `hybrid_exec` 系统（P1-P4 已完成），探索优先 agent/llm、执行优先脚本、脚本坏了先自愈修复、修不好再降级，脚本仓库版本管理+成功率统计+自动退役，`default_executor()` 独立调用 / `hybrid_step` workflow 接入（插件文件开关）/ `GET /v1/hybrid_exec/summary` + 看板 Tab / `ReexplorePolicy` 跨 run 主动重探索（默认关闭）
 - [Skill 系统指南](docs/skill-system-guide.md) 第 3.8 节 — `generative-capability` skill（按需调用的领域能力包，`capability_call` 工具，`resolve → execute → explore → distill` 全流程）：三条蒸馏路径 `script_source > llm_synthesized > trace_replay`（后者只会顺序重放动作序列，明确定位为最后兜底、`registry.json` 里转正门槛更保守）、`explorer.depends_skills` 自动从依赖 skill 的 `impl/tools_impl.py` 派生领域原语（取代手写 `tool_allowlist.json`）、蒸馏脚本可自由使用标准 Python 不必强套领域原语，详见 [方案文档](next_doc/generative_capability_trace_replay_and_allowlist_plan.md)
