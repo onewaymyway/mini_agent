@@ -558,6 +558,19 @@ def _cron_field_match(value: int, expr: str) -> bool:
         return False
 
 
+def _cron_dow_match(py_wday: int, expr: str) -> bool:
+    """星期字段匹配（标准 cron 语义：0 或 7 = 周日，1 = 周一 … 6 = 周六）。
+
+    `time.struct_time.tm_wday` 是 Python 口径（周一 = 0 … 周日 = 6），不能直接拿去和 cron 字段比：
+    以前直接比，`1-5` 实际匹配的是周二~周六——周一永不触发、周六却会触发。这里先换算成 cron 口径；
+    周日同时接受 0 和 7（`0`、`7`、`5-7`、`*/n` 等写法都按标准语义）。
+    """
+    cron_wday = (py_wday + 1) % 7
+    if _cron_field_match(cron_wday, expr):
+        return True
+    return cron_wday == 0 and _cron_field_match(7, expr)
+
+
 def _next_cron(expr: str, after: Optional[float] = None) -> float:
     """
     计算 cron 表达式的下次触发时间（Unix timestamp）。
@@ -582,7 +595,7 @@ def _next_cron(expr: str, after: Optional[float] = None) -> float:
             and _cron_field_match(tm.tm_hour, h_expr)
             and _cron_field_match(tm.tm_mday, dom_expr)
             and _cron_field_match(tm.tm_mon, mon_expr)
-            and _cron_field_match(tm.tm_wday, dow_expr)
+            and _cron_dow_match(tm.tm_wday, dow_expr)
         ):
             return float(t)
         start += 60
