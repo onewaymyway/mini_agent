@@ -502,3 +502,13 @@ $ daemon status
   持有哪把锁）；
 - 没有对多次卡死的栈快照做跨事件对比（比如"这次和上次是不是卡在同一
   行"），目前需要人工比对。
+
+
+## 13. 调度心跳卡死时的栈快照（跨平台，含 Windows）
+
+§12 的 SIGUSR1 栈转储在 Windows 上不可用。`SchedulerHeartbeat` 的看门狗线程在判定"疑似卡死"时，改为**进程内**用 `sys._current_frames()` 把所有线程的调用栈写到 `.agent/scheduler_hang_stacks/stuck_<时间>_<序号>.txt`：首次命中立即写，之后每 10 分钟补一份（同一次卡死最多 3 份，只保留最近 10 份文件）。文件头注明阶段：
+
+- `waiting_lock`：本次 tick 还没拿到共享 `sched_lock`——别的线程（AgentRunner 的 `on_turn_done/on_turn_failed`、Objective runner）长期占着锁；
+- `in_tick`：已拿到锁，卡在 `tick()` 内部——看 `scheduler-heartbeat` 线程栈停在哪一行。
+
+`scheduler_heartbeat_status.json` 新增 `stuck_phase` / `last_stack_dump_path`，通知正文带快照路径。

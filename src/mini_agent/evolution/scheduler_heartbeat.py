@@ -137,6 +137,12 @@ class SchedulerHeartbeat(threading.Thread):
         self._paths = paths
         self._suspected_stuck: bool = False
         self._stuck_alert_sent: bool = False
+        # 卡死诊断：区分"在等共享锁"与"已拿到锁、卡在 tick() 里"，并在命中时落一份全线程栈快照
+        # （纯 Python、跨平台；Windows 没有 SIGUSR1，supervisor 的 faulthandler 栈转储在那边用不了）。
+        self._tick_lock_acquired_at: float = 0.0
+        self._stack_dump_count: int = 0
+        self._last_stack_dump_at: float = 0.0
+        self._last_stack_dump_path: str = ""
         # [P3] 看门狗必须是一条独立于主 tick 循环的线程——如果只是在
         # run() 的主循环里"tick 完之后顺带检查"，一旦真的卡在某次
         # tick() 里，主循环会阻塞在 `self._maybe_tick()` 那一行出不来，
@@ -253,8 +259,11 @@ class SchedulerHeartbeat(threading.Thread):
                     # 复位，允许下一次卡住重新告警一次。
                     self._suspected_stuck = False
                     self._stuck_alert_sent = False
+                    self._stack_dump_count = 0
                     should_alert = False
                     stuck_seconds = 0.0
+            if is_currently_stuck:
+                self._maybe_dump_stacks(started_at)
             if should_alert:
                 log.warning(
                     "SchedulerHeartbeat suspected stuck: tick() has been running for "
@@ -294,6 +303,8 @@ class SchedulerHeartbeat(threading.Thread):
                     "last_tick_duration_seconds": self._last_tick_duration_seconds,
                     "tick_interval_seconds": self._tick_interval_seconds,
                     "suspected_stuck": self._suspected_stuck,
+                    "stuck_phase": self._stuck_phase_locked(),
+                    "last_stack_dump_path": self._last_stack_dump_path,
                     "pid": os.getpid(),
                 }
             target = heartbeat_status_file_path(self._paths.project_root)
@@ -305,6 +316,67 @@ class SchedulerHeartbeat(threading.Thread):
             os.replace(tmp_path, target)
         except Exception as exc:
             log.warning("SchedulerHeartbeat._write_status_file() raised: %s", exc)
+
+    def _stuck_phase_locked(self) -> str:
+        """调用方须已持有 `_stats_lock`。`waiting_lock` = 已开始但还没拿到共享锁（别人占着锁）；
+        `in_tick` = 已拿到锁、卡在 tick() 内部；`""` = 当前没有进行中的 tick。"""
+        if self._last_tick_started_at > self._last_tick_finished_at:
+            return "in_tick" if self._tick_lock_acquired_at > 0.0 else "waiting_lock"
+        return ""
+
+    STACK_DUMP_MAX_PER_INCIDENT = 3
+    STACK_DUMP_REPEAT_SECONDS = 600.0
+    STACK_DUMP_KEEP_FILES = 10
+
+    def _maybe_dump_stacks(self, started_at: float) -> None:
+        """命中卡死时把**全部线程**的当前调用栈写到 `.agent/scheduler_hang_stacks/`：首次命中立即写一份，
+        之后每 10 分钟补一份（同一次卡死最多 3 份，用来确认是否还停在同一处）。只留最近 10 份。
+        任何失败都吞掉，绝不影响看门狗线程。"""
+        if self._paths is None:
+            return
+        try:
+            now = time.time()
+            with self._stats_lock:
+                if self._stack_dump_count >= self.STACK_DUMP_MAX_PER_INCIDENT:
+                    return
+                if self._stack_dump_count and (now - self._last_stack_dump_at) < self.STACK_DUMP_REPEAT_SECONDS:
+                    return
+                phase = self._stuck_phase_locked()
+                lock_wait = (self._tick_lock_acquired_at or now) - started_at
+                self._stack_dump_count += 1
+                self._last_stack_dump_at = now
+                seq = self._stack_dump_count
+            import sys
+            import traceback
+            from datetime import datetime
+            names = {t.ident: t.name for t in threading.enumerate()}
+            lines = [
+                f"# SchedulerHeartbeat 卡死栈快照 #{seq}  {datetime.now().astimezone().isoformat()}",
+                f"# 阶段: {phase or '?'}（waiting_lock = 在等共享锁，说明别的线程长期占着 sched_lock；"
+                "in_tick = 已拿到锁、卡在 tick() 内部）",
+                f"# 本次 tick 已进行 {now - started_at:.0f}s，其中等锁 {max(0.0, lock_wait):.0f}s",
+                "# 重点看 name 含 scheduler-heartbeat 的线程栈（tick 卡在哪一行），"
+                "以及其它线程里是否有 `with ...sched_lock` / `on_turn_done` 的长时间调用。",
+                "",
+            ]
+            for ident, frame in sys._current_frames().items():
+                lines.append(f"--- thread {names.get(ident, '?')} (ident={ident}) ---")
+                lines.extend(x.rstrip("\n") for x in traceback.format_stack(frame))
+                lines.append("")
+            target_dir = heartbeat_status_file_path(self._paths.project_root).parent / "scheduler_hang_stacks"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            path = target_dir / f"stuck_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{seq}.txt"
+            path.write_text("\n".join(lines), encoding="utf-8")
+            with self._stats_lock:
+                self._last_stack_dump_path = str(path)
+            for old in sorted(target_dir.glob("stuck_*.txt"))[:-self.STACK_DUMP_KEEP_FILES]:
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
+            log.warning("SchedulerHeartbeat stuck stack dump written: %s", path)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("SchedulerHeartbeat._maybe_dump_stacks() raised: %s", exc)
 
     def _alert_stuck(self, stuck_seconds: float) -> None:
         """告警失败静默降级，不影响心跳线程本身。"""
@@ -319,7 +391,8 @@ class SchedulerHeartbeat(threading.Thread):
                     "tick()，线程仍存活（alive=True）但可能卡在某次同步调用里，"
                     "建议检查是否有新代码违反了 tick() 内部'决策+提交、不做耗时"
                     "调用'的约束"
-                )[:200],
+                    + (f"。栈快照：{self._last_stack_dump_path}" if self._last_stack_dump_path else "")
+                )[:400],
                 source="scheduler_heartbeat_stuck",
                 meta={"stuck_seconds": round(stuck_seconds, 1)},
             ))
@@ -340,6 +413,8 @@ class SchedulerHeartbeat(threading.Thread):
             self._last_tick_started_at = started_at
         try:
             with self._lock:
+                with self._stats_lock:
+                    self._tick_lock_acquired_at = time.time()
                 self._autonomous_loop.tick()
         except Exception as exc:
             # 与 AutonomousLoop 既有的"非核心子系统静默降级"原则一致：
@@ -354,3 +429,4 @@ class SchedulerHeartbeat(threading.Thread):
             with self._stats_lock:
                 self._last_tick_finished_at = finished_at
                 self._last_tick_duration_seconds = max(0.0, finished_at - started_at)
+                self._tick_lock_acquired_at = 0.0
