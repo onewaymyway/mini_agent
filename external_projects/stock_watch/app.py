@@ -165,13 +165,18 @@ def get_signal_scan_results() -> pd.DataFrame:
     return pd.DataFrame()
 
 
-def get_kline_file(code: str, pool_type: str = "algo") -> Optional[Path]:
-    """查找最近的 K 线图文件。"""
+def get_kline_file(code: str, pool_type: str = "algo", adjust: str = "qfq") -> Optional[Path]:
+    """查找最近的 K 线图文件（支持按复权方式筛选）。"""
     base = REPORTS_DIR / "kline" / pool_type
     if not base.exists():
         return None
-    # 按日期排序，取最新的
-    files = sorted(base.rglob(f"{code}*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
+    adjust_tag = adjust if adjust else "none"
+    # 按修改时间排序，取最新的（文件名含 adjust_tag）
+    files = sorted(
+        base.rglob(f"{code}_*_{adjust_tag}.png"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
     return files[0] if files else None
 
 
@@ -629,13 +634,22 @@ def render_kline_viewer(algo: Dict, manual: Dict):
         code = selected.split(" (")[0]
 
         pool_type = "manual" if code in manual else "algo"
-        kline_file = get_kline_file(code, pool_type)
+        adjust_type = st.selectbox(
+            "复权方式",
+            ["前复权 (qfq)", "后复权 (hfq)", "不复权"],
+            index=0,
+            key="kline_adjust",
+        )
+        adjust_map = {"前复权 (qfq)": "qfq", "后复权 (hfq)": "hfq", "不复权": "none"}
+        adjust = adjust_map[adjust_type]
+
+        kline_file = get_kline_file(code, pool_type, adjust=adjust)
 
         if kline_file and kline_file.exists():
             st.image(str(kline_file), use_container_width=True)
-            st.caption(f"来源: {pool_type} 池 | 文件: {kline_file.name}")
+            st.caption(f"来源: {pool_type} 池 | 复权: {adjust_type} | 文件: {kline_file.name}")
         else:
-            st.info(f"未找到 {code} 的 K 线图，请先运行 K 线批量生成")
+            st.info(f"未找到 {code} 的 K 线图，请先运行 K 线批量生成（当前复权方式：{adjust_type}）")
 
     # 提供执行按钮
     st.markdown("---")
