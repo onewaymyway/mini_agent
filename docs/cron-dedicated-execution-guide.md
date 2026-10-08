@@ -187,6 +187,29 @@ daemon 重启后清零），透出在 `GET /v1/self/execution_model_status` 的
 失效），通过 `NotificationDispatcher` 主动告警——只记录 + 告警，
 **不阻断**新 job 的调度。
 
+### 3.5 不占槽位的档位：`concurrency: unmanaged`（外部项目 entrypoint 专用）
+
+并发槽位的目的是控制 LLM 并发。外部项目里不调 LLM 的纯脚本 entrypoint，
+可以在 `project.yaml` 里声明 `concurrency: unmanaged`（缺省 `managed`，
+即上面 §3 ~ §3.4 描述的全部既有行为），声明后对应的 `ext:<项目>:<entrypoint>`
+job：
+
+- **不占槽位、不排队**：`_run_job_thread()` 跳过 `_acquire_slot()`/`_release_slot()`，直接在
+  独立线程里执行（不堵 tick），不计入 `max_concurrent_jobs`，也不计入
+  `scheduler.max_total_concurrent_tasks` 的跨通道总数；
+- **跳过资源仲裁**：不调用 `ResourceArbiter.gating_state()`，`blocked` 时也照常触发，
+  不累加 `arbiter_skipped_count`；
+- **保留**：同一 job 的 `already_running` 去重、`timeout_sec` + watchdog 回收（回收时不会
+  替它归还槽位，文案为"卡死"而不是"排队超时"）、账本记录；状态显示"运行中"，不会出现"排队中"；
+- **不设总量上限**：同时到点的 unmanaged job 数量不受限制，建议每个 unmanaged entrypoint
+  都显式写 `timeout_sec`；
+- 只对 `run_mode="external_entrypoint"` 生效；`message`/`goal_cycle` 必然涉及 LLM，字段会被忽略。
+
+观测：`GET /v1/self/scheduling_overview` 的 `cron_channel.unmanaged_running` 单独统计在跑数，
+`running`/`queued` 只算占槽位的 job，所以"运行中/上限"不会出现超过上限的显示。
+`project.yaml` 是唯一权威来源，daemon 启动/项目开关切换时的全量对齐会同步该字段。
+设计与取舍见 [next_doc/cron_unmanaged_concurrency_plan.md](../next_doc/cron_unmanaged_concurrency_plan.md)。
+
 ## 4. 执行循环：超时 + 步数 + 卡死检测
 
 `CronJobExecutor.run_job()` 是一个同步循环，每一"步"调用一次

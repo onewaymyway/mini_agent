@@ -4096,6 +4096,8 @@ async def get_self_scheduling_overview(request: Request):
       },
       "cron_channel": {   # 不含 goal_cycle 通道的 job（run_mode 区分）
         "running": int, "queued": int,
+        "unmanaged_running": int,       # concurrency="unmanaged" 的 job 在跑数，
+                                          # 不占槽位，不计入 running
         "max_concurrent": int | None,   # 当前生效的并发上限（effective_
                                           # max_concurrent()，degraded 时会
                                           # 比 static_max_concurrent 更低）
@@ -4270,6 +4272,9 @@ async def get_self_scheduling_overview(request: Request):
             jobs = cs.list_jobs()
             cron_running = 0
             cron_queued = 0
+            # concurrency="unmanaged" 的 job 不占并发槽位，单独计数，
+            # 避免"运行中/并发上限"显示成 3/2 这种超出上限的假象。
+            cron_unmanaged_running = 0
             over_threshold = []
             goal_cycle_jobs = []
             for j in jobs:
@@ -4282,7 +4287,10 @@ async def get_self_scheduling_overview(request: Request):
                 except Exception:
                     phase = "not_running"
                 if phase == "running":
-                    cron_running += 1
+                    if getattr(j, "concurrency", "managed") == "unmanaged":
+                        cron_unmanaged_running += 1
+                    else:
+                        cron_running += 1
                 elif phase == "queued":
                     cron_queued += 1
                 if skip_threshold > 0 and getattr(j, "consecutive_skip_count", 0) >= skip_threshold:
@@ -4302,6 +4310,7 @@ async def get_self_scheduling_overview(request: Request):
 
             result["cron_channel"] = {
                 "running": cron_running,
+                "unmanaged_running": cron_unmanaged_running,
                 "queued": cron_queued,
                 "max_concurrent": max_concurrent,
                 "static_max_concurrent": static_max_concurrent,
@@ -4782,7 +4791,8 @@ async def get_self_task_concurrency(request: Request):
                 # [bugfix] CronJobRunner.running_count 是 @property，不是
                 # 方法——之前误加了 () 调用，导致 TypeError: 'int' object
                 # is not callable。
-                "running": runner.running_count,
+                # 只统计占槽位的 job；unmanaged 不受这个上限约束，不计入。
+                "running": runner.managed_running_count,
             }
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception

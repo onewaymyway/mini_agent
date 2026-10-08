@@ -50,6 +50,7 @@ entrypoints:
     cmd: "python entrypoints/run_hotlist_scan.py"
     schedule: "cron: 0 9,13 * * 1-5"   # 可选；不写就是纯手动/外部触发
     timeout_sec: 600                    # 可选
+    concurrency: unmanaged              # 可选；不调 LLM 的纯脚本才写，见下
   stock_analysis:
     cmd: "python entrypoints/run_stock_analysis.py"
     params:                             # 可选（external_projects_kanban_
@@ -73,6 +74,13 @@ resources:                               # 可选
   周，`*`、单值、逗号列表、`-` 区间均支持；不支持步进 `*/5` 等更复杂
   语法——真的需要就交给 OS 原生 cron 直接调这个 entrypoint 的 `cmd`）；
 - `timeout_sec` 必须是正整数；它既是子进程的运行超时，也是 daemon 卡死回收（watchdog）对该 entrypoint 的阈值基准——阈值 = `timeout_sec` + `cron.stale_job_watchdog_grace_seconds`（默认 300s），不再套全局 `cron.default_timeout_seconds`。**不写则子进程不限时**，watchdog 退回全局默认，建议每个定时 entrypoint 都显式声明；
+- `concurrency`（可选，`managed`｜`unmanaged`，缺省 `managed`）：daemon 定时触发时是否占用
+  cron 并发槽位。`managed`（默认）占槽位、触发前过资源仲裁，槽位满了排队；`unmanaged`
+  只应给**不调用 LLM 的纯脚本**用——直接起独立线程执行，不占槽位、不排队、不过仲裁，
+  但仍保留同一 entrypoint 不并发跑两份的去重、`timeout_sec` 超时与 watchdog 回收。
+  不设总量上限，建议同时显式声明 `timeout_sec`。写成其它值会在解析 `project.yaml` 时报错。
+  只影响 daemon 定时触发路径，手动触发（CLI/看板）本来就不占槽位。详见
+  [cron 专属执行指南 §3.5](cron-dedicated-execution-guide.md)；
 - `params`（可选）：entrypoint 需要传参数时声明，每项
   `{name, required?, default?, help?}`（`required` 默认 `true`）。
   触发时按声明顺序把传入值拼成位置参数（自动做 shell 转义）追加在
@@ -354,6 +362,8 @@ land_maintenance_fix("/data/stock_watch", result.branch)
 
 ## 10. 相关文档
 
+- [next_doc/cron_unmanaged_concurrency_plan.md](../next_doc/cron_unmanaged_concurrency_plan.md) —
+  `concurrency: unmanaged`：不调 LLM 的脚本 entrypoint 不占 cron 槽位、不过仲裁。
 - [next_doc/external_projects_workspace_plan.md](../next_doc/external_projects_workspace_plan.md) —
   完整的架构设计过程、四条核心原则、为什么否决了"每个项目自己起
   daemon"等备选方案。

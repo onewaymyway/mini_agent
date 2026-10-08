@@ -62,6 +62,12 @@ class ParamSpec:
     help: str = ""
 
 
+# entrypoint 的并发档位取值（project.yaml 的 `concurrency` 字段）
+CONCURRENCY_MANAGED = "managed"
+CONCURRENCY_UNMANAGED = "unmanaged"
+CONCURRENCY_VALUES = (CONCURRENCY_MANAGED, CONCURRENCY_UNMANAGED)
+
+
 @dataclass
 class EntrypointSpec:
     """`project.yaml` 里 `entrypoints.<key>` 对应的一条声明。"""
@@ -71,6 +77,9 @@ class EntrypointSpec:
     schedule: Optional[str] = None
     timeout_sec: Optional[int] = None
     params: List[ParamSpec] = field(default_factory=list)
+    # 并发档位：managed（默认，占 cron 并发槽位、受 ResourceArbiter 仲裁）/
+    # unmanaged（不涉及 LLM 的纯脚本，直接起独立线程，不占槽位、不过仲裁）。
+    concurrency: str = "managed"
 
     @property
     def cron_expr(self) -> Optional[str]:
@@ -315,7 +324,7 @@ def _parse_params(raw: Any, *, ctx: str) -> List[ParamSpec]:
 def _parse_entrypoint(key: str, raw: Any) -> EntrypointSpec:
     ctx = f"entrypoints.{key}"
     if not isinstance(raw, dict):
-        raise ProjectManifestError(f"{ctx}: 必须是一个映射（cmd/schedule/timeout_sec/params）")
+        raise ProjectManifestError(f"{ctx}: 必须是一个映射（cmd/schedule/timeout_sec/concurrency/params）")
     cmd = _require_str(raw, "cmd", ctx=ctx)
 
     schedule = raw.get("schedule")
@@ -332,10 +341,18 @@ def _parse_entrypoint(key: str, raw: Any) -> EntrypointSpec:
     ):
         raise ProjectManifestError(f"{ctx}: 'timeout_sec' 必须是正整数")
 
+    concurrency = raw.get("concurrency", CONCURRENCY_MANAGED)
+    if not isinstance(concurrency, str) or concurrency.strip().lower() not in CONCURRENCY_VALUES:
+        raise ProjectManifestError(
+            f"{ctx}: 'concurrency' 只能是 {' / '.join(CONCURRENCY_VALUES)}"
+        )
+    concurrency = concurrency.strip().lower()
+
     params = _parse_params(raw.get("params"), ctx=ctx)
 
     return EntrypointSpec(
-        key=key, cmd=cmd, schedule=schedule, timeout_sec=timeout_sec, params=params
+        key=key, cmd=cmd, schedule=schedule, timeout_sec=timeout_sec, params=params,
+        concurrency=concurrency,
     )
 
 

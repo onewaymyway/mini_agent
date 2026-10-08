@@ -341,6 +341,7 @@ def ensure_external_project_cron_jobs(
             external_project=project_name,
             external_entrypoint=ep.key,
             tags=["external_project", project_name],
+            concurrency=getattr(ep, "concurrency", "managed"),
         )
         changed.append(job.id)
 

@@ -119,6 +119,12 @@ class CronJob:
     external_project: Optional[str] = None
     external_entrypoint: Optional[str] = None
 
+    # [next_doc/cron_unmanaged_concurrency_plan.md] 并发档位："managed"（默认，
+    # 占 cron 并发槽位、受 ResourceArbiter 仲裁，即既有行为）/"unmanaged"
+    # （不涉及 LLM 的外部项目脚本：独立线程直接执行，不占槽位、不过仲裁）。
+    # 只对 run_mode="external_entrypoint" 生效；旧 cron_jobs.json 缺省按 managed。
+    concurrency: str = "managed"
+
     # [goal_cron_paused_semantics_and_status_provenance_plan.md] `enabled`
     # 变更历史（含来源），与 GoalNode.status_history 同一套表达：
     # `{enabled: bool, at, from, by, reason[, caller]}`，只追加，超长丢最旧。
@@ -148,6 +154,7 @@ class CronJob:
             "last_skip_detail": self.last_skip_detail,
             "external_project": self.external_project,
             "external_entrypoint": self.external_entrypoint,
+            "concurrency": self.concurrency,
             "state_history": self.state_history,
             # [看板 cron 面板补齐删除功能] 显式下发 is_system，避免前端
             # 只能靠 id.startswith("sys:") 这种约定猜测，接口更自描述。
@@ -177,6 +184,7 @@ class CronJob:
             last_skip_detail=d.get("last_skip_detail", "") or "",
             external_project=d.get("external_project"),
             external_entrypoint=d.get("external_entrypoint"),
+            concurrency=d.get("concurrency") or "managed",
             state_history=list(d.get("state_history", []) or []),
         )
 
@@ -1294,6 +1302,7 @@ class CronScheduler:
         external_project: str,
         external_entrypoint: str,
         tags: Optional[list[str]] = None,
+        concurrency: str = "managed",
     ) -> CronJob:
         """[external_projects_cron_dispatch_plan.md 3.1/3.3] 供
         `external_projects.scheduler.ensure_external_project_cron_jobs()`
@@ -1317,6 +1326,7 @@ class CronScheduler:
             existing.external_project = external_project
             existing.external_entrypoint = external_entrypoint
             existing.run_mode = "external_entrypoint"
+            existing.concurrency = concurrency
             self.save()
             return existing
         job = CronJob(
@@ -1331,6 +1341,7 @@ class CronScheduler:
             run_mode="external_entrypoint",
             external_project=external_project,
             external_entrypoint=external_entrypoint,
+            concurrency=concurrency,
         )
         self._jobs[job_id] = job
         self.save()

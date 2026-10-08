@@ -23,6 +23,7 @@
 | `cmd` | str | 是 | 完整 shell 命令，如 `"python entrypoints/foo.py"` |
 | `schedule` | str | 否 | 格式固定 `"cron: <5段cron表达式>"`；不填表示不自动定时，只能被手动/`projects run` 触发 |
 | `timeout_sec` | int | 否 | 单次执行超时秒数 |
+| `concurrency` | str | 否 | `managed`（缺省，占 cron 并发槽位、过资源仲裁）或 `unmanaged`（**仅给不调 LLM 的纯脚本用**：不占槽位、不排队、不过仲裁，仍有去重与超时/watchdog；建议同时写 `timeout_sec`）。其它取值解析报错 |
 | `params` | list | 否 | 见下，声明这个 entrypoint 需要的位置参数 |
 
 `schedule` 只做"是否长得像 cron 表达式"（5 个空白分隔字段）的基本形状

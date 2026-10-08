@@ -12061,6 +12061,8 @@ def _render_scheduling_overview(client: AgentClient):
             extra = f"（静态上限 {static_c}）" if static_c is not None and static_c != max_c else ""
             st.caption(f"当前并发上限：{max_c}{extra}")
         st.caption(f"仲裁累计跳过次数（进程内）：{cron_ch.get('arbiter_skipped_count', 0)}")
+        if cron_ch.get("unmanaged_running"):
+            st.caption(f"另有 {cron_ch['unmanaged_running']} 个不占槽位的脚本任务（concurrency: unmanaged）在运行，不计入上面的运行中/上限")
         over = cron_ch.get("jobs_over_skip_threshold") or []
         if over:
             st.markdown("🔴 **连续跳过超阈值的 job**")

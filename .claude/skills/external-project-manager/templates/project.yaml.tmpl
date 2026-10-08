@@ -18,6 +18,10 @@ entrypoints:
     # 填 5 个字段；不需要定时（按需手动/被大管家触发）就删掉这一行。
     # schedule: "cron: 0 9 * * 1-5"
     timeout_sec: 300
+    # 如果这个 entrypoint 是纯脚本、完全不调用 LLM，取消下一行注释可让它
+    # 定时触发时不占 cron 并发槽位（不排队、不受资源仲裁影响）；会调 LLM
+    # 的 entrypoint 不要开，保持默认 managed。
+    # concurrency: unmanaged
     # 如果这个 entrypoint 需要外部传参（比如指定某个标的代码），按下面
     # 的格式声明，看板「手动触发」会据此渲染输入框；不需要就删掉
     # 整个 params 块。

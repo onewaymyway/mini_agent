@@ -112,6 +112,11 @@ class CronJobRunner:
         # 还在排队）。用于区分 is_running()==True 时到底是"正在跑"还是
         # "卡在排队"——此前两者完全无法从外部区分。
         self._sem_acquired: set[str] = set()
+        # [next_doc/cron_unmanaged_concurrency_plan.md] concurrency="unmanaged" 的
+        # job 正在执行的集合：它们直接起线程跑，不占槽位（不进 _sem_acquired，
+        # 也不计入 _held_slots），但对外仍显示为"运行中"，watchdog 回收时也据此
+        # 区分"卡死"与"排队超时"，且绝不替它们归还槽位。
+        self._unmanaged_running: set[str] = set()
         # [阶段一] job_id -> 当前合法执行者的 token（submit() 时生成）。
         # reap_stale_jobs() 强制回收时会清空对应条目；线程体收尾前会比对
         # 自己拿到的 token 与这里当前的值，不相等说明自己已经是"迟到的
@@ -178,6 +183,18 @@ class CronJobRunner:
     def running_count(self) -> int:
         with self._lock:
             return len(self._running_job_ids)
+
+    @property
+    def managed_running_count(self) -> int:
+        """占用（或正在排队等待）并发槽位的 job 数，不含 unmanaged。"""
+        with self._lock:
+            return len(self._running_job_ids - self._unmanaged_running)
+
+    @property
+    def unmanaged_running_count(self) -> int:
+        """[cron_unmanaged_concurrency_plan.md] 正在执行的 unmanaged job 数（不占槽位）。"""
+        with self._lock:
+            return len(self._unmanaged_running)
 
     @property
     def reaped_job_count(self) -> int:
@@ -300,6 +317,16 @@ class CronJobRunner:
             self._held_slots = max(0, self._held_slots - 1)
             self._slot_cond.notify_all()
 
+    @staticmethod
+    def _is_unmanaged(job: "CronJob") -> bool:
+        """[cron_unmanaged_concurrency_plan.md] 是否"不占槽位、不过仲裁"的 job。
+        只有外部项目 entrypoint 才可能是 unmanaged（message/goal_cycle 必然
+        涉及 LLM，即使字段被误写也一律按 managed 处理）。"""
+        return (
+            getattr(job, "run_mode", "message") == "external_entrypoint"
+            and getattr(job, "concurrency", "managed") == "unmanaged"
+        )
+
     def execution_phase(self, job_id: str) -> str:
         """[阶段 B] 返回 job 当前的执行阶段：
         "not_running"（没在跑）/ "queued"（已提交但还在排队等 semaphore）
@@ -308,7 +335,7 @@ class CronJobRunner:
         with self._lock:
             if job_id not in self._running_job_ids:
                 return "not_running"
-            if job_id in self._sem_acquired:
+            if job_id in self._sem_acquired or job_id in self._unmanaged_running:
                 return "running"
             return "queued"
 
@@ -342,7 +369,9 @@ class CronJobRunner:
         # CronScheduler._fire() 里的另一条分支（_goal_cycle_fn），根本
         # 不会到达这里，因此这里只需要判断 is_system 即可覆盖到达
         # submit() 的所有用户自定义 message 类 job。
-        if not job.is_system:
+        # [cron_unmanaged_concurrency_plan.md] unmanaged job（不涉及 LLM 的脚本）
+        # 同样跳过仲裁：仲裁的目的是"用户在场/预算紧张时别抢 LLM 资源"，对脚本无意义。
+        if not job.is_system and not self._is_unmanaged(job):
             try:
                 from mini_agent.evolution.resource_arbiter import ResourceArbiter
                 arbiter = ResourceArbiter(self._paths, self._base_cfg)
@@ -380,6 +409,10 @@ class CronJobRunner:
             self._running_job_ids.add(job.id)
             self._tokens[job.id] = token
             self._started_at[job.id] = time.time()
+            if self._is_unmanaged(job):
+                # 提交即视为"运行中"（没有排队阶段），线程启动前就登记，
+                # 避免 execution_phase() 在这一瞬间误报 queued。
+                self._unmanaged_running.add(job.id)
 
         t = threading.Thread(
             target=self._run_job_thread,
@@ -516,7 +549,9 @@ class CronJobRunner:
                 return False
             if self._tokens.get(job_id) != token:
                 return False
+            was_unmanaged = job_id in self._unmanaged_running
             held_a_slot = job_id in self._sem_acquired
+            self._unmanaged_running.discard(job_id)
             self._timeout_override.pop(job_id, None)
             self._running_job_ids.discard(job_id)
             self._threads.pop(job_id, None)
@@ -543,7 +578,7 @@ class CronJobRunner:
             ws.ensure()
             state = ws.read_state()
             state.status = STATUS_NEEDS_REVIEW
-            if held_a_slot:
+            if held_a_slot or was_unmanaged:
                 state.last_error = (
                     f"cron job 判定为卡死（超过 {effective_timeout:.0f}s 未收到执行结果），"
                     "已被 watchdog 强制回收，可重新触发"
@@ -561,7 +596,7 @@ class CronJobRunner:
         import logging
         logging.getLogger(__name__).warning(
             "CronJobRunner.reap_stale_jobs: job_id=%s 判定为%s（超过 %.0fs），已强制回收（槽位 %d/%d）",
-            job_id, "卡死" if held_a_slot else "排队超时未拿到槽位", effective_timeout, held_now, cap_now,
+            job_id, "卡死" if (held_a_slot or was_unmanaged) else "排队超时未拿到槽位", effective_timeout, held_now, cap_now,
         )
         try:
             from mini_agent.evolution.recovery_event_log import record_recovery_event
@@ -578,20 +613,25 @@ class CronJobRunner:
     # ── 线程体 ────────────────────────────────────────────────────────────
 
     def _run_job_thread(self, job: "CronJob", token: str) -> None:
-        self._acquire_slot()
+        unmanaged = self._is_unmanaged(job)
+        if not unmanaged:
+            self._acquire_slot()
         with self._lock:
             # 迟到的孤儿线程（已经被 reap_stale_jobs() 回收过）不应该
             # 把自己标记为"正在运行"——只有仍持有当前合法 token 才标记。
             token_valid = self._tokens.get(job.id) == token
-            if token_valid:
+            if token_valid and not unmanaged:
                 self._sem_acquired.add(job.id)
+            if token_valid:
                 # 执行超时从"真正拿到槽位开始跑"算起，排队等待的时间不挤占执行预算
                 # （排队时长另有判定，见 _reap_one_if_stale）。
                 self._started_at[job.id] = time.time()
         if not token_valid:
             # 排队期间就已被 watchdog 回收的孤儿：此刻才排到槽位，**不能再去执行**（否则回收之后
             # 又偷偷跑一遍，且 finally 因 token 不符不会释放槽位 = 永久泄漏一个槽位），立刻把槽位还回去。
-            self._release_slot()
+            # unmanaged 从未拿过槽位，什么都不用还。
+            if not unmanaged:
+                self._release_slot()
             return
         try:
             if job.run_mode == "external_entrypoint":
@@ -621,8 +661,9 @@ class CronJobRunner:
                     self._started_at.pop(job.id, None)
                     self._tokens.pop(job.id, None)
                     self._sem_acquired.discard(job.id)
+                    self._unmanaged_running.discard(job.id)
                     released = True
-            if released:
+            if released and not unmanaged:
                 self._release_slot()
 
     def _run_external_entrypoint_job(self, job: "CronJob") -> None:

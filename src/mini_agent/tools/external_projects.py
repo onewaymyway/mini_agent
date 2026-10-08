@@ -109,7 +109,8 @@ def inspect_project(name: str, recent_runs_limit: int = 5) -> str:
         source_dir = manifest.source_dir
         manifest_payload = {
             "entrypoints": {
-                key: {"cmd": ep.cmd, "schedule": ep.schedule, "timeout_sec": ep.timeout_sec}
+                key: {"cmd": ep.cmd, "schedule": ep.schedule, "timeout_sec": ep.timeout_sec,
+                      "concurrency": ep.concurrency}
                 for key, ep in manifest.entrypoints.items()
             },
             "health_check": manifest.health_check.cmd if manifest.health_check else None,
