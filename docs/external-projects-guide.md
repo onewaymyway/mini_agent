@@ -72,7 +72,7 @@ resources:                               # 可选
 - `schedule` 目前只支持 `cron: <5 字段 cron 表达式>` 写法（分 时 日 月
   周，`*`、单值、逗号列表、`-` 区间均支持；不支持步进 `*/5` 等更复杂
   语法——真的需要就交给 OS 原生 cron 直接调这个 entrypoint 的 `cmd`）；
-- `timeout_sec` 必须是正整数；
+- `timeout_sec` 必须是正整数；它既是子进程的运行超时，也是 daemon 卡死回收（watchdog）对该 entrypoint 的阈值基准——阈值 = `timeout_sec` + `cron.stale_job_watchdog_grace_seconds`（默认 300s），不再套全局 `cron.default_timeout_seconds`。**不写则子进程不限时**，watchdog 退回全局默认，建议每个定时 entrypoint 都显式声明；
 - `params`（可选）：entrypoint 需要传参数时声明，每项
   `{name, required?, default?, help?}`（`required` 默认 `true`）。
   触发时按声明顺序把传入值拼成位置参数（自动做 shell 转义）追加在

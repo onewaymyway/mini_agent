@@ -122,6 +122,9 @@ class CronJobRunner:
         # 进程内累计，不持久化——只用于观测"卡死回收发生的频率"。
         self._reaped_job_count: int = 0
         # 槽位账实核对：`_held_slots` 与 `len(_sem_acquired)` 长时间不一致 = 槽位泄漏（见 reap_stale_jobs）。
+        # job_id -> 该次执行自己声明的超时（外部项目 entrypoint 的 `timeout_sec`）。有值时 watchdog 阈值
+        # = 它 + grace，而不是全局 default_timeout_seconds；只对当前这次执行有效，收尾/回收时清掉。
+        self._timeout_override: dict[str, float] = {}
         self._slot_mismatch_since: float = 0.0
         self._slot_reconciled_count: int = 0
         # [next_doc/scheduling_unification_and_kanban_visibility_improvement_plan.md
@@ -474,6 +477,13 @@ class CronJobRunner:
         default_timeout = getattr(cron_cfg, "default_timeout_seconds", 20 * 60) if cron_cfg is not None else 20 * 60
         grace = getattr(cron_cfg, "stale_job_watchdog_grace_seconds", 5 * 60) if cron_cfg is not None else 5 * 60
 
+        # 外部项目 entrypoint 在 project.yaml 里声明了 timeout_sec：以它为准（子进程本身就会在这个时间被杀），
+        # watchdog 只在其后再留 grace 余量，不再套全局默认值（否则 timeout_sec 大于默认值的任务会被误判卡死）。
+        with self._lock:
+            override = self._timeout_override.get(job_id)
+        if override is not None:
+            return float(override) + float(grace)
+
         try:
             from mini_agent.evolution.cron_job_workspace import CronJobWorkspace, CronJobConfig
             ws = CronJobWorkspace(self._paths, job_id)
@@ -507,6 +517,7 @@ class CronJobRunner:
             if self._tokens.get(job_id) != token:
                 return False
             held_a_slot = job_id in self._sem_acquired
+            self._timeout_override.pop(job_id, None)
             self._running_job_ids.discard(job_id)
             self._threads.pop(job_id, None)
             self._started_at.pop(job_id, None)
@@ -604,6 +615,7 @@ class CronJobRunner:
             released = False
             with self._lock:
                 if self._tokens.get(job.id) == token:
+                    self._timeout_override.pop(job.id, None)
                     self._running_job_ids.discard(job.id)
                     self._threads.pop(job.id, None)
                     self._started_at.pop(job.id, None)
@@ -639,6 +651,10 @@ class CronJobRunner:
                 return
             manifest = registry.load_manifest_for(job.external_project)
             entrypoint = manifest.entrypoint(job.external_entrypoint)
+            declared = getattr(entrypoint, "timeout_sec", None)
+            if isinstance(declared, int) and not isinstance(declared, bool) and declared > 0:
+                with self._lock:
+                    self._timeout_override[job.id] = float(declared)
             _run_entrypoint(manifest, entrypoint, trigger="daemon")
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception

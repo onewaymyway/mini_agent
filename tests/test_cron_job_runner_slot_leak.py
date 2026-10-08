@@ -78,3 +78,42 @@ def test_no_false_reconcile_when_slots_match_running_jobs(tmp_path):
     r._reconcile_slots(now)
     r._reconcile_slots(now + 1000)
     assert r._held_slots == 1 and r._slot_reconciled_count == 0
+
+
+def test_external_entrypoint_timeout_sec_drives_watchdog_threshold(tmp_path):
+    r = _runner(tmp_path)
+    base = r._effective_timeout_seconds("ext:p:k")          # 全局默认 + grace
+    r._timeout_override["ext:p:k"] = 3600.0                  # project.yaml 里声明 timeout_sec: 3600
+    grace = base - 20 * 60
+    assert r._effective_timeout_seconds("ext:p:k") == 3600.0 + grace
+    assert r._effective_timeout_seconds("ext:p:other") == base   # 只影响这一个 job
+
+
+def test_external_job_declares_timeout_and_clears_it_afterwards(tmp_path, monkeypatch):
+    import types
+    import mini_agent.external_projects.registry as reg_mod
+    import mini_agent.external_projects.scheduler as sch_mod
+    seen = {}
+    entry = types.SimpleNamespace(timeout_sec=3600)
+    manifest = types.SimpleNamespace(entrypoint=lambda key: entry)
+
+    class _Reg:
+        def get(self, name):
+            return types.SimpleNamespace(enabled=True)
+
+        def load_manifest_for(self, name):
+            return manifest
+
+    monkeypatch.setattr(reg_mod, "ExternalProjectRegistry", _Reg)
+    r = _runner(tmp_path)
+
+    def _fake_run(m, e, trigger):
+        seen["during"] = r._effective_timeout_seconds("ext:p:k")
+
+    monkeypatch.setattr(sch_mod, "_run_entrypoint", _fake_run)
+    job = _make_job("ext:p:k")
+    job.run_mode, job.external_project, job.external_entrypoint = "external_entrypoint", "p", "k"
+    assert r.submit(job) is True
+    assert _wait(lambda: "during" in seen and not r.is_running("ext:p:k"))
+    assert seen["during"] >= 3600.0
+    assert "ext:p:k" not in r._timeout_override
