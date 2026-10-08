@@ -648,6 +648,41 @@ def render_kline_viewer(algo: Dict, manual: Dict):
         if st.button("📊 运行 K 线批量生成", use_container_width=True):
             st.info("请在终端执行: python entrypoints/run_kline_batch.py")
 
+    # 清理历史 K 线数据（保留最新日期）
+    st.markdown("---")
+    st.subheader("🗑️ 清理历史 K 线数据")
+    st.caption("一键删除除最新日期外的所有 K 线图数据，释放磁盘空间。")
+    if st.button("✅ 保留最新日期，删除其他所有 K 线数据", key="kline_cleanup_btn", use_container_width=True):
+        deleted_count = 0
+        deleted_dirs: list[str] = []
+        for pool_type in ("algo", "manual"):
+            kline_base = REPORTS_DIR / "kline" / pool_type
+            if not kline_base.exists():
+                continue
+            date_folders = sorted(
+                [d.name for d in kline_base.iterdir() if d.is_dir()],
+                reverse=True,
+            )
+            if len(date_folders) <= 1:
+                continue
+            latest = date_folders[0]
+            for d_name in date_folders[1:]:
+                d_path = kline_base / d_name
+                try:
+                    for f in d_path.glob("*"):
+                        if f.is_file():
+                            f.unlink()
+                    d_path.rmdir()
+                    deleted_count += 1
+                    deleted_dirs.append(f"{pool_type}/{d_name}")
+                except Exception as e:
+                    st.error(f"删除失败 {d_name}: {e}")
+        if deleted_count > 0:
+            st.success(f"✅ 已删除 {deleted_count} 个旧日期目录：{', '.join(deleted_dirs)}")
+        else:
+            st.info("没有需要清理的旧数据，所有日期目录均已保留。")
+
+
 
 def render_source_health():
     """数据源健康状态页。"""
