@@ -8,6 +8,7 @@ from typing import Optional
 
 import matplotlib
 import matplotlib.pyplot as plt
+import numpy as np
 from stock_watch.data_sources import DataSourceError, fetch_etf_kline, fetch_kline
 
 # 设置中文字体，避免 K 线图中中文显示为方框
@@ -79,7 +80,10 @@ def _normalize_df(df):
         raise DataSourceError(f"K 线数据缺少必要列: {missing}，akshare 返回列名可能已变化")
     df["Date"] = pd.to_datetime(df["Date"])
     df = df.set_index("Date")
-    return df[["Open", "High", "Low", "Close", "Volume"]].astype(float)
+    # 清理空字符串和无效值，避免 astype(float) 报错
+    for col in ["Open", "High", "Low", "Close", "Volume"]:
+        df[col] = pd.to_numeric(df[col], errors='coerce').replace(0, np.nan)
+    return df.dropna()
 
 
 def get_kline_df(code: str, entry_type: str, days: int, adjust: str = "qfq"):
