@@ -32,7 +32,7 @@ screener:
     - "MACD金叉且成交量放大"
 
 kline:
-  days: 120          # 每次生成 K 线图取最近多少个交易日
+  days: 756          # 每次生成 K 线图取最近多少个交易日（~3年）
   adjust: "qfq"       # 复权方式：qfq 前复权 / hfq 后复权 / "" 不复权
 
 outcomes:
