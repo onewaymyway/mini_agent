@@ -99,9 +99,11 @@ def kill_active_bash_processes() -> int:
         procs = list(_active_bash_procs)
     killed = 0
     for proc in procs:
-        if proc.poll() is None:  # 仍在运行
-            _force_kill_proc(proc)
-            killed += 1
+        # [SYS-BASH-ORPHAN-FIX] 不能只在 shell 仍存活时才杀：`start /b xxx` /
+        # `cmd &` 这类命令里 shell 会立刻退出，真正的后台进程变成孤儿并继续
+        # 占着 stdout 管道写端。这里无条件对进程组/进程树下手。
+        _force_kill_proc(proc)
+        killed += 1
     return killed
 
 
@@ -403,43 +405,92 @@ def _bash_stream(command: str, *, timeout: Optional[int], cwd: Path, env: dict) 
 
     interrupted_flag = False
     chunks: list[bytes] = []
+
+    # [SYS-BASH-ORPHAN-FIX] 主线程绝不能直接阻塞在 proc.stdout.readline() 上：
+    #   * Windows 上 ReadFile 不会被 Ctrl+C 打断；
+    #   * `start /b python -m streamlit ...` 这类命令里，cmd 外壳秒退，但后台
+    #     进程继承了管道写端，readline() 永远等不到 EOF，主线程就卡死。
+    # 改为：daemon 读线程把数据塞进队列，主线程用 queue.get(timeout=0.1) 轮询
+    # （Python 层的定时等待，KeyboardInterrupt 随时可达）。外壳退出后只再等一小段
+    # 宽限期把残余输出收完，就放手返回——后台服务继续跑，工具调用不再被拖住。
+    import queue as _queue
+    _q: "_queue.Queue" = _queue.Queue()
+    _EOF = object()
+
+    def _reader():
+        try:
+            assert proc.stdout is not None
+            for line in iter(proc.stdout.readline, b""):
+                _q.put(line)
+        except Exception:
+            pass
+        finally:
+            _q.put(_EOF)
+
+    _rt = threading.Thread(target=_reader, name="bash-stream-reader", daemon=True)
+    _rt.start()
+
+    _GRACE_AFTER_EXIT = 1.0  # 外壳退出后，等残余输出的最长时间（秒）
+    _exit_seen_at: Optional[float] = None
+    _detached_note = ""
+
+    def _emit(line: bytes) -> None:
+        chunks.append(line)
+        try:
+            R.console.print(_bash_decode(line), end="")
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.tools.builtin._bash_stream')
+
     try:
-        assert proc.stdout is not None
-        for line in iter(proc.stdout.readline, b""):
-            chunks.append(line)
+        while True:
             try:
-                R.console.print(_bash_decode(line), end="")
-            except Exception as _mini_agent_exc:
-                from mini_agent.errors import log_exception
-                log_exception(_mini_agent_exc, where='mini_agent.tools.builtin._bash_stream')
-                pass  # 终端打印失败不应影响命令本身的执行/结果收集
-        proc.wait()
+                item = _q.get(timeout=0.1)
+            except _queue.Empty:
+                if proc.poll() is not None:
+                    if _exit_seen_at is None:
+                        _exit_seen_at = time.monotonic()
+                    elif time.monotonic() - _exit_seen_at >= _GRACE_AFTER_EXIT:
+                        # 外壳已退出但管道仍被后台进程占着 → 放手，不再等 EOF
+                        _detached_note = (
+                            "[note: command exited but background process(es) still hold "
+                            "the output pipe — returning now; they keep running]"
+                        )
+                        break
+                if timed_out_flag.is_set():
+                    break
+                continue
+            if item is _EOF:
+                break
+            _emit(item)
+        # 收尾：把队列里剩余的取干净
+        while True:
+            try:
+                item = _q.get_nowait()
+            except _queue.Empty:
+                break
+            if item is not _EOF:
+                _emit(item)
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            pass
     except KeyboardInterrupt:
-        # [SYS-BASH-SIGINT-FIX] 兜底：万一主线程真的感知到了中断（没
-        # 依赖按键监听线程的直杀），也要杀掉子进程树，而不是让异常
-        # 裸奔到上层、留下孤儿进程继续跑。
+        # 兜底：主线程感知到 Ctrl+C，杀整棵树并带回已有输出。
         interrupted_flag = True
         _force_kill_proc(proc)
+        while True:
+            try:
+                item = _q.get(timeout=0.3)
+            except _queue.Empty:
+                break
+            if item is _EOF:
+                break
+            chunks.append(item)
     finally:
         _unregister_active_proc(proc)
         if watchdog is not None:
             watchdog.cancel()
-        # 进程被 kill 后，管道里可能还残留一点没读完的缓冲内容，补读一次。
-        if proc.stdout is not None:
-            try:
-                rest = proc.stdout.read()
-                if rest:
-                    chunks.append(rest)
-                    try:
-                        R.console.print(_bash_decode(rest), end="")
-                    except Exception as _mini_agent_exc:
-                        from mini_agent.errors import log_exception
-                        log_exception(_mini_agent_exc, where='mini_agent.tools.builtin._bash_stream')
-                        pass
-            except Exception as _mini_agent_exc:
-                from mini_agent.errors import log_exception
-                log_exception(_mini_agent_exc, where='mini_agent.tools.builtin._bash_stream')
-                pass
 
     combined = _bash_decode(b"".join(chunks)).rstrip()
 
@@ -455,6 +506,8 @@ def _bash_stream(command: str, *, timeout: Optional[int], cwd: Path, env: dict) 
     returncode = proc.returncode
     if returncode not in (0, None):
         combined += f"\n[exit code: {returncode}]"
+    if _detached_note:
+        combined = (combined + "\n" + _detached_note) if combined else _detached_note
 
     return combined or "(no output)"
 
