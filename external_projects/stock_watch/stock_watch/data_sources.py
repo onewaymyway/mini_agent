@@ -801,36 +801,34 @@ def _get_persistent_cdp_session():
 
 
 def _eastmoney_kline_cdp_fetch(url: str, timeout: int = 15, max_retries: int = 3) -> str:
-    """通过 CDP 导航到 URL 并返回页面文本内容（绕过 Windows 系统代理冲突）。
+    """通过 CDP 直接导航到 URL 并读取页面内容（绕过 Windows 系统代理冲突）。
 
-    使用 fetch API 获取完整响应，避免 document.body.innerText 截断长 JSON。
+    采用直接导航方式而非 fetch/XHR：CORS 跨域限制下，从东财页面发起的跨源
+    请求一律被浏览器拦截（状态码 0），而直接导航到 API URL 可以正常返回数据。
     """
     for attempt in range(1, max_retries + 1):
         session = None
         try:
             session, _ = _get_cdp_session()
-            # Step 1: 先访问东财首页建立 session/cookie（增加等待时间）
+            # 先访问东财首页建立 session/cookie（增加等待时间）
             session.eval_js(f"location.href={json.dumps('https://www.eastmoney.com/')}", await_promise=False)
-            time.sleep(5)  # 增加等待确保 cookie 设置完成
+            time.sleep(5)
 
-            # Step 2: 使用 fetch API 获取完整 JSON 数据
-            fetch_js = f'''
-fetch({json.dumps(url)}, {{
-  headers: {{'User-Agent': 'Mozilla/5.0'}}
-}})
-.then(r => r.text())
-.then(t => t.substring(0, 50000))
-.catch(e => 'FETCH_ERROR: ' + e.message)
-'''
-            body = session.eval_js(fetch_js, await_promise=True)
-            
-            if body and not body.startswith('FETCH_ERROR') and 'rc' in body:
+            # 直接导航到目标 URL，等待页面加载完成
+            session.eval_js(f"location.href={json.dumps(url)}", await_promise=True)
+            time.sleep(3)
+
+            # 读取页面完整文本内容
+            body = session.eval_js("document.body.innerText", await_promise=True)
+            body = (body or "").strip()
+
+            if body and "rc" in body and not body.startswith("FETCH_ERROR"):
                 return body
-            raise DataSourceError("CDP 返回无效内容")
+            raise DataSourceError(f"CDP 返回无效内容: {body[:200]!r}")
         except Exception as e:
             logger.debug("CDP 第 %d 次尝试失败: %s", attempt, e)
             if attempt < max_retries:
-                time.sleep(2)  # 增加重试间隔
+                time.sleep(2)
                 continue
             raise DataSourceError(f"CDP 获取失败（已重试 {max_retries} 次）: {e}") from e
         finally:
