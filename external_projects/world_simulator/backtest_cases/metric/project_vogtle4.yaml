@@ -1,0 +1,27 @@
+# 指标级回测案例（第二十四轮 A8）：Vogtle 4 号机组投运日期（项目工期型）
+# 数据来源与日期约定同 project_vogtle3.yaml（同一页面、同一约定）。4 号机组的公告日期同样大多只到月：
+#   2009 年许可预期 2017 年投运；2018-02 目标 2022-11；2021-10 推迟三个月，预期 2023 年 Q2（→ 5-15）；
+#   2022-08 预期 2023 年 Q4（→ 11-15）；2023-10 冷却剂泵电机故障，预期 2024 年 Q1（→ 2-15）；实际商运 2024-04-29。
+#   2024-02 的第二次推迟（Q2 2024）页面未给出公告日，不使用（它晚于所有截止日，只会是未来信息）。
+# 与 3 号机组强相关（同一项目、同一承包商），汇总时按两个案例计数但应视作一个项目的两个观察。
+id: project_vogtle4
+title: Vogtle 4 号机组投运日期（项目工期型）
+family: project_schedule
+verified: false
+disclaimer: "日期来自 Wikipedia 摘要并按约定补全到日；与 3 号机组强相关；超期规则是启发式。"
+provenance:
+  - source: "Wikipedia — Plant Vogtle"
+    url: "https://en.wikipedia.org/wiki/Plant_Vogtle"
+    retrieved: "2026-10-08"
+    note: "公告日期与计划日期的补全约定见 project_vogtle3.yaml 头部。"
+kind: schedule
+project:
+  name: Vogtle 4 号机组投运
+  baseline: {announced: "2009-08-15", completion: "2017-07-01"}
+  announcements:
+    - {date: "2018-02-15", completion: "2022-11-15"}
+    - {date: "2021-10-15", completion: "2023-05-15"}
+    - {date: "2022-08-15", completion: "2023-11-15"}
+    - {date: "2023-10-15", completion: "2024-02-15"}
+  actual: "2024-04-29"
+cutoffs: ["2018-02-28", "2021-10-31"]

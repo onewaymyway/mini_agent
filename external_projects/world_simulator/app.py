@@ -54,6 +54,7 @@ from world_simulator import element_registry as element_mod
 from world_simulator import element_view as element_view_mod
 from world_simulator import forecast as forecast_mod
 from world_simulator import forecast_brief as forecast_brief_mod
+from world_simulator import backtest_metrics as backtest_metrics_mod
 from world_simulator import tech_model as tech_mod
 from world_simulator import event_sampler as event_mod
 from world_simulator import causal_engine as causal_mod
@@ -4940,6 +4941,7 @@ def _render_forecast_brief(manifest: Any, history: Any, sim_id: str) -> None:
                 s, history, evidence=SimStore.for_root(DATA_DIR, sim_id).load_evidence(), runs=int(runs),
                 horizon_days=float(years) * 365.25, time_budget_sec=float(budget), with_sensitivity=bool(with_sens),
                 sens_budget_sec=(float(budget) / 2 if budget else 0.0), sim_id=sim_id,
+                backtest=backtest_metrics_mod.feedback_summary(s),
             )
     brief = st.session_state.get(sk)
     if not brief:
@@ -6214,7 +6216,8 @@ def page_detail() -> None:
                 _c_ok = _cc[2].number_input("有依据比例·不扣分线", min_value=0.0, max_value=1.0, value=float(_rp["conf_grounded_ok"]), step=0.05, key=f"conf_ok_{sim_id}")
                 _c_lo = _cc[3].number_input("有依据比例·重扣线", min_value=0.0, max_value=1.0, value=float(_rp["conf_grounded_low"]), step=0.05, key=f"conf_lo_{sim_id}")
                 _c_wd = _cc[4].number_input("区间过宽（high/low）", min_value=1.1, max_value=1000.0, value=float(_rp["conf_wide_ratio"]), step=0.5, key=f"conf_wd_{sim_id}")
-                _c_new = {"conf_high_min": int(_c_hi), "conf_medium_min": int(_c_md), "conf_grounded_ok": float(_c_ok), "conf_grounded_low": float(_c_lo), "conf_wide_ratio": float(_c_wd)}
+                _c_bt = st.checkbox("回测反馈：把指标级回测汇总（reports/backtest_metric/summary.json）计入置信等级（默认关闭；需先运行 entrypoints/backtest.py metric-run）", value=bool(_rp["backtest_feedback"]), key=f"conf_bt_{sim_id}")
+                _c_new = {"backtest_feedback": bool(_c_bt), "conf_high_min": int(_c_hi), "conf_medium_min": int(_c_md), "conf_grounded_ok": float(_c_ok), "conf_grounded_low": float(_c_lo), "conf_wide_ratio": float(_c_wd)}
                 if any(_c_new[k] != _rp[k] for k in _c_new):
                     update_settings(DATA_DIR, sim_id, anatomy_params={
                         **(cur_settings.get("anatomy_params") if isinstance(cur_settings.get("anatomy_params"), dict) else {}),

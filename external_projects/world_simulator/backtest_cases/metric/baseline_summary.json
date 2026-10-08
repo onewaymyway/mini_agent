@@ -1,0 +1,228 @@
+{
+  "by_family": {
+    "exponential": {
+      "case_ids": [
+        "cpu_transistors"
+      ],
+      "cases": 1,
+      "coverage": 0.0,
+      "expected": 0.8,
+      "mean_mape_p50": 1.8444484202391465,
+      "mean_pinball": 0.42801357690559916,
+      "mean_width_ratio": 1.1863741407304484,
+      "milestones": {
+        "above_p90": 0,
+        "below_p10": 0,
+        "inside": 0,
+        "mean_p50_error_rel": null,
+        "n": 0
+      },
+      "points": {
+        "above": 0,
+        "below": 11,
+        "coverage": 0.0,
+        "covered": 0,
+        "n": 11,
+        "wilson95": [
+          2.7755575615628914e-17,
+          0.2588400172488141
+        ]
+      },
+      "run_coverages": [
+        0.0,
+        0.0
+      ],
+      "runs": 2,
+      "verdict": "insufficient"
+    },
+    "learning_curve": {
+      "case_ids": [
+        "solar_module_price"
+      ],
+      "cases": 1,
+      "coverage": 0.020833333333333332,
+      "expected": 0.8,
+      "mean_mape_p50": 0.5881111404581405,
+      "mean_pinball": 0.3889405062341464,
+      "mean_width_ratio": 1.1759490797245409,
+      "milestones": {
+        "above_p90": 0,
+        "below_p10": 0,
+        "inside": 0,
+        "mean_p50_error_rel": null,
+        "n": 0
+      },
+      "points": {
+        "above": 44,
+        "below": 13,
+        "coverage": 0.017241379310344827,
+        "covered": 1,
+        "n": 58,
+        "wilson95": [
+          0.003049959884541764,
+          0.09141072677298324
+        ]
+      },
+      "run_coverages": [
+        0.0,
+        0.041666666666666664
+      ],
+      "runs": 2,
+      "verdict": "insufficient"
+    },
+    "logistic": {
+      "case_ids": [
+        "internet_users_share",
+        "mobile_subscriptions"
+      ],
+      "cases": 2,
+      "coverage": 0.23333333333333334,
+      "expected": 0.8,
+      "mean_mape_p50": 0.09576874447739211,
+      "mean_pinball": 0.06367130033949428,
+      "mean_width_ratio": 0.19440793756822197,
+      "milestones": {
+        "above_p90": 0,
+        "below_p10": 0,
+        "inside": 0,
+        "mean_p50_error_rel": null,
+        "n": 0
+      },
+      "points": {
+        "above": 8,
+        "below": 37,
+        "coverage": 0.22413793103448276,
+        "covered": 13,
+        "n": 58,
+        "wilson95": [
+          0.13593533332871566,
+          0.3466136304755843
+        ]
+      },
+      "run_coverages": [
+        0.4666666666666667,
+        0.3333333333333333,
+        0.0,
+        0.13333333333333333
+      ],
+      "runs": 4,
+      "verdict": "insufficient"
+    },
+    "project_schedule": {
+      "case_ids": [
+        "project_vogtle3",
+        "project_vogtle4"
+      ],
+      "cases": 2,
+      "coverage": 0.75,
+      "expected": 0.8,
+      "mean_mape_p50": null,
+      "mean_pinball": null,
+      "mean_width_ratio": null,
+      "milestones": {
+        "above_p90": 0,
+        "below_p10": 1,
+        "inside": 3,
+        "mean_p50_error_rel": 0.22224073687650014,
+        "n": 4
+      },
+      "points": {
+        "above": 0,
+        "below": 0,
+        "coverage": null,
+        "covered": 0,
+        "n": 0,
+        "wilson95": null
+      },
+      "run_coverages": [
+        1.0,
+        1.0,
+        0.0,
+        1.0
+      ],
+      "runs": 4,
+      "verdict": "insufficient"
+    }
+  },
+  "cases": 6,
+  "caveats": [
+    "回测测的是『骨架 + 按历史点机械拟合出的参数区间』，不是 LLM 研究出的参数质量；案例少、序列自相关、同一案例的截止日强相关，覆盖率只是旁证，不是校准。",
+    "案例是公开且容易找到数据的序列（策展偏差）；项目案例是公认的超期项目（选择偏差），两个机组强相关。",
+    "真值来自摘要抓取，未逐点核对原始资料（案例 verified: false）。",
+    "拟合常数事先声明、没有拿案例调过；换常数会改变覆盖率，应当用新的案例而不是这些案例去选常数。"
+  ],
+  "coverage": 0.33125,
+  "expected_coverage": 0.8,
+  "failed": [],
+  "generated_at": "2026-10-08T03:34:20Z",
+  "honesty": "回测测的是『骨架 + 按历史点机械拟合出的参数区间』，不是 LLM 研究出的参数质量；案例少、序列自相关、同一案例的截止日强相关，覆盖率只是旁证，不是校准。",
+  "overall": {
+    "case_ids": [
+      "cpu_transistors",
+      "internet_users_share",
+      "mobile_subscriptions",
+      "project_vogtle3",
+      "project_vogtle4",
+      "solar_module_price"
+    ],
+    "cases": 6,
+    "coverage": 0.33125,
+    "expected": 0.8,
+    "mean_mape_p50": 0.6560242624130178,
+    "mean_pinball": 0.23607417095468353,
+    "mean_width_ratio": 0.6877847738978583,
+    "milestones": {
+      "above_p90": 0,
+      "below_p10": 1,
+      "inside": 3,
+      "mean_p50_error_rel": 0.22224073687650014,
+      "n": 4
+    },
+    "points": {
+      "above": 52,
+      "below": 61,
+      "coverage": 0.11023622047244094,
+      "covered": 14,
+      "n": 127,
+      "wilson95": [
+        0.06680938916575475,
+        0.17655052083228873
+      ]
+    },
+    "run_coverages": [
+      0.0,
+      0.0,
+      0.4666666666666667,
+      0.3333333333333333,
+      0.0,
+      0.13333333333333333,
+      1.0,
+      1.0,
+      0.0,
+      1.0,
+      0.0,
+      0.041666666666666664
+    ],
+    "runs": 12,
+    "verdict": "narrow_severe"
+  },
+  "runs": 12,
+  "runs_per_forecast": 1000,
+  "seed": 2024,
+  "thresholds": {
+    "min_cases": 3,
+    "narrow": 0.7,
+    "narrow_severe": 0.5,
+    "wide": 0.95
+  },
+  "unverified_cases": [
+    "cpu_transistors",
+    "internet_users_share",
+    "mobile_subscriptions",
+    "project_vogtle3",
+    "project_vogtle4",
+    "solar_module_price"
+  ],
+  "verdict": "narrow_severe",
+  "version": 1
+}

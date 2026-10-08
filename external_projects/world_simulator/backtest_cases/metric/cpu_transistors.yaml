@@ -1,0 +1,30 @@
+# 指标级回测案例（第二十四轮 A8）：Intel 旗舰 CPU 晶体管数（指数型）
+#
+# 【数据来源】Wikipedia "Transistor count" 微处理器表（2026-10-08 经 WebFetch 摘要取得，未逐条对照 Intel 原始资料）。
+#   取的是各代 Intel x86 旗舰/代表型号；同一代常有多个变体，本案例取表中第一个。
+#   型号与年份的选择本身是策展序列（"摩尔定律"叙事的经典序列），存在选择偏差。
+# 【口径】t = 发布年（整数年）；截止日当年的点算作"已知"。
+# 【验证状态】verified: false —— 数值来自摘要抓取，没有人工逐点核对。
+id: cpu_transistors
+title: Intel 旗舰 CPU 晶体管数（指数型）
+family: exponential
+verified: false
+disclaimer: "数值经 Wikipedia 摘要抓取得到，未逐点对照原始资料；序列由 Intel 旗舰型号策展而成，存在选择偏差。"
+provenance:
+  - source: "Wikipedia — Transistor count（微处理器表）"
+    url: "https://en.wikipedia.org/wiki/Transistor_count"
+    retrieved: "2026-10-08"
+    note: "4004 的晶体管数该页现写 2,250（旧资料常写 2,300）；Pentium II 取 Klamath 7.5M 为 1997，Pentium III 取 Katmai 9.5M 为 1999，Pentium 4 取 Willamette 42M 为 2000，Core 2 Duo 取 Conroe 291M 为 2006。"
+kind: series
+series:
+  - id: transistors
+    name: 晶体管数
+    unit: 个
+    scored: true
+    scale: log
+    points: [[1971, 2250], [1972, 3500], [1974, 6000], [1978, 29000], [1982, 134000], [1985, 275000], [1989, 1180235], [1993, 3100000], [1997, 7500000], [1999, 9500000], [2000, 42000000], [2006, 291000000]]
+model:
+  metrics:
+    - series: transistors
+      trend: exponential
+cutoffs: [1982, 1989]

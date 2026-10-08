@@ -14,6 +14,10 @@
             [--time-basis auto|years_per_step]
                                      同一案例 A（不改设置）/B（覆盖设置）各重复 R
                                      次，输出指标分布对比（成本 ≈ 2×R×步数）。
+  metric-check [case]                指标级回测（A8）：校验案例、打印每个截止日的拟合参数与金丝雀结果（不跑蒙特卡洛）。
+  metric-run [--case ID ...] [--runs N] [--seed S] [--no-save]
+                                     指标级回测：不调 LLM、不联网；输出区间覆盖率等，并写
+                                     reports/backtest_metric/summary.json（预测简报开启『回测反馈』后读取）。
   rescore <result.json> --override 真值id=候选id|none [...]
                                      用户覆盖匹配结果并重算指标。
 
@@ -91,6 +95,53 @@ def _matcher(kind: str, workspace_root: Path):
     return bt.make_llm_matcher(load_llm_cfg(), workspace_root)
 
 
+def _metric_main(args) -> int:
+    from world_simulator import backtest_metrics as bm
+
+    try:
+        if args.cmd == "metric-check":
+            cases = [bm.load_case(Path(args.case))] if args.case else bm.load_cases()
+            for c in cases:
+                print(f"案例 {c.id}（{c.family}）{'已核对' if c.verified else '⚠ 未核对'}：{c.title}")
+                for cut in c.cutoffs:
+                    truth = bm.extract_truth(c, cut)
+                    hz = bm.future_horizon_days(c, cut, truth)
+                    digest = bm.leak_check(c, cut, hz)
+                    pack = bm.build_pack(c, cut, future_horizon_days=hz)
+                    print(f"  截止 {cut}：历史点 {pack.history_counts} · 视野 {hz / 365.25:.1f} 年 · 金丝雀通过 {digest[:8]}")
+                    for k, v in pack.fits.items():
+                        ps = v.get("params") or {x: v[x] for x in ("low", "mode", "high") if x in v}
+                        print(f"    {k}: {json.dumps(ps, ensure_ascii=False)[:300]}")
+            return 0
+        runs = args.runs or bm.DEFAULT_RUNS
+        seed = args.seed if args.seed is not None else bm.DEFAULT_SEED
+        results = bm.run_all(runs=runs, seed=seed, only=args.cases or None)
+        summary = bm.summarize(results, runs=runs, seed=seed)
+        for r in results:
+            if not r.get("ok"):
+                print(f"✗ {r.get('case_id')} @ {r.get('cutoff')}：{r.get('error')}")
+                continue
+            print(f"{r['case_id']:<22s} 截止 {str(r['cutoff']):<11s} 覆盖率 {_fmt(r['run_coverage'])}")
+        o = summary["overall"]
+        print(f"整体：{o['cases']} 个案例 / {o['runs']} 次运行，按运行平均覆盖率 {_fmt(o['coverage'])}（名义 0.8）→ {bm.VERDICT_LABELS[o['verdict']]}")
+        for fam, g in summary["by_family"].items():
+            print(f"  {fam:<17s} 案例 {g['cases']} 覆盖率 {_fmt(g['coverage'])} → {bm.VERDICT_LABELS[g['verdict']]}")
+        for c in summary["caveats"]:
+            print(f"  ※ {c}")
+        if not args.no_save and not args.cases:
+            out = REPORTS_DIR / "backtest_metric" / bm.SUMMARY_NAME
+            bm.write_json(out, summary)
+            bm.write_json(out.with_name("results.json"), results)
+            print(f"汇总：{out}")
+        elif not args.no_save:
+            print("（只跑了部分案例，不写汇总，避免用残缺数据影响置信等级）")
+        return 0
+    except bm.BacktestMetricError as exc:
+        logger.error("%s", exc)
+        _common.set_run_detail(str(exc))
+        return 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -116,12 +167,23 @@ def main() -> int:
     p.add_argument("--steps", type=int, default=None)
     p.add_argument("--matcher", choices=["rule", "llm"], default="rule")
 
+    p = sub.add_parser("metric-check")
+    p.add_argument("case", nargs="?", default=None)
+
+    p = sub.add_parser("metric-run")
+    p.add_argument("--case", dest="cases", action="append", default=[])
+    p.add_argument("--runs", type=int, default=None)
+    p.add_argument("--seed", type=int, default=None)
+    p.add_argument("--no-save", dest="no_save", action="store_true")
+
     p = sub.add_parser("rescore")
     p.add_argument("result")
     p.add_argument("--override", action="append", required=True)
 
     args = parser.parse_args()
     ensure_dirs()
+    if args.cmd in ("metric-check", "metric-run"):
+        return _metric_main(args)
     try:
         if args.cmd == "check":
             case = bt.load_case(Path(args.case))

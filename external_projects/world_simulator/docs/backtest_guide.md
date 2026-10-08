@@ -153,3 +153,25 @@ resolved 的步数取自 WP0 的快照链，找不到快照时保守地取最后
 - `elapsed_days` 是 LLM 估计，长跨度/变步长时误差可能很大，且回测不会像技术模型那样夹值（只取落盘的合法正数）；
 - 旧的 `result.json`（P6 之前）没有 `horizon_years`/`tech_timing`，`rescore` 退回旧口径、不补该指标；
 - 没有在真实 LLM 下运行过：涌现的技术节点数量与命名、能否被匹配、`elapsed_days` 质量都是未知数。
+
+## 指标级回测（第二十四轮 A8）
+
+上面讲的是"整套推演引擎涌现的里程碑顺序对不对"（要真实 LLM）。第二十四轮另有一条**不调 LLM、不联网**的回测，只回答一个问题：
+**骨架（A4 引擎 + A6 蒙特卡洛）给出的 P10–P90 区间，在真实历史数值序列上偏窄还是偏宽？**
+
+```powershell
+# 校验案例 + 防泄漏金丝雀 + 看每个截止日拟合出的参数（不跑蒙特卡洛）
+python entrypoints/backtest.py metric-check
+
+# 跑全部案例（约 1 分钟），写 reports/backtest_metric/summary.json
+python entrypoints/backtest.py metric-run
+python entrypoints/backtest.py metric-run --runs 300 --seed 7          # 更快
+python entrypoints/backtest.py metric-run --case cpu_transistors      # 只跑一个，不写汇总
+```
+
+- 案例在 `backtest_cases/metric/*.yaml`：真实历史序列（含截止日之后的真值）或项目公告时间线，每个案例列若干截止日，一个"运行"= 案例 × 截止日。
+- 参数**不是手填**的：由 `backtest_fit` 只用截止日前的点机械拟合，运行前还有金丝雀检查改动未来数据不会改变资料包。
+- 输出区间覆盖率（名义 0.8）、分位损失、里程碑落点；案例数 < 3 时不下结论。
+- 默认**不影响**任何预测简报。要让置信等级参考它：设置页勾选"回测反馈"（`anatomy_params.backtest_feedback`），并先跑一次 `metric-run`。
+- 随仓库的 `backtest_cases/metric/baseline_summary.json` 是参考基线（2026-10-08，`runs=1000, seed=2024`），**不会被自动使用**。
+- ⚠ 测的是"骨架 + 机械拟合参数"，不是 LLM 研究参数的质量；案例少且策展、数值未逐点核对（`verified: false`）；拟合常数不要拿这些案例去调。完整说明、规则与基线数字见 `docs/anatomy_guide.md` §17。

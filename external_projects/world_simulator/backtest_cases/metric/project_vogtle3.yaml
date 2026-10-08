@@ -1,0 +1,32 @@
+# 指标级回测案例（第二十四轮 A8）：Vogtle 3 号机组投运日期（项目工期型）
+#
+# 【数据来源】Wikipedia "Plant Vogtle"（2026-10-08 经 WebFetch 摘要取得）：
+#   2009 年许可时预期 2016 年投运；2018-02 VCM-18 报告目标 2021-11；2021-10 推迟三个月，预期 2022 年 Q3；
+#   2022-08 再推迟，预期 2023 年 Q1；2023-02 启动期振动问题推迟到 5–6 月；实际商运 2023-07-31。
+# 【日期约定】页面多数只给到年/季/月，没有具体日：
+#   年 → 当年 7 月 1 日；季度 → 该季中间月 15 日（Q3 → 8-15，Q1 → 2-15）；月 → 15 日；"5 月或 6 月" → 6-01。
+#   公告日期同理（2009 年 8 月许可 → 2009-08-15；2018-02 → 02-15；2021-10 → 10-15；2022-08 → 08-15；2023-02 → 02-15）。
+#   这些约定带来约 ±0.5 个月的不确定性，与项目量级（年）相比可忽略，但不是精确值。
+# 【选择偏差】Vogtle 是公认的重大超期项目，不是随机抽取的项目；单个项目的两个机组相互强相关。
+# 【验证状态】verified: false —— 来自页面摘要，未对照 Georgia Power 一手公告。
+id: project_vogtle3
+title: Vogtle 3 号机组投运日期（项目工期型）
+family: project_schedule
+verified: false
+disclaimer: "日期来自 Wikipedia 摘要并按约定补全到日；Vogtle 是公认的超期项目（选择偏差），3/4 号机组强相关；超期规则是启发式。"
+provenance:
+  - source: "Wikipedia — Plant Vogtle"
+    url: "https://en.wikipedia.org/wiki/Plant_Vogtle"
+    retrieved: "2026-10-08"
+    note: "公告日期与计划日期的补全约定见文件头。"
+kind: schedule
+project:
+  name: Vogtle 3 号机组投运
+  baseline: {announced: "2009-08-15", completion: "2016-07-01"}
+  announcements:
+    - {date: "2018-02-15", completion: "2021-11-15"}
+    - {date: "2021-10-15", completion: "2022-08-15"}
+    - {date: "2022-08-15", completion: "2023-02-15"}
+    - {date: "2023-02-15", completion: "2023-06-01"}
+  actual: "2023-07-31"
+cutoffs: ["2018-02-28", "2021-10-31"]

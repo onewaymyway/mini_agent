@@ -1,0 +1,31 @@
+# 指标级回测案例（第二十四轮 A8）：全球每百人移动电话订阅数（S 曲线型，上限未知）
+#
+# 【数据来源】World Bank 指标 IT.CEL.SETS.P2（World 聚合，ITU 数据），2026-10-08 经 World Bank API 取得，
+#   两次抓取（全范围与 1990–2012）数值一致。World 聚合在 2000–2004 年为空，序列分 1990–1999 与 2005–2025 两段。
+# 【口径】t = 年，值 = 每百人订阅数（可超过 100：一人多卡）。没有物理上限，cap 上界按"历史最大值的 5 倍"机械给出。
+# 【拟合窗口】window_years: 8 —— 只用截止日前 8 年内的点（避开 1990 年代早期的另一段增长），声明于看结果之前。
+# 【验证状态】verified: false —— 数值经 API 摘要抓取，没有人工逐点核对。
+id: mobile_subscriptions
+title: 全球每百人移动订阅数（S 曲线型，上限未知）
+family: logistic
+verified: false
+disclaimer: "World Bank/ITU 的 World 聚合；2000–2004 缺数据；订阅数可超过 100，cap 没有物理上限，只能由数据给出，区间会很宽。"
+provenance:
+  - source: "World Bank — Mobile cellular subscriptions (per 100 people), World"
+    url: "https://data.worldbank.org/indicator/IT.CEL.SETS.P2"
+    retrieved: "2026-10-08"
+    note: "API: api.worldbank.org/v2/country/WLD/indicator/IT.CEL.SETS.P2"
+kind: series
+series:
+  - id: subs
+    name: 每百人移动订阅数
+    unit: 每百人
+    scored: true
+    scale: linear
+    points: [[1990, 0.211594271247073], [1991, 0.302299140293289], [1992, 0.427741587995374], [1993, 0.61917529433752], [1994, 0.991495034555743], [1995, 1.58624957062705], [1996, 2.49966341127963], [1997, 3.65525621935149], [1998, 5.33358304332039], [1999, 8.12312872482729], [2005, 33.9], [2006, 41.7], [2007, 50.6], [2008, 59.7], [2009, 68.0], [2010, 76.6], [2011, 84.2], [2012, 88.5], [2013, 93.1], [2014, 96.7], [2015, 96.1], [2016, 99.3], [2017, 101.4], [2018, 103.1], [2019, 105.9], [2020, 104.8], [2021, 106.7], [2022, 108.0], [2023, 109.8], [2024, 110.4], [2025, 111.5]]
+model:
+  metrics:
+    - series: subs
+      trend: logistic
+      fit: {window_years: 8}
+cutoffs: [2008, 2010]

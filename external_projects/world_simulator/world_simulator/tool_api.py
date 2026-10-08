@@ -591,12 +591,14 @@ def get_forecast_brief(
     if elements is not None and (not isinstance(elements, list) or not all(isinstance(e, str) for e in elements)):
         return _err("validation_error", "elements 必须是字符串数组")
     try:
+        from world_simulator import backtest_metrics as _bm
         from world_simulator import forecast_brief as _fb
 
         store, _m, history, settings, br = _anatomy_context(sim_id, branch)
         brief = _fb.run_brief(
             settings, history, evidence=store.load_evidence(), elements=elements, runs=runs, seed=seed,
             horizon_days=horizon_days, time_budget_sec=time_budget_sec, with_sensitivity=bool(with_sensitivity), sim_id=sim_id,
+            backtest=_bm.feedback_summary(settings),
         )
         if not brief.get("ok"):
             return _err("validation_error", str(brief.get("reason") or "无法生成预测简报"))

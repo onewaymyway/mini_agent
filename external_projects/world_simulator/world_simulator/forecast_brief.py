@@ -33,6 +33,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from world_simulator import anatomy as an
 from world_simulator import anatomy_engine as ae
+from world_simulator import backtest_metrics as bm
 from world_simulator import element_registry as er
 from world_simulator import element_view as ev
 from world_simulator import forecast as fc
@@ -48,6 +49,8 @@ RULE_LABELS = {
     "wide_intervals": "参数区间很宽",
     "point_estimates": "多数参数只有点估计",
     "no_backtest": "没有同类回测案例",
+    "backtest_narrow": "同类回测显示区间偏窄",
+    "backtest_thin": "回测案例太少，不下结论",
     "time_precision": "时间精度降级",
     "truncated": "预测被时间预算截断",
 }
@@ -55,6 +58,7 @@ RULE_LABELS = {
 POINTS = {
     "grounded_ok_miss": 20, "grounded_low": 35, "unreviewed": 10, "stale_evidence": 10,
     "wide_intervals": 10, "point_estimates": 10, "no_backtest": 10, "time_precision": 10, "truncated": 5,
+    "backtest_narrow_severe": 15, "backtest_narrow": 10, "backtest_thin": 5,   # A8；退回整体汇总（同类案例不足）时再减半（向上取整）
 }
 POINT_SHARE_LIMIT = 0.5          # 趋势参数 + 路径耗时里\"只有点估计\"的占比超过它 → 扣分
 MAX_BLOCKERS = 5
@@ -64,7 +68,8 @@ MAX_ASSUMPTIONS = 5
 DEFAULT_BRIEF_BUDGET_SEC = 60.0
 DEFAULT_SENS_BUDGET_SEC = 30.0
 
-NO_BACKTEST_NOTE = "A8（指标级回测）尚未提供数据，骨架在同类案例上的区间覆盖率未知。"
+NO_BACKTEST_NOTE = "没有可用的指标级回测汇总（需在设置里开启『回测反馈』并先运行 `entrypoints/backtest.py metric-run`），骨架在同类案例上的区间覆盖率未知。"
+BACKTEST_SCOPE_NOTE = "（回测里的参数区间由历史点机械拟合而来，LLM/证据给出的区间可能更宽；这是『参数区间驱动的预测普遍偏自信』的旁证，不是对本元素区间的校准。）"
 HONEST_NOTE = fc.HONEST_NOTE
 CONFIDENCE_NOTE = "置信等级由引擎按固定规则计算（见下方扣分），不是 AI 的主观评价，也不是概率；它衡量的是『这份剖面有多少依据』。"
 
@@ -201,7 +206,9 @@ def confidence(
     | stale_evidence | 被字段引用的证据已过期（只有传了 `evidence` 才检查） | 10 |
     | wide_intervals | 带区间参数的 high/low 中位数 ≥ `conf_wide_ratio` | 10 |
     | point_estimates | 趋势参数 + 路径耗时里只有点估计的占比 > 50% | 10 |
-    | no_backtest | `backtest` 为空（A8 之前恒为此项） | 10 |
+    | no_backtest | 没有回测汇总（`backtest` 为空/无效） | 10 |
+    | backtest_narrow | 同类回测平均覆盖率 < 0.7（< 0.5 为严重，且同类时封顶「中」）；同类案例不足时退回整体汇总、扣分减半 | 10 / 15 |
+    | backtest_thin | 有汇总但案例 < 3，不下结论 | 5 |
     | time_precision | 预测标了\"时间精度降级\" | 10 |
     | truncated | 预测被时间预算截断 | 5 |
 
@@ -245,9 +252,20 @@ def confidence(
     if w["point_share"] is not None and w["point_share"] > POINT_SHARE_LIMIT:
         deduct("point_estimates", POINTS["point_estimates"], f"{w['total'] - w['ranged']}/{w['total']} 个趋势参数/路径耗时只有点估计，区间会低估不确定性")
 
-    has_backtest = isinstance(backtest, dict) and int(backtest.get("cases") or 0) >= 1
+    bt = bm.assess_for_element(backtest, anatomy)
+    has_backtest = bool(bt.get("has_data"))
     if not has_backtest:
         deduct("no_backtest", POINTS["no_backtest"], NO_BACKTEST_NOTE)
+    elif bt.get("verdict") == "insufficient":
+        deduct("backtest_thin", POINTS["backtest_thin"], str(bt["detail"]))
+    elif bt.get("verdict") in ("narrow", "narrow_severe"):
+        severe = bt["verdict"] == "narrow_severe"
+        pts = POINTS["backtest_narrow_severe" if severe else "backtest_narrow"]
+        if bt["scope"] == "overall":
+            pts = (pts + 1) // 2
+        deduct("backtest_narrow", pts, str(bt["detail"]) + BACKTEST_SCOPE_NOTE)
+        if severe and bt["scope"] == "family":
+            caps.append({"rule": "backtest_narrow", "level": "medium", "detail": "同类回测里区间严重偏窄，最高只给「中」"})
 
     fm = forecast_meta or {}
     if fm.get("time_precision_degraded"):
@@ -264,7 +282,7 @@ def confidence(
         "level": level, "level_label": LEVEL_LABELS[level], "score": score, "deductions": deductions, "caps": caps,
         "inputs": {
             "grounded": g, "anatomy_status": status, "stale_evidence": stale, "evidence_checked": evidence is not None,
-            "widths": w, "has_backtest": has_backtest,
+            "widths": w, "has_backtest": has_backtest, "backtest": {k: bt.get(k) for k in ("scope", "verdict", "cases", "runs", "coverage", "families")},
         },
         "thresholds": th, "note": CONFIDENCE_NOTE,
     }

@@ -131,6 +131,8 @@ DEFAULT_PARAMS: Dict[str, Any] = {
     "conf_grounded_ok": 0.6,           # 关键条目里「有出处/已确认/已编辑」的比例 ≥ 此值 → 不扣分
     "conf_grounded_low": 0.25,         # 比例 < 此值 → 重扣并把等级封顶在「低」
     "conf_wide_ratio": 3.0,            # 带区间的参数 high/low 的中位数 ≥ 此值 → 视为区间很宽
+    # A8：是否把指标级回测汇总（`reports/backtest_metric/summary.json`）喂给置信等级。保守的 opt-in，默认关闭。
+    "backtest_feedback": False,
 }
 # `deep_time_budget_sec`：计划 §7 标"待 A5 定"，A5 定为 120 秒（见 `docs/anatomy_guide.md` §14.2）。
 
@@ -204,6 +206,7 @@ _VALIDATORS = {
     "conf_grounded_ok": _is_unit_float,
     "conf_grounded_low": _is_unit_float,
     "conf_wide_ratio": _is_ratio_above_one,
+    "backtest_feedback": _is_bool,
 }
 
 

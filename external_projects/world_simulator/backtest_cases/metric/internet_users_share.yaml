@@ -1,0 +1,30 @@
+# 指标级回测案例（第二十四轮 A8）：全球互联网用户占人口比例（S 曲线型）
+#
+# 【数据来源】World Bank 指标 IT.NET.USER.ZS（World 聚合，ITU 数据），2026-10-08 经 World Bank API 取得，
+#   同一接口两次抓取（不同日期范围）数值一致。2025 为估计值；2020 年前后有 ITU 方法修订造成的跳变。
+# 【口径】t = 年，值 = 占人口百分比，物理上限 100。World 聚合在 2000–2004 年为空，序列从 2005 年开始。
+# 【验证状态】verified: false —— 数值经 API 摘要抓取，没有人工逐点核对。
+id: internet_users_share
+title: 全球互联网用户占比（S 曲线型）
+family: logistic
+verified: false
+disclaimer: "World Bank/ITU 的 World 聚合；2025 为估计值；2020 前后有方法修订；只有 21 个年度点，且截止日处于曲线早中段，cap 本就难以识别。"
+provenance:
+  - source: "World Bank — Individuals using the Internet (% of population), World"
+    url: "https://data.worldbank.org/indicator/IT.NET.USER.ZS"
+    retrieved: "2026-10-08"
+    note: "API: api.worldbank.org/v2/country/WLD/indicator/IT.NET.USER.ZS"
+kind: series
+series:
+  - id: share
+    name: 互联网用户占比
+    unit: "%"
+    scored: true
+    scale: linear
+    points: [[2005, 15.6], [2006, 17.2], [2007, 20.2], [2008, 22.8], [2009, 25.3], [2010, 28.4], [2011, 30.9], [2012, 33.3], [2013, 35.3], [2014, 37.4], [2015, 39.9], [2016, 43.6], [2017, 46.3], [2018, 49.4], [2019, 53.9], [2020, 60.1], [2021, 63.8], [2022, 67.0], [2023, 69.2], [2024, 71.2], [2025, 73.6]]
+model:
+  cap_max: 100
+  metrics:
+    - series: share
+      trend: logistic
+cutoffs: [2010, 2013]
