@@ -282,10 +282,17 @@ class DailyKlineDB:
                 eta = (n - i - 1) / rate if rate > 0 else 0
                 has_new = sum(1 for v in result.values() if v > 0)
                 up_to_date = sum(1 for v in result.values() if v == 0)
+
+                def fmt_time(seconds):
+                    h, m = divmod(int(seconds), 3600)
+                    if h > 0:
+                        return f"{h}小时{m}分钟"
+                    return f"{m}分钟"
+
                 print(
                     f"[进度] {i+1}/{n} ({(i+1)*100/n:.1f}%) "
                     f"新数据 {has_new} 只 已是最新 {up_to_date} 只 "
-                    f"耗时 {elapsed:.1f}s 速度 {rate:.1f}只/s ETA {eta:.0f}s"
+                    f"已使用 {fmt_time(elapsed)} 预计剩余 {fmt_time(eta)}"
                 )
         return result
 
