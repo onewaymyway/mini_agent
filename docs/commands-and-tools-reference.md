@@ -526,10 +526,11 @@ REST 端点（详见 [HTTP API 指南](http-api-guide.md)）。
 | `/cron disable <id>` | 禁用 job（`sys:` 前缀的系统 job 可禁用但不可删除） |
 | `/cron run <id>` | 立即触发一次（不修改 `next_run_at`，不影响下次正常触发） |
 | `/cron add <name> <schedule> <task_template>` | 添加用户自定义 job |
+| `/cron add-cmd <name> <schedule> <command...> [--cwd X] [--timeout N] [--unmanaged]` | 添加「执行命令」型 job：到点直接跑 shell 命令（不经 LLM）；`--unmanaged` 不占并发槽位（仅限不调 LLM 的命令）。**仅用户可用，agent 的 `run_slash_command` 会拒绝**；详见 [Cron 专属执行机制指南 §3.6](cron-dedicated-execution-guide.md) |
 | `/cron add-goal-cycle <goal_id> <schedule> [task_template]` | 把已有 Goal 声明为周期性：到期时自动为该 Goal 派生并启动一轮新 Objective，而不是发一条孤立消息；详见 [Goal 与 Cron 绑定指南](goal-cron-binding-guide.md) |
 | `/cron remove <id>` | 删除用户 job（`sys:` 前缀的系统 job 不可删除） |
 | `/cron set-schedule <id> <schedule>` | 修改触发时间并重新计算 `next_run_at` |
-| `/cron feedback <id> <text>` | 持久化提意见，合入 `description`/`task_template`（及 dedicated 模式的 `prompt.md`）；若绑定了 Goal 会自动双向同步；详见 [Goal 与 Cron 绑定指南 §7](goal-cron-binding-guide.md#7-用户意见反馈持久化区别于一次性inject_guidance) |
+| `/cron feedback <id> <text>` | （命令型 job 不支持）持久化提意见，合入 `description`/`task_template`（及 dedicated 模式的 `prompt.md`）；若绑定了 Goal 会自动双向同步；详见 [Goal 与 Cron 绑定指南 §7](goal-cron-binding-guide.md#7-用户意见反馈持久化区别于一次性inject_guidance) |
 
 **schedule 格式：**
 

@@ -391,9 +391,24 @@ export const getEvolutionFeedbackLoopSummary = () => apiGet<Record<string, unkno
 
 // ── Cron 任务（Tab11） ──────────────────────────────────────────
 export const listCronJobs = () => apiGet<{ jobs: CronJob[]; note?: string }>("/cron/jobs");
-export const createCronJob = (body: { name: string; schedule: string; task_template: string; description?: string; priority?: number }) =>
+export const createCronJob = (body: {
+  name: string;
+  schedule: string;
+  task_template?: string;
+  description?: string;
+  priority?: number;
+  // 执行命令型（不经 LLM）：run_mode="command" 时填 command/cwd/timeout_sec/concurrency
+  run_mode?: "message" | "command";
+  command?: string;
+  cwd?: string;
+  timeout_sec?: number;
+  concurrency?: "managed" | "unmanaged";
+}) =>
   apiPost<{ job: CronJob }>("/cron/jobs", body);
-export const updateCronJob = (jobId: string, body: { enabled?: boolean; schedule?: string; priority?: number }) =>
+export const updateCronJob = (
+  jobId: string,
+  body: { enabled?: boolean; schedule?: string; priority?: number; command?: string; cwd?: string; timeout_sec?: number; concurrency?: "managed" | "unmanaged" },
+) =>
   apiPut<{ job: CronJob }>(`/cron/jobs/${encodeURIComponent(jobId)}`, body);
 export const deleteCronJob = (jobId: string) => apiDelete<{ deleted?: boolean; job_id?: string }>(`/cron/jobs/${encodeURIComponent(jobId)}`);
 export const runCronJobNow = (jobId: string) => apiPost<{ triggered?: boolean }>(`/cron/jobs/${encodeURIComponent(jobId)}/run`);

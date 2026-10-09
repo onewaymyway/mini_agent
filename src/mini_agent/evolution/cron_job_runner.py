@@ -320,10 +320,11 @@ class CronJobRunner:
     @staticmethod
     def _is_unmanaged(job: "CronJob") -> bool:
         """[cron_unmanaged_concurrency_plan.md] 是否"不占槽位、不过仲裁"的 job。
-        只有外部项目 entrypoint 才可能是 unmanaged（message/goal_cycle 必然
-        涉及 LLM，即使字段被误写也一律按 managed 处理）。"""
+        只有不经 LLM 的 run_mode 才可能是 unmanaged：外部项目 entrypoint，以及
+        [cron_command_job_plan.md] 的 command（用户自建的执行命令型）。
+        message/goal_cycle 必然涉及 LLM，即使字段被误写也一律按 managed 处理。"""
         return (
-            getattr(job, "run_mode", "message") == "external_entrypoint"
+            getattr(job, "run_mode", "message") in ("external_entrypoint", "command")
             and getattr(job, "concurrency", "managed") == "unmanaged"
         )
 
@@ -409,6 +410,12 @@ class CronJobRunner:
             self._running_job_ids.add(job.id)
             self._tokens[job.id] = token
             self._started_at[job.id] = time.time()
+            if getattr(job, "run_mode", "") == "command":
+                # [cron_command_job_plan.md] watchdog 以 job 自己的 timeout_sec 为准
+                # （子进程会在这个时间被杀），不套全局 default_timeout_seconds。
+                _ts = getattr(job, "timeout_sec", None)
+                if isinstance(_ts, int) and not isinstance(_ts, bool) and _ts > 0:
+                    self._timeout_override[job.id] = float(_ts)
             if self._is_unmanaged(job):
                 # 提交即视为"运行中"（没有排队阶段），线程启动前就登记，
                 # 避免 execution_phase() 在这一瞬间误报 queued。
@@ -645,6 +652,11 @@ class CronJobRunner:
                 # （_effective_timeout_seconds 见下方特判）。
                 self._run_external_entrypoint_job(job)
                 return
+            if job.run_mode == "command":
+                # [cron_command_job_plan.md] 用户自建的执行命令型：起子进程跑命令，
+                # 结果写进 job workspace（state.json + runs/<id>.jsonl），不经 LLM。
+                self._run_command_job(job)
+                return
             self._run_message_job(job)
         finally:
             # [阶段一] 只有自己仍是这个 job 当前合法的执行者（没有被
@@ -703,6 +715,182 @@ class CronJobRunner:
                 _mini_agent_exc,
                 where="mini_agent.evolution.cron_job_runner.CronJobRunner._run_external_entrypoint_job",
             )
+
+    # ── command 型 job ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _kill_process_tree(proc) -> None:
+        """超时后杀掉整棵进程树，而不只是外层 shell。
+        shell=True 时 proc 只是 sh/cmd.exe，真正的脚本是它的子进程，只杀 shell 会留下孤儿。"""
+        import os
+        import signal
+        import subprocess
+        import sys
+        try:
+            if sys.platform == "win32":
+                from mini_agent.utils import win_subprocess
+                win_subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                    capture_output=True, timeout=15,
+                )
+            else:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _read_tail(path, max_bytes: int) -> str:
+        """读文件末尾 max_bytes 字节并解码；文件很大时只 seek 到尾部，不整体读入内存。"""
+        import locale
+        try:
+            size = path.stat().st_size
+            with open(path, "rb") as f:
+                truncated = size > max_bytes
+                if truncated:
+                    f.seek(size - max_bytes)
+                raw = f.read()
+        except Exception:
+            return ""
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            # Windows 控制台程序常按本地代码页（如 GBK）输出
+            text = raw.decode(locale.getpreferredencoding(False) or "utf-8", errors="replace")
+        return ("…(前文已截断)\n" + text) if truncated else text
+
+    def _run_command_job(self, job: "CronJob") -> None:
+        """[next_doc/cron_command_job_plan.md] worker：执行 run_mode="command" 的 job。
+
+        - shell=True 子进程，cwd 为空用 daemon 工作目录；继承 daemon 环境变量（含 API key，
+          与外部项目 entrypoint 一致），额外注入 MINI_AGENT_CRON_JOB_ID。
+        - stdout/stderr 重定向到 runs/ 下临时文件，结束后只读尾部（cron.command_output_tail_bytes），
+          命令输出再大也不占 daemon 内存。
+        - 超时按 job.timeout_sec 杀整棵进程树，记为 timed_out。
+        - 结果写 state.json（status/last_error/last_step_index=退出码无意义故固定 0）与
+          runs/<run_id>.jsonl（run_started / command_output / step_error / run_finished），
+          事件类型与既有 agent 型 job 对齐，看板的执行记录/状态摘要直接可用。
+        不抛异常：任何内部错误都落成一次失败的 run，不影响 daemon 主循环。
+        """
+        import os
+        import subprocess
+        import sys
+        from mini_agent.evolution.cron_job_workspace import (
+            CronJobWorkspace, STATUS_IDLE, STATUS_NEEDS_REVIEW, STATUS_RUNNING, STATUS_TIMED_OUT,
+        )
+        from mini_agent.utils import win_subprocess
+
+        cron_cfg = getattr(self._base_cfg, "cron", None)
+        tail_bytes = int(getattr(cron_cfg, "command_output_tail_bytes", 4096) or 4096)
+
+        ws = CronJobWorkspace(self._paths, job.id)
+        ws.ensure(default_task_template="")
+        state = ws.read_state()
+        if state.status == STATUS_RUNNING:
+            # 上次异常退出残留的 running 僵尸态：记一次失败，不阻止本次执行（与 agent 型一致）
+            state.consecutive_failures += 1
+        run_id = ws.new_run_id()
+        started = time.time()
+        state.status = STATUS_RUNNING
+        state.last_run_started_at = started
+        state.last_run_id = run_id
+        ws.write_state(state)
+
+        command = getattr(job, "command", "") or ""
+        cwd = getattr(job, "cwd", "") or None
+        timeout = getattr(job, "timeout_sec", None) or int(
+            getattr(cron_cfg, "command_default_timeout_seconds", 600) or 600
+        )
+        ws.append_run_event(run_id, {
+            "type": "run_started", "job_id": job.id, "job_name": job.name,
+            "run_mode": "command", "command": command, "cwd": cwd or "",
+            "timeout_sec": timeout,
+        })
+
+        final_status = STATUS_IDLE
+        error_text = ""
+        returncode: Optional[int] = None
+        stdout_tail = stderr_tail = ""
+        out_path = ws.runs_dir / f"{run_id}.stdout.tmp"
+        err_path = ws.runs_dir / f"{run_id}.stderr.tmp"
+        try:
+            if not command.strip():
+                raise ValueError("command 为空")
+            if cwd and not os.path.isdir(cwd):
+                raise FileNotFoundError(f"cwd 不存在：{cwd}")
+            env = dict(os.environ)
+            env["MINI_AGENT_CRON_JOB_ID"] = job.id
+            popen_kwargs: dict = {}
+            if sys.platform != "win32":
+                popen_kwargs["start_new_session"] = True  # 独立进程组，超时时 killpg
+            else:
+                popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            with open(out_path, "wb") as fo, open(err_path, "wb") as fe:
+                proc = win_subprocess.Popen(
+                    command, shell=True, cwd=cwd, env=env,
+                    stdin=subprocess.DEVNULL, stdout=fo, stderr=fe, **popen_kwargs,
+                )
+                try:
+                    returncode = proc.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    self._kill_process_tree(proc)
+                    returncode = None
+                    final_status = STATUS_TIMED_OUT
+                    ws.append_run_event(run_id, {"type": "timed_out", "timeout_sec": timeout})
+            stdout_tail = self._read_tail(out_path, tail_bytes)
+            stderr_tail = self._read_tail(err_path, tail_bytes)
+            if final_status == STATUS_TIMED_OUT:
+                error_text = f"命令执行超过 {timeout}s 被终止"
+            elif returncode != 0:
+                final_status = STATUS_NEEDS_REVIEW
+                error_text = f"命令退出码 {returncode}"
+        except Exception as exc:  # 启动失败等：落成一次失败的 run
+            final_status = STATUS_NEEDS_REVIEW
+            error_text = f"命令未能执行：{exc}"
+            from mini_agent.errors import log_exception
+            log_exception(exc, where="mini_agent.evolution.cron_job_runner.CronJobRunner._run_command_job")
+        finally:
+            for _p in (out_path, err_path):
+                try:
+                    _p.unlink()
+                except Exception:
+                    pass
+
+        duration = time.time() - started
+        ws.append_run_event(run_id, {
+            "type": "command_output", "returncode": returncode,
+            "stdout_tail": stdout_tail, "stderr_tail": stderr_tail,
+            "summary": f"退出码 {returncode}" if returncode is not None else "无退出码（超时或未能启动）",
+        })
+        if error_text:
+            detail = (stderr_tail or stdout_tail).strip()
+            ws.append_run_event(run_id, {
+                "type": "step_error",
+                "error": error_text + (f"\n{detail[-tail_bytes:]}" if detail else ""),
+            })
+        state = ws.read_state()
+        state.status = final_status
+        state.last_run_finished_at = time.time()
+        state.last_run_id = run_id
+        state.last_step_index = 0
+        state.last_error = (error_text + (f"\n{(stderr_tail or stdout_tail).strip()[-tail_bytes:]}"
+                                            if (stderr_tail or stdout_tail).strip() else "")) if error_text else ""
+        state.progress_summary = ""
+        if final_status == STATUS_IDLE:
+            state.consecutive_failures = 0
+        else:
+            state.consecutive_failures += 1
+        ws.write_state(state)
+        ws.append_run_event(run_id, {
+            "type": "run_finished", "status": final_status,
+            "steps_executed": 0, "duration_seconds": duration, "returncode": returncode,
+        })
 
     def _run_message_job(self, job: "CronJob") -> None:
         """既有 run_mode="message" worker：构造一次性 cron agent，走

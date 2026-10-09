@@ -1472,6 +1472,20 @@ class AgentClient:
     def cron_jobs(self):
         return self._get("/cron/jobs")
 
+    def add_cron_command_job(self, name: str, schedule: str, command: str, *, cwd: str = "",
+                             timeout_sec: int | None = None, concurrency: str = "managed",
+                             description: str = "", priority: int | None = None):
+        """[next_doc/cron_command_job_plan.md] 创建「执行命令」型 cron job（不经 LLM）。"""
+        body = {
+            "run_mode": "command", "name": name, "schedule": schedule, "command": command,
+            "cwd": cwd, "concurrency": concurrency, "description": description,
+        }
+        if timeout_sec is not None:
+            body["timeout_sec"] = timeout_sec
+        if priority is not None:
+            body["priority"] = priority
+        return self._post("/cron/jobs", body)
+
     def add_cron_job(self, name: str, schedule: str, task_template: str, description: str = "",
                       priority: int | None = None):
         body = {

@@ -7201,6 +7201,7 @@ def render_kanban_tab(client: AgentClient):
             cj_name = st.text_input("名称", key="cj_name")
             cj_task = st.text_area("任务内容 (task_template)", height=80, key="cj_task")
             cj_desc = st.text_area("描述（可选）", height=60, key="cj_desc")
+            st.caption("需要定时执行命令/脚本（不经 LLM）？请到「⏰ Cron 任务」标签页新建，类型选「执行命令」。")
             cj_submitted = st.form_submit_button("创建")
         if cj_submitted:
             if not (cj_name.strip() and cj_schedule.strip() and cj_task.strip()):
@@ -12935,6 +12936,10 @@ def _render_cron_job_card(client: AgentClient, job: dict) -> None:
             name_label += "　🛠️ 系统任务"
         if is_external_job:
             name_label += "　🗂️ 外部项目"
+        if job.get("run_mode") == "command":
+            name_label += "　⌨️ 执行命令"
+            if job.get("concurrency") == "unmanaged":
+                name_label += "（不占槽位）"
         top1.markdown(name_label)
         top1.caption(job_id)
         top2.caption(f"schedule: `{job.get('schedule', '')}`")
@@ -12949,6 +12954,11 @@ def _render_cron_job_card(client: AgentClient, job: dict) -> None:
         desc = job.get("description", "")
         if desc:
             st.caption(desc)
+        if job.get("run_mode") == "command":
+            st.caption(
+                f"命令：`{job.get('command', '')}`　目录：`{job.get('cwd') or '(daemon 工作目录)'}`"
+                f"　超时：{job.get('timeout_sec', '-')}s"
+            )
 
         # [资源仲裁可见性] 连续因仲裁被跳过触发的次数——sys: job 不受
         # 仲裁约束（见 §3.2），恒为 0，这里只对非 system job 展示，
@@ -13202,52 +13212,60 @@ def _render_cron_job_details(client: AgentClient, job: dict) -> None:
             else:
                 st.caption("暂无执行记录，触发过至少一次后这里会显示逐次的状态/耗时/事件时间线。")
 
-        with st.expander("✏️ 编辑任务 Prompt"):
-            prompt_resp = client.cron_job_prompt(job_id)
-            if prompt_resp and "_error" in prompt_resp:
-                st.caption(f"获取 prompt 失败：{prompt_resp['_error']}")
-            else:
-                current_prompt = (prompt_resp or {}).get("prompt", "")
-                new_prompt = st.text_area(
-                    "prompt.md（支持 {{task_description}} / {{progress}} 占位符）",
-                    value=current_prompt, height=160,
-                    key=f"cron_prompt_{job_id}",
-                )
-                if st.button("💾 保存 prompt", key=f"cron_prompt_save_{job_id}"):
-                    save_res = client.update_cron_job_prompt(job_id, new_prompt)
-                    if save_res and "_error" in save_res:
-                        st.error(f"保存失败：{save_res['_error']}")
-                    else:
-                        st.success("已保存，下次该 job 触发时生效。")
+        if job.get("run_mode") == "command":
+            st.caption(
+                f"⌨️ 命令型任务（不经 LLM）：`{job.get('command', '')}`；失败时的输出尾部见上方"
+                "状态区的错误信息与执行记录。如需修改命令，请通过 REST "
+                "`PUT /v1/cron/jobs/{id}` 的 command/cwd/timeout_sec/concurrency 字段，或删除后重建。"
+            )
+        else:
+            with st.expander("✏️ 编辑任务 Prompt"):
+                prompt_resp = client.cron_job_prompt(job_id)
+                if prompt_resp and "_error" in prompt_resp:
+                    st.caption(f"获取 prompt 失败：{prompt_resp['_error']}")
+                else:
+                    current_prompt = (prompt_resp or {}).get("prompt", "")
+                    new_prompt = st.text_area(
+                        "prompt.md（支持 {{task_description}} / {{progress}} 占位符）",
+                        value=current_prompt, height=160,
+                        key=f"cron_prompt_{job_id}",
+                    )
+                    if st.button("💾 保存 prompt", key=f"cron_prompt_save_{job_id}"):
+                        save_res = client.update_cron_job_prompt(job_id, new_prompt)
+                        if save_res and "_error" in save_res:
+                            st.error(f"保存失败：{save_res['_error']}")
+                        else:
+                            st.success("已保存，下次该 job 触发时生效。")
 
     # [goal_cron_feedback_and_output_policy_plan.md Track E] 用户对本
     # CronJob 提意见——持久化写入 description/task_template（及
     # dedicated 模式下的 prompt.md）；若绑定了 Goal（run_mode=goal_cycle）
     # 会自动双向同步。复用 P1-P4 观测面板的卡片样式，保持视觉一致。
-    with st.expander("💬 提意见", expanded=False):
-        job_feedback = job.get("user_feedback") or []
-        if job_feedback:
-            for item in reversed(job_feedback):
-                at = item.get("at")
-                ts_str = time.strftime("%m-%d %H:%M", time.localtime(at)) if at else "-"
-                st.caption(f"`{ts_str}` {item.get('text', '')}")
-        else:
-            st.caption("还没有意见记录。")
-        with st.form(f"cron_feedback_{job_id}", clear_on_submit=True):
-            fb_text = st.text_area(
-                "你的意见（会永久合入这个 job 的说明，之后每次触发都会带着）",
-                height=60, key=f"cron_feedback_text_{job_id}",
-            )
-            fb_submit = st.form_submit_button("提交意见")
-        if fb_submit:
-            if not fb_text.strip():
-                st.error("意见内容不能为空")
+    if job.get("run_mode") != "command":  # 命令型无 prompt，反馈接口也会拒绝
+        with st.expander("💬 提意见", expanded=False):
+            job_feedback = job.get("user_feedback") or []
+            if job_feedback:
+                for item in reversed(job_feedback):
+                    at = item.get("at")
+                    ts_str = time.strftime("%m-%d %H:%M", time.localtime(at)) if at else "-"
+                    st.caption(f"`{ts_str}` {item.get('text', '')}")
             else:
-                res = client.add_cron_job_feedback(job_id, fb_text.strip())
-                if res and "_error" in res:
-                    st.error(res["_error"])
+                st.caption("还没有意见记录。")
+            with st.form(f"cron_feedback_{job_id}", clear_on_submit=True):
+                fb_text = st.text_area(
+                    "你的意见（会永久合入这个 job 的说明，之后每次触发都会带着）",
+                    height=60, key=f"cron_feedback_text_{job_id}",
+                )
+                fb_submit = st.form_submit_button("提交意见")
+            if fb_submit:
+                if not fb_text.strip():
+                    st.error("意见内容不能为空")
                 else:
-                    _cron_dialog_done(job_id, "success", "意见已提交。")
+                    res = client.add_cron_job_feedback(job_id, fb_text.strip())
+                    if res and "_error" in res:
+                        st.error(res["_error"])
+                    else:
+                        _cron_dialog_done(job_id, "success", "意见已提交。")
 
     btn_col1, btn_col2 = st.columns(2)
     with btn_col1:
@@ -13464,27 +13482,53 @@ def render_cron_jobs_tab(client: AgentClient):
 
     st.divider()
     with st.expander("➕ 新建 cron job"):
+        new_kind = st.radio(
+            "类型", ["Agent 任务", "执行命令"], horizontal=True, key="cron_new_kind",
+            help="执行命令：到点直接跑 shell 命令（如 python 脚本），不经 LLM；Windows 下由 cmd.exe 执行。",
+        )
+        is_cmd = new_kind == "执行命令"
         new_name = st.text_input("名称", key="cron_new_name")
         new_schedule = _render_schedule_picker("cron_tab_new_job", default_value=1.0, default_unit="小时")
-        new_template = st.text_area("任务描述（task_template）", key="cron_new_template")
+        if is_cmd:
+            new_command = st.text_area("命令", key="cron_new_command", placeholder="python scripts/etl.py")
+            new_cwd = st.text_input("工作目录（可选，须已存在；留空 = daemon 工作目录）", key="cron_new_cwd")
+            new_timeout = st.number_input(
+                "超时（秒；缺省 600，超过服务端上限会被拒绝）", min_value=1, value=600, step=60,
+                key="cron_new_timeout",
+            )
+            new_unmanaged = st.checkbox(
+                "不占 cron 并发槽位、不过资源仲裁（仅限确定不调 LLM 的命令）", key="cron_new_unmanaged",
+            )
+            new_template = ""
+        else:
+            new_template = st.text_area("任务描述（task_template）", key="cron_new_template")
         new_desc = st.text_input("说明（可选）", key="cron_new_desc")
         new_priority = st.number_input(
             "priority（默认 0，数值越大同一次 tick 内到期时越先被触发）",
             value=0, step=1, key="cron_new_priority",
         )
         if st.button("创建", key="cron_new_submit"):
-            if not new_name.strip() or not new_template.strip():
-                st.warning("名称和任务描述不能为空。")
+            body_text = new_command if is_cmd else new_template
+            if not new_name.strip() or not body_text.strip():
+                st.warning("名称和命令不能为空。" if is_cmd else "名称和任务描述不能为空。")
             else:
                 from mini_agent.evolution.cron_scheduler import validate_schedule
                 schedule_error = validate_schedule(new_schedule)
                 if schedule_error:
                     st.warning(f"schedule 格式不合法：{schedule_error}")
                 else:
-                    res = client.add_cron_job(
-                        new_name, new_schedule, new_template, new_desc,
-                        priority=int(new_priority),
-                    )
+                    if is_cmd:
+                        res = client.add_cron_command_job(
+                            new_name, new_schedule, new_command.strip(), cwd=new_cwd.strip(),
+                            timeout_sec=int(new_timeout),
+                            concurrency="unmanaged" if new_unmanaged else "managed",
+                            description=new_desc, priority=int(new_priority),
+                        )
+                    else:
+                        res = client.add_cron_job(
+                            new_name, new_schedule, new_template, new_desc,
+                            priority=int(new_priority),
+                        )
                     if res and "_error" in res:
                         st.error(f"创建失败：{res['_error']}")
                     else:

@@ -10,6 +10,7 @@ import {
   InputNumber,
   List,
   Modal,
+  Radio,
   Space,
   Switch,
   Tag,
@@ -39,6 +40,8 @@ export default function CronJobs() {
   const { data: runEvents } = useCronJobRunEvents(workspaceJobId, runEventsRunId);
 
   const jobs = data?.jobs || [];
+  const workspaceJob = jobs.find((x) => x.id === workspaceJobId);
+  const isCommandJob = workspaceJob?.run_mode === "command";
 
   return (
     <Card
@@ -69,9 +72,11 @@ export default function CronJobs() {
               >
                 {j.enabled ? "禁用" : "启用"}
               </a>,
-              <a key="feedback" onClick={() => { setFeedbackTarget(j.id); setFeedbackText(""); }}>
-                提意见
-              </a>,
+              j.run_mode !== "command" && (
+                <a key="feedback" onClick={() => { setFeedbackTarget(j.id); setFeedbackText(""); }}>
+                  提意见
+                </a>
+              ),
               !j.is_system && (
                 <a
                   key="delete"
@@ -94,6 +99,8 @@ export default function CronJobs() {
                   <Tag color={j.enabled ? "green" : "default"}>{j.enabled ? "已启用" : "已禁用"}</Tag>
                   {j.execution_phase && <Tag color="processing">{j.execution_phase}</Tag>}
                   {j.is_system && <Tag>系统内置</Tag>}
+                  {j.run_mode === "command" && <Tag color="purple">执行命令</Tag>}
+                  {j.run_mode === "command" && j.concurrency === "unmanaged" && <Tag color="cyan">不占槽位</Tag>}
                   <InputNumber
                     size="small"
                     min={0}
@@ -107,6 +114,12 @@ export default function CronJobs() {
               description={
                 <>
                   <div>{j.description}</div>
+                  {j.run_mode === "command" && (
+                    <div>
+                      <Text code>{j.command}</Text>
+                      <Text type="secondary"> · 目录: {j.cwd || "(daemon 工作目录)"} · 超时 {j.timeout_sec ?? "-"}s</Text>
+                    </div>
+                  )}
                   <Text type="secondary">
                     schedule: {j.schedule} · 下次: {j.next_run_str || j.next_run_at || "-"} · 已跑 {j.run_count ?? 0} 次
                   </Text>
@@ -121,6 +134,7 @@ export default function CronJobs() {
         <Form
           form={form}
           layout="vertical"
+          initialValues={{ run_mode: "message", concurrency: "managed" }}
           onFinish={(values) => {
             actions.create.mutate(values, {
               onSuccess: () => {
@@ -134,11 +148,41 @@ export default function CronJobs() {
           <Form.Item name="name" label="名称" rules={[{ required: true }]}>
             <Input />
           </Form.Item>
-          <Form.Item name="schedule" label="cron 表达式" rules={[{ required: true }]}>
-            <Input placeholder="例如 0 9 * * *" />
+          <Form.Item name="run_mode" label="类型">
+            <Radio.Group>
+              <Radio.Button value="message">Agent 任务</Radio.Button>
+              <Radio.Button value="command">执行命令</Radio.Button>
+            </Radio.Group>
           </Form.Item>
-          <Form.Item name="task_template" label="任务 Prompt" rules={[{ required: true }]}>
-            <Input.TextArea rows={4} />
+          <Form.Item name="schedule" label="调度表达式" rules={[{ required: true }]} extra="格式：interval:<秒> 或 cron:<分 时 日 月 周>，如 cron:0 9 * * *">
+            <Input placeholder="cron:0 9 * * *" />
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate={(a, b) => a.run_mode !== b.run_mode}>
+            {({ getFieldValue }) =>
+              getFieldValue("run_mode") === "command" ? (
+                <>
+                  <Form.Item name="command" label="命令" rules={[{ required: true }]} extra="Windows 下由 cmd.exe 执行，Linux/macOS 由 sh 执行；不经 LLM">
+                    <Input.TextArea rows={3} placeholder="python scripts/etl.py" />
+                  </Form.Item>
+                  <Form.Item name="cwd" label="工作目录（可选，须已存在）">
+                    <Input placeholder="留空 = daemon 工作目录" />
+                  </Form.Item>
+                  <Form.Item name="timeout_sec" label="超时（秒，可选）" extra="缺省 600；超过服务端上限会被拒绝">
+                    <InputNumber min={1} />
+                  </Form.Item>
+                  <Form.Item name="concurrency" label="并发档位" extra="不占槽位 = 不占 cron 并发槽位、不过资源仲裁；仅限确定不调 LLM 的命令">
+                    <Radio.Group>
+                      <Radio value="managed">占槽位（默认）</Radio>
+                      <Radio value="unmanaged">不占槽位</Radio>
+                    </Radio.Group>
+                  </Form.Item>
+                </>
+              ) : (
+                <Form.Item name="task_template" label="任务 Prompt" rules={[{ required: true }]}>
+                  <Input.TextArea rows={4} />
+                </Form.Item>
+              )
+            }
           </Form.Item>
           <Form.Item name="description" label="描述">
             <Input.TextArea rows={2} />
@@ -181,6 +225,8 @@ export default function CronJobs() {
               <Descriptions.Item label="状态摘要">{JSON.stringify(workspace.state)}</Descriptions.Item>
             </Descriptions>
 
+            {!isCommandJob && (
+              <>
             <Title level={5}>
               专属 Prompt
               {!promptEditing && (
@@ -219,6 +265,9 @@ export default function CronJobs() {
               <Paragraph style={{ whiteSpace: "pre-wrap" }}>{promptData?.prompt}</Paragraph>
             )}
 
+              </>
+            )}
+
             <Space style={{ marginBottom: 12 }}>
               <Button
                 danger
@@ -245,6 +294,7 @@ export default function CronJobs() {
                   <Space>
                     <Tag color={r.success ? "green" : "red"}>{r.success ? "成功" : "失败"}</Tag>
                     {r.run_id} {r.started_at}
+                    {!r.success && r.error && <Text type="danger">{String(r.error).split("\n")[0]}</Text>}
                   </Space>
                 </List.Item>
               )}
@@ -258,7 +308,15 @@ export default function CronJobs() {
                   dataSource={(runEvents?.events as any[]) || []}
                   renderItem={(e: any) => (
                     <List.Item>
-                      <Text type="secondary">{e.ts}</Text> {e.summary || JSON.stringify(e)}
+                      <div>
+                        <Text type="secondary">{e.ts}</Text> {e.summary || JSON.stringify(e)}
+                        {e.type === "command_output" && (e.stdout_tail || e.stderr_tail) && (
+                          <Paragraph code style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}>
+                            {e.stdout_tail ? `[stdout]\n${e.stdout_tail}\n` : ""}
+                            {e.stderr_tail ? `[stderr]\n${e.stderr_tail}` : ""}
+                          </Paragraph>
+                        )}
+                      </div>
                     </List.Item>
                   )}
                 />

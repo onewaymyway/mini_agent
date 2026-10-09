@@ -346,6 +346,11 @@ export interface CronJob {
   run_count?: number;
   consecutive_skip_count?: number;
   execution_phase?: string;
+  run_mode?: string;
+  concurrency?: string;
+  command?: string;
+  cwd?: string;
+  timeout_sec?: number | null;
   [key: string]: unknown;
 }
 

@@ -121,3 +121,4 @@ entrypoints:
 - 已按 §3 实现；新增 16 个用例，相关回归（cron runner/槽位泄漏/仲裁/外部项目/调度概览）全部通过。
 - 文档同步：`docs/external-projects-guide.md` §2.2、`docs/cron-dedicated-execution-guide.md` §3.5、
   `.claude/skills/external-project-manager/reference/project_yaml_schema.md` 与 `project.yaml.tmpl`。
+- 后续扩展：用户自建的执行命令型 job（`run_mode="command"`）同样适用本档位，见 [cron_command_job_plan.md](cron_command_job_plan.md)。

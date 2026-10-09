@@ -125,6 +125,14 @@ class CronJob:
     # 只对 run_mode="external_entrypoint" 生效；旧 cron_jobs.json 缺省按 managed。
     concurrency: str = "managed"
 
+    # [next_doc/cron_command_job_plan.md] run_mode="command"：到点直接起子进程执行
+    # shell 命令（不经 LLM/agent）。command 为命令行；cwd 为空表示 daemon 工作目录；
+    # timeout_sec 为子进程硬超时（秒）。其它 run_mode 下三个字段恒为 ""/""/None。
+    # 仅 owner 的 REST/CLI/看板可创建与修改，agent 工具路径一律拒绝（见 slash_command deny）。
+    command: str = ""
+    cwd: str = ""
+    timeout_sec: Optional[int] = None
+
     # [goal_cron_paused_semantics_and_status_provenance_plan.md] `enabled`
     # 变更历史（含来源），与 GoalNode.status_history 同一套表达：
     # `{enabled: bool, at, from, by, reason[, caller]}`，只追加，超长丢最旧。
@@ -155,6 +163,9 @@ class CronJob:
             "external_project": self.external_project,
             "external_entrypoint": self.external_entrypoint,
             "concurrency": self.concurrency,
+            "command": self.command,
+            "cwd": self.cwd,
+            "timeout_sec": self.timeout_sec,
             "state_history": self.state_history,
             # [看板 cron 面板补齐删除功能] 显式下发 is_system，避免前端
             # 只能靠 id.startswith("sys:") 这种约定猜测，接口更自描述。
@@ -185,6 +196,9 @@ class CronJob:
             external_project=d.get("external_project"),
             external_entrypoint=d.get("external_entrypoint"),
             concurrency=d.get("concurrency") or "managed",
+            command=d.get("command") or "",
+            cwd=d.get("cwd") or "",
+            timeout_sec=d.get("timeout_sec"),
             state_history=list(d.get("state_history", []) or []),
         )
 
@@ -1252,6 +1266,108 @@ class CronScheduler:
         self.save()
         return job
 
+    def _normalize_command_fields(
+        self,
+        command: str,
+        cwd: str,
+        timeout_sec: Optional[int],
+        concurrency: str,
+    ) -> tuple[str, str, int, str]:
+        """[next_doc/cron_command_job_plan.md] 命令型 job 字段校验（创建/修改共用）。
+        失败抛 ValueError，调用方转成 400/用户提示：
+          - command 非空；
+          - cwd 非空时必须是已存在的目录（存成绝对路径）；
+          - timeout_sec 缺省取 cron.command_default_timeout_seconds，必须是正整数且不超过
+            cron.command_max_timeout_seconds（超限直接拒绝，不静默截断）；
+          - concurrency ∈ {managed, unmanaged}，非法值报错（保守 opt-in，不静默当 managed）。
+        """
+        command = (command or "").strip()
+        if not command:
+            raise ValueError("command 不能为空")
+        concurrency = (concurrency or "managed").strip().lower()
+        if concurrency not in ("managed", "unmanaged"):
+            raise ValueError(f"concurrency 只能是 managed/unmanaged，收到 {concurrency!r}")
+        cron_cfg = self._cron_cfg()
+        default_t = int(getattr(cron_cfg, "command_default_timeout_seconds", 600) or 600)
+        max_t = int(getattr(cron_cfg, "command_max_timeout_seconds", 3600) or 3600)
+        if timeout_sec is None:
+            timeout_sec = default_t
+        if isinstance(timeout_sec, bool) or not isinstance(timeout_sec, int) or timeout_sec <= 0:
+            raise ValueError("timeout_sec 必须是正整数（秒）")
+        if timeout_sec > max_t:
+            raise ValueError(f"timeout_sec={timeout_sec} 超过上限 {max_t}（cron.command_max_timeout_seconds）")
+        cwd = (cwd or "").strip()
+        if cwd:
+            abs_cwd = os.path.abspath(os.path.expanduser(cwd))
+            if not os.path.isdir(abs_cwd):
+                raise ValueError(f"cwd 不是已存在的目录：{cwd}")
+            cwd = abs_cwd
+        return command, cwd, timeout_sec, concurrency
+
+    def add_command_job(
+        self,
+        name: str,
+        schedule: str,
+        command: str,
+        *,
+        cwd: str = "",
+        timeout_sec: Optional[int] = None,
+        concurrency: str = "managed",
+        description: str = "",
+        tags: Optional[list[str]] = None,
+        enabled: bool = True,
+        priority: Optional[int] = None,
+    ) -> CronJob:
+        """[next_doc/cron_command_job_plan.md] 添加「执行命令」型用户 Job（校验见
+        `_normalize_command_fields`）。task_template 恒为 ""；run_mode 固定 "command"。"""
+        command, cwd, timeout_sec, concurrency = self._normalize_command_fields(
+            command, cwd, timeout_sec, concurrency,
+        )
+        job_id = f"user:{uuid.uuid4().hex[:8]}"
+        job = CronJob(
+            id=job_id,
+            name=name,
+            schedule=schedule,
+            task_template="",
+            description=description,
+            tags=tags or ["user", "command"],
+            enabled=enabled,
+            initiator="cron",
+            next_run_at=compute_next_run(schedule, 0.0),
+            run_mode="command",
+            priority=0 if priority is None else int(priority),
+            concurrency=concurrency,
+            command=command,
+            cwd=cwd,
+            timeout_sec=timeout_sec,
+        )
+        self._jobs[job_id] = job
+        self.save()
+        return job
+
+    def update_command_job(self, job_id: str, **fields) -> Optional[CronJob]:
+        """[next_doc/cron_command_job_plan.md] 修改命令型 job 的 command/cwd/timeout_sec/
+        concurrency（只传需要改的字段）。job 不存在返回 None；不是 command 型抛 ValueError；
+        字段校验失败抛 ValueError（此时不做任何修改）。仅 owner 的 REST 调用。"""
+        job = self._jobs.get(job_id)
+        if job is None:
+            return None
+        if job.run_mode != "command":
+            raise ValueError(f"job {job_id} 不是命令型（run_mode={job.run_mode}），不能修改 command 相关字段")
+        allowed = {"command", "cwd", "timeout_sec", "concurrency"}
+        unknown = set(fields) - allowed
+        if unknown:
+            raise ValueError(f"不支持的字段：{sorted(unknown)}")
+        command, cwd, timeout_sec, concurrency = self._normalize_command_fields(
+            fields.get("command", job.command),
+            fields.get("cwd", job.cwd),
+            fields.get("timeout_sec", job.timeout_sec),
+            fields.get("concurrency", job.concurrency),
+        )
+        job.command, job.cwd, job.timeout_sec, job.concurrency = command, cwd, timeout_sec, concurrency
+        self.save()
+        return job
+
     def register_local_handler(self, job_id: str, handler: Callable[["CronJob"], bool]) -> None:
         """注册一个"零 LLM 成本"的本地回调，供 `_fire()` 优先使用（见
         watchlist_notification_goal_design.md §10.1）。可重复调用覆盖同一
@@ -1430,6 +1546,10 @@ class CronScheduler:
         job = self._jobs.get(job_id)
         if not job:
             return False
+        # [cron_command_job_plan.md] 命令型 job 没有 prompt，反馈会被合并进 task_template/
+        # description 但对执行毫无意义，且不能让反馈通道成为改写命令的旁路：直接拒绝。
+        if job.run_mode == "command":
+            return False
         from mini_agent.time_utils import ts_to_str
         job.user_feedback.append({"text": text, "at": time.time()})
         stamp = f"[用户意见 {ts_to_str(time.time())}] {text}"
@@ -1506,6 +1626,8 @@ class CronScheduler:
         job = self._jobs.get(job_id)
         if not job:
             return False
+        if job.run_mode == "command":
+            return False  # 命令型 job 无 task_template，调优提案不得改写
         job.task_template = task_template
         self.save()
         return True

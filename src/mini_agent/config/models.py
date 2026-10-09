@@ -1993,6 +1993,15 @@ class CronConfig:
     # 收紧到 1，不再像改造前那样把 degraded 当 blocked 处理、整体跳过。
     degraded_max_concurrent: int = 1
 
+    # [next_doc/cron_command_job_plan.md] run_mode="command"（执行 shell 命令、
+    # 不经 LLM 的 cron）的全局限制。timeout_sec 为必填语义：用户没写时用
+    # command_default_timeout_seconds；写了超过 command_max_timeout_seconds 的值
+    # 创建时直接拒绝（而不是静默截断），防止命令不限时挂住。
+    command_default_timeout_seconds: int = 600
+    command_max_timeout_seconds: int = 3600
+    # 每次运行保留的 stdout/stderr 尾部字节数（写入 runs/<id>.jsonl 与 state.last_error）。
+    command_output_tail_bytes: int = 4096
+
     # [goal_cron_unified_scheduler_improvement_plan.md P2] CronJob 连续
     # 跳过次数达到该阈值时，通过 NotificationDispatcher 发一次告警。
     # 默认 5：太低容易在偶发的短暂 blocked 期间就刷屏告警，太高则错过

@@ -290,7 +290,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - `commands/debug_cmd.py` — `/debug system|history|all|save`：打印/导出当前 system prompt 与 history（含 `_type`/估算 token），便于分析调试；补全表 `_COMMANDS`（`ui/terminal.py`）同步注册
 - `commands/user_cmd.py` — `mini-agent user` 子命令（多用户架构）；通过 HTTP 调用 `/v1/users` 端点管理用户，不直接读写文件；支持 list / add / remove / role / token 子命令；需要 daemon 以 `--http-multi-user` 启动
   - `goals.py` — `/agent goals` 全部子命令（add/obj/done/abandon/accept/reject/pause/progress/status），`/goals`/`/digest` 快捷命令，`/goals accept|reject` 含 `SoftGoalDeriver.record_rejected()` 30天去重（Stage 9）
-  - `cron.py` — `/cron` 全部子命令（list/status/enable/disable/run/add/remove/set-schedule），daemon 模式专属（Stage 9 Phase 1）
+  - `cron.py` — `/cron` 全部子命令（list/status/enable/disable/run/add/add-cmd/remove/set-schedule；`add-cmd` 创建执行命令型 job，见 `next_doc/cron_command_job_plan.md`），daemon 模式专属（Stage 9 Phase 1）
 
 ### hooks (`src/mini_agent/hooks/`)
 

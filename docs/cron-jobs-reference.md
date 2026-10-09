@@ -254,3 +254,10 @@ job 时也请同步这两处**——`next_doc/goal_cron_docs_status_audit_record
 详见 `docs/http-api-guide.md`（`/v1/autonomous/status`、
 `/v1/autonomous/gating_history`）和 `docs/kanban-dashboard-guide.md`
 （"⏰ Cron 任务"、"🗓️ 全局日程"两个 Tab）。
+
+## 附：用户自建的「执行命令」型 job（`run_mode="command"`）
+
+除上述内置 `sys:` job 和 agent 任务型 job 外，用户可自建到点直接执行 shell 命令的 job（不经 LLM，
+可选不占并发槽位），id 形如 `user:<8位hex>`，由 `/cron add-cmd`、`POST /v1/cron/jobs`
+（`run_mode:"command"`）或看板创建。字段、并发、超时、结果落盘与安全边界见
+[Cron 专属执行机制指南 §3.6](cron-dedicated-execution-guide.md)。

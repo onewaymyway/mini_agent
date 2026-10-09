@@ -9064,6 +9064,9 @@ async def add_cron_job(request: Request):
     POST /v1/cron/jobs
     Body: { "name": str, "schedule": str, "task_template": str, "description": str,
             "priority": int (可选，缺省按 add_job() 的 run_mode 规则决定) }
+    执行命令型（不经 LLM）：{ "run_mode": "command", "name", "schedule", "command": str,
+            "cwd": str (可选), "timeout_sec": int (可选，缺省 cron.command_default_timeout_seconds),
+            "concurrency": "managed"|"unmanaged" (可选，缺省 managed), "description", "priority" }
     """
     http_server = getattr(request.app.state, "http_server", None)
     if http_server is None:
@@ -9078,6 +9081,32 @@ async def add_cron_job(request: Request):
     body = await request.json()
     name = body.get("name", "").strip()
     schedule = body.get("schedule", "").strip()
+
+    # [next_doc/cron_command_job_plan.md] run_mode="command"：执行 shell 命令、不经 LLM。
+    # 只有 owner 的 REST 能创建（_require_owner 已在上面校验），agent 工具路径没有这个入口。
+    run_mode = (body.get("run_mode") or "message").strip().lower()
+    if run_mode == "command":
+        if not name or not schedule or not (body.get("command") or "").strip():
+            raise HTTPException(status_code=400, detail="name, schedule, command are required")
+        try:
+            job = cs.add_command_job(
+                name=name,
+                schedule=schedule,
+                command=body.get("command", ""),
+                cwd=body.get("cwd") or "",
+                timeout_sec=body.get("timeout_sec"),
+                concurrency=body.get("concurrency") or "managed",
+                description=body.get("description", ""),
+                priority=body.get("priority"),
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+        return {"job": {**job.to_dict(), "next_run_str": job.next_run_str()}}
+    if run_mode != "message":
+        raise HTTPException(status_code=400, detail="run_mode 只支持 message / command")
+
     task_template = body.get("task_template", "").strip()
     if not name or not schedule or not task_template:
         raise HTTPException(status_code=400, detail="name, schedule, task_template are required")
@@ -9101,7 +9130,8 @@ async def add_cron_job(request: Request):
 async def update_cron_job(job_id: str, request: Request):
     """
     PUT /v1/cron/jobs/{job_id}
-    Body: { "enabled": bool, "schedule": str, "priority": int }
+    Body: { "enabled": bool, "schedule": str, "priority": int,
+            "command"/"cwd"/"timeout_sec"/"concurrency": 仅命令型 job 可改 }
     """
     http_server = getattr(request.app.state, "http_server", None)
     if http_server is None:
@@ -9114,6 +9144,14 @@ async def update_cron_job(job_id: str, request: Request):
         raise HTTPException(status_code=503, detail="CronScheduler not available")
 
     body = await request.json()
+    # [next_doc/cron_command_job_plan.md] 命令相关字段先整体校验再动手，失败时不产生部分修改。
+    command_fields = {k: body[k] for k in ("command", "cwd", "timeout_sec", "concurrency") if k in body}
+    if command_fields:
+        try:
+            if cs.update_command_job(job_id, **command_fields) is None:
+                raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
     try:
         if "enabled" in body:
             # [goal_cron_paused_semantics_and_status_provenance_plan.md] 记录来源
@@ -9221,6 +9259,9 @@ async def add_cron_job_feedback(job_id: str, request: Request):
     job = cs.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
+    if job.run_mode == "command":
+        # [next_doc/cron_command_job_plan.md] 命令型没有 prompt，反馈不得改写命令
+        raise HTTPException(status_code=400, detail="命令型 job 不支持提意见；请直接修改 command")
     ok = cs.add_user_feedback(job_id, text)
     if not ok:
         raise HTTPException(status_code=500, detail="add_user_feedback failed")

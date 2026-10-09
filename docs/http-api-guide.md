@@ -1124,10 +1124,23 @@ Body: {
   "description": "每天 09:00 自动生成摘要"
 }
 
+# 添加「执行命令」型 job（不经 LLM；详见 cron-dedicated-execution-guide §3.6）
+POST /v1/cron/jobs
+Body: {
+  "run_mode": "command",
+  "name": "daily-etl",
+  "schedule": "cron:0 6 * * *",
+  "command": "python scripts/etl.py",
+  "cwd": "D:/work",              # 可选，须已存在
+  "timeout_sec": 900,            # 可选，缺省 600，超过 cron.command_max_timeout_seconds 返回 400
+  "concurrency": "unmanaged"     # 可选，缺省 managed；unmanaged = 不占槽位、不过仲裁
+}
+
 # 修改 job（启用/禁用/改 schedule）
 PUT /v1/cron/jobs/{job_id}
 Body: { "enabled": false }
 Body: { "schedule": "interval:7200" }
+Body: { "command": "python scripts/etl2.py", "timeout_sec": 600 }   # 仅命令型 job 可改 command/cwd/timeout_sec/concurrency
 
 # 立即触发一次（不影响 next_run_at）
 POST /v1/cron/jobs/{job_id}/run

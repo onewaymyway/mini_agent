@@ -69,11 +69,27 @@ _DENY_PREFIXES = (
 _SESSION_SUBCOMMAND_ALLOWLIST = ("session cleanup", "session pin", "session unpin")
 
 
+# [next_doc/cron_command_job_plan.md] 会创建/改写「定时执行任意 shell 命令」的 cron 子命令：
+# 只允许 owner 通过 REST/CLI/看板操作，agent 经 run_slash_command 一律拒绝，
+# 否则 agent 能借 cron 绕开 bash 工具的权限审批。按"首词 + 子命令"精确匹配，
+# 不拦整个 /cron（agent 仍可 /cron list、/cron add 创建 agent 任务型 job 等）。
+_CRON_COMMAND_SUBCOMMANDS_DENIED = ("add-cmd",)
+
+
+def _is_cron_command_creation(name: str, full_command: str) -> bool:
+    if name.lower() != "cron":
+        return False
+    tokens = full_command.lower().split()
+    return len(tokens) >= 2 and tokens[1] in _CRON_COMMAND_SUBCOMMANDS_DENIED
+
+
 def _is_denied(name: str, full_command: str = "") -> bool:
     """name 是命令首词（如 "session"）；full_command 是去掉前导 "/" 后的完整
     命令（如 "session cleanup --dry-run"），用于需要看子命令才能判断的例外
     （目前只有 "session"，其它前缀首词即可判断，不需要 full_command）。"""
     name = name.lower()
+    if _is_cron_command_creation(name, full_command):
+        return True
     if name == "session":
         full = full_command.lower().strip()
         return not any(
@@ -111,6 +127,14 @@ def register_slash_command_tool(registry: "ToolRegistry", agent: "Agent") -> Non
             return json.dumps({"status": "error", "message": "empty command"}, ensure_ascii=False)
 
         full_command = " ".join(parts)
+        if _is_cron_command_creation(name, full_command):
+            return json.dumps({
+                "status": "denied",
+                "message": (
+                    "'/cron add-cmd' 不允许通过 run_slash_command 执行：执行命令型 cron 会定时跑任意 "
+                    "shell 命令，只能由用户本人在 CLI/看板/REST 创建，避免绕过 bash 工具的权限审批。"
+                ),
+            }, ensure_ascii=False)
         if _is_denied(name, full_command):
             return json.dumps({
                 "status": "denied",

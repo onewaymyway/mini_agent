@@ -203,7 +203,7 @@ job：
   替它归还槽位，文案为"卡死"而不是"排队超时"）、账本记录；状态显示"运行中"，不会出现"排队中"；
 - **不设总量上限**：同时到点的 unmanaged job 数量不受限制，建议每个 unmanaged entrypoint
   都显式写 `timeout_sec`；
-- 只对 `run_mode="external_entrypoint"` 生效；`message`/`goal_cycle` 必然涉及 LLM，字段会被忽略。
+- 只对 `run_mode="external_entrypoint"` 和 `run_mode="command"`（§3.6）生效；`message`/`goal_cycle` 必然涉及 LLM，字段会被忽略。
 
 观测：`GET /v1/self/scheduling_overview` 的 `cron_channel.unmanaged_running` 单独统计在跑数，
 `running`/`queued` 只算占槽位的 job，所以"运行中/上限"不会出现超过上限的显示。
@@ -372,6 +372,40 @@ build_cron_agent()`），不跨触发复用同一个 Agent/history：
 | `timed_out` | 上次因触达硬超时/步数上限被收尾（不算失败，下次会带着进度继续） |
 | `waiting_feedback` | 本次本来正常完成，但通过 `ask_user_async` 提出的问题仍有未回答的——**不计入** `consecutive_failures`，语义是"等一个具体问题的答案"而非"卡死放弃"，详见 [cron-async-user-feedback-guide.md §4](cron-async-user-feedback-guide.md#4-任务状态如何体现等反馈中不算失败) |
 
+### 3.6 执行命令型 job：`run_mode="command"`
+
+用户自建的 cron 除了「交给 agent 的自然语言任务」（`message`），还可以是**到点直接跑一条 shell 命令**
+（比如 `python scripts/etl.py`），不经 LLM、不构造 agent。
+
+| 项 | 说明 |
+|---|---|
+| 字段 | `command`（必填）、`cwd`（可选，须已存在的目录，存绝对路径，缺省 daemon 工作目录）、`timeout_sec`（缺省 `cron.command_default_timeout_seconds`=600，必须 >0 且不超过 `cron.command_max_timeout_seconds`=3600，超限创建时直接拒绝）、`concurrency`（`managed`/`unmanaged`，**缺省 `managed`**，非法值报错） |
+| 并发 | 默认 `managed`：占槽位、受 §3.2 资源仲裁（blocked 时本次触发会被跳过）。显式 `unmanaged`（CLI `--unmanaged`/看板勾选/REST）后行为同 §3.5：不占槽位、不过仲裁。**只给确定不调 LLM 的命令开 unmanaged** |
+| 执行 | `shell=True` 子进程（Windows 为 `cmd.exe`，Linux/macOS 为 `sh`），继承 daemon 环境变量（**含 API key**），额外注入 `MINI_AGENT_CRON_JOB_ID`；stdin 为空 |
+| 超时 | 到 `timeout_sec` 杀**整棵进程树**（POSIX `killpg`，Windows `taskkill /T /F`），记为 `timed_out`；watchdog 阈值取 `timeout_sec` + grace |
+| 结果 | 写入该 job 的专属文件夹（§6），看板的状态/执行记录直接可用：`state.json`（`idle`=退出码 0；`needs_human_review`=非 0 退出或启动失败；`timed_out`；`last_error` 含退出码与输出尾部；失败累加 `consecutive_failures`）；`runs/<run_id>.jsonl` 事件 `run_started` → `command_output`（`returncode`/`stdout_tail`/`stderr_tail`）→ `step_error`（仅失败）→ `run_finished`。输出先落临时文件再取尾部，每路保留 `cron.command_output_tail_bytes`（默认 4096）字节，命令输出再大也不占 daemon 内存 |
+| 创建入口 | REST `POST /v1/cron/jobs`（`run_mode:"command"`）、CLI `/cron add-cmd`、两个看板的「新建」表单（类型选「执行命令」） |
+| 修改 | 仅 REST `PUT /v1/cron/jobs/{id}` 可改 `command`/`cwd`/`timeout_sec`/`concurrency`（校验失败整体不生效）；`enabled`/`schedule`/`priority` 与其它 job 通用 |
+
+**安全边界**（命令型等于「定时执行任意 shell」，必须只由用户本人创建）：
+
+- `/cron add-cmd` 被加入 `run_slash_command` 的拒绝列表（`tools/slash_command.py`），agent 无法通过斜杠命令工具创建；
+  `/cron add`（agent 任务型）、`/cron list` 等仍放行。agent 也没有其它 cron 创建入口。
+- `POST /v1/cron/jobs/{id}/feedback`、`/cron feedback`、调优提案的 `update_task_template()` 对命令型一律拒绝，
+  避免反馈/调优通道成为改写命令的旁路；命令型没有 `prompt.md` 的编辑入口。
+- `cwd` 不做目录白名单（命令本身已是任意 shell），只校验存在性。
+
+CLI：
+
+```
+/cron add-cmd <name> <schedule> <command...> [--cwd <目录>] [--timeout <秒>] [--unmanaged]
+/cron add-cmd daily-etl cron:0 6 * * * python scripts/etl.py --cwd D:/work --timeout 900 --unmanaged
+```
+
+选项必须写在 command 之后；CLI 按空白分词，连续空格会被折叠、引号原样保留，命令里含复杂引号/空格时请改用 REST 或看板创建。
+
+设计与取舍见 [next_doc/cron_command_job_plan.md](../next_doc/cron_command_job_plan.md)。
+
 ## 7. 全局默认配置
 
 > 本节讲的是 cron 通道自身的分级响应/记账/仲裁配置；三条执行通道
@@ -410,6 +444,9 @@ build_cron_agent()`），不跨触发复用同一个 Agent/history：
 | `skip_alert_backoff_enabled` | `false` | 连续跳过告警改为第 N×2^k 次（默认 5、10、20、40…）才发；关闭时每 N 次一条 |
 | `reserved_min_concurrent` | 1 | 仅 `scheduler.unified_arbitration_enabled=True` 时生效：degraded 状态下 cron 通道保证能分到的最少槽位数（见 §7.1） |
 | `circuit_breaker_distinct_threshold` | `null`（不启用） | §3.4 跨 job 广度熔断的判定阈值 |
+| `command_default_timeout_seconds` | 600 | §3.6 命令型 job 未指定 `timeout_sec` 时的默认超时 |
+| `command_max_timeout_seconds` | 3600 | §3.6 `timeout_sec` 上限；超过则创建/修改时被拒绝（不静默截断） |
+| `command_output_tail_bytes` | 4096 | §3.6 每次运行保留的 stdout/stderr 尾部字节数（各一份） |
 
 不配置这一块时，所有字段使用上表的硬编码默认值。
 

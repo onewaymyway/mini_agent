@@ -9,6 +9,8 @@ cli/commands/cron.py — /cron 命令处理器
   /cron run <id>                — 立即触发一次（不改变 next_run_at）
   /cron add <name> <schedule> <task>  — 添加用户 job
   /cron add-goal-cycle <goal_id> <schedule> [task]
+  /cron add-cmd <name> <schedule> <command...> [--cwd X] [--timeout N] [--unmanaged]
+                                       — 添加「执行命令」型 job（不经 LLM；仅用户可创建）
                                  — 把已有 Goal 声明为周期性（见 goal_cron_bridge.py）
   /cron remove <id>             — 删除用户 job（sys: 前缀不可删）
   /cron set-schedule <id> <schedule>  — 修改触发时间
@@ -83,6 +85,10 @@ async def handle_cron(args: list[str], ctx: "ReplContext") -> str:
         task_template = " ".join(rest[2:])
         return _cmd_add(cs, name, schedule, task_template)
 
+    if sub == "add-cmd":
+        # /cron add-cmd <name> <schedule> <command...> [--cwd X] [--timeout N] [--unmanaged]
+        return _cmd_add_cmd(cs, rest)
+
     if sub == "add-goal-cycle":
         # /cron add-goal-cycle <goal_id> <schedule> [task_template...]
         if len(rest) < 2:
@@ -108,7 +114,7 @@ async def handle_cron(args: list[str], ctx: "ReplContext") -> str:
 
     return (
         "[cron] 未知子命令。可用子命令：\n"
-        "  list [--all]  status  enable  disable  run  add  remove  set-schedule  feedback"
+        "  list [--all]  status  enable  disable  run  add  add-cmd  remove  set-schedule  feedback"
     )
 
 
@@ -220,6 +226,96 @@ def _cmd_add(cs, name: str, schedule: str, task_template: str) -> str:
         f"  名称：{job.name}\n"
         f"  触发：{schedule}\n"
         f"  任务：{task_template[:80]}\n"
+        f"  下次：{job.next_run_str()}"
+    )
+
+
+_ADD_CMD_USAGE = (
+    "[cron] 用法：/cron add-cmd <name> <schedule> <command...> [--cwd <目录>] [--timeout <秒>] [--unmanaged]\n"
+    "到点直接执行 shell 命令（不经 LLM）。选项必须写在 command 之后；command 里如果本身要用\n"
+    "这几个选项名，请改用 REST/看板创建。\n"
+    "  --cwd        工作目录（须已存在；缺省为 daemon 工作目录）\n"
+    "  --timeout    超时秒数（缺省 cron.command_default_timeout_seconds，上限 cron.command_max_timeout_seconds）\n"
+    "  --unmanaged  不占 cron 并发槽位、不过资源仲裁（仅限确定不调 LLM 的命令；缺省 managed）\n"
+    "示例：/cron add-cmd daily-etl cron:0 6 * * * python scripts/etl.py --cwd D:/work --timeout 900 --unmanaged\n"
+    "注意：shell 在 Windows 下是 cmd.exe，在 Linux/macOS 下是 sh。"
+)
+
+
+def _parse_add_cmd_args(rest: list[str]):
+    """解析 add-cmd 参数。schedule 含空格的 cron 表达式（`cron:0 6 * * *`）按 5 段拼接。
+    返回 (name, schedule, command, cwd, timeout, unmanaged) 或抛 ValueError(用法/提示)。"""
+    if len(rest) < 3:
+        raise ValueError(_ADD_CMD_USAGE)
+    name = rest[0]
+    idx = 1
+    schedule = rest[idx]
+    idx += 1
+    if schedule.startswith("cron:"):
+        # cron:<分 时 日 月 周> 被按空白分词拆成多段：凑够 5 个字段再并回
+        fields = [schedule[5:]] if schedule[5:] else []
+        while len(fields) < 5 and idx < len(rest):
+            fields.append(rest[idx])
+            idx += 1
+        if len(fields) < 5:
+            raise ValueError("[cron] ✗ cron 表达式需要 5 段：cron:<分 时 日 月 周>\n" + _ADD_CMD_USAGE)
+        schedule = "cron:" + " ".join(fields)
+    cmd_tokens: list[str] = []
+    cwd = ""
+    timeout = None
+    unmanaged = False
+    i = idx
+    while i < len(rest):
+        tok = rest[i]
+        if tok == "--unmanaged":
+            unmanaged = True
+        elif tok in ("--cwd", "--timeout"):
+            if i + 1 >= len(rest):
+                raise ValueError(f"[cron] ✗ {tok} 需要一个值\n" + _ADD_CMD_USAGE)
+            val = rest[i + 1]
+            i += 1
+            if tok == "--cwd":
+                cwd = val
+            else:
+                try:
+                    timeout = int(val)
+                except ValueError:
+                    raise ValueError(f"[cron] ✗ --timeout 必须是整数秒，收到 {val!r}")
+        else:
+            cmd_tokens.append(tok)
+        i += 1
+    command = " ".join(cmd_tokens).strip()
+    if not command:
+        raise ValueError(_ADD_CMD_USAGE)
+    return name, schedule, command, cwd, timeout, unmanaged
+
+
+def _cmd_add_cmd(cs, rest: list[str]) -> str:
+    """[cron_command_job_plan.md] /cron add-cmd 的实现。"""
+    try:
+        name, schedule, command, cwd, timeout, unmanaged = _parse_add_cmd_args(rest)
+    except ValueError as e:
+        return str(e)
+    if not (schedule.startswith("interval:") or schedule.startswith("cron:")):
+        return (
+            "[cron] ✗ schedule 格式错误。\n"
+            "  interval 格式：interval:<秒>     例：interval:3600\n"
+            "  cron 格式：   cron:<分 时 日 月 周>  例：cron:0 9 * * 1"
+        )
+    try:
+        job = cs.add_command_job(
+            name=name, schedule=schedule, command=command, cwd=cwd,
+            timeout_sec=timeout, concurrency="unmanaged" if unmanaged else "managed",
+        )
+    except ValueError as e:
+        return f"[cron] ✗ {e}"
+    return (
+        f"[cron] ✓ 已添加命令型 Job：{job.id}\n"
+        f"  名称：{job.name}\n"
+        f"  触发：{job.schedule}\n"
+        f"  命令：{job.command[:120]}\n"
+        f"  目录：{job.cwd or '(daemon 工作目录)'}\n"
+        f"  超时：{job.timeout_sec}s　并发：{job.concurrency}\n"
         f"  下次：{job.next_run_str()}"
     )
 
