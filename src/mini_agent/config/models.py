@@ -753,6 +753,14 @@ class RetryConfig:
     network_aware: bool = True
     network_check_interval: float = 5.0
     network_max_wait: float = 0.0
+    # [next_doc/tick_dispatch_only_execution_model_plan.md 阶段四 §6.6] 后台轻量 LLM 调用
+    # （declare_paths / goal_relevance / novelty_judge 等辅助判定）的预算：单次请求超时与
+    # 最大重试次数，总 deadline = timeout × (max_retries + 1)。只作用于显式使用
+    # ``LLMHelper.background_kwargs()`` 的调用点，Agent 主对话与 step 执行不受影响。
+    # 方案原文写作 ``llm.background_call_*``，仓库中并无 ``llm`` 配置块，LLM 重试配置
+    # 统一在 ``retry`` 块下，故放在此处。
+    background_call_timeout_seconds: float = 30.0
+    background_call_max_retries: int = 1
 
 
 @dataclass
@@ -1976,6 +1984,13 @@ class SchedulerConfig:
     # reap_stale() 回收记账（卡死线程成为孤儿线程继续在后台跑，不再占名额）。
     tick_dispatcher_timeout_seconds: float = 300.0
     tick_dispatcher_grace_seconds: float = 30.0
+
+    # [next_doc/tick_dispatch_only_execution_model_plan.md 阶段四 §6.4] 严格模式：
+    # True 时 tick 线程内发起 LLM 调用会直接抛 TickThreadBlockingError（默认 False：
+    # 只告警 + 计数 + 写入 scheduler_heartbeat_status.json 的 tick_thread_llm_calls，
+    # 因为直接抛可能让个别降级路径产生副作用，需存量调用点清零后再收紧）。
+    # 测试套件默认开启（tests/conftest.py）。
+    tick_thread_llm_strict: bool = False
 
 
 @dataclass

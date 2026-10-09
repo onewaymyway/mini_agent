@@ -205,7 +205,7 @@ Objective 的 step 最终都提交进和用户交互对话共用的同一个单�
 
 > 方案文档：[`next_doc/tick_dispatch_only_execution_model_plan.md`](../next_doc/tick_dispatch_only_execution_model_plan.md)。
 > 当前已实施**阶段一**（cron `local_handler` 异步化）、**阶段二**（step 状态机）和
-> **阶段三**（executor 之外的同类调用点）；tick 线程 LLM 告警与 deadline 兜底（阶段四）尚未实施。
+> **阶段三**（executor 之外的同类调用点）和**阶段四**（tick 线程 LLM 告警 + 后台调用 deadline 兜底）。
 
 **问题**：`SchedulerHeartbeat` 约定 tick 只做"决策 + 提交"，但实际有多处在 tick 线程
 （且持有 `sched_lock`）里同步等待 LLM。上游一变慢，整个调度心跳被拖死，`on_turn_done`
@@ -305,6 +305,24 @@ daemon 重启后所有 `running` 的记录仍由 `reconcile_orphaned_executions(
 `pending_pursuit_checks` 持续不降说明派发器长期被占满。
 
 **回退**：把 `async_goal_side_calls_enabled` 改回 `false` 并重启 daemon。
+
+### 阶段四：tick 线程告警与后台调用 deadline
+
+**tick 线程告警**：调度 tick（`SchedulerHeartbeat._maybe_tick` 与 AgentRunner 兜底 tick）执行期间，当前线程被标记为"tick 线程"。
+任何 LLM provider 在该线程发起请求，都会记录带调用栈的 warning（同一调用点 5 分钟内只告警一次）并累加计数。
+被派发到 TickDispatcher worker 线程里的调用不会被误报。
+
+- 计数写入 `.agent/scheduler_heartbeat_status.json`：`tick_thread_llm_calls`（应恒为 0）、`tick_thread_llm_last_at`、`tick_thread_llm_last_label`；
+  也可在 `GET /api/execution_model_status` 的 `tick_thread_guard` 查看。**值大于 0 说明还有调用点把 LLM 同步放在 tick 里**，看 warning 里的栈定位。
+- 严格模式 `scheduler.tick_thread_llm_strict`（默认 `false`）：为 `true` 时直接抛 `TickThreadBlockingError`。
+  测试套件默认开启严格模式；生产建议先观察计数清零后再开启，且只在 `async_*` 开关都已开启时开启（关闭开关意味着同步路径仍会在 tick 里调 LLM）。
+
+**后台轻量调用 deadline**：`declare_paths`、`goal_relevance`、`novelty_judge`、goal_cycle 进展信号刷新这类辅助判定，
+通过 `ask_background()` 套用 `retry.background_call_timeout_seconds`（默认 30，单次请求上限）与 `retry.background_call_max_retries`（默认 1）；
+总 deadline = `timeout × (max_retries + 1)`，覆盖重试、退避、pool fallback、限速与并发槽位排队。超时抛 `LLMTimeoutError`，各调用点按原有降级逻辑处理。
+长输出的拆解类调用不套该预算，仍由 `tick_dispatcher_timeout_seconds + grace` 兜底。
+
+**回退**：`retry.background_call_timeout_seconds` 设为 `0` 即关闭后台预算；`tick_thread_llm_strict` 保持 `false` 则只告警不影响行为。
 
 ## 相关文档
 

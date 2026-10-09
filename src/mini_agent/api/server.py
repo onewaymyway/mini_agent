@@ -402,7 +402,10 @@ class AgentRunner(threading.Thread):
                         and self._autonomous_loop is not None
                         and self._autonomous_loop.should_tick()):
                     try:
-                        self._autonomous_loop.tick()
+                        # [tick_dispatch_only_execution_model_plan.md 阶段四] 兜底路径同样标记 tick 线程
+                        from mini_agent.evolution.tick_thread_guard import tick_thread_scope
+                        with tick_thread_scope():
+                            self._autonomous_loop.tick()
                     except Exception as _mini_agent_exc:
                         from mini_agent.errors import log_exception
                         log_exception(_mini_agent_exc, where='mini_agent.api.server.AgentRunner._main_loop')
@@ -1339,6 +1342,13 @@ class HttpServer:
             # 不再在 SchedulerHeartbeat 的 tick 线程里同步执行（含 LLM 调用）。
             # 默认关闭，开关见 SchedulerConfig.async_local_handlers_enabled。
             tick_dispatcher = None
+            # [阶段四] tick 线程内 LLM 调用检测：严格模式开关来自 scheduler.tick_thread_llm_strict
+            try:
+                from mini_agent.evolution.tick_thread_guard import configure_from_config as _tick_guard_cfg
+                _tick_guard_cfg(cfg)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.tick_thread_guard')
             # [阶段二] ObjectiveExecutor 的 step 准备异步化同样共用这个派发器；它依赖
             # 共享的 sched_lock（没有锁就无法在后台线程里安全推进 executor 状态）。
             _want_async_step = (

@@ -52,6 +52,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, TYPE_CHECKING
 
 from .base import LLMClient, LLMConfig, LLMResponse, LLMRateLimitError, LLMError
+from . import deadline as _deadline
 
 if TYPE_CHECKING:
     from mini_agent.config import AppConfig
@@ -416,6 +417,11 @@ class LLMClientPool:
                     entry_idx = (start_idx + config_attempt) % total
                     entry = self._entries[entry_idx]
 
+                # [tick_dispatch_only_execution_model_plan.md 阶段四] deadline 作用域内，
+                # 切换 entry / 进入新一轮之前先确认预算还在；没有作用域时是空操作。
+                if last_exc is not None:
+                    _deadline.check_deadline("LLMClientPool fallback")
+
                 try:
                     response = self._call_entry(
                         entry=entry,
@@ -433,6 +439,9 @@ class LLMClientPool:
                     # 判断是否触发 fallback；不触发的错误（如配置错误）
                     # 无论第几轮都应该立即抛出，多等/多轮没有意义。
                     if not self._should_fallback(exc):
+                        raise
+                    # deadline 已用尽：不再 fallback 到下一个 entry / 下一轮，直接抛出
+                    if _deadline.expired():
                         raise
 
                     is_last_in_round = config_attempt == total - 1
@@ -458,7 +467,7 @@ class LLMClientPool:
                         if on_switch_config:
                             on_switch_config(entry.label, first_entry.label, exc)
                         if self._round_wait > 0:
-                            time.sleep(self._round_wait)
+                            time.sleep(_deadline.clamp_wait(self._round_wait))
                     # else: 已经是最后一轮的最后一个 entry，跳出内层循环，
                     # 内层 for 结束、外层 for 也结束，落到函数末尾统一抛出
 

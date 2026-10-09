@@ -80,7 +80,7 @@ class NvidiaProvider(ProviderMixin, LLMClient):
             resp = self._http.post(
                 self._endpoint(),
                 json=payload,
-                timeout=self.config.timeout,
+                timeout=self._request_timeout(),
             )
             resp.raise_for_status()
             return self._parse_json_response(resp.json())
@@ -106,7 +106,7 @@ class NvidiaProvider(ProviderMixin, LLMClient):
                 "POST",
                 self._endpoint(),
                 json=payload,
-                timeout=self.config.timeout,
+                timeout=self._request_timeout(),
             ) as resp:
                 # httpx 流式模式下，raise_for_status() 在读取响应体前调用会报错
                 # 改为手动检查状态码并构造错误

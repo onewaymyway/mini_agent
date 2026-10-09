@@ -81,6 +81,9 @@ import threading
 import time
 from typing import Optional
 
+from .tick_thread_guard import stats as tick_thread_stats
+from .tick_thread_guard import tick_thread_scope
+
 log = logging.getLogger(__name__)
 
 
@@ -307,6 +310,15 @@ class SchedulerHeartbeat(threading.Thread):
                     "last_stack_dump_path": self._last_stack_dump_path,
                     "pid": os.getpid(),
                 }
+            # [tick_dispatch_only_execution_model_plan.md 阶段四] tick 线程内发起 LLM 调用的
+            # 累计次数（应恒为 0）及最近一次的调用点，供看板/supervisor 直接读取。
+            try:
+                _guard = tick_thread_stats()
+                payload["tick_thread_llm_calls"] = _guard["tick_thread_llm_calls"]
+                payload["tick_thread_llm_last_at"] = _guard["last_call_at"]
+                payload["tick_thread_llm_last_label"] = _guard["last_call_label"]
+            except Exception:
+                payload["tick_thread_llm_calls"] = 0
             target = heartbeat_status_file_path(self._paths.project_root)
             target.parent.mkdir(parents=True, exist_ok=True)
             tmp_path = target.with_suffix(target.suffix + f".tmp{os.getpid()}")
@@ -415,7 +427,12 @@ class SchedulerHeartbeat(threading.Thread):
             with self._lock:
                 with self._stats_lock:
                     self._tick_lock_acquired_at = time.time()
-                self._autonomous_loop.tick()
+                # [tick_dispatch_only_execution_model_plan.md 阶段四] 标记当前线程"正在 tick"：
+                # 此后若有 LLM provider 在本线程发起请求，会被 tick_thread_guard 计数/告警
+                # （严格模式下直接抛 TickThreadBlockingError）。被派发到 TickDispatcher
+                # worker 线程里的调用不受影响。
+                with tick_thread_scope():
+                    self._autonomous_loop.tick()
         except Exception as exc:
             # 与 AutonomousLoop 既有的"非核心子系统静默降级"原则一致：
             # 心跳线程本身绝不应该因为一次 tick() 内部异常而整体退出，

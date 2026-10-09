@@ -1,6 +1,6 @@
 # tick 只派发、不执行：调度心跳去阻塞改造方案
 
-> 状态：**方案已确认，实施中**（阶段 0～3 已完成，阶段 4 未开始）。
+> 状态：**阶段 0～4 全部实施完成**（阶段 4 完成于 2026-10-09；生产侧 `tick_thread_llm_calls` 长期为 0 的验收需上线后观察）。
 > 背景来源：`SchedulerHeartbeat` 卡死栈快照（`.agent/` 下 `stuck_20261009_100807_1.txt`、
 > `stuck_20261009_104039_1.txt`、`stuck_20261009_104328_1.txt`）分析。用户确认的方向：
 > **tick 只负责判断与派发，所有可能阻塞的执行都在独立线程里完成，不应卡住 tick。**
@@ -331,8 +331,8 @@ ok = dispatcher.dispatch(key=f"cron:{job.id}", fn=lambda: local_handler(job),
 | `scheduler.tick_dispatcher_timeout_seconds` | `300` | 默认任务存活期限 |
 | `scheduler.tick_dispatcher_grace_seconds` | `30` | 超过期限后再宽限多久才回收 |
 | `scheduler.tick_thread_llm_strict` | `False` | tick 线程内 LLM 调用直接抛异常 |
-| `llm.background_call_timeout_seconds` | `30` | 后台轻量调用单次超时 |
-| `llm.background_call_max_retries` | `1` | 后台轻量调用重试次数 |
+| `retry.background_call_timeout_seconds` | `30` | 后台轻量调用单次超时；`<= 0` 关闭后台预算（原方案写作 `llm.*`，实际放 `retry` 块） |
+| `retry.background_call_max_retries` | `1` | 后台轻量调用重试次数（总 deadline = timeout × (重试次数 + 1)） |
 
 遵循项目约定"配置开关默认保持非破坏行为"，新开关默认保持旧行为；在 `agent_config.json` 示例里开启，
 **各阶段验收通过后再决定是否翻转默认值**（需用户确认）。回滚方式：关闭对应开关即可回到现状，
@@ -400,4 +400,26 @@ ok = dispatcher.dispatch(key=f"cron:{job.id}", fn=lambda: local_handler(job),
   - 仍存在的与本改动无关的既有失败：`test_goal_cron_feedback_and_output_policy.py`（2）、`test_goal_mode.py::test_build_from_history_*`（5）、
     `test_unified_dispatch_p5_step4.py::TestObjectiveAdapterExecuteStillUnimplemented`（1），在原始代码上同样失败。
   - `agent_config.json` 的 `autonomy` 块已设 `async_goal_side_calls_enabled: true`；代码默认值仍为 `false`。
-- 阶段 4（tick 线程告警 + deadline 兜底）：**未开始**
+- 阶段 4（tick 线程告警 + deadline 兜底）：**已完成**（2026-10-09）
+  - 新增：`evolution/tick_thread_guard.py`（thread-local 标记 / 计数 / 带栈告警 / 严格模式）、`llm/deadline.py`（thread-local 总 deadline + 单次请求上限，嵌套取更紧）、
+    `tests/test_tick_dispatch_phase4_guard_and_deadline.py`（56 个用例）。
+  - 修改：`scheduler_heartbeat.py`（`tick()` 包进 `tick_thread_scope()`；状态文件新增 `tick_thread_llm_calls` / `tick_thread_llm_last_at` / `tick_thread_llm_last_label`）、
+    `api/server.py`（AgentRunner 兜底 tick 同样打标记；按配置设置严格模式）、`api/routes.py`（`execution_model_status.tick_thread_guard`）、
+    `llm/providers/_base_mixin.py`（发请求前检测；限速与并发槽位排队受 deadline 约束；`_request_timeout()`）、
+    `openai/anthropic/nvidia/ollama` provider（单次请求超时取 配置值 与 deadline 剩余的较小者，无 deadline 作用域时行为不变）、
+    `orchestrator/concurrency.py`（`acquire(timeout=)`、限速 `acquire(max_wait=)`，超时抛 `SlotWaitTimeout`）、
+    `llm/retry.py`（`RetryPolicy.deadline_seconds`；异常路径预算不足抛 `LLMTimeoutError`，质量条件路径返回最后一次响应）、
+    `llm/client_pool.py`（deadline 用尽后不再 fallback、`round_wait` 不超过剩余）、
+    `llm/service.py`（`ask/chat` 新增 `timeout`/`deadline`；`background_kwargs()`；`ask_background()`）、`config/models.py`。
+  - 套用后台预算的调用点：`_default_declare_paths`、`goal_relevance`、`novelty_judge`、`goal_cron_bridge` 的 goal_cycle 进展信号刷新（异步与同步路径）。
+  - `tests/conftest.py` 新增 autouse fixture：测试套件默认严格模式，每个测试前后重置。
+  - **与原方案的差异**：
+    1. 配置放在 `retry.background_call_timeout_seconds` / `retry.background_call_max_retries`，而非 `llm.*`（仓库无 `llm` 配置块，LLM 重试配置统一在 `retry` 下）。
+    2. 总 deadline = `timeout × (max_retries + 1)`。
+    3. 新增回退开关：`retry.background_call_timeout_seconds <= 0` 关闭后台预算，回到旧行为（满足 G6 一键回退）。
+    4. 输出较长的 `_default_llm_decompose` / 重新分解 / Goal 拆解**未**套 30s 预算，仍由 TickDispatcher 的 `timeout + grace` 兜底。
+  - 局限：Python 无法强杀阻塞在 socket 上的线程，deadline 靠"SDK 层超时 + 重试层预算 + 排队层上限"三重保证；openai provider 仅在 deadline 作用域内传每请求 timeout。
+  - 验证：阶段四新增 56 个用例全部通过；对触及模块的 81 个相关测试文件（排除需 streamlit 的 kanban 对话框测试）定向回归：1159 通过、3 失败，
+    3 个失败（`test_goal_cron_feedback_and_output_policy.py` 2 个、`test_tick_dispatch_phase3_goal_side_calls.py::test_exception_degrades_to_mirror` 1 个）在原始代码上同样失败，与本改动无关。
+    **未做全量套件回归**（沙箱单核，耗时过长）；"整个套件在严格模式下通过"仅在上述相关文件范围内验证。
+  - 配置：`scheduler.tick_thread_llm_strict` 默认仍为 `false`——先观察 `tick_thread_llm_calls`，清零后再收紧。

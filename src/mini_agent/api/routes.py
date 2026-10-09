@@ -3916,6 +3916,10 @@ async def get_self_execution_model_status(request: Request):
         "pursuit_dispatched": int, "pursuit_deferred": int, "pursuit_retried": int,
         "pending_pursuit_checks": int, "cached_signal_verdicts": int,
       },
+      "tick_thread_guard": {            # [tick_dispatch_only 阶段四] tick 线程内 LLM 调用检测
+        "tick_thread_llm_calls": int,   # 累计次数，应恒为 0
+        "last_call_at": float, "last_call_label": str, "strict": bool,
+      },
       "objective_executor": {
         "stale_step_reap_count": int,   # [阶段三] ObjectiveExecutor 累计
                                           # 强制回收过的卡死 step 次数
@@ -3951,6 +3955,7 @@ async def get_self_execution_model_status(request: Request):
         "objective_executor": {"stale_step_reap_count": 0},
         "tick_dispatcher": {"enabled": False},
         "goal_side_calls": {"enabled": False},
+        "tick_thread_guard": {"tick_thread_llm_calls": 0, "strict": False},
         "recent_recoveries": [],
     }
     try:
@@ -4059,6 +4064,15 @@ async def get_self_execution_model_status(request: Request):
             result["goal_side_calls"] = async_side_calls_stats()
         except Exception:
             result["goal_side_calls"] = {"enabled": False}
+
+        # [tick_dispatch_only 阶段四] tick 线程内 LLM 调用检测计数（不含调用栈，栈在状态文件/日志里）
+        try:
+            from mini_agent.evolution.tick_thread_guard import stats as _tick_guard_stats
+            _g = _tick_guard_stats()
+            _g.pop("last_call_stack", None)
+            result["tick_thread_guard"] = _g
+        except Exception:
+            result["tick_thread_guard"] = {"tick_thread_llm_calls": 0, "strict": False}
 
         # [阶段三] ObjectiveExecutor 卡死 step 回收计数。
         objective_executor = getattr(http_server.bridge, "_objective_executor", None)

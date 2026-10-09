@@ -74,6 +74,24 @@ resp = helper.chat(
 
 ---
 
+## 总预算：`timeout` / `deadline` 与后台轻量调用
+
+`ask()` / `chat()` 支持两个可选参数：
+
+- `timeout`：单次请求超时上限（秒），只会把 provider 配置的超时压得更小，不会放宽。
+- `deadline`：整个调用的总墙钟上限（秒），覆盖重试、退避、pool fallback / 多轮、限速与并发槽位排队；用尽抛 `LLMTimeoutError`。
+
+两者都不传时行为与以前完全一致。后台辅助判定（路径声明、相关度判定、新颖度判定等，不希望长时间占用线程和并发槽位的调用）使用：
+
+```python
+from mini_agent.llm.service import ask_background
+text = ask_background(llm_helper, prompt)   # 套用 retry.background_call_* 预算
+```
+
+`LLMHelper.background_kwargs()` 返回 `{"timeout", "deadline", "max_retries"}`（默认 30 / 60 / 1）；
+`retry.background_call_timeout_seconds` 设为 `0` 则返回空 dict，等同普通 `ask()`。
+`ask_background` 对只实现 `ask(prompt)` 的鸭子类型对象原样透传。Agent 主对话和 step 执行**不要**使用后台预算。
+
 ## `max_retries` 取值：按场景区别对待，没有统一"一刀切"
 
 | 调用点 | max_retries | 理由 |

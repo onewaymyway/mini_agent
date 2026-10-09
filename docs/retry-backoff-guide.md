@@ -143,6 +143,14 @@ CLI 参数：
 
 ---
 
+## 总 deadline（`deadline_seconds`）
+
+`RetryPolicy(deadline_seconds=N)`（默认 `0` = 不限）给一次 `call_with_retry` 设置总墙钟预算：
+每次重试、退避、断网等待之前检查剩余时间，不够再来一次就停止——异常路径抛 `LLMTimeoutError`（`__cause__` 为原异常），
+质量条件（如空输出）路径返回最后一次响应；单次请求的 SDK 超时也会被压到剩余时间之内。
+与外层 `llm/deadline.py` 的作用域取更紧的一方。后台轻量调用的默认预算见 `retry.background_call_timeout_seconds`
+（默认 30）与 `retry.background_call_max_retries`（默认 1），配置 `<= 0` 关闭。
+
 ## 断网感知
 
 请求失败后，如果异常"看起来像"网络层失败（DNS 解析失败、连接被拒、连接超时

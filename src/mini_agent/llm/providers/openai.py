@@ -168,6 +168,11 @@ class OpenAIProvider(ProviderMixin, LLMClient):
         # OpenAI() client），不应随请求 kwargs 传给 chat.completions.create()/stream()
         _CLIENT_LEVEL_KEYS = {"tool_choice", "default_headers"}
         kwargs.update({k: v for k, v in self.config.extra.items() if k not in _CLIENT_LEVEL_KEYS})
+        # [tick_dispatch_only_execution_model_plan.md 阶段四] deadline 作用域内用每请求 timeout
+        # 覆盖客户端级超时；无作用域时不传，行为与之前完全一致。
+        from .. import deadline as _deadline
+        if _deadline.has_deadline() or _deadline._get()[1] is not None:
+            kwargs["timeout"] = self._request_timeout()
         return kwargs
 
     def _parse_response(self, resp) -> LLMResponse:

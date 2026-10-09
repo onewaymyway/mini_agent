@@ -158,7 +158,7 @@ class OllamaProvider(ProviderMixin, LLMClient):
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=self.config.timeout) as resp:
+            with urllib.request.urlopen(req, timeout=self._request_timeout()) as resp:
                 return json.loads(resp.read().decode())
         except urllib.error.URLError as e:
             raise LLMProviderError(
@@ -179,7 +179,7 @@ class OllamaProvider(ProviderMixin, LLMClient):
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=self.config.timeout) as resp:
+            with urllib.request.urlopen(req, timeout=self._request_timeout()) as resp:
                 for line in resp:
                     yield line.decode("utf-8")
         except urllib.error.URLError as e:

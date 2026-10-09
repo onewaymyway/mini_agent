@@ -56,6 +56,10 @@ class Waiter:
 
 # ── 计数信号量（带排队可见性） ─────────────────────────────────────────────────
 
+class SlotWaitTimeout(TimeoutError):
+    """排队等待并发槽位超过调用方给定的上限（此时未持有 slot）。"""
+
+
 class CountingSemaphore:
     """
     带等待队列可见性的计数信号量。
@@ -123,22 +127,28 @@ class CountingSemaphore:
     # ── 获取 / 释放 ───────────────────────────────────────────────────────────
 
     @contextmanager
-    def acquire(self, label: str = "") -> Generator[None, None, None]:
+    def acquire(self, label: str = "", timeout: Optional[float] = None) -> Generator[None, None, None]:
         """
         获取一个 slot。若已满则阻塞排队等待。
         用作 context manager：
             with sem.acquire("task-abc123"):
                 do_work()
+
+        timeout: 排队等待上限（秒）。None = 无限等（旧行为）；超时抛 ``SlotWaitTimeout``
+                 （TimeoutError 子类），此时并未持有 slot。
+                 [tick_dispatch_only_execution_model_plan.md 阶段四] 后台轻量 LLM 调用
+                 带 deadline 时用它，避免在 8 个槽位全被挂死请求占满时无限排队。
         """
-        self._wait_and_acquire(label)
+        self._wait_and_acquire(label, timeout)
         try:
             yield
         finally:
             self._do_release()
 
-    def _wait_and_acquire(self, label: str) -> None:
-        """阻塞直到获得 slot（可能排队等待）。"""
+    def _wait_and_acquire(self, label: str, timeout: Optional[float] = None) -> None:
+        """阻塞直到获得 slot（可能排队等待）。timeout 非 None 时超时抛 SlotWaitTimeout。"""
         waiter = Waiter(label=label, waited_since=time.time(), kind=self._kind)
+        give_up_at = None if timeout is None else time.monotonic() + max(0.0, float(timeout))
         with self._cond:
             if self._active < self._limit:
                 # 立即有空位，直接获取
@@ -148,7 +158,15 @@ class CountingSemaphore:
             self._waiters.append(waiter)
             try:
                 while self._active >= self._limit:
-                    self._cond.wait(timeout=0.5)
+                    if give_up_at is None:
+                        self._cond.wait(timeout=0.5)
+                        continue
+                    left = give_up_at - time.monotonic()
+                    if left <= 0:
+                        raise SlotWaitTimeout(
+                            f"等待 {self._kind} 并发槽位超时（{timeout:.1f}s，label={label}）"
+                        )
+                    self._cond.wait(timeout=min(0.5, left))
                 self._active += 1
             finally:
                 if waiter in self._waiters:
@@ -246,9 +264,13 @@ class RateLimiter:
     def enabled(self) -> bool:
         return self._max_rpm > 0
 
-    def acquire(self) -> float:
+    def acquire(self, max_wait: Optional[float] = None) -> float:
         """
         等待直到可以发出一次请求（不超过 RPM 限制）。
+
+        Args:
+            max_wait: 最长等待秒数；None = 不限（旧行为）。超出抛 ``SlotWaitTimeout``
+                      （[tick_dispatch_only_execution_model_plan.md 阶段四]）。
 
         Returns:
             实际等待的秒数（0.0 = 无需等待）
@@ -273,6 +295,8 @@ class RateLimiter:
                 oldest = self._timestamps[0]
                 wait_sec = (oldest + 60.0) - now + 0.05
 
+            if max_wait is not None and waited >= max(0.0, max_wait):
+                raise SlotWaitTimeout(f"RPM 限速等待超时（{max_wait:.1f}s）")
             time.sleep(min(wait_sec, 0.5))
             waited += min(wait_sec, 0.5)
 

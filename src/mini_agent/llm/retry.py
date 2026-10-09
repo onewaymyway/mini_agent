@@ -35,7 +35,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-from .base import LLMResponse, LLMConfigError, LLMContextWindowError, LLMPermanentError
+from .base import LLMResponse, LLMConfigError, LLMContextWindowError, LLMPermanentError, LLMTimeoutError
+from . import deadline as _deadline
 
 logger = logging.getLogger(__name__)
 
@@ -280,6 +281,12 @@ class RetryPolicy:
         network_max_wait: 断网等待的最长时长（秒），默认 0 = 不限时长一直等
                        到网络恢复为止。设置为正数后，等待超时仍未恢复网络时
                        会退回正常的异常重试流程（消耗一次重试预算）。
+        deadline_seconds: [tick_dispatch_only_execution_model_plan.md 阶段四]
+                       本次 call_with_retry 的总墙钟预算（秒），0 = 不限（默认，旧行为）。
+                       预算内：每次重试/退避/断网等待前检查剩余时间，不够再来一次就不再
+                       重试——异常路径抛 LLMTimeoutError（chained 原异常），质量条件路径
+                       返回最后一次响应；单次请求的 SDK 超时也被压到剩余时间之内
+                       （见 llm/deadline.py）。与外层 deadline_scope 取更紧的一方。
     """
 
     max_retries: int = 2
@@ -296,6 +303,7 @@ class RetryPolicy:
     network_aware: bool = True
     network_check_interval: float = 5.0
     network_max_wait: float = 0.0
+    deadline_seconds: float = 0.0
 
     def __post_init__(self) -> None:
         # 兼容旧接口：若外部只传了 retry_delay 而未显式设置 backoff，
@@ -304,6 +312,23 @@ class RetryPolicy:
             self.backoff = FixedBackoff(self.retry_delay)
 
     def call_with_retry(
+        self,
+        call_fn: Callable[[], LLMResponse],
+        on_retry: Optional[Callable[[int, str], None]] = None,
+    ) -> LLMResponse:
+        """执行 call_fn，失败时按策略重试；``deadline_seconds`` > 0 时受总预算约束。
+        详见 ``_call_with_retry_impl``。"""
+        if self.deadline_seconds and self.deadline_seconds > 0:
+            with _deadline.deadline_scope(total_seconds=self.deadline_seconds):
+                return self._call_with_retry_impl(call_fn, on_retry)
+        return self._call_with_retry_impl(call_fn, on_retry)
+
+    def _budget_exhausted_for_retry(self, delay: float) -> bool:
+        """deadline 作用域内：剩余时间是否不足以“等 delay 再来一次”。无作用域恒 False。"""
+        rem = _deadline.remaining()
+        return rem is not None and rem <= max(0.0, delay)
+
+    def _call_with_retry_impl(
         self,
         call_fn: Callable[[], LLMResponse],
         on_retry: Optional[Callable[[int, str], None]] = None,
@@ -338,6 +363,9 @@ class RetryPolicy:
 
         attempt = 0
         while True:
+            # 重试（含断网恢复后的重新调用）之前确认总预算还在；首次调用时无作用域则空操作
+            if attempt > 0:
+                _deadline.check_deadline("重试前")
             try:
                 response = call_fn()
             except self.non_retryable_exceptions:
@@ -353,9 +381,13 @@ class RetryPolicy:
 
                 if attempt >= self.max_retries:
                     raise
+                delay = self.backoff.delay_for(attempt + 1)
+                if self._budget_exhausted_for_retry(delay):
+                    raise LLMTimeoutError(
+                        f"LLM 后台调用总 deadline 已耗尽，放弃重试: {type(e).__name__}: {e}"
+                    ) from e
                 attempt += 1
                 reason = f"[Exception] {type(e).__name__}: {e}"
-                delay = self.backoff.delay_for(attempt)
                 logger.warning(
                     "LLM retry %d/%d (wait %.1fs, %s) — %s",
                     attempt, self.max_retries, delay, self.backoff.description, reason,
@@ -367,6 +399,9 @@ class RetryPolicy:
 
             triggered = self._check_conditions(response)
             if triggered is None or attempt >= self.max_retries:
+                return response
+            # 预算不足以再等一轮：质量条件路径沿用“重试耗尽返回最后一次响应”的语义
+            if self._budget_exhausted_for_retry(self.backoff.delay_for(attempt + 1)):
                 return response
 
             attempt += 1
@@ -414,9 +449,16 @@ class RetryPolicy:
             if on_retry:
                 on_retry(attempt, f"[NetworkOffline] 已等待 {elapsed:.0f}s，仍未恢复网络…")
 
+        # deadline 作用域内：断网等待也不能超过剩余预算；预算已尽则不等，交回正常流程
+        _max_wait = self.network_max_wait
+        _rem = _deadline.remaining()
+        if _rem is not None:
+            if _rem <= 0:
+                return False
+            _max_wait = _rem if _max_wait <= 0 else min(_max_wait, _rem)
         recovered = wait_until_online(
             check_interval=self.network_check_interval,
-            max_wait=self.network_max_wait,
+            max_wait=_max_wait,
             on_waiting=_on_waiting,
         )
         if recovered and on_retry:
@@ -437,7 +479,7 @@ class RetryPolicy:
 
     def _sleep_with_countdown(self, total: float) -> None:
         """分片 sleep（每片 ≤0.2s），让状态栏有机会刷新倒计时显示。"""
-        remaining = total
+        remaining = _deadline.clamp_wait(total)
         while remaining > 0:
             time.sleep(min(remaining, 0.2))
             remaining -= 0.2

@@ -28,6 +28,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Optional
 
 from .base import LLMConfig, LLMResponse, ToolSchema
+from . import deadline as _deadline
 from .retry import EmptyOutputCondition, RetryPolicy
 
 if TYPE_CHECKING:
@@ -96,6 +97,35 @@ class LLMHelper:
         from .client_pool import LLMClientPool
         return cls(LLMClientPool.from_config(app_cfg), app_cfg)
 
+    # ── 后台轻量调用的预算（tick_dispatch_only_execution_model_plan.md §6.6）──────────
+
+    def background_kwargs(self) -> dict:
+        """后台轻量判定调用（declare_paths / goal_relevance / novelty_judge 等）专用的
+        ``ask()/chat()`` 关键字参数：``timeout`` / ``deadline`` / ``max_retries``。
+
+        取值来自 ``AppConfig.retry.background_call_timeout_seconds``（默认 30）与
+        ``background_call_max_retries``（默认 1）；``deadline`` 取
+        ``timeout × (max_retries + 1)``，即“每次尝试最多 timeout 秒、最多 max_retries 次重试”
+        的理论上限，再不含退避以外的任何额外等待。Agent 主对话与 step 执行不使用本方法。
+        配置读不到时回退到默认值而不是关闭预算——后台调用宁可被截断也不该无限占用线程。
+        回退开关：``background_call_timeout_seconds`` 显式设为 0（或负数）= 关闭后台预算，
+        返回空 dict，``ask_background`` 退化为不带任何预算的普通 ``ask()``（旧行为）。
+        """
+        retry_cfg = getattr(self._cfg, "retry", None)
+        raw_timeout = getattr(retry_cfg, "background_call_timeout_seconds", 30.0)
+        if raw_timeout is None:
+            raw_timeout = 30.0
+        timeout = float(raw_timeout)
+        if timeout <= 0:
+            return {}
+        retries = int(getattr(retry_cfg, "background_call_max_retries", 1))
+        retries = max(0, retries)
+        return {
+            "timeout": timeout,
+            "deadline": timeout * (retries + 1),
+            "max_retries": retries,
+        }
+
     # ── 便捷入口：单轮、无工具、只要文本 ──────────────────────────────────────
 
     def ask(
@@ -108,9 +138,16 @@ class LLMHelper:
         override_model: Optional[str] = None,
         override_provider: Optional[str] = None,
         override_temperature: Optional[float] = None,
+        timeout: Optional[float] = None,
+        deadline: Optional[float] = None,
     ) -> str:
         """
         最常见场景：单轮 user 消息、无工具、只要最终文本。
+
+        timeout:  [tick_dispatch_only_execution_model_plan.md 阶段四] 单次请求超时上限（秒），
+                  只会把 provider 配置的超时压得更小，不会放宽；None = 沿用配置。
+        deadline: 本次调用的总墙钟上限（秒，含重试、退避、fallback、排队）；
+                  None = 不限（旧行为）。后台轻量判定调用请用 ``background_kwargs()``。
 
         调用失败（重试预算耗尽后仍异常）时向上抛出 LLMError，
         由调用方决定是否要捕获降级——不同调用点的降级语义不一样
@@ -125,12 +162,46 @@ class LLMHelper:
             override_model=override_model,
             override_provider=override_provider,
             override_temperature=override_temperature,
+            timeout=timeout,
+            deadline=deadline,
         )
         return (resp.text or "").strip()
 
     # ── 完整入口 ──────────────────────────────────────────────────────────────
 
     def chat(
+        self,
+        messages: list[dict],
+        system: str = "",
+        tools: Optional[list[ToolSchema]] = None,
+        *,
+        max_retries: int = 3,
+        retry_policy: Optional[RetryPolicy] = None,
+        override_model: Optional[str] = None,
+        override_provider: Optional[str] = None,
+        override_temperature: Optional[float] = None,
+        timeout: Optional[float] = None,
+        deadline: Optional[float] = None,
+    ) -> LLMResponse:
+        # [tick_dispatch_only_execution_model_plan.md 阶段四] 带 timeout/deadline 时整个调用
+        # （含 pool fallback / 多轮 / 重试 / 并发槽位排队）都在同一个 deadline 作用域内，
+        # 预算共享而不是每个 entry 各算一份。两者都为 None 时完全是旧路径。
+        if (timeout is not None and timeout > 0) or (deadline is not None and deadline > 0):
+            with _deadline.deadline_scope(total_seconds=deadline, request_timeout=timeout):
+                return self._chat_impl(
+                    messages, system, tools,
+                    max_retries=max_retries, retry_policy=retry_policy,
+                    override_model=override_model, override_provider=override_provider,
+                    override_temperature=override_temperature,
+                )
+        return self._chat_impl(
+            messages, system, tools,
+            max_retries=max_retries, retry_policy=retry_policy,
+            override_model=override_model, override_provider=override_provider,
+            override_temperature=override_temperature,
+        )
+
+    def _chat_impl(
         self,
         messages: list[dict],
         system: str = "",
@@ -203,3 +274,23 @@ class LLMHelper:
         return policy.call_with_retry(
             call_fn=lambda: client.chat(messages, system, tools),
         )
+
+
+def ask_background(llm_helper: Any, prompt: str, **kwargs: Any) -> str:
+    """后台轻量判定调用的统一入口（tick_dispatch_only_execution_model_plan.md §6.6）。
+
+    若 ``llm_helper`` 是真正的 ``LLMHelper``（有 ``background_kwargs()``），自动套用
+    ``retry.background_call_*`` 预算（单次超时 / 重试次数 / 总 deadline）；否则
+    （测试替身、仅实现 ``ask(prompt)`` 的鸭子类型）原样透传，保持兼容。
+    调用方显式传入的同名参数优先于默认预算。
+    """
+    getter = getattr(llm_helper, "background_kwargs", None)
+    if callable(getter):
+        try:
+            merged = dict(getter())
+        except Exception:
+            merged = {}
+        merged.update(kwargs)
+        return llm_helper.ask(prompt, **merged)
+    return llm_helper.ask(prompt, **kwargs)
+

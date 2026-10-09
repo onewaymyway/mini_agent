@@ -512,3 +512,5 @@ $ daemon status
 - `in_tick`：已拿到锁，卡在 `tick()` 内部——看 `scheduler-heartbeat` 线程栈停在哪一行。
 
 `scheduler_heartbeat_status.json` 新增 `stuck_phase` / `last_stack_dump_path`，通知正文带快照路径。
+
+另有 `tick_thread_llm_calls` / `tick_thread_llm_last_at` / `tick_thread_llm_last_label`（tick 只派发改造 阶段四）：tick 线程内发起 LLM 调用的累计次数及最近一次的调用类型，应恒为 0；大于 0 时日志里有对应的带栈 warning。

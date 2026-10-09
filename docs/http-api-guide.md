@@ -680,6 +680,7 @@ curl -H "Authorization: Bearer <owner_token>" \
 | `scheduler_heartbeat.alive` | 心跳线程是否仍在运行；`enabled=true` 但 `alive=false` 说明线程异常退出，需要检查日志 |
 | `tick_dispatcher` | [tick 只派发改造] 后台派发器统计：`enabled`（`scheduler.async_local_handlers_enabled`、`autonomy.async_step_prepare_enabled`、`autonomy.async_goal_side_calls_enabled` 任一开启即为 true）、`running`、`dispatched_total`、`timed_out_total`、`orphan_threads_alive`、`running_keys` 等。`timed_out_total`/`orphan_threads_alive` 持续增长说明有后台任务反复卡在外部调用（LLM）上 |
 | `goal_side_calls` | [tick 只派发改造 阶段三] Goal 拆解 / pursuit 复核 / goal_cycle LLM 进展判断的异步化统计：`enabled`（`autonomy.async_goal_side_calls_enabled`）、`signal_dispatched`、`signal_cache_hits`、`pursuit_dispatched`、`pursuit_deferred`、`pursuit_retried`、`pending_pursuit_checks`（派发器繁忙而待重试的复核，长期不降说明派发器被占满）、`cached_signal_verdicts` |
+| `tick_thread_guard` | [tick 只派发改造 阶段四] tick 线程内发起 LLM 调用的检测：`tick_thread_llm_calls`（累计次数，应恒为 0，>0 说明仍有同步 LLM 调用点在 tick 里）、`last_call_at`、`last_call_label`、`strict`（`scheduler.tick_thread_llm_strict`） |
 | `objective_executor.prepare` | [tick 只派发改造 阶段二] step 后台准备队列：`enabled`、`in_flight`（后台正在算）、`pending_dispatch`（派发器繁忙、等下一轮 tick 重试派发）、`results_waiting`（结果已就绪、等持锁线程消费）。`results_waiting` 长期不为 0 说明持锁线程一直没机会消费，需要检查 tick 是否正常 |
 
 > 两个开关都在 `agent_config.json` 的 `autonomy` 块下配置，修改后需要重启

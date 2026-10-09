@@ -335,7 +335,9 @@ def _resolve_execution_phase(paths, goal: "GoalNode", cycle_no: int,
                             llm_helper = _make_async_signal_llm(goal.id, "progress_trend", helper)
                             routine_llm_helper = _make_async_signal_llm(goal.id, "routine_stability", helper)
                         else:
-                            llm_helper = lambda prompt, _h=helper: _h.ask(prompt)
+                            # [tick_dispatch_only 阶段四] 未走异步缓存的同步路径同样受后台预算约束
+                            from mini_agent.llm.service import ask_background as _ask_bg
+                            llm_helper = lambda prompt, _h=helper: _ask_bg(_h, prompt)
             except Exception:
                 llm_helper = None
 
@@ -1384,7 +1386,9 @@ def _make_async_signal_llm(goal_id: str, kind: str, helper):
                 _async_stats["signal_cache_hits"] += 1
         # 无论有无缓存，都刷新一次（保证缓存跟上最新窗口）；已在跑则被派发器去重
         def _work():
-            return helper.ask(prompt)
+            # [tick_dispatch_only 阶段四] 后台刷新也走轻量预算，不无限占用派发器线程/并发槽位
+            from mini_agent.llm.service import ask_background
+            return ask_background(helper, prompt)
 
         def _on_done(result):
             if result.status != "ok" or not result.value or not str(result.value).strip():

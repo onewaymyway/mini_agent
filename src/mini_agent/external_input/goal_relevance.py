@@ -352,7 +352,9 @@ def run_goal_relevance_judge_once(
         batch = pending[:batch_size]
         prompt = _build_judge_prompt(batch)
         try:
-            raw_response = llm_helper.ask(prompt)
+            # [tick_dispatch_only_execution_model_plan.md 阶段四] 后台轻量判定，走 background 预算
+            from mini_agent.llm.service import ask_background
+            raw_response = ask_background(llm_helper, prompt)
         except Exception as exc:
             from mini_agent.errors import log_exception
             log_exception(exc, where="mini_agent.external_input.goal_relevance.run_goal_relevance_judge_once.ask")

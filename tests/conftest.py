@@ -120,3 +120,22 @@ def _close_all_resources():
     # 3. 仅做轻量 GC，不主动关闭文件对象（避免关闭已在使用的文件）
     import gc
     gc.collect()
+
+
+@pytest.fixture(autouse=True)
+def _tick_thread_guard_strict():
+    """[next_doc/tick_dispatch_only_execution_model_plan.md 阶段四 §6.4]
+    测试套件默认开启 tick 线程严格模式：任何代码在调度 tick 线程内发起 LLM provider
+    调用都会抛 TickThreadBlockingError，防止“tick 只派发、不执行”被新代码回退。
+    每个测试前后重置计数并恢复非严格默认，避免状态在测试间泄漏。
+    需要验证非严格行为的测试自行 ``set_strict(False)``。
+    """
+    from mini_agent.evolution import tick_thread_guard as _g
+    _g.reset_stats()
+    _g.set_strict(True)
+    try:
+        yield
+    finally:
+        _g.set_strict(False)
+        _g.reset_stats()
+

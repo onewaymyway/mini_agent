@@ -2616,7 +2616,9 @@ def _default_declare_paths(llm_helper, step_description: str) -> list[str]:
 3. 最多列出 5 个路径
 """
     try:
-        result = llm_helper.ask(prompt)
+        # [tick_dispatch_only_execution_model_plan.md 阶段四] 路径声明是辅助判断，走后台轻量预算
+        from mini_agent.llm.service import ask_background
+        result = ask_background(llm_helper, prompt)
         if not result:
             return []
         paths: list[str] = []

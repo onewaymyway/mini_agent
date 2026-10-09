@@ -61,7 +61,7 @@ class AnthropicProvider(ProviderMixin, LLMClient):
                 system=system,
                 messages=messages,
                 # tools 已通过 system prompt 传递，不传 SDK tools 参数
-                timeout=self.config.timeout,
+                timeout=self._request_timeout(),
                 **self.config.extra,
             )
         except Exception as e:
@@ -76,7 +76,7 @@ class AnthropicProvider(ProviderMixin, LLMClient):
                 system=system,
                 messages=messages,
                 # tools 已通过 system prompt 传递，不传 SDK tools 参数
-                timeout=self.config.timeout,
+                timeout=self._request_timeout(),
                 **self.config.extra,
             ) as stream:
                 for token in stream.text_stream:

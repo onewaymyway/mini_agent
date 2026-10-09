@@ -25,7 +25,8 @@ import time
 from typing import Callable, Optional
 
 from ..base import LLMClient, LLMResponse, LLMUsage, ToolSchema, StreamCallback
-from ..base import LLMProviderError, LLMContextWindowError
+from ..base import LLMProviderError, LLMContextWindowError, LLMTimeoutError
+from .. import deadline as _deadline
 from mini_agent.orchestrator.concurrency import get_llm_sem
 from ..debug_logger import get_debug_logger
 from ..system_tool_call import (
@@ -72,6 +73,33 @@ class ProviderMixin:
     # 子类按需覆盖为 True（目前仅 AnthropicProvider）。
     _native_block_content: bool = False
 
+    # ── tick 线程告警 / deadline 辅助（tick_dispatch_only_execution_model_plan.md 阶段四）────
+
+    def _guard_tick_thread(self, kind: str) -> None:
+        """发请求前检测：当前线程若正处于调度 tick 内，记录告警并计数
+        （严格模式下抛 TickThreadBlockingError）。必须放在 try/except 之外，
+        让严格模式的有意抛出不被 _upgrade_error 吞掉或改写。"""
+        try:
+            from mini_agent.evolution.tick_thread_guard import note_llm_call_in_tick_thread
+        except Exception:  # pragma: no cover - 模块缺失时不影响 LLM 调用
+            return
+        note_llm_call_in_tick_thread(
+            f"{kind}:{getattr(self.config, 'provider', '')}/{getattr(self.config, 'model', '')}"
+        )
+
+    def _request_timeout(self) -> float:
+        """单次请求超时：config.timeout 与当前线程 deadline 作用域取较小者。
+        没有 deadline 作用域时恒等于 config.timeout（旧行为）。"""
+        base = getattr(self.config, "timeout", None)
+        return _deadline.effective_timeout(float(base) if base else None) or (float(base) if base else 0.0)
+
+    def _slot_wait_limit(self) -> Optional[float]:
+        """排队等并发槽位/限速的上限：有 deadline 时取剩余，否则 None（不限）。"""
+        rem = _deadline.remaining()
+        if rem is None:
+            return None
+        return max(0.0, rem)
+
     # ── 带日志和 system tool call 的调用入口 ──────────────────────────────────
 
     def _traced_chat(
@@ -84,6 +112,8 @@ class ProviderMixin:
         """
         包装 _do_chat()，记录完整的原始/实际请求和原始/处理后响应。
         """
+        self._guard_tick_thread("chat")
+        _deadline.check_deadline("chat 发起前")
         # 1. 准备工具（注入协议到 system）+ 1b. 按 system_message_format 合并
         # system 到 messages —— 这两步之前完全没有埋点保护，异常会在写任何
         # 日志之前就直接抛出。用独立的 try/except 兜底，失败时记一条
@@ -113,14 +143,15 @@ class ProviderMixin:
         )
 
         # 2b. RPM 频率限速（超限时阻塞等待）
-        from mini_agent.orchestrator.concurrency import get_rate_limiter
-        get_rate_limiter().acquire()
-
+        from mini_agent.orchestrator.concurrency import get_rate_limiter, SlotWaitTimeout
         sem = get_llm_sem()
         sem_label = f"{self.config.provider}/{self.config.model[:20]}"
         t0 = time.monotonic()
         try:
-            with sem.acquire(label=sem_label):
+            # deadline 作用域内：限速等待 / 并发槽位排队都不得超过剩余预算
+            # （槽位全被挂死请求占满时，后台轻量调用不再无限排队）。
+            get_rate_limiter().acquire(max_wait=self._slot_wait_limit())
+            with sem.acquire(label=sem_label, timeout=self._slot_wait_limit()):
                 raw_response = impl(messages, system_final, api_tools)
 
             # 3. postprocess（提取 tool_use 块、think 标签）
@@ -138,6 +169,10 @@ class ProviderMixin:
             )
             return processed_response
 
+        except SlotWaitTimeout as e:
+            duration_ms = int((time.monotonic() - t0) * 1000)
+            logger.log_error(seq, self.config.provider, self.config.model, e, duration_ms)
+            raise LLMTimeoutError(f"后台 LLM 调用等待并发槽位/限速超时: {e}")
         except Exception as e:
             duration_ms = int((time.monotonic() - t0) * 1000)
             logger.log_error(seq, self.config.provider, self.config.model, e, duration_ms)
@@ -157,6 +192,8 @@ class ProviderMixin:
         extra_kwargs 透传给 impl（如 on_reasoning）。
         集成 RPM 限速和实时 token 计数（状态栏显示）。
         """
+        self._guard_tick_thread("stream")
+        _deadline.check_deadline("stream 发起前")
         logger = get_debug_logger()
         _t_prep0 = time.monotonic()
         try:
@@ -181,8 +218,13 @@ class ProviderMixin:
         )
 
         # RPM 频率限速
-        from mini_agent.orchestrator.concurrency import get_rate_limiter, get_stream_token_state
-        get_rate_limiter().acquire()
+        from mini_agent.orchestrator.concurrency import (
+            get_rate_limiter, get_stream_token_state, SlotWaitTimeout,
+        )
+        try:
+            get_rate_limiter().acquire(max_wait=self._slot_wait_limit())
+        except SlotWaitTimeout as e:
+            raise LLMTimeoutError(f"后台 LLM 调用等待限速超时: {e}")
 
         # 包装 on_token：同时更新全局 token 计数状态
         # 注意：start() 返回本路 stream 专属的 stream_id，
@@ -199,7 +241,7 @@ class ProviderMixin:
         sem_label = f"{self.config.provider}/{self.config.model[:20]}"
         t0 = time.monotonic()
         try:
-            with sem.acquire(label=sem_label):
+            with sem.acquire(label=sem_label, timeout=self._slot_wait_limit()):
                 raw_response = impl(
                     messages, system_final, api_tools, _counting_on_token, **extra_kwargs
                 )
@@ -217,6 +259,10 @@ class ProviderMixin:
             )
             return processed_response
 
+        except SlotWaitTimeout as e:
+            duration_ms = int((time.monotonic() - t0) * 1000)
+            logger.log_error(seq, self.config.provider, self.config.model, e, duration_ms)
+            raise LLMTimeoutError(f"后台 LLM 调用等待并发槽位超时: {e}")
         except Exception as e:
             duration_ms = int((time.monotonic() - t0) * 1000)
             logger.log_error(seq, self.config.provider, self.config.model, e, duration_ms)

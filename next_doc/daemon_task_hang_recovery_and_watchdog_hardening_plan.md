@@ -560,3 +560,5 @@ in-flight 的 turn 里有多少个已经运行超过有效超时阈值，达到�
 
 后续（本次改进的另一条主线）：看板可观测性 + 管控能力增强方案详见
 `next_doc/kanban_execution_visibility_and_control_plan.md`。
+
+> 交叉引用（2026-10-09）：`tick_dispatch_only_execution_model_plan.md` 阶段四已实施 tick 线程 LLM 告警（状态文件 `tick_thread_llm_calls`）与后台调用 deadline（`retry.background_call_*`），与本方案的 watchdog 栈快照互补：前者在 tick 里出现同步 LLM 调用时即时告警，后者在卡死后取证。
