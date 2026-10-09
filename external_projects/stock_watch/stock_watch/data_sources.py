@@ -765,8 +765,9 @@ def fetch_xueqiu_hot_stock(top_n: int = 50) -> List[HotStockItem]:
 # CDP 浏览器连接器：用于在 Python 网络层有代理/TLS 问题时绕过
 from .browser_manager import ensure_browser_running, get_cdp_session, is_browser_running
 
+# 默认调试端口（可被外部配置覆盖）
 _BROWSER_CDP_PORT = 9333
-_BROWSER_CDP_TAB_ID = None
+_BROWSER_CDP_TAB_ID = None  # 动态获取，不硬编码
 
 # 持久化 CDP session，避免每次重新导航建立 session
 _cdp_session_cache = None
@@ -775,16 +776,75 @@ _CDP_SESSION_TTL = 300  # 5分钟缓存
 
 
 def _get_cdp_session():
-    """懒加载 CDP 会话（自动确保浏览器运行）。"""
-    global _BROWSER_CDP_TAB_ID
+    """懒加载 CDP 会话（自动确保浏览器运行，动态检测端口和tab）。
+
+    策略：
+    1. 先尝试使用已缓存的端口和tab
+    2. 如果缓存失效或连接失败，杀掉旧浏览器并重启
+    3. 不主动扫描多个端口，避免并发启动冲突
+    """
+    global _BROWSER_CDP_PORT, _BROWSER_CDP_TAB_ID, _cdp_session_cache, _cdp_session_ts
+    import time as _time
+    
     try:
-        port, tab_id = ensure_browser_running(port=_BROWSER_CDP_PORT)
-        if tab_id and not _BROWSER_CDP_TAB_ID:
-            _BROWSER_CDP_TAB_ID = tab_id
-        session, tab = get_cdp_session(port=_BROWSER_CDP_PORT)
-        return session, tab
+        # 先尝试使用现有缓存
+        if _cdp_session_cache is not None:
+            try:
+                current_url = _cdp_session_cache.eval_js("window.location.href", await_promise=False)
+                if current_url and 'chrome-error' not in current_url:
+                    return _cdp_session_cache, _BROWSER_CDP_TAB_ID
+                _cdp_session_cache.close()
+                _cdp_session_cache = None
+            except:
+                _cdp_session_cache = None
+        
+        # 尝试当前端口
+        from .browser_manager import is_debug_port_alive
+        if is_debug_port_alive(port=_BROWSER_CDP_PORT):
+            try:
+                session = get_cdp_session(port=_BROWSER_CDP_PORT)
+                tabs = session.list_tabs()
+                if tabs:
+                    tab_id = tabs[0]['id']
+                    current_url = session.eval_js("window.location.href", await_promise=False)
+                    if current_url and 'chrome-error' not in current_url:
+                        _BROWSER_CDP_TAB_ID = tab_id
+                        _cdp_session_cache = session
+                        _cdp_session_ts = _time.monotonic()
+                        return session, tab_id
+                session.close()
+            except Exception as e:
+                logger.debug(f"当前端口{_BROWSER_CDP_PORT}连接失败: {e}")
+        
+        # 当前端口不可用，杀掉可能残留的浏览器并重启
+        logger.info(f"浏览器不可用，重启 CDP 实例 (port={_BROWSER_CDP_PORT})...")
+        from .browser_manager import close_browser
+        try:
+            close_browser(port=_BROWSER_CDP_PORT)
+            _time.sleep(2)
+        except:
+            pass
+        
+        # 启动新浏览器
+        new_port, new_tab = ensure_browser_running(port=_BROWSER_CDP_PORT, headless=True)
+        session, tab = get_cdp_session(port=new_port)
+        
+        # 验证页面有效
+        current_url = session.eval_js("window.location.href", await_promise=False)
+        if current_url and 'chrome-error' not in current_url:
+            _BROWSER_CDP_PORT = new_port
+            _BROWSER_CDP_TAB_ID = new_tab
+            _cdp_session_cache = session
+            _cdp_session_ts = _time.monotonic()
+            logger.info(f"CDP 浏览器已重新启动于端口 {new_port}")
+            return session, new_tab
+        else:
+            session.close()
+            raise DataSourceError(f"浏览器页面异常: {current_url}")
+            
     except Exception as e:
         raise DataSourceError(f"CDP 连接失败: {e}") from e
+
 
 
 def _get_persistent_cdp_session():
@@ -821,13 +881,19 @@ def _eastmoney_kline_cdp_fetch(url: str, timeout: int = 15, max_retries: int = 3
             session.eval_js(f"location.href={json.dumps(url)}", await_promise=True)
             time.sleep(3)
 
-            # 读取页面完整文本内容
-            body = session.eval_js("document.body.innerText", await_promise=True)
-            body = (body or "").strip()
+            # 读取页面完整HTML内容（JSON API返回在<pre>标签内）
+            html = session.eval_js("document.documentElement.outerHTML", await_promise=True)
+            html = (html or "").strip()
 
-            if body and "rc" in body and not body.startswith("FETCH_ERROR"):
-                return body
-            raise DataSourceError(f"CDP 返回无效内容: {body[:200]!r}")
+            # 从HTML中提取JSON内容（去掉<html><head>...<body><pre>前缀）
+            if "rc" in html:
+                # 提取JSON部分
+                start = html.find('{')
+                end = html.rfind('}') + 1
+                if start >= 0 and end > start:
+                    body = html[start:end]
+                    return body
+            raise DataSourceError(f"CDP 返回无效内容: {html[:200]!r}")
         except Exception as e:
             logger.debug("CDP 第 %d 次尝试失败: %s", attempt, e)
             if attempt < max_retries:
@@ -912,22 +978,13 @@ def _eastmoney_kline_direct(
 def fetch_kline(code: str, market: str, days: int, adjust: str = "qfq"):
     """获取最近 `days` 个交易日的日 K 线。
 
-    执行顺序：
-      1. CDP 浏览器直连东方财富（绕过 Windows 系统代理冲突）
-      2. urllib.request 直连东方财富（不读系统代理）
-      3. baostock（TCP 直连，不受代理影响）
-      4. 新浪财经 API（绕过代理）
-      5. akshare.stock_zh_a_hist（走系统代理，可能失败）
+    主数据源：baostock（TCP 直连，稳定可靠）
+    降级路径：新浪财经 → akshare
     """
-    try:
-        df = _eastmoney_kline_direct(code, market, days, adjust)
-        return df
-    except Exception as exc:
-        logger.warning("东方财富直连失败 (%s)，降级到 baostock", exc)
+    import datetime as _dt
 
-    # 3. baostock（TCP 直连，最稳兜底）
+    # 1. baostock（主数据源）
     try:
-        import datetime as _dt
         end = _dt.date.today()
         start = end - _dt.timedelta(days=int(days * 1.7) + 30)
         bs = _import_baostock()
@@ -951,18 +1008,18 @@ def fetch_kline(code: str, market: str, days: int, adjust: str = "qfq"):
                 bs_df["date"] = pd.to_datetime(bs_df["date"])
                 logger.info("baostock K 线成功: %s (%d 行)", code, len(bs_df))
                 return bs_df.tail(days).reset_index(drop=True)
-    except Exception as exc2:
-        logger.debug("baostock K 线失败 (%s)，降级到新浪", exc2)
+    except Exception as exc:
+        logger.warning("baostock K 线失败 (%s)，降级到新浪", exc)
 
-    # 4. 新浪财经兜底
+    # 2. 新浪财经兜底
     try:
         sina_df = _sina_kline_fetch(f"{'sh' if market == 'sh' else 'sz'}{code}", datalen=days + 10)
         if sina_df is not None and not sina_df.empty:
             return sina_df.tail(days).reset_index(drop=True)
-    except Exception as exc3:
-        logger.debug("新浪 K 线失败: %s", exc3)
+    except Exception as exc2:
+        logger.debug("新浪 K 线失败: %s", exc2)
 
-    # 5. akshare 最后备选
+    # 3. akshare 最后备选
     import datetime
     ak = _import_akshare()
     end = datetime.date.today()
@@ -976,83 +1033,61 @@ def fetch_kline(code: str, market: str, days: int, adjust: str = "qfq"):
             adjust=adjust,
         )
         return df.tail(days)
-    except Exception as exc2:
+    except Exception as exc3:
         raise DataSourceError(
-            f"所有数据源均失败 ({code}): CDP, baostock, sina, akshare={exc2}"
-        ) from exc2
+            f"所有数据源均失败 ({code}): baostock, sina, akshare={exc3}"
+        ) from exc3
 
 
 def fetch_etf_kline(code: str, days: int, adjust: str = "qfq"):
     """获取 ETF K 线数据。
 
-    执行顺序：
-      1. CDP 浏览器直连东方财富
-      2. urllib.request 直连东方财富
-      3. baostock（TCP 直连，最稳兜底）
-      4. 新浪财经 API
-      5. akshare.fund_etf_hist_em
+    主数据源：baostock（TCP 直连，稳定可靠）
+    降级路径：新浪财经 → akshare
     """
     import re
     # 正确判断市场：51xxxx/58xxxx 是上交所，159xxx 是深交所
     market = "sh" if code.startswith(("5",)) else "sz"
-    try:
-        df = _eastmoney_kline_direct(code, market, days, adjust)
-        return df
-    except Exception as exc:
-        logger.warning("东方财富直连失败 (%s)，降级到 baostock", exc)
 
-    # 3. 新浪财经（HTTP 直连，最可靠且无需登录）
+    # 1. baostock（主数据源）
+    try:
+        import datetime as _dt
+        end = _dt.date.today()
+        start = end - _dt.timedelta(days=int(days * 1.7) + 30)
+        bs = _import_baostock()
+        _bs_compat_patch()
+        bs_code = f"{market}.{code}"
+        adjustflag = "3" if adjust == "none" else "2" if adjust == "hfq" else "1"
+        lg = bs.login()
+        if lg.error_code == "0":
+            rs = bs.query_history_k_data_plus(
+                bs_code,
+                "date,open,high,low,close,volume",
+                start_date=start.strftime("%Y-%m-%d"),
+                end_date=end.strftime("%Y-%m-%d"),
+                frequency="d",
+                adjustflag=adjustflag,
+            )
+            bs_df = rs.get_data()
+            bs.logout()
+            if bs_df is not None and not bs_df.empty:
+                bs_df.columns = ["date", "open", "high", "low", "close", "volume"]
+                bs_df["date"] = pd.to_datetime(bs_df["date"])
+                logger.info("baostock ETF K 线成功: %s (%d 行)", code, len(bs_df))
+                return bs_df.tail(days).reset_index(drop=True)
+    except Exception as exc:
+        logger.warning("baostock ETF K 线失败 (%s)，降级到新浪", exc)
+
+    # 2. 新浪财经兜底
     try:
         sina_symbol = f"{'sh' if market == 'sh' else 'sz'}{code}"
         sina_df = _sina_kline_fetch(sina_symbol, datalen=days + 10)
         if sina_df is not None and not sina_df.empty:
             return sina_df.tail(days).reset_index(drop=True)
-    except Exception as exc3:
-        logger.debug("新浪 ETF K 线失败: %s", exc3)
-
-    # 4. baostock（TCP 直连，最稳兜底，但需加超时避免卡死）
-    try:
-        import datetime as _dt
-        import signal
-
-        def _timeout_handler(signum, frame):
-            raise TimeoutError("baostock 查询超时")
-
-        old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
-        signal.alarm(15)  # 15 秒超时
-        try:
-            end = _dt.date.today()
-            start = end - _dt.timedelta(days=int(days * 1.7) + 30)
-            bs = _import_baostock()
-            _bs_compat_patch()
-            bs_code = f"{market}.{code}"
-            adjustflag = "3" if adjust == "none" else "2" if adjust == "hfq" else "1"
-            lg = bs.login()
-            if lg.error_code == "0":
-                rs = bs.query_history_k_data_plus(
-                    bs_code,
-                    "date,open,high,low,close,volume",
-                    start_date=start.strftime("%Y-%m-%d"),
-                    end_date=end.strftime("%Y-%m-%d"),
-                    frequency="d",
-                    adjustflag=adjustflag,
-                )
-                bs_df = rs.get_data()
-                bs.logout()
-                if bs_df is not None and not bs_df.empty:
-                    bs_df.columns = ["date", "open", "high", "low", "close", "volume"]
-                    bs_df["date"] = pd.to_datetime(bs_df["date"])
-                    logger.info("baostock ETF K 线成功: %s (%d 行)", code, len(bs_df))
-                    return bs_df.tail(days).reset_index(drop=True)
-        except TimeoutError:
-            logger.debug("baostock ETF K 线超时 (%s)，跳过", code)
-        finally:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, old_handler)
     except Exception as exc2:
-        logger.debug("baostock ETF K 线失败 (%s)，降级到 akshare", exc2)
+        logger.debug("新浪 ETF K 线失败: %s", exc2)
 
-    # 5. akshare 最后备选
+    # 3. akshare 最后备选
     import datetime
     ak = _import_akshare()
     end = datetime.date.today()
@@ -1066,8 +1101,8 @@ def fetch_etf_kline(code: str, days: int, adjust: str = "qfq"):
             adjust=adjust,
         )
         return df.tail(days)
-    except Exception as exc2:  # noqa: BLE001
-        raise DataSourceError(f"所有数据源均失败 ({code}): akshare={exc2}") from exc2
+    except Exception as exc3:
+        raise DataSourceError(f"所有数据源均失败 ({code}): baostock, sina, akshare={exc3}") from exc3
 
 
 def fetch_announcements(code: str, top_n: int = 20):
