@@ -256,14 +256,37 @@ class DailyKlineDB:
         return len(rows)
 
     # ── 批量增量更新 ──────────────────────────────────────────────────────
-    def update_batch(self, symbols: List[str], *, max_days_back: int = 3000) -> Dict[str, int]:
-        """对多只标的批量增量更新，返回 {symbol: 写入行数}。"""
+    def update_batch(
+        self,
+        symbols: List[str],
+        *,
+        max_days_back: int = 3000,
+        progress_interval: int = 50,
+    ) -> Dict[str, int]:
+        """对多只标的批量增量更新，返回 {symbol: 写入行数}。
+
+        参数 progress_interval：每隔多少只打印一次进度（默认每 50 只）。
+        """
+        n = len(symbols)
         result = {}
+        start_ts = time.time()
         for i, sym in enumerate(symbols):
             result[sym] = self.update_stock(sym, max_days_back=max_days_back)
             # 简单限速：每 5 只稍作停顿
             if (i + 1) % 5 == 0:
                 time.sleep(0.3)
+            # 进度打印
+            if progress_interval <= 0 or ((i + 1) % progress_interval == 0) or (i + 1 == n):
+                elapsed = time.time() - start_ts
+                rate = (i + 1) / elapsed if elapsed > 0 else 0
+                eta = (n - i - 1) / rate if rate > 0 else 0
+                has_new = sum(1 for v in result.values() if v > 0)
+                up_to_date = sum(1 for v in result.values() if v == 0)
+                print(
+                    f"[进度] {i+1}/{n} ({(i+1)*100/n:.1f}%) "
+                    f"新数据 {has_new} 只 已是最新 {up_to_date} 只 "
+                    f"耗时 {elapsed:.1f}s 速度 {rate:.1f}只/s ETA {eta:.0f}s"
+                )
         return result
 
     # ── 全市场增量更新（收盘后定时任务用）───────────────────────────────
@@ -591,7 +614,8 @@ def _cmd_main() -> int:
         if args.all:
             results = db.update_all_market()
             ok = sum(1 for n in results.values() if n > 0)
-            print(f"全市场更新完成: {ok}/{len(results)} 只有增量变化")
+            up_to_date = sum(1 for n in results.values() if n == 0)
+            print(f"\n全市场更新完成: 新数据 {ok}/{len(results)} 只, {up_to_date} 只已是最新")
             return 0
         parser.print_help()
         return 0
