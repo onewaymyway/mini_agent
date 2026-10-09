@@ -185,6 +185,7 @@
     "goal_scheduling_strategy": "fair_round_robin",
     "guardian_mode_enabled": true,
     "async_step_prepare_enabled": true,
+    "async_goal_side_calls_enabled": true,
     "objective_isolated_context_enabled": true,
     "objective_isolated_inner_max_turns": 50,
     "objective_isolated_max_workers": 1,

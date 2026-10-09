@@ -158,6 +158,7 @@ progress_notes）区分开。
 
 - 一对一绑定：一个 Goal 只能绑定一个 goal_cycle job，暂不支持"多个 job 共享同一个 Goal"。
 - `reap_finished_cycles()` 是轮询式回收，最坏情况下有一个 tick 间隔（约 60s）的计数延迟。
+- 开启 `autonomy.async_goal_side_calls_enabled` 后，`reap_finished_cycles()` 里的 pursuit 饱和度复核（含可选 LLM）与 goal_cycle 触发时的 LLM 进展/稳定性判断改为后台执行，后者存在一轮滞后（首轮走 difflib 兜底），见 [Daemon 执行模型指南 §6 阶段三](daemon-execution-model-guide.md)。
 - `progress_notes` 的摘要压缩（超过一定行数后自动压缩早期记录，避免长期运行后信息噪声
   过多）尚未实现，见 `goal_cron_visibility_and_intervention_improvement_plan.md` §2.2，
   留作后续独立小 Track。

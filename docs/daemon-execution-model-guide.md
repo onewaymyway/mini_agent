@@ -204,8 +204,8 @@ Objective 的 step 最终都提交进和用户交互对话共用的同一个单�
 ## 6. 阶段三：tick 只派发、不执行（TickDispatcher）
 
 > 方案文档：[`next_doc/tick_dispatch_only_execution_model_plan.md`](../next_doc/tick_dispatch_only_execution_model_plan.md)。
-> 当前已实施**阶段一**（cron `local_handler` 异步化）和**阶段二**（step 状态机）；
-> tick 线程 LLM 告警与 deadline 兜底（阶段四）尚未实施。
+> 当前已实施**阶段一**（cron `local_handler` 异步化）、**阶段二**（step 状态机）和
+> **阶段三**（executor 之外的同类调用点）；tick 线程 LLM 告警与 deadline 兜底（阶段四）尚未实施。
 
 **问题**：`SchedulerHeartbeat` 约定 tick 只做"决策 + 提交"，但实际有多处在 tick 线程
 （且持有 `sched_lock`）里同步等待 LLM。上游一变慢，整个调度心跳被拖死，`on_turn_done`
@@ -234,6 +234,7 @@ Objective 的 step 最终都提交进和用户交互对话共用的同一个单�
 |---|---|---|
 | `scheduler.async_local_handlers_enabled` | `false` | 开启后 local_handler 走 TickDispatcher；仓库自带的 `agent_config.json` 已设为 `true` |
 | `autonomy.async_step_prepare_enabled` | `false` | 开启后 step 准备（路径声明/拆解/重新分解）走 TickDispatcher；依赖 `scheduler_heartbeat_enabled`；仓库自带的 `agent_config.json` 已设为 `true` |
+| `autonomy.async_goal_side_calls_enabled` | `false` | 开启后 Goal 拆解 / pursuit 复核 / goal_cycle LLM 进展判断走 TickDispatcher（阶段三，不依赖 `sched_lock`）；仓库自带的 `agent_config.json` 已设为 `true` |
 | `scheduler.tick_dispatcher_max_workers` | `4` | 派发器同时在跑的任务数上限 |
 | `scheduler.tick_dispatcher_timeout_seconds` | `300` | 单个任务存活期限（秒） |
 | `scheduler.tick_dispatcher_grace_seconds` | `30` | 超过期限后再宽限多久才回收 |
@@ -282,6 +283,28 @@ daemon 重启后所有 `running` 的记录仍由 `reconcile_orphaned_executions(
 `results_waiting`）；看板里 `preparing` step 显示为"准备中"占位。
 
 **回退**：把 `async_step_prepare_enabled` 改回 `false` 并重启 daemon。
+
+### 阶段三：executor 之外的同类调用点（Goal 拆解 / pursuit 复核 / goal_cycle 进展判断）
+
+**问题**：审计里除 `ObjectiveExecutor` 之外还有三处在 tick 线程同步等 LLM 的调用点。
+
+| 调用点 | 做法 | 失败/忙碌时 |
+|---|---|---|
+| `AutonomousLoop._ensure_goal_objectives` 的 Goal→Objective 拆解（审计 #7） | 对每个"缺 Objective"的 Goal 派发 `goal_decompose:<goal_id>`，worker 只算标题列表放进结果表；**下一轮 tick** 在 tick 线程里消费（写 Objective + 记 digest） | 异常/超时 → 结果为空 → 降级为与 Goal 同名的 1:1 镜像 Objective（与原同步语义一致）；派发器忙/同 key 在跑 → 下一轮重试，**不**回退同步 |
+| `goal_cron_bridge._check_pursuit_saturation`（`reap_finished_cycles` 内，审计 #8） | 整个复核（含可选 LLM 与通知）交后台线程，`reap_finished_cycles` 立即返回，计数主流程不受影响 | 派发器忙 → 进入有界待重试队列（最多 50 条），下一次 reap 开头重试；复核本身是纯诊断增强，异常照旧整体吞掉 |
+| goal_cycle 触发时 `progress_trend_llm_enabled` 的进展/稳定性 LLM 判断（审计 #6） | 包成"缓存 + 后台刷新"：有未过期（7 天内）缓存判定直接用；无缓存返回 `None` → 原有 difflib 兜底；同时把本次 prompt 派发后台，结果存缓存供下一轮用 | 失败/超时保留旧缓存、不覆盖 |
+
+**语义差异（开启后）**：
+- Goal 拆解的 Objective 比同步版晚一个 tick（默认 60s）出现；
+- goal_cycle 的 LLM 进展判断存在**一轮滞后**（本轮用的是上一轮 prompt 的判定，首轮用 difflib）。该信号本来就是
+  辅助性的，且相邻两轮的判定窗口只差一条 `progress_notes`；缓存是进程内的，daemon 重启后首轮回到 difflib。
+
+**观测**：`execution_model_status.goal_side_calls`（`enabled`、`signal_dispatched`、`signal_cache_hits`、
+`pursuit_dispatched`、`pursuit_deferred`、`pursuit_retried`、`pending_pursuit_checks`、`cached_signal_verdicts`），
+以及 `tick_dispatcher.running_keys` 里的 `goal_decompose:*` / `pursuit_saturation:*` / `goal_signal:*`。
+`pending_pursuit_checks` 持续不降说明派发器长期被占满。
+
+**回退**：把 `async_goal_side_calls_enabled` 改回 `false` 并重启 daemon。
 
 ## 相关文档
 

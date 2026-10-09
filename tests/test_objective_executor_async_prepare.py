@@ -305,11 +305,16 @@ class TestEdges(_Base):
         blocker.set()
         self.assertTrue(_wait_until(lambda: not self.dispatcher.is_running("blocker")))
         for _ in range(20):
-            executor.process_prepared()
+            # 真实 tick 线程调用 process_prepared() 时持有 sched_lock；不持锁会与 worker
+            # 线程的 on_done（持锁推进状态）并发改 executor 状态，偶发重复提交（测试自身竞态）
+            with self.sched_lock:
+                executor.process_prepared()
             if self.submitter.calls:
                 break
             time.sleep(0.1)
         self.assertTrue(_wait_until(lambda: len(self.submitter.calls) == 1))
+        time.sleep(0.3)
+        self.assertEqual(len(self.submitter.calls), 1, "不得重复提交")
 
     def test_without_sched_lock_stays_synchronous(self):
         executor = self.executor(decompose=lambda o: ["s"], declare=lambda d: [], lock=False)

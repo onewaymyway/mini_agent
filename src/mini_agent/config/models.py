@@ -1806,6 +1806,15 @@ class AutonomyConfig:
     # （需要共享的 sched_lock 才能在后台线程里安全推进状态），否则自动保持同步。
     # 默认 False（遵循"开关默认保持非破坏行为"约定）。
     async_step_prepare_enabled: bool = False
+
+    # [next_doc/tick_dispatch_only_execution_model_plan.md 阶段三] tick 只派发、不执行：
+    # True 时 executor 之外三处 tick 线程内的同步 LLM 调用也交给 TickDispatcher：
+    #   ① AutonomousLoop._ensure_goal_objectives 的 Goal→Objective 拆解（审计 #7）；
+    #   ② goal_cron_bridge.reap_finished_cycles 里的 pursuit 饱和度复核（审计 #8）；
+    #   ③ goal_cycle 触发时 progress_trend_llm_enabled 的进展/稳定性 LLM 判断（审计 #6，
+    #      后台刷新、本轮用缓存或 difflib 兜底，存在一轮滞后）。
+    # 与 async_step_prepare_enabled 不同，本开关不要求 sched_lock。默认 False。
+    async_goal_side_calls_enabled: bool = False
     # SchedulerHeartbeat 自身的轮询间隔（秒）——只是"多久检查一次是否该
     # tick"，真正的 tick 频率仍由 AutonomousLoop 的 tick_interval_seconds
     # 决定，本项应明显小于 tick_interval_seconds 才有意义（默认 5 秒 vs

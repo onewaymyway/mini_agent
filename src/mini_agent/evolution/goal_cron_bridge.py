@@ -323,13 +323,19 @@ def _resolve_execution_phase(paths, goal: "GoalNode", cycle_no: int,
                     spec_recently_revised = True
 
         llm_helper = None
+        routine_llm_helper = None
         if llm_helper_provider is not None:
             try:
                 from mini_agent.config import load_config
                 if getattr(load_config().execution_phase, "progress_trend_llm_enabled", False):
                     helper = llm_helper_provider()
                     if helper is not None:
-                        llm_helper = lambda prompt, _h=helper: _h.ask(prompt)
+                        if _async_dispatcher is not None:
+                            # [tick_dispatch_only 阶段三 #6] 不在 tick 线程里同步等 LLM
+                            llm_helper = _make_async_signal_llm(goal.id, "progress_trend", helper)
+                            routine_llm_helper = _make_async_signal_llm(goal.id, "routine_stability", helper)
+                        else:
+                            llm_helper = lambda prompt, _h=helper: _h.ask(prompt)
             except Exception:
                 llm_helper = None
 
@@ -362,7 +368,9 @@ def _resolve_execution_phase(paths, goal: "GoalNode", cycle_no: int,
                 if current_routine_text:
                     routine_texts.append(current_routine_text)
                 routine_texts = [t for t in routine_texts if t]
-                routine_stability = ep.compute_routine_stability_signal(routine_texts, llm_helper=llm_helper)
+                routine_stability = ep.compute_routine_stability_signal(
+                    routine_texts, llm_helper=routine_llm_helper if routine_llm_helper is not None else llm_helper,
+                )
             except Exception:
                 routine_stability = None
 
@@ -1310,6 +1318,95 @@ def stop_goal_recurrence(
     return goal_backlog.set_recurrence(goal.id, recurring=False, cron_job_id=None)
 
 
+# ── tick 只派发：goal_cron_bridge 内的后台旁路调用（tick_dispatch_only 阶段三）──────
+#
+# 审计 #6（goal_cycle 触发时的 LLM 进展/稳定性判断）与 #8（reap_finished_cycles 里的
+# pursuit 饱和度复核）都在 tick 线程里同步等 LLM。本节提供最小设施：模块级注入一个
+# TickDispatcher（由 api/server.py 在 `autonomy.async_goal_side_calls_enabled` 开启时注入），
+# 未注入时一切保持原同步行为。
+
+import collections as _collections
+import threading as _threading
+
+_async_lock = _threading.Lock()
+_async_dispatcher = None
+_async_timeout_seconds: float = 120.0
+# #6：每个 (goal_id, kind) 最近一次后台 LLM 判定结果（True/False/None）及时间戳
+_signal_verdicts: dict = {}
+_SIGNAL_VERDICT_MAX_AGE_SECONDS = 7 * 86400.0
+# #8：派发器繁忙被拒的 pursuit 复核，留待下一次 reap 重试（有界，丢最旧）
+_pending_pursuit_checks: "_collections.deque" = _collections.deque(maxlen=50)
+_async_stats = {"signal_dispatched": 0, "signal_cache_hits": 0, "pursuit_dispatched": 0,
+                "pursuit_deferred": 0, "pursuit_retried": 0}
+
+
+def set_async_side_calls(dispatcher, *, timeout_seconds: float = 120.0) -> None:
+    """注入（或用 None 清除）后台派发器，开启/关闭本模块的旁路调用异步化。"""
+    global _async_dispatcher, _async_timeout_seconds
+    with _async_lock:
+        _async_dispatcher = dispatcher
+        _async_timeout_seconds = float(timeout_seconds)
+        if dispatcher is None:
+            _signal_verdicts.clear()
+            _pending_pursuit_checks.clear()
+            for k in _async_stats:
+                _async_stats[k] = 0
+
+
+def async_side_calls_stats() -> dict:
+    """观测快照（供 execution_model_status 展示）。"""
+    with _async_lock:
+        return {"enabled": _async_dispatcher is not None, **_async_stats,
+                "pending_pursuit_checks": len(_pending_pursuit_checks),
+                "cached_signal_verdicts": len(_signal_verdicts)}
+
+
+def _make_async_signal_llm(goal_id: str, kind: str, helper):
+    """[#6] 把"同步等 LLM"的 `llm_helper(prompt)->str` 包成"缓存 + 后台刷新"版本。
+
+    `compute_progress_trend_signal`/`compute_routine_stability_signal` 在 llm_helper 返回
+    空/None 时本来就会退回 difflib 兜底，所以这里的策略是：
+      - 有未过期的缓存判定 → 直接返回对应关键词（STUCK/PROGRESSING），本轮就用上；
+      - 无缓存 → 返回 None（走 difflib 兜底），同时把本次 prompt 派发到后台，结果存缓存，
+        下一轮触发时生效。
+    **语义变化**：LLM 判定存在一轮滞后（缓存的是上一轮 prompt 的判定）。该信号本来就是
+    辅助性的，且判定窗口只相差一条 note，可以接受；默认关闭，见 §10 开关说明。
+    派发器忙/key 已在跑时不重复派发。"""
+    dispatcher = _async_dispatcher
+    key = (goal_id, kind)
+
+    def _call(prompt: str):
+        now = time.time()
+        with _async_lock:
+            cached = _signal_verdicts.get(key)
+        if cached is not None and now - cached[1] <= _SIGNAL_VERDICT_MAX_AGE_SECONDS:
+            with _async_lock:
+                _async_stats["signal_cache_hits"] += 1
+        # 无论有无缓存，都刷新一次（保证缓存跟上最新窗口）；已在跑则被派发器去重
+        def _work():
+            return helper.ask(prompt)
+
+        def _on_done(result):
+            if result.status != "ok" or not result.value or not str(result.value).strip():
+                return  # 失败/超时：保留旧缓存，不覆盖
+            with _async_lock:
+                _signal_verdicts[key] = (str(result.value).strip(), time.time())
+
+        try:
+            if dispatcher.dispatch(f"goal_signal:{goal_id}:{kind}", _work,
+                                   timeout=_async_timeout_seconds, on_done=_on_done,
+                                   label=f"goal_signal:{kind}"):
+                with _async_lock:
+                    _async_stats["signal_dispatched"] += 1
+        except Exception:
+            pass
+        if cached is not None and now - cached[1] <= _SIGNAL_VERDICT_MAX_AGE_SECONDS:
+            return cached[0]
+        return None
+
+    return _call
+
+
 # ── 完成计数回收（Track C） ────────────────────────────────────────────────────
 
 def reap_finished_cycles(goal_backlog: "GoalBacklog", *, llm_helper_provider=None) -> int:
@@ -1328,6 +1425,8 @@ def reap_finished_cycles(goal_backlog: "GoalBacklog", *, llm_helper_provider=Non
     返回本次新计数的子节点数量（用于日志/测试断言，正常 tick 大多数时候是 0）。
     """
     goal_backlog.load()
+    if _async_dispatcher is not None:
+        _retry_pending_pursuit_checks(goal_backlog)
     reaped = 0
     for goal in goal_backlog.all_nodes():
         if not goal.is_goal or not goal.recurring:
@@ -1361,7 +1460,7 @@ def reap_finished_cycles(goal_backlog: "GoalBacklog", *, llm_helper_provider=Non
                     # 做增量质量判断；一轮成功完成时顺带算一次饱和度信号，
                     # 刚跨过阈值才推一次通知（同一次饱和状态不重复打扰）。
                     # 诊断增强，任何异常都吞掉，不影响 reap 主流程的计数。
-                    _check_pursuit_saturation(goal_backlog, goal, llm_helper_provider=llm_helper_provider)
+                    _check_pursuit_saturation(goal_backlog, goal, llm_helper_provider=llm_helper_provider, child_id=child.id)
                     # [方向 C2] 本轮新增摘要暂存，等下一次真正推送时打包
                     # 带出，不单独消耗推送额度。同样只是诊断/展示增强。
                     _record_pursuit_digest(goal_backlog, goal)
@@ -1527,14 +1626,64 @@ def _notify_phase_health_issue(paths, goal: "GoalNode", reason: str) -> None:
         log_exception(_mini_agent_exc, where='mini_agent.evolution.goal_cron_bridge._notify_phase_health_issue')
 
 
-def _check_pursuit_saturation(goal_backlog: "GoalBacklog", goal: "GoalNode", *, llm_helper_provider=None) -> None:
+def _check_pursuit_saturation(goal_backlog: "GoalBacklog", goal: "GoalNode", *, llm_helper_provider=None,
+                              child_id: str = "") -> None:
     """[growth_advisor_autonomy_deepening_plan.md 方向 B1/B2；
     growth_advisor_autonomy_deepening_plan_v2.md 方向 1] 一轮成功
     完成时，对成长顾问自主推进的 Goal 算一次增量质量/饱和度信号，刚
     跨过阈值就推一条"要不要降频"的通知。纯诊断增强：不判断失败、不
     自动停止/降低周期性执行（是否降频仍由用户在通知/看板里决定），
     任何异常整体吞掉，不影响 reap_finished_cycles() 的计数主流程。
+
+    [tick_dispatch_only 阶段三 #8] 注入了后台派发器（`set_async_side_calls`）时，整个复核
+    （含可能的 LLM 调用与通知）交给后台线程，本函数立即返回；派发器忙则进入待重试队列，
+    下一次 reap 再试，不回退同步等待。
     """
+    dispatcher = _async_dispatcher
+    if dispatcher is not None:
+        _dispatch_pursuit_check(goal_backlog, goal, llm_helper_provider, child_id)
+        return
+    _check_pursuit_saturation_sync(goal_backlog, goal, llm_helper_provider=llm_helper_provider)
+
+
+def _dispatch_pursuit_check(goal_backlog, goal, llm_helper_provider, child_id: str) -> bool:
+    dispatcher = _async_dispatcher
+    if dispatcher is None:
+        return False
+    key = f"pursuit_saturation:{goal.id}:{child_id or 'x'}"
+
+    def _work():
+        _check_pursuit_saturation_sync(goal_backlog, goal, llm_helper_provider=llm_helper_provider)
+
+    try:
+        ok = dispatcher.dispatch(key, _work, timeout=_async_timeout_seconds, label=key)
+    except Exception:
+        ok = False
+    with _async_lock:
+        if ok:
+            _async_stats["pursuit_dispatched"] += 1
+        else:
+            _async_stats["pursuit_deferred"] += 1
+            _pending_pursuit_checks.append((goal.id, child_id, llm_helper_provider))
+    return ok
+
+
+def _retry_pending_pursuit_checks(goal_backlog) -> None:
+    """下一次 reap 时重试上次被派发器拒绝的复核（goal 重新从 backlog 取最新快照）。"""
+    with _async_lock:
+        pending = list(_pending_pursuit_checks)
+        _pending_pursuit_checks.clear()
+    for gid, cid, provider in pending:
+        goal = goal_backlog.get(gid)
+        if goal is None:
+            continue
+        with _async_lock:
+            _async_stats["pursuit_retried"] += 1
+        _dispatch_pursuit_check(goal_backlog, goal, provider, cid)
+
+
+def _check_pursuit_saturation_sync(goal_backlog: "GoalBacklog", goal: "GoalNode", *, llm_helper_provider=None) -> None:
+    """`_check_pursuit_saturation` 的同步实现体（原逻辑，未改动）。"""
     try:
         paths = getattr(goal_backlog, "_paths", None)
         if paths is None:

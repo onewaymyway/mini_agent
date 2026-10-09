@@ -3911,6 +3911,11 @@ async def get_self_execution_model_status(request: Request):
         "rejected_busy_total": int, "rejected_full_total": int,
         "orphan_threads_alive": int, "running_keys": [str, ...],
       },
+      "goal_side_calls": {              # [tick_dispatch_only 阶段三] 未开启时 enabled=False
+        "enabled": bool, "signal_dispatched": int, "signal_cache_hits": int,
+        "pursuit_dispatched": int, "pursuit_deferred": int, "pursuit_retried": int,
+        "pending_pursuit_checks": int, "cached_signal_verdicts": int,
+      },
       "objective_executor": {
         "stale_step_reap_count": int,   # [阶段三] ObjectiveExecutor 累计
                                           # 强制回收过的卡死 step 次数
@@ -3945,6 +3950,7 @@ async def get_self_execution_model_status(request: Request):
         "cron": {"reaped_job_count": 0},
         "objective_executor": {"stale_step_reap_count": 0},
         "tick_dispatcher": {"enabled": False},
+        "goal_side_calls": {"enabled": False},
         "recent_recoveries": [],
     }
     try:
@@ -4046,6 +4052,13 @@ async def get_self_execution_model_status(request: Request):
                 result["tick_dispatcher"] = {"enabled": True}
         else:
             result["tick_dispatcher"] = {"enabled": False}
+
+        # [tick_dispatch_only 阶段三] goal 拆解/pursuit 复核/goal_cycle 进展判断的异步化统计
+        try:
+            from mini_agent.evolution.goal_cron_bridge import async_side_calls_stats
+            result["goal_side_calls"] = async_side_calls_stats()
+        except Exception:
+            result["goal_side_calls"] = {"enabled": False}
 
         # [阶段三] ObjectiveExecutor 卡死 step 回收计数。
         objective_executor = getattr(http_server.bridge, "_objective_executor", None)

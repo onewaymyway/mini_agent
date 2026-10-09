@@ -1,6 +1,6 @@
 # tick 只派发、不执行：调度心跳去阻塞改造方案
 
-> 状态：**方案已确认，待实施**（阶段 0～4 均未开始）。
+> 状态：**方案已确认，实施中**（阶段 0～3 已完成，阶段 4 未开始）。
 > 背景来源：`SchedulerHeartbeat` 卡死栈快照（`.agent/` 下 `stuck_20261009_100807_1.txt`、
 > `stuck_20261009_104039_1.txt`、`stuck_20261009_104328_1.txt`）分析。用户确认的方向：
 > **tick 只负责判断与派发，所有可能阻塞的执行都在独立线程里完成，不应卡住 tick。**
@@ -326,6 +326,7 @@ ok = dispatcher.dispatch(key=f"cron:{job.id}", fn=lambda: local_handler(job),
 |---|---|---|
 | `scheduler.async_local_handlers_enabled` | `False` | cron local_handler 走 dispatcher（§6.2） |
 | `autonomy.async_step_prepare_enabled` | `False` | step 准备阶段异步（§6.3） |
+| `autonomy.async_goal_side_calls_enabled` | `False` | executor 之外的 Goal 拆解 / pursuit 复核 / goal_cycle LLM 进展判断异步（§7 阶段三） |
 | `scheduler.tick_dispatcher_max_workers` | `4` | 派发器线程数 |
 | `scheduler.tick_dispatcher_timeout_seconds` | `300` | 默认任务存活期限 |
 | `scheduler.tick_dispatcher_grace_seconds` | `30` | 超过期限后再宽限多久才回收 |
@@ -377,5 +378,26 @@ ok = dispatcher.dispatch(key=f"cron:{job.id}", fn=lambda: local_handler(job),
     审计 #7/#8（`_ensure_goal_objectives` 的 goal 拆解、`reap_finished_cycles` 的复核）**本阶段未做**：
     它们不在 executor 内部，需要各自的 dispatch 点，留到阶段 3 收尾处理。
   - `agent_config.json` 的 `autonomy` 块已设 `async_step_prepare_enabled: true`；代码默认值仍为 `false`。
-- 阶段 3（executor 之外的同类调用点收尾）：**未开始**
+- 阶段 3（executor 之外的同类调用点收尾）：**已完成**（2026-10-09）
+  - 范围与做法（审计 #6/#7/#8，统一开关 `autonomy.async_goal_side_calls_enabled`，默认 `False`；不依赖 `sched_lock`）：
+    - #7 `AutonomousLoop._ensure_goal_objectives`：新增 `set_tick_dispatcher()`；对缺 Objective 的 Goal 派发
+      `goal_decompose:<id>`，worker 只算标题放进结果表，由**下一轮 tick** 消费（`add_objectives_for_goal` + digest 仍在 tick
+      线程）；失败/超时 → 空列表 → 降级 1:1 镜像；派发器忙/同 key 在跑 → 下一轮重试，不回退同步；陈旧结果按 Goal 是否仍缺 Objective 清理。
+    - #8 `goal_cron_bridge._check_pursuit_saturation`：模块级 `set_async_side_calls()` 注入派发器后，整个复核交后台；
+      被拒进入有界（50）待重试队列，下一次 `reap_finished_cycles` 开头重试。原同步实现体保留为 `_check_pursuit_saturation_sync`。
+    - #6 `_resolve_execution_phase`：LLM 进展/稳定性判断包成"缓存 + 后台刷新"（`_make_async_signal_llm`）：有 7 天内缓存直接用，
+      否则返回 `None` 让 `compute_*_signal` 走 difflib 兜底，同时后台刷新缓存。**存在一轮滞后**（见 docs 语义差异）。
+    - 装配：`api/server.py` 在任一异步开关开启时创建派发器，开关开启才调用 `set_tick_dispatcher`/`set_async_side_calls`；
+      `GET /v1/self/execution_model_status` 新增 `goal_side_calls`。
+  - 设计取舍：#6 的"异步化"是**缓存 + 兜底**而非"状态机等结果"，因为这两个信号本来就是辅助性的、`compute_*` 本身带 difflib 降级，
+    且 goal_cycle 触发的返回值语义（确保一轮 Objective 在推进）不能因等 LLM 而改变；#6 的 LLM 调用本身的最坏时长由阶段 4 deadline 兜底。
+  - 测试：新增 `tests/test_tick_dispatch_phase3_goal_side_calls.py`（18 用例：LLM 挂死时 tick 秒级返回、去重、结果消费、
+    异常/超时降级镜像、派发器满重试、未注入保持同步、缓存命中/失败保留旧缓存、与真实 `compute_progress_trend_signal` 联动、
+    `reap_finished_cycles` 端到端）。相关 65 个测试文件 1159 通过。
+  - 顺带修复：`tests/test_objective_executor_async_prepare.py::test_dispatcher_busy_queues_prepare_and_retries` 在调用
+    `process_prepared()` 时未持 `sched_lock`（真实 tick 持锁），与 worker 的持锁 on_done 并发改状态而偶发重复提交，属测试自身竞态；
+    已改为持锁调用并增加"不得重复提交"断言（产品代码未改）。
+  - 仍存在的与本改动无关的既有失败：`test_goal_cron_feedback_and_output_policy.py`（2）、`test_goal_mode.py::test_build_from_history_*`（5）、
+    `test_unified_dispatch_p5_step4.py::TestObjectiveAdapterExecuteStillUnimplemented`（1），在原始代码上同样失败。
+  - `agent_config.json` 的 `autonomy` 块已设 `async_goal_side_calls_enabled: true`；代码默认值仍为 `false`。
 - 阶段 4（tick 线程告警 + deadline 兜底）：**未开始**

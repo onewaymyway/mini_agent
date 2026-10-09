@@ -1345,10 +1345,14 @@ class HttpServer:
                 bool(getattr(getattr(cfg, "autonomy", None), "async_step_prepare_enabled", False))
                 and sched_lock is not None
             )
+            # [阶段三] Goal 拆解 / pursuit 复核 / goal_cycle LLM 进展判断异步化（不需要 sched_lock）
+            _want_async_goal_side = bool(
+                getattr(getattr(cfg, "autonomy", None), "async_goal_side_calls_enabled", False)
+            )
             try:
                 _sched_cfg = getattr(cfg, "scheduler", None)
                 _want_async_local = bool(getattr(_sched_cfg, "async_local_handlers_enabled", False))
-                if _want_async_local or _want_async_step:
+                if _want_async_local or _want_async_step or _want_async_goal_side:
                     from mini_agent.evolution.tick_dispatcher import TickDispatcher
                     tick_dispatcher = TickDispatcher(
                         max_workers=int(getattr(_sched_cfg, "tick_dispatcher_max_workers", 4)),
@@ -2053,7 +2057,7 @@ class HttpServer:
             def _pursuit_increment_llm_helper():
                 return getattr(agent, "llm_helper", None)
 
-            return AutonomousLoop(
+            _loop = AutonomousLoop(
                 goal_backlog=goal_backlog,
                 input_queue=self._bridge.input_queue,
                 paths=paths,
@@ -2065,6 +2069,20 @@ class HttpServer:
                 objective_isolated_runner=self._objective_isolated_runner,
                 llm_helper_provider=_pursuit_increment_llm_helper,
             )
+            # [tick_dispatch_only 阶段三] 开关开启且派发器构造成功才接线；否则保持同步
+            _side_timeout = float(getattr(getattr(cfg, "scheduler", None),
+                                          "tick_dispatcher_timeout_seconds", 300.0))
+            try:
+                from mini_agent.evolution import goal_cron_bridge as _gcb
+                if _want_async_goal_side and tick_dispatcher is not None:
+                    _loop.set_tick_dispatcher(tick_dispatcher, timeout_seconds=_side_timeout)
+                    _gcb.set_async_side_calls(tick_dispatcher, timeout_seconds=_side_timeout)
+                else:
+                    _gcb.set_async_side_calls(None)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.async_goal_side_calls')
+            return _loop
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop')

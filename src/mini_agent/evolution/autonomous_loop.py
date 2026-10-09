@@ -83,6 +83,13 @@ class AutonomousLoop:
         # 未注入时 _ensure_goal_objectives() 直接降级为 1:1 镜像 Objective，
         # 不影响"有 Objective 才能被执行"这条主链路。
         self._goal_decompose_fn = goal_decompose_fn
+        # [tick_dispatch_only 阶段三 #7] Goal 拆解异步化：未注入派发器时保持同步。
+        # worker 只把拆解结果放进 _goal_decompose_results，状态写入（add_objectives_for_goal
+        # + digest）由 tick 线程消费，避免 worker 线程碰 tick 线程独占的 _digest_records。
+        self._tick_dispatcher = None
+        self._tick_dispatcher_timeout: float = 300.0
+        self._goal_decompose_results: dict[str, list[str]] = {}
+        self._goal_decompose_lock = threading.Lock()
 
         # [daemon_execution_model_and_scheduler_heartbeat_improvement_plan.md
         # 阶段二 违规修复] 探索实验后台线程的忙碌标记，保护 tick() 不被
@@ -91,6 +98,15 @@ class AutonomousLoop:
         # 问题，不是为了应对高并发（同一时刻最多只有一个探索线程在跑）。
         self._exploration_thread: Optional[threading.Thread] = None
         self._exploration_state_lock: threading.Lock = threading.Lock()
+
+    def set_tick_dispatcher(self, dispatcher, *, timeout_seconds: float = 300.0) -> None:
+        """[tick_dispatch_only 阶段三] 注入后台派发器，开启 Goal 拆解异步化。
+
+        传 None 关闭（回到同步）。是否注入由 `autonomy.async_goal_side_calls_enabled` 决定，
+        调用方（api/server.py）负责判断开关。
+        """
+        self._tick_dispatcher = dispatcher
+        self._tick_dispatcher_timeout = float(timeout_seconds)
 
     # ── 公共接口 ──────────────────────────────────────────────────────────────
 
@@ -789,9 +805,27 @@ class AutonomousLoop:
             log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop.AutonomousLoop._ensure_goal_objectives.read')
             return
 
+        dispatcher = self._tick_dispatcher
+        if dispatcher is not None:
+            self._prune_goal_decompose_results({g.id for g in goals})
+            # 先回收卡死的拆解任务：超时的 on_done 会写入 []，下面按"降级 1:1 镜像"处理
+            try:
+                dispatcher.reap_stale()
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop.AutonomousLoop._ensure_goal_objectives.reap')
+
         for goal in goals:
             titles: list[str] = []
-            if self._goal_decompose_fn is not None:
+            if self._goal_decompose_fn is not None and dispatcher is not None:
+                # [阶段三 #7] tick 只派发：有结果就消费，没有就派发后立即处理下一个 Goal。
+                with self._goal_decompose_lock:
+                    ready = self._goal_decompose_results.pop(goal.id, None)
+                if ready is None:
+                    self._dispatch_goal_decompose(goal)
+                    continue
+                titles = [t for t in ready if t and t.strip()][:max_per_goal]
+            elif self._goal_decompose_fn is not None:
                 try:
                     titles = [t for t in (self._goal_decompose_fn(goal) or []) if t and t.strip()]
                     titles = titles[:max_per_goal]
@@ -817,6 +851,42 @@ class AutonomousLoop:
                     "title": obj.title,
                     "summary": f"自动为目标「{goal.title}」创建执行子目标：{obj.title}",
                 })
+
+    def _prune_goal_decompose_results(self, live_goal_ids: set) -> None:
+        """丢弃已不在"缺 Objective"列表里的 Goal 的陈旧拆解结果（Goal 被删/已有 Objective）。"""
+        with self._goal_decompose_lock:
+            for gid in [g for g in self._goal_decompose_results if g not in live_goal_ids]:
+                del self._goal_decompose_results[gid]
+
+    def _dispatch_goal_decompose(self, goal) -> None:
+        """[阶段三 #7] 把一个 Goal 的 LLM 拆解派发到后台。派发器忙/key 已在跑时静默返回，
+        下一轮 tick 重试，不回退同步等待。结果（含失败/超时 → 空列表）写入结果表，
+        空列表在消费时按原语义降级为 1:1 镜像 Objective。"""
+        fn = self._goal_decompose_fn
+        gid = goal.id
+
+        def _work():
+            return list(fn(goal) or [])
+
+        def _on_done(result) -> None:
+            titles = result.value if (result.status == "ok" and isinstance(result.value, list)) else []
+            if result.status != "ok":
+                import logging
+                logging.getLogger(__name__).warning(
+                    "goal decompose %s: %s (%s)", gid, result.status, result.error_repr,
+                )
+            with self._goal_decompose_lock:
+                self._goal_decompose_results[gid] = titles
+
+        try:
+            self._tick_dispatcher.dispatch(
+                f"goal_decompose:{gid}", _work,
+                timeout=self._tick_dispatcher_timeout, on_done=_on_done,
+                label=f"goal_decompose:{gid}",
+            )
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop.AutonomousLoop._dispatch_goal_decompose')
 
     def _maybe_propose_goals_on_exhaustion(self) -> None:
         """[maintenance 档位专属兜底] `_tick_maintenance()` 顶部明确写着
