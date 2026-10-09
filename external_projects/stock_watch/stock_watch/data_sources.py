@@ -449,8 +449,11 @@ def _fetch_json_no_proxy(url: str, headers: Optional[Dict[str, str]] = None, tim
         for k, v in headers.items():
             req.add_header(k, v)
 
+    # 显式禁用代理：urllib 默认会读系统环境变量 HTTP_PROXY/HTTPS_PROXY，
+    # 必须通过 ProxyHandler({}) 才能彻底绕过。
+    no_proxy_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with no_proxy_opener.open(req, timeout=timeout) as resp:
             body = resp.read().decode("utf-8", errors="replace")
             status = resp.status
             if status >= 400:
