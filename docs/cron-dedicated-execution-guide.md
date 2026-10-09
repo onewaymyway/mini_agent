@@ -642,7 +642,7 @@ job 至今没有任何自定义覆盖，`config` 里展示的每个值都直接�
 | 取值 | 含义 | 会产生 `recent_runs`/`recent_runs_summary` 吗 |
 |---|---|---|
 | `dedicated_workspace` | 走本文档描述的独立线程 + `CronJobWorkspace` 记录链路（`job_runner` 已注入，且不属于下面两类） | ✅ 会 |
-| `local_handler` | 注册过 `register_local_handler()` 的"本地回调"job（零 LLM 成本、确定性逻辑，比如 `sys:watchlist_report_<tier_id>`、`sys:wiki_quarantine_repair` 等），触发时在原进程内直接同步执行 | ❌ 不会——但 `CronJob.run_count` 照常累加 |
+| `local_handler` | 注册过 `register_local_handler()` 的"本地回调"job（零 LLM 成本、确定性逻辑，比如 `sys:watchlist_report_<tier_id>`、`sys:wiki_quarantine_repair` 等），触发时在原进程内执行（默认在 tick 线程里同步执行；`scheduler.async_local_handlers_enabled=true` 时改为交给 TickDispatcher 后台线程，tick 不再被 handler 阻塞，见 [Daemon 执行模型指南 §6](daemon-execution-model-guide.md)） | ❌ 不会——但 `CronJob.run_count` 照常累加 |
 | `goal_cycle` | `run_mode="goal_cycle"` 的 job，走 Objective 执行通道，执行记录去对应 Goal 详情里看 | ❌ 不会——但 `CronJob.run_count` 照常累加 |
 | `message_queue` | `job_runner` 未注入时的旧回退路径（消息直接进 `InputQueue`，当普通 turn 处理） | ❌ 不会——但 `CronJob.run_count` 照常累加 |
 

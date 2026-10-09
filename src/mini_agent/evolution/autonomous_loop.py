@@ -163,6 +163,14 @@ class AutonomousLoop:
         # maintenance/autonomous 三个档位同时生效，不需要在另外两个
         # 方法里重复接线。
         if self._cron_scheduler is not None:
+            # [tick_dispatch_only 阶段一] 先回收卡死的后台 local_handler、消费已完成
+            # 的结果（补记失败/超时的 skip 记账）。放在派发之前，使上一轮留下的
+            # "已卡死名额"在本轮到期判断前就被释放。未开启异步时是 no-op（返回 0）。
+            try:
+                self._cron_scheduler.drain_async_handler_results()
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.autonomous_loop._tick_passive.drain_async_handler_results')
             try:
                 _scheduler_cfg = getattr(self._cfg, "scheduler", None)
                 if bool(getattr(_scheduler_cfg, "unified_dispatch_enabled", False)):

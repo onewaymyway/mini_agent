@@ -196,6 +196,7 @@
   "scheduler": {
     "unified_arbitration_enabled": true,
     "unified_dispatch_enabled": true,
+    "async_local_handlers_enabled": true,
     "max_total_concurrent_tasks": 2
   },
   "growth_advisor": {

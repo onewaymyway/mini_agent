@@ -32,6 +32,8 @@ evolution/cron_scheduler.py — Daemon 模式定时任务调度器
 
 from __future__ import annotations
 
+import collections
+import copy
 import json
 import math
 import os
@@ -750,6 +752,18 @@ class CronScheduler:
         # 用一个按 run_mode 分派的通用回调更合适）。为 None 时 goal_cycle job
         # 不会被触发（_fire 直接返回 False，等同于"这个功能还没接线"）。
         self._goal_cycle_fn: Optional[Callable[["CronJob"], bool]] = None
+        # [next_doc/tick_dispatch_only_execution_model_plan.md 阶段一] local_handler
+        # 异步化：注入 TickDispatcher 后，_fire() 对 local_handler 不再在 tick 线程里
+        # 同步执行，而是派发到后台线程并立即返回。None（默认）= 保持旧的同步行为。
+        # 后台线程只把结果放进线程安全的 deque，由 tick 线程在
+        # drain_async_handler_results() 里统一消费并更新 job 记账，避免 worker 线程
+        # 直接改动 tick 线程独占的 job 状态。
+        self._tick_dispatcher = None
+        self._async_handler_timeout: Optional[float] = None
+        self._async_results: "collections.deque" = collections.deque()
+        # job_id -> 连续失败次数。_trigger_and_record() 在"派发成功"时会把
+        # consecutive_skip_count 清零，若不单独记，连续失败永远累计不到告警阈值。
+        self._async_fail_streak: dict[str, int] = {}
 
     # ── 持久化 ────────────────────────────────────────────────────────────────
 
@@ -1162,6 +1176,8 @@ class CronScheduler:
                 return False
 
         local_handler = self._local_handlers.get(job.id)
+        if local_handler is not None and self._tick_dispatcher is not None:
+            return self._fire_local_handler_async(job, local_handler)
         if local_handler is not None:
             try:
                 ok = local_handler(job)
@@ -1367,6 +1383,120 @@ class CronScheduler:
         job.command, job.cwd, job.timeout_sec, job.concurrency = command, cwd, timeout_sec, concurrency
         self.save()
         return job
+
+    # ── local_handler 异步化（tick_dispatch_only 阶段一） ──────────────────────
+
+    def set_tick_dispatcher(self, dispatcher, *, timeout_seconds: Optional[float] = None) -> None:
+        """注入 `TickDispatcher`，开启 local_handler 异步执行。传 None 关闭（回到同步）。
+
+        `timeout_seconds`：单个 local_handler 的存活期限（超过 timeout+grace 由
+        dispatcher.reap_stale() 回收记账）；None 用 dispatcher 自己的默认值。
+        """
+        self._tick_dispatcher = dispatcher
+        self._async_handler_timeout = timeout_seconds
+
+    def _fire_local_handler_async(self, job: "CronJob", local_handler) -> bool:
+        """把 local_handler 派发到后台线程，**立即返回**。
+
+        返回语义与 `job_runner.submit()` 路径一致：派发成功即 True（视为"已触发"，
+        `_trigger_and_record` 照常推进 last_run_at/next_run_at）；同一 job 上一次
+        还没跑完（或派发器已满）返回 False 并记 skip reason。handler 自己的执行结果
+        （返回 False/抛异常/超时）在 `drain_async_handler_results()` 里补记。
+        """
+        dispatcher = self._tick_dispatcher
+        key = f"cron:{job.id}"
+        # handler 拿到的是 job 的浅拷贝：它里面 set_skip_reason() 写的是拷贝，
+        # 不会与 tick 线程对 job 本体的记账（_trigger_and_record 清零 skip 字段）
+        # 竞争；执行结束后由包装函数把拷贝上的原因带回结果里。
+        job_copy = copy.copy(job)
+
+        def _call():
+            ok = bool(local_handler(job_copy))
+            return (ok, job_copy.last_skip_reason or "", job_copy.last_skip_detail or "")
+
+        def _on_done(result, _job_id=job.id):
+            self._async_results.append((_job_id, result))
+
+        try:
+            dispatched = dispatcher.dispatch(
+                key, _call, timeout=self._async_handler_timeout,
+                on_done=_on_done, label=f"cron-local:{job.id}",
+            )
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.cron_scheduler.CronScheduler._fire_local_handler_async')
+            set_skip_reason(job, "local_handler_exception", repr(_mini_agent_exc))
+            return False
+        if not dispatched:
+            if dispatcher.is_running(key):
+                set_skip_reason(job, "local_handler_already_running")
+            else:
+                set_skip_reason(job, "local_handler_dispatch_rejected")
+            return False
+        return True
+
+    def drain_async_handler_results(self) -> int:
+        """tick 线程里调用：先回收卡死的后台任务，再消费已完成的 local_handler 结果，
+        把"handler 返回 False/抛异常/超时"补记到 job 的 skip 记账上（连续失败累计、
+        告警、退避），与同步路径的可见行为保持一致。返回处理的结果条数。
+
+        只在 tick 线程里调用 → job 字段的读写与 tick() 内其它记账串行，无需额外加锁。
+        未注入 dispatcher 时直接返回 0。
+        """
+        dispatcher = self._tick_dispatcher
+        if dispatcher is None:
+            return 0
+        try:
+            dispatcher.reap_stale()
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.cron_scheduler.CronScheduler.drain_async_handler_results.reap')
+
+        handled = 0
+        changed = False
+        while True:
+            try:
+                job_id, result = self._async_results.popleft()
+            except IndexError:
+                break
+            handled += 1
+            job = self._jobs.get(job_id)
+            code, detail = "", ""
+            if result.status == "ok":
+                ok, reason, reason_detail = result.value
+                if ok:
+                    self._async_fail_streak.pop(job_id, None)
+                    continue
+                code = reason or "local_handler_returned_false"
+                detail = reason_detail
+            elif result.status == "timeout":
+                code, detail = "local_handler_timeout", result.error_repr
+            else:
+                code, detail = "local_handler_exception", result.error_repr
+            if job is None:
+                continue
+            streak = self._async_fail_streak.get(job_id, 0) + 1
+            self._async_fail_streak[job_id] = streak
+            job.last_skip_reason = ""
+            job.last_skip_detail = ""
+            set_skip_reason(job, code, detail)
+            # _trigger_and_record() 在派发成功时已把 consecutive_skip_count 清零；
+            # 这里按"连续失败次数"还原，再交给 _record_skip() 做 +1/告警/退避，
+            # 从而与同步路径"连续失败 N 次触发告警"的行为一致。
+            job.consecutive_skip_count = streak - 1
+            try:
+                self._record_skip(job, time.time())
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.cron_scheduler.CronScheduler.drain_async_handler_results.record_skip')
+            changed = True
+        if changed:
+            try:
+                self.save()
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.evolution.cron_scheduler.CronScheduler.drain_async_handler_results.save')
+        return handled
 
     def register_local_handler(self, job_id: str, handler: Callable[["CronJob"], bool]) -> None:
         """注册一个"零 LLM 成本"的本地回调，供 `_fire()` 优先使用（见
@@ -1637,6 +1767,8 @@ class CronScheduler:
     def is_job_running(self, job_id: str) -> bool:
         """job_runner 未注入（旧路径）时始终返回 False——旧路径的执行状态
         并入普通 turn，没有独立的"是否在跑"概念可查。"""
+        if self._tick_dispatcher is not None and self._tick_dispatcher.is_running(f"cron:{job_id}"):
+            return True
         if self._job_runner is None:
             return False
         return self._job_runner.is_running(job_id)

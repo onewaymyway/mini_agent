@@ -101,11 +101,10 @@
 5. **约束机制化**：把"tick 不许跑慢调用"变成可检测的运行时事实，而不是文档约定。
 6. **兼容优先**：遵循项目约定"配置开关默认保持非破坏行为"，新机制逐阶段落地、各自可开关。
 
-## 5. tick 阻塞点审计（阶段 0 的初始结论）
+## 5. tick 阻塞点审计（阶段 0 已完成，2026-10-09）
 
-下表是我基于快照和代码走查得到的初始清单，**"证据"列区分了三种可信度**：
-`栈已证实`（快照里直接出现）、`代码确认`（代码里确实同步调 LLM，但快照没抓到）、
-`待审计`（需阶段 0 逐行确认）。
+"证据"列分三种可信度：`栈已证实`（快照里直接出现）、`代码确认`（代码里确实同步调 LLM，
+但快照没抓到）、`排除`（审计后确认无 LLM/长阻塞，不需要卸载）。
 
 | # | tick 内位置 | 阻塞内容 | 证据 | 处理阶段 |
 |---|---|---|---|---|
@@ -113,18 +112,26 @@
 | 2 | `start() → _decompose`（`_llm_decompose_fn`） | LLM 拆解 Objective | 代码确认 | 阶段 2 |
 | 3 | `reap_stale_steps → _attempt_redecompose → _llm_redecompose_fn` | LLM 重拆解 | 代码确认 | 阶段 2 |
 | 4 | `retry_blocked_steps → _submit_step` | 同 #1 | 代码确认 | 阶段 2 |
-| 5 | `_tick_passive → dispatch_due_cron_jobs/CronScheduler.tick → _fire → local_handler` | 20+ handler，含多个 LLM 调用 | 栈已证实（#3） | 阶段 1 |
-| 6 | `_fire` 的 `_goal_cycle_fn` 分支 | goal_cycle 触发逻辑 | 待审计 | 阶段 1 |
-| 7 | `_ensure_goal_objectives → _goal_decompose_fn` | LLM 拆解 Goal（注释写"锁外调用"，但仍在 tick 线程） | 代码确认 | 阶段 2 |
-| 8 | `reap_finished_cycles(llm_helper_provider=...)`（`goal_cron_bridge.py` ~330 行） | LLM 调用 | 代码确认 | 阶段 2 |
-| 9 | `_tick_autonomous → SoftGoalDeriver.derive_candidates / review_unvalidated_candidates / commit_goals` | 可能含 LLM | 待审计 | 阶段 2 |
-| 10 | `_tick_passive` 内联的 `run_ingestion_policy_once / run_watchlist_matcher_once / run_novelty_candidate_once` | 规则式，文件 I/O；注释称零 LLM | 待审计（关注 I/O 量级与锁） | 阶段 0 判定 |
-| 11 | `check_persistent_attention_mismatch`（`next_action_advisor.py`） | 同模块有 `llm_helper.ask`，需确认本函数是否走到 | 待审计 | 阶段 0 判定 |
-| 12 | `cron_scheduler is None` 降级路径：`run_consolidation` / `_run_workdir_consolidation` | 同步整合，可能含 LLM | 待审计 | 阶段 1 顺带 |
-| 13 | `on_turn_done()` 在 `api/server.py` 持 `sched_lock` 的调用点（~619、~660 行）里转入的 `_submit_step` | 持锁线程里同步 LLM | 代码推断，需核对调用链 | 阶段 2 |
+| 5 | `_tick_passive → dispatch_due_cron_jobs/CronScheduler.tick → _fire → local_handler` | 20+ handler，含多个 LLM 调用 | 栈已证实（#3） | **阶段 1** |
+| 6 | `_fire` 的 `_goal_cycle_fn` 分支 → `goal_cron_bridge._fire_goal_cycle` | 内部 `objective_executor.start()`（同 #1/#2）；`compute_progress_trend_signal`/`compute_routine_stability_signal` 在 `progress_trend_llm_enabled=True` 时调 LLM | 代码确认（LLM 部分条件触发） | 阶段 2（`start()` 非阻塞后自然收敛）+ 阶段 4（deadline）；**阶段 1 不动**：goal_cycle 的返回值语义是"确保该 Goal 下有一轮 Objective 在推进"，异步化会改变 cron 记账含义 |
+| 7 | `_ensure_goal_objectives → _goal_decompose_fn`（`api/server.py:2024` 注入） | LLM 拆解 Goal（注释写"锁外调用"，但仍在 tick 线程） | 代码确认 | 阶段 2 |
+| 8 | `reap_finished_cycles → _check_pursuit_saturation → process_pursuit_cycle_completion(llm_helper)` | LLM 复核（取决于 pursuit 配置） | 代码确认（条件触发） | 阶段 2 |
+| 9 | `_tick_autonomous → SoftGoalDeriver.*` | `soft_goal_deriver.py` 内无 LLM 调用，规则 + 文件 I/O | **排除** | — |
+| 10 | `_tick_passive` 内联的 `run_ingestion_policy_once / run_watchlist_matcher_once / run_novelty_candidate_once` | 规则式 + 文件 I/O，无 LLM | **排除**（不卸载；风险只是文件 I/O 量级，由阶段 4 的 tick 分段耗时观测兜底） | 阶段 4 观测 |
+| 11 | `check_persistent_attention_mismatch` | 函数体内无 LLM | **排除** | — |
+| 12 | `cron_scheduler is None` 降级路径（`run_consolidation` / `_run_workdir_consolidation`） | 同步整合 | 代码确认存在，但 daemon 生产路径恒注入 `cron_scheduler`，仅非 daemon/测试场景走到 | 不做（记录在案） |
+| 13 | `on_turn_done()` / `on_turn_failed()` 持 `sched_lock` 的调用点 | `api/server.py` AgentRunner 两处（~619、~660）和 `objective_agent_bridge.py` 的 obj-worker 线程（~428/436/452）持 `sched_lock` 调 `on_turn_done → _submit_step → _declare_step_paths` | **代码确认**（调用链走查） | 阶段 2 |
 
-已有先例：`_tick_autonomous` 里的能力探索已经改成 `_start_capability_exploration_bg`（异步），
-注释里标注为"阶段二 违规修复"——说明项目内部早已认同这条原则，本方案是把它推广为统一机制。
+补充发现：
+
+- #13 比快照显示的更严重。持 `sched_lock` 调 `on_turn_done` 的线程除了 obj-worker，还有
+  **AgentRunner 主循环线程**——它同时负责 dequeue 用户消息，因此这条路径一旦卡住，
+  不仅 heartbeat 等锁（"waiting_lock"阶段），用户输入也会被一并堵住。
+- `ExecutionStep.status` 的外部读取点很少：`api/routes.py:7844/7886` 原样透传字符串、
+  `api/server.py:1769` 读 `current_step.description`，其余都在 `objective_executor.py` 内部。
+  新增 `preparing/decomposing` 状态影响面小，主要是看板展示文案。
+- 已有先例：`_tick_autonomous` 里的能力探索已经改成 `_start_capability_exploration_bg`（异步），
+  注释里标注为"阶段二 违规修复"——说明项目内部早已认同这条原则，本方案是把它推广为统一机制。
 
 ## 6. 方案
 
@@ -171,8 +178,13 @@ ok = dispatcher.dispatch(key=f"cron:{job.id}", fn=lambda: local_handler(job),
   并落盘，kanban 里仍可见失败原因；**语义变化**：失败不再回滚本次的 `last_run_at`，
   与 `job_runner` 路径一致。
 - 开关：`scheduler.async_local_handlers_enabled`（遵循约定默认 `False`，上线验收后翻转默认，见 §10）。
-- `goal_cycle` 分支（#6）由阶段 0 审计后决定是否同样卸载。
-- 无 `cron_scheduler` 的降级路径（#12）顺带改为派发。
+- `goal_cycle` 分支（#6）：阶段 0 审计结论是**阶段一不动**——它的返回值语义是"确保该 Goal 下有一轮
+  Objective 在推进"，异步化会改变 cron 记账含义；其内部的 `objective_executor.start()` 在阶段 2
+  非阻塞化后自然收敛，LLM 进展判断部分由阶段 4 的 deadline 兜底。
+- 无 `cron_scheduler` 的降级路径（#12）：审计确认仅非 daemon/测试场景走到，不做。
+- 实现要点：handler 拿 `CronJob` 浅拷贝；后台线程只把结果放进线程安全 deque，由 tick 线程在
+  `drain_async_handler_results()` 里消费（先 `reap_stale()` 再补记），避免 worker 线程改 tick 线程独占的
+  job 状态；连续失败用独立 `_async_fail_streak` 累计，因为派发成功会把 `consecutive_skip_count` 清零。
 
 ### 6.3 step 状态机（阶段 2）
 
@@ -300,6 +312,7 @@ ok = dispatcher.dispatch(key=f"cron:{job.id}", fn=lambda: local_handler(job),
 | `autonomy.async_step_prepare_enabled` | `False` | step 准备阶段异步（§6.3） |
 | `scheduler.tick_dispatcher_max_workers` | `4` | 派发器线程数 |
 | `scheduler.tick_dispatcher_timeout_seconds` | `300` | 默认任务存活期限 |
+| `scheduler.tick_dispatcher_grace_seconds` | `30` | 超过期限后再宽限多久才回收 |
 | `scheduler.tick_thread_llm_strict` | `False` | tick 线程内 LLM 调用直接抛异常 |
 | `llm.background_call_timeout_seconds` | `30` | 后台轻量调用单次超时 |
 | `llm.background_call_max_retries` | `1` | 后台轻量调用重试次数 |
@@ -319,7 +332,18 @@ ok = dispatcher.dispatch(key=f"cron:{job.id}", fn=lambda: local_handler(job),
 
 ## 12. 处理状态
 
-- 阶段 0（只读审计）：**未开始**
-- 阶段 1（TickDispatcher + cron local_handler）：**未开始**
+- 阶段 0（只读审计）：**已完成**（2026-10-09，结果见 §5）
+- 阶段 1（TickDispatcher + cron local_handler）：**已完成**（2026-10-09）
+  - 新增 `evolution/tick_dispatcher.py`；`cron_scheduler.py`（`set_tick_dispatcher` /
+    `_fire_local_handler_async` / `drain_async_handler_results`，`is_job_running` 感知派发器）；
+    `cron_skip_reasons.py`（3 个新原因码）；`config/models.py::SchedulerConfig` 新增 4 个字段；
+    `api/server.py` 装配；`autonomous_loop._tick_passive` 先 drain 再派发；
+    `GET /v1/self/execution_model_status` 新增 `tick_dispatcher`。
+  - 测试：`tests/test_tick_dispatcher.py`（8）+ `tests/test_cron_scheduler_async_local_handler.py`（11，
+    含"handler 永不返回时 heartbeat 单次 tick < 1s"验收）；cron/heartbeat/unified scheduler 相关回归
+    137 个全部通过。
+  - `agent_config.json` 的 `scheduler` 块已设 `async_local_handlers_enabled: true`；代码默认值仍为 `false`。
+  - 文档：`docs/daemon-execution-model-guide.md` 新增 §6，`cron-dedicated-execution-guide.md` /
+    `unified-scheduler-guide.md` 补充说明。
 - 阶段 2（step 状态机 + 同类调用点）：**未开始**
 - 阶段 4（tick 线程告警 + deadline 兜底）：**未开始**

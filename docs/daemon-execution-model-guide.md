@@ -201,6 +201,52 @@ Objective 的 step 最终都提交进和用户交互对话共用的同一个单�
 不再是"同时开启"的阻塞项。如果观察到异常，可以用上方各自小节的"回退"
 方式单独或同时关闭。
 
+## 6. 阶段三：tick 只派发、不执行（TickDispatcher）
+
+> 方案文档：[`next_doc/tick_dispatch_only_execution_model_plan.md`](../next_doc/tick_dispatch_only_execution_model_plan.md)。
+> 当前已实施**阶段一**（cron `local_handler` 异步化）；step 状态机（阶段二）、
+> tick 线程 LLM 告警与 deadline 兜底（阶段四）尚未实施。
+
+**问题**：`SchedulerHeartbeat` 约定 tick 只做"决策 + 提交"，但实际有多处在 tick 线程
+（且持有 `sched_lock`）里同步等待 LLM。上游一变慢，整个调度心跳被拖死，`on_turn_done`
+等同锁的状态更新、甚至 AgentRunner 的用户输入处理都会被连带堵住。卡死栈快照里
+出现过的三条路径：`_declare_step_paths`（路径声明，2 次）、cron `local_handler`
+（`goal_relevance` 的 LLM 判定）。
+
+**原则**：tick 只负责判断与派发，所有可能阻塞的执行都在后台线程里完成；
+后台任务的结果通过状态回写，由下一轮 tick 读取，不靠返回值。
+
+**阶段一做了什么**：
+
+- 新增 `evolution/tick_dispatcher.py::TickDispatcher`：有界（`max_workers`）、按 key 去重、
+  立即返回的后台派发器；超过 `timeout + grace` 仍未返回的任务由 `reap_stale()` 回收记账
+  （卡死线程成为孤儿线程，不再占名额；迟到线程不会重复释放或回调）。
+- `CronScheduler._fire()` 对 `local_handler` 改为"派发即返回"。派发成功视为已触发
+  （与 `job_runner` 路径一致）；handler 返回 `False`、抛异常、超时，由
+  `drain_async_handler_results()` 在下一轮 tick 补记 skip 原因、连续失败计数、告警与退避。
+- 同一 job 上一次还没跑完时再次到期，记 skip 原因 `local_handler_already_running`。
+- 新增 skip 原因：`local_handler_already_running` / `local_handler_dispatch_rejected` /
+  `local_handler_timeout`。
+
+**开关与配置**（`agent_config.json` 的 `scheduler` 块）：
+
+| 配置项 | 默认 | 说明 |
+|---|---|---|
+| `async_local_handlers_enabled` | `false` | 开启后 local_handler 走 TickDispatcher；仓库自带的 `agent_config.json` 已设为 `true` |
+| `tick_dispatcher_max_workers` | `4` | 派发器同时在跑的任务数上限 |
+| `tick_dispatcher_timeout_seconds` | `300` | 单个任务存活期限（秒） |
+| `tick_dispatcher_grace_seconds` | `30` | 超过期限后再宽限多久才回收 |
+
+**语义差异（开启后）**：handler 失败不再回滚本次 `last_run_at`/`run_count`
+（派发时已推进），失败原因事后补记；handler 拿到的是 `CronJob` 的浅拷贝，
+其中 `set_skip_reason()` 写的原因会被带回并写到 job 本体。
+
+**观测**：`GET /v1/self/execution_model_status` 新增 `tick_dispatcher` 字段
+（`enabled`、`running`、`dispatched_total`、`timed_out_total`、`orphan_threads_alive` 等）。
+`timed_out_total` 或 `orphan_threads_alive` 持续增长，说明有 handler 反复卡在外部调用上。
+
+**回退**：把 `async_local_handlers_enabled` 改回 `false` 并重启 daemon，回到同步执行。
+
 ## 相关文档
 
 - [`next_doc/daemon_execution_model_and_scheduler_heartbeat_improvement_plan.md`](../next_doc/daemon_execution_model_and_scheduler_heartbeat_improvement_plan.md) —— 设计推理过程与实施记录
@@ -208,3 +254,4 @@ Objective 的 step 最终都提交进和用户交互对话共用的同一个单�
 - [Goal 执行公平性调度配置](goal-execution-fairness-config.md) —— "该轮到谁"的排序算法（与本方案的关系：本方案解决排序结果是否被真正并行执行、是否被及时触发，不改变排序算法本身）
 - [看板使用指南](kanban-dashboard-guide.md) —— "⚙️ 执行模型"面板
 - [HTTP API 指南](http-api-guide.md) —— `GET /v1/self/execution_model_status`
+- [`next_doc/tick_dispatch_only_execution_model_plan.md`](../next_doc/tick_dispatch_only_execution_model_plan.md) —— tick 只派发、不执行（TickDispatcher）改造方案

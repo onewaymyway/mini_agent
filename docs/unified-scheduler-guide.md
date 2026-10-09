@@ -198,7 +198,7 @@ gating_state()` 本身）不变。
   goal_cycle 两条通道到期任务后按 priority 统一触发，内部复用上面同一份
   委托链路。配置开关 `scheduler.unified_dispatch_enabled`（默认
   `False`）控制 `AutonomousLoop._tick_passive()` 是否改用这条统一路径
-  而不是直接调用 `cron_scheduler.tick()`。由于 `_tick_maintenance()`/
+  而不是直接调用 `cron_scheduler.tick()`。另有 `scheduler.async_local_handlers_enabled`（默认 `False`）控制 cron `local_handler` 是否异步执行，不影响本统一路径的到期判断与记账，见 [Daemon 执行模型指南 §6](daemon-execution-model-guide.md)。由于 `_tick_maintenance()`/
   `_tick_autonomous()` 方法体都以调用 `_tick_passive()` 开头，这个开关
   对 **passive/maintenance/autonomous 三个执行档位同时生效**，不需要
   分别配置。两条路径的到期判断/触发/记账口径完全一致，开关只影响"谁来

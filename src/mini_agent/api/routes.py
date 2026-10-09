@@ -3904,6 +3904,13 @@ async def get_self_execution_model_status(request: Request):
         "arbiter_skipped_count": int,   # [P3] 累计因 ResourceArbiter
                                           # 仲裁未通过被跳过触发的次数
       },
+      "tick_dispatcher": {              # [tick_dispatch_only 阶段一] 后台派发器
+        "enabled": bool,                #   未开启时只有 enabled=False
+        "running": int, "max_workers": int, "dispatched_total": int,
+        "completed_total": int, "failed_total": int, "timed_out_total": int,
+        "rejected_busy_total": int, "rejected_full_total": int,
+        "orphan_threads_alive": int, "running_keys": [str, ...],
+      },
       "objective_executor": {
         "stale_step_reap_count": int,   # [阶段三] ObjectiveExecutor 累计
                                           # 强制回收过的卡死 step 次数
@@ -3937,6 +3944,7 @@ async def get_self_execution_model_status(request: Request):
                                  "last_tick_duration_seconds": 0.0, "suspected_stuck": False},
         "cron": {"reaped_job_count": 0},
         "objective_executor": {"stale_step_reap_count": 0},
+        "tick_dispatcher": {"enabled": False},
         "recent_recoveries": [],
     }
     try:
@@ -4027,6 +4035,17 @@ async def get_self_execution_model_status(request: Request):
             # 与 reaped_job_count 同属"cron 通道健康度"观测指标。
             "arbiter_skipped_count": getattr(job_runner, "arbiter_skipped_count", 0) if job_runner is not None else 0,
         }
+
+        # [tick_dispatch_only 阶段一] TickDispatcher 统计：未开启
+        # （scheduler.async_local_handlers_enabled=False）时 enabled=False。
+        _td = getattr(http_server.bridge, "_tick_dispatcher", None)
+        if _td is not None:
+            try:
+                result["tick_dispatcher"] = {"enabled": True, **_td.stats()}
+            except Exception:
+                result["tick_dispatcher"] = {"enabled": True}
+        else:
+            result["tick_dispatcher"] = {"enabled": False}
 
         # [阶段三] ObjectiveExecutor 卡死 step 回收计数。
         objective_executor = getattr(http_server.bridge, "_objective_executor", None)

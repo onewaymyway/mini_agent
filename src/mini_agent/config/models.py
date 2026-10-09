@@ -1941,6 +1941,24 @@ class SchedulerConfig:
     # 派发路径不受影响（ObjectiveChannelAdapter.execute() 仍未实现）。
     unified_dispatch_enabled: bool = False
 
+    # [next_doc/tick_dispatch_only_execution_model_plan.md 阶段一] tick 只派发、
+    # 不执行：True 时 cron 的 local_handler（20+ 个内置 sys: job 的本地回调，其中
+    # goal_relevance/novelty_judge/knowledge_extractor 等会调 LLM）不再在
+    # SchedulerHeartbeat 的 tick 线程里同步执行，而是交给 TickDispatcher 后台线程，
+    # tick 立即返回。默认 False（遵循"开关默认保持非破坏行为"约定）——语义差异：
+    # handler 返回 False/抛异常不再回滚本次 last_run_at，改为事后补记 skip 原因/
+    # 连续失败告警/退避（与 job_runner 路径"提交成功即视为触发"一致）。
+    async_local_handlers_enabled: bool = False
+
+    # TickDispatcher 同时在跑的后台任务数上限（阶段二起 Objective 的 step 准备
+    # 也会共用这个派发器）。
+    tick_dispatcher_max_workers: int = 4
+
+    # 单个被派发任务的默认存活期限（秒）。超过 timeout + grace 仍未返回会被
+    # reap_stale() 回收记账（卡死线程成为孤儿线程继续在后台跑，不再占名额）。
+    tick_dispatcher_timeout_seconds: float = 300.0
+    tick_dispatcher_grace_seconds: float = 30.0
+
 
 @dataclass
 class CronConfig:

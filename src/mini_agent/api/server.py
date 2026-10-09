@@ -1334,6 +1334,25 @@ class HttpServer:
                 digest_advisor_cfg=getattr(cfg, "digest_advisor", None),
                 job_runner=cron_job_runner,
             )
+            # [next_doc/tick_dispatch_only_execution_model_plan.md 阶段一] tick 只
+            # 派发、不执行：开启后 local_handler 交给 TickDispatcher 后台线程，
+            # 不再在 SchedulerHeartbeat 的 tick 线程里同步执行（含 LLM 调用）。
+            # 默认关闭，开关见 SchedulerConfig.async_local_handlers_enabled。
+            tick_dispatcher = None
+            try:
+                _sched_cfg = getattr(cfg, "scheduler", None)
+                if bool(getattr(_sched_cfg, "async_local_handlers_enabled", False)):
+                    from mini_agent.evolution.tick_dispatcher import TickDispatcher
+                    tick_dispatcher = TickDispatcher(
+                        max_workers=int(getattr(_sched_cfg, "tick_dispatcher_max_workers", 4)),
+                        default_timeout_seconds=float(getattr(_sched_cfg, "tick_dispatcher_timeout_seconds", 300.0)),
+                        grace_seconds=float(getattr(_sched_cfg, "tick_dispatcher_grace_seconds", 30.0)),
+                    )
+                    cron_scheduler.set_tick_dispatcher(tick_dispatcher)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.tick_dispatcher')
+                tick_dispatcher = None
             # external_projects_cron_dispatch_plan.md 3.3：daemon 启动时
             # 对所有已注册外部项目各调一次 ensure_external_project_cron_jobs()，
             # 把 project.yaml 里声明的定时 entrypoint 与 cron_jobs.json
@@ -1982,6 +2001,8 @@ class HttpServer:
             # 供 AgentRunner.run() 在 turn 完成后回调
             self._bridge._objective_executor = objective_executor
             self._bridge._cron_scheduler = cron_scheduler
+            # 供 /v1/self/execution_model_status 读取派发器统计（未开启时为 None）
+            self._bridge._tick_dispatcher = tick_dispatcher
             # 也挂到 agent，供 /cron REPL 命令使用
             if agent is not None:
                 agent._cron_scheduler = cron_scheduler
