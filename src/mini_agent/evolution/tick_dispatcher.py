@@ -160,7 +160,19 @@ class TickDispatcher:
             return False
         return True
 
+    @staticmethod
+    def in_worker_thread() -> bool:
+        """当前线程是否是 TickDispatcher 的 worker 线程。
+
+        `on_done` 既可能在 worker 线程里被调用（任务正常结束），也可能在调用
+        `reap_stale()` 的线程里被调用（任务超时被回收，通常就是持有 sched_lock 的 tick
+        线程）。需要拿 sched_lock 的回调靠这个判断：只有 worker 线程才能去等锁，
+        否则会在 tick 线程里对自己持有的非可重入锁死等。
+        """
+        return bool(getattr(threading.current_thread(), "_tick_dispatch_worker", False))
+
     def _run(self, rec: _Running, fn: Callable[[], Any]) -> None:
+        threading.current_thread()._tick_dispatch_worker = True  # type: ignore[attr-defined]
         status = STATUS_OK
         value: Any = None
         error: Optional[BaseException] = None

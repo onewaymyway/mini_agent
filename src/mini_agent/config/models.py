@@ -1797,6 +1797,15 @@ class AutonomyConfig:
     # 理由与回退方式同上方 `objective_persistent_worker_enabled` 的注释——
     # 两个开关的默认值调整是同一个 Track 一起做的决定。
     scheduler_heartbeat_enabled: bool = True
+
+    # [next_doc/tick_dispatch_only_execution_model_plan.md 阶段二] tick 只派发、
+    # 不执行：True 时 ObjectiveExecutor 里的慢操作（step 提交前的 LLM 路径声明、
+    # Objective 拆解、step 失败后的重新分解）不再在 tick 线程/持 sched_lock 的
+    # 线程里同步等 LLM，而是交给 TickDispatcher 后台线程，step 进入 "preparing"
+    # 状态，结果就绪后由持锁线程继续提交。依赖 scheduler_heartbeat_enabled=True
+    # （需要共享的 sched_lock 才能在后台线程里安全推进状态），否则自动保持同步。
+    # 默认 False（遵循"开关默认保持非破坏行为"约定）。
+    async_step_prepare_enabled: bool = False
     # SchedulerHeartbeat 自身的轮询间隔（秒）——只是"多久检查一次是否该
     # tick"，真正的 tick 频率仍由 AutonomousLoop 的 tick_interval_seconds
     # 决定，本项应明显小于 tick_interval_seconds 才有意义（默认 5 秒 vs

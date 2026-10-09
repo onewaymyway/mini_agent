@@ -4053,6 +4053,12 @@ async def get_self_execution_model_status(request: Request):
             "stale_step_reap_count": getattr(objective_executor, "stale_step_reap_count", 0)
             if objective_executor is not None else 0,
         }
+        # [tick_dispatch_only 阶段二] step 后台准备（路径声明/拆解/重新分解）的队列状态
+        try:
+            if objective_executor is not None and hasattr(objective_executor, "prepare_stats"):
+                result["objective_executor"]["prepare"] = objective_executor.prepare_stats()
+        except Exception:
+            pass
 
         # [kanban_execution_visibility_and_control_plan.md 阶段 B] 汇总
         # 最近发生过的卡死回收事件，供看板"📋 执行总览"的"🔴 异常/已回收"

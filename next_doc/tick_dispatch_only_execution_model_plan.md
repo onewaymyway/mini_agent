@@ -188,32 +188,43 @@ ok = dispatcher.dispatch(key=f"cron:{job.id}", fn=lambda: local_handler(job),
 
 ### 6.3 step 状态机（阶段 2）
 
-`ExecutionStep.status` 新增 `preparing`（现为 `pending|running|done|failed|blocked`）。
+`ExecutionStep.status` 新增 `preparing`；`ObjectiveExecution` 新增 `decomposing` 标记。
 
-`_submit_step(ex, idx)` 改造为非阻塞的两段式：
+**关键设计：慢操作"算"在 worker，状态修改在持锁线程。** `ObjectiveExecutor` 本身没有内部锁，
+其状态一直靠外部 `sched_lock` 串行化。因此 worker 线程**不直接改** executor 状态，只把 LLM 结果
+放进缓存；状态的推进（`step.paths`、`step.status`、`ex.steps`、提交）统一由持 `sched_lock` 的线程完成：
 
-1. **tick/持锁线程侧**（快）：若 `step.paths` 已缓存，直接走原有"冲突检测 → 提交"；
-   否则置 `step.status = "preparing"`，`dispatch(key=f"prepare:{ex.execution_id}:{idx}", ...)` 后返回 `False`
-   （调用方已能区分"暂时排队"与失败，沿用 `blocked` 的既有处理分支，扩展为 `blocked/preparing` 都不判失败）。
-2. **worker 侧**（慢）：调 `_declare_step_paths`（LLM，带 §6.6 的 deadline），回写 `step.paths`，
-   在**独立的小锁**下做冲突检测并占位 `_active_step_paths`（原先由 tick 线程隐式串行保证的原子性，
-   改为显式小锁保证）；无冲突 → 真正提交；冲突 → `blocked`，交给 `retry_blocked_steps` 重试。
+1. worker 的 `on_done` 里 `acquire(sched_lock, timeout=30s)` 后立即继续（延迟最低）；
+2. 拿不到锁（或结果来自 tick 线程里的 `reap_stale` 超时回收）则留在缓存，由下一轮 tick 的
+   `retry_blocked_steps() → process_prepared()` 接手。两条路径对同一个结果幂等。
+3. `TickDispatcher.in_worker_thread()` 区分两种回调来源，避免在持锁的 tick 线程里对自己持有的
+   非可重入锁死等。
 
-关键点：
+三类慢操作统一走同一套 `_submit_prepare / _complete_prepared / process_prepared`：
 
-- `_active_step_paths` 的读写、冲突检测与占位必须在同一把小锁内完成（check-then-act 原子）。
-- 声明失败/超时 → 退化为哨兵路径（既有逻辑），不阻塞。
-- **持久化与恢复**：`status` 会随执行状态落盘（`d.get("status", "pending")`），daemon 重启后
-  `preparing` 必须回退为 `pending`（恢复流程里统一处理），避免永久悬挂。
-- `reap_stale_steps` 需识别 `preparing` 超时：dispatcher 超时回收后回退为 `pending` 并按哨兵路径提交，
-  不计入 `retry_count`（它不是 step 执行失败）。
-- 同类改造：`_decompose`（#2）、`_attempt_redecompose`（#3，先 `redecompose` 再提交，状态新增
-  `decomposing`）、`_ensure_goal_objectives`（#7）、`reap_finished_cycles`（#8）、
-  `SoftGoalDeriver`（#9，视审计结论）——统一模式：**tick 置状态+派发，worker 做 LLM，
-  结果落盘/回写，下一轮 tick 消费**。
-- `on_turn_done()` 持锁路径（#13）：先核对 `api/server.py` 中持锁调用链，保证持锁线程里不再同步调 LLM，
-  必要时 `on_turn_done` 只更新状态并派发"准备下一步"。
-- 开关：`autonomy.async_step_prepare_enabled`（默认 `False`）。
+| 操作 | 触发点 | 后台算什么 | 继续函数 |
+|---|---|---|---|
+| 路径声明 | `_submit_step`（首次提交且 `step.paths` 为空） | `declare_paths_fn(description)` | 写 `step.paths` → 冲突检测 → 提交 |
+| Objective 拆解 | `start()` | `_decompose(objective)` | 替换占位 step → 提交第一步 |
+| 重新分解 | `_attempt_redecompose` | `llm_redecompose_fn(...)` | 替换剩余步骤 → 提交；失败判 Objective failed |
+
+要点：
+
+- `_submit_step` 在异步模式下返回 `False` 且 `step.status == "preparing"`；所有调用方用
+  `_DEFERRED_STATUSES = ("blocked", "preparing")` 区分"暂时排队"与"真正提交失败"。
+  `reap_stale_steps` 的重试分支为保持既有行为只把 `preparing` 视为排队。
+- `start()` 异步版本立即返回 `exec_id`：创建 `running + decomposing` 的 execution（带占位 step，
+  占用并发槽位、`is_running()` 为真，防止重复启动）。`start()` 返回值语义：`preparing` 视为已受理；
+  `blocked` 维持原来的 `None`。
+- 路径冲突检测与占位仍在 `_submit_step` 内由持锁线程完成，原子性不变，**不需要新增小锁**
+  （与最初方案不同：最初设想"worker 里做冲突检测需要小锁"，改为"只在持锁线程里做"后更简单也更安全）。
+- 声明失败/超时 → 退化为哨兵路径；拆解失败/超时 → 退化为单步（与原 `_decompose` 降级一致）。
+- 派发器繁忙/满时任务进入待派发表，下一轮 tick 重试，**不回退同步等待、不让 Objective 失败**。
+- 暂停期间到达的结果被丢弃，`resume()` 时对 `preparing` 重新触发；取消的 execution 不再派发新任务。
+- **持久化与恢复**：最初方案要求重启时 `preparing → pending`。审计发现
+  `reconcile_orphaned_executions()` 本来就会把所有 `running` 的记录判为异常中断，因此**不需要**额外恢复逻辑。
+- 开关：`autonomy.async_step_prepare_enabled`（默认 `False`）；依赖 `scheduler_heartbeat_enabled`
+  提供的共享 `sched_lock`，没有锁则自动保持同步。
 
 ### 6.4 tick 线程告警与严格模式（阶段 4）
 
@@ -273,9 +284,14 @@ ok = dispatcher.dispatch(key=f"cron:{job.id}", fn=lambda: local_handler(job),
   重启恢复 `preparing → pending`；声明超时退化为哨兵路径；redecompose 异步后的失败判定语义不变。
 - 验收：构造"LLM 永远挂起"，Objective 能进入 `preparing`，tick 不受影响，超时后降级继续推进。
 
-### 阶段 3（并入阶段 2 的收尾）
+### 阶段 3：executor 之外的同类调用点收尾
 
-- 审计中新增的零散调用点（如 #10、#11 若被判定有风险）统一按同一模式卸载。
+- 范围（阶段 0 审计确认、阶段 2 未覆盖）：`_ensure_goal_objectives → _goal_decompose_fn`（#7）、
+  `reap_finished_cycles → _check_pursuit_saturation → process_pursuit_cycle_completion`（#8），
+  以及 `goal_cycle` 触发里按配置走 LLM 的进展/稳定性判断（#6 剩余部分）。
+- 做法：沿用阶段 2 的"tick 置状态 + 派发、结果缓存、持锁线程消费"模式。这些调用点不在 `ObjectiveExecutor`
+  内部，需要各自的结果缓存与继续函数；是否值得抽成通用的"派发 + 消费"小工具，在实施时按重复程度决定。
+- 验收：对应调用点在"LLM 永远挂起"下 tick 仍秒级返回；原有测试通过。
 
 ### 阶段 4：tick 线程告警 + deadline 兜底
 
@@ -345,5 +361,21 @@ ok = dispatcher.dispatch(key=f"cron:{job.id}", fn=lambda: local_handler(job),
   - `agent_config.json` 的 `scheduler` 块已设 `async_local_handlers_enabled: true`；代码默认值仍为 `false`。
   - 文档：`docs/daemon-execution-model-guide.md` 新增 §6，`cron-dedicated-execution-guide.md` /
     `unified-scheduler-guide.md` 补充说明。
-- 阶段 2（step 状态机 + 同类调用点）：**未开始**
+- 阶段 2（step 状态机 + 同类调用点）：**已完成**（2026-10-09）
+  - `objective_executor.py`：`preparing` 状态、`decomposing` 标记、后台准备基础设施
+    （`set_async_prepare` / `_submit_prepare` / `process_prepared` / `prepare_stats`）、`_submit_step`
+    /`start`/`_attempt_redecompose` 异步分支、各调用方改用 `_DEFERRED_STATUSES`；`tick_dispatcher.py`
+    新增 `in_worker_thread()`；`config/models.py::AutonomyConfig.async_step_prepare_enabled`；
+    `api/server.py` 装配（派发器在任一开关开启时创建，`set_async_prepare` 在
+    `reconcile_orphaned_executions()` 之后）；`execution_model_status.objective_executor.prepare`。
+  - 测试：`tests/test_objective_executor_async_prepare.py`（15）。含：LLM 拆解/路径声明挂死时 `start()`
+    秒级返回、`on_turn_done` 持锁推进下一步不阻塞、路径互斥语义不变、超时回收后降级、重新分解
+    成功/失败、取消、派发器繁忙重试、暂停恢复、未注入锁/派发器时保持同步。
+    objective/cron/heartbeat/goal_cycle 等 51 个测试文件共 711 个通过；唯一 2 个失败
+    （`test_goal_cron_feedback_and_output_policy.py` 的输出路径策略测试）在原始代码上同样失败，与本改动无关。
+  - 审计 #6 的 goal_cycle：`start()` 非阻塞后其同步等待已消除；其 LLM 进展判断部分留阶段 4 deadline 兜底。
+    审计 #7/#8（`_ensure_goal_objectives` 的 goal 拆解、`reap_finished_cycles` 的复核）**本阶段未做**：
+    它们不在 executor 内部，需要各自的 dispatch 点，留到阶段 3 收尾处理。
+  - `agent_config.json` 的 `autonomy` 块已设 `async_step_prepare_enabled: true`；代码默认值仍为 `false`。
+- 阶段 3（executor 之外的同类调用点收尾）：**未开始**
 - 阶段 4（tick 线程告警 + deadline 兜底）：**未开始**

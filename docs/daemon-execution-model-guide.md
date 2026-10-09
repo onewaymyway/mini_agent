@@ -204,7 +204,7 @@ Objective 的 step 最终都提交进和用户交互对话共用的同一个单�
 ## 6. 阶段三：tick 只派发、不执行（TickDispatcher）
 
 > 方案文档：[`next_doc/tick_dispatch_only_execution_model_plan.md`](../next_doc/tick_dispatch_only_execution_model_plan.md)。
-> 当前已实施**阶段一**（cron `local_handler` 异步化）；step 状态机（阶段二）、
+> 当前已实施**阶段一**（cron `local_handler` 异步化）和**阶段二**（step 状态机）；
 > tick 线程 LLM 告警与 deadline 兜底（阶段四）尚未实施。
 
 **问题**：`SchedulerHeartbeat` 约定 tick 只做"决策 + 提交"，但实际有多处在 tick 线程
@@ -232,10 +232,11 @@ Objective 的 step 最终都提交进和用户交互对话共用的同一个单�
 
 | 配置项 | 默认 | 说明 |
 |---|---|---|
-| `async_local_handlers_enabled` | `false` | 开启后 local_handler 走 TickDispatcher；仓库自带的 `agent_config.json` 已设为 `true` |
-| `tick_dispatcher_max_workers` | `4` | 派发器同时在跑的任务数上限 |
-| `tick_dispatcher_timeout_seconds` | `300` | 单个任务存活期限（秒） |
-| `tick_dispatcher_grace_seconds` | `30` | 超过期限后再宽限多久才回收 |
+| `scheduler.async_local_handlers_enabled` | `false` | 开启后 local_handler 走 TickDispatcher；仓库自带的 `agent_config.json` 已设为 `true` |
+| `autonomy.async_step_prepare_enabled` | `false` | 开启后 step 准备（路径声明/拆解/重新分解）走 TickDispatcher；依赖 `scheduler_heartbeat_enabled`；仓库自带的 `agent_config.json` 已设为 `true` |
+| `scheduler.tick_dispatcher_max_workers` | `4` | 派发器同时在跑的任务数上限 |
+| `scheduler.tick_dispatcher_timeout_seconds` | `300` | 单个任务存活期限（秒） |
+| `scheduler.tick_dispatcher_grace_seconds` | `30` | 超过期限后再宽限多久才回收 |
 
 **语义差异（开启后）**：handler 失败不再回滚本次 `last_run_at`/`run_count`
 （派发时已推进），失败原因事后补记；handler 拿到的是 `CronJob` 的浅拷贝，
@@ -246,6 +247,41 @@ Objective 的 step 最终都提交进和用户交互对话共用的同一个单�
 `timed_out_total` 或 `orphan_threads_alive` 持续增长，说明有 handler 反复卡在外部调用上。
 
 **回退**：把 `async_local_handlers_enabled` 改回 `false` 并重启 daemon，回到同步执行。
+
+### 阶段二：step 状态机（路径声明 / 拆解 / 重新分解）
+
+**问题**：`ObjectiveExecutor._submit_step` 在提交前同步调 LLM 猜路径（Track C 路径互斥）；
+`start()` 同步调 LLM 拆解；step 失败后的重新分解也同步调 LLM。这些调用发生在 tick 线程，
+也发生在持 `sched_lock` 调 `on_turn_done` 的线程（obj-worker 与 AgentRunner 主循环）里——
+后者一旦卡住，用户输入处理也会被堵。
+
+**做法**（`autonomy.async_step_prepare_enabled=true`，且需要 `scheduler_heartbeat_enabled=true`
+提供共享的 `sched_lock`，否则自动保持同步）：
+
+- `ExecutionStep` 新增状态 `preparing`（与 `blocked` 同属"暂时无法提交、不是失败"，
+  不计入 `retry_count`）；`ObjectiveExecution` 新增 `decomposing` 标记。
+- 慢操作只在 TickDispatcher 的 worker 线程里"算"，**不碰 executor 状态**；算出的结果进缓存，
+  executor 状态的修改统一由持 `sched_lock` 的线程完成：worker 回调里拿锁后立即继续，
+  或下一轮 tick 的 `retry_blocked_steps() → process_prepared()` 接手。两条路径对同一个结果幂等。
+- `start()` 立即返回 `exec_id`：先创建 `running + decomposing` 的 execution（带一个"准备中"占位
+  step，占用并发槽位、防止重复启动），拆解结果就绪后替换成真实步骤并提交第一步。拆解失败/超时
+  按原 `_decompose()` 的降级语义退化为单步。
+- 路径声明失败/超时 → 退化为哨兵路径（保守串行化），Objective 照常推进；路径冲突语义不变
+  （冲突 → `blocked` → 占用方释放后 `retry_blocked_steps()` 重试）。
+- 重新分解异步化后，失败 step 保持 `running + decomposing`；结果就绪后替换剩余步骤并提交，
+  不可用/失败则按原逻辑判 Objective failed。
+- 派发器繁忙/满时任务留在待派发表里由下一轮 tick 重试，**绝不**因此让 Objective 失败，也不回退到
+  同步等待（否则上游整体挂死、派发器被占满时 tick 会再次被拖死）。
+- 暂停期间到达的准备结果被丢弃，`resume()` 时重新触发准备；取消的 execution 不再派发新的准备任务。
+
+**语义差异**：`start()` 返回 `exec_id` 时 execution 可能还在拆解/路径声明阶段，尚未提交第一步；
+daemon 重启后所有 `running` 的记录仍由 `reconcile_orphaned_executions()` 判为异常中断，
+因此 `preparing`/`decomposing` 不需要额外的恢复逻辑。
+
+**观测**：`execution_model_status.objective_executor.prepare`（`in_flight` / `pending_dispatch` /
+`results_waiting`）；看板里 `preparing` step 显示为"准备中"占位。
+
+**回退**：把 `async_step_prepare_enabled` 改回 `false` 并重启 daemon。
 
 ## 相关文档
 

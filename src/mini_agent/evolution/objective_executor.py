@@ -33,6 +33,7 @@ import json
 import logging
 import os
 import re as _re
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -68,6 +69,19 @@ DEFAULT_STEP_TIMEOUT_SECONDS = 600  # 10 分钟，超时算失败
 # 拆解不出可靠的路径信息时，宁可牺牲并行度也不允许两个 Objective 同时写文件。
 _UNKNOWN_PATH_SENTINEL = "__unknown__"
 
+# [tick_dispatch_only 阶段二] 暂时无法提交、但不是失败的 step 状态：
+#   blocked   — 路径与其他 Objective 冲突，等 retry_blocked_steps() 重试；
+#   preparing — 正在后台准备（LLM 路径声明/拆解等），结果就绪后由持锁线程继续提交。
+# 各 _submit_step() 调用方据此区分"暂时排队"与"真正的提交失败"。
+_DEFERRED_STATUSES = ("blocked", "preparing")
+
+# 后台准备任务失败/超时的结果哨兵（区别于"成功但返回空列表"）。
+_PREP_FAILED = object()
+
+# 持锁线程等待 sched_lock 的最长时间（秒）。拿不到就把结果留在缓存里，
+# 由下一轮 tick 的 process_prepared() 接手，不会丢。
+_PREPARE_LOCK_WAIT_SECONDS = 30.0
+
 
 # ── 数据结构 ──────────────────────────────────────────────────────────────────
 
@@ -76,7 +90,9 @@ class ExecutionStep:
     step_id: str
     step_index: int                 # 0-based
     description: str                # 提交给 agent 的任务文本
-    # pending | running | done | failed | blocked
+    # pending | running | done | failed | blocked | preparing
+    # [tick_dispatch_only 阶段二] "preparing"：正在后台准备（LLM 路径声明/拆解），
+    # 结果就绪后由持锁线程继续提交——不算失败，不计入 retry_count。
     # [Track C] "blocked"：本步骤声明的路径与其他正在运行的 Objective 冲突，
     # 暂不提交，等占用方释放后由 retry_blocked_steps() 重新尝试——不算失败，
     # 不计入 retry_count。
@@ -189,6 +205,10 @@ class ObjectiveExecution:
     # 因此先只记一个请求标记，等这一步真正完成（on_turn_done）时再落地为
     # status="paused_by_user"，不会打断正在执行的这一步。
     pause_requested: bool = False
+    # [tick_dispatch_only 阶段二] 正在后台拆解/重新拆解步骤（steps 里只有占位 step
+    # 或失败的 step）。daemon 重启后 reconcile_orphaned_executions() 会把所有
+    # running 的记录判为异常中断，因此这个标志不需要跨重启恢复逻辑。
+    decomposing: bool = False
 
     @property
     def current_step(self) -> Optional[ExecutionStep]:
@@ -222,6 +242,7 @@ class ObjectiveExecution:
             "fairness_slice_started_at": self.fairness_slice_started_at,
             "fairness_slice_start_step": self.fairness_slice_start_step,
             "pause_requested": self.pause_requested,
+            "decomposing": self.decomposing,
         }
 
     @staticmethod
@@ -239,6 +260,7 @@ class ObjectiveExecution:
             fairness_slice_started_at=d.get("fairness_slice_started_at", 0.0),
             fairness_slice_start_step=d.get("fairness_slice_start_step", 0),
             pause_requested=bool(d.get("pause_requested", False)),
+            decomposing=bool(d.get("decomposing", False)),
         )
         ex.steps = [ExecutionStep.from_dict(s) for s in d.get("steps", [])]
         return ex
@@ -393,6 +415,16 @@ class ObjectiveExecutor:
         # reap_stale_steps() 每回收一个 step 就 +=1，进程内累计，不持久化
         # ——只用于观测"卡死回收发生的频率"，暴露给 execution_model_status。
         self._stale_step_reap_count: int = 0
+        # [next_doc/tick_dispatch_only_execution_model_plan.md 阶段二] 后台准备
+        # （LLM 路径声明/拆解/重新分解）基础设施。未注入 dispatcher/sched_lock
+        # 时（默认）_async_enabled 为 False，所有流程保持原来的同步行为。
+        self._async_dispatcher = None
+        self._async_lock = None
+        self._async_timeout: Optional[float] = None
+        self._prep_lock = threading.Lock()   # 只保护下面几个 dict，持有时间极短
+        self._prep_conts: dict = {}          # key -> 结果就绪后的继续函数
+        self._prep_fns: dict = {}            # key -> (fn, label, alive_fn)：尚未派发成功
+        self._prep_results: dict = {}        # key -> 结果值或 _PREP_FAILED
         # [daemon_stability_and_ux_improvement_plan.md 第 1 项 / P2-1]
         # 跨 Objective 广度熔断：scope_id 用 execution_id，与
         # workflow/watchdog.py 共用同一份 `CircuitBreakerCore` 实现，只是
@@ -636,7 +668,7 @@ class ObjectiveExecutor:
         step_idx = ex.current_step_idx
         submitted = self._submit_step(ex, step_idx)
         step = ex.steps[step_idx] if step_idx < len(ex.steps) else None
-        if not submitted and (step is None or step.status != "blocked"):
+        if not submitted and (step is None or step.status not in _DEFERRED_STATUSES):
             ex.status = "failed"
             ex.progress_notes = "从公平性暂停恢复时提交失败"
             self._on_objective_failed(ex)
@@ -711,7 +743,7 @@ class ObjectiveExecutor:
         step_idx = ex.current_step_idx
         submitted = self._submit_step(ex, step_idx)
         step = ex.steps[step_idx] if step_idx < len(ex.steps) else None
-        if not submitted and (step is None or step.status != "blocked"):
+        if not submitted and (step is None or step.status not in _DEFERRED_STATUSES):
             ex.status = "failed"
             ex.progress_notes = "从用户暂停恢复时提交失败"
             self._on_objective_failed(ex)
@@ -904,6 +936,10 @@ class ObjectiveExecutor:
         if self.is_running(objective.id):
             return None  # 已在运行中，不重复启动
 
+        # [tick_dispatch_only 阶段二] 异步启动：不在当前线程里同步等 LLM 拆解。
+        if self._async_enabled and self._llm_decompose_fn is not None:
+            return self._start_async(objective)
+
         # 拆解 Objective → steps
         step_descs = self._decompose(objective)
         if not step_descs:
@@ -933,7 +969,7 @@ class ObjectiveExecutor:
 
         # 提交第一步
         submitted = self._submit_step(ex, 0)
-        if not submitted and steps[0].status != "blocked":
+        if not submitted and steps[0].status not in _DEFERRED_STATUSES:
             ex.status = "failed"
             ex.progress_notes = "第一步提交失败"
         # 注：steps[0].status == "blocked" 时（Track C 路径冲突）ex.status
@@ -942,7 +978,11 @@ class ObjectiveExecutor:
 
         self._notify_progress(ex)
         self.save()
-        return exec_id if submitted else None
+        # [tick_dispatch_only 阶段二] preparing = 已受理、后台准备中，视为启动成功；
+        # blocked（路径冲突）维持原有语义：返回 None。
+        if submitted or steps[0].status == "preparing":
+            return exec_id
+        return None
 
     def on_turn_done(self, turn_id: str, result_summary: str = "", valid: bool = True) -> Optional[str]:
         """
@@ -1055,16 +1095,18 @@ class ObjectiveExecutor:
             ex.current_step_idx = next_idx
             submitted = self._submit_step(ex, next_idx)
             next_step = ex.steps[next_idx]
-            if not submitted and next_step.status == "blocked":
+            if not submitted and next_step.status in _DEFERRED_STATUSES:
                 # [Track C] 路径冲突，不是真正的提交失败——留在 blocked
                 # 状态，等 retry_blocked_steps() 下次 tick 时重新尝试。
+                # [tick_dispatch_only 阶段二] preparing 同理：后台正在准备，
+                # 就绪后由持锁线程继续提交。
                 pass
             elif not submitted:
                 # 提交失败（非路径冲突），重试或放弃
                 if next_step.retry_count < MAX_STEP_RETRIES:
                     next_step.retry_count += 1
                     submitted = self._submit_step(ex, next_idx)
-                if not submitted and next_step.status != "blocked":
+                if not submitted and next_step.status not in _DEFERRED_STATUSES:
                     ex.status = "failed"
                     ex.progress_notes = f"步骤 {next_idx+1} 提交失败（重试 {next_step.retry_count} 次）"
                     self._on_objective_failed(ex)
@@ -1273,7 +1315,7 @@ class ObjectiveExecutor:
         ex.progress_notes = f"步骤 {step_idx+1} 已重置：{note}"
 
         submitted = self._submit_step(ex, step_idx)
-        if not submitted and step.status != "blocked":
+        if not submitted and step.status not in _DEFERRED_STATUSES:
             ex.status = "failed"
             ex.progress_notes = f"步骤 {step_idx+1} 重置后重新提交失败"
 
@@ -1376,7 +1418,7 @@ class ObjectiveExecutor:
                 step.turn_id = None
                 step.error_msg = timeout_msg
                 submitted = self._submit_step(ex, ex.current_step_idx)
-                if not submitted:
+                if not submitted and step.status != "preparing":
                     step.status = "failed"
                     step.finished_at = now
                     ex.status = "failed"
@@ -1424,7 +1466,7 @@ class ObjectiveExecutor:
             if cur and cur.status == "running" and cur.turn_id:
                 # turn_id 仍在 _turn_to_exec 中，等待结果即可
                 ex.status = "running"
-            elif cur and cur.status in ("pending", "running"):
+            elif cur and cur.status in ("pending", "running", "preparing"):
                 ex.status = "running"
                 # 当前 step 的 turn 可能已经丢失，重新提交
                 if cur.turn_id not in self._turn_to_exec:
@@ -1640,34 +1682,70 @@ class ObjectiveExecutor:
             except Exception as _mini_agent_exc:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor._attempt_redecompose.external_context')
+        title = ex.objective_title
+
+        # [tick_dispatch_only 阶段二] 异步：LLM 重新分解放到后台，execution 保持
+        # running + decomposing 标记，调用方按"已接管、继续执行"处理（返回 True）；
+        # 结果就绪后由持锁线程替换剩余步骤并提交，失败则按原有逻辑判 Objective failed。
+        if self._async_enabled:
+            ex.status = "running"
+            ex.decomposing = True
+            ex.progress_notes = f"步骤 {step_idx+1} 多次失败，正在重新分解剩余步骤（原因：{failure_reason[:80]}）"
+            key = ("redecompose", ex.execution_id, step_idx)
+
+            def _fn():
+                return self._call_redecompose_llm(
+                    title, completed_summaries, remaining_descs, failure_reason, external_context,
+                )
+
+            def _cont(value, _ex=ex, _idx=step_idx, _reason=failure_reason):
+                self._finish_redecompose(_ex, _idx, _reason, value)
+
+            self._submit_prepare(
+                key, _fn, _cont, label=f"redecompose:{ex.execution_id}:{step_idx}",
+                alive_fn=lambda: ex.status == "running" and ex.decomposing,
+            )
+            return True
+
         try:
-            new_descs = self._llm_redecompose_fn(
-                ex.objective_title, completed_summaries, remaining_descs, failure_reason,
+            new_descs = self._call_redecompose_llm(
+                title, completed_summaries, remaining_descs, failure_reason, external_context,
+            )
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor._attempt_redecompose')
+            return False
+
+        new_descs = self._clean_redecompose_descs(new_descs)
+        if not new_descs:
+            return False
+        self._install_redecomposed_steps(ex, step_idx, failure_reason, new_descs)
+        return self._submit_step(ex, step_idx)
+
+    def _call_redecompose_llm(self, title, completed_summaries, remaining_descs, failure_reason, external_context):
+        """调用注入的 llm_redecompose_fn（含对旧签名的向后兼容）。可能抛异常。"""
+        try:
+            return self._llm_redecompose_fn(
+                title, completed_summaries, remaining_descs, failure_reason,
                 external_context=external_context,
             )
         except TypeError:
             # 向后兼容：调用方注入的 llm_redecompose_fn 若还是旧签名
             # （不接受 external_context 关键字参数），退化为不传这个参数，
             # 不影响未升级的自定义实现。
-            try:
-                new_descs = self._llm_redecompose_fn(
-                    ex.objective_title, completed_summaries, remaining_descs, failure_reason,
-                )
-            except Exception as _mini_agent_exc:
-                from mini_agent.errors import log_exception
-                log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor._attempt_redecompose')
-                return False
-        except Exception as _mini_agent_exc:
-            from mini_agent.errors import log_exception
-            log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor._attempt_redecompose')
-            return False
+            return self._llm_redecompose_fn(
+                title, completed_summaries, remaining_descs, failure_reason,
+            )
 
+    @staticmethod
+    def _clean_redecompose_descs(new_descs) -> list[str]:
         if not new_descs or not isinstance(new_descs, list):
-            return False
-        new_descs = [str(d) for d in new_descs if str(d).strip()][:MAX_STEPS_PER_OBJECTIVE]
-        if not new_descs:
-            return False
+            return []
+        return [str(d) for d in new_descs if str(d).strip()][:MAX_STEPS_PER_OBJECTIVE]
 
+    def _install_redecomposed_steps(self, ex: ObjectiveExecution, step_idx: int,
+                                    failure_reason: str, new_descs: list[str]) -> None:
+        """用新步骤替换 ex.steps[step_idx:]（保留之前已完成的步骤不变）。"""
         kept = ex.steps[:step_idx]
         new_steps = [
             ExecutionStep(
@@ -1681,7 +1759,24 @@ class ObjectiveExecutor:
         ex.current_step_idx = step_idx
         ex.status = "running"
         ex.progress_notes = f"步骤 {step_idx+1} 多次失败后已重新分解剩余步骤（原因：{failure_reason[:80]}）"
-        return self._submit_step(ex, step_idx)
+
+    def _finish_redecompose(self, ex: ObjectiveExecution, step_idx: int, failure_reason: str, value) -> None:
+        """异步重新分解的继续函数（持锁线程里执行）。"""
+        if ex.status != "running" or not ex.decomposing:
+            return  # 期间被取消/终止/重置
+        ex.decomposing = False
+        new_descs = [] if value is _PREP_FAILED else self._clean_redecompose_descs(value)
+        if not new_descs:
+            # 与同步路径一致：重新分解不可用 → 判 Objective failed
+            ex.status = "failed"
+            ex.finished_at = time.time()
+            ex.progress_notes = f"步骤 {step_idx+1} 失败且重新分解不可用：{failure_reason[:100]}"
+            self._on_objective_failed(ex)
+            self._notify_progress(ex)
+            self.save()
+            return
+        self._install_redecomposed_steps(ex, step_idx, failure_reason, new_descs)
+        self._continue_after_prepare(ex, step_idx)
 
     def _extract_tool_artifacts(self, step: "ExecutionStep") -> list[str]:
         """[Track G 深化] 优先路径：从这一步实际调用过的写文件类工具记录
@@ -1713,6 +1808,255 @@ class ObjectiveExecutor:
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor._parse_step_artifacts')
             return []
+
+    # ── 后台准备基础设施（tick_dispatch_only 阶段二） ─────────────────────────
+    #
+    # 模型：慢操作（LLM）只在 TickDispatcher 的 worker 线程里"算"，不碰 executor
+    # 状态；算出的结果放进 _prep_results；executor 状态的修改（step.paths、
+    # step.status、ex.steps 等）统一由**持有 sched_lock 的线程**完成——要么是 worker
+    # 线程在 on_done 里拿锁后立即继续，要么是下一轮 tick 的 process_prepared()
+    # （tick 线程本来就持锁）。这样保持了"executor 内部状态只被持锁线程改动"的既有约定。
+
+    def set_async_prepare(self, dispatcher, sched_lock, *, timeout_seconds: Optional[float] = None) -> None:
+        """注入 TickDispatcher 与共享的 sched_lock，开启异步准备。任一为 None 即关闭
+        （保持同步）：没有共享锁就无法在后台线程里安全地推进 executor 状态。"""
+        self._async_dispatcher = dispatcher
+        self._async_lock = sched_lock
+        self._async_timeout = timeout_seconds
+
+    @property
+    def _async_enabled(self) -> bool:
+        return self._async_dispatcher is not None and self._async_lock is not None
+
+    def prepare_stats(self) -> dict:
+        """后台准备任务的观测快照（供 execution_model_status）。"""
+        with self._prep_lock:
+            return {
+                "enabled": self._async_enabled,
+                "in_flight": max(0, len(self._prep_conts) - len(self._prep_fns) - len(self._prep_results)),
+                "pending_dispatch": len(self._prep_fns),
+                "results_waiting": len(self._prep_results),
+            }
+
+    @staticmethod
+    def _prep_dispatch_key(key: tuple) -> str:
+        return "prepare:" + ":".join(str(k) for k in key)
+
+    def _prepare_tracked(self, key: tuple) -> bool:
+        with self._prep_lock:
+            return key in self._prep_conts
+
+    def _prepare_tracked_for_step(self, ex: ObjectiveExecution, step: ExecutionStep) -> bool:
+        return self._prepare_tracked(("paths", ex.execution_id, step.step_id))
+
+    def _submit_prepare(self, key: tuple, fn: Callable[[], object], cont: Callable[[object], None],
+                        *, label: str, alive_fn: Optional[Callable[[], bool]] = None) -> None:
+        """登记并派发一个后台准备任务。同一个 key 已在途/已有结果时不重复登记。
+        派发器暂时拒绝（满/同名在跑）时留在待派发表里，由 process_prepared() 下一轮重试，
+        绝不因为派发器繁忙而让 Objective 失败，也不回退到同步等待。"""
+        with self._prep_lock:
+            if key in self._prep_conts:
+                return
+            self._prep_conts[key] = cont
+            self._prep_fns[key] = (fn, label, alive_fn)
+        self._try_dispatch_prepare(key)
+
+    def _try_dispatch_prepare(self, key: tuple) -> None:
+        with self._prep_lock:
+            entry = self._prep_fns.get(key)
+        if entry is None:
+            return
+        fn, label, alive_fn = entry
+        if alive_fn is not None:
+            try:
+                alive = bool(alive_fn())
+            except Exception:
+                alive = False
+            if not alive:  # execution 已被取消/终止，不必再花一次 LLM 调用
+                with self._prep_lock:
+                    self._prep_fns.pop(key, None)
+                    self._prep_conts.pop(key, None)
+                return
+        try:
+            ok = self._async_dispatcher.dispatch(
+                self._prep_dispatch_key(key), fn,
+                timeout=self._async_timeout,
+                on_done=lambda result, _key=key: self._on_prepare_done(_key, result),
+                label=label,
+            )
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor._try_dispatch_prepare')
+            ok = False
+        if ok:
+            with self._prep_lock:
+                self._prep_fns.pop(key, None)
+
+    def _on_prepare_done(self, key: tuple, result) -> None:
+        """TickDispatcher 的 on_done 回调。
+
+        可能在 worker 线程（任务正常结束）或调用 reap_stale() 的线程（超时回收，
+        通常是持锁的 tick 线程）里被调用。只有 worker 线程才去等 sched_lock；
+        超时回收场景只存结果，由随后的 process_prepared() 消费。"""
+        from mini_agent.evolution.tick_dispatcher import STATUS_OK, TickDispatcher
+        value = result.value if result.status == STATUS_OK else _PREP_FAILED
+        if value is _PREP_FAILED:
+            log.warning("ObjectiveExecutor: background prepare %s failed (%s) — degrade", key, result.status)
+        with self._prep_lock:
+            if key not in self._prep_conts:
+                return  # 已被取消/丢弃
+            self._prep_results[key] = value
+        if TickDispatcher.in_worker_thread():
+            self._complete_prepared_locked(key)
+
+    def _complete_prepared_locked(self, key: tuple) -> None:
+        lock = self._async_lock
+        if lock is None:
+            return
+        if not lock.acquire(timeout=_PREPARE_LOCK_WAIT_SECONDS):
+            return  # 拿不到锁：结果留在缓存里，下一轮 tick 的 process_prepared() 接手
+        try:
+            self._complete_prepared(key)
+        finally:
+            lock.release()
+
+    def _complete_prepared(self, key: tuple) -> None:
+        """消费一个已就绪的准备结果并执行继续函数。**必须在持锁线程里调用。** 幂等。"""
+        with self._prep_lock:
+            if key not in self._prep_results:
+                return
+            value = self._prep_results.pop(key)
+            cont = self._prep_conts.pop(key, None)
+        if cont is None:
+            return
+        try:
+            cont(value)
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor._complete_prepared')
+
+    def process_prepared(self) -> int:
+        """tick 线程里调用（每次 tick）：回收超时的后台任务、重试派发被拒的任务、
+        消费已就绪的结果。返回本次消费的结果数。未开启异步时是 no-op。"""
+        if not self._async_enabled:
+            return 0
+        try:
+            self._async_dispatcher.reap_stale()
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.objective_executor.process_prepared.reap')
+        with self._prep_lock:
+            pending = list(self._prep_fns.keys())
+        for key in pending:
+            self._try_dispatch_prepare(key)
+        with self._prep_lock:
+            ready = list(self._prep_results.keys())
+        for key in ready:
+            self._complete_prepared(key)
+        return len(ready)
+
+    def _take_prepared_paths(self, ex: ObjectiveExecution, step: ExecutionStep) -> bool:
+        """若这个 step 的路径声明结果已经就绪（缓存里有），直接应用并返回 True。"""
+        key = ("paths", ex.execution_id, step.step_id)
+        with self._prep_lock:
+            if key not in self._prep_results:
+                return False
+            value = self._prep_results.pop(key)
+            self._prep_conts.pop(key, None)
+        self._apply_declared_paths(step, value)
+        return True
+
+    @staticmethod
+    def _apply_declared_paths(step: ExecutionStep, value) -> None:
+        declared = [] if value is _PREP_FAILED or not isinstance(value, (list, tuple, set)) else list(value)
+        step.paths = [str(p) for p in declared if p] or [_UNKNOWN_PATH_SENTINEL]
+        if step.status == "preparing":
+            step.status = "pending"
+
+    def _request_paths_prepare(self, ex: ObjectiveExecution, step_idx: int, step: ExecutionStep) -> None:
+        step.status = "preparing"
+        description = step.description
+        declare_fn = self._declare_paths_fn
+        key = ("paths", ex.execution_id, step.step_id)
+
+        def _fn():
+            return declare_fn(description) or []
+
+        def _cont(value, _ex=ex, _idx=step_idx, _step=step):
+            if _ex.status != "running" or _step.status != "preparing":
+                return  # 期间被暂停/取消/重置，丢弃；恢复时会重新触发准备
+            if _idx >= len(_ex.steps) or _ex.steps[_idx] is not _step:
+                return  # 步骤已被重新分解替换
+            self._apply_declared_paths(_step, value)
+            self._continue_after_prepare(_ex, _idx)
+
+        self._submit_prepare(
+            key, _fn, _cont, label=f"paths:{ex.execution_id}:{step_idx}",
+            alive_fn=lambda: ex.status in ("running", "paused", "paused_for_fairness", "paused_by_user"),
+        )
+
+    def _continue_after_prepare(self, ex: ObjectiveExecution, step_idx: int) -> None:
+        """准备就绪后继续提交 step（持锁线程里）。失败语义与 on_turn_done 提交下一步一致：
+        路径冲突/再次准备中 → 保持等待；真正提交失败 → 重试一次，仍失败则判 Objective failed。"""
+        if step_idx >= len(ex.steps):
+            return
+        step = ex.steps[step_idx]
+        submitted = self._submit_step(ex, step_idx)
+        if not submitted and step.status not in _DEFERRED_STATUSES:
+            if step.retry_count < MAX_STEP_RETRIES:
+                step.retry_count += 1
+                submitted = self._submit_step(ex, step_idx)
+            if not submitted and step.status not in _DEFERRED_STATUSES:
+                ex.status = "failed"
+                ex.finished_at = time.time()
+                ex.progress_notes = f"步骤 {step_idx+1} 提交失败（重试 {step.retry_count} 次）"
+                self._on_objective_failed(ex)
+        self._notify_progress(ex)
+        self.save()
+
+    def _start_async(self, objective: "GoalNode") -> Optional[str]:
+        """start() 的异步版本：立即创建 execution（running + decomposing，带一个占位
+        step），LLM 拆解在后台进行；返回 execution_id 表示"已受理"。拆解结果就绪后由
+        持锁线程替换占位 step 并提交第一步。"""
+        exec_id = f"exec_{uuid.uuid4().hex[:8]}"
+        placeholder = ExecutionStep(
+            step_id=f"{exec_id}_s0", step_index=0,
+            description="（准备中：正在拆解任务）", status="preparing",
+        )
+        ex = ObjectiveExecution(
+            execution_id=exec_id,
+            objective_id=objective.id,
+            objective_title=objective.title,
+            steps=[placeholder],
+            status="running",
+            started_at=time.time(),
+            decomposing=True,
+        )
+        ex.fairness_slice_started_at = ex.started_at
+        ex.fairness_slice_start_step = 0
+        self._executions[exec_id] = ex
+
+        def _cont(value, _ex=ex, _obj=objective):
+            if _ex.status != "running" or not _ex.decomposing:
+                return  # 期间被取消/终止
+            _ex.decomposing = False
+            # 与同步 _decompose() 的降级语义一致：失败/超时/空结果 → 单步（直接用 title）
+            descs = [str(d) for d in value] if isinstance(value, list) and value else [_obj.title]
+            _ex.steps = [
+                ExecutionStep(step_id=f"{_ex.execution_id}_s{i}", step_index=i, description=desc)
+                for i, desc in enumerate(descs)
+            ]
+            _ex.current_step_idx = 0
+            self._continue_after_prepare(_ex, 0)
+
+        self._submit_prepare(
+            ("decompose", exec_id), lambda: self._decompose(objective), _cont,
+            label=f"decompose:{exec_id}",
+            alive_fn=lambda: ex.status == "running" and ex.decomposing,
+        )
+        self._notify_progress(ex)
+        self.save()
+        return exec_id
 
     def _declare_step_paths(self, ex: ObjectiveExecution, step: ExecutionStep) -> set:
         """[Track C] 确保 step.paths 已声明（缓存到 step 上，避免重复调用 LLM）。
@@ -1750,12 +2094,23 @@ class ObjectiveExecutor:
         """[Track C] 每次 tick 时调用：尝试重新提交所有处于 blocked 状态的
         当前 step——占用方可能已经在上一次 tick 完成/失败/取消，释放了路径。
         返回本次成功重新提交的 execution_id 列表。"""
+        # [tick_dispatch_only 阶段二] 先处理后台准备：回收超时任务、重试派发被拒的、
+        # 消费已就绪的结果（持锁线程里执行——本方法由 tick 调用）。
+        self.process_prepared()
         submitted_ids: list[str] = []
         for ex in list(self._executions.values()):
             if ex.status != "running":
                 continue
             step = ex.current_step
-            if not step or step.status != "blocked":
+            if not step:
+                continue
+            if step.status == "preparing":
+                # 兜底：step 处于 preparing 但没有任何在途/待派发的准备任务（比如准备
+                # 结果因 execution 暂停被丢弃），重新走一遍 _submit_step() 触发准备。
+                if not ex.decomposing and not self._prepare_tracked_for_step(ex, step):
+                    self._submit_step(ex, ex.current_step_idx)
+                continue
+            if step.status != "blocked":
                 continue
             if self._submit_step(ex, ex.current_step_idx):
                 submitted_ids.append(ex.execution_id)
@@ -1775,6 +2130,13 @@ class ObjectiveExecutor:
         if self._submit_fn is None:
             return False
         step = ex.steps[step_idx]
+        # [tick_dispatch_only 阶段二] 异步准备：路径尚未声明时不在当前线程里同步等
+        # LLM，而是派发到后台、step 置为 preparing 并返回 False（调用方按"暂时
+        # 排队"处理，不判失败）；结果就绪后由持锁线程经 _complete_prepared() 继续。
+        if not step.paths and self._async_enabled and self._declare_paths_fn is not None:
+            if not self._take_prepared_paths(ex, step):
+                self._request_paths_prepare(ex, step_idx, step)
+                return False
         candidate_paths = self._declare_step_paths(ex, step)
         conflict_with = self._find_path_conflict(ex, candidate_paths)
         if conflict_with is not None:

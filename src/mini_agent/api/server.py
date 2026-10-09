@@ -1339,16 +1339,24 @@ class HttpServer:
             # 不再在 SchedulerHeartbeat 的 tick 线程里同步执行（含 LLM 调用）。
             # 默认关闭，开关见 SchedulerConfig.async_local_handlers_enabled。
             tick_dispatcher = None
+            # [阶段二] ObjectiveExecutor 的 step 准备异步化同样共用这个派发器；它依赖
+            # 共享的 sched_lock（没有锁就无法在后台线程里安全推进 executor 状态）。
+            _want_async_step = (
+                bool(getattr(getattr(cfg, "autonomy", None), "async_step_prepare_enabled", False))
+                and sched_lock is not None
+            )
             try:
                 _sched_cfg = getattr(cfg, "scheduler", None)
-                if bool(getattr(_sched_cfg, "async_local_handlers_enabled", False)):
+                _want_async_local = bool(getattr(_sched_cfg, "async_local_handlers_enabled", False))
+                if _want_async_local or _want_async_step:
                     from mini_agent.evolution.tick_dispatcher import TickDispatcher
                     tick_dispatcher = TickDispatcher(
                         max_workers=int(getattr(_sched_cfg, "tick_dispatcher_max_workers", 4)),
                         default_timeout_seconds=float(getattr(_sched_cfg, "tick_dispatcher_timeout_seconds", 300.0)),
                         grace_seconds=float(getattr(_sched_cfg, "tick_dispatcher_grace_seconds", 30.0)),
                     )
-                    cron_scheduler.set_tick_dispatcher(tick_dispatcher)
+                    if _want_async_local:
+                        cron_scheduler.set_tick_dispatcher(tick_dispatcher)
             except Exception as _mini_agent_exc:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.tick_dispatcher')
@@ -1900,6 +1908,17 @@ class HttpServer:
             # 阻塞 `_goal_has_active_cycle()` 导致对应 Goal 看似 overdue
             # 却再也不会真正触发。
             objective_executor.reconcile_orphaned_executions()
+
+            # [tick_dispatch_only 阶段二] step 准备（LLM 路径声明/拆解/重新分解）异步化：
+            # 必须放在 reconcile_orphaned_executions() 之后——冷启动回收孤儿记录时
+            # 不需要也不应该触发任何后台准备。tick_dispatcher 为 None（开关关闭或
+            # 构造失败）或没有共享锁时保持同步行为。
+            if _want_async_step and tick_dispatcher is not None:
+                objective_executor.set_async_prepare(
+                    tick_dispatcher, sched_lock,
+                    timeout_seconds=float(getattr(getattr(cfg, "scheduler", None),
+                                                  "tick_dispatcher_timeout_seconds", 300.0)),
+                )
 
             # [goal_execution_scheduling_global_cap_bugfix.md] 双向接线跨
             # 通道运行数回调，供 `scheduler.max_total_concurrent_tasks`
