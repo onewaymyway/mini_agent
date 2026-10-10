@@ -284,7 +284,8 @@ class DailyKlineDB:
                 up_to_date = sum(1 for v in result.values() if v == 0)
 
                 def fmt_time(seconds):
-                    h, m = divmod(int(seconds), 3600)
+                    total_min = int(seconds) // 60
+                    h, m = divmod(total_min, 60)
                     if h > 0:
                         return f"{h}小时{m}分钟"
                     return f"{m}分钟"
