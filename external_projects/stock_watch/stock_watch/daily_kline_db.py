@@ -97,6 +97,57 @@ def _bs_query_with_timeout(func, *args, timeout=10, **kwargs):
     return result
 
 
+# ── akshare 超时+重试包装器（解决 EastMoney 网络不稳定）────────────────────
+
+def _akshare_with_timeout(func, *args, timeout=10, retries=3, backoff=2.0, **kwargs):
+    """带超时和重试的 akshare 查询包装。
+    
+    Args:
+        func: akshare 函数 (如 ak.stock_zh_a_hist, ak.fund_etf_hist_em, ak.stock_zh_a_spot_em)
+        timeout: 单次请求超时秒数
+        retries: 最大重试次数
+        backoff: 退避倍数 (指数退避)
+    Returns:
+        DataFrame 或抛出最后一次异常
+    """
+    last_exc = None
+    for attempt in range(retries):
+        try:
+            # akshare 的 timeout 参数只控制连接超时，读取超时需用 threading 包装
+            result_queue = queue.Queue()
+
+            def worker():
+                try:
+                    # 传入 timeout 参数给 akshare
+                    rs = func(*args, timeout=timeout, **kwargs)
+                    result_queue.put(rs)
+                except Exception as e:
+                    result_queue.put(e)
+
+            t = threading.Thread(target=worker)
+            t.daemon = True
+            t.start()
+            t.join(timeout=timeout + 5)  # 给读取留余量
+
+            if t.is_alive():
+                raise TimeoutError(f"akshare 调用超时 ({timeout}s)")
+
+            result = result_queue.get_nowait()
+            if isinstance(result, Exception):
+                raise result
+            return result
+        except Exception as e:
+            last_exc = e
+            if attempt < retries - 1:
+                wait_time = backoff ** attempt
+                logger.warning("akshare 调用失败 (尝试 %d/%d): %s, %ds 后重试", 
+                               attempt + 1, retries, e, wait_time)
+                time.sleep(wait_time)
+            else:
+                logger.error("akshare 调用最终失败 (%d 次尝试): %s", retries, e)
+    raise last_exc
+
+
 # ── TickFlow 懒加载单例（免费套餐，无需注册）────────────────────────
 _tf_instance = None
 
@@ -269,7 +320,7 @@ class DailyKlineDB:
         try:
             from stock_watch.data_sources import _import_akshare
             ak = _import_akshare()
-            df = ak.stock_zh_a_spot_em()
+            df = _akshare_with_timeout(ak.stock_zh_a_spot_em, timeout=10, retries=3)
             if df is not None and not df.empty:
                 col = next((c for c in df.columns if "代码" in c or "code" in c.lower()), None)
                 if col is not None:
@@ -326,9 +377,10 @@ class DailyKlineDB:
         if start_date > end_date:
             return 0
 
-        rows = self._fetch_kline_rows(symbol, start_date, end_date)
-        if not rows:
+        df = self._fetch_kline_rows(symbol, start_date, end_date)
+        if df is None or df.empty:
             return 0
+        rows = self._normalize_kline_rows(df, symbol)
         self._upsert_rows(symbol, rows)
         logger.info("更新 %s: %d 行 (从 %s 到 %s)", symbol, len(rows), start_date, end_date)
         return len(rows)
@@ -378,13 +430,25 @@ class DailyKlineDB:
             # 简单限速：每 5 只稍作停顿
             if (i + 1) % 5 == 0:
                 time.sleep(0.3)
-            # 进度打印
+            # 进度打印（包含已处理数量/总数、成功率百分比、新数据写入只数、已是最新的只数、已用时间、预计剩余时间）
             if progress_interval <= 0 or ((i + 1) % progress_interval == 0) or (i + 1 == len(to_update)):
                 elapsed = time.time() - start_ts
-                rate = (i + 1) / elapsed if elapsed > 0 else 0
-                eta = (len(to_update) - i - 1) / rate if rate > 0 else 0
-                has_new = sum(1 for v in result.values() if v > 0)
-                up_to_date = sum(1 for v in result.values() if v == 0)
+                processed = i + 1 + skipped
+                success_count = sum(1 for v in result.values() if v > 0)
+                success_rate = success_count * 100 / processed if processed > 0 else 0
+                has_new = success_count
+                up_to_date = skipped
+
+                # 计算成功率（排除0值的失败项）
+                total_processed = len(result)
+                failed = sum(1 for v in result.values() if v is None)
+                effective_processed = total_processed - failed
+                if effective_processed > 0:
+                    success_rate = (total_processed - failed) * 100 / effective_processed
+
+                rate = processed / elapsed if elapsed > 0 else 0
+                remaining = n - processed
+                eta = remaining / rate if rate > 0 else 0
 
                 def fmt_time(seconds):
                     total_min = int(seconds) // 60
@@ -394,9 +458,9 @@ class DailyKlineDB:
                     return f"{m}分钟"
 
                 print(
-                    f"[进度] {i+1+skipped}/{n} ({(i+1+skipped)*100/n:.1f}%) "
-                    f"新数据 {has_new} 只 已是最新 {up_to_date} 只 "
-                    f"已使用 {fmt_time(elapsed)} 预计剩余 {fmt_time(eta)}"
+                    f"[进度] {processed}/{n} ({processed*100/n:.1f}%) "
+                    f"成功率 {success_rate:.1f}% 新数据 {has_new} 只 已是最新 {up_to_date} 只 "
+                    f"已用 {fmt_time(elapsed)} 预计剩余 {fmt_time(eta)}"
                 )
         return result
 
@@ -506,9 +570,11 @@ class DailyKlineDB:
         symbol: str,
         start_date: str,
         end_date: str,
-    ) -> List[Tuple]:
-        """拉取单只标的指定日期范围的日 K 行数据，返回列表格式便于批量插入。"""
-        rows = []
+    ) -> Optional[pd.DataFrame]:
+        """拉取单只标的指定日期范围的日 K 数据，返回 DataFrame 或 None。
+
+        数据源降级逻辑：baostock → TickFlow → 新浪直连 → Yahoo Finance → akshare
+        """
         # 判断是 ETF 还是股票（ETF 通常以 51/15/16 开头）
         is_etf = symbol.startswith(("51", "15", "16"))
         try:
@@ -517,10 +583,10 @@ class DailyKlineDB:
             else:
                 df = self._fetch_via_stock_api(symbol, start_date, end_date)
             if df is not None and not df.empty:
-                rows = self._normalize_kline_rows(df, symbol)
+                return df
         except Exception as e:
             logger.debug("拉取 %s K线失败: %s", symbol, e)
-        return rows
+        return None
 
     def _fetch_via_stock_api(self, symbol: str, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
         """拉取股票日K，按优先级尝试多个数据源。

@@ -62,6 +62,57 @@ def _bs_query_with_timeout(func, *args, timeout=10, **kwargs):
     return result
 
 
+# ── akshare 超时+重试包装器（解决 EastMoney 网络不稳定）────────────────────
+
+def _akshare_with_timeout(func, *args, timeout=10, retries=3, backoff=2.0, **kwargs):
+    """带超时和重试的 akshare 查询包装。
+    
+    Args:
+        func: akshare 函数 (如 ak.stock_zh_a_hist, ak.fund_etf_hist_em)
+        timeout: 单次请求超时秒数
+        retries: 最大重试次数
+        backoff: 退避倍数 (指数退避)
+    Returns:
+        DataFrame 或抛出最后一次异常
+    """
+    last_exc = None
+    for attempt in range(retries):
+        try:
+            # akshare 的 timeout 参数只控制连接超时，读取超时需用 threading 包装
+            result_queue = queue.Queue()
+
+            def worker():
+                try:
+                    # 传入 timeout 参数给 akshare
+                    rs = func(*args, timeout=timeout, **kwargs)
+                    result_queue.put(rs)
+                except Exception as e:
+                    result_queue.put(e)
+
+            t = threading.Thread(target=worker)
+            t.daemon = True
+            t.start()
+            t.join(timeout=timeout + 5)  # 给读取留余量
+
+            if t.is_alive():
+                raise TimeoutError(f"akshare 调用超时 ({timeout}s)")
+
+            result = result_queue.get_nowait()
+            if isinstance(result, Exception):
+                raise result
+            return result
+        except Exception as e:
+            last_exc = e
+            if attempt < retries - 1:
+                wait_time = backoff ** attempt
+                logger.warning("akshare 调用失败 (尝试 %d/%d): %s, %ds 后重试", 
+                               attempt + 1, retries, e, wait_time)
+                time.sleep(wait_time)
+            else:
+                logger.error("akshare 调用最终失败 (%d 次尝试): %s", retries, e)
+    raise last_exc
+
+
 def _normalize_stock_code(code: str) -> str:
     """将股票代码统一为纯6位数字格式。
 
@@ -1111,12 +1162,15 @@ def fetch_kline(code: str, market: str, days: int, adjust: str = "qfq"):
     end = datetime.date.today()
     start = end - datetime.timedelta(days=int(days * 1.7) + 10)
     try:
-        df = ak.stock_zh_a_hist(
+        df = _akshare_with_timeout(
+            ak.stock_zh_a_hist,
             symbol=code,
             period="daily",
             start_date=start.strftime("%Y%m%d"),
             end_date=end.strftime("%Y%m%d"),
             adjust=adjust,
+            timeout=10,
+            retries=3,
         )
         return df.tail(days)
     except Exception as exc3:
@@ -1186,12 +1240,15 @@ def fetch_etf_kline(code: str, days: int, adjust: str = "qfq"):
     end = datetime.date.today()
     start = end - datetime.timedelta(days=int(days * 1.7) + 10)
     try:
-        df = ak.fund_etf_hist_em(
+        df = _akshare_with_timeout(
+            ak.fund_etf_hist_em,
             symbol=code,
             period="daily",
             start_date=start.strftime("%Y%m%d"),
             end_date=end.strftime("%Y%m%d"),
             adjust=adjust,
+            timeout=10,
+            retries=3,
         )
         return df.tail(days)
     except Exception as exc3:
@@ -1312,12 +1369,16 @@ def fetch_price_change_pct(code: str, entry_type: str, start_date: str, end_date
     ak = _import_akshare()
     try:
         if entry_type == "etf":
-            df = ak.fund_etf_hist_em(
+            df = _akshare_with_timeout(
+                ak.fund_etf_hist_em,
                 symbol=code, period="daily", start_date=start_date, end_date=end_date, adjust="",
+                timeout=10, retries=3,
             )
         else:
-            df = ak.stock_zh_a_hist(
+            df = _akshare_with_timeout(
+                ak.stock_zh_a_hist,
                 symbol=code, period="daily", start_date=start_date, end_date=end_date, adjust="",
+                timeout=10, retries=3,
             )
     except Exception as exc:  # noqa: BLE001
         raise DataSourceError(f"获取 {code} 区间行情失败: {exc}") from exc
@@ -1359,12 +1420,16 @@ def fetch_latest_close(code: str, entry_type: str) -> float:
     start = (datetime.now() - timedelta(days=10)).strftime("%Y%m%d")
     try:
         if entry_type == "etf":
-            df = ak.fund_etf_hist_em(
+            df = _akshare_with_timeout(
+                ak.fund_etf_hist_em,
                 symbol=code, period="daily", start_date=start, end_date=end, adjust="",
+                timeout=10, retries=3,
             )
         else:
-            df = ak.stock_zh_a_hist(
+            df = _akshare_with_timeout(
+                ak.stock_zh_a_hist,
                 symbol=code, period="daily", start_date=start, end_date=end, adjust="",
+                timeout=10, retries=3,
             )
         if df is not None and not df.empty:
             close_col = "收盘" if "收盘" in df.columns else "close"
