@@ -59,7 +59,9 @@ def _get_bs():
     import baostock as bs
     global _bs_instance
     if _bs_instance is None:
-        lg = bs.login()
+        lg = _bs_query_with_timeout(lambda: bs.login(), timeout=15)
+        if lg is None:
+            raise RuntimeError("baostock 登录超时")
         if lg.error_code != "0":
             raise RuntimeError(f"baostock 登录失败: {lg.error_msg}")
         _bs_instance = bs
@@ -70,25 +72,25 @@ def _get_bs():
 import threading
 import queue
 
-def _bs_query_with_timeout(bs, *args, timeout=10, **kwargs):
-    """带超时的 baostock 查询，超时返回 None。"""
+def _bs_query_with_timeout(func, *args, timeout=10, **kwargs):
+    """带超时的 baostock 查询包装，超时返回 None。"""
     result_queue = queue.Queue()
-    
+
     def worker():
         try:
-            rs = bs.query_history_k_data_plus(*args, **kwargs)
+            rs = func(*args, **kwargs)
             result_queue.put(rs)
         except Exception as e:
             result_queue.put(e)
-    
+
     t = threading.Thread(target=worker)
     t.daemon = True
     t.start()
     t.join(timeout=timeout)
-    
+
     if t.is_alive():
         return None  # 超时
-    
+
     result = result_queue.get_nowait()
     if isinstance(result, Exception):
         raise result
@@ -105,6 +107,50 @@ def _get_tf():
     if _tf_instance is None:
         _tf_instance = tickflow.TickFlow.free()
     return _tf_instance
+
+
+# ── TickFlow 限流处理（免费套餐 60 req/min，IP 限流）─────────────────────
+_tf_last_request_ts = 0.0
+_TF_MIN_INTERVAL = 1.05  # 60次/分钟 → 至少间隔1秒，留5%余量
+
+
+def _tf_klines_get(tf, symbol, period="1d", start_time=None, end_time=None,
+                   as_dataframe=True, max_wait_ms=65000):
+    """TickFlow klines.get 包装：客户端节流 + 429 限流等待后重试一次。
+
+    - 客户端节流：保证相邻 TickFlow 请求间隔 >= 1.05s，主动避免触发限流
+    - 服务端限流：解析 "请 XXXXms 后重试"，等待后重试一次；仍失败则抛出，
+      由调用方的多源回退链（新浪/Yahoo/akshare）接管
+    """
+    import time as _time
+    import re as _re
+    global _tf_last_request_ts
+
+    elapsed = _time.time() - _tf_last_request_ts
+    if elapsed < _TF_MIN_INTERVAL:
+        _time.sleep(_TF_MIN_INTERVAL - elapsed)
+
+    for attempt in range(2):  # 首次 + 1 次限流重试
+        _tf_last_request_ts = _time.time()
+        try:
+            return tf.klines.get(symbol=symbol, period=period,
+                                 start_time=start_time, end_time=end_time,
+                                 as_dataframe=as_dataframe)
+        except Exception as e:
+            msg = str(e)
+            is_rate_limit = (type(e).__name__ == "RateLimitError"
+                            or "频率超限" in msg
+                            or getattr(e, "status_code", None) == 429)
+            if is_rate_limit and attempt == 0:
+                m = _re.search(r"(\d+)\s*ms", msg)
+                wait_ms = int(m.group(1)) if m else 61000
+                wait_ms = min(wait_ms, max_wait_ms)
+                logger.info("TickFlow 限流，等待 %.1fs 后重试 [%s]",
+                            wait_ms / 1000.0, symbol)
+                _time.sleep(wait_ms / 1000.0)
+                continue
+            raise
+
 
 logger = logging.getLogger("stock_watch.daily_kline_db")
 
@@ -178,7 +224,10 @@ class DailyKlineDB:
         # 第一优先：baostock（TCP 协议，不受 HTTP 代理影响）
         try:
             bs = _get_bs()
-            rs = bs.query_all_stock(day="2026-09-01")
+            # 使用最近的交易日作为查询日期，避免硬编码日期导致查询失败
+            query_day = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+            query_kwargs = {k: v for k, v in dict(day=query_day).items()}
+            rs = _bs_query_with_timeout(lambda: bs.query_all_stock(**query_kwargs), timeout=15)
             df = rs.get_data()
             if df is not None and not df.empty:
                 clean = []
@@ -321,7 +370,11 @@ class DailyKlineDB:
         # 只处理需要更新的标的
         to_update = [s for s in symbols if s not in last_dates or last_dates[s] != latest_trade_date]
         for i, sym in enumerate(to_update):
-            result[sym] = self.update_stock(sym, max_days_back=max_days_back)
+            try:
+                result[sym] = self.update_stock(sym, max_days_back=max_days_back)
+            except Exception as e:
+                logger.error("更新 %s 失败: %s", sym, e)
+                result[sym] = 0
             # 简单限速：每 5 只稍作停顿
             if (i + 1) % 5 == 0:
                 time.sleep(0.3)
@@ -363,14 +416,19 @@ class DailyKlineDB:
         # 使用 baostock 获取一只活跃股票的最新日期
         try:
             bs = _get_bs()
-            rs = bs.query_history_k_data_plus(
-                "sh.600519",  # 贵州茅台，长期活跃
-                "date",
-                start_date=(datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d"),
-                end_date=datetime.now().strftime("%Y-%m-%d"),
-                frequency="d",
-                adjustflag="1",
+            rs = _bs_query_with_timeout(
+                lambda: bs.query_history_k_data_plus(
+                    "sh.600519",  # 贵州茅台，长期活跃
+                    "date",
+                    start_date=(datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d"),
+                    end_date=datetime.now().strftime("%Y-%m-%d"),
+                    frequency="d",
+                    adjustflag="1",
+                ),
+                timeout=15,
             )
+            if rs is None:
+                raise TimeoutError("baostock 查询最新交易日超时")
             df = rs.get_data()
             if df is not None and not df.empty:
                 return df["date"].max()
@@ -480,13 +538,14 @@ class DailyKlineDB:
             bs_end = end_date[:4] + "-" + end_date[4:6] + "-" + end_date[6:]
             adjustflag = "1"  # qfq
             rs = _bs_query_with_timeout(
-                bs,
-                f"{prefix}.{symbol}",
-                "date,open,high,low,close,volume",
-                start_date=bs_start,
-                end_date=bs_end,
-                frequency="d",
-                adjustflag=adjustflag,
+                lambda: bs.query_history_k_data_plus(
+                    f"{prefix}.{symbol}",
+                    "date,open,high,low,close,volume",
+                    start_date=bs_start,
+                    end_date=bs_end,
+                    frequency="d",
+                    adjustflag=adjustflag,
+                ),
                 timeout=10,
             )
             if rs is None:
@@ -510,7 +569,8 @@ class DailyKlineDB:
             import time as _time
             start_ms = int(datetime.strptime(start_date, "%Y%m%d").timestamp() * 1000)
             end_ms = int(datetime.strptime(end_date, "%Y%m%d").timestamp() * 1000) + 86400000
-            df = tf.klines.get(symbol=tf_symbol, period="1d", start_time=start_ms, end_time=end_ms, as_dataframe=True)
+            logger.debug("TickFlow 请求 %s (%s) 范围 %s~%s", symbol, tf_symbol, start_date, end_date)
+            df = _tf_klines_get(tf, symbol=tf_symbol, period="1d", start_time=start_ms, end_time=end_ms, as_dataframe=True)
             if df is not None and not df.empty:
                 df["date"] = pd.to_datetime(df["timestamp"], unit="ms").dt.strftime("%Y-%m-%d")
                 df = df.rename(columns={"close": "close", "open": "open", "high": "high", "low": "low", "volume": "volume", "amount": "amount"})
@@ -520,9 +580,10 @@ class DailyKlineDB:
                 if len(filtered) > 0:
                     return filtered.drop(columns=["date_str"])
         except Exception as e:
-            logger.debug("TickFlow K线失败 (%s): %s", symbol, e)
+            logger.warning("TickFlow K线失败 [%s]: %s", symbol, e)
 
         # 3. 新浪直连（备用）
+        logger.debug("尝试新浪数据源: %s", symbol)
         from stock_watch.data_sources import _sina_kline_fetch
         sina_sym = prefix + symbol
         df = _sina_kline_fetch(sina_sym, datalen=800)
@@ -530,18 +591,24 @@ class DailyKlineDB:
             df["date_str"] = df["date"]
             filtered = df[(df["date_str"] >= start_date) & (df["date_str"] <= end_date)]
             if len(filtered) > 0:
+                logger.info("新浪数据源成功: %s, %d 行", symbol, len(filtered))
                 return filtered.drop(columns=["date_str"])
+        logger.warning("新浪数据源无数据或失败: %s", symbol)
 
         # 4. Yahoo Finance（复权数据）
+        logger.debug("尝试 Yahoo 数据源: %s", symbol)
         from stock_watch.data_sources import _yahoo_kline_fetch
         df = _yahoo_kline_fetch(symbol, days_back=1500)
         if df is not None and not df.empty:
             df["date_str"] = df["date"]
             filtered = df[(df["date_str"] >= start_date) & (df["date_str"] <= end_date)]
             if len(filtered) > 0:
+                logger.info("Yahoo 数据源成功: %s, %d 行", symbol, len(filtered))
                 return filtered.drop(columns=["date_str"])
+        logger.warning("Yahoo 数据源无数据或失败: %s", symbol)
 
         # 5. 备用：akshare
+        logger.debug("尝试 akshare 数据源: %s", symbol)
         try:
             from stock_watch.data_sources import fetch_kline, DataSourceError
             df = fetch_kline(symbol, prefix, days=300)
@@ -549,9 +616,12 @@ class DailyKlineDB:
                 df["date_str"] = df["date"].dt.strftime("%Y%m%d")
                 df = df[(df["date_str"] >= start_date) & (df["date_str"] <= end_date)]
                 df = df.drop(columns=["date_str"])
+                logger.info("akshare 数据源成功: %s, %d 行", symbol, len(df))
                 return df
+        except DataSourceError as e:
+            logger.warning("akshare 数据源失败 (%s): %s", symbol, e)
         except Exception as e:
-            logger.debug("备用数据源(%s)失败: %s", symbol, e)
+            logger.warning("akshare 数据源异常 (%s): %s", symbol, e)
         return None
 
     def _fetch_via_etf_api(self, symbol: str, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
@@ -564,13 +634,14 @@ class DailyKlineDB:
             bs_start = start_date[:4] + "-" + start_date[4:6] + "-" + start_date[6:]
             bs_end = end_date[:4] + "-" + end_date[4:6] + "-" + end_date[6:]
             rs = _bs_query_with_timeout(
-                bs,
-                f"{prefix}.{symbol}",
-                "date,open,high,low,close,volume",
-                start_date=bs_start,
-                end_date=bs_end,
-                frequency="d",
-                adjustflag="1",
+                lambda: bs.query_history_k_data_plus(
+                    f"{prefix}.{symbol}",
+                    "date,open,high,low,close,volume",
+                    start_date=bs_start,
+                    end_date=bs_end,
+                    frequency="d",
+                    adjustflag="1",
+                ),
                 timeout=10,
             )
             if rs is None:
@@ -592,7 +663,8 @@ class DailyKlineDB:
             tf_symbol = f"SH.{symbol}" if prefix == "sh" else f"SZ.{symbol}"
             start_ms = int(datetime.strptime(start_date, "%Y%m%d").timestamp() * 1000)
             end_ms = int(datetime.strptime(end_date, "%Y%m%d").timestamp() * 1000) + 86400000
-            df = tf.klines.get(symbol=tf_symbol, period="1d", start_time=start_ms, end_time=end_ms, as_dataframe=True)
+            logger.debug("TickFlow ETF 请求 %s (%s) 范围 %s~%s", symbol, tf_symbol, start_date, end_date)
+            df = _tf_klines_get(tf, symbol=tf_symbol, period="1d", start_time=start_ms, end_time=end_ms, as_dataframe=True)
             if df is not None and not df.empty:
                 df["date"] = pd.to_datetime(df["timestamp"], unit="ms").dt.strftime("%Y-%m-%d")
                 df = df[["date", "open", "high", "low", "close", "volume", "amount"]]
@@ -601,7 +673,7 @@ class DailyKlineDB:
                 if len(filtered) > 0:
                     return filtered.drop(columns=["date_str"])
         except Exception as e:
-            logger.debug("TickFlow ETF K线失败 (%s): %s", symbol, e)
+            logger.warning("TickFlow ETF K线失败 [%s]: %s", symbol, e)
 
         # 3. 新浪直连
         from stock_watch.data_sources import _sina_kline_fetch

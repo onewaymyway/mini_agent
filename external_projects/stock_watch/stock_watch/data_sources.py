@@ -32,6 +32,36 @@ import ssl
 logger = logging.getLogger("stock_watch.data_sources")
 
 
+# ── baostock 超时查询包装器（复用 daily_kline_db 的逻辑）──────────────────
+import threading
+import queue
+
+
+def _bs_query_with_timeout(func, *args, timeout=10, **kwargs):
+    """带超时的 baostock 查询包装，超时返回 None。"""
+    result_queue = queue.Queue()
+
+    def worker():
+        try:
+            rs = func(*args, **kwargs)
+            result_queue.put(rs)
+        except Exception as e:
+            result_queue.put(e)
+
+    t = threading.Thread(target=worker)
+    t.daemon = True
+    t.start()
+    t.join(timeout=timeout)
+
+    if t.is_alive():
+        return None  # 超时
+
+    result = result_queue.get_nowait()
+    if isinstance(result, Exception):
+        raise result
+    return result
+
+
 def _normalize_stock_code(code: str) -> str:
     """将股票代码统一为纯6位数字格式。
 
@@ -101,7 +131,7 @@ def _sina_kline_fetch(symbol: str, datalen: int = 800) -> Optional[pd.DataFrame]
             df["change_pct"] = df["close"].pct_change() * 100
             return df
     except Exception as e:
-        logger.debug("sina kline(%s) 失败: %s", symbol, e)
+        logger.warning("sina kline(%s) 失败: %s", symbol, e)
         return None
 
 
@@ -170,7 +200,13 @@ def _yahoo_kline_fetch(code_6digit: str, days_back: int = 1500) -> Optional[pd.D
             "Accept": "application/json",
         })
         with urllib.request.urlopen(req, context=_YAHOO_CTX, timeout=15) as r:
-            data = json.loads(r.read().decode("utf-8"))
+            body = r.read()
+            if body[:2] == b"\x1f\x8b":
+                try:
+                    body = gzip.decompress(body)
+                except Exception as e:
+                    logger.debug("yahoo kline(%s) gzip 解压失败，尝试原始数据: %s", yf_sym, e)
+            data = json.loads(body.decode("utf-8", errors="replace"))
         result = data.get("chart", {}).get("result", [None])[0]
         if not result:
             logger.debug("yahoo kline(%s) no result", yf_sym)
@@ -208,7 +244,7 @@ def _yahoo_kline_fetch(code_6digit: str, days_back: int = 1500) -> Optional[pd.D
         df["change_pct"] = df["close"].pct_change() * 100
         return df
     except Exception as e:
-        logger.debug("yahoo kline(%s) 失败: %s", yf_sym, e)
+        logger.warning("yahoo kline(%s) 失败: %s", yf_sym, e)
         return None
 
 _DEFAULT_UA = (
@@ -454,7 +490,22 @@ def _fetch_json_no_proxy(url: str, headers: Optional[Dict[str, str]] = None, tim
     no_proxy_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
         with no_proxy_opener.open(req, timeout=timeout) as resp:
-            body = resp.read().decode("utf-8", errors="replace")
+            body = resp.read()
+            # 检查并解压 gzip
+            if body[:2] == b"\x1f\x8b":
+                try:
+                    body = gzip.decompress(body)
+                except Exception as e:
+                    logger.warning("gzip 解压失败，尝试原始数据: %s", e)
+            # 尝试多种编码解码
+            for encoding in ("utf-8", "gbk", "gb2312", "latin-1"):
+                try:
+                    body = body.decode(encoding)
+                    break
+                except UnicodeDecodeError:
+                    continue
+            else:
+                body = body.decode("utf-8", errors="replace")
             status = resp.status
             if status >= 400:
                 raise DataSourceError(f"HTTP {status}: {body[:200]}")
@@ -505,7 +556,9 @@ def fetch_kline_baostock(
     adjustflag = "3" if adjust == "none" else "2" if adjust == "hfq" else "1"
 
     # baostock 登录（幂等，重复 login 无副作用）
-    lg = bs.login()
+    lg = _bs_query_with_timeout(lambda: bs.login(), timeout=15)
+    if lg is None:
+        raise DataSourceError("baostock 登录超时")
     if lg.error_code != "0":
         raise DataSourceError(f"baostock 登录失败: {lg.error_msg}")
 
@@ -514,14 +567,19 @@ def fetch_kline_baostock(
         import datetime
         end = datetime.date.today()
         start = end - datetime.timedelta(days=int(days * 1.7) + 30)
-        rs = bs.query_history_k_data_plus(
-            bs_code,
-            "date,open,high,low,close,volume",
-            start_date=start.strftime("%Y-%m-%d"),
-            end_date=end.strftime("%Y-%m-%d"),
-            frequency="d",
-            adjustflag=adjustflag,
+        rs = _bs_query_with_timeout(
+            lambda: bs.query_history_k_data_plus(
+                bs_code,
+                "date,open,high,low,close,volume",
+                start_date=start.strftime("%Y-%m-%d"),
+                end_date=end.strftime("%Y-%m-%d"),
+                frequency="d",
+                adjustflag=adjustflag,
+            ),
+            timeout=15,
         )
+        if rs is None:
+            raise TimeoutError("baostock 查询超时")
         rows = rs.get_data()
     finally:
         bs.logout()
@@ -542,12 +600,21 @@ def fetch_all_symbols_baostock() -> List[str]:
     bs = _import_baostock()
     _bs_compat_patch()
 
-    lg = bs.login()
+    lg = _bs_query_with_timeout(lambda: bs.login(), timeout=15)
+    if lg is None:
+        raise DataSourceError("baostock 登录超时")
     if lg.error_code != "0":
         raise DataSourceError(f"baostock 登录失败: {lg.error_msg}")
 
     try:
-        rs = bs.query_all_stock(day="2026-09-01")
+        # 使用最近的交易日作为查询日期，避免硬编码日期导致查询失败
+        query_day = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        rs = _bs_query_with_timeout(
+            lambda: bs.query_all_stock(day=query_day),
+            timeout=15,
+        )
+        if rs is None:
+            raise TimeoutError("baostock 查询全市场代码超时")
         df = rs.get_data()
     finally:
         bs.logout()
@@ -885,6 +952,18 @@ def _eastmoney_kline_cdp_fetch(url: str, timeout: int = 15, max_retries: int = 3
             html = session.eval_js("document.documentElement.outerHTML", await_promise=True)
             html = (html or "").strip()
 
+            # 处理可能的二进制/编码问题
+            if isinstance(html, bytes):
+                # 尝试多种编码解码
+                for encoding in ("utf-8", "gbk", "gb2312", "latin-1"):
+                    try:
+                        html = html.decode(encoding)
+                        break
+                    except UnicodeDecodeError:
+                        continue
+                else:
+                    html = html.decode("utf-8", errors="replace")
+
             # 从HTML中提取JSON内容（去掉<html><head>...<body><pre>前缀）
             if "rc" in html:
                 # 提取JSON部分
@@ -991,16 +1070,23 @@ def fetch_kline(code: str, market: str, days: int, adjust: str = "qfq"):
         _bs_compat_patch()
         bs_code = f"{market}.{code}"
         adjustflag = "3" if adjust == "none" else "2" if adjust == "hfq" else "1"
-        lg = bs.login()
+        lg = _bs_query_with_timeout(lambda: bs.login(), timeout=15)
+        if lg is None:
+            raise DataSourceError("baostock 登录超时")
         if lg.error_code == "0":
-            rs = bs.query_history_k_data_plus(
-                bs_code,
-                "date,open,high,low,close,volume",
-                start_date=start.strftime("%Y-%m-%d"),
-                end_date=end.strftime("%Y-%m-%d"),
-                frequency="d",
-                adjustflag=adjustflag,
+            rs = _bs_query_with_timeout(
+                lambda: bs.query_history_k_data_plus(
+                    bs_code,
+                    "date,open,high,low,close,volume",
+                    start_date=start.strftime("%Y-%m-%d"),
+                    end_date=end.strftime("%Y-%m-%d"),
+                    frequency="d",
+                    adjustflag=adjustflag,
+                ),
+                timeout=15,
             )
+            if rs is None:
+                raise TimeoutError("baostock 查询超时")
             bs_df = rs.get_data()
             bs.logout()
             if bs_df is not None and not bs_df.empty:
@@ -1058,16 +1144,23 @@ def fetch_etf_kline(code: str, days: int, adjust: str = "qfq"):
         _bs_compat_patch()
         bs_code = f"{market}.{code}"
         adjustflag = "3" if adjust == "none" else "2" if adjust == "hfq" else "1"
-        lg = bs.login()
+        lg = _bs_query_with_timeout(lambda: bs.login(), timeout=15)
+        if lg is None:
+            raise DataSourceError("baostock 登录超时")
         if lg.error_code == "0":
-            rs = bs.query_history_k_data_plus(
-                bs_code,
-                "date,open,high,low,close,volume",
-                start_date=start.strftime("%Y-%m-%d"),
-                end_date=end.strftime("%Y-%m-%d"),
-                frequency="d",
-                adjustflag=adjustflag,
+            rs = _bs_query_with_timeout(
+                lambda: bs.query_history_k_data_plus(
+                    bs_code,
+                    "date,open,high,low,close,volume",
+                    start_date=start.strftime("%Y-%m-%d"),
+                    end_date=end.strftime("%Y-%m-%d"),
+                    frequency="d",
+                    adjustflag=adjustflag,
+                ),
+                timeout=15,
             )
+            if rs is None:
+                raise TimeoutError("baostock 查询超时")
             bs_df = rs.get_data()
             bs.logout()
             if bs_df is not None and not bs_df.empty:
