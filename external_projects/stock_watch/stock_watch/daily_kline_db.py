@@ -66,6 +66,35 @@ def _get_bs():
     return _bs_instance
 
 
+# 带超时的 baostock 查询包装器
+import threading
+import queue
+
+def _bs_query_with_timeout(bs, *args, timeout=10, **kwargs):
+    """带超时的 baostock 查询，超时返回 None。"""
+    result_queue = queue.Queue()
+    
+    def worker():
+        try:
+            rs = bs.query_history_k_data_plus(*args, **kwargs)
+            result_queue.put(rs)
+        except Exception as e:
+            result_queue.put(e)
+    
+    t = threading.Thread(target=worker)
+    t.daemon = True
+    t.start()
+    t.join(timeout=timeout)
+    
+    if t.is_alive():
+        return None  # 超时
+    
+    result = result_queue.get_nowait()
+    if isinstance(result, Exception):
+        raise result
+    return result
+
+
 # ── TickFlow 懒加载单例（免费套餐，无需注册）────────────────────────
 _tf_instance = None
 
@@ -450,14 +479,18 @@ class DailyKlineDB:
             bs_start = start_date[:4] + "-" + start_date[4:6] + "-" + start_date[6:]
             bs_end = end_date[:4] + "-" + end_date[4:6] + "-" + end_date[6:]
             adjustflag = "1"  # qfq
-            rs = bs.query_history_k_data_plus(
+            rs = _bs_query_with_timeout(
+                bs,
                 f"{prefix}.{symbol}",
                 "date,open,high,low,close,volume",
                 start_date=bs_start,
                 end_date=bs_end,
                 frequency="d",
                 adjustflag=adjustflag,
+                timeout=10,
             )
+            if rs is None:
+                raise TimeoutError("baostock 查询超时")
             df = rs.get_data()
             if df is not None and not df.empty:
                 df.columns = ["date", "open", "high", "low", "close", "volume"]
@@ -530,14 +563,18 @@ class DailyKlineDB:
             bs = _get_bs()
             bs_start = start_date[:4] + "-" + start_date[4:6] + "-" + start_date[6:]
             bs_end = end_date[:4] + "-" + end_date[4:6] + "-" + end_date[6:]
-            rs = bs.query_history_k_data_plus(
+            rs = _bs_query_with_timeout(
+                bs,
                 f"{prefix}.{symbol}",
                 "date,open,high,low,close,volume",
                 start_date=bs_start,
                 end_date=bs_end,
                 frequency="d",
                 adjustflag="1",
+                timeout=10,
             )
+            if rs is None:
+                raise TimeoutError("baostock 查询超时")
             df = rs.get_data()
             if df is not None and not df.empty:
                 df.columns = ["date", "open", "high", "low", "close", "volume"]
