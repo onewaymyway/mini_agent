@@ -266,20 +266,41 @@ class DailyKlineDB:
         """对多只标的批量增量更新，返回 {symbol: 写入行数}。
 
         参数 progress_interval：每隔多少只打印一次进度（默认每 50 只）。
+        会预检并跳过已有最新数据的标的，避免无效网络请求。
         """
         n = len(symbols)
         result = {}
         start_ts = time.time()
-        for i, sym in enumerate(symbols):
+
+        # 获取最新交易日（数据库中已有数据的最晚日期，或从数据源获取）
+        latest_trade_date = self._get_latest_trade_date()
+
+        # 预检：一次性查所有标的的最新日期，跳过已是最新的
+        placeholders = ",".join(["?"] * n)
+        cur = self.conn.execute(
+            f"SELECT symbol, MAX(date) FROM kline WHERE symbol IN ({placeholders}) GROUP BY symbol",
+            symbols,
+        )
+        last_dates = {row[0]: row[1] for row in cur.fetchall()}
+        skipped = 0
+        for sym in symbols:
+            last = last_dates.get(sym)
+            if last == latest_trade_date:
+                result[sym] = 0
+                skipped += 1
+
+        # 只处理需要更新的标的
+        to_update = [s for s in symbols if s not in last_dates or last_dates[s] != latest_trade_date]
+        for i, sym in enumerate(to_update):
             result[sym] = self.update_stock(sym, max_days_back=max_days_back)
             # 简单限速：每 5 只稍作停顿
             if (i + 1) % 5 == 0:
                 time.sleep(0.3)
             # 进度打印
-            if progress_interval <= 0 or ((i + 1) % progress_interval == 0) or (i + 1 == n):
+            if progress_interval <= 0 or ((i + 1) % progress_interval == 0) or (i + 1 == len(to_update)):
                 elapsed = time.time() - start_ts
                 rate = (i + 1) / elapsed if elapsed > 0 else 0
-                eta = (n - i - 1) / rate if rate > 0 else 0
+                eta = (len(to_update) - i - 1) / rate if rate > 0 else 0
                 has_new = sum(1 for v in result.values() if v > 0)
                 up_to_date = sum(1 for v in result.values() if v == 0)
 
@@ -291,11 +312,44 @@ class DailyKlineDB:
                     return f"{m}分钟"
 
                 print(
-                    f"[进度] {i+1}/{n} ({(i+1)*100/n:.1f}%) "
+                    f"[进度] {i+1+skipped}/{n} ({(i+1+skipped)*100/n:.1f}%) "
                     f"新数据 {has_new} 只 已是最新 {up_to_date} 只 "
                     f"已使用 {fmt_time(elapsed)} 预计剩余 {fmt_time(eta)}"
                 )
         return result
+
+    def _get_latest_trade_date(self) -> str:
+        """获取最新交易日。
+
+        优先从数据库已有数据中取最晚日期（避免周末/节假日误判），
+        若数据库为空则从数据源获取。
+        """
+        # 1. 从数据库取最晚日期
+        cur = self.conn.execute("SELECT MAX(date) FROM kline")
+        row = cur.fetchone()
+        if row and row[0]:
+            return row[0]
+
+        # 2. 数据库为空，从数据源获取最新交易日
+        # 使用 baostock 获取一只活跃股票的最新日期
+        try:
+            bs = _get_bs()
+            rs = bs.query_history_k_data_plus(
+                "sh.600519",  # 贵州茅台，长期活跃
+                "date",
+                start_date=(datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d"),
+                end_date=datetime.now().strftime("%Y-%m-%d"),
+                frequency="d",
+                adjustflag="1",
+            )
+            df = rs.get_data()
+            if df is not None and not df.empty:
+                return df["date"].max()
+        except Exception as e:
+            logger.debug("获取最新交易日失败: %s", e)
+
+        # 3. 兜底：返回今天（可能是非交易日，但后续增量逻辑会处理）
+        return datetime.now().strftime("%Y-%m-%d")
 
     # ── 全市场增量更新（收盘后定时任务用）───────────────────────────────
     def update_all_market(self, *, symbols: Optional[List[str]] = None, max_days_back: int = 3000) -> Dict[str, int]:
