@@ -717,7 +717,7 @@ class DailyKlineDB:
                 raise TimeoutError("baostock 查询超时")
             df = rs.get_data()
             if df is not None and not df.empty:
-                df.columns = ["date", "open", "high", "low", "close", "volume"]
+                df.columns = ["date", "open", "high", "low", "close", "volume", "amount"]
                 df["date"] = pd.to_datetime(df["date"])
                 df["date_str"] = df["date"].dt.strftime("%Y%m%d")
                 filtered = df[(df["date_str"] >= start_date) & (df["date_str"] <= end_date)]
@@ -813,7 +813,7 @@ class DailyKlineDB:
                 raise TimeoutError("baostock 查询超时")
             df = rs.get_data()
             if df is not None and not df.empty:
-                df.columns = ["date", "open", "high", "low", "close", "volume"]
+                df.columns = ["date", "open", "high", "low", "close", "volume", "amount"]
                 df["date"] = pd.to_datetime(df["date"])
                 df["date_str"] = df["date"].dt.strftime("%Y%m%d")
                 filtered = df[(df["date_str"] >= start_date) & (df["date_str"] <= end_date)]
