@@ -705,7 +705,7 @@ class DailyKlineDB:
             rs = _bs_query_with_timeout(
                 lambda: bs.query_history_k_data_plus(
                     f"{prefix}.{symbol}",
-                    "date,open,high,low,close,volume",
+                    "date,open,high,low,close,volume,amount",
                     start_date=bs_start,
                     end_date=bs_end,
                     frequency="d",
