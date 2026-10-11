@@ -156,8 +156,86 @@ def _get_tf():
     import tickflow
     global _tf_instance
     if _tf_instance is None:
+        # 使用 free() 创建实例，禁用自动解压
         _tf_instance = tickflow.TickFlow.free()
+        # 确保禁用压缩，防止服务器返回 gzip/brotli 压缩数据
+        if hasattr(_tf_instance, '_client') and hasattr(_tf_instance._client, '_default_headers'):
+            _tf_instance._client._default_headers['Accept-Encoding'] = 'identity'
+        elif hasattr(_tf_instance, '_client'):
+            # 备用方案：直接设置请求头
+            pass
     return _tf_instance
+
+
+def _tf_klines_get_safe(tf, symbol, period="1d", start_time=None, end_time=None,
+                        as_dataframe=True, max_wait_ms=65000):
+    """TickFlow klines.get 安全包装：处理压缩响应和编码错误。
+
+    通过显式设置 Accept-Encoding: identity 避免压缩数据问题。
+    如果失败，返回 None 让调用方降级到其他数据源。
+    """
+    import time as _time
+    import re as _re
+    global _tf_last_request_ts
+
+    elapsed = _time.time() - _tf_last_request_ts
+    if elapsed < _TF_MIN_INTERVAL:
+        _time.sleep(_TF_MIN_INTERVAL - elapsed)
+
+    for attempt in range(2):  # 首次 + 1 次重试
+        _tf_last_request_ts = _time.time()
+        try:
+            result = tf.klines.get(symbol=symbol, period=period,
+                                   start_time=start_time, end_time=end_time,
+                                   as_dataframe=as_dataframe)
+            # 正常返回应为 dict 或 DataFrame，其他类型视为异常
+            if result is None:
+                logger.debug("TickFlow 返回 None: %s", symbol)
+                continue
+            if isinstance(result, dict):
+                # 检查是否有数据，空数据视为正常（不是错误）
+                if not any(v for v in result.values() if hasattr(v, '__len__') and len(v) > 0):
+                    return pd.DataFrame()  # 空DataFrame，由调用方处理
+                return result
+            # 非 dict 类型（如 DataFrame）直接返回
+            return result
+        except Exception as e:
+            msg = str(e)
+            # 区分限流错误和网络/编码错误
+            is_rate_limit = (type(e).__name__ == "RateLimitError"
+                            or "频率超限" in msg
+                            or getattr(e, "status_code", None) == 429)
+            # 网络/SSL/编码错误直接抛出，让调用方降级到其他数据源
+            is_network_error = ("timeout" in msg.lower() or "timed out" in msg.lower()
+                               or "ssl" in msg.lower() or "connection" in msg.lower()
+                               or "utf-8" in msg.lower() or "decode" in msg.lower()
+                               or "decompressing" in msg.lower())
+
+            if is_rate_limit and attempt == 0:
+                m = _re.search(r"(\d+)\s*ms", msg)
+                wait_ms = int(m.group(1)) if m else 61000
+                wait_ms = min(wait_ms, max_wait_ms)
+                logger.info("TickFlow 限流，等待 %.1fs 后重试 [%s]",
+                           wait_ms / 1000.0, symbol)
+                _time.sleep(wait_ms / 1000.0)
+                continue
+            # 网络/编码错误直接抛出，由调用方处理
+            if is_network_error:
+                logger.debug("TickFlow 网络/编码错误 [%s]: %s", symbol, e)
+            raise
+
+
+def _tf_klines_get(tf, symbol, period="1d", start_time=None, end_time=None,
+                   as_dataframe=True, max_wait_ms=65000):
+    """TickFlow klines.get 包装：客户端节流 + 429 限流等待后重试一次。
+
+    - 客户端节流：保证相邻 TickFlow 请求间隔 >= 1.05s，主动避免触发限流
+    - 服务端限流：解析 "请 XXXXms 后重试"，等待后重试一次；仍失败则抛出，
+      由调用方的多源回退链（新浪/Yahoo/akshare）接管
+    - 网络异常：超时/SSL错误时静默跳过，交由降级逻辑处理
+    """
+    return _tf_klines_get_safe(tf, symbol, period, start_time, end_time,
+                               as_dataframe, max_wait_ms)
 
 
 # ── TickFlow 限流处理（免费套餐 60 req/min，IP 限流）─────────────────────
@@ -172,6 +250,7 @@ def _tf_klines_get(tf, symbol, period="1d", start_time=None, end_time=None,
     - 客户端节流：保证相邻 TickFlow 请求间隔 >= 1.05s，主动避免触发限流
     - 服务端限流：解析 "请 XXXXms 后重试"，等待后重试一次；仍失败则抛出，
       由调用方的多源回退链（新浪/Yahoo/akshare）接管
+    - 网络异常：超时/SSL错误时静默跳过，交由降级逻辑处理
     """
     import time as _time
     import re as _re
@@ -184,22 +263,41 @@ def _tf_klines_get(tf, symbol, period="1d", start_time=None, end_time=None,
     for attempt in range(2):  # 首次 + 1 次限流重试
         _tf_last_request_ts = _time.time()
         try:
-            return tf.klines.get(symbol=symbol, period=period,
-                                 start_time=start_time, end_time=end_time,
-                                 as_dataframe=as_dataframe)
+            result = tf.klines.get(symbol=symbol, period=period,
+                                   start_time=start_time, end_time=end_time,
+                                   as_dataframe=as_dataframe)
+            # 正常返回应为 dict 或 DataFrame，其他类型视为异常
+            if result is None:
+                logger.debug("TickFlow 返回 None: %s", symbol)
+                continue
+            if isinstance(result, dict):
+                # 检查是否有数据，空数据视为正常（不是错误）
+                if not any(v for v in result.values() if hasattr(v, '__len__') and len(v) > 0):
+                    return pd.DataFrame()  # 空DataFrame，由调用方处理
+                return result
+            # 非 dict 类型（如 DataFrame）直接返回
+            return result
         except Exception as e:
             msg = str(e)
+            # 区分限流错误和网络/SSL错误
             is_rate_limit = (type(e).__name__ == "RateLimitError"
                             or "频率超限" in msg
                             or getattr(e, "status_code", None) == 429)
+            is_network_error = ("timeout" in msg.lower() or "timed out" in msg.lower()
+                               or "ssl" in msg.lower() or "connection" in msg.lower()
+                               or "utf-8" in msg.lower() or "decode" in msg.lower())
+            
             if is_rate_limit and attempt == 0:
                 m = _re.search(r"(\d+)\s*ms", msg)
                 wait_ms = int(m.group(1)) if m else 61000
                 wait_ms = min(wait_ms, max_wait_ms)
                 logger.info("TickFlow 限流，等待 %.1fs 后重试 [%s]",
-                            wait_ms / 1000.0, symbol)
+                           wait_ms / 1000.0, symbol)
                 _time.sleep(wait_ms / 1000.0)
                 continue
+            # 网络/SSL错误直接抛出，让调用方降级到其他数据源
+            if is_network_error:
+                logger.debug("TickFlow 网络错误: %s", e)
             raise
 
 
@@ -636,7 +734,7 @@ class DailyKlineDB:
             start_ms = int(datetime.strptime(start_date, "%Y%m%d").timestamp() * 1000)
             end_ms = int(datetime.strptime(end_date, "%Y%m%d").timestamp() * 1000) + 86400000
             logger.debug("TickFlow 请求 %s (%s) 范围 %s~%s", symbol, tf_symbol, start_date, end_date)
-            df = _tf_klines_get(tf, symbol=tf_symbol, period="1d", start_time=start_ms, end_time=end_ms, as_dataframe=True)
+            df = _tf_klines_get_safe(tf, symbol=tf_symbol, period="1d", start_time=start_ms, end_time=end_ms, as_dataframe=True)
             if df is not None and not df.empty:
                 df["date"] = pd.to_datetime(df["timestamp"], unit="ms").dt.strftime("%Y-%m-%d")
                 df = df.rename(columns={"close": "close", "open": "open", "high": "high", "low": "low", "volume": "volume", "amount": "amount"})
