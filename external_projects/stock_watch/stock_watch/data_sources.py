@@ -83,8 +83,7 @@ def _akshare_with_timeout(func, *args, timeout=10, retries=3, backoff=2.0, **kwa
 
             def worker():
                 try:
-                    # 传入 timeout 参数给 akshare
-                    rs = func(*args, timeout=timeout, **kwargs)
+                    rs = func(*args, **kwargs)
                     result_queue.put(rs)
                 except Exception as e:
                     result_queue.put(e)
