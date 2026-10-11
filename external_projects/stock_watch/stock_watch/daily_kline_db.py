@@ -385,6 +385,7 @@ class DailyKlineDB:
                     code = raw.split(".")[1] if "." in raw else raw
                     if len(code) == 6 and code.isdigit():
                         name = str(row.get("code_name", ""))
+                        # 过滤掉指数（92xxx等无K线数据的中证指数）
                         if "指数" not in name:
                             clean.append(code)
                 if clean:
@@ -406,7 +407,7 @@ class DailyKlineDB:
                 for s in raw_symbols:
                     prefix = s[:2] if len(s) >= 2 else ""
                     code = s[2:] if len(s) > 2 else s
-                    if len(code) == 6 and code.isdigit() and prefix in ("sh", "sz", "bj"):
+                    if len(code) == 6 and code.isdigit() and prefix in ("sh", "sz", "bj") and not code.startswith("92"):
                         clean.append(code)
                 if clean:
                     return sorted(set(clean))
