@@ -620,7 +620,7 @@ def fetch_kline_baostock(
         rs = _bs_query_with_timeout(
             lambda: bs.query_history_k_data_plus(
                 bs_code,
-                "date,open,high,low,close,volume",
+                "date,open,high,low,close,volume,amount",
                 start_date=start.strftime("%Y-%m-%d"),
                 end_date=end.strftime("%Y-%m-%d"),
                 frequency="d",
@@ -638,7 +638,7 @@ def fetch_kline_baostock(
         raise DataSourceError(f"baostock {bs_code} 无数据")
 
     # 列名映射为中文（与 akshare 输出一致）
-    rows.columns = ["日期", "开盘", "收盘", "最高", "最低", "成交量"]
+    rows.columns = ["日期", "开盘", "收盘", "最高", "最低", "成交量", "成交额"]
     return rows.tail(days).reset_index(drop=True)
 
 
@@ -1127,7 +1127,7 @@ def fetch_kline(code: str, market: str, days: int, adjust: str = "qfq"):
             rs = _bs_query_with_timeout(
                 lambda: bs.query_history_k_data_plus(
                     bs_code,
-                    "date,open,high,low,close,volume",
+                    "date,open,high,low,close,volume,amount",
                     start_date=start.strftime("%Y-%m-%d"),
                     end_date=end.strftime("%Y-%m-%d"),
                     frequency="d",
@@ -1140,7 +1140,7 @@ def fetch_kline(code: str, market: str, days: int, adjust: str = "qfq"):
             bs_df = rs.get_data()
             bs.logout()
             if bs_df is not None and not bs_df.empty:
-                bs_df.columns = ["date", "open", "high", "low", "close", "volume"]
+                bs_df.columns = ["date", "open", "high", "low", "close", "volume", "amount"]
                 bs_df["date"] = pd.to_datetime(bs_df["date"])
                 logger.info("baostock K 线成功: %s (%d 行)", code, len(bs_df))
                 return bs_df.tail(days).reset_index(drop=True)
@@ -1204,7 +1204,7 @@ def fetch_etf_kline(code: str, days: int, adjust: str = "qfq"):
             rs = _bs_query_with_timeout(
                 lambda: bs.query_history_k_data_plus(
                     bs_code,
-                    "date,open,high,low,close,volume",
+                    "date,open,high,low,close,volume,amount",
                     start_date=start.strftime("%Y-%m-%d"),
                     end_date=end.strftime("%Y-%m-%d"),
                     frequency="d",
@@ -1217,7 +1217,7 @@ def fetch_etf_kline(code: str, days: int, adjust: str = "qfq"):
             bs_df = rs.get_data()
             bs.logout()
             if bs_df is not None and not bs_df.empty:
-                bs_df.columns = ["date", "open", "high", "low", "close", "volume"]
+                bs_df.columns = ["date", "open", "high", "low", "close", "volume", "amount"]
                 bs_df["date"] = pd.to_datetime(bs_df["date"])
                 logger.info("baostock ETF K 线成功: %s (%d 行)", code, len(bs_df))
                 return bs_df.tail(days).reset_index(drop=True)
