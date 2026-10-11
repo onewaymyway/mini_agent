@@ -828,7 +828,7 @@ class DailyKlineDB:
             start_ms = int(datetime.strptime(start_date, "%Y%m%d").timestamp() * 1000)
             end_ms = int(datetime.strptime(end_date, "%Y%m%d").timestamp() * 1000) + 86400000
             logger.debug("TickFlow ETF 请求 %s (%s) 范围 %s~%s", symbol, tf_symbol, start_date, end_date)
-            df = _tf_klines_get(tf, symbol=tf_symbol, period="1d", start_time=start_ms, end_time=end_ms, as_dataframe=True)
+            df = _tf_klines_get_safe(tf, symbol=tf_symbol, period="1d", start_time=start_ms, end_time=end_ms, as_dataframe=True)
             if df is not None and not df.empty:
                 df["date"] = pd.to_datetime(df["timestamp"], unit="ms").dt.strftime("%Y-%m-%d")
                 df = df[["date", "open", "high", "low", "close", "volume", "amount"]]
