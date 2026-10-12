@@ -19,7 +19,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import shlex
+import subprocess
 import sys
+import threading
+import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -435,6 +441,145 @@ def render_algo_pool(algo: Dict, manual: Dict):
             st.dataframe(hist_df, use_container_width=True, hide_index=True)
 
 
+# ─────────────────────────────────────────────────────────────
+# 通用脚本执行器：子进程运行 entrypoints 脚本，实时展示输出
+# ─────────────────────────────────────────────────────────────
+
+SCRIPT_LOG_KEEP = 20  # 每个脚本最多保留的历史日志数
+SCRIPT_TAIL_LINES = 80  # 运行中只展示最近 N 行，结束后展示全部
+
+
+@dataclass(frozen=True)
+class ScriptSpec:
+    """一个可在看板内执行的 entrypoints 脚本。"""
+
+    key: str  # 唯一标识，同时用作日志文件名前缀
+    title: str  # 展示名
+    args: tuple  # 相对项目根目录的脚本路径 + 参数
+
+    @classmethod
+    def from_command(cls, key: str, title: str, command: str) -> "ScriptSpec":
+        return cls(key=key, title=title, args=tuple(shlex.split(command)))
+
+
+SIGNAL_SCAN_SPEC = ScriptSpec.from_command("signal_scan", "信号扫描", "entrypoints/run_signal_scan.py")
+HOTLIST_SCAN_SPEC = ScriptSpec.from_command("hotlist_scan", "热点扫描", "entrypoints/run_hotlist_scan.py")
+KLINE_BATCH_SPEC = ScriptSpec.from_command("kline_batch", "K 线批量生成", "entrypoints/run_kline_batch.py")
+
+
+def _persist_script_log(spec: ScriptSpec, lines: List[str]) -> Optional[Path]:
+    """把本次输出落盘，避免页面刷新后丢失，并清理过旧的日志。"""
+    try:
+        log_dir = REPORTS_DIR / "scan_logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / f"{spec.key}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        log_file.write_text("\n".join(lines), encoding="utf-8")
+        old_logs = sorted(log_dir.glob(f"{spec.key}_*.txt"), key=lambda x: x.stat().st_mtime, reverse=True)
+        for old in old_logs[SCRIPT_LOG_KEEP:]:
+            old.unlink(missing_ok=True)
+        return log_file
+    except OSError as exc:
+        logger.warning("写入执行日志失败: %s", exc)
+        return None
+
+
+def _run_script_live(spec: ScriptSpec, out_ph, status_ph) -> dict:
+    """在子进程中运行脚本，实时把输出刷到 out_ph，返回本次运行记录。"""
+    lines: List[str] = []
+    start = time.time()
+    # 子进程 stdout 被管道接管后默认是块缓冲，不加 -u 看不到实时输出；
+    # Windows 下默认编码是 gbk，统一成 utf-8 避免中文日志乱码。
+    env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"}
+
+    status_ph.info(f"正在启动{spec.title}...")
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, "-u", *spec.args],
+            cwd=PROJECT_ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,  # 合并 stderr，保证 logging 与 print 的先后顺序
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            env=env,
+        )
+    except OSError as exc:
+        lines.append(f"启动失败: {exc}")
+        out_ph.code("\n".join(lines), language="text")
+        return {
+            "key": spec.key, "title": spec.title, "lines": lines, "log_file": None,
+            "time": datetime.now().isoformat(), "returncode": -1, "elapsed": 0,
+        }
+
+    def drain() -> None:
+        for line in iter(proc.stdout.readline, ""):
+            lines.append(line.rstrip())
+        proc.stdout.close()
+
+    reader = threading.Thread(target=drain, daemon=True)
+    reader.start()
+
+    shown = 0
+    while proc.poll() is None:
+        time.sleep(0.3)
+        if len(lines) != shown:
+            shown = len(lines)
+            out_ph.code("\n".join(lines[-SCRIPT_TAIL_LINES:]), language="text")
+        status_ph.info(f"正在执行{spec.title}... (已运行 {int(time.time() - start)} 秒)")
+
+    reader.join(timeout=3)
+    if not lines:
+        lines.append("（脚本没有任何输出）")
+    out_ph.code("\n".join(lines), language="text")
+
+    return {
+        "key": spec.key,
+        "title": spec.title,
+        "lines": list(lines),
+        "log_file": str(_persist_script_log(spec, lines) or ""),
+        "time": datetime.now().isoformat(),
+        "returncode": proc.returncode,
+        "elapsed": int(time.time() - start),
+    }
+
+
+def render_script_output(state_key: str, clicked: Optional[ScriptSpec]) -> None:
+    """页面上的脚本输出区（需放在按钮之后、全宽位置）。
+
+    - clicked 不为空：运行该脚本并实时展示输出，结束后把记录存进 session_state 并 rerun，
+      这样页面上依赖产物的部分（图、表）会用最新数据重新渲染，日志也不会丢。
+    - clicked 为空：展示该页面上一次执行的记录（如果有）。
+    """
+    session_key = f"script_run:{state_key}"
+    out_ph = st.empty()
+    status_ph = st.empty()
+
+    if clicked is not None:
+        record = _run_script_live(clicked, out_ph, status_ph)
+        st.session_state[session_key] = record
+        st.rerun()
+        return
+
+    record = st.session_state.get(session_key)
+    if not record:
+        return
+
+    when = datetime.fromisoformat(record["time"]).strftime("%Y-%m-%d %H:%M")
+    with out_ph.container():
+        st.markdown(f"**📋 上次执行：{record['title']}（{when}）**")
+        st.code("\n".join(record["lines"]), language="text")
+        if record.get("log_file"):
+            st.caption(f"日志文件：{record['log_file']}")
+        if st.button("🗑️ 清除历史日志", key=f"clear_script_log:{state_key}"):
+            st.session_state.pop(session_key, None)
+            st.rerun()
+    if record["returncode"] == 0:
+        status_ph.success(f"✅ {record['title']}完成！耗时 {record['elapsed']} 秒 | 日志已保存")
+    else:
+        status_ph.error(f"❌ {record['title']}失败 (耗时 {record['elapsed']} 秒)，退出码: {record['returncode']}")
+
+
 def render_signals(algo: Dict, manual: Dict):
     """信号扫描结果页。"""
     st.header("📡 信号扫描结果")
@@ -469,90 +614,71 @@ def render_signals(algo: Dict, manual: Dict):
     with btn_col2:
         run_clicked = st.button("🔍 运行信号扫描", key="run_signal_scan", use_container_width=True, type="primary")
 
-    # 输出容器放在列外，占据完整宽度
-    output_container = st.empty()
-    status_container = st.empty()
+    # 输出区放在列外，占据完整宽度
+    render_script_output("signals", SIGNAL_SCAN_SPEC if run_clicked else None)
 
-    # 恢复上次扫描日志
-    if st.session_state.get("last_scan_done"):
-        with output_container:
-            st.markdown(f"**📋 上次信号扫描结果（{datetime.fromisoformat(st.session_state.get('last_scan_time', '')).strftime('%Y-%m-%d %H:%M')}）**")
-            if st.session_state.get("last_scan_lines"):
-                st.code("\n".join(st.session_state["last_scan_lines"]), language="text")
-            st.caption(f"日志文件：{st.session_state.get('last_scan_log', 'N/A')}")
-            if st.button("🗑️ 清除历史日志", key="clear_scan_log", use_container_width=False):
-                st.session_state.pop("last_scan_done", None)
-                st.session_state.pop("last_scan_lines", None)
-                st.session_state.pop("last_scan_log", None)
-                st.session_state.pop("last_scan_time", None)
-                st.rerun()
-        st.markdown("---")
-
-    if run_clicked:
-        import subprocess, sys, time, threading
-
-        all_lines = []
-        start_time = time.time()
-
-        def drain(stream, tag):
-            for line in iter(stream.readline, ""):
-                if line:
-                    all_lines.append(f"[{tag}] {line.rstrip()}")
-
-        with output_container:
-            status_container.info("正在启动信号扫描...")
-
-        proc = subprocess.Popen(
-            [sys.executable, "entrypoints/run_signal_scan.py"],
-            cwd=Path(__file__).parent,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-        )
-
-        threading.Thread(target=drain, args=(proc.stdout, "OUT"), daemon=True).start()
-        threading.Thread(target=drain, args=(proc.stderr, "ERR"), daemon=True).start()
-
-        while proc.poll() is None:
-            time.sleep(0.3)
-            if all_lines:
-                output_container.code("\n".join(all_lines[-80:]), language="text")
-            elapsed = int(time.time() - start_time)
-            status_container.info(f"正在执行信号扫描... (已运行 {elapsed} 秒)")
-
-        time.sleep(0.2)
-        if all_lines:
-            output_container.code("\n".join(all_lines), language="text")
-
-            # 持久化日志到文件，防止页面刷新后丢失
-            scan_log_path = REPORTS_DIR / "scan_logs"
-            scan_log_path.mkdir(parents=True, exist_ok=True)
-            log_filename = f"signal_scan_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-            log_filepath = scan_log_path / log_filename
-            log_filepath.write_text("\n".join(all_lines), encoding="utf-8")
-            # 只保留最近 20 条日志，避免文件堆积
-            existing_logs = sorted(scan_log_path.glob("signal_scan_*.txt"), key=lambda x: x.stat().st_mtime, reverse=True)
-            for old_log in existing_logs[20:]:
-                old_log.unlink(missing_ok=True)
-            st.session_state["last_scan_log"] = str(log_filepath)
-            st.session_state["last_scan_lines"] = all_lines
-            st.session_state["last_scan_done"] = True
-            st.session_state["last_scan_time"] = datetime.now().isoformat()
-            st.session_state["last_scan_returncode"] = proc.returncode
-
-        elapsed = int(time.time() - start_time)
-        if proc.returncode == 0:
-            status_container.success(f"✅ 信号扫描完成！耗时 {elapsed} 秒 | 日志已保存")
-        else:
-            status_container.error(f"❌ 信号扫描失败 (耗时 {elapsed} 秒)，退出码: {proc.returncode}")
 
 def render_kline_viewer(algo: Dict, manual: Dict):
     """K线图查看页。"""
     st.header("📈 K线图查看")
 
     all_codes = {**algo, **manual}
+    _render_kline_gallery(all_codes, manual)
 
+    # 执行按钮：直接在看板里运行脚本并实时展示输出（有无数据都可用）
+    st.markdown("---")
+    st.subheader("执行操作")
+    c1, c2 = st.columns(2)
+    clicked: Optional[ScriptSpec] = None
+    with c1:
+        if st.button("🔄 运行热点扫描", key="kline_run_hotlist", use_container_width=True):
+            clicked = HOTLIST_SCAN_SPEC
+    with c2:
+        if st.button("📊 运行 K 线批量生成", key="kline_run_batch", use_container_width=True):
+            clicked = KLINE_BATCH_SPEC
+    render_script_output("kline", clicked)
+
+    # 清理历史 K 线数据（保留最新日期）
+    st.markdown("---")
+    st.subheader("🗑️ 清理历史 K 线数据")
+    st.caption("一键删除除最新日期外的所有 K 线图数据，释放磁盘空间。")
+    if st.button("✅ 保留最新日期，删除其他所有 K 线数据", key="kline_cleanup_btn", use_container_width=True):
+        deleted_count = 0
+        deleted_dirs: list[str] = []
+        for pool_type in ("algo", "manual"):
+            kline_base = REPORTS_DIR / "kline" / pool_type
+            if not kline_base.exists():
+                continue
+            date_folders = sorted(
+                [d.name for d in kline_base.iterdir() if d.is_dir()],
+                reverse=True,
+            )
+            if len(date_folders) <= 1:
+                continue
+            latest = date_folders[0]
+            for d_name in date_folders[1:]:
+                d_path = kline_base / d_name
+                try:
+                    for f in d_path.glob("*"):
+                        if f.is_file():
+                            f.unlink()
+                    d_path.rmdir()
+                    deleted_count += 1
+                    deleted_dirs.append(f"{pool_type}/{d_name}")
+                except Exception as e:
+                    st.error(f"删除失败 {d_name}: {e}")
+        if deleted_count > 0:
+            st.success(f"✅ 已删除 {deleted_count} 个旧日期目录：{', '.join(deleted_dirs)}")
+        else:
+            st.info("没有需要清理的旧数据，所有日期目录均已保留。")
+
+
+def _render_kline_gallery(all_codes: Dict, manual: Dict) -> None:
+    """K线图查看区（单股 / 按日期浏览）。
+
+    独立成函数：内部有多处 early return（无目录、无图、无标的），
+    不能让它们连带跳过页面下方的执行按钮。
+    """
     # ── 模式切换：单股查看 / 按日期浏览 ────────────────────────────
     view_mode = st.radio(
         "查看模式",
@@ -651,52 +777,6 @@ def render_kline_viewer(algo: Dict, manual: Dict):
         else:
             st.info(f"未找到 {code} 的 K 线图，请先运行 K 线批量生成（当前复权方式：{adjust_type}）")
 
-    # 提供执行按钮
-    st.markdown("---")
-    st.subheader("执行操作")
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("🔄 运行热点扫描", use_container_width=True):
-            st.info("请在终端执行: python entrypoints/run_hotlist_scan.py")
-    with c2:
-        if st.button("📊 运行 K 线批量生成", use_container_width=True):
-            st.info("请在终端执行: python entrypoints/run_kline_batch.py")
-
-    # 清理历史 K 线数据（保留最新日期）
-    st.markdown("---")
-    st.subheader("🗑️ 清理历史 K 线数据")
-    st.caption("一键删除除最新日期外的所有 K 线图数据，释放磁盘空间。")
-    if st.button("✅ 保留最新日期，删除其他所有 K 线数据", key="kline_cleanup_btn", use_container_width=True):
-        deleted_count = 0
-        deleted_dirs: list[str] = []
-        for pool_type in ("algo", "manual"):
-            kline_base = REPORTS_DIR / "kline" / pool_type
-            if not kline_base.exists():
-                continue
-            date_folders = sorted(
-                [d.name for d in kline_base.iterdir() if d.is_dir()],
-                reverse=True,
-            )
-            if len(date_folders) <= 1:
-                continue
-            latest = date_folders[0]
-            for d_name in date_folders[1:]:
-                d_path = kline_base / d_name
-                try:
-                    for f in d_path.glob("*"):
-                        if f.is_file():
-                            f.unlink()
-                    d_path.rmdir()
-                    deleted_count += 1
-                    deleted_dirs.append(f"{pool_type}/{d_name}")
-                except Exception as e:
-                    st.error(f"删除失败 {d_name}: {e}")
-        if deleted_count > 0:
-            st.success(f"✅ 已删除 {deleted_count} 个旧日期目录：{', '.join(deleted_dirs)}")
-        else:
-            st.info("没有需要清理的旧数据，所有日期目录均已保留。")
-
-
 
 def render_source_health():
     """数据源健康状态页。"""
@@ -749,26 +829,29 @@ def render_source_health():
 def render_exec_dashboard():
     """执行入口页。"""
     st.header("🚀 执行入口")
-    st.caption("点击下方按钮在终端执行对应脚本，或直接在此展示执行结果。")
+    st.caption("点击「▶ 执行」直接在看板内运行对应脚本，并实时展示输出。")
 
     entries = [
-        ("run_hotlist_scan", "热点候选池抓取", "entrypoints/run_hotlist_scan.py"),
-        ("run_kline_batch", "K线批量生成", "entrypoints/run_kline_batch.py"),
-        ("run_pool_tracking", "池状态跟踪", "entrypoints/run_pool_tracking.py"),
-        ("run_signal_scan", "信号扫描", "entrypoints/run_signal_scan.py"),
-        ("manage_pool_list", "列出手动池", "entrypoints/manage_pool.py list"),
-        ("manage_pool_stats", "双池统计", "entrypoints/manage_pool.py stats"),
+        ScriptSpec.from_command("run_hotlist_scan", "热点候选池抓取", "entrypoints/run_hotlist_scan.py"),
+        KLINE_BATCH_SPEC,
+        ScriptSpec.from_command("run_pool_tracking", "池状态跟踪", "entrypoints/run_pool_tracking.py"),
+        ScriptSpec.from_command("run_signal_scan", "信号扫描", "entrypoints/run_signal_scan.py"),
+        ScriptSpec.from_command("manage_pool_list", "列出手动池", "entrypoints/manage_pool.py list"),
+        ScriptSpec.from_command("manage_pool_stats", "双池统计", "entrypoints/manage_pool.py stats"),
     ]
 
-    for key, label, cmd in entries:
+    clicked: Optional[ScriptSpec] = None
+    for spec in entries:
         col1, col2 = st.columns([3, 1])
         with col1:
-            st.markdown(f"**{label}**")
-            st.code(cmd, language="bash")
+            st.markdown(f"**{spec.title}**")
+            st.code(" ".join(spec.args), language="bash")
         with col2:
-            if st.button("▶ 执行", key=key):
-                st.info(f"请在终端手动执行: {cmd}")
+            if st.button("▶ 执行", key=f"exec_{spec.key}"):
+                clicked = spec
         st.divider()
+
+    render_script_output("exec", clicked)
 
 
 # ─────────────────────────────────────────────────────────────
