@@ -51,7 +51,9 @@ from stock_watch.config import (
     load_config,
 )
 from stock_watch.kline import read_kline_meta
+from stock_watch.data_sources import DataSourceError, fetch_latest_close
 from stock_watch.candidate_pool import (
+    change_state,
     DEFAULT_STATE,
     POOL_STATES,
     CandidateEntry,
@@ -674,12 +676,136 @@ def render_kline_viewer(algo: Dict, manual: Dict):
             st.info("没有需要清理的旧数据，所有日期目录均已保留。")
 
 
+# ─────────────────────────────────────────────────────────────
+# K 线详情弹窗（大图 + 数据源 + 状态设置）
+# ─────────────────────────────────────────────────────────────
+
+# st.dialog 需要 streamlit >= 1.37（1.34~1.36 为 experimental_dialog）；都没有时退化为 expander
+_DIALOG_DECORATOR = getattr(st, "dialog", None) or getattr(st, "experimental_dialog", None)
+
+_STATE_LABELS = {
+    "watching": "👀 观察池",
+    "focused": "⭐ 重点关注",
+    "buy_suggested": "🟢 建议买入",
+    "holding": "💼 已建仓",
+    "sell_suggested": "🔴 建议卖出",
+    "dropped": "🗑️ 已淘汰",
+}
+
+
+def _state_label(state: str) -> str:
+    return _STATE_LABELS.get(state, state)
+
+
+def _code_from_png(png: Path) -> str:
+    """从 K 线图推断标的代码：优先读 sidecar json，其次文件名第一段（SH600825_xxx_qfq.png）。"""
+    code = read_kline_meta(png).get("code")
+    return code or png.stem.split("_")[0]
+
+
+def _kline_detail_body(png_path: str, pool_type: str) -> None:
+    png = Path(png_path)
+    code = _code_from_png(png)
+    meta = read_kline_meta(png)
+
+    # 每次都从磁盘读最新池数据，避免用到 60s 缓存里的旧状态
+    pools = {"algo": load_pool(ALGO_POOL_PATH), "manual": load_pool(MANUAL_POOL_PATH)}
+    pool_key = pool_type if code in pools.get(pool_type, {}) else next(
+        (k for k, v in pools.items() if code in v), None
+    )
+    entry = pools[pool_key][code] if pool_key else None
+
+    name = entry.name if entry else meta.get("name", code)
+    st.subheader(f"{name}（{code}）")
+
+    if png.exists():
+        st.image(str(png), use_container_width=True)  # 鼠标悬停图片右上角可再全屏
+        with open(png, "rb") as f:
+            st.download_button("⬇️ 下载原图", f.read(), file_name=png.name, mime="image/png",
+                               key=f"dl_{png.name}")
+    else:
+        st.warning(f"图片不存在：{png}")
+
+    st.caption(
+        f"数据源: {meta.get('source', '未知(旧数据)')} | "
+        f"实际复权: {meta.get('adjust_actual', '-')} | "
+        f"最新数据日: {meta.get('last_date', '-')} | 生成: {meta.get('generated_at', '-')}"
+    )
+
+    st.markdown("---")
+    if entry is None:
+        st.info(f"{code} 当前不在算法池/手动池中，无法设置状态。")
+        return
+
+    st.markdown(
+        f"**所在池**：{'✋ 手动池' if pool_key == 'manual' else '🤖 算法池'}　|　"
+        f"**当前状态**：{_state_label(entry.state)}"
+    )
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        new_state = st.selectbox(
+            "新状态",
+            list(POOL_STATES),
+            index=list(POOL_STATES).index(entry.state) if entry.state in POOL_STATES else 0,
+            format_func=_state_label,
+            key=f"dlg_state_{code}",
+        )
+    with c2:
+        note = st.text_input("变更原因（可选）", key=f"dlg_note_{code}")
+
+    if st.button("✅ 保存状态", type="primary", use_container_width=True, key=f"dlg_save_{code}"):
+        path = MANUAL_POOL_PATH if pool_key == "manual" else ALGO_POOL_PATH
+        pool = pools[pool_key]
+        old = entry.state
+        price = None
+        if new_state != old:
+            with st.spinner("记录当前价格…"):
+                try:
+                    price = fetch_latest_close(code, entry.type)
+                except Exception as exc:  # noqa: BLE001 - 取价失败不影响状态变更本身
+                    logger.warning("取当前价格失败（不影响状态变更）: %s", exc)
+        change_state(pool, code, new_state, price_at_entry=price, note=note)
+        pool[code].last_seen = datetime.now().isoformat()
+        save_pool(path, pool)
+        st.cache_data.clear()
+        st.session_state["kline_toast"] = f"✅ {name}({code}): {_state_label(old)} → {_state_label(new_state)}"
+        st.rerun()
+
+    if entry.state_history:
+        with st.expander("📜 状态历史（最近 5 条）"):
+            for ev in reversed(entry.state_history[-5:]):
+                price_txt = f" @ {ev.price_at_entry:.2f}" if ev.price_at_entry else ""
+                st.write(f"{ev.entered_at[:16]}　{_state_label(ev.state)}{price_txt}　{ev.note or ''}")
+
+
+if _DIALOG_DECORATOR is not None:
+    _kline_detail_dialog = _DIALOG_DECORATOR("📈 K 线详情", width="large")(_kline_detail_body)
+else:
+    _kline_detail_dialog = None
+
+
+def _open_kline_detail(png: Path, pool_type: str, key: str) -> None:
+    """渲染「放大 / 设置状态」按钮；点击后弹窗（旧版 streamlit 退化为内联展开）。"""
+    if st.button("🔍 放大 / 设置状态", key=key, use_container_width=True):
+        if _kline_detail_dialog is not None:
+            _kline_detail_dialog(str(png), pool_type)
+        else:
+            st.session_state["kline_inline_detail"] = (str(png), pool_type)
+    if _kline_detail_dialog is None and st.session_state.get("kline_inline_detail", (None,))[0] == str(png):
+        with st.expander("K 线详情", expanded=True):
+            _kline_detail_body(str(png), pool_type)
+
+
 def _render_kline_gallery(all_codes: Dict, manual: Dict) -> None:
     """K线图查看区（单股 / 按日期浏览）。
 
     独立成函数：内部有多处 early return（无目录、无图、无标的），
     不能让它们连带跳过页面下方的执行按钮。
     """
+    _toast = st.session_state.pop("kline_toast", None)
+    if _toast:
+        st.toast(_toast)
+
     # ── 模式切换：单股查看 / 按日期浏览 ────────────────────────────
     view_mode = st.radio(
         "查看模式",
@@ -740,6 +866,7 @@ def _render_kline_gallery(all_codes: Dict, manual: Dict) -> None:
                 f"来源: {pool_type} 池 | 日期: {selected_date} | 文件: {kline_file.name}"
                 f" | 数据源: {_m.get('source', '未知(旧数据)')}"
             )
+            _open_kline_detail(kline_file, pool_type, key=f"kline_zoom_main_{kline_file.name}")
         else:
             st.info(f"未找到 {selected_code} 的 K 线图")
 
@@ -750,7 +877,10 @@ def _render_kline_gallery(all_codes: Dict, manual: Dict) -> None:
         for i, pf in enumerate(png_files):
             with cols[i % 4]:
                 st.image(str(pf), use_container_width=True)
-                st.caption(pf.stem)
+                _ent = all_codes.get(_code_from_png(pf))
+                _src = read_kline_meta(pf).get("source", "?")
+                st.caption(f"{pf.stem} | {_state_label(_ent.state) if _ent else '不在池中'} | {_src}")
+                _open_kline_detail(pf, pool_type, key=f"kline_zoom_{selected_date}_{pf.name}")
 
     elif not all_codes:
         st.info("池中无标的，无法查看 K 线图")
@@ -786,6 +916,7 @@ def _render_kline_gallery(all_codes: Dict, manual: Dict) -> None:
                 f" | 数据源: {_m.get('source', '未知(旧数据)')}"
                 f" | 生成: {_m.get('generated_at', '-')}"
             )
+            _open_kline_detail(kline_file, pool_type, key=f"kline_zoom_single_{kline_file.name}")
         else:
             st.info(f"未找到 {code} 的 K 线图，请先运行 K 线批量生成（当前复权方式：{adjust_type}）")
 
