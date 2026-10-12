@@ -497,6 +497,9 @@ class DailyKlineDB:
         参数 progress_interval：每隔多少只打印一次进度（默认每 50 只）。
         会预检并跳过已有最新数据的标的，避免无效网络请求。
         """
+        # 确保表存在
+        self.ensure_schema()
+        
         n = len(symbols)
         result = {}
         start_ts = time.time()
