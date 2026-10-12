@@ -40,7 +40,7 @@ from stock_watch.config import (
     load_config,
 )
 from stock_watch.data_sources import DataSourceError
-from stock_watch.kline import plot_kline
+from stock_watch.kline import plot_kline, read_kline_meta
 from stock_watch.browser_manager import ensure_browser_running
 
 logger = logging.getLogger("stock_watch.kline_batch")
@@ -75,15 +75,18 @@ def _generate_klines(
     else:
         entries = list(pool.values())
 
+    from collections import Counter
+    src_counter: Counter = Counter()
     ok, failed = 0, []
     failure_lines = []
     for entry in entries:
         try:
-            plot_kline(
+            png = plot_kline(
                 entry.code, entry.name, entry.type, out_dir,
                 days=cfg.kline_days, adjust=cfg.kline_adjust,
             )
             ok += 1
+            src_counter[read_kline_meta(png).get("source", "unknown")] += 1
         except DataSourceError as exc:
             logger.warning("K 线生成失败: %s(%s) -> %s", entry.name, entry.code, exc)
             failed.append(entry.code)
@@ -94,6 +97,9 @@ def _generate_klines(
             failure_lines.append(f"{entry.name}({entry.code}): {type(exc).__name__}: {exc}")
 
     logger.info("%s K 线批量生成完成: 成功 %d, 失败 %d, 目录 %s", pool_name, ok, len(failed), out_dir)
+    if src_counter:
+        logger.info("%s 数据源分布: %s", pool_name,
+                    ", ".join(f"{k}={v}" for k, v in src_counter.most_common()))
     return ok, failed, failure_lines
 
 

@@ -101,7 +101,22 @@ def get_kline_df(code: str, entry_type: str, days: int, adjust: str = "qfq"):
         # A 股需要提供 market，这里根据代码前缀判断
         market = "sh" if clean_code.startswith(("6", "51")) else "sz"
         raw = fetch_kline(clean_code, market=market, days=days, adjust=adjust)
-    return _normalize_df(raw)
+    source = raw.attrs.get("source", "unknown")
+    adjust_actual = raw.attrs.get("adjust_actual", adjust or "none")
+    out = _normalize_df(raw)
+    out.attrs["source"] = source
+    out.attrs["adjust_actual"] = adjust_actual
+    return out
+
+
+def read_kline_meta(png_path: Path) -> dict:
+    """读取与 PNG 同名的 .json 元数据（数据源等），不存在返回空 dict。"""
+    import json
+    meta_path = Path(png_path).with_suffix(".json")
+    try:
+        return json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {}
 
 
 def plot_kline(
@@ -144,21 +159,45 @@ def plot_kline(
         style=style,
         title="",  # 不设置标题，手动添加
         returnfig=True,
+        warn_too_much_data=100000,
     )
     fig, axes = result
 
+    source = df.attrs.get("source", "unknown")
+    adjust_actual = df.attrs.get("adjust_actual", adjust_tag)
+    title = f"{name} ({code})  [数据源: {source}]"
+    if adjust_actual != adjust_tag:
+        title += f" 实际复权:{adjust_actual}"
     # 用指定字体添加中文标题
     if fp:
-        axes[0].set_title(f"{name} ({code})", fontsize=14, fontproperties=fp)
+        axes[0].set_title(title, fontsize=14, fontproperties=fp)
     else:
-        axes[0].set_title(f"{name} ({code})", fontsize=14)
+        axes[0].set_title(title, fontsize=14)
 
     fig.savefig(str(out_path), dpi=150, bbox_inches="tight")
     logger.info("K 线图已生成: %s", out_path)
 
     # 同步保存原始数据（同目录）
     data_path = out_dir / f"{code}_{safe_name}_{adjust_tag}.csv"
-    df.to_csv(str(data_path))
+    df_out = df.copy()
+    df_out["source"] = source
+    df_out["adjust_actual"] = adjust_actual
+    df_out.to_csv(str(data_path))
     logger.info("K 线数据已保存: %s", data_path)
+
+    # 元数据 sidecar（同名 .json），供看板/批量脚本读取
+    import json
+    from datetime import datetime
+    meta = {
+        "code": code, "name": name, "type": entry_type,
+        "source": source,
+        "adjust_requested": adjust_tag, "adjust_actual": adjust_actual,
+        "rows": int(len(df)),
+        "last_date": str(df.index[-1].date()),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    out_path.with_suffix(".json").write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    logger.info("K 线数据源: %s(%s) <- %s (实际复权: %s)", name, code, source, adjust_actual)
 
     return out_path

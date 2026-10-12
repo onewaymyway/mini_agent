@@ -1104,6 +1104,13 @@ def _eastmoney_kline_direct(
     return df.tail(days).reset_index(drop=True)
 
 
+def _tag_source(df, source: str, adjust_actual: str):
+    """在 DataFrame.attrs 上记录数据来源与实际复权方式（供 kline.py 落盘/展示）。"""
+    df.attrs["source"] = source
+    df.attrs["adjust_actual"] = adjust_actual
+    return df
+
+
 def fetch_kline(code: str, market: str, days: int, adjust: str = "qfq"):
     """获取最近 `days` 个交易日的日 K 线。
 
@@ -1143,7 +1150,7 @@ def fetch_kline(code: str, market: str, days: int, adjust: str = "qfq"):
                 bs_df.columns = ["date", "open", "high", "low", "close", "volume", "amount"]
                 bs_df["date"] = pd.to_datetime(bs_df["date"])
                 logger.info("baostock K 线成功: %s (%d 行)", code, len(bs_df))
-                return bs_df.tail(days).reset_index(drop=True)
+                return _tag_source(bs_df.tail(days).reset_index(drop=True), "baostock", adjust or "none")
     except Exception as exc:
         logger.warning("baostock K 线失败 (%s)，降级到新浪", exc)
 
@@ -1151,7 +1158,7 @@ def fetch_kline(code: str, market: str, days: int, adjust: str = "qfq"):
     try:
         sina_df = _sina_kline_fetch(f"{'sh' if market == 'sh' else 'sz'}{code}", datalen=days + 10)
         if sina_df is not None and not sina_df.empty:
-            return sina_df.tail(days).reset_index(drop=True)
+            return _tag_source(sina_df.tail(days).reset_index(drop=True), "sina", "none")  # 新浪为未复权数据
     except Exception as exc2:
         logger.debug("新浪 K 线失败: %s", exc2)
 
@@ -1171,7 +1178,7 @@ def fetch_kline(code: str, market: str, days: int, adjust: str = "qfq"):
             timeout=10,
             retries=3,
         )
-        return df.tail(days)
+        return _tag_source(df.tail(days), "akshare", adjust or "none")
     except Exception as exc3:
         raise DataSourceError(
             f"所有数据源均失败 ({code}): baostock, sina, akshare={exc3}"
@@ -1220,7 +1227,7 @@ def fetch_etf_kline(code: str, days: int, adjust: str = "qfq"):
                 bs_df.columns = ["date", "open", "high", "low", "close", "volume", "amount"]
                 bs_df["date"] = pd.to_datetime(bs_df["date"])
                 logger.info("baostock ETF K 线成功: %s (%d 行)", code, len(bs_df))
-                return bs_df.tail(days).reset_index(drop=True)
+                return _tag_source(bs_df.tail(days).reset_index(drop=True), "baostock", adjust or "none")
     except Exception as exc:
         logger.warning("baostock ETF K 线失败 (%s)，降级到新浪", exc)
 
@@ -1229,7 +1236,7 @@ def fetch_etf_kline(code: str, days: int, adjust: str = "qfq"):
         sina_symbol = f"{'sh' if market == 'sh' else 'sz'}{code}"
         sina_df = _sina_kline_fetch(sina_symbol, datalen=days + 10)
         if sina_df is not None and not sina_df.empty:
-            return sina_df.tail(days).reset_index(drop=True)
+            return _tag_source(sina_df.tail(days).reset_index(drop=True), "sina", "none")  # 新浪为未复权数据
     except Exception as exc2:
         logger.debug("新浪 ETF K 线失败: %s", exc2)
 
@@ -1249,7 +1256,7 @@ def fetch_etf_kline(code: str, days: int, adjust: str = "qfq"):
             timeout=10,
             retries=3,
         )
-        return df.tail(days)
+        return _tag_source(df.tail(days), "akshare", adjust or "none")
     except Exception as exc3:
         raise DataSourceError(f"所有数据源均失败 ({code}): baostock, sina, akshare={exc3}") from exc3
 

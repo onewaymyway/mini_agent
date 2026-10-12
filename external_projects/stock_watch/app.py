@@ -50,6 +50,7 @@ from stock_watch.config import (
     SOURCE_HEALTH_PATH,
     load_config,
 )
+from stock_watch.kline import read_kline_meta
 from stock_watch.candidate_pool import (
     DEFAULT_STATE,
     POOL_STATES,
@@ -734,7 +735,11 @@ def _render_kline_gallery(all_codes: Dict, manual: Dict) -> None:
         kline_file = date_dir / f"{selected_code}.png"
         if kline_file.exists():
             st.image(str(kline_file), use_container_width=True)
-            st.caption(f"来源: {pool_type} 池 | 日期: {selected_date} | 文件: {kline_file.name}")
+            _m = read_kline_meta(kline_file)
+            st.caption(
+                f"来源: {pool_type} 池 | 日期: {selected_date} | 文件: {kline_file.name}"
+                f" | 数据源: {_m.get('source', '未知(旧数据)')}"
+            )
         else:
             st.info(f"未找到 {selected_code} 的 K 线图")
 
@@ -773,7 +778,14 @@ def _render_kline_gallery(all_codes: Dict, manual: Dict) -> None:
 
         if kline_file and kline_file.exists():
             st.image(str(kline_file), use_container_width=True)
-            st.caption(f"来源: {pool_type} 池 | 复权: {adjust_type} | 文件: {kline_file.name}")
+            _m = read_kline_meta(kline_file)
+            _act = _m.get("adjust_actual")
+            _warn = f"（⚠️ 实际为 {_act}，数据源不支持复权）" if _act and _act != adjust else ""
+            st.caption(
+                f"来源: {pool_type} 池 | 复权: {adjust_type}{_warn} | 文件: {kline_file.name}"
+                f" | 数据源: {_m.get('source', '未知(旧数据)')}"
+                f" | 生成: {_m.get('generated_at', '-')}"
+            )
         else:
             st.info(f"未找到 {code} 的 K 线图，请先运行 K 线批量生成（当前复权方式：{adjust_type}）")
 
