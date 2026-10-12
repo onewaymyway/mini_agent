@@ -414,16 +414,16 @@ mini_agent 看板（`apps/mini_agent_kanban/app.py`）的 `🗂️ 外部项目`
 ```bash
 cd external_projects/stock_watch
 pip install streamlit plotly  # 首次运行需要安装
-streamlit run app.py --server.port 8501
+streamlit run app.py --server.port 8503
 ```
 
-浏览器访问 `http://localhost:8501` 即可查看。
+浏览器访问 `http://localhost:8503` 即可查看。
 
 如需后台常驻运行（Linux/macOS）：
 
 ```bash
 cd external_projects/stock_watch
-nohup streamlit run app.py --server.port 8501 > streamlit.log 2>&1 &
+nohup streamlit run app.py --server.port 8503 > streamlit.log 2>&1 &
 ```
 
 Windows 下直接前台运行即可，或用 `start cmd /k "cd /d external_projects\stock_watch && streamlit run app.py --server.port 8501"`。
