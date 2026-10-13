@@ -25,16 +25,17 @@ logger = logging.getLogger("stock_watch.price_position")
 class PricePositionResult:
     """单只标的的价格位置分析结果。"""
     symbol: str
-    latest_close: float
-    hist_high: float
-    hist_low: float
-    days: int
+    name: str = ""  # 新增股票名称
+    latest_close: float = 0.0
+    hist_high: float = 0.0
+    hist_low: float = 0.0
+    days: int = 0
     
     # 核心指标
-    upside_pct: float      # 涨幅空间 = (最高价 - 当前价) / 当前价
-    downside_pct: float    # 跌幅空间 = (当前价 - 最低价) / 当前价
-    price_percentile: float  # 价格分位 = 当前价 / 最高价
-    estimated_score: float   # 预估分数 = 涨幅空间 - 2×跌幅空间
+    upside_pct: float = 0.0      # 涨幅空间 = (最高价 - 当前价) / 当前价
+    downside_pct: float = 0.0    # 跌幅空间 = (当前价 - 最低价) / 当前价
+    price_percentile: float = 0.0  # 价格分位 = 当前价 / 最高价
+    estimated_score: float = 0.0   # 预估分数 = 涨幅空间 - 2×跌幅空间
 
 
 def analyze_price_position(
@@ -44,6 +45,7 @@ def analyze_price_position(
     lookback_days: int = 200,
     min_lookback_days: int = 200,
     top_n: int = 100,
+    name_map: Optional[Dict[str, str]] = None,
 ) -> List[PricePositionResult]:
     """批量分析标的的价格位置，返回按预估分数排序的 Top N 结果。
     
@@ -53,6 +55,7 @@ def analyze_price_position(
         lookback_days: 统计天数（默认 200）
         min_lookback_days: 最低数据要求（默认等于 lookback_days）
         top_n: 输出数量
+        name_map: 股票代码到名称的映射字典
     
     Returns:
         按 estimated_score 降序排列的 PricePositionResult 列表
@@ -88,8 +91,14 @@ def analyze_price_position(
         # 负权重表示风险厌恶，即使上涨空间大，下跌风险也要加倍考虑
         estimated_score = upside_pct - 2 * downside_pct
         
+        # 获取股票名称
+        stock_name = ""
+        if name_map and symbol in name_map:
+            stock_name = name_map[symbol]
+        
         results.append(PricePositionResult(
             symbol=symbol,
+            name=stock_name,
             latest_close=latest_close,
             hist_high=hist_high,
             hist_low=hist_low,
@@ -123,6 +132,7 @@ def to_scorecard(result: PricePositionResult) -> Dict:
     """转换为 JSON 友好的字典格式，用于报告输出。"""
     return {
         "symbol": result.symbol,
+        "name": result.name,  # 新增名称字段
         "rank": 0,  # 由调用方填充
         "estimated_score": round(result.estimated_score, 4),
         "latest_close": round(result.latest_close, 2),

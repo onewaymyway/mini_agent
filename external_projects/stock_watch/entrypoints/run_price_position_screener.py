@@ -31,10 +31,13 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
+
+import _common  # noqa: F401 — 把项目根加入 sys.path
 
 from stock_watch.daily_kline_db import DailyKlineDB
 from stock_watch.price_position import analyze_price_position, to_scorecard
@@ -65,6 +68,15 @@ def run_price_position_screener(
 ) -> List[Dict]:
     """核心选股逻辑。"""
     output_dir = output_dir or ensure_dirs()
+    
+    # 加载股票名称映射
+    name_map = {}
+    try:
+        from run_local_screener import load_name_mapping
+        name_map = load_name_mapping(pool_type)
+        logger.info("已加载 %d 只股票名称映射", len(name_map))
+    except Exception as e:
+        logger.debug("加载股票名称映射失败: %s", e)
     
     with DailyKlineDB() as db:
         info = db.table_info()
@@ -98,6 +110,7 @@ def run_price_position_screener(
             lookback_days=lookback_days,
             min_lookback_days=lookback_days,
             top_n=top_n,
+            name_map=name_map,
         )
         
         # 生成报告
@@ -113,14 +126,15 @@ def run_price_position_screener(
             f.write("---\n\n")
             
             f.write("## 候选股列表\n\n")
-            f.write("| 排名 | 代码 | 预估分数 | 收盘 | 历史区间 | 价格分位 | 涨幅空间 | 跌幅空间 | 解读 |\n")
-            f.write("|------|------|---------|------|---------|---------|---------|---------|------|\n")
+            f.write("| 排名 | 代码 | 名称 | 预估分数 | 收盘 | 历史区间 | 价格分位 | 涨幅空间 | 跌幅空间 | 解读 |\n")
+            f.write("|------|------|------|---------|------|---------|---------|---------|---------|------|\n")
             
             for i, r in enumerate(results, 1):
                 interpretation = "强势" if r.price_percentile > 0.8 else (
                     "超跌" if r.price_percentile < 0.2 else "中性"
                 )
-                f.write(f"| {i} | {r.symbol} | {r.estimated_score:.3f} | "
+                name_str = r.name if hasattr(r, 'name') and r.name else '-'  # 获取股票名称
+                f.write(f"| {i} | {r.symbol} | {name_str} | {r.estimated_score:.3f} | "
                         f"{r.latest_close:.2f} | [{r.hist_low:.2f}, {r.hist_high:.2f}] | "
                         f"{r.price_percentile:.1%} | {r.upside_pct:.1%} | "
                         f"{r.downside_pct:.1%} | {interpretation} |\n")
@@ -177,13 +191,14 @@ def main():
     
     print(f"\n✅ 选股完成：共 {len(results)} 只候选股")
     print(f"策略：价格位置分析（统计 {args.lookback} 天，风险厌恶权重 2.0）\n")
-    print(f"{'排名':<4} {'代码':<8} {'预估分数':<10} {'收盘':<10} {'价格分位':<10} {'解读'}")
-    print("-" * 70)
+    print(f"{'排名':<4} {'代码':<8} {'名称':<10} {'预估分数':<10} {'收盘':<10} {'价格分位':<10} {'解读'}")
+    print("-" * 80)
     for i, r in enumerate(results, 1):
         interpretation = "强势" if r["price_percentile"] > 0.8 else (
             "超跌" if r["price_percentile"] < 0.2 else "中性"
         )
-        print(f"{i:<4} {r['symbol']:<8} {r['estimated_score']:<10.3f} "
+        name_str = r.get('name', '') or '-'  # 获取股票名称
+        print(f"{i:<4} {r['symbol']:<8} {name_str:<10} {r['estimated_score']:<10.3f} "
               f"{r['latest_close']:<10.2f} {r['price_percentile']:<10.1%} {interpretation}")
     
     return 0

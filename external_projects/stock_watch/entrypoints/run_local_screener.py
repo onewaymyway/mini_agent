@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import sys
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -79,16 +80,48 @@ def _build_signal_weight_map() -> Dict[str, float]:
 
 # ── 核心：对单只标的计算多因子评分 ──────────────────────────────────────────
 
+def load_name_mapping(pool_type: str = "algo") -> Dict[str, str]:
+    """从候选池文件加载股票名称映射（代码->名称）。
+    
+    返回 {symbol: name} 字典，如 {'600519': '贵州茅台'}。
+    如果文件不存在或无法读取，返回空字典。
+    """
+    name_map: Dict[str, str] = {}
+    try:
+        pool_path = (
+            Path(__file__).resolve().parent.parent / "data"
+            / ("algo_pool.json" if pool_type == "algo" else "manual_pool.json")
+        )
+        if pool_path.exists():
+            import json as _json
+            with pool_path.open("r", encoding="utf-8") as f:
+                pool = _json.load(f)
+            for key, entry in pool.items():
+                # 支持两种格式：dict 或有 name 属性的对象
+                if isinstance(entry, dict):
+                    code = re.sub(r"^(SH|SZ|BJ)", "", key)
+                    name = entry.get("name", "")
+                else:
+                    code = re.sub(r"^(SH|SZ|BJ)", "", str(key))
+                    name = getattr(entry, "name", "")
+                if code and name:
+                    name_map[code] = name
+    except Exception as e:
+        logger.debug("加载股票名称映射失败: %s", e)
+    return name_map
+
+
 def analyze_symbol(
     db: DailyKlineDB,
     symbol: str,
     *,
     lookback_days: int = 120,
     min_lookback_days: int = 60,
+    name_map: Optional[Dict[str, str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """对单只标的计算技术指标信号 + 综合评分。
 
-    返回 dict（含 score/reasons/top_signals 等），数据不足时返回 None。
+    返回 dict（含 score/reasons/top_signals/name 等），数据不足时返回 None。
     """
     df = db.get_kline(symbol, days=lookback_days)
     if df is None or len(df) < min_lookback_days:
@@ -103,8 +136,14 @@ def analyze_symbol(
     total_score = score_signals(signals)
     top = top_signals(signals, n=5)
 
+    # 从映射表获取股票名称
+    stock_name = ""
+    if name_map and symbol in name_map:
+        stock_name = name_map[symbol]
+
     return {
         "symbol": symbol,
+        "name": stock_name,
         "rows": len(df),
         "latest_date": str(df["date"].iloc[-1]) if "date" in df.columns else "",
         "latest_close": float(df["close"].iloc[-1]) if "close" in df.columns else None,
@@ -129,6 +168,11 @@ def run_local_screener(
 ) -> List[Dict[str, Any]]:
     """核心选股逻辑：分析给定标的列表，按综合评分排序返回 Top N。"""
     ensure_dirs()
+    
+    # 加载股票名称映射
+    name_map = load_name_mapping(pool_type)
+    logger.info("已加载 %d 只股票名称映射", len(name_map))
+    
     with DailyKlineDB() as db:
         info = db.table_info()
         logger.info("数据库状态: %s 只标的, %s 行, 最新日期 %s",
@@ -165,6 +209,7 @@ def run_local_screener(
                 db, sym,
                 lookback_days=lookback_days,
                 min_lookback_days=min_lookback_days,
+                name_map=name_map,
             )
             if r is None:
                 skipped += 1
@@ -215,13 +260,14 @@ def _save_report(
         # 排名表
         lines.append("## Top 候选股")
         lines.append("")
-        lines.append("| 排名 | 代码 | 最新收盘 | 综合评分 | 信号数 | 主要信号 |")
-        lines.append("|------|------|---------|---------|-------|---------|")
+        lines.append("| 排名 | 代码 | 名称 | 最新收盘 | 综合评分 | 信号数 | 主要信号 |")
+        lines.append("|------|------|------|---------|---------|-------|---------|")
         for i, r in enumerate(results, 1):
             sig_names = ", ".join(s["name"] for s in r["top_signals"][:3])
             close_str = f"{r['latest_close']:.2f}" if r.get("latest_close") else "-"
+            name_str = r.get('name', '') or '-'  # 获取股票名称
             lines.append(
-                f"| {i} | {r['symbol']} | {close_str} | **{r['total_score']:.1f}** | {r['signal_count']} | {sig_names} |"
+                f"| {i} | {r['symbol']} | {name_str} | {close_str} | **{r['total_score']:.1f}** | {r['signal_count']} | {sig_names} |"
             )
         lines.append("")
 
@@ -328,7 +374,8 @@ def main() -> int:
 
     print(f"\n✅ 选股完成：共 {len(results)} 只候选股")
     for i, r in enumerate(results, 1):
-        print(f"  {i}. {r['symbol']}  评分={r['total_score']:.1f}  收盘={r.get('latest_close', '-')}  信号数={r['signal_count']}")
+        name_str = r.get('name') or '-'  # 获取股票名称
+        print(f"  {i}. {r['symbol']}  {name_str}  评分={r['total_score']:.1f}  收盘={r.get('latest_close', '-')}  信号数={r['signal_count']}")
 
     return 0
 
