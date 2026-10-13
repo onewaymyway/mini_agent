@@ -66,8 +66,26 @@ ADVANCED_WEIGHTS = {
 
 
 def load_name_mapping(pool_type: str = "algo") -> Dict[str, str]:
-    """从候选池文件加载股票名称映射。"""
+    """从数据库加载股票名称映射（优先），候选池文件作为补充。"""
     name_map: Dict[str, str] = {}
+    
+    # 1. 先从数据库加载
+    try:
+        with DailyKlineDB() as db:
+            # 检查是否有 name 列
+            cursor = db.conn.execute('PRAGMA table_info(kline)')
+            columns = [col[1] for col in cursor.fetchall()]
+            
+            if "name" in columns:
+                # 从数据库加载所有有名称的股票
+                cursor = db.conn.execute('SELECT DISTINCT symbol, name FROM kline WHERE name != ""')
+                for symbol, name in cursor.fetchall():
+                    name_map[symbol] = name
+                logger.info("从数据库加载 %d 只股票名称", len(name_map))
+    except Exception as e:
+        logger.debug("从数据库加载名称失败: %s", e)
+    
+    # 2. 从候选池补充（数据库中可能没有的股票）
     try:
         pool_path = (
             Path(__file__).resolve().parent.parent / "data"
@@ -83,10 +101,12 @@ def load_name_mapping(pool_type: str = "algo") -> Dict[str, str]:
                 else:
                     code = re.sub(r"^(SH|SZ|BJ)", "", str(key))
                     name = getattr(entry, "name", "")
-                if code and name:
+                if code and name and code not in name_map:
                     name_map[code] = name
+            logger.info("从候选池补充 %d 只股票名称", len(name_map))
     except Exception as e:
-        logger.debug("加载股票名称映射失败: %s", e)
+        logger.debug("从候选池加载名称失败: %s", e)
+    
     return name_map
 
 
