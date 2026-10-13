@@ -612,7 +612,6 @@ def _load_screener_json(state_key: str) -> tuple[Optional[pd.DataFrame], Optiona
     for r in results:
         symbol = r.get("symbol", "")
         name = r.get("name", "") or "-"
-        generated_at = data.get("generated_at", "")
 
         if state_key == "screener1":  # 多因子
             total_score = r.get("total_score", 0.0)
