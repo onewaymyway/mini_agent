@@ -13,7 +13,10 @@ akshare `stock_news_em` 的中文列名，标题字段常见"新闻标题"/"标�
 
 from __future__ import annotations
 
+import json
 import re
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from stock_watch.signals import Signal
@@ -216,3 +219,76 @@ def classify_telegraph_news(
     )
 
     return result
+
+
+def _news_hash(content: str, time_str: str) -> str:
+    """生成新闻去重哈希（基于内容和时间的组合）。"""
+    import hashlib
+    key = f"{time_str}:{content[:200]}"  # 前200字符
+    return hashlib.md5(key.encode()).hexdigest()
+
+
+def load_telegraph_history(history_path: Path) -> dict:
+    """加载历史新闻记录（用于去重）。"""
+    if not history_path.exists():
+        return {"news": [], "hashes": set()}
+    try:
+        data = json.loads(history_path.read_text(encoding="utf-8"))
+        return {
+            "news": data.get("news", []),
+            "hashes": set(data.get("hashes", [])),
+        }
+    except (json.JSONDecodeError, Exception):
+        return {"news": [], "hashes": set()}
+
+
+def save_telegraph_history(history_path: Path, news_list: list, hashes: set):
+    """保存新闻历史（用于去重）。"""
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "total_news": len(news_list),
+        "news": news_list[-500:],  # 保留最近500条
+        "hashes": list(hashes),
+    }
+    history_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def filter_dedup_news(
+    news_items: List[Dict[str, Any]],
+    history_path: Path,
+) -> tuple:
+    """对新闻进行去重过滤。
+
+    参数:
+        news_items: 待检查的新闻列表
+        history_path: 历史记录文件路径
+
+    返回:
+        (新新闻列表, 新增条数)
+    """
+    history = load_telegraph_history(history_path)
+    existing_hashes = history["hashes"]
+    new_news = []
+    new_hashes = set(existing_hashes)
+
+    for item in news_items:
+        h = _news_hash(item.get("content", ""), item.get("time", ""))
+        if h not in existing_hashes:
+            new_news.append(item)
+            new_hashes.add(h)
+
+    # 保存更新后的历史
+    if new_news:
+        all_news = history["news"][-200:] + [
+            {
+                "time": n.get("time", ""),
+                "content": n.get("content", "")[:200],
+                "hash": _news_hash(n.get("content", ""), n.get("time", "")),
+            }
+            for n in new_news
+        ]
+        save_telegraph_history(history_path, all_news, new_hashes)
+
+    return new_news, len(new_news)
+

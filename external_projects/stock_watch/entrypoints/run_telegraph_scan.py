@@ -37,7 +37,7 @@ from stock_watch.data_sources import (
     DataSourceError,
     fetch_sina_telegraph,
 )
-from stock_watch.news_signals import classify_telegraph_news
+from stock_watch.news_signals import classify_telegraph_news, filter_dedup_news
 from stock_watch.source_health import tracked_source
 from stock_watch.signals import Signal
 
@@ -156,8 +156,13 @@ def main() -> int:
 
     logger.info("抓取到 %d 条新闻", len(news_items))
 
-    # 分析新闻，提取股票信号
-    stats = classify_telegraph_news(news_items, stock_name_map=stock_name_map)
+    # 去重过滤：只处理新新闻
+    TELEGRAPH_HISTORY_PATH = DATA_DIR / "telegraph_history.json"
+    new_news, new_count = filter_dedup_news(news_items, TELEGRAPH_HISTORY_PATH)
+    logger.info("去重后新增 %d 条新闻 (总数 %d)", new_count, len(news_items))
+
+    # 分析新闻，提取股票信号（使用去重后的新闻）
+    stats = classify_telegraph_news(new_news, stock_name_map=stock_name_map)
 
     # 生成报告
     report_path = TELEGRAPH_REPORT_DIR / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
