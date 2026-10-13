@@ -593,7 +593,17 @@ def _load_screener_json(state_key: str) -> tuple[Optional[pd.DataFrame], Optiona
     except Exception:
         return None, None, None
 
-    results = data.get("results", [])
+    # price_position scripts emit a raw JSON array; others emit {results: [...]}
+    if isinstance(data, list):
+        results = data
+        generated_at = ""
+        total_analyzed = len(results)
+        skipped = 0
+    else:
+        results = data.get("results", [])
+        generated_at = data.get("generated_at", "")
+        total_analyzed = data.get("total_analyzed", 0)
+        skipped = data.get("skipped", 0)
     if not results:
         return None, None, None
 
