@@ -121,6 +121,7 @@ def run_local_screener(
     symbols: Optional[List[str]] = None,
     *,
     pool_type: str = "algo",
+    use_all_symbols: bool = False,
     top_n: int = 10,
     lookback_days: int = 120,
     min_lookback_days: int = 60,
@@ -135,22 +136,26 @@ def run_local_screener(
 
         # 确定分析范围
         if symbols is None:
-            # 从候选池读取
-            from stock_watch.candidate_pool import load_pool
-            pool_path = (
-                Path(__file__).resolve().parent.parent / "data"
-                / ("algo_pool.json" if pool_type == "algo" else "manual_pool.json")
-            )
-            pool = load_pool(pool_path)
-            raw_symbols = list(pool.keys())
-            # 统一格式：去掉交易所前缀（如 SZ300059 -> 300059），与数据库一致
-            import re
-            symbols = []
-            for s in raw_symbols:
-                clean = re.sub(r"^(SH|SZ|BJ)", "", s)
-                symbols.append(clean)
-            symbols = list(dict.fromkeys(symbols))  # 去重，保留顺序
-            logger.info("从 %s 候选池读取 %d 只标的（原始=%d，归一化=%d）", pool_type, len(symbols), len(raw_symbols), len(raw_symbols))
+            if use_all_symbols:
+                symbols = db.get_all_symbols()  # 直接读 kline.db 全部标的
+                logger.info("从 kline.db 读取全量标的 %d 只", len(symbols))
+            else:
+                # 从候选池读取
+                from stock_watch.candidate_pool import load_pool
+                pool_path = (
+                    Path(__file__).resolve().parent.parent / "data"
+                    / ("algo_pool.json" if pool_type == "algo" else "manual_pool.json")
+                )
+                pool = load_pool(pool_path)
+                raw_symbols = list(pool.keys())
+                # 统一格式：去掉交易所前缀（如 SZ300059 -> 300059），与数据库一致
+                import re
+                symbols = []
+                for s in raw_symbols:
+                    clean = re.sub(r"^(SH|SZ|BJ)", "", s)
+                    symbols.append(clean)
+                symbols = list(dict.fromkeys(symbols))  # 去重，保留顺序
+                logger.info("从 %s 候选池读取 %d 只标的（原始=%d，归一化=%d）", pool_type, len(symbols), len(raw_symbols), len(raw_symbols))
 
         # 批量分析
         results: List[Dict[str, Any]] = []
@@ -275,6 +280,12 @@ def main() -> int:
         help="从哪个候选池读取标的（默认 algo）",
     )
     parser.add_argument(
+        "--all",
+        action="store_true",
+        dest="use_all_symbols",
+        help="使用 all_symbols.json 全量标的（默认 5151 只）",
+    )
+    parser.add_argument(
         "--top-n",
         type=int,
         default=10,
@@ -304,6 +315,7 @@ def main() -> int:
     results = run_local_screener(
         symbols=args.codes,
         pool_type=args.pool_type,
+        use_all_symbols=args.use_all_symbols,
         top_n=args.top_n,
         lookback_days=args.lookback_days,
         min_lookback_days=args.min_days,

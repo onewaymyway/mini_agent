@@ -666,6 +666,12 @@ class DailyKlineDB:
             "db_path": str(self.db_path),
         }
 
+    def get_all_symbols(self) -> List[str]:
+        """从 kline.db 读取全部已存储的标的代码列表。"""
+        self.ensure_schema()
+        cur = self.conn.execute("SELECT DISTINCT symbol FROM kline ORDER BY symbol")
+        return [row[0] for row in cur.fetchall()]
+
     # ── 内部：拉取 K 线数据 ────────────────────────────────────────────────
     def _fetch_kline_rows(
         self,
