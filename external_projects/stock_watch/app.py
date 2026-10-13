@@ -616,21 +616,29 @@ def _load_screener_json(state_key: str) -> tuple[Optional[pd.DataFrame], Optiona
         if state_key == "screener1":  # 多因子
             total_score = r.get("total_score", 0.0)
             latest_close = r.get("latest_close", "-")
+            latest_date = r.get("latest_date", "-")
             signal_count = r.get("signal_count", 0)
             top_signals = r.get("top_signals", [])
             sig_str = ", ".join(s.get("name", "") for s in top_signals[:3]) if top_signals else "-"
+            sig_reasons = [s.get("reason", "") for s in top_signals[:2]] if top_signals else []
+            sig_reason_str = " | ".join(sig_reasons) if sig_reasons else "-"
             row = {
                 "排名": rows.__len__() + 1,
                 "代码": symbol,
                 "名称": name,
                 "综合评分": total_score,
                 "最新收盘": latest_close,
+                "最新日期": latest_date,
                 "信号数": signal_count,
                 "主要信号": sig_str,
+                "选中原因": sig_reason_str,
             }
         elif state_key == "screener2":  # 价格位置
             est_score = r.get("estimated_score", 0.0)
             latest_close = r.get("latest_close", "-")
+            latest_date = r.get("latest_date", "-")
+            hist_high = r.get("hist_high", "-")
+            hist_low = r.get("hist_low", "-")
             percentile = r.get("price_percentile", 0.0)
             upside = r.get("upside_pct", 0.0)
             downside = r.get("downside_pct", 0.0)
@@ -640,11 +648,14 @@ def _load_screener_json(state_key: str) -> tuple[Optional[pd.DataFrame], Optiona
                 "代码": symbol,
                 "名称": name,
                 "预估分数": est_score,
-                "收盘": latest_close,
+                "最新收盘": latest_close,
+                "最新日期": latest_date,
+                "历史最高": hist_high,
+                "历史最低": hist_low,
                 "价格分位": f"{percentile:.1%}" if percentile else "-",
                 "涨幅空间": f"{upside:.1%}" if upside is not None else "-",
                 "跌幅空间": f"{downside:.1%}" if downside is not None else "-",
-                "解读": interpretation,
+                "选中原因": interpretation,
             }
         else:  # screener3 高级多因子
             total_score = r.get("total_score", 0.0)
@@ -653,6 +664,7 @@ def _load_screener_json(state_key: str) -> tuple[Optional[pd.DataFrame], Optiona
             volume = r.get("volume_score", 0.0)
             price = r.get("price_score", 0.0)
             latest_close = r.get("latest_close", "-")
+            latest_date = r.get("latest_date", "-")
             signals = r.get("all_signals", [])
             sig_str = ", ".join(signals[:4]) if signals else "-"
             row = {
@@ -660,12 +672,13 @@ def _load_screener_json(state_key: str) -> tuple[Optional[pd.DataFrame], Optiona
                 "代码": symbol,
                 "名称": name,
                 "总分": total_score,
-                "趋势": trend,
-                "动量": momentum,
-                "量能": volume,
-                "位置": price,
-                "收盘": latest_close,
-                "信号": sig_str,
+                "趋势分": trend,
+                "动量分": momentum,
+                "量能分": volume,
+                "位置分": price,
+                "最新收盘": latest_close,
+                "最新日期": latest_date,
+                "选中原因": sig_str,
             }
         rows.append(row)
 
