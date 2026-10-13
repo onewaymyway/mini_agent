@@ -1161,7 +1161,7 @@ def _screener_tab(key: str, title: str, description: str, script_path: str,
                 st.markdown(f"**{int(row['排名'])}.** {symbol} — {name}")
             with col_btn:
                 btn_key = f"add_to_manual_{key}_{symbol}"
-                if st.button("✋ 加入手动池", key=btn_key, size="small"):
+                if st.button("✋ 加入手动池", key=btn_key):
                     if symbol in manual:
                         st.warning(f"{symbol} {name} 已在手动池中")
                     else:
