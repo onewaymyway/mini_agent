@@ -673,9 +673,12 @@ def _load_screener_json(state_key: str) -> tuple[Optional[pd.DataFrame], Optiona
         return None, None, None
 
     df = pd.DataFrame(rows)
-    when = generated_at or datetime.fromisoformat(latest.stat().st_ctime).strftime("%Y-%m-%d %H:%M")
-    total_analyzed = data.get("total_analyzed", 0)
-    skipped = data.get("skipped", 0)
+    when = generated_at
+    if not when:
+        try:
+            when = datetime.fromtimestamp(latest.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            when = "未知"
     source_summary = f"来源: {total_analyzed + skipped} 只标的中 {total_analyzed} 只有数据，跳过 {skipped} 只 | 生成时间 {when}"
     return df, f"📋 选股结果（{when}，共 {len(df)} 只候选）", source_summary
 
