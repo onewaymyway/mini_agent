@@ -69,39 +69,43 @@ def run_price_position_screener(
     """核心选股逻辑。"""
     output_dir = output_dir or ensure_dirs()
     
-    # 加载股票名称映射
-    name_map = {}
-    try:
-        from run_local_screener import load_name_mapping
-        name_map = load_name_mapping(pool_type)
-        logger.info("已加载 %d 只股票名称映射", len(name_map))
-    except Exception as e:
-        logger.debug("加载股票名称映射失败: %s", e)
-    
     with DailyKlineDB() as db:
         info = db.table_info()
         logger.info("数据库状态: %s 只标的, %s 行, 最新日期 %s",
                     info["symbol_count"], info["total_rows"], info["latest_date"])
-        
-        # 确定分析范围
-        if symbols is None:
-            if use_all_symbols:
-                symbols = db.get_all_symbols()
-                logger.info("从 kline.db 读取全量标的 %d 只", len(symbols))
-            else:
-                from stock_watch.candidate_pool import load_pool
-                pool_path = (
-                    Path(__file__).resolve().parent.parent / "data"
-                    / ("algo_pool.json" if pool_type == "algo" else "manual_pool.json")
-                )
-                pool = load_pool(pool_path)
-                import re
-                symbols = []
-                for s in pool.keys():
-                    clean = re.sub(r"^(SH|SZ|BJ)", "", s)
-                    symbols.append(clean)
-                symbols = list(dict.fromkeys(symbols))
-                logger.info("从 %s 候选池读取 %d 只标的", pool_type, len(symbols))
+
+        # 加载股票名称映射：优先从候选池文件，全量扫描时补充 DB 中的名称
+        name_map = {}
+        try:
+            from run_local_screener import load_name_mapping
+            name_map = load_name_mapping(pool_type)
+            logger.info("已从候选池加载 %d 只股票名称映射", len(name_map))
+        except Exception as e:
+            logger.debug("加载股票名称映射失败: %s", e)
+
+        # 从数据库补充名称（适用于全量扫描）
+        if use_all_symbols:
+            try:
+                db_name_map = db.get_symbol_names()
+                overlapped = sum(1 for s in db_name_map if s in name_map)
+                name_map.update(db_name_map)
+                logger.info("已从数据库补充 %d 只名称（与候选池重叠 %d 只）", len(db_name_map), overlapped)
+            except Exception as e:
+                logger.debug("从数据库加载名称失败: %s", e)
+        else:
+            from stock_watch.candidate_pool import load_pool
+            pool_path = (
+                Path(__file__).resolve().parent.parent / "data"
+                / ("algo_pool.json" if pool_type == "algo" else "manual_pool.json")
+            )
+            pool = load_pool(pool_path)
+            import re
+            symbols = []
+            for s in pool.keys():
+                clean = re.sub(r"^(SH|SZ|BJ)", "", s)
+                symbols.append(clean)
+            symbols = list(dict.fromkeys(symbols))
+            logger.info("从 %s 候选池读取 %d 只标的", pool_type, len(symbols))
         
         # 执行价格位置分析
         results = analyze_price_position(

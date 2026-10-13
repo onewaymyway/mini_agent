@@ -672,6 +672,22 @@ class DailyKlineDB:
         cur = self.conn.execute("SELECT DISTINCT symbol FROM kline ORDER BY symbol")
         return [row[0] for row in cur.fetchall()]
 
+    def get_symbol_names(self) -> Dict[str, str]:
+        """从 kline.db 读取有名称的标的映射（symbol -> name）。
+
+        返回 {symbol: name} 字典，仅包含 name 非空的记录。
+        用于全量扫描时补充股票名称。
+        """
+        self.ensure_schema()
+        try:
+            cur = self.conn.execute(
+                "SELECT DISTINCT symbol, name FROM kline WHERE name IS NOT NULL AND name != '' ORDER BY symbol"
+            )
+            return {row[0]: row[1] for row in cur.fetchall()}
+        except Exception as e:
+            logger.debug("从数据库加载名称映射失败: %s", e)
+            return {}
+
     # ── 内部：拉取 K 线数据 ────────────────────────────────────────────────
     def _fetch_kline_rows(
         self,
