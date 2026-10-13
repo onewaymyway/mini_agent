@@ -124,12 +124,71 @@ class CDPSession:
             params["awaitPromise"] = True
         result = self.send("Runtime.evaluate", params, timeout=timeout)
         # 提取结果值
-        if "result" in result and "value" in result["result"]:
-            return result["result"]["value"]
+        if "result" in result:
+            res = result["result"]
+            # 简单类型（字符串、数字等）直接返回 value
+            if "value" in res:
+                return res["value"]
+            # 复杂对象需要通过 objectId 获取属性
+            if "objectId" in res:
+                return self._get_object_properties(res["objectId"])
         if "exceptionDetails" in result:
             exc = result["exceptionDetails"]
             raise CDPError(f"JS 执行失败: {exc.get('text', '')} {exc.get('exception', {}).get('description', '')}")
         return result.get("result", {})
+
+    def _unwrap_value(self, prop_value: dict) -> Any:
+        """递归解包单个属性值。"""
+        if "value" in prop_value:
+            return prop_value["value"]
+        if "objectId" in prop_value:
+            obj_id = prop_value["objectId"]
+            cls = prop_value.get("className", "")
+            if cls == "Array":
+                # 数组：递归获取每个元素
+                result = self.send("Runtime.getProperties",
+                                 {"objectId": obj_id, "ownProperties": True},
+                                 timeout=self.timeout)
+                props = result.get("result", [])
+                arr = []
+                for p in props:
+                    if p.get("name", "").isdigit():
+                        arr.append(self._unwrap_value(p.get("value", {})))
+                return arr
+            # 普通对象：获取所有属性
+            result = self.send("Runtime.getProperties",
+                             {"objectId": obj_id, "ownProperties": True},
+                             timeout=self.timeout)
+            obj = {}
+            for p in result.get("result", []):
+                name = p.get("name", "")
+                if not name.startswith("__") and name != "constructor":
+                    obj[name] = self._unwrap_value(p.get("value", {}))
+            return obj
+        return None
+
+    def _get_object_properties(self, object_id: str, depth: int = 0, max_depth: int = 10) -> Any:
+        """递归获取对象的所有属性（用于处理 CDP 返回的 objectId 引用）。"""
+        if depth > max_depth:
+            return f"<{object_id}> (max depth reached)"
+        try:
+            result = self.send("Runtime.getProperties",
+                             {"objectId": object_id, "ownProperties": True},
+                             timeout=self.timeout)
+            props = result.get("result", [])
+            obj = {}
+            for prop in props:
+                name = prop.get("name", "")
+                if name.startswith("__") or name == "constructor":
+                    continue
+                obj[name] = self._unwrap_value(prop.get("value", {}))
+            # 特殊处理数组
+            if isinstance(obj, dict) and obj.get("length", 0) > 0:
+                return [obj[str(i)] for i in range(obj["length"]) if str(i) in obj]
+            return obj
+        except Exception as e:
+            logger.warning(f"获取对象属性失败 {object_id}: {e}")
+            return f"<{object_id}> error: {e}"
 
     def get_page_content(self, selector: str = "body", timeout: float = 10.0) -> str:
         """获取页面元素内容。"""

@@ -1779,3 +1779,67 @@ def fetch_sector_rotation_analysis() -> Dict[str, Any]:
     except Exception as exc:
         logger.warning("获取板块轮动分析失败: %s", exc)
         return {"strong_sectors": [], "weak_sectors": [], "capital_flow": []}
+
+
+# ── 新浪财经 7x24 直播流 ────────────────────────────────────────────────────
+_SINA_TELEGRAPH_URL = "https://finance.sina.com.cn/7x24/"
+
+
+def fetch_sina_telegraph(top_n: int = 50) -> List[Dict[str, Any]]:
+    """抓取新浪财经 7x24 直播流最新新闻。
+
+    返回格式：[{"title": str, "content": str, "time": str, "url": str}, ...]
+
+    使用 CDP 浏览器访问 SPA 页面，通过 JS 提取新闻列表。
+    失败时 raise DataSourceError，调用方负责记账和报告。
+    """
+    try:
+        session, _ = _get_cdp_session()
+        session.eval_js(f"location.href={json.dumps(_SINA_TELEGRAPH_URL)}", await_promise=True)
+        time.sleep(5)
+
+        # 直接从页面文本提取新闻，格式为时间戳 + 新闻内容交替
+        # IIFE 格式：避免 illegal return 错误
+        js_extract = (
+            "(function() { "
+            "var lines = document.body.innerText.split(String.fromCharCode(10)); "
+            "var items = []; "
+            "var ct = ''; "
+            "for (var i = 0; i < lines.length; i++) { "
+            "var L = lines[i].trim(); "
+            "if (/^\\d{2}:\\d{2}:\\d{2}$/.test(L)) { ct = L; } "
+            "else if (L && ct && items.length < 100) { "
+            "if (!/^\\d+(\\.\\d+)?万?\\s*阅读$/.test(L)) "
+            "items.push({time: ct, content: L, url: ''}); "
+            "ct = ''; } } return items; "
+            "})()"
+        )
+
+        raw_results = session.eval_js(js_extract, await_promise=True)
+        if isinstance(raw_results, str):
+            import json as _json
+            try:
+                results = _json.loads(raw_results)
+            except (ValueError, TypeError):
+                results = []
+        elif isinstance(raw_results, list):
+            results = raw_results
+        elif isinstance(raw_results, dict) and "result" in raw_results:
+            # CDP 返回的包装对象，提取实际值
+            inner = raw_results.get("result", {})
+            if isinstance(inner, list):
+                results = inner
+            elif isinstance(inner, dict) and "value" in inner:
+                try:
+                    import json as _json2
+                    results = _json2.loads(inner["value"])
+                except:
+                    results = []
+            else:
+                results = []
+        else:
+            results = []
+        return results[:top_n] if isinstance(results, list) else []
+    except Exception as exc:
+        logger.warning("抓取新浪 7x24 直播流失败: %s", exc)
+        raise DataSourceError(f"新浪 7x24 抓取失败: {exc}") from exc

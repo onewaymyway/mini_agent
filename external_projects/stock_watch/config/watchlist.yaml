@@ -17,6 +17,7 @@ sources:
   eastmoney_guba_hot: true      # 东方财富股吧热帖
   xueqiu_hot_stock: true        # 雪球热门股票
   iwencai_screener: true        # 问财自然语言选股（功能 3 复用）
+  sina_telegraph: true          # 新浪财经 7x24 直播流
 
 # ── 候选池配置 ──────────────────────────────────────────────────────────────
 candidate_pool:
@@ -38,6 +39,11 @@ kline:
 outcomes:
   lookback_days: 7          # 结果回溯：拿多少天前的候选池快照去核对后续涨跌
   notable_gain_pct: 15.0    # 涨跌幅绝对值超过这个百分比，记入改进积压账本供 review 参考
+
+# 新浪 7x24 直播流配置
+telegraph:
+  top_n: 50                 # 每次抓取最近 N 条新闻
+  positive_threshold: 2     # 正面提及至少 N 次才入池
 
 # 阶段3自算信号（见 next_doc/stock_watch_pool_state_tracking_and_kanban_
 # plan.md 阶段3）：不依赖外部网站结论，自己分析历史行情/公告/新闻。

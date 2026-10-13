@@ -58,6 +58,7 @@ class WatchlistConfig:
     kline: Dict[str, Any] = field(default_factory=dict)
     outcomes: Dict[str, Any] = field(default_factory=dict)
     signals: Dict[str, Any] = field(default_factory=dict)
+    telegraph: Dict[str, Any] = field(default_factory=dict)
     secrets: Dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -99,6 +100,14 @@ class WatchlistConfig:
 
     def source_enabled(self, name: str) -> bool:
         return bool(self.sources.get(name, False))
+
+    @property
+    def telegraph_top_n(self) -> int:
+        return int(self.telegraph.get("top_n", 50))
+
+    @property
+    def telegraph_positive_threshold(self) -> int:
+        return int(self.telegraph.get("positive_threshold", 2))
 
     @property
     def signal_categories_enabled(self) -> Dict[str, bool]:
@@ -157,6 +166,7 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH, secrets_path: Path = DEFAULT_S
         kline=raw.get("kline", {}) or {},
         outcomes=raw.get("outcomes", {}) or {},
         signals=raw.get("signals", {}) or {},
+        telegraph=raw.get("telegraph", {}) or {},
         secrets=_load_secrets(secrets_path),
     )
 

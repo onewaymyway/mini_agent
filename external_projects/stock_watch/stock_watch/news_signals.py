@@ -13,7 +13,8 @@ akshare `stock_news_em` 的中文列名，标题字段常见"新闻标题"/"标�
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+import re
+from typing import Any, Dict, List, Optional, Set
 
 from stock_watch.signals import Signal
 
@@ -83,3 +84,135 @@ def compute_news_signals(
             )
         )
     return signals
+
+
+# ── 新浪 7x24 直播流专用信号处理 ──────────────────────────────────────────
+
+# 从新闻中提取股票代码的正则（A股代码格式）
+_STOCK_CODE_RE = re.compile(r'\b(\d{6})\b')
+
+
+def extract_stock_codes(text: str) -> List[str]:
+    """从文本中提取 A 股股票代码（6 位数字）。
+    
+    返回去重后的代码列表，按首次出现顺序排列。
+    """
+    codes = _STOCK_CODE_RE.findall(text)
+    seen: Set[str] = set()
+    result = []
+    for code in codes:
+        if code not in seen:
+            seen.add(code)
+            result.append(code)
+    return result
+
+
+def classify_telegraph_news(
+    news_items: List[Dict[str, Any]],
+    stock_name_map: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    """分析新浪 7x24 直播流新闻，提取股票相关信号。
+
+    参数:
+        news_items: fetch_sina_telegraph() 返回的新闻列表
+                   [{"time": str, "content": str, "url": str}, ...]
+        stock_name_map: 可选，code -> name 映射，用于在新闻中匹配股票名称
+
+    返回:
+        {
+            "total_news": int,           # 总新闻条数
+            "stock_related": int,        # 提及股票的条数
+            "positive_mentions": int,    # 正面提及次数
+            "negative_mentions": int,    # 负面提及次数
+            "stock_mentions": List[Dict], # 每只股票的提及详情
+            "sample_news": List[Dict],   # 样例新闻（前5条含股票的）
+        }
+    """
+    result = {
+        "total_news": len(news_items),
+        "stock_related": 0,
+        "positive_mentions": 0,
+        "negative_mentions": 0,
+        "stock_mentions": [],
+        "sample_news": [],
+    }
+
+    if not news_items:
+        return result
+
+    # 统计每只股票的出现情况
+    stock_stats: Dict[str, Dict[str, Any]] = {}
+
+    for item in news_items:
+        content = item.get("content", "")
+        if not content:
+            continue
+
+        # 提取股票代码
+        codes = extract_stock_codes(content)
+
+        # 检查是否包含股票关键词
+        has_stock = False
+        if codes:
+            has_stock = True
+        elif stock_name_map:
+            # 尝试匹配股票名称
+            for name in stock_name_map.values():
+                if name and name in content:
+                    has_stock = True
+                    break
+
+        if not has_stock:
+            continue
+
+        result["stock_related"] += 1
+
+        # 情感分析
+        pos = sum(1 for w in _POSITIVE_WORDS if w in content)
+        neg = sum(1 for w in _NEGATIVE_WORDS if w in content)
+        result["positive_mentions"] += pos
+        result["negative_mentions"] += neg
+
+        # 记录每只股票
+        for code in codes:
+            if code not in stock_stats:
+                stock_stats[code] = {
+                    "code": code,
+                    "count": 0,
+                    "positive": 0,
+                    "negative": 0,
+                    "names": set(),
+                    "first_seen": item.get("time", ""),
+                }
+            stock_stats[code]["count"] += 1
+            stock_stats[code]["positive"] += pos
+            stock_stats[code]["negative"] += neg
+
+            # 从新闻内容中提取可能的股票名称
+            if stock_name_map:
+                for sc, sn in stock_name_map.items():
+                    if sc == code and sn:
+                        stock_stats[code]["names"].add(sn)
+
+        # 收集样例新闻
+        if len(result["sample_news"]) < 5 and (codes or has_stock):
+            result["sample_news"].append({
+                "time": item.get("time", ""),
+                "content": content[:100] + ("..." if len(content) > 100 else ""),
+                "codes": codes,
+            })
+
+    # 转换为列表并排序（按提及次数降序）
+    result["stock_mentions"] = sorted(
+        [
+            {
+                **stats,
+                "names": list(stats["names"])[:3],  # 最多保留3个可能的名称
+            }
+            for stats in stock_stats.values()
+        ],
+        key=lambda x: x["count"],
+        reverse=True,
+    )
+
+    return result
