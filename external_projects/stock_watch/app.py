@@ -679,6 +679,17 @@ def _load_screener_json(state_key: str) -> tuple[Optional[pd.DataFrame], Optiona
             when = datetime.fromtimestamp(latest.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
         except Exception:
             when = "未知"
+    # 将 UTC 时间转换为本地时间（北京时间 UTC+8）
+    try:
+        if "UTC" in when:
+            dt = datetime.strptime(when, "%Y-%m-%d %H:%M %Z")
+            from datetime import timedelta
+            local_dt = dt + timedelta(hours=8)
+            when = local_dt.strftime("%Y-%m-%d %H:%M")
+        else:
+            when = when.strip()
+    except Exception:
+        when = when.replace(" UTC", "").strip()
     source_summary = f"来源: {total_analyzed + skipped} 只标的中 {total_analyzed} 只有数据，跳过 {skipped} 只 | 生成时间 {when}"
     return df, f"📋 选股结果（{when}，共 {len(df)} 只候选）", source_summary
 
