@@ -281,16 +281,18 @@ def filter_dedup_news(
             new_news.append(item)
             new_hashes.add(h)
 
-    # 保存更新后的历史
+    # 保存更新后的历史（按时间排序，保留完整内容）
     if new_news:
-        all_news = history["news"][-200:] + [
+        all_news = history["news"][-500:] + [
             {
                 "time": n.get("time", ""),
-                "content": n.get("content", "")[:200],
+                "content": n.get("content", ""),  # 保存完整内容
                 "hash": _news_hash(n.get("content", ""), n.get("time", "")),
             }
             for n in new_news
         ]
+        # 按时间排序（新新闻在前）
+        all_news.sort(key=lambda x: x.get("time", ""), reverse=True)
         save_telegraph_history(history_path, all_news, new_hashes)
 
     return new_news, len(new_news)

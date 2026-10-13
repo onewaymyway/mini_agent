@@ -1257,8 +1257,8 @@ def render_telegraph_news(algo: Dict, manual: Dict):
     st.header("📰 新浪 7x24 直播流")
     st.caption("实时财经新闻抓取、LLM 机会分析、长期统计")
 
-    tab1, tab2, tab3 = st.tabs([
-        "📊 最新分析", "📈 长期统计", "⚙️ 手动触发"
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📊 最新分析", "📈 长期统计", "📜 原始新闻", "⚙️ 手动触发"
     ])
 
     state_path = DATA_DIR / "telegraph_analysis_state.json"
@@ -1286,9 +1286,13 @@ def render_telegraph_news(algo: Dict, manual: Dict):
             # 显示最近20条分析
             recent = analyses[-20:][::-1]
             for i, item in enumerate(recent):
-                excerpt = item.get("news_excerpt", "")[:60]
+                excerpt = item.get("news_excerpt", "")[:80]
                 time_str = item.get("news_time", "")
                 with st.expander(f"{i+1}. [{time_str}] {excerpt}..."):
+                    # 完整新闻内容
+                    news_content = item.get("news_content", "") or item.get("news_excerpt", "")
+                    st.markdown(f"**新闻内容**:\n{news_content}")
+                    st.divider()
                     direction = item.get("direction", "")
                     emoji = {"positive": "🟢", "negative": "🔴", "neutral": "⚪"}.get(direction, "⚪")
                     st.markdown(f"**方向**: {emoji} {direction.upper()}")
@@ -1345,8 +1349,29 @@ def render_telegraph_news(algo: Dict, manual: Dict):
         except Exception as e:
             st.error(f"加载统计数据失败: {e}")
 
-    # ── Tab 3: 手动触发 ──
+    # ── Tab 3: 原始新闻 ──
     with tab3:
+        st.subheader("原始抓取新闻")
+        telegraph_history_path = DATA_DIR / "telegraph_history.json"
+        if not telegraph_history_path.exists():
+            st.info("暂无历史新闻数据。")
+        else:
+            try:
+                history_data = json.loads(telegraph_history_path.read_text(encoding="utf-8"))
+                news_list = history_data.get("news", [])
+                if not news_list:
+                    st.info("暂无新闻记录。")
+                else:
+                    st.caption(f"共 {len(news_list)} 条新闻（按时间排序，最新在前）")
+                    for i, item in enumerate(news_list[:100]):  # 最多显示100条
+                        with st.expander(f"{i+1}. [{item.get('time', '')}] {item.get('content', '')[:50]}..."):
+                            st.markdown(item.get('content', ''))
+            except Exception as e:
+                st.error(f"加载原始新闻失败: {e}")
+
+    # ── Tab 4: 手动触发 ──
+    with tab4:
+
         st.subheader("手动触发扫描")
         if st.button("🚀 立即运行扫描", type="primary"):
             with st.spinner("正在抓取和分析新闻..."):
