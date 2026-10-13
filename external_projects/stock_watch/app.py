@@ -572,6 +572,105 @@ def _run_script_live(spec: ScriptSpec, out_ph, status_ph) -> dict:
     }
 
 
+def _load_screener_json(state_key: str) -> tuple[Optional[pd.DataFrame], Optional[str], Optional[str]]:
+    """加载最近一次选股的 JSON 结果，返回 (DataFrame, status_caption, source_summary) 或全 None。"""
+    patterns: dict = {
+        "screener1": "local_screener_*.json",
+        "screener2": "price_position_*.json",
+        "screener3": "advanced_screener_*.json",
+    }
+    pattern = patterns.get(state_key)
+    if not pattern:
+        return None, None, None
+
+    candidates = sorted(REPORTS_DIR.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not candidates:
+        return None, None, None
+
+    latest = candidates[0]
+    try:
+        data = json.loads(latest.read_text(encoding="utf-8"))
+    except Exception:
+        return None, None, None
+
+    results = data.get("results", [])
+    if not results:
+        return None, None, None
+
+    # ── 构建 DataFrame（兼容三种脚本的字段差异）────────────────────────────
+    rows = []
+    for r in results:
+        symbol = r.get("symbol", "")
+        name = r.get("name", "") or "-"
+        generated_at = data.get("generated_at", "")
+
+        if state_key == "screener1":  # 多因子
+            total_score = r.get("total_score", 0.0)
+            latest_close = r.get("latest_close", "-")
+            signal_count = r.get("signal_count", 0)
+            top_signals = r.get("top_signals", [])
+            sig_str = ", ".join(s.get("name", "") for s in top_signals[:3]) if top_signals else "-"
+            row = {
+                "排名": rows.__len__() + 1,
+                "代码": symbol,
+                "名称": name,
+                "综合评分": total_score,
+                "最新收盘": latest_close,
+                "信号数": signal_count,
+                "主要信号": sig_str,
+            }
+        elif state_key == "screener2":  # 价格位置
+            est_score = r.get("estimated_score", 0.0)
+            latest_close = r.get("latest_close", "-")
+            percentile = r.get("price_percentile", 0.0)
+            upside = r.get("upside_pct", 0.0)
+            downside = r.get("downside_pct", 0.0)
+            interpretation = r.get("interpretation", "-")
+            row = {
+                "排名": rows.__len__() + 1,
+                "代码": symbol,
+                "名称": name,
+                "预估分数": est_score,
+                "收盘": latest_close,
+                "价格分位": f"{percentile:.1%}" if percentile else "-",
+                "涨幅空间": f"{upside:.1%}" if upside is not None else "-",
+                "跌幅空间": f"{downside:.1%}" if downside is not None else "-",
+                "解读": interpretation,
+            }
+        else:  # screener3 高级多因子
+            total_score = r.get("total_score", 0.0)
+            trend = r.get("trend_score", 0.0)
+            momentum = r.get("momentum_score", 0.0)
+            volume = r.get("volume_score", 0.0)
+            price = r.get("price_score", 0.0)
+            latest_close = r.get("latest_close", "-")
+            signals = r.get("all_signals", [])
+            sig_str = ", ".join(signals[:4]) if signals else "-"
+            row = {
+                "排名": rows.__len__() + 1,
+                "代码": symbol,
+                "名称": name,
+                "总分": total_score,
+                "趋势": trend,
+                "动量": momentum,
+                "量能": volume,
+                "位置": price,
+                "收盘": latest_close,
+                "信号": sig_str,
+            }
+        rows.append(row)
+
+    if not rows:
+        return None, None, None
+
+    df = pd.DataFrame(rows)
+    when = generated_at or datetime.fromisoformat(latest.stat().st_ctime).strftime("%Y-%m-%d %H:%M")
+    total_analyzed = data.get("total_analyzed", 0)
+    skipped = data.get("skipped", 0)
+    source_summary = f"来源: {total_analyzed + skipped} 只标的中 {total_analyzed} 只有数据，跳过 {skipped} 只 | 生成时间 {when}"
+    return df, f"📋 选股结果（{when}，共 {len(df)} 只候选）", source_summary
+
+
 def render_script_output(state_key: str, clicked: Optional[ScriptSpec]) -> None:
     """页面上的脚本输出区（需放在按钮之后、全宽位置）。
 
@@ -1025,7 +1124,7 @@ def render_exec_dashboard():
 def _screener_tab(key: str, title: str, description: str, script_path: str,
                   default_pool: str = "algo", default_top_n: int = 10, default_lookback: int = 120,
                   lookback_arg: str = "--lookback-days"):
-    """渲染单个选股 Tab。"""
+    """渲染单个选股 Tab，含结果表格与加入手动池操作。"""
     st.subheader(f"{title}（{script_path.split('/')[-1].replace('.py', '')}）")
     st.markdown(description)
     col_a, col_b, col_c = st.columns(3)
@@ -1045,6 +1144,45 @@ def _screener_tab(key: str, title: str, description: str, script_path: str,
         render_script_output(key, ScriptSpec(key, title, tuple(args)))
     else:
         render_script_output(key, None)
+
+    # 加载并展示 JSON 结果表格
+    df, caption, summary = _load_screener_json(key)
+    if df is not None:
+        st.markdown(caption)
+        if summary:
+            st.caption(summary)
+        # 为每行提供"加入手动池"按钮
+        for idx, row in df.iterrows():
+            symbol = row["代码"]
+            name = row["名称"]
+            col_tx, col_btn = st.columns([6, 1])
+            with col_tx:
+                st.markdown(f"**{int(row['排名'])}.** {symbol} — {name}")
+            with col_btn:
+                btn_key = f"add_to_manual_{key}_{symbol}"
+                if st.button("✋ 加入手动池", key=btn_key, size="small"):
+                    if symbol in manual:
+                        st.warning(f"{symbol} {name} 已在手动池中")
+                    else:
+                        now = datetime.now().isoformat()
+                        entry = CandidateEntry(
+                            code=symbol,
+                            name=name,
+                            type="stock",
+                            score=float(row.get("综合评分", row.get("预估分数", row.get("总分", 0)))),
+                            sources=[caption],
+                            reasons=[],
+                            first_seen=now,
+                            last_seen=now,
+                            state=DEFAULT_STATE,
+                            pool_type="manual",
+                        )
+                        entry.state_history.append(StateEvent(state=entry.state, entered_at=now, note="选股结果加入"))
+                        manual[symbol] = entry
+                        save_pool(MANUAL_POOL_PATH, manual)
+                        st.success(f"已加入手动池: {name}({symbol})")
+                        st.rerun()
+        st.divider()
 
 
 def render_screener(algo: Dict, manual: Dict):
