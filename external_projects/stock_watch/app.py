@@ -1188,6 +1188,9 @@ def _screener_tab(key: str, title: str, description: str, script_path: str,
         st.markdown(caption)
         if summary:
             st.caption(summary)
+        # 显示完整 DataFrame 表格
+        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.divider()
         # 为每行提供"加入手动池"按钮
         for idx, row in df.iterrows():
             symbol = row["代码"]
