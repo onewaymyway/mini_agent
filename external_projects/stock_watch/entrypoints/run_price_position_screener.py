@@ -90,6 +90,10 @@ def run_price_position_screener(
                 overlapped = sum(1 for s in db_name_map if s in name_map)
                 name_map.update(db_name_map)
                 logger.info("已从数据库补充 %d 只名称（与候选池重叠 %d 只）", len(db_name_map), overlapped)
+                # 获取全量标的列表
+                symbols = db.fetch_all_symbols()
+                symbols = [s for s in symbols if s in name_map]  # 只保留有名称的
+                logger.info("全量扫描 %d 只标的", len(symbols))
             except Exception as e:
                 logger.debug("从数据库加载名称失败: %s", e)
         else:
