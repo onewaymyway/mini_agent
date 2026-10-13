@@ -169,14 +169,22 @@ def run_local_screener(
     """核心选股逻辑：分析给定标的列表，按综合评分排序返回 Top N。"""
     ensure_dirs()
     
-    # 加载股票名称映射
-    name_map = load_name_mapping(pool_type)
-    logger.info("已加载 %d 只股票名称映射", len(name_map))
-    
     with DailyKlineDB() as db:
         info = db.table_info()
         logger.info("数据库状态: %s 只标的, %s 行, 最新日期 %s",
                     info["symbol_count"], info["total_rows"], info["latest_date"])
+
+        # 加载股票名称映射：优先从候选池，全量扫描时从 DB 补充
+        name_map = load_name_mapping(pool_type)
+        logger.info("已从候选池加载 %d 只股票名称映射", len(name_map))
+        if use_all_symbols:
+            try:
+                db_names = db.get_symbol_names()
+                overlapped = sum(1 for s in db_names if s in name_map)
+                name_map.update(db_names)
+                logger.info("已从数据库补充 %d 只名称（与候选池重叠 %d 只）", len(db_names), overlapped)
+            except Exception as e:
+                logger.debug("从数据库加载名称失败: %s", e)
 
         # 确定分析范围
         if symbols is None:
