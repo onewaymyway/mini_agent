@@ -490,9 +490,24 @@ def _run_script_live(spec: ScriptSpec, out_ph, status_ph) -> dict:
     """在子进程中运行脚本，实时把输出刷到 out_ph，返回本次运行记录。"""
     lines: List[str] = []
     start = time.time()
-    # 子进程 stdout 被管道接管后默认是块缓冲，不加 -u 看不到实时输出；
-    # Windows 下默认编码是 gbk，统一成 utf-8 避免中文日志乱码。
-    env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"}
+
+    # Build command for display
+    cmd = [sys.executable, "-u", *spec.args]
+    lines.append(f"=== COMMAND: {' '.join(cmd)} ===")
+    lines.append(f"=== CWD: {PROJECT_ROOT} ===")
+    lines.append("")
+
+    # 清理环境变量，避免 PYTHONSTARTUP 等导致子进程崩溃
+    env = dict(os.environ)
+    env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    env.pop("PYTHONSTARTUP", None)
+    env.pop("PYTHONLEGACYWINDOWSSTDIO", None)
+    env.pop("PYTHONUTF8", None)
+    env.pop("PYTHON_BASIC_REPL", None)
+    lines.append(f"=== PYTHONSTARTUP cleared: {'PYTHONSTARTUP' not in env} ===")
+    lines.append(f"=== PYTHONPATH: {env.get('PYTHONPATH', 'not set')} ===")
+    lines.append("")
 
     status_ph.info(f"正在启动{spec.title}...")
     try:
@@ -500,7 +515,7 @@ def _run_script_live(spec: ScriptSpec, out_ph, status_ph) -> dict:
             [sys.executable, "-u", *spec.args],
             cwd=PROJECT_ROOT,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,  # 合并 stderr，保证 logging 与 print 的先后顺序
+            stderr=subprocess.STDOUT,
             text=True,
             encoding="utf-8",
             errors="replace",
@@ -508,7 +523,12 @@ def _run_script_live(spec: ScriptSpec, out_ph, status_ph) -> dict:
             env=env,
         )
     except OSError as exc:
-        lines.append(f"启动失败: {exc}")
+        lines.append(f"启动失败 (OSError): {exc}")
+        lines.append("")
+        lines.append("=== Environment Debug ===")
+        for k, v in sorted(os.environ.items()):
+            if 'PYTHON' in k or k == 'PATH':
+                lines.append(f"  {k}={v[:100]}")
         out_ph.code("\n".join(lines), language="text")
         return {
             "key": spec.key, "title": spec.title, "lines": lines, "log_file": None,
@@ -534,6 +554,11 @@ def _run_script_live(spec: ScriptSpec, out_ph, status_ph) -> dict:
     reader.join(timeout=3)
     if not lines:
         lines.append("（脚本没有任何输出）")
+
+    if proc.returncode != 0:
+        lines.append("")
+        lines.append(f"=== EXIT CODE: {proc.returncode} ===")
+
     out_ph.code("\n".join(lines), language="text")
 
     return {
@@ -997,6 +1022,52 @@ def render_exec_dashboard():
     render_script_output("exec", clicked)
 
 
+def _screener_tab(key: str, title: str, description: str, script_path: str,
+                  default_pool: str = "algo", default_top_n: int = 10, default_lookback: int = 120,
+                  lookback_arg: str = "--lookback-days"):
+    """渲染单个选股 Tab。"""
+    st.subheader(f"{title}（{script_path.split('/')[-1].replace('.py', '')}）")
+    st.markdown(description)
+    col_a, col_b, col_c = st.columns(3)
+    with col_a:
+        pool_type = st.selectbox("候选池", ["algo", "manual"], key=f"{key}_pool")
+    with col_b:
+        top_n = st.number_input("Top N", min_value=1, max_value=100, value=default_top_n, key=f"{key}_topn")
+    with col_c:
+        lookback = st.number_input("历史天数", min_value=30, max_value=500, value=default_lookback, key=f"{key}_lookback")
+    use_all = st.checkbox("全量标的（5151 只）", key=f"{key}_all")
+    if st.button("▶ 运行", key=f"run_{key}", type="primary"):
+        args = [sys.executable, "-u", script_path,
+                "--pool-type", pool_type, "--top-n", str(top_n),
+                lookback_arg, str(lookback)]
+        if use_all:
+            args.append("--all")
+        render_script_output(key, ScriptSpec(key, title, tuple(args)))
+    else:
+        render_script_output(key, None)
+
+
+def render_screener(algo: Dict, manual: Dict):
+    """选股页面。"""
+    st.header("🔍 选股")
+    st.caption("使用本地 K 线数据（kline.db）进行技术面选股，支持多种策略。")
+
+    tab1, tab2, tab3 = st.tabs(["多因子选股", "价格位置选股", "高级多因子选股"])
+
+    with tab1:
+        _screener_tab("screener1", "多因子选股", "基于 MACD/RSI/KDJ/MA/布林带/量能 六维度加权评分。",
+                      "entrypoints/run_local_screener.py")
+
+    with tab2:
+        _screener_tab("screener2", "价格位置选股", "统计 N 天历史最高/最低价，计算当前价格相对区间的位置。",
+                      "entrypoints/run_price_position_screener.py",
+                      lookback_arg="--lookback")
+
+    with tab3:
+        _screener_tab("screener3", "高级多因子选股", "四维度综合评分：趋势 30 + 动量 20 + 量能 15 + 价格位置 35 = 100 满分。",
+                      "entrypoints/run_advanced_screener.py")
+
+
 # ─────────────────────────────────────────────────────────────
 # 主程序
 # ─────────────────────────────────────────────────────────────
@@ -1018,7 +1089,7 @@ def main():
         st.markdown("### 📑 导航")
         page = st.radio(
             "选择页面",
-            ["🏠 概览", "✋ 手动池", "🤖 算法池", "📡 信号扫描", "📈 K线图", "🔌 数据源健康", "🚀 执行入口"],
+            ["🏠 概览", "✋ 手动池", "🤖 算法池", "📡 信号扫描", "📈 K线图", "🔍 选股", "🔌 数据源健康", "🚀 执行入口"],
             label_visibility="collapsed",
         )
         st.markdown("---")
@@ -1051,6 +1122,8 @@ def main():
         render_signals(algo, manual)
     elif page == "📈 K线图":
         render_kline_viewer(algo, manual)
+    elif page == "🔍 选股":
+        render_screener(algo, manual)
     elif page == "🔌 数据源健康":
         render_source_health()
     elif page == "🚀 执行入口":
