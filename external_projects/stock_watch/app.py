@@ -583,7 +583,7 @@ def _load_screener_json(state_key: str) -> tuple[Optional[pd.DataFrame], Optiona
     if not pattern:
         return None, None, None
 
-    candidates = sorted(REPORTS_DIR.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+    candidates = sorted(REPORTS_DIR.rglob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
     if not candidates:
         return None, None, None
 
