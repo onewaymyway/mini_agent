@@ -1037,7 +1037,7 @@ def _screener_tab(key: str, title: str, description: str, script_path: str,
         lookback = st.number_input("历史天数", min_value=30, max_value=500, value=default_lookback, key=f"{key}_lookback")
     use_all = st.checkbox("全量标的（5151 只）", key=f"{key}_all")
     if st.button("▶ 运行", key=f"run_{key}", type="primary"):
-        args = [sys.executable, "-u", script_path,
+        args = [script_path,
                 "--pool-type", pool_type, "--top-n", str(top_n),
                 lookback_arg, str(lookback)]
         if use_all:
