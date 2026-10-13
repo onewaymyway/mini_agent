@@ -1122,6 +1122,7 @@ def render_exec_dashboard():
 
 
 def _screener_tab(key: str, title: str, description: str, script_path: str,
+                  manual: Dict,
                   default_pool: str = "algo", default_top_n: int = 10, default_lookback: int = 120,
                   lookback_arg: str = "--lookback-days"):
     """渲染单个选股 Tab，含结果表格与加入手动池操作。"""
@@ -1194,16 +1195,16 @@ def render_screener(algo: Dict, manual: Dict):
 
     with tab1:
         _screener_tab("screener1", "多因子选股", "基于 MACD/RSI/KDJ/MA/布林带/量能 六维度加权评分。",
-                      "entrypoints/run_local_screener.py")
+                      "entrypoints/run_local_screener.py", manual)
 
     with tab2:
         _screener_tab("screener2", "价格位置选股", "统计 N 天历史最高/最低价，计算当前价格相对区间的位置。",
                       "entrypoints/run_price_position_screener.py",
-                      lookback_arg="--lookback")
+                      lookback_arg="--lookback", manual=manual)
 
     with tab3:
         _screener_tab("screener3", "高级多因子选股", "四维度综合评分：趋势 30 + 动量 20 + 量能 15 + 价格位置 35 = 100 满分。",
-                      "entrypoints/run_advanced_screener.py")
+                      "entrypoints/run_advanced_screener.py", manual=manual)
 
 
 # ─────────────────────────────────────────────────────────────
