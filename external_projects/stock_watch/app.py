@@ -1246,6 +1246,129 @@ def render_screener(algo: Dict, manual: Dict):
                       "entrypoints/run_advanced_screener.py", manual=manual)
 
 
+def render_telegraph_news(algo: Dict, manual: Dict):
+    """新浪 7x24 新闻分析页面。"""
+    from stock_watch.news_signals import (
+        load_analysis_state,
+        get_all_analyses_summary,
+    )
+    from stock_watch.config import DATA_DIR
+
+    st.header("📰 新浪 7x24 直播流")
+    st.caption("实时财经新闻抓取、LLM 机会分析、长期统计")
+
+    tab1, tab2, tab3 = st.tabs([
+        "📊 最新分析", "📈 长期统计", "⚙️ 手动触发"
+    ])
+
+    state_path = DATA_DIR / "telegraph_analysis_state.json"
+
+    # ── Tab 1: 最新分析 ──
+    with tab1:
+        st.subheader("最近分析结果")
+
+        if not state_path.exists():
+            st.info("暂无分析数据，请先运行扫描任务。")
+            return
+
+        try:
+            state = load_analysis_state(state_path)
+            analyses = state.get("analyses", [])
+            last_run = state.get("last_run_at", "未知")
+            total_analyses = len(analyses)
+
+            st.caption(f"最后更新: {last_run} | 总分析记录: {total_analyses}")
+
+            if not analyses:
+                st.warning("暂无分析记录")
+                return
+
+            # 显示最近20条分析
+            recent = analyses[-20:][::-1]
+            for i, item in enumerate(recent):
+                excerpt = item.get("news_excerpt", "")[:60]
+                time_str = item.get("news_time", "")
+                with st.expander(f"{i+1}. [{time_str}] {excerpt}..."):
+                    direction = item.get("direction", "")
+                    emoji = {"positive": "🟢", "negative": "🔴", "neutral": "⚪"}.get(direction, "⚪")
+                    st.markdown(f"**方向**: {emoji} {direction.upper()}")
+                    st.markdown(f"**类型**: {item.get('opportunity_type', '')}")
+                    st.markdown(f"**置信度**: {item.get('confidence', '')}")
+
+                    if item.get("related_stocks"):
+                        st.markdown("**相关股票**:")
+                        for s in item["related_stocks"]:
+                            st.markdown(f"- {s.get('code', '')} ({s.get('name', '')}) - 相关性: {s.get('relevance', '')}")
+
+                    if item.get("related_etfs"):
+                        st.markdown("**相关ETF**:")
+                        for e in item["related_etfs"]:
+                            st.markdown(f"- {e.get('code', '')} ({e.get('name', '')}) - 行业: {e.get('sector', '')}")
+
+                    if item.get("industry_opportunities"):
+                        st.markdown("**行业机会**:")
+                        st.markdown(", ".join(item["industry_opportunities"]))
+
+                    st.markdown(f"**分析理由**:\n{item.get('reasoning', '')}")
+
+        except Exception as e:
+            st.error(f"加载分析数据失败: {e}")
+
+    # ── Tab 2: 长期统计 ──
+    with tab2:
+        st.subheader("长期统计分析")
+        days = st.slider("统计天数", 1, 90, 7)
+
+        try:
+            summary = get_all_analyses_summary(state_path, days=days)
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("总分析数", summary.get("total_analyses", 0))
+            with col2:
+                st.metric("正面机会", summary.get("positive_count", 0))
+            with col3:
+                st.metric("负面机会", summary.get("negative_count", 0))
+
+            if summary.get("top_stocks"):
+                st.markdown("### 高频提及股票")
+                df_stocks = pd.DataFrame(summary["top_stocks"])
+                st.dataframe(df_stocks, use_container_width=True)
+
+            if summary.get("top_industries"):
+                st.markdown("### 高频提及行业")
+                df_ind = pd.DataFrame([
+                    {"行业": k, "提及次数": v}
+                    for k, v in summary["top_industries"]
+                ])
+                st.dataframe(df_ind, use_container_width=True)
+
+        except Exception as e:
+            st.error(f"加载统计数据失败: {e}")
+
+    # ── Tab 3: 手动触发 ──
+    with tab3:
+        st.subheader("手动触发扫描")
+        if st.button("🚀 立即运行扫描", type="primary"):
+            with st.spinner("正在抓取和分析新闻..."):
+                try:
+                    result = subprocess.run(
+                        [sys.executable, "entrypoints/run_telegraph_scan.py"],
+                        cwd=str(PROJECT_ROOT),
+                        capture_output=True,
+                        text=True,
+                        timeout=180,
+                    )
+                    if result.returncode == 0:
+                        st.success("扫描完成！")
+                        st.code(result.stdout, language="text")
+                    else:
+                        st.error(f"扫描失败: {result.stderr}")
+                except subprocess.TimeoutExpired:
+                    st.error("扫描超时（180秒）")
+                except Exception as e:
+                    st.error(f"执行失败: {e}")
+
+
 # ─────────────────────────────────────────────────────────────
 # 主程序
 # ─────────────────────────────────────────────────────────────
@@ -1267,7 +1390,7 @@ def main():
         st.markdown("### 📑 导航")
         page = st.radio(
             "选择页面",
-            ["🏠 概览", "✋ 手动池", "🤖 算法池", "📡 信号扫描", "📈 K线图", "🔍 选股", "🔌 数据源健康", "🚀 执行入口"],
+            ["🏠 概览", "✋ 手动池", "🤖 算法池", "📡 信号扫描", "📰 新浪7x24", "📈 K线图", "🔍 选股", "🔌 数据源健康", "🚀 执行入口"],
             label_visibility="collapsed",
         )
         st.markdown("---")
@@ -1298,6 +1421,8 @@ def main():
         render_algo_pool(algo, manual)
     elif page == "📡 信号扫描":
         render_signals(algo, manual)
+    elif page == "📰 新浪7x24":
+        render_telegraph_news(algo, manual)
     elif page == "📈 K线图":
         render_kline_viewer(algo, manual)
     elif page == "🔍 选股":

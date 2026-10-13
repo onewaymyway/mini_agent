@@ -14,10 +14,13 @@ akshare `stock_news_em` 的中文列名，标题字段常见"新闻标题"/"标�
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
+
+logger = logging.getLogger(__name__)
 
 from stock_watch.signals import Signal
 
@@ -291,4 +294,241 @@ def filter_dedup_news(
         save_telegraph_history(history_path, all_news, new_hashes)
 
     return new_news, len(new_news)
+
+
+# ─────────────────────────────────────────────────────────────
+# LLM 分析功能
+# ─────────────────────────────────────────────────────────────
+
+ANALYSIS_STATE_PATH = None  # 运行时设置
+
+ANALYSIS_SYSTEM_PROMPT = """你是股票投资分析师，专注于从财经新闻中挖掘投资机会。
+
+请分析以下新浪财经7x24直播流新闻，识别其中的投资机会。
+
+对于每条新闻，你需要：
+1. 识别涉及的具体股票（代码+名称）
+2. 识别涉及的行业/板块机会
+3. 判断对A股的影响方向（利好/利空/中性）
+4. 给出置信度（高/中/低）
+5. 简短说明理由（不超过50字）
+
+输出格式为JSON数组，每项包含：
+- news_hash: 新闻的唯一标识（时间+内容哈希）
+- news_time: 新闻时间
+- news_excerpt: 新闻摘要（前80字）
+- opportunity_type: "stock" | "industry" | "market"
+- related_stocks: [{"code": "股票代码", "name": "股票名称", "relevance": "高/中/低"}]
+- related_etfs: [{"code": "ETF代码", "name": "ETF名称", "sector": "所属行业"}]
+- industry_opportunities: ["行业1", "行业2"]
+- direction: "positive" | "negative" | "neutral"
+- confidence: "high" | "medium" | "low"
+- reasoning: "分析理由"
+"""
+
+
+
+def _get_llm_helper():
+    """获取LLM助手实例。"""
+    try:
+        from mini_agent.config import load_config
+        from mini_agent.llm.service import LLMHelper
+        
+        # 检测主项目根目录
+        import os
+        main_root = os.environ.get("MINI_AGENT_MAIN_PROJECT_ROOT")
+        if not main_root:
+            candidate = Path(__file__).resolve().parent.parent.parent
+            if (candidate / "src" / "mini_agent").is_dir():
+                main_root = str(candidate)
+                os.environ["MINI_AGENT_MAIN_PROJECT_ROOT"] = main_root
+        
+        cfg = load_config()
+        return LLMHelper.from_config(cfg)
+    except ImportError as e:
+        raise RuntimeError(f"无法导入 mini_agent LLM 模块: {e}")
+    except Exception as e:
+        raise RuntimeError(f"LLM 初始化失败: {e}")
+
+
+def analyze_telegraph_news_llm(
+    news_items: List[Dict[str, Any]],
+    stock_name_map: Optional[Dict[str, str]] = None,
+    pool_codes: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """使用LLM分析新浪7x24新闻，识别投资机会。
+
+    参数:
+        news_items: 新闻列表 [{time, content, url}]
+        stock_name_map: 可选，code -> name 映射
+        pool_codes: 可选，当前股票池中的所有代码
+
+    返回:
+        分析结果列表，每项包含 opportunity 信息
+    """
+    if not news_items:
+        return []
+
+    # 构建股票池参考
+    pool_ref = ""
+    if pool_codes:
+        pool_items = []
+        for code in pool_codes[:100]:  # 限制数量避免prompt过长
+            name = stock_name_map.get(code, code) if stock_name_map else code
+            pool_items.append(f"{code}({name})")
+        pool_ref = f"\n\n当前股票池参考（部分）:\n{', '.join(pool_items[:30])}...\n"
+
+    # 构建新闻文本
+    news_text_parts = []
+    for i, item in enumerate(news_items[:30]):  # 限制数量
+        time_str = item.get("time", "")
+        content = item.get("content", "")[:150]  # 截断过长内容
+        news_text_parts.append(f"[{time_str}] {content}")
+
+    news_text = "\n".join(news_text_parts)
+
+    prompt = f"""{ANALYSIS_SYSTEM_PROMPT}
+
+当前新闻列表（共{len(news_items)}条，展示前{min(30, len(news_items))}条）：
+{news_text}
+{pool_ref}
+
+请直接输出JSON数组，不要包含其他说明文字。"""
+
+    try:
+        llm = _get_llm_helper()
+        response = llm.ask(prompt, timeout=60, max_retries=2)
+
+        # 解析JSON响应
+        results = []
+        # 尝试从响应中提取JSON
+        import re as _re
+        json_match = _re.search(r'\[.*\]', response, re.DOTALL)
+        if json_match:
+            try:
+                results = json.loads(json_match.group())
+            except json.JSONDecodeError:
+                logger.warning("LLM返回JSON解析失败，尝试修复...")
+                # 简单修复：尝试找到有效的JSON片段
+                fixed = response.strip()
+                if fixed.startswith('['):
+                    fixed = fixed[:fixed.rfind(']') + 1]
+                    try:
+                        results = json.loads(fixed)
+                    except:
+                        pass
+
+        logger.info("LLM分析完成，返回%d条机会", len(results))
+        return results
+    except Exception as e:
+        logger.error("LLM分析失败: %s", e)
+        return []
+
+
+def load_analysis_state(state_path: Path) -> Dict[str, Any]:
+    """加载分析状态（包含cursor）。"""
+    if not state_path.exists():
+        return {"last_analysis_index": -1, "analyses": []}
+    try:
+        data = json.loads(state_path.read_text(encoding="utf-8"))
+        return {
+            "last_analysis_index": data.get("last_analysis_index", -1),
+            "analyses": data.get("analyses", []),
+            "last_run_at": data.get("last_run_at", ""),
+        }
+    except Exception:
+        return {"last_analysis_index": -1, "analyses": []}
+
+
+def save_analysis_state(
+    state_path: Path,
+    last_index: int,
+    new_analyses: List[Dict[str, Any]],
+) -> None:
+    """保存分析状态。"""
+    state = load_analysis_state(state_path)
+    state["last_analysis_index"] = last_index
+    state["analyses"] = state.get("analyses", []) + new_analyses
+    state["last_run_at"] = datetime.now(timezone.utc).isoformat()
+    # 保留最近2000条分析记录
+    state["analyses"] = state["analyses"][-2000:]
+    state_path.write_text(
+        json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def get_analyses_by_date(state_path: Path, date_str: str) -> List[Dict]:
+    """按日期获取分析记录。"""
+    state = load_analysis_state(state_path)
+    return [
+        a for a in state.get("analyses", [])
+        if a.get("analysis_date", "") == date_str
+    ]
+
+
+def get_all_analyses_summary(state_path: Path, days: int = 7) -> Dict[str, Any]:
+    """获取长期统计分析摘要。"""
+    from datetime import timedelta
+    state = load_analysis_state(state_path)
+    analyses = state.get("analyses", [])
+
+    # 过滤最近N天的分析（使用news_time作为时间戳）
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    recent = [
+        a for a in analyses
+        if a.get("news_time", "") >= cutoff.strftime("%Y-%m-%dT%H:%M:%S")
+    ]
+
+    # 统计
+    stock_mentions: Dict[str, Dict] = {}
+    industry_mentions: Dict[str, int] = {}
+    positive_count = 0
+    negative_count = 0
+
+    for a in recent:
+        direction = a.get("direction", "")
+        if direction == "positive":
+            positive_count += 1
+        elif direction == "negative":
+            negative_count += 1
+
+        for stock in a.get("related_stocks", []):
+            code = stock.get("code", "")
+            if code not in stock_mentions:
+                stock_mentions[code] = {
+                    "code": code,
+                    "name": stock.get("name", code),
+                    "count": 0,
+                    "positive": 0,
+                    "negative": 0,
+                }
+            stock_mentions[code]["count"] += 1
+            if direction == "positive":
+                stock_mentions[code]["positive"] += 1
+            elif direction == "negative":
+                stock_mentions[code]["negative"] += 1
+
+        for ind in a.get("industry_opportunities", []):
+            industry_mentions[ind] = industry_mentions.get(ind, 0) + 1
+
+    top_stocks = sorted(
+        stock_mentions.values(),
+        key=lambda x: x["count"],
+        reverse=True,
+    )[:10]
+
+    top_industries = sorted(
+        industry_mentions.items(),
+        key=lambda x: x[1],
+        reverse=True,
+    )[:10]
+
+    return {
+        "total_analyses": len(recent),
+        "positive_count": positive_count,
+        "negative_count": negative_count,
+        "top_stocks": top_stocks,
+        "top_industries": top_industries,
+        "period_days": days,
+    }
 

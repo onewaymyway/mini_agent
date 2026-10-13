@@ -37,7 +37,14 @@ from stock_watch.data_sources import (
     DataSourceError,
     fetch_sina_telegraph,
 )
-from stock_watch.news_signals import classify_telegraph_news, filter_dedup_news
+from stock_watch.news_signals import (
+    classify_telegraph_news,
+    filter_dedup_news,
+    analyze_telegraph_news_llm,
+    load_analysis_state,
+    save_analysis_state,
+    get_all_analyses_summary,
+)
 from stock_watch.source_health import tracked_source
 from stock_watch.signals import Signal
 
@@ -45,6 +52,8 @@ logger = logging.getLogger("stock_watch.telegraph_scan")
 
 # 报告输出路径
 TELEGRAPH_REPORT_DIR = REPORTS_DIR / "telegraph"
+# 分析状态路径
+TELEGRAPH_ANALYSIS_STATE_PATH = DATA_DIR / "telegraph_analysis_state.json"
 
 
 def _load_stock_name_map() -> dict:
@@ -118,28 +127,25 @@ def _generate_report(stats: dict, report_path: Path) -> None:
     if stats["sample_news"]:
         lines.append("## 样例新闻\n")
         for i, news in enumerate(stats["sample_news"][:5], 1):
-            lines.append(f"### {i}. [{news['time']}]\n")
-            lines.append(f"{news['content']}\n")
+            lines.append(f"{i}. **{news['time']}** {news['content']}\n")
             if news.get("codes"):
-                lines.append(f"涉及股票: {', '.join(news['codes'])}\n")
-            lines.append("")
+                lines.append(f"   相关股票: {', '.join(news['codes'])}\n")
+        lines.append("")
 
-    report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text("\n".join(lines), encoding="utf-8")
     logger.info("报告已生成: %s", report_path)
 
 
 def main() -> int:
-    ensure_dirs()
     cfg = load_config()
-
-    # 确保 TELEGRAPH_SCAN 开关开启
-    if not cfg.source_enabled("sina_telegraph"):
-        logger.info("新浪 7x24 数据源未启用，跳过")
-        return 0
+    ensure_dirs()
 
     # 加载股票名称映射
     stock_name_map = _load_stock_name_map()
+
+    # 加载候选池（用于构建股票池参考）
+    algo_pool = load_pool(ALGO_POOL_PATH)
+    algo_pool = ensure_seeds(algo_pool, cfg.seeds)
 
     # 抓取新浪 7x24 直播流
     try:
@@ -161,6 +167,32 @@ def main() -> int:
     new_news, new_count = filter_dedup_news(news_items, TELEGRAPH_HISTORY_PATH)
     logger.info("去重后新增 %d 条新闻 (总数 %d)", new_count, len(news_items))
 
+    # LLM分析新新闻
+    llm_analyses = []
+    if new_news and cfg.sources.get("sina_telegraph", False):
+        try:
+            # 构建股票池代码列表
+            pool_codes = list(algo_pool.keys())
+            # 分析新闻机会
+            llm_analyses = analyze_telegraph_news_llm(
+                new_news,
+                stock_name_map=stock_name_map,
+                pool_codes=pool_codes,
+            )
+            # 保存分析状态（cursor = 上次位置 + 本次新增数量）
+            from stock_watch.news_signals import load_analysis_state as _load_state
+            _prev_state = _load_state(TELEGRAPH_ANALYSIS_STATE_PATH)
+            _prev_index = _prev_state.get('last_analysis_index', 0)
+            _new_index = _prev_index + len(new_news)
+            save_analysis_state(
+                TELEGRAPH_ANALYSIS_STATE_PATH,
+                _new_index,
+                llm_analyses,
+            )
+            logger.info("LLM分析完成，识别%d条投资机会", len(llm_analyses))
+        except Exception as e:
+            logger.warning("LLM分析失败，跳过: %s", e)
+
     # 分析新闻，提取股票信号（使用去重后的新闻）
     stats = classify_telegraph_news(new_news, stock_name_map=stock_name_map)
 
@@ -169,9 +201,6 @@ def main() -> int:
     _generate_report(stats, report_path)
 
     # 将正面信号合并进候选池（仅算法池）
-    algo_pool = load_pool(ALGO_POOL_PATH)
-    algo_pool = ensure_seeds(algo_pool, cfg.seeds)
-
     positive_threshold = cfg.telegraph_positive_threshold
     positive_stocks = [
         m for m in stats["stock_mentions"]
