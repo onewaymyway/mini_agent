@@ -485,6 +485,46 @@ class DailyKlineDB:
         if df is None or df.empty:
             return 0
         rows = self._normalize_kline_rows(df, symbol)
+
+        # ── 复权检测：比较新数据最后一行与数据库中对应日期行的收盘价 ──
+        # 取新数据中日期落在 [start_date, db_last] 范围内的部分（即可能重叠区）
+        db_last_date = last
+        overlap_df = df.copy()
+        overlap_df["date_str"] = pd.to_datetime(overlap_df["date"]).dt.strftime("%Y%m%d")
+        if db_last_date:
+            overlap = overlap_df[overlap_df["date_str"] <= db_last_date]
+            if not overlap.empty:
+                new_last_overlap = overlap.iloc[-1]
+                old_row = self.conn.execute(
+                    "SELECT close, open FROM kline WHERE symbol=? AND date=?",
+                    (symbol, db_last_date),
+                ).fetchone()
+                if old_row is not None:
+                    new_close = float(new_last_overlap.get("close", 0))
+                    old_close = float(old_row[0] or 0)
+                    old_open = float(old_row[1] or 0)
+                    new_open = float(new_last_overlap.get("open", 0))
+                    # 价差超过 1.5% 视为发生了复权/拆股等事件
+                    threshold = 0.015
+                    if old_close > 0 and abs(new_close - old_close) / old_close > threshold:
+                        logger.warning(
+                            "复权检测: %s 发生分红/拆股事件（db_close=%.4f vs new_close=%.4f, 偏差=%.2f%%），清除全量数据后重新拉取",
+                            symbol, old_close, new_close,
+                            abs(new_close - old_close) / old_close * 100,
+                        )
+                        self.conn.execute("DELETE FROM kline WHERE symbol=?", (symbol,))
+                        self.conn.commit()
+                        # 首次拉取模式，从头覆盖
+                        end_date2 = datetime.now().strftime("%Y%m%d")
+                        start_date2 = (datetime.now() - timedelta(days=max_days_back)).strftime("%Y%m%d")
+                        df = self._fetch_kline_rows(symbol, start_date2, end_date2)
+                        if df is None or df.empty:
+                            return 0
+                        rows = self._normalize_kline_rows(df, symbol)
+                        self._upsert_rows(symbol, rows)
+                        logger.info("更新 %s (复权重拉): %d 行 (从 %s 到 %s)", symbol, len(rows), start_date2, end_date2)
+                        return len(rows)
+
         self._upsert_rows(symbol, rows)
         logger.info("更新 %s: %d 行 (从 %s 到 %s)", symbol, len(rows), start_date, end_date)
         return len(rows)
