@@ -823,11 +823,12 @@ class DailyKlineDB:
                 return filtered.drop(columns=["date_str"])
         logger.warning("Yahoo 数据源无数据或失败: %s", symbol)
 
-        # 5. 备用：akshare
+        # 5. 备用：akshare（根据实际日期跨度动态计算拉取天数）
         logger.debug("尝试 akshare 数据源: %s", symbol)
         try:
             from stock_watch.data_sources import fetch_kline, DataSourceError
-            df = fetch_kline(symbol, prefix, days=300)
+            _fetch_days = max(300, (datetime.strptime(end_date, "%Y%m%d") - datetime.strptime(start_date, "%Y%m%d")).days + 50)
+            df = fetch_kline(symbol, prefix, days=_fetch_days)
             if df is not None and not df.empty:
                 # 确保 date 列是 datetime 类型（某些数据源返回 string）
                 if df["date"].dtype == object:
