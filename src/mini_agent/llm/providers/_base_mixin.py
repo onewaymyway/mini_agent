@@ -93,6 +93,61 @@ class ProviderMixin:
         base = getattr(self.config, "timeout", None)
         return _deadline.effective_timeout(float(base) if base else None) or (float(base) if base else 0.0)
 
+    def _call_cancellable(self, impl: Callable, *args, **kwargs):
+        """[cancel_task 硬取消] 在可被取消的前提下执行一次 provider 请求。
+
+        当前线程没有绑定取消令牌（主 Agent / cron / 后台判定等一切非 SubAgent
+        路径）时直接 ``impl(*args, **kwargs)``，与旧行为完全一致。
+
+        有令牌时：请求放到一个 daemon 工作线程里执行，调用线程只等待
+        "请求完成"或"被取消"两者之一：
+          * 被取消 → 调用线程立即抛 TaskCancelled，不再等 LLM 返回；工作线程
+            在请求自然结束 / 超时后自行退出，结果被丢弃（Python 无法强杀阻塞在
+            socket 上的线程）。流式请求在下一个 token 到达时还会主动断开连接
+            （见 _traced_stream 里的 _counting_on_token）。
+          * 先完成 → 返回结果 / 原样抛出请求里的异常。
+        deadline 作用域是 thread-local，这里把剩余预算带进工作线程，保持
+        "后台调用总 deadline"语义不变。
+        """
+        from mini_agent.utils.cancel_scope import current_token, TaskCancelled
+        import threading
+
+        tok = current_token()
+        if tok is None:
+            return impl(*args, **kwargs)
+        tok.raise_if_cancelled()
+
+        rem = _deadline.remaining()
+        cap = _deadline._get()[1]
+        box: dict = {}
+        wake = threading.Event()
+
+        def _worker() -> None:
+            try:
+                with _deadline.deadline_scope(
+                    total_seconds=rem if (rem is not None and rem > 0) else None,
+                    request_timeout=cap,
+                ):
+                    box["value"] = impl(*args, **kwargs)
+            except BaseException as exc:  # noqa: BLE001 - 原样转交给调用线程
+                box["error"] = exc
+            finally:
+                wake.set()
+
+        handle = tok.register_killer(wake.set)  # 取消时唤醒调用线程
+        try:
+            t = threading.Thread(target=_worker, name="llm-cancellable-call", daemon=True)
+            t.start()
+            wake.wait()
+        finally:
+            tok.unregister_killer(handle)
+
+        if tok.is_cancelled:
+            raise TaskCancelled("task cancelled during LLM request")
+        if "error" in box:
+            raise box["error"]
+        return box["value"]
+
     def _slot_wait_limit(self) -> Optional[float]:
         """排队等并发槽位/限速的上限：有 deadline 时取剩余，否则 None（不限）。"""
         rem = _deadline.remaining()
@@ -152,7 +207,7 @@ class ProviderMixin:
             # （槽位全被挂死请求占满时，后台轻量调用不再无限排队）。
             get_rate_limiter().acquire(max_wait=self._slot_wait_limit())
             with sem.acquire(label=sem_label, timeout=self._slot_wait_limit()):
-                raw_response = impl(messages, system_final, api_tools)
+                raw_response = self._call_cancellable(impl, messages, system_final, api_tools)
 
             # 3. postprocess（提取 tool_use 块、think 标签）
             processed_response = self._postprocess(raw_response, tools)
@@ -233,7 +288,16 @@ class ProviderMixin:
         _token_state = get_stream_token_state()
         _stream_id = _token_state.start(model=self.config.model)
 
+        # [cancel_task 硬取消] 在调用线程里先取到令牌（工作线程是另一个线程，
+        # thread-local 不会带过去）；取消后下一个 token 到达时抛出，让 SDK 的
+        # 流式 context manager 退出并真正关闭连接。TaskCancelled 是
+        # BaseException，不会被 provider 里的 except Exception 改写或重试。
+        from mini_agent.utils.cancel_scope import current_token as _cur_tok
+        _cancel_tok = _cur_tok()
+
         def _counting_on_token(token: str) -> None:
+            if _cancel_tok is not None:
+                _cancel_tok.raise_if_cancelled()
             _token_state.increment(_stream_id)
             on_token(token)
 
@@ -242,8 +306,8 @@ class ProviderMixin:
         t0 = time.monotonic()
         try:
             with sem.acquire(label=sem_label, timeout=self._slot_wait_limit()):
-                raw_response = impl(
-                    messages, system_final, api_tools, _counting_on_token, **extra_kwargs
+                raw_response = self._call_cancellable(
+                    impl, messages, system_final, api_tools, _counting_on_token, **extra_kwargs
                 )
 
             processed_response = self._postprocess(raw_response, tools)

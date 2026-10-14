@@ -58,6 +58,26 @@ def _unregister_active_proc(proc) -> None:
         _active_bash_procs.discard(proc)
 
 
+def _attach_cancel(proc):
+    """[cancel_task 硬取消] 若当前线程绑定了取消令牌，登记一个"被取消时
+    杀掉该子进程整棵树"的 killer。返回 (token, handle)；没有令牌（主 Agent /
+    cron 等路径）时返回 (None, None)，调用方据此完全走旧逻辑。"""
+    from mini_agent.utils.cancel_scope import current_token
+    tok = current_token()
+    if tok is None:
+        return None, None
+    return tok, tok.register_killer(lambda: _force_kill_proc(proc))
+
+
+def _detach_cancel(tok, handle) -> None:
+    if tok is not None and handle is not None:
+        tok.unregister_killer(handle)
+
+
+_CANCEL_NOTE = "[cancelled by cancel_task — partial output above, process killed]"
+_CANCEL_BEFORE_START_NOTE = "[cancelled by cancel_task — command was not started]"
+
+
 def _force_kill_proc(proc) -> None:
     """强杀单个子进程（及其整棵进程树）。Windows 用 taskkill /T /F，
     Unix 用 os.killpg 对整个进程组下 SIGKILL；任何一步失败都退化成
@@ -175,6 +195,12 @@ def bash(command: str, timeout: int = 300, workdir: Optional[str] = None) -> str
     # timeout < 0 => 不设超时（None 传给 communicate/不启动看门狗定时器）。
     _effective_timeout: Optional[int] = None if (timeout is None or timeout < 0) else timeout
 
+    # [cancel_task 硬取消] 任务已被取消则根本不启动子进程。
+    from mini_agent.utils.cancel_scope import current_token as _cur_cancel_token
+    _ct = _cur_cancel_token()
+    if _ct is not None and _ct.is_cancelled:
+        return _CANCEL_BEFORE_START_NOTE
+
     if _BASH_STREAM_OUTPUT_ENABLED:
         return _bash_stream(command, timeout=_effective_timeout, cwd=cwd, env=_env)
 
@@ -230,6 +256,7 @@ def bash(command: str, timeout: int = 300, workdir: Optional[str] = None) -> str
     # [SYS-BASH-SIGINT-FIX] 注册到活跃子进程表，供 Ctrl+C 按键监听线程
     # 随时"直杀"；无论下面走哪条 return 路径，finally 里都会反注册。
     _register_active_proc(proc)
+    _cancel_tok, _cancel_handle = _attach_cancel(proc)
     try:
         try:
             # _effective_timeout 为 None 时，communicate() 会一直阻塞到进程
@@ -267,8 +294,12 @@ def bash(command: str, timeout: int = 300, workdir: Optional[str] = None) -> str
             return f"[error: {e}]"
     finally:
         _unregister_active_proc(proc)
+        _detach_cancel(_cancel_tok, _cancel_handle)
 
     combined = (decode(stdout_b) + decode(stderr_b)).rstrip()
+    # [cancel_task 硬取消] 进程是被 cancel_task 杀掉的：带回已产生的输出 + 明确标记
+    if _cancel_tok is not None and _cancel_tok.is_cancelled:
+        return (combined + "\n" + _CANCEL_NOTE) if combined else _CANCEL_NOTE
     if proc.returncode != 0:
         combined += f"\n[exit code: {proc.returncode}]"
 
@@ -402,6 +433,7 @@ def _bash_stream(command: str, *, timeout: Optional[int], cwd: Path, env: dict) 
     # 随时"直杀"——即使主线程正卡在下面的 readline() 里完全无法感知
     # 中断信号（Windows 上尤其如此），也能从另一个线程把它杀掉。
     _register_active_proc(proc)
+    _cancel_tok, _cancel_handle = _attach_cancel(proc)
 
     interrupted_flag = False
     chunks: list[bytes] = []
@@ -459,6 +491,9 @@ def _bash_stream(command: str, *, timeout: Optional[int], cwd: Path, env: dict) 
                         break
                 if timed_out_flag.is_set():
                     break
+                # [cancel_task 硬取消] killer 已杀掉进程树；不必再等管道 EOF
+                if _cancel_tok is not None and _cancel_tok.is_cancelled and proc.poll() is not None:
+                    break
                 continue
             if item is _EOF:
                 break
@@ -489,6 +524,7 @@ def _bash_stream(command: str, *, timeout: Optional[int], cwd: Path, env: dict) 
             chunks.append(item)
     finally:
         _unregister_active_proc(proc)
+        _detach_cancel(_cancel_tok, _cancel_handle)
         if watchdog is not None:
             watchdog.cancel()
 
@@ -497,6 +533,9 @@ def _bash_stream(command: str, *, timeout: Optional[int], cwd: Path, env: dict) 
     if interrupted_flag:
         note = "[interrupted by user (Ctrl+C) — partial output above, process killed]"
         return (combined + "\n" + note) if combined else note
+
+    if _cancel_tok is not None and _cancel_tok.is_cancelled:
+        return (combined + "\n" + _CANCEL_NOTE) if combined else _CANCEL_NOTE
 
     if timed_out_flag.is_set():
         # 关键行为：超时不丢弃已产生的部分输出，同时明确告知调用方"没跑完"。

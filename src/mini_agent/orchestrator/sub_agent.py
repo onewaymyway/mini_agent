@@ -112,6 +112,11 @@ class SubAgent:
         self._shared_tool_cache = shared_tool_cache
         self._thread: Optional[threading.Thread] = None
         self._cancel_event = threading.Event()
+        # [cancel_task 硬取消] 令牌复用同一个 Event（旧代码里的
+        # `_cancel_event.is_set()` 判断继续有效），额外支持 cancel() 时主动
+        # 杀掉进行中的 bash 子进程树、放弃进行中的 LLM 请求。
+        from mini_agent.utils.cancel_scope import CancelToken
+        self._cancel_token = CancelToken(self._cancel_event)
         self._lock = threading.Lock()
         self._terminal_notified: set[TaskStatus] = set()  # 已通知的终态
 
@@ -166,8 +171,14 @@ class SubAgent:
             self._thread.join(timeout=timeout)
 
     def cancel(self) -> None:
-        """发送取消信号（当前轮次完成后生效）。"""
-        self._cancel_event.set()
+        """发送取消信号。
+
+        [cancel_task 硬取消] 除了置协作式取消信号，还会立即：
+          * 杀掉该任务正在执行的 bash 子进程（整棵进程树）；
+          * 让进行中的 LLM 请求立刻返回（后台请求线程自行结束、结果丢弃）。
+        不再需要等"当前工具跑完 / 当前 LLM 请求返回"才停下来。
+        """
+        self._cancel_token.cancel()
         with self._lock:
             if self.record.status == TaskStatus.PENDING:
                 self.record.status = TaskStatus.CANCELLED
@@ -208,7 +219,16 @@ class SubAgent:
                     _debug_log(task.id, "cancelled_while_queued", events_path=self._events_path)
                     # 在排队期间被取消，直接返回
                     return
-            self._run_body(task)
+            # [cancel_task 硬取消] 把取消令牌绑定到本执行线程：bash 工具与 LLM
+            # provider 层通过 thread-local 读取它，无需层层改函数签名。
+            from mini_agent.utils.cancel_scope import cancel_scope, TaskCancelled
+            try:
+                with cancel_scope(self._cancel_token):
+                    self._run_body(task)
+            except TaskCancelled:
+                # 兜底：正常情况下 _run_body 内部已处理；这里防止取消异常
+                # （BaseException）从线程入口裸奔出去。
+                pass
 
     def _run_body(self, task) -> None:
         # 【修复】在这里设置 RUNNING 状态（之前错误地在 task_manager._launch() 里设置）
@@ -233,6 +253,7 @@ class SubAgent:
             log_exception(_mini_agent_exc, where='mini_agent.orchestrator.sub_agent')
             pass
 
+        from mini_agent.utils.cancel_scope import TaskCancelled
         self._log(f"Starting task: {task.name}")
         self._log(f"Config: model={task.model or 'default'}, max_turns={task.max_turns}")
         _debug_log(task.id, "run_body_start", {"model": task.model, "max_turns": task.max_turns}, events_path=self._events_path)
@@ -273,6 +294,16 @@ class SubAgent:
                         "turns": agent.stats.turns
                     })
             self._log(f"Done. Tokens: {agent.stats.input_tokens}↑ {agent.stats.output_tokens}↓, turns={agent.stats.turns}")
+
+        except TaskCancelled:
+            # [cancel_task 硬取消] LLM 请求 / 工具执行被取消令牌打断。状态在
+            # cancel() 里已置为 CANCELLED；这里只确保终态正确并留痕，不当作失败。
+            self._log("Cancelled: in-flight LLM request / tool execution interrupted")
+            _debug_log(task.id, "cancelled_hard", events_path=self._events_path)
+            with self._lock:
+                self.record.status = TaskStatus.CANCELLED
+                if self.record.result is None:
+                    self.record.result = TaskResult(output="", error="Cancelled by user")
 
         except TimeoutError as exc:
             self._log(f"TIMEOUT: {exc}")

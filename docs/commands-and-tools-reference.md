@@ -786,7 +786,7 @@ mini-agent self status
 | `get_task_status` | ❌ | `task_id`, `full` | 查询任务状态和结果；输出超 3000 字符且 `full=False` 时返回 `truncated`/`full_length` 字段，提示用 `full=True` 重新取完整内容 |
 | `update_task_progress` | ❌ | `task_id`, `current_step`, `steps_done`, `steps_remaining`, `blockers`, `note` | 主动记录长任务进度到 `manifest.json`，`note` 追加到 `decision_log` |
 | `list_tasks` | ❌ | `status`, `tag` | 列出所有任务 |
-| `cancel_task` | ❌ | `task_id` | 取消指定任务；运行中的任务会立即变为 `cancelled` 状态（后台线程在下一个检查点退出，进行中的单次 LLM 请求/工具调用需等其返回） |
+| `cancel_task` | ❌ | `task_id` | 取消指定任务；运行中的任务会立即变为 `cancelled` 状态，并立即杀掉其正在执行的 bash 子进程（整棵进程树）、让进行中的 LLM 请求立刻返回（后台请求线程自行结束、结果丢弃）。排队中的任务直接取消、不会开始执行 |
 | `wait_for_tasks` | ❌ | `task_ids`, `timeout_seconds` | 等待多个任务完成 |
 | `run_ensemble_llm` | ❌ | `prompt`, `system`, `n`, `execution`, `strategy` | 同一输入多次调用模型取优（粒度A，便宜快速），需 `ensemble.mode != off` |
 | `run_ensemble_subagents` | ❌ | `prompt`, `n`, `execution`, `strategy`, `variant_prompts` | 多个不同人设的 Sub-Agent 各自完整跑同一任务再取优（粒度B），需 `ensemble.mode != off` |
