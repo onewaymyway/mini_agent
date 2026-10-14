@@ -95,7 +95,12 @@ def compute_news_signals(
 # ── 新浪 7x24 直播流专用信号处理 ──────────────────────────────────────────
 
 # 从新闻中提取股票代码的正则（A股代码格式）
-_STOCK_CODE_RE = re.compile(r'\b(\d{6})\b')
+# 支持：纯6位数字、SZ/SH前缀6位、HK前缀5位（如 SZ301236、SH600519、HK00700）
+_STOCK_CODE_RE = re.compile(
+    r'(?:\b|(?<=[^A-Za-z0-9]))(?:SZ|SH)(\d{6})(?:\b|(?=[^A-Za-z0-9]))'
+    r'|(?:\b|(?<=[^A-Za-z0-9]))HK(\d{5})(?:\b|(?=[^A-Za-z0-9]))'
+    r'|(?:\b|(?<=[^A-Za-z0-9]))(\d{6})(?:\b|(?=[^A-Za-z0-9]))'
+)
 
 
 def extract_stock_codes(text: str) -> List[str]:
@@ -103,11 +108,13 @@ def extract_stock_codes(text: str) -> List[str]:
     
     返回去重后的代码列表，按首次出现顺序排列。
     """
-    codes = _STOCK_CODE_RE.findall(text)
+    matches = _STOCK_CODE_RE.findall(text)
     seen: Set[str] = set()
     result = []
-    for code in codes:
-        if code not in seen:
+    for match in matches:
+        # match 是元组，取非空的分组
+        code = next((g for g in match if g), None)
+        if code and code not in seen:
             seen.add(code)
             result.append(code)
     return result
@@ -326,6 +333,41 @@ ANALYSIS_SYSTEM_PROMPT = """你是股票投资分析师，专注于从财经新�
 - direction: "positive" | "negative" | "neutral"
 - confidence: "high" | "medium" | "low"
 - reasoning: "分析理由"
+
+输出示例：
+```json
+[
+  {
+    "news_hash": "20261013210218_ocp_workgroup",
+    "news_time": "21:02:18",
+    "news_excerpt": "Marvell、微软和甲骨文成立OCP工作组，推动开放计算项目标准。",
+    "opportunity_type": "industry",
+    "related_stocks": [],
+    "related_etfs": [
+      {"code": "561510", "name": "数据中心ETF", "sector": "数据中心"},
+      {"code": "515050", "name": "芯片ETF", "sector": "半导体"}
+    ],
+    "industry_opportunities": ["AI算力", "数据中心", "云计算"],
+    "direction": "positive",
+    "confidence": "medium",
+    "reasoning": "三大科技巨头联合推动OCP开放标准，利好AI算力基础设施及数据中心产业链。"
+  },
+  {
+    "news_hash": "20261013215212_luchang_tech",
+    "news_time": "21:52:12",
+    "news_excerpt": "路畅科技公告称，控股股东中联重科拟转让29.99%股份给远卓天使，转让价25元/股。",
+    "opportunity_type": "stock",
+    "related_stocks": [
+      {"code": "SZ002813", "name": "路畅科技", "relevance": "高"}
+    ],
+    "related_etfs": [],
+    "industry_opportunities": [],
+    "direction": "positive",
+    "confidence": "high",
+    "reasoning": "控制权变更引入新实控人，股权转让溢价明显，存在资产重组预期。"
+  }
+]
+```
 """
 
 
@@ -380,11 +422,11 @@ def analyze_telegraph_news_llm(
             pool_items.append(f"{code}({name})")
         pool_ref = f"\n\n当前股票池参考（部分）:\n{', '.join(pool_items[:30])}...\n"
 
-    # 构建新闻文本
+    # 构建新闻文本（保留完整内容）
     news_text_parts = []
     for i, item in enumerate(news_items[:30]):  # 限制数量
         time_str = item.get("time", "")
-        content = item.get("content", "")[:150]  # 截断过长内容
+        content = item.get("content", "")
         news_text_parts.append(f"[{time_str}] {content}")
 
     news_text = "\n".join(news_text_parts)
@@ -401,26 +443,65 @@ def analyze_telegraph_news_llm(
         llm = _get_llm_helper()
         response = llm.ask(prompt, timeout=60, max_retries=2)
 
-        # 解析JSON响应
+        # 解析JSON响应 - 使用 json_repair 增强鲁棒性
         results = []
-        # 尝试从响应中提取JSON
         import re as _re
-        json_match = _re.search(r'\[.*\]', response, re.DOTALL)
-        if json_match:
+        
+        # 先尝试提取markdown代码块中的JSON
+        code_block_match = _re.search(r'```(?:json)?\s*(\[.*?\])\s*```', response, re.DOTALL)
+        if code_block_match:
+            json_str = code_block_match.group(1)
+        else:
+            # 回退到直接查找JSON数组
+            json_match = _re.search(r'\[.*\]', response, re.DOTALL)
+            if json_match:
+                json_str = json_match.group()
+            else:
+                json_str = None
+        
+        if json_str:
             try:
-                results = json.loads(json_match.group())
-            except json.JSONDecodeError:
-                logger.warning("LLM返回JSON解析失败，尝试修复...")
-                # 简单修复：尝试找到有效的JSON片段
-                fixed = response.strip()
-                if fixed.startswith('['):
-                    fixed = fixed[:fixed.rfind(']') + 1]
-                    try:
-                        results = json.loads(fixed)
-                    except:
-                        pass
+                # 使用 json_repair 自动修复常见JSON格式问题
+                import json_repair
+                results = json_repair.loads(json_str)
+            except Exception as e:
+                logger.warning("json_repair 解析失败，尝试标准 json.loads: %s", e)
+                try:
+                    results = json.loads(json_str)
+                except json.JSONDecodeError:
+                    logger.warning("标准 JSON 解析也失败，尝试简单修复...")
+                    # 简单修复：尝试找到有效的JSON片段
+                    fixed = json_str.strip()
+                    if fixed.startswith('['):
+                        fixed = fixed[:fixed.rfind(']') + 1]
+                        try:
+                            results = json.loads(fixed)
+                        except:
+                            pass
 
         logger.info("LLM分析完成，返回%d条机会", len(results))
+
+        # 将完整新闻内容补充到分析结果中 - 按 news_time 匹配（更可靠）
+        # 构建 news_time -> news_item 映射
+        time_map = {}
+        for item in news_items:
+            time_map[item.get("time", "")] = item
+        
+        for result in results:
+            news_time = result.get("news_time", "")
+            if news_time in time_map:
+                item = time_map[news_time]
+                result["news_content"] = item.get("content", "")
+                # 保留原始 news_time（LLM可能返回略有不同的格式）
+                result["news_time"] = item.get("time", news_time)
+            else:
+                # 回退：尝试模糊匹配 time
+                for t, item in time_map.items():
+                    if t in news_time or news_time in t:
+                        result["news_content"] = item.get("content", "")
+                        result["news_time"] = item.get("time", news_time)
+                        break
+
         return results
     except Exception as e:
         logger.error("LLM分析失败: %s", e)
