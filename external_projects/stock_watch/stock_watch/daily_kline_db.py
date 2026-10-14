@@ -655,14 +655,34 @@ class DailyKlineDB:
         return float(df["close"].iloc[-1])
 
     def table_info(self) -> Dict:
-        """返回数据库统计信息：总标的数、总行数、最新数据日期。"""
+        """返回数据库统计信息：总标的数、总行数、最新数据日期、已更新/未更新数量。"""
         self.ensure_schema()
         cur = self.conn.execute("SELECT COUNT(DISTINCT symbol), COUNT(*), MAX(date) FROM kline")
         n_symbols, n_rows, latest = cur.fetchone()
+
+        if latest is None:
+            return {
+                "symbol_count": n_symbols,
+                "total_rows": n_rows,
+                "latest_date": None,
+                "up_to_date_count": 0,
+                "behind_count": 0,
+                "db_path": str(self.db_path),
+            }
+
+        # 查询未达到最新日期的标的
+        cur = self.conn.execute(
+            "SELECT COUNT(*) FROM (SELECT symbol FROM kline GROUP BY symbol HAVING MAX(date) < ?)",
+            (latest,),
+        )
+        behind = cur.fetchone()[0]
+
         return {
             "symbol_count": n_symbols,
             "total_rows": n_rows,
             "latest_date": latest,
+            "up_to_date_count": n_symbols - behind,
+            "behind_count": behind,
             "db_path": str(self.db_path),
         }
 
