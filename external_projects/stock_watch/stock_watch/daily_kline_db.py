@@ -302,6 +302,11 @@ def _tf_klines_get(tf, symbol, period="1d", start_time=None, end_time=None,
 
 
 logger = logging.getLogger("stock_watch.daily_kline_db")
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(levelname)s - %(message)s"))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
 
 # ── 数据库路径（相对项目根目录）────────────────────────────────────────────
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
