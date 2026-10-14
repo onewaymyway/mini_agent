@@ -2919,6 +2919,14 @@ class FormatCorrectionConfig:
     # ObjectiveExecutor 的 step.result_summary）。默认开启；关闭时完全回退到
     # 升级前行为（一键回退）。
     result_sanity_check_enabled: bool = True
+    # [llm_check] 规则检测未命中、但文本里有"疑似工具调用痕迹"（`<tool_` 标签 /
+    # ```tool_call 围栏 / "name"+"input" JSON 形状）时，再让 LLM 复核一次是否
+    # 真的是写坏的工具调用。复核失败/输出无法解析一律按"没问题"处理。
+    # 注意：开启后每条命中门控的无工具调用回复会多一次 LLM 调用；设为 False
+    # 完全回退到纯规则检测。
+    llm_check_enabled: bool = True
+    # 送去复核的文本最大字符数（超长时保留头 1/3 + 尾 2/3）
+    llm_check_max_chars: int = 6000
 
 
 @dataclass

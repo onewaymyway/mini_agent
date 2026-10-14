@@ -430,18 +430,75 @@ class RemindersCorrectionMixin:
             return None
         if TOOL_USE_EXAMPLE_MARKER in assistant_text:
             return None
+        # 第一层：规则检测（零成本）。命中即判定有问题。
         issue = detect_format_issue(assistant_text)
+        llm_reason = ""
         if issue is None:
-            return None
+            # 第二层：规则没命中，但文本里确有工具调用痕迹 → 让 LLM 复核一次。
+            # 任何失败（调用异常/输出无法解析）都按"没问题"处理。
+            issue, llm_reason = self._llm_check_format_issue(assistant_text)
+            if issue is None:
+                return None
         if getattr(self, "_reminder_mgr", None) is not None:
             matched = self._reminder_mgr.check_format_issue(issue.issue_type)
             if matched:
                 custom_body = "\n\n".join(r.content for r in matched)
+                if llm_reason:
+                    custom_body += f"\n\nDiagnosis: {llm_reason}"
                 issue = type(issue)(
                     issue_type=issue.issue_type,
                     message=PROMPT_HEADER + custom_body,
                 )
+        # 统一收口：无论规则命中 / reminder 命中 / LLM 命中，最终发给模型的
+        # 纠错消息末尾都带"正确格式示例"（带 TOOL_USE_EXAMPLE_MARKER），
+        # 末尾已是该提示则不重复追加。write_file_truncated 的修复方式是分片
+        # 写入，不能再塞一个"请照这个格式重发"的示例误导模型，所以排除。
+        from mini_agent.perception.format_correction_detector import (
+            append_hint_once, _NO_RESEND_FOOTER_ISSUE_TYPES,
+        )
+        if issue.issue_type not in _NO_RESEND_FOOTER_ISSUE_TYPES:
+            hinted = append_hint_once(issue.message)
+            if hinted != issue.message:
+                issue = type(issue)(issue_type=issue.issue_type, message=hinted)
         return issue
+
+    def _llm_check_format_issue(self, assistant_text: str):
+        """[SYS-FORMAT-CORRECTION / llm_check] 规则未命中时的 LLM 二次复核。
+
+        返回 (FormatIssue | None, reason)。仅在以下条件全部满足时才调用 LLM：
+          - cfg.format_correction.llm_check_enabled；
+          - 文本通过 has_tool_call_trace 门控（`<tool_` 标签 / ```tool_call
+            围栏 / "name"+"input" JSON 形状）——只是提到单词 tool_use 不触发；
+        调用方（turn_loop）已保证：本次请求挂了工具、纠错重试次数未用尽。
+        同一份 response.text 只复核一次；LLM 判"没问题"不消耗重试次数。
+        """
+        cfg = self.cfg.format_correction
+        if not getattr(cfg, "llm_check_enabled", True):
+            return None, ""
+        from mini_agent.perception.format_correction_detector import (
+            has_tool_call_trace, build_llm_check_prompt,
+            parse_llm_check_verdict, build_llm_issue,
+        )
+        if not has_tool_call_trace(assistant_text):
+            return None, ""
+        try:
+            from mini_agent.llm.service import ask_background
+            prompt = build_llm_check_prompt(
+                assistant_text, getattr(cfg, "llm_check_max_chars", 6000),
+            )
+            raw = ask_background(
+                self.llm_helper, prompt, max_retries=1, override_temperature=0.0,
+            )
+            verdict = parse_llm_check_verdict(raw)
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.agent.reminders_correction.RemindersCorrectionMixin._llm_check_format_issue')
+            return None, ""
+        if getattr(cfg, "verbose", False):
+            R.print_info(f"[format-correction] LLM 复核结果: {verdict!r}")
+        if verdict is None or not verdict[0]:
+            return None, ""
+        return build_llm_issue(verdict[1]), verdict[1]
 
     # ── Tool execution ─────────────────────────────────────────────────────────
 
