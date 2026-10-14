@@ -378,3 +378,92 @@ class TestExternalProjectsKanbanRoutes(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRefreshEntrypointsRoute(TestExternalProjectsKanbanRoutes):
+    """POST /v1/external_projects/{name}/refresh_entrypoints
+
+    继承父类只为复用 setUp/tearDown 和 `_register_project()` 等辅助方法
+    （临时注册表路径 + 最小 FastAPI app）。副作用是父类的用例会在本类
+    下再跑一遍，开销可忽略，不值得为此改动既有测试类的结构。
+    """
+
+    def _app_with_cron_scheduler(self):
+        from types import SimpleNamespace
+
+        from mini_agent.evolution.cron_scheduler import CronScheduler
+        from mini_agent.storage.paths import AgentPaths
+
+        workdir = self.tmp_path / "agent_workdir"
+        workdir.mkdir(exist_ok=True)
+        cs = CronScheduler(AgentPaths(project_root=workdir))
+        cs.load()
+
+        app = FastAPI()
+        app.include_router(router)
+        app.state.http_server = SimpleNamespace(
+            autonomous_loop=SimpleNamespace(_cron_scheduler=cs),
+            bridge=SimpleNamespace(_cron_scheduler=None),
+        )
+        return TestClient(app), cs
+
+    def test_refresh_unknown_project_returns_404(self):
+        resp = self.client.post("/v1/external_projects/ghost/refresh_entrypoints")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_refresh_without_daemon_cron_returns_200_not_synced(self):
+        self._register_project()
+        resp = self.client.post("/v1/external_projects/demo_project/refresh_entrypoints")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertFalse(data["cron_synced"])
+        self.assertEqual(set(data["entrypoints"]), {"scan", "analyze"})
+
+    def test_refresh_rebuilds_cron_jobs_from_latest_manifest(self):
+        registry = ExternalProjectRegistry(self.registry_path)
+        registry.register("demo_project", self.project_dir, enabled=True)
+        client, cs = self._app_with_cron_scheduler()
+
+        (self.project_dir / "project.yaml").write_text(
+            """
+name: demo_project
+entrypoints:
+  scan:
+    cmd: "python -c pass"
+    schedule: "cron: 0 9 * * 1-5"
+""",
+            encoding="utf-8",
+        )
+        resp = client.post("/v1/external_projects/demo_project/refresh_entrypoints")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data["cron_synced"])
+        self.assertEqual(data["registered"], ["ext:demo_project:scan"])
+        self.assertIsNotNone(cs.get("ext:demo_project:scan"))
+
+        # 再改成没有 schedule：旧 job 应被删除、没有新 job
+        (self.project_dir / "project.yaml").write_text(VALID_MANIFEST, encoding="utf-8")
+        resp = client.post("/v1/external_projects/demo_project/refresh_entrypoints")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["removed"], ["ext:demo_project:scan"])
+        self.assertEqual(data["registered"], [])
+        self.assertIsNone(cs.get("ext:demo_project:scan"))
+
+    def test_refresh_invalid_manifest_returns_400_and_keeps_jobs(self):
+        registry = ExternalProjectRegistry(self.registry_path)
+        registry.register("demo_project", self.project_dir, enabled=True)
+        client, cs = self._app_with_cron_scheduler()
+        cs.upsert_external_entrypoint_job(
+            job_id="ext:demo_project:scan",
+            name="x",
+            schedule="cron: 0 9 * * 1-5",
+            external_project="demo_project",
+            external_entrypoint="scan",
+        )
+
+        (self.project_dir / "project.yaml").write_text("name: demo_project\n", encoding="utf-8")
+        resp = client.post("/v1/external_projects/demo_project/refresh_entrypoints")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("已保留现有定时任务", resp.json()["detail"])
+        self.assertIsNotNone(cs.get("ext:demo_project:scan"))

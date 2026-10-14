@@ -849,6 +849,26 @@ cron job 后等待其按 cadence 自动触发。
     的条目是否有 `"enabled"` 字段；没有的话，在看板上重新点一次
     「自动调度」开关（哪怕先开再关）就会把这个 key 正确落盘，之后不
     会再复现。
+- **「🔄 更新 entrypoints」按钮**（卡片路径下方）：改完该项目的
+  `project.yaml` 后点一次，调用
+  `POST /v1/external_projects/{name}/refresh_entrypoints`——后端先校验
+  最新 manifest（失败则提示原因并**保留现有定时任务不动**），通过后
+  删除该项目名下旧的 `ext:*` cron 任务，并（「自动调度」开启时）按最新
+  配置重新注册。点击后页面会重跑一次，使卡片里的 entrypoints 列表立即
+  变成最新，并在卡片上方一次性展示结果（删除/重新注册了哪些任务、
+  哪些 entrypoint 没有 schedule、项目是否未开启自动调度、daemon cron
+  调度器是否可用）。注意重建出来的是全新任务，原任务的累计运行次数等
+  历史会被重置（详见 [外部项目使用指南](./external-projects-guide.md)
+  §6.3「更新 entrypoints」）。
+- **时间一律显示本地时间**：卡片里的「最近一次执行」、最近 N 条执行
+  记录的开始/结束时间、「📊 状态看板」的"数据生成时间"，都经
+  `app.py::_to_local_time_str()` 统一转成**运行看板这台机器的本地时间**
+  （`YYYY-MM-DD HH:MM:SS`）。账本里时间戳来源不一——daemon 写的是带
+  偏移量的本地 ISO，外部 entrypoint 脚本上报的可能是 UTC（`Z` /
+  `+00:00`），也可能是不带时区的串——带时区的会换算成本地，不带时区的
+  视为已是本地时间，epoch 秒数同理；无法解析的原样显示，不会因为一条
+  脏数据让整个 Tab 渲染失败。本次只覆盖「🗂️ 外部项目」Tab，看板其它
+  Tab（成长顾问、会话管理等）的时间展示未改动。
 - **卡片内「▶️ 手动触发」**：把该项目 `project.yaml` 声明的 entrypoints
   全部列出来，一个 entrypoint 对应一行（key + schedule[如有] + 命令
   预览 + 「▶️ 触发」按钮），点按钮直接调用
@@ -1119,6 +1139,7 @@ plan.md`）：纯只读快照，回答"P2 公平轮询/P3 老化加成/P4 时间
 | `wiki_quarantine_status()` | `GET /v1/wiki/quarantine_status` | wiki 隔离区当前积压情况，不含已修复记录（只读，方向 E） |
 | `external_projects_status()` | `GET /v1/self/external_projects` | 已注册外部项目的聚合状态（健康 + 最近5条执行记录），"🗂️ 外部项目"Tab 总览卡片数据来源 |
 | `register_external_project(path, name=, validate=True)` | `POST /v1/external_projects/register` | 注册一个新的外部项目 |
+| `refresh_external_project_entrypoints(name)` | `POST /v1/external_projects/{name}/refresh_entrypoints` | 按最新 `project.yaml` 重新加载 entrypoints：先校验 manifest（失败保留现有任务），再删除该项目旧的 `ext:*` cron 任务并按最新配置重新注册；返回 `removed`/`registered`/`entrypoints`/`unscheduled`/`enabled`/`cron_synced` |
 | `trigger_external_project_run(name, entrypoint, params=None)` | `POST /v1/external_projects/{name}/trigger_run` | 立即触发某个已注册项目的某个 entrypoint 一次；`params` 是该 entrypoint 在 `project.yaml` 里声明了 `params` 时按参数名传的值（阶段6） |
 | `external_project_ledger(name, limit=20)` | `GET /v1/external_projects/{name}/ledger` | 该项目的执行账本，最近 `limit` 条 |
 | `external_project_backlog(name, status=)` | `GET /v1/external_projects/{name}/backlog` | 该项目的改进积压账本；`status` 留空表示不过滤 |

@@ -297,6 +297,61 @@ client.py`）✅已完成
       `st.form`（此时表单里只有一个提交按钮），保持所有 entrypoint
       行为一致，不用按"有没有参数"分两套代码路径。
 
+### 阶段 7：「更新 entrypoints」按钮 + 外部项目 Tab 时间统一本地化（使用者反馈驱动）
+
+- [x] 起因：改了外部项目的 `project.yaml`（新增/删除 entrypoint、改
+      schedule）之后，daemon 里已注册的 `ext:*` cron 任务不会跟着变，
+      只能重启 daemon 或把「自动调度」开关关了再开；另外账本里的时间
+      戳直接显示原始 ISO 串（部分是 UTC），需要自己换算。
+- [x] `scheduler.py`：新增 `refresh_external_project_cron_jobs()` +
+      `EntrypointRefreshResult`。语义是**先删后建**（用户明确要求"删除
+      之前注册的 cron 任务，按最新配置注册新任务"），与既有
+      `ensure_external_project_cron_jobs()` 的"原地对齐、保留运行历史"
+      刻意区分、互不替代：先严格解析最新 manifest，失败直接抛
+      `ProjectManifestError` 且**不删任何现有 job**；通过后删光
+      `ext:<name>:*`，项目 `enabled=True` 才按最新 schedule 重建；同时
+      清健康探测缓存；`cron_scheduler=None` 时只校验并返回
+      `cron_synced=False`。
+- [x] 后端路由 `POST /v1/external_projects/{name}/refresh_entrypoints`
+      （`api/routes.py`）：404 未注册、400 manifest 解析失败（文案注明
+      "已保留现有定时任务不变"）、200 正常。刻意与 `PATCH .../enabled`
+      /`DELETE` 两个同类路由保持一致，在事件循环线程里同步调用而不丢
+      线程池——只是一次 yaml 解析 + 一次 `cron_jobs.json` 写盘（毫秒
+      级），且 `CronScheduler` 本身无锁，不额外引入第二个写线程。
+- [x] `AgentClient.refresh_external_project_entrypoints(name)`。
+- [x] 看板项目卡片「🔄 更新 entrypoints」按钮：点击才请求（不在每次
+      页面重跑时触发）；成功后把结果存进 `st.session_state` 并
+      `st.rerun()`——本轮脚本里项目列表是点击前拉的，不重跑的话卡片里
+      的 entrypoints 仍是旧的——下一轮渲染时一次性展示结果（删/建了
+      哪些任务、无 schedule 的 entrypoint、项目未开启自动调度、cron
+      调度器不可用的提示）。
+- [x] 时间本地化：新增 `app.py::_to_local_time_str()`，应用于「最近一次
+      执行」、最近 N 条执行记录的 started/finished、「📊 状态看板」的
+      `generated_at`。带时区的 ISO → `astimezone()`；不带时区 → 视为
+      本地；epoch 秒 → 本地；无法解析 → 原样返回不抛异常。**范围仅限
+      外部项目 Tab**，看板其它 Tab（成长顾问、会话管理等）里的原始时间
+      展示未动。
+- [x] 测试：`tests/test_external_projects.py` +6（刷新删旧建新且 run_count
+      重置/manifest 解析失败保留现有 job/项目禁用只删不建/只动目标项目
+      的 job/无 cron_scheduler 只校验/未注册项目抛错）；
+      `tests/test_api_external_projects_routes.py` +4 个用例（404/无
+      daemon cron 返回 200 且 `cron_synced=false`/按最新 manifest 重建
+      并在去掉 schedule 后删除/manifest 损坏返回 400 且 job 保留）；
+      新增 `tests/test_kanban_external_projects_local_time.py`（11 个，
+      固定 `TZ=Asia/Shanghai` 验证 Z/+00:00/其它偏移/naive/带小数秒/
+      epoch/自定义格式/空值/无法解析）和
+      `tests/test_kanban_external_projects_refresh_entrypoints.py`
+      （5 个，`streamlit.testing.v1.AppTest` 驱动真实
+      `render_external_projects_tab()`：卡片时间为本地时间、点击后展示
+      结果、结果只展示一次、报错展示、cron 不可用警告）。
+- [x] **已知取舍**：重建出的是全新 job，`run_count`、上次运行时间、
+      状态历史会重置，手动 disable 过的 job 会恢复启用——这是"先删后
+      建"语义的直接后果，按钮悬停提示里已写明；如果只想改 schedule 而
+      保留历史，用切换「自动调度」开关（走原地对齐）不会重置。
+- [x] 文档：`docs/external-projects-guide.md` §6.3、
+      `docs/kanban-dashboard-guide.md`、`docs/http-api-guide.md`、
+      `next_doc/external_projects_cron_dispatch_plan.md` §6.3 同步更新。
+
 - 2026-08-27：本计划里"🗂️ 外部项目"tab 的通用框架（项目卡片、健康
   徽标、执行账本、手动触发+参数表单、backlog、review 预览）保持不变。
   另有一块由 `stock_watch_pool_state_tracking_and_kanban_plan.md`

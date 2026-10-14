@@ -12216,6 +12216,38 @@ _EXTERNAL_PROJECT_BACKLOG_STATUS_LABEL = {
 }
 
 
+def _to_local_time_str(value, fmt: str = "%Y-%m-%d %H:%M:%S") -> str:
+    """把各种时间表示统一转成「运行看板这台机器的本地时间」字符串。
+
+    外部项目账本/状态里的时间戳来源不一：daemon 自己写的是带偏移量的
+    本地 ISO（`2026-10-14T10:46:00+08:00`），外部 entrypoint 脚本用
+    `track_run()` 上报或 `registered_at` 这类字段可能是 UTC（`...Z`/
+    `+00:00`），也可能是不带时区的 naive ISO 串，或 epoch 秒数。统一
+    转成本地时间展示，避免用户对着 UTC/带偏移量的原始串自己换算。
+
+    规则：
+      - int/float → 视为 epoch 秒；
+      - 带时区的 ISO 串 → `astimezone()` 转本地；
+      - 不带时区的 ISO 串 → 视为已经是本地时间，原样格式化；
+      - 空值 → 返回空串；完全无法解析 → 原样返回字符串，不抛异常
+        （展示层不应该因为某条脏数据让整个 tab 渲染失败）。
+    """
+    if value is None or value == "":
+        return ""
+    try:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return datetime.fromtimestamp(float(value)).strftime(fmt)
+        text = str(value).strip()
+        if text.endswith(("Z", "z")):
+            text = text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone()
+        return dt.strftime(fmt)
+    except (ValueError, TypeError, OverflowError, OSError):
+        return str(value)
+
+
 def render_output_projects_tab(client: AgentClient):
     """[next_doc/output_projects_intro_and_kanban_plan.md] 展示
     `output_projects_root`（调研/产出类项目统一落脚目录，见
@@ -12270,6 +12302,39 @@ def render_output_projects_tab(client: AgentClient):
                         st.caption("（内容较长，已截断展示，完整内容请查看文件本身）")
             else:
                 st.warning("⚠️ 该项目还没有 `PROJECT_INFO.md` 介绍信息文件。")
+
+
+def _render_entrypoint_refresh_result(res: dict) -> None:
+    """展示「更新 entrypoints」的结果。
+
+    只做展示：删了哪些旧任务、注册了哪些新任务、哪些 entrypoint 没有
+    schedule（不会产生定时任务，但仍可手动触发）、项目是否未开启
+    「自动调度」、daemon 的 cron 调度器是否可用。
+    """
+    entrypoints = res.get("entrypoints") or []
+    removed = res.get("removed") or []
+    registered = res.get("registered") or []
+    unscheduled = res.get("unscheduled") or []
+
+    if not res.get("cron_synced", True):
+        st.warning(
+            f"已重新读取 project.yaml（共 {len(entrypoints)} 个 entrypoint），"
+            "但 daemon 的 cron 调度器当前不可用，定时任务未重建；"
+            "下次 daemon 启动时会自动按最新配置对齐。"
+        )
+    else:
+        st.success(
+            f"已更新：共 {len(entrypoints)} 个 entrypoint，"
+            f"删除旧定时任务 {len(removed)} 个，重新注册 {len(registered)} 个。"
+        )
+        if registered:
+            st.caption("重新注册：" + "、".join(f"`{j}`" for j in registered))
+        if removed and not registered and res.get("enabled"):
+            st.caption("最新 project.yaml 里没有任何 entrypoint 声明 schedule，所以没有新任务注册。")
+        if not res.get("enabled"):
+            st.info("该项目未开启「自动调度」，旧定时任务已清理，但不会注册新任务。需要的话请勾选上方「自动调度」。")
+    if unscheduled:
+        st.caption("未声明 schedule（仅可手动触发）：" + "、".join(f"`{k}`" for k in unscheduled))
 
 
 def render_external_projects_tab(client: AgentClient):
@@ -12351,6 +12416,33 @@ def render_external_projects_tab(client: AgentClient):
                     st.rerun()
             st.caption(f"路径：{proj.get('path', '')}")
 
+            # 更新 entrypoints：用户改了该项目的 project.yaml 之后点一次，
+            # 后端先校验最新 manifest，通过后删除该项目名下旧的 ext:* cron
+            # 任务并按最新配置重新注册（见 POST .../refresh_entrypoints）。
+            # 点击才请求，不在每次页面重跑时触发。
+            if st.button(
+                "🔄 更新 entrypoints",
+                key=f"ext_proj_refresh_ep_{name}",
+                help=(
+                    "重新读取 project.yaml：删除该项目已注册的定时任务，"
+                    "并按最新 entrypoints/schedule 重新注册。"
+                    "会重置这些定时任务的累计运行次数等历史。"
+                ),
+            ):
+                with st.spinner("正在按最新 project.yaml 重建定时任务…"):
+                    refresh_res = client.refresh_external_project_entrypoints(name)
+                if refresh_res and "_error" in refresh_res:
+                    st.error(f"更新失败：{refresh_res['_error']}")
+                else:
+                    # 本轮脚本里项目列表是刷新之前拉的，卡片上的
+                    # entrypoints 还是旧的——存下结果后 rerun，下一轮
+                    # 重新拉状态并在这里展示结果提示。
+                    st.session_state[f"ext_proj_refresh_result_{name}"] = refresh_res or {}
+                    st.rerun()
+            _flash_refresh = st.session_state.pop(f"ext_proj_refresh_result_{name}", None)
+            if _flash_refresh is not None:
+                _render_entrypoint_refresh_result(_flash_refresh)
+
             if proj.get("manifest_error"):
                 st.warning(f"manifest 解析失败：{proj['manifest_error']}")
 
@@ -12359,7 +12451,7 @@ def render_external_projects_tab(client: AgentClient):
                 status_txt = "✅ 成功" if last_run.get("exit_code") == 0 else "❌ 失败"
                 st.caption(
                     f"最近一次执行：{last_run.get('entrypoint', '')} · {status_txt} "
-                    f"· {last_run.get('finished_at', '')}"
+                    f"· {_to_local_time_str(last_run.get('finished_at'))}"
                 )
                 # [2026-08-27 追加] error_summary 只是一行摘要（比如
                 # "entrypoint exited with code 1"），排查问题时完全没有
@@ -12379,7 +12471,8 @@ def render_external_projects_tab(client: AgentClient):
                         status_txt = "✅" if r.get("exit_code") == 0 else "❌"
                         st.caption(
                             f"{status_txt} {r.get('entrypoint', '')} · {r.get('trigger', '')} "
-                            f"· {r.get('started_at', '')} → {r.get('finished_at', '')}"
+                            f"· {_to_local_time_str(r.get('started_at'))} → "
+                            f"{_to_local_time_str(r.get('finished_at'))}"
                         )
                         if r.get("error_summary"):
                             st.caption(f"　　{r['error_summary']}")
@@ -12629,7 +12722,7 @@ def _render_kanban_view_panel(client: AgentClient, name: str, kanban_view_spec: 
             st.caption("暂无记录。")
             return
         if resp.get("generated_at"):
-            st.caption(f"数据生成时间：{resp['generated_at']}")
+            st.caption(f"数据生成时间：{_to_local_time_str(resp['generated_at'])}")
 
         # —— 按声明顺序动态生成状态列；collapsed=True 的状态放进单独的
         # expander，不占列位 ——

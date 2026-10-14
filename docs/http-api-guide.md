@@ -1232,6 +1232,9 @@ Body: { "path": "/data/stock_watch", "name": "stock_watch", "validate": true }
 POST /v1/external_projects/{name}/trigger_run
 Body: { "entrypoint": "hotlist_scan" }
 
+# 按最新 project.yaml 重新加载 entrypoints，并删除、重建该项目的 ext:* cron 任务
+POST /v1/external_projects/{name}/refresh_entrypoints     # 无 Body
+
 # 执行账本
 GET /v1/external_projects/{name}/ledger?limit=20
 
@@ -1256,6 +1259,28 @@ GET /v1/external_projects/{name}/review
 
 `enabled=false`（`project.yaml` 未声明 `review: {enabled: true}`）时
 不报错，仍返回模板文本，供先预览格式。
+
+`POST /v1/external_projects/{name}/refresh_entrypoints` 响应示例：
+
+```json
+{
+  "project": "stock_watch",
+  "enabled": true,
+  "removed": ["ext:stock_watch:scan", "ext:stock_watch:batch"],
+  "registered": ["ext:stock_watch:scan"],
+  "entrypoints": ["scan", "stock_analysis"],
+  "unscheduled": ["stock_analysis"],
+  "cron_synced": true
+}
+```
+
+先严格解析最新 `project.yaml`：解析失败返回 `400`（`detail` 里带原因，
+并声明已保留现有定时任务不变，**不会删除任何 cron 任务**）；项目未注册
+返回 `404`。通过后删除该项目名下全部 `ext:<name>:*` job，项目
+`enabled=true` 时按最新 `schedule` 重新注册，`enabled=false` 时只删不建。
+重建出的是全新 job，`run_count`/上次运行时间/状态历史会重置。daemon 的
+cron 调度器不可用时仍返回 `200`、`cron_synced=false`，只做 manifest
+校验。同时会清掉健康探测缓存。
 
 ### /v1/workflows/{name}/editor、/v1/workflow_editor/meta — 工作流可视化编辑器后端（owner only）
 

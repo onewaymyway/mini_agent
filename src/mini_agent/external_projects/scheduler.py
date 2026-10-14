@@ -352,6 +352,123 @@ def ensure_external_project_cron_jobs(
     return changed
 
 
+@dataclass
+class EntrypointRefreshResult:
+    """`refresh_external_project_cron_jobs()` 的结构化返回，供路由/看板展示。"""
+
+    project_name: str
+    enabled: bool
+    # 本次刷新前该项目名下已存在、并被删除的 ext:* job id
+    removed: List[str]
+    # 本次按最新 project.yaml 重新注册的 job id
+    registered: List[str]
+    # 最新 project.yaml 里声明的全部 entrypoint key（含没有 schedule 的）
+    entrypoints: List[str]
+    # 没有声明 schedule、因此不会注册 cron 的 entrypoint key
+    unscheduled: List[str]
+    # False 表示 daemon 的 cron_scheduler 当前不可用（只做了 manifest 校验）
+    cron_synced: bool = True
+
+    def to_dict(self) -> Dict:
+        return {
+            "project": self.project_name,
+            "enabled": self.enabled,
+            "removed": list(self.removed),
+            "registered": list(self.registered),
+            "entrypoints": list(self.entrypoints),
+            "unscheduled": list(self.unscheduled),
+            "cron_synced": self.cron_synced,
+        }
+
+
+def refresh_external_project_cron_jobs(
+    project_name: str,
+    registry: ExternalProjectRegistry,
+    cron_scheduler,
+) -> EntrypointRefreshResult:
+    """按最新 `project.yaml` 强制重建某个外部项目的 cron 任务。
+
+    与 `ensure_external_project_cron_jobs()`（"原地对齐"：保留已有 job 的
+    运行时状态，只改 schedule）不同，这里是用户在看板上主动点
+    「更新 entrypoints」时的语义——**先删后建**：
+
+      1. 先严格解析一次最新 manifest。解析失败直接抛
+         `ProjectManifestError`，此时**不删除任何现有 job**——避免
+         project.yaml 被改坏时，一次点击把正在跑的调度全部打掉。
+      2. 删除该项目名下全部 `ext:{project}:*` job。
+      3. 项目 `enabled=True` 时，按最新 manifest 里带 schedule 的
+         entrypoint 逐个重新注册；`enabled=False` 时只删不建（与
+         项目粒度开关"关闭即真删"的语义一致）。
+
+    重建后的 job 是全新记录：`run_count`/`last_run_at`/`state_history`
+    以及用户手动 disable 过的状态都会重置（新 job 一律 enabled=True、
+    next_run_at 按当前时间重算）。这是"删除旧任务再注册新任务"的直接
+    后果，调用方（看板）应在界面上说明。
+
+    `cron_scheduler=None`（daemon 未运行/不可用）时只做 manifest 校验并
+    返回 `cron_synced=False`，不报错——下次 daemon 启动的批量对齐会
+    自然补齐。
+
+    不存在的项目抛 `ExternalProjectRegistryError`。
+    """
+    record = registry.get(project_name)  # 未注册 → ExternalProjectRegistryError
+    manifest = registry.load_manifest_for(project_name)  # 解析失败 → 抛出，不动现有 job
+
+    all_keys = list(manifest.entrypoints.keys())
+    scheduled = list(manifest.scheduled_entrypoints())
+    scheduled_keys = {ep.key for ep in scheduled}
+    unscheduled = [k for k in all_keys if k not in scheduled_keys]
+
+    # 清掉健康探测缓存：health_check 命令可能也改了，刷新后看板应拿到新结果
+    try:
+        from mini_agent.external_projects.status import _clear_health_cache
+
+        _clear_health_cache()
+    except Exception:  # noqa: BLE001 — 缓存清理失败不影响刷新本身
+        pass
+
+    if cron_scheduler is None:
+        return EntrypointRefreshResult(
+            project_name=project_name,
+            enabled=bool(record.enabled),
+            removed=[],
+            registered=[],
+            entrypoints=all_keys,
+            unscheduled=unscheduled,
+            cron_synced=False,
+        )
+
+    prefix = f"ext:{project_name}:"
+    removed: List[str] = []
+    for job in list(cron_scheduler.list_jobs()):
+        if job.id.startswith(prefix) and cron_scheduler.remove_job(job.id):
+            removed.append(job.id)
+
+    registered: List[str] = []
+    if record.enabled:
+        for ep in scheduled:
+            job = cron_scheduler.upsert_external_entrypoint_job(
+                job_id=f"{prefix}{ep.key}",
+                name=f"[外部项目] {project_name}/{ep.key}",
+                schedule=ep.schedule,
+                external_project=project_name,
+                external_entrypoint=ep.key,
+                tags=["external_project", project_name],
+                concurrency=getattr(ep, "concurrency", "managed"),
+            )
+            registered.append(job.id)
+
+    return EntrypointRefreshResult(
+        project_name=project_name,
+        enabled=bool(record.enabled),
+        removed=removed,
+        registered=registered,
+        entrypoints=all_keys,
+        unscheduled=unscheduled,
+        cron_synced=True,
+    )
+
+
 def trigger_run(
     registry: ExternalProjectRegistry,
     project_name: str,

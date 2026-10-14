@@ -261,6 +261,7 @@ review 这一具体接线动作目前还没做，见第9节"已知限制"。
 |---|---|---|
 | 注册新项目 | `POST /v1/external_projects/register` | `mini-agent projects register` |
 | 手动触发 entrypoint | `POST /v1/external_projects/{name}/trigger_run` | `mini-agent projects run` |
+| 更新 entrypoints（重建 cron 任务） | `POST /v1/external_projects/{name}/refresh_entrypoints` | —（命令行无对应；见下） |
 | 执行账本 | `GET /v1/external_projects/{name}/ledger` | `mini-agent projects ledger` |
 | 改进积压：查看 | `GET /v1/external_projects/{name}/backlog` | `mini-agent projects backlog list` |
 | 改进积压：新增 | `POST /v1/external_projects/{name}/backlog` | `mini-agent projects backlog add` |
@@ -277,6 +278,39 @@ review 模板预览旁边的「复制到对话框」按钮只是把生成的文�
 「🗂️ 外部项目 Tab」一节；`propose_fix`/`land_maintenance_fix`（提出
 维护改动/落地分支，见第8节）明确不在这一期看板化范围内，仍然只能
 通过 agent 工具调用或 Python 函数/`git merge` 完成。
+
+### 更新 entrypoints：改完 `project.yaml` 后让 daemon 立即生效
+
+改了外部项目的 `project.yaml`（新增/删除 entrypoint、改 `schedule`/
+`cmd`/`params`）之后，不必重启 daemon、也不必把「自动调度」开关关了
+再开：在看板项目卡片上点「🔄 更新 entrypoints」（或直接
+`POST /v1/external_projects/{name}/refresh_entrypoints`）即可。后端
+`scheduler.refresh_external_project_cron_jobs()` 的行为：
+
+1. **先校验、后动手**：严格解析最新 `project.yaml`。解析失败返回 400
+   （`project.yaml 解析失败，已保留现有定时任务不变: ...`），**一个现有
+   cron 任务都不会删**——避免 project.yaml 被改坏时一次点击把正在跑的
+   调度全部打掉。
+2. 删除该项目名下全部 `ext:<项目名>:*` cron 任务。
+3. 项目「自动调度」已开启时，按最新 `project.yaml` 里**声明了
+   `schedule` 的** entrypoint 逐个重新注册；未开启时只删不建（与开关
+   关闭即真删的语义一致）。没有 `schedule` 的 entrypoint 不产生 cron
+   任务，仍可手动触发。
+4. 清掉健康探测缓存（`status.py` 的 60s TTL），看板下一次拉状态时
+   entrypoints 列表与 health 都是最新的。
+
+返回值包含 `removed`（被删的 job id）、`registered`（重新注册的
+job id）、`entrypoints`（最新声明的全部 key）、`unscheduled`（没有
+schedule 的 key）、`enabled`、`cron_synced`。daemon 的 cron 调度器不可用
+时仍返回 200、`cron_synced=false`，只做了 manifest 校验——下次 daemon
+启动的批量对齐会自然补齐。
+
+**与既有对齐函数的区别**：`ensure_external_project_cron_jobs()`（daemon
+启动/切换开关时调用）是"原地对齐"，保留已有 job 的运行历史，只改
+schedule；本功能是"先删后建"，重建出来的是全新 job——**累计运行次数
+（`run_count`）、上次运行时间、状态历史都会重置，之前手动 disable 过的
+job 也会恢复成启用**。这是"删除旧任务再注册新任务"的直接后果，看板
+按钮的悬停提示里已写明。
 
 ## 7. daemon 侧调度器（可选）
 

@@ -27,6 +27,7 @@ from mini_agent.external_projects.registry import (
 from mini_agent.external_projects.scheduler import (
     cron_matches,
     ensure_external_project_cron_jobs,
+    refresh_external_project_cron_jobs,
     run_due_entrypoints,
     trigger_run,
 )
@@ -596,3 +597,118 @@ entrypoints:
     job_ids = {j.id for j in cs.list_jobs() if j.id.startswith("ext:proj:")}
     assert job_ids == {"ext:proj:scan"}
     assert cs.get("ext:proj:scan").schedule == "cron: 30 10 * * 1-5"
+
+
+# ── 看板「更新 entrypoints」── refresh_external_project_cron_jobs ──
+
+
+def _ext_job_ids(cs, name="proj"):
+    return {j.id for j in cs.list_jobs() if j.id.startswith(f"ext:{name}:")}
+
+
+def test_refresh_deletes_old_jobs_and_registers_from_latest_manifest(tmp_path):
+    root = _make_scheduled_project_dir(tmp_path)
+    registry = ExternalProjectRegistry(store_path=tmp_path / "registry.json")
+    registry.register("proj", root, enabled=True)
+    cs = _fresh_cron_scheduler(tmp_path)
+    ensure_external_project_cron_jobs("proj", registry, cs)
+    assert _ext_job_ids(cs) == {"ext:proj:scan", "ext:proj:batch"}
+    # 模拟旧 job 已有运行历史：刷新后应被重置（删除再新建，而不是原地更新）
+    cs.get("ext:proj:scan").run_count = 7
+
+    # 改 project.yaml：去掉 batch，scan 改 schedule，新增 report
+    (root / "project.yaml").write_text(
+        f"""
+name: proj
+entrypoints:
+  scan:
+    cmd: "{sys.executable} -c \\"pass\\""
+    schedule: "cron: 30 10 * * 1-5"
+  report:
+    cmd: "{sys.executable} -c \\"pass\\""
+    schedule: "cron: 0 18 * * 1-5"
+  manual_only:
+    cmd: "{sys.executable} -c \\"pass\\""
+""",
+        encoding="utf-8",
+    )
+
+    res = refresh_external_project_cron_jobs("proj", registry, cs)
+
+    assert set(res.removed) == {"ext:proj:scan", "ext:proj:batch"}
+    assert set(res.registered) == {"ext:proj:scan", "ext:proj:report"}
+    assert _ext_job_ids(cs) == {"ext:proj:scan", "ext:proj:report"}
+    assert cs.get("ext:proj:scan").schedule == "cron: 30 10 * * 1-5"
+    assert cs.get("ext:proj:scan").run_count == 0  # 全新 job
+    assert set(res.entrypoints) == {"scan", "report", "manual_only"}
+    assert res.unscheduled == ["manual_only"]
+    assert res.cron_synced is True and res.enabled is True
+
+
+def test_refresh_invalid_manifest_raises_and_keeps_existing_jobs(tmp_path):
+    root = _make_scheduled_project_dir(tmp_path)
+    registry = ExternalProjectRegistry(store_path=tmp_path / "registry.json")
+    registry.register("proj", root, enabled=True)
+    cs = _fresh_cron_scheduler(tmp_path)
+    ensure_external_project_cron_jobs("proj", registry, cs)
+
+    (root / "project.yaml").write_text("name: proj\nentrypoints: [broken\n", encoding="utf-8")
+
+    with pytest.raises(ProjectManifestError):
+        refresh_external_project_cron_jobs("proj", registry, cs)
+    # 解析失败时一个 job 都不能少
+    assert _ext_job_ids(cs) == {"ext:proj:scan", "ext:proj:batch"}
+
+
+def test_refresh_disabled_project_removes_jobs_without_registering(tmp_path):
+    root = _make_scheduled_project_dir(tmp_path)
+    registry = ExternalProjectRegistry(store_path=tmp_path / "registry.json")
+    registry.register("proj", root, enabled=True)
+    cs = _fresh_cron_scheduler(tmp_path)
+    ensure_external_project_cron_jobs("proj", registry, cs)
+    registry.set_enabled("proj", False)
+    # 模拟：禁用后遗留了一个 job（比如 daemon 当时没在运行）
+    assert _ext_job_ids(cs)
+
+    res = refresh_external_project_cron_jobs("proj", registry, cs)
+
+    assert _ext_job_ids(cs) == set()
+    assert res.registered == []
+    assert res.enabled is False
+
+
+def test_refresh_only_touches_target_project_jobs(tmp_path):
+    root_a = _make_scheduled_project_dir(tmp_path, "proj")
+    root_b = _make_scheduled_project_dir(tmp_path, "other")
+    registry = ExternalProjectRegistry(store_path=tmp_path / "registry.json")
+    registry.register("proj", root_a, enabled=True)
+    registry.register("other", root_b, enabled=True)
+    cs = _fresh_cron_scheduler(tmp_path)
+    ensure_external_project_cron_jobs("proj", registry, cs)
+    ensure_external_project_cron_jobs("other", registry, cs)
+    other_before = cs.get("ext:other:scan")
+    other_before.run_count = 3
+
+    refresh_external_project_cron_jobs("proj", registry, cs)
+
+    assert _ext_job_ids(cs, "other") == {"ext:other:scan", "ext:other:batch"}
+    assert cs.get("ext:other:scan").run_count == 3
+
+
+def test_refresh_without_cron_scheduler_only_validates(tmp_path):
+    root = _make_scheduled_project_dir(tmp_path)
+    registry = ExternalProjectRegistry(store_path=tmp_path / "registry.json")
+    registry.register("proj", root, enabled=True)
+
+    res = refresh_external_project_cron_jobs("proj", registry, None)
+
+    assert res.cron_synced is False
+    assert res.removed == [] and res.registered == []
+    assert set(res.entrypoints) == {"scan", "batch", "unscheduled"}
+
+
+def test_refresh_unknown_project_raises(tmp_path):
+    registry = ExternalProjectRegistry(store_path=tmp_path / "registry.json")
+    cs = _fresh_cron_scheduler(tmp_path)
+    with pytest.raises(ExternalProjectRegistryError):
+        refresh_external_project_cron_jobs("nope", registry, cs)

@@ -99,6 +99,9 @@ api/routes.py — FastAPI 路由定义
                                        cron_dispatch_plan.md] 切换项目粒度
                                        的 daemon 自动调度开关，联动对齐
                                        ext:* cron job
+    POST   /v1/external_projects/{name}/refresh_entrypoints
+                                       按最新 project.yaml 重新加载 entrypoints，
+                                       删除并重建该项目的 ext:* cron 任务
     DELETE /v1/external_projects/{name}  [external_projects_agent_skill_
                                        workflow_integration_plan.md] 注销
                                        项目（只删注册表记录，不删项目文件），
@@ -1006,6 +1009,67 @@ async def patch_external_projects_enabled(name: str, request: Request):
         log_exception(_mini_agent_exc, where='mini_agent.api.routes.patch_external_projects_enabled.ensure_cron_jobs')
 
     return {"project": record.to_dict()}
+
+
+@router.post("/external_projects/{name}/refresh_entrypoints")
+async def post_external_projects_refresh_entrypoints(name: str, request: Request):
+    """POST /v1/external_projects/{name}/refresh_entrypoints — 按最新
+    `project.yaml` 重新加载 entrypoints，并重建该项目的 cron 任务。
+
+    看板项目卡片上「🔄 更新 entrypoints」按钮的后端：用户改了外部项目的
+    `project.yaml`（新增/删除 entrypoint、改 schedule/cmd/params）之后
+    点一次，不必重启 daemon 或切换「自动调度」开关。
+
+    行为（见 `scheduler.refresh_external_project_cron_jobs()`）：
+      - 先严格解析最新 manifest——失败返回 400 + 原因，**不会删除现有
+        cron 任务**；
+      - 通过后删除该项目名下全部 `ext:<name>:*` job，并（项目「自动
+        调度」已开启时）按最新 schedule 重新注册；
+      - 同时清掉健康探测缓存，让看板下次拉状态拿到新的 entrypoints/
+        health。
+
+    daemon 的 cron_scheduler 不可用时仍返回 200，`cron_synced=false`。
+    """
+    _require_owner(request)
+
+    try:
+        from mini_agent.external_projects.manifest import ProjectManifestError
+        from mini_agent.external_projects.registry import (
+            ExternalProjectRegistry,
+            ExternalProjectRegistryError,
+        )
+        from mini_agent.external_projects.scheduler import (
+            refresh_external_project_cron_jobs,
+        )
+
+        registry = ExternalProjectRegistry()
+        # 先确认项目存在，给出准确的 404（而不是等刷新函数内部抛）。
+        registry.get(name)
+
+        http_server = getattr(request.app.state, "http_server", None)
+        cron_scheduler = None
+        if http_server is not None:
+            al = getattr(http_server, "autonomous_loop", None)
+            cron_scheduler = getattr(al, "_cron_scheduler", None) if al is not None else None
+            if cron_scheduler is None:
+                cron_scheduler = getattr(http_server.bridge, "_cron_scheduler", None)
+
+        # 与 PATCH .../enabled、DELETE 两个同类路由一致：直接在事件循环
+        # 线程里同步调用（只是一次 yaml 解析 + cron_jobs.json 写盘，耗时
+        # 毫秒级；CronScheduler 本身无锁，不额外引入第二个写线程）。
+        result = refresh_external_project_cron_jobs(name, registry, cron_scheduler)
+        return result.to_dict()
+    except ProjectManifestError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"project.yaml 解析失败，已保留现有定时任务不变: {exc}",
+        )
+    except ExternalProjectRegistryError as exc:
+        raise HTTPException(status_code=_external_project_error_status(exc), detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @router.delete("/external_projects/{name}")

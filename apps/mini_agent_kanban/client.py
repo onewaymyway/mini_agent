@@ -1411,6 +1411,13 @@ class AgentClient:
         关闭时会把这些 job 真正删除（不是 disable）。"""
         return self._patch(f"/external_projects/{name}/enabled", {"enabled": enabled})
 
+    def refresh_external_project_entrypoints(self, name: str):
+        """按最新 project.yaml 重新加载该项目的 entrypoints：后端先校验
+        manifest（失败则保留现有定时任务不动），再删除该项目名下全部
+        ext:* cron 任务，并（「自动调度」开启时）按最新 schedule 重新
+        注册。返回 removed/registered/entrypoints/unscheduled/cron_synced。"""
+        return self._post(f"/external_projects/{name}/refresh_entrypoints", {}, timeout=30)
+
     def trigger_external_project_run(self, name: str, entrypoint: str, params: dict | None = None):
         """立即触发某个已注册项目的某个 entrypoint 一次。
 

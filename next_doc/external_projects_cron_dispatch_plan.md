@@ -291,9 +291,15 @@ cron/goal-cron 调度行为。
   确认），只删注册表记录，不删项目文件。详见
   `next_doc/external_projects_agent_skill_workflow_integration_plan.md`
   第 2 节。
-- 未新增看板端"手动触发一次全量对齐"的按钮（比如用户怀疑 `ext:*`
-  job 和 `project.yaml` 不同步时）；当前对齐时机是"daemon 启动时"和
-  "开关切换时"，覆盖了文档列出的主要触发点，暂不需要额外入口。
+- ~~未新增看板端"手动触发一次全量对齐"的按钮~~ → **已补上**（见
+  `external_projects_kanban_integration_plan.md` 阶段 7）：看板项目卡片
+  新增「🔄 更新 entrypoints」，调用
+  `POST /v1/external_projects/{name}/refresh_entrypoints` →
+  `scheduler.refresh_external_project_cron_jobs()`。注意它与本文档
+  3.3 的 `ensure_external_project_cron_jobs()` 语义不同：后者是原地
+  对齐（保留 job 的运行历史），前者是先删后建（重置运行历史），且
+  manifest 解析失败时不动任何现有 job。对齐时机现为"daemon 启动时"、
+  "开关切换时"、"用户点更新按钮时"三处。
 - 2026-08-30（补记，非本文档主题范围内的关联修正）：`stock_watch` 新增
   的 `stock_analysis_ai` entrypoint（个股 AI 综合研判，会触发 LLM 调用）
   未带 `schedule`，本次不涉及本文档描述的定时调度接线；仅按本文档 §1.3
