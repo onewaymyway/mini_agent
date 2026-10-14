@@ -896,6 +896,8 @@ def load_config(
     # 此前未传入 AppConfig，导致 agent_config.json 中 cycle_patrol.enabled
     # 等字段无论怎么配都不会生效——本次一并补齐。
     cycle_patrol_cfg = _nested_blocks["cycle_patrol"]
+    # LLM 请求网络层配置：llm_network.trust_env=false 强制 LLM 直连（忽略环境/系统代理）
+    llm_network_cfg = _nested_blocks["llm_network"]
 
     cfg = AppConfig(
         api_key=api_key,
@@ -951,6 +953,7 @@ def load_config(
         debug=debug_cfg,
         http=http_cfg,
         retry=retry_cfg,
+        llm_network=llm_network_cfg,
         ensemble=ensemble_cfg,
         mcp=mcp_cfg,
         web_search=web_search_cfg,

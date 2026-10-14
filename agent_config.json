@@ -31,6 +31,9 @@
   "report_include_external_context": true,
   "report_two_stage_enabled": true,
   "report_dismiss_reason_adaptive_enabled": true,
+  "llm_network": {
+    "trust_env": false
+  },
   "max_llm_calls": 4,
   "llm_retry_delay": 30,
   "max_turns": 50,

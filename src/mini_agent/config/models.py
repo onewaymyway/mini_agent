@@ -725,6 +725,26 @@ class EcosystemPositioningConfig:
 
 
 @dataclass
+class LLMNetworkConfig:
+    """LLM 调用的网络层配置（只影响 LLM provider 的 HTTP 请求）。
+
+    trust_env — 是否让 LLM 请求遵循进程环境/系统里的代理设置（默认 True，
+      与引入本配置前的行为完全一致）。
+
+      True  : SDK / urllib 的默认行为，读取 HTTP_PROXY / HTTPS_PROXY / ALL_PROXY /
+              NO_PROXY，以及 Windows / macOS 的系统代理设置。
+      False : 强制直连。忽略上述所有环境变量和系统代理，所有 LLM 请求不经任何代理。
+
+    只作用于 LLM provider（openai 兼容系 / anthropic / ollama）。web_search、
+    通知 webhook、代理池自身等其它网络调用不受影响，仍按各自逻辑处理。
+
+    providers 链（providers.json / agent_config.json 的 providers 条目）里的单个
+    条目可以写同名字段 ``"trust_env"`` 覆盖这里的全局值。
+    """
+    trust_env: bool = True
+
+
+@dataclass
 class RetryConfig:
     """LLM 调用重试配置。
 
@@ -3123,6 +3143,8 @@ class AppConfig:
     global_knowledge: GlobalKnowledgeConfig = field(default_factory=GlobalKnowledgeConfig)
     observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
     privacy:    PrivacyConfig     = field(default_factory=PrivacyConfig)
+    # LLM 请求的网络层配置（是否遵循环境/系统代理），见 LLMNetworkConfig
+    llm_network: LLMNetworkConfig = field(default_factory=LLMNetworkConfig)
     ensemble:   EnsembleConfig    = field(default_factory=EnsembleConfig)
 
     # ── 向后兼容属性（让旧代码 cfg.memory_enabled 不报错）────────────────────

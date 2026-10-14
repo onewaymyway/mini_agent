@@ -51,7 +51,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, TYPE_CHECKING
 
-from .base import LLMClient, LLMConfig, LLMResponse, LLMRateLimitError, LLMError
+from .base import LLMClient, LLMConfig, LLMResponse, LLMRateLimitError, LLMError, resolve_trust_env
 from . import deadline as _deadline
 
 if TYPE_CHECKING:
@@ -246,6 +246,7 @@ class ProviderEntry:
             requires_api_key=self.config.requires_api_key,
             use_system_tool_call=self.config.use_system_tool_call,
             system_message_format=self.config.system_message_format,
+            trust_env=self.config.trust_env,
         )
         self.config = new_cfg
         self.client = create_client(new_cfg)
@@ -654,6 +655,8 @@ class LLMClientPool:
                 "system_message_format",
                 getattr(cfg, "system_message_format", "system_field"),
             ),
+            # 条目显式写 trust_env 优先，否则沿用全局 llm_network.trust_env
+            trust_env=bool(item.get("trust_env", resolve_trust_env(cfg))),
         )
 
 

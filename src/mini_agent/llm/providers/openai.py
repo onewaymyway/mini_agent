@@ -14,6 +14,7 @@ from ..base import (
     LLMProviderError, LLMTimeoutError, LLMRateLimitError,
 )
 from ._base_mixin import ProviderMixin
+from ._http import build_sdk_http_client
 
 
 class OpenAIProvider(ProviderMixin, LLMClient):
@@ -36,6 +37,12 @@ class OpenAIProvider(ProviderMixin, LLMClient):
         # 用于 OpenRouter 等需要自定义头的服务
         if self.config.extra.get("default_headers"):
             kwargs["default_headers"] = self.config.extra["default_headers"]
+        # llm_network.trust_env=false 时强制直连（忽略环境/系统代理）；
+        # 默认 True 时不传 http_client，沿用 SDK 默认行为。
+        import openai as _openai_sdk
+        http_client = build_sdk_http_client(_openai_sdk, self.config)
+        if http_client is not None:
+            kwargs["http_client"] = http_client
         return OpenAI(**kwargs)
 
     # ── 公共接口 ───────────────────────────────────────────────────────────────

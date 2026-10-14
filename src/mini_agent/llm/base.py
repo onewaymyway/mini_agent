@@ -285,6 +285,12 @@ class LLMConfig:
     #   "system_role"  — 将 system 注入为 messages[0] role="system"
     system_message_format: str = "system_field"
 
+    # 是否遵循环境变量 / 系统里配置的代理（HTTP_PROXY / HTTPS_PROXY / ALL_PROXY /
+    # NO_PROXY、Windows/macOS 系统代理）。默认 True = 各 SDK 原有行为（向后兼容）；
+    # False = 强制直连。来源：agent_config.json 的 llm_network.trust_env，
+    # providers 条目可用同名字段覆盖。只影响 LLM provider 的 HTTP 请求。
+    trust_env: bool = True
+
     @classmethod
     def from_app_config(cls, cfg: Any) -> "LLMConfig":
         """
@@ -317,7 +323,14 @@ class LLMConfig:
             requires_api_key=(provider not in ("ollama", "local")),
             use_system_tool_call=use_system_tc,
             system_message_format=sys_msg_fmt,
+            trust_env=resolve_trust_env(cfg),
         )
+
+
+def resolve_trust_env(cfg: Any) -> bool:
+    """读取 AppConfig.llm_network.trust_env；缺失（旧 cfg / 测试替身）时按默认 True。"""
+    block = getattr(cfg, "llm_network", None)
+    return bool(getattr(block, "trust_env", True))
 
 
 # ── 异常 ──────────────────────────────────────────────────────────────────────

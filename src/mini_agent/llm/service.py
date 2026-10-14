@@ -269,6 +269,7 @@ class LLMHelper:
             requires_api_key=base_cfg.requires_api_key,
             use_system_tool_call=base_cfg.use_system_tool_call,
             system_message_format=base_cfg.system_message_format,
+            trust_env=base_cfg.trust_env,
         )
         client = create_client(llm_cfg)
         return policy.call_with_retry(

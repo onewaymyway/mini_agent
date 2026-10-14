@@ -25,6 +25,7 @@ from ..base import (
     LLMTimeoutError,
 )
 from ._base_mixin import ProviderMixin
+from ._http import build_urllib_opener
 
 _DEFAULT_BASE_URL = "http://localhost:11434"
 
@@ -147,6 +148,16 @@ class OllamaProvider(ProviderMixin, LLMClient):
             payload["tools"] = self.format_tools(tools)
         return payload
 
+    def _urlopen(self, req):
+        """发请求。llm_network.trust_env=false 时用空 ProxyHandler 的 opener 强制直连，
+        否则沿用 urllib.request.urlopen（遵循环境/系统代理，行为不变）。"""
+        import urllib.request
+        opener = build_urllib_opener(self.config)
+        timeout = self._request_timeout()
+        if opener is None:
+            return urllib.request.urlopen(req, timeout=timeout)
+        return opener.open(req, timeout=timeout)
+
     def _post(self, path: str, payload: dict) -> dict:
         """发送 POST 请求，返回解析后的 JSON dict。"""
         import urllib.request, urllib.error
@@ -158,7 +169,7 @@ class OllamaProvider(ProviderMixin, LLMClient):
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=self._request_timeout()) as resp:
+            with self._urlopen(req) as resp:
                 return json.loads(resp.read().decode())
         except urllib.error.URLError as e:
             raise LLMProviderError(
@@ -179,7 +190,7 @@ class OllamaProvider(ProviderMixin, LLMClient):
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=self._request_timeout()) as resp:
+            with self._urlopen(req) as resp:
                 for line in resp:
                     yield line.decode("utf-8")
         except urllib.error.URLError as e:

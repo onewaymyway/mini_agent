@@ -340,6 +340,9 @@ def _build_nested_blocks() -> list:
         # json` 里写 `"execution_phase": {"progress_trend_llm_enabled": true}`
         # 此前完全不起作用。此处补齐注册。
         NestedBlockSpec("execution_phase", _m.ExecutionPhaseConfig),
+        # LLM 请求网络层配置（llm_network.trust_env=false 强制 LLM 直连、忽略
+        # 环境/系统代理）。走通用加载机制，只影响 LLM provider。
+        NestedBlockSpec("llm_network", _m.LLMNetworkConfig),
     ]
 
 

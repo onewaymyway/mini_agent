@@ -17,6 +17,7 @@ from ..base import (
     LLMProviderError, LLMTimeoutError, LLMRateLimitError,
 )
 from ._base_mixin import ProviderMixin
+from ._http import build_sdk_http_client
 
 
 class AnthropicProvider(ProviderMixin, LLMClient):
@@ -40,6 +41,11 @@ class AnthropicProvider(ProviderMixin, LLMClient):
         kwargs: dict = {"api_key": self.config.api_key}
         if self.config.base_url:
             kwargs["base_url"] = self.config.base_url
+        # llm_network.trust_env=false 时强制直连（忽略环境/系统代理）；
+        # 默认 True 时不传 http_client，沿用 SDK 默认行为。
+        http_client = build_sdk_http_client(anthropic, self.config)
+        if http_client is not None:
+            kwargs["http_client"] = http_client
         return anthropic.Anthropic(**kwargs)
 
     # ── 公共接口（带日志 + system tool call） ─────────────────────────────────

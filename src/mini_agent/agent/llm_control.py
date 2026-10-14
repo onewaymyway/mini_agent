@@ -12,6 +12,7 @@ from mini_agent.llm import (
     LLMError,
 )
 import mini_agent.agent as _agent_pkg
+from mini_agent.llm.base import resolve_trust_env
 from mini_agent.llm.retry import RetryPolicy, default_retry_policy, no_retry_policy, parse_backoff
 from mini_agent.llm.client_pool import LLMClientPool
 from mini_agent.permissions import PermissionGuard
@@ -145,6 +146,7 @@ class LLMControlMixin:
                 requires_api_key=current.config.requires_api_key,
                 use_system_tool_call=current.config.use_system_tool_call,
                 system_message_format=current.config.system_message_format,
+                trust_env=current.config.trust_env,
             )
             new_client = _agent_pkg.create_client(new_cfg)
             entry = ProviderEntry(config=new_cfg, client=new_client, key_pool=None)
@@ -189,6 +191,7 @@ class LLMControlMixin:
                 model=resolved_model,
                 api_key=api_key,
                 requires_api_key=(provider not in ("ollama", "local")),
+                trust_env=resolve_trust_env(self.cfg),
             )
             new_client = _agent_pkg.create_client(new_cfg)
             entry = ProviderEntry(config=new_cfg, client=new_client, key_pool=None)
