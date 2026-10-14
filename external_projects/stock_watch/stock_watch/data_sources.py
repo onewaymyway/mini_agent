@@ -1803,9 +1803,9 @@ def fetch_sina_telegraph(top_n: int = 50, max_pages: int = 5, scroll_delay: floa
         session.eval_js(f"location.href={json.dumps(_SINA_TELEGRAPH_URL)}", await_promise=True)
         time.sleep(3)
 
-        # 滚动加载：每次滚动到顶部，触发懒加载，循环 max_pages 次
+        # 滚动加载：向下滚动到底部触发懒加载，循环 max_pages 次
         for page in range(max_pages):
-            session.eval_js("window.scrollTo(0, 0)", await_promise=True)
+            session.eval_js("window.scrollTo(0, document.body.scrollHeight)", await_promise=True)
             time.sleep(scroll_delay)
 
         # 从页面文本提取新闻，格式为时间戳 + 新闻内容交替
