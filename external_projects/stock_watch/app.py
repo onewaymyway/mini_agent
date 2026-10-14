@@ -1310,8 +1310,8 @@ def render_telegraph_news(algo: Dict, manual: Dict):
                 st.warning("暂无分析记录")
                 return
 
-            # 显示最近20条分析
-            recent = analyses[-20:][::-1]
+            # 按新闻时间倒序排列（最新在前），显示最近20条
+            recent = sorted(analyses, key=lambda x: x.get("news_time", ""), reverse=True)[:20]
             for i, item in enumerate(recent):
                 excerpt = item.get("news_excerpt", "")[:80]
                 time_str = item.get("news_time", "")
