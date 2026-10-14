@@ -1312,93 +1312,90 @@ def render_telegraph_news(algo: Dict, manual: Dict):
 
         if not state_path.exists():
             st.info("暂无分析数据，请先运行扫描任务。")
-            return
+        else:
+            try:
+                state = load_analysis_state(state_path)
+                analyses = state.get("analyses", [])
+                last_run = state.get("last_run_at", "未知")
+                total_analyses = len(analyses)
 
-        try:
-            state = load_analysis_state(state_path)
-            analyses = state.get("analyses", [])
-            last_run = state.get("last_run_at", "未知")
-            total_analyses = len(analyses)
+                # 按新闻时间倒序排列（最新在前）
+                sorted_analyses = sorted(analyses, key=lambda x: x.get("news_time", ""), reverse=True)
+                local_last_run = _to_local(last_run)
+                st.caption(f"最后更新: {local_last_run} | 总分析记录: {total_analyses}")
 
-            # 按新闻时间倒序排列（最新在前）
-            sorted_analyses = sorted(analyses, key=lambda x: x.get("news_time", ""), reverse=True)
-            local_last_run = _to_local(last_run)
-            st.caption(f"最后更新: {local_last_run} | 总分析记录: {total_analyses}")
+                if not sorted_analyses:
+                    st.warning("暂无分析记录")
+                else:
+                    # 翻页控制：每页条数可选 + 上一页/下一页 + 数字跳转
+                    _ps = st.selectbox("每页条数", options=[10, 20, 50, 100], index=1, key="telegraph_page_size")
+                    total_pages = (len(sorted_analyses) + _ps - 1) // _ps
+                    cur_page = st.session_state.get("telegraph_cur_page", 1)
+                    if cur_page < 1:
+                        cur_page = 1
+                    elif cur_page > total_pages:
+                        cur_page = total_pages
 
-            if not sorted_analyses:
-                st.warning("暂无分析记录")
-                return
+                    col_prev, col_num, col_next, col_info = st.columns([1, 2, 1, 2])
+                    with col_prev:
+                        if st.button("◀ 上一页", disabled=(cur_page <= 1), key="tprev_btn"):
+                            cur_page -= 1
+                            st.session_state["telegraph_cur_page"] = cur_page
+                    with col_num:
+                        new_page = st.number_input(
+                            "",
+                            min_value=1,
+                            max_value=total_pages,
+                            value=cur_page,
+                            step=1,
+                            key="tpage_input",
+                            label_visibility="collapsed",
+                            width=80,
+                        )
+                        if new_page != cur_page:
+                            st.session_state["telegraph_cur_page"] = new_page
+                            cur_page = new_page
+                    with col_next:
+                        if st.button("下一页 ▶", disabled=(cur_page >= total_pages), key="tnext_btn"):
+                            cur_page += 1
+                            st.session_state["telegraph_cur_page"] = cur_page
+                    with col_info:
+                        st.caption(f"第 {cur_page} / {total_pages} 页  （共 {len(sorted_analyses)} 条）")
 
-            # 翻页控制：每页条数可选 + 上一页/下一页 + 数字跳转
-            _ps = st.selectbox("每页条数", options=[10, 20, 50, 100], index=1, key="telegraph_page_size")
-            total_pages = (len(sorted_analyses) + _ps - 1) // _ps
-            cur_page = st.session_state.get("telegraph_cur_page", 1)
-            if cur_page < 1:
-                cur_page = 1
-            elif cur_page > total_pages:
-                cur_page = total_pages
+                    start = (cur_page - 1) * _ps
+                    page_items = sorted_analyses[start:start + _ps]
 
-            col_prev, col_num, col_next, col_info = st.columns([1, 2, 1, 2])
-            with col_prev:
-                if st.button("◀ 上一页", disabled=(cur_page <= 1), key="tprev_btn"):
-                    cur_page -= 1
-                    st.session_state["telegraph_cur_page"] = cur_page
-            with col_num:
-                new_page = st.number_input(
-                    "",
-                    min_value=1,
-                    max_value=total_pages,
-                    value=cur_page,
-                    step=1,
-                    key="tpage_input",
-                    label_visibility="collapsed",
-                    width=80,
-                )
-                if new_page != cur_page:
-                    st.session_state["telegraph_cur_page"] = new_page
-                    cur_page = new_page
-            with col_next:
-                if st.button("下一页 ▶", disabled=(cur_page >= total_pages), key="tnext_btn"):
-                    cur_page += 1
-                    st.session_state["telegraph_cur_page"] = cur_page
-            with col_info:
-                st.caption(f"第 {cur_page} / {total_pages} 页  （共 {len(sorted_analyses)} 条）")
+                    for i, item in enumerate(page_items, start=start + 1):
+                        excerpt = item.get("news_excerpt", "")[:80]
+                        time_str = _to_local(item.get("news_time", ""))
+                        with st.expander(f"{i}. [{time_str}] {excerpt}..."):
+                            # 完整新闻内容
+                            news_content = item.get("news_content", "") or item.get("news_excerpt", "")
+                            st.markdown(f"**新闻内容**:\n{news_content}")
+                            st.divider()
+                            direction = item.get("direction", "")
+                            emoji = {"positive": "🟢", "negative": "🔴", "neutral": "⚪"}.get(direction, "⚪")
+                            st.markdown(f"**方向**: {emoji} {direction.upper()}")
+                            st.markdown(f"**类型**: {item.get('opportunity_type', '')}")
+                            st.markdown(f"**置信度**: {item.get('confidence', '')}")
 
-            start = (cur_page - 1) * _ps
-            page_items = sorted_analyses[start:start + _ps]
+                            if item.get("related_stocks"):
+                                st.markdown("**相关股票**:")
+                                for s in item["related_stocks"]:
+                                    st.markdown(f"- {s.get('code', '')} ({s.get('name', '')}) - 相关性: {s.get('relevance', '')}")
 
-            for i, item in enumerate(page_items, start=start + 1):
-                excerpt = item.get("news_excerpt", "")[:80]
-                time_str = _to_local(item.get("news_time", ""))
-                with st.expander(f"{i}. [{time_str}] {excerpt}..."):
-                    # 完整新闻内容
-                    news_content = item.get("news_content", "") or item.get("news_excerpt", "")
-                    st.markdown(f"**新闻内容**:\n{news_content}")
-                    st.divider()
-                    direction = item.get("direction", "")
-                    emoji = {"positive": "🟢", "negative": "🔴", "neutral": "⚪"}.get(direction, "⚪")
-                    st.markdown(f"**方向**: {emoji} {direction.upper()}")
-                    st.markdown(f"**类型**: {item.get('opportunity_type', '')}")
-                    st.markdown(f"**置信度**: {item.get('confidence', '')}")
+                            if item.get("related_etfs"):
+                                st.markdown("**相关ETF**:")
+                                for e in item["related_etfs"]:
+                                    st.markdown(f"- {e.get('code', '')} ({e.get('name', '')}) - 行业: {e.get('sector', '')}")
 
-                    if item.get("related_stocks"):
-                        st.markdown("**相关股票**:")
-                        for s in item["related_stocks"]:
-                            st.markdown(f"- {s.get('code', '')} ({s.get('name', '')}) - 相关性: {s.get('relevance', '')}")
+                            if item.get("industry_opportunities"):
+                                st.markdown("**行业机会**:")
+                                st.markdown(", ".join(item["industry_opportunities"]))
 
-                    if item.get("related_etfs"):
-                        st.markdown("**相关ETF**:")
-                        for e in item["related_etfs"]:
-                            st.markdown(f"- {e.get('code', '')} ({e.get('name', '')}) - 行业: {e.get('sector', '')}")
-
-                    if item.get("industry_opportunities"):
-                        st.markdown("**行业机会**:")
-                        st.markdown(", ".join(item["industry_opportunities"]))
-
-                    st.markdown(f"**分析理由**:\n{item.get('reasoning', '')}")
-
-        except Exception as e:
-            st.error(f"加载分析数据失败: {e}")
+                            st.markdown(f"**分析理由**:\n{item.get('reasoning', '')}")
+            except Exception as e:
+                st.error(f"加载分析数据失败: {e}")
 
     # ── Tab 2: 长期统计 ──
     with tab2:
