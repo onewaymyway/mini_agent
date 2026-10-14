@@ -218,3 +218,4 @@ output/
 .agent/created_dirs_registry.json
 .agent/decision_profile_state.json
 .agent/reports/
+.agent/last_sync
