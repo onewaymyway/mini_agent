@@ -26,8 +26,24 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
+
+_CN_TZ = ZoneInfo("Asia/Shanghai")
+
+
+def _to_local(dt_str: str) -> str:
+    """将 ISO 时间字符串（含时区）转为北京时间本地格式。"""
+    if not dt_str or dt_str == "未知":
+        return dt_str
+    try:
+        dt = datetime.fromisoformat(dt_str)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(_CN_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return dt_str
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -1304,18 +1320,57 @@ def render_telegraph_news(algo: Dict, manual: Dict):
             last_run = state.get("last_run_at", "未知")
             total_analyses = len(analyses)
 
-            st.caption(f"最后更新: {last_run} | 总分析记录: {total_analyses}")
+            # 按新闻时间倒序排列（最新在前）
+            sorted_analyses = sorted(analyses, key=lambda x: x.get("news_time", ""), reverse=True)
+            local_last_run = _to_local(last_run)
+            st.caption(f"最后更新: {local_last_run} | 总分析记录: {total_analyses}")
 
-            if not analyses:
+            if not sorted_analyses:
                 st.warning("暂无分析记录")
                 return
 
-            # 按新闻时间倒序排列（最新在前），显示最近20条
-            recent = sorted(analyses, key=lambda x: x.get("news_time", ""), reverse=True)[:20]
-            for i, item in enumerate(recent):
+            # 翻页控制：每页条数可选 + 上一页/下一页 + 数字跳转
+            _ps = st.selectbox("每页条数", options=[10, 20, 50, 100], index=1, key="telegraph_page_size")
+            total_pages = (len(sorted_analyses) + _ps - 1) // _ps
+            cur_page = st.session_state.get("telegraph_cur_page", 1)
+            if cur_page < 1:
+                cur_page = 1
+            elif cur_page > total_pages:
+                cur_page = total_pages
+
+            col_prev, col_num, col_next, col_info = st.columns([1, 2, 1, 2])
+            with col_prev:
+                if st.button("◀ 上一页", disabled=(cur_page <= 1), key="tprev_btn"):
+                    cur_page -= 1
+                    st.session_state["telegraph_cur_page"] = cur_page
+            with col_num:
+                new_page = st.number_input(
+                    "",
+                    min_value=1,
+                    max_value=total_pages,
+                    value=cur_page,
+                    step=1,
+                    key="tpage_input",
+                    label_visibility="collapsed",
+                    width=80,
+                )
+                if new_page != cur_page:
+                    st.session_state["telegraph_cur_page"] = new_page
+                    cur_page = new_page
+            with col_next:
+                if st.button("下一页 ▶", disabled=(cur_page >= total_pages), key="tnext_btn"):
+                    cur_page += 1
+                    st.session_state["telegraph_cur_page"] = cur_page
+            with col_info:
+                st.caption(f"第 {cur_page} / {total_pages} 页  （共 {len(sorted_analyses)} 条）")
+
+            start = (cur_page - 1) * _ps
+            page_items = sorted_analyses[start:start + _ps]
+
+            for i, item in enumerate(page_items, start=start + 1):
                 excerpt = item.get("news_excerpt", "")[:80]
-                time_str = item.get("news_time", "")
-                with st.expander(f"{i+1}. [{time_str}] {excerpt}..."):
+                time_str = _to_local(item.get("news_time", ""))
+                with st.expander(f"{i}. [{time_str}] {excerpt}..."):
                     # 完整新闻内容
                     news_content = item.get("news_content", "") or item.get("news_excerpt", "")
                     st.markdown(f"**新闻内容**:\n{news_content}")
