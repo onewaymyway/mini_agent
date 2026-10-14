@@ -1849,6 +1849,13 @@ def fetch_sina_telegraph(top_n: int = 50, max_pages: int = 5, scroll_delay: floa
                 results = []
         else:
             results = []
+        # 补全日期：页面只提供 HH:MM:SS，需加上当天日期才能正确跨天排序
+        from datetime import date as _date
+        today = _date.today().isoformat()  # "YYYY-MM-DD"
+        for r in results:
+            t = r.get("time", "")
+            if t and ":" in t and len(t) == 8:  # HH:MM:SS 格式
+                r["time"] = f"{today} {t}"
         return results[:top_n] if isinstance(results, list) else []
     except Exception as exc:
         logger.warning("抓取新浪 7x24 直播流失败: %s", exc)
