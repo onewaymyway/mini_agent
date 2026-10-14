@@ -56,9 +56,9 @@ entrypoints:
     # 无 schedule：按需手动触发，用于 401 时刷新 cookie
   telegraph_scan:
     cmd: "python entrypoints/run_telegraph_scan.py"
-    schedule: "cron: 10,30,50 9-15 * * 1-5"  # 交易日 9:00-15:00 每10分钟
+    schedule: "cron: 10,30,50 * * * *"  # 全天24小时每10分钟
     timeout_sec: 300
-    # 盘间扫描：实时捕捉政策/行业动态，补充热点候选池
+    # 全天新闻抓取：无时间段限制，持续捕捉市场动态
   # 以下两个 entrypoint 见 next_doc/stock_watch_pool_state_tracking_and_
   # kanban_plan.md 阶段2：候选池状态机 + 按状态区间的涨跌跟踪。
   pool_tracking:
