@@ -13178,6 +13178,118 @@ def _show_cron_job_detail_dialog(client: AgentClient, job: dict) -> None:
     _dialog()
 
 
+_CRON_CHANNEL_NO_RECORD_NOTE = {
+    "local_handler": (
+        "这是一个「本地回调」类型的内置任务（零 LLM 成本、"
+        "确定性逻辑，比如按 tier 消费 pending_hits 并发通知），"
+        "触发时在进程内直接同步执行、不经过独立执行通道，"
+        "所以不会产生这里的逐次执行记录——但上面的「累计运行"
+        "次数」是真实的，每次成功执行都会正常累加，两者不"
+        "冲突，也不会补上历史记录。"
+    ),
+    "goal_cycle": (
+        "这个 job 绑定了一个 Goal（run_mode=goal_cycle），"
+        "走的是 Objective 执行通道而不是这里的独立执行通道，"
+        "具体的执行记录请到「🎯 目标」tab 对应 Goal 里查看。"
+    ),
+    "message_queue": (
+        "当前部署未启用 job 的独立执行通道（非 daemon 模式，"
+        "或 job_runner 未注入），触发时消息直接进普通对话"
+        "队列处理，不产生这里的逐次执行记录。"
+    ),
+}
+
+
+def _render_cron_no_record_note(execution_channel: str) -> None:
+    """[为什么累计运行次数不为 0，但这里没有执行记录] 不是所有 job 触发时都走
+    会写入执行记录的"独立执行通道"——见 `CronScheduler.execution_channel()` 的
+    说明，这里按实际通道给出针对性解释，而不是一句可能误导的"触发过至少一次后
+    这里会显示"。"""
+    note = _CRON_CHANNEL_NO_RECORD_NOTE.get(execution_channel)
+    if note:
+        st.caption(f"暂无执行记录。{note}")
+    else:
+        st.caption("暂无执行记录，触发过至少一次后这里会显示逐次的状态/耗时/事件时间线。")
+
+
+_EXT_TRIGGER_LABEL = {
+    "daemon": "daemon 定时触发",
+    "manual": "手动触发",
+    "external_cron": "外部 OS cron 触发",
+}
+
+
+def _ext_ledger_duration_str(started, finished) -> str:
+    """账本里 started_at/finished_at 是 ISO 串；算不出耗时（缺失/格式异常）返回空串。"""
+    try:
+        t0 = datetime.fromisoformat(str(started).strip().replace("Z", "+00:00"))
+        t1 = datetime.fromisoformat(str(finished).strip().replace("Z", "+00:00"))
+        if (t0.tzinfo is None) != (t1.tzinfo is None):
+            return ""
+        sec = (t1 - t0).total_seconds()
+        if sec < 0:
+            return ""
+        return f"，耗时 {sec:.1f}s" if sec < 120 else f"，耗时 {sec / 60.0:.1f} 分钟"
+    except (ValueError, TypeError):
+        return ""
+
+
+def _render_external_job_ledger(client: AgentClient, job: dict) -> None:
+    """[外部项目 cron job 执行记录] ext:* job 的 entrypoint 由
+    `external_projects.scheduler._run_entrypoint()` 以子进程方式执行，执行结果写进
+    **外部项目自己的** `<项目目录>/.agent/run_status.jsonl` 账本，并不写入 Cron
+    任务自己的 workspace（`runs/<run_id>.jsonl`）。所以详情里原来的「执行记录」
+    （读 workspace）对这类 job 永远是空的——但累计运行次数是真实累加的。
+    这里改为读取该项目的执行账本，并按本 job 的 entrypoint 过滤后展示。"""
+    project = job.get("external_project", "")
+    entrypoint = job.get("external_entrypoint", "")
+    resp = client.external_project_ledger(project, limit=200) if project else None
+    if resp and "_error" in resp:
+        st.caption(f"获取外部项目「{project}」的执行账本失败：{resp['_error']}")
+        return
+    records = [
+        r for r in ((resp or {}).get("records") or [])
+        if not entrypoint or r.get("entrypoint") == entrypoint
+    ]
+    run_count = int(job.get("run_count", 0) or 0)
+    st.caption(
+        "外部项目任务的执行记录写在项目自己的执行账本（`<项目目录>/.agent/run_status.jsonl`）里，"
+        "不在 Cron 任务自己的执行记录目录，所以这里展示的是该项目账本中 "
+        f"`{entrypoint or '（全部）'}` 的记录。"
+    )
+    if not records:
+        st.caption(
+            "账本里暂无该 entrypoint 的执行记录。「累计运行次数」统计的是调度器**成功派发**的次数"
+            "（任务进入执行队列即计一次），不代表已经执行完成：任务仍在排队、或项目被禁用/"
+            "project.yaml 里该 entrypoint 已被删除而被静默跳过时，次数会增加但账本不会有记录。"
+        )
+        return
+    shown = list(reversed(records))[:20]   # 账本按时间正序，倒过来最新在前
+    with st.expander(f"🗒️ 执行记录（最近 {len(shown)} 条，账本共 {len(records)} 条）", expanded=True):
+        if run_count > len(records):
+            st.caption(
+                f"累计运行次数 {run_count} 大于账本记录数 {len(records)}：累计次数按「成功派发」计，"
+                "包含仍在排队、被静默跳过或账本被清理过的触发。"
+            )
+        for i, r in enumerate(shown):
+            ok = r.get("exit_code") == 0
+            badge = "✅ 成功" if ok else "❌ 失败"
+            trigger = _EXT_TRIGGER_LABEL.get(r.get("trigger", ""), r.get("trigger", ""))
+            dur = _ext_ledger_duration_str(r.get("started_at"), r.get("finished_at"))
+            st.markdown(
+                f"**{_to_local_time_str(r.get('started_at'), '%m-%d %H:%M:%S')}** {badge}"
+                f"{dur}　·　{trigger}"
+            )
+            if not ok:
+                if r.get("error_summary"):
+                    st.error(r["error_summary"])
+                if r.get("detail"):
+                    # 最新一次失败默认展开，更早的收起，避免长输出刷屏
+                    with st.expander("查看失败详情（子进程输出尾部）", expanded=(i == 0)):
+                        st.code(r["detail"], language=None)
+            st.divider()
+
+
 def _render_cron_job_details(client: AgentClient, job: dict) -> None:
     """[看板卡片瘦身] Cron 任务详情弹窗的内容主体，从原来直接摊平在
     `render_cron_jobs_tab` 循环体里的代码原样搬来，行为不变——独立重新
@@ -13282,7 +13394,11 @@ def _render_cron_job_details(client: AgentClient, job: dict) -> None:
             "failed": "❌ 失败",
             "crashed_or_running": "❓ 未知（进程异常退出/仍在运行）",
         }
-        if recent_runs_summary is not None:
+        if is_external_job:
+            # [外部项目 cron job 执行记录] 见 _render_external_job_ledger 说明：
+            # 这类 job 的记录在项目自己的账本里，workspace 里永远是空的。
+            _render_external_job_ledger(client, job)
+        elif recent_runs_summary is not None:
             if recent_runs_summary:
                 with st.expander(f"🗒️ 执行记录（{len(recent_runs_summary)} 条）", expanded=True):
                     for i, run in enumerate(recent_runs_summary):
@@ -13315,6 +13431,10 @@ def _render_cron_job_details(client: AgentClient, job: dict) -> None:
                                 else:
                                     _render_cron_run_timeline((events_resp or {}).get("events") or [])
                         st.divider()
+            else:
+                # [bugfix] recent_runs_summary 是空列表（不是 None）时，原来
+                # 这里什么都不显示，用户只看到「累计运行次数」却没有任何解释。
+                _render_cron_no_record_note(execution_channel)
         elif recent_runs:
             with st.expander(f"🗒️ 执行记录（{len(recent_runs)} 条）", expanded=True):
                 for run_id in recent_runs:
@@ -13325,37 +13445,7 @@ def _render_cron_job_details(client: AgentClient, job: dict) -> None:
                         else:
                             _render_cron_run_timeline((events_resp or {}).get("events") or [])
         else:
-            # [为什么累计运行次数不为 0，但这里没有执行记录] 不是所有
-            # job 触发时都走会写入执行记录的"独立执行通道"——见
-            # `CronScheduler.execution_channel()` 的说明，这里按实际
-            # 通道给出针对性解释，而不是一句可能误导的"触发过至少一次
-            # 后这里会显示"（"local_handler"/"goal_cycle"/
-            # "message_queue" 这三种通道不管触发多少次都不会显示）。
-            _CHANNEL_NO_RECORD_NOTE = {
-                "local_handler": (
-                    "这是一个「本地回调」类型的内置任务（零 LLM 成本、"
-                    "确定性逻辑，比如按 tier 消费 pending_hits 并发通知），"
-                    "触发时在进程内直接同步执行、不经过独立执行通道，"
-                    "所以不会产生这里的逐次执行记录——但上面的「累计运行"
-                    "次数」是真实的，每次成功执行都会正常累加，两者不"
-                    "冲突，也不会补上历史记录。"
-                ),
-                "goal_cycle": (
-                    "这个 job 绑定了一个 Goal（run_mode=goal_cycle），"
-                    "走的是 Objective 执行通道而不是这里的独立执行通道，"
-                    "具体的执行记录请到「🎯 目标」tab 对应 Goal 里查看。"
-                ),
-                "message_queue": (
-                    "当前部署未启用 job 的独立执行通道（非 daemon 模式，"
-                    "或 job_runner 未注入），触发时消息直接进普通对话"
-                    "队列处理，不产生这里的逐次执行记录。"
-                ),
-            }
-            note = _CHANNEL_NO_RECORD_NOTE.get(execution_channel)
-            if note:
-                st.caption(f"暂无执行记录。{note}")
-            else:
-                st.caption("暂无执行记录，触发过至少一次后这里会显示逐次的状态/耗时/事件时间线。")
+            _render_cron_no_record_note(execution_channel)
 
         if job.get("run_mode") == "command":
             st.caption(
