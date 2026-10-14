@@ -34,6 +34,7 @@ import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import yaml
 
 # 添加项目根目录和entrypoints目录到路径
 PROJECT_ROOT = Path(__file__).parent.resolve()
@@ -465,10 +466,40 @@ class ScriptSpec:
         return cls(key=key, title=title, args=tuple(shlex.split(command)))
 
 
-SIGNAL_SCAN_SPEC = ScriptSpec.from_command("signal_scan", "信号扫描", "entrypoints/run_signal_scan.py")
-HOTLIST_SCAN_SPEC = ScriptSpec.from_command("hotlist_scan", "热点扫描", "entrypoints/run_hotlist_scan.py")
-KLINE_BATCH_SPEC = ScriptSpec.from_command("kline_batch", "K 线批量生成", "entrypoints/run_kline_batch.py")
-TELEGRAPH_SCAN_SPEC = ScriptSpec.from_command("telegraph_scan", "新浪 7x24 扫描", "entrypoints/run_telegraph_scan.py")
+def _strip_python_prefix(cmd: str) -> str:
+    """去掉 cmd 开头的 'python ' / 'python3 '，避免与 sys.executable 重复。"""
+    for prefix in ("python ", "python3 ", "python\t", "python3\t"):
+        if cmd.startswith(prefix):
+            return cmd[len(prefix):]
+    return cmd
+
+
+def load_all_specs() -> Dict[str, ScriptSpec]:
+    """从 project.yaml 的 entrypoints 段加载所有可执行脚本的 ScriptSpec。"""
+    spec_map: Dict[str, ScriptSpec] = {}
+    yaml_path = PROJECT_ROOT / "project.yaml"
+    try:
+        data = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+        for name, cfg in data.get("entrypoints", {}).items():
+            cmd = cfg.get("cmd", "").strip()
+            if not cmd:
+                continue
+            # 去掉 yaml 中多余的 'python' 前缀，_run_script_live 会自动前置 sys.executable
+            cmd = _strip_python_prefix(cmd)
+            spec_map[name] = ScriptSpec.from_command(name, name, cmd)
+    except Exception as exc:
+        logger.warning("加载 project.yaml entrypoints 失败: %s", exc)
+    return spec_map
+
+
+# 启动时一次性加载，缓存到模块级变量
+_ALL_SPECS = load_all_specs()
+
+# 为向后兼容保留已有引用
+SIGNAL_SCAN_SPEC = _ALL_SPECS.get("signal_scan")
+HOTLIST_SCAN_SPEC = _ALL_SPECS.get("hotlist_scan")
+KLINE_BATCH_SPEC = _ALL_SPECS.get("kline_batch")
+TELEGRAPH_SCAN_SPEC = _ALL_SPECS.get("telegraph_scan")
 
 
 def _persist_script_log(spec: ScriptSpec, lines: List[str]) -> Optional[Path]:
@@ -1135,14 +1166,7 @@ def render_exec_dashboard():
     st.header("🚀 执行入口")
     st.caption("点击「▶ 执行」直接在看板内运行对应脚本，并实时展示输出。")
 
-    entries = [
-        ScriptSpec.from_command("run_hotlist_scan", "热点候选池抓取", "entrypoints/run_hotlist_scan.py"),
-        KLINE_BATCH_SPEC,
-        ScriptSpec.from_command("run_pool_tracking", "池状态跟踪", "entrypoints/run_pool_tracking.py"),
-        ScriptSpec.from_command("run_signal_scan", "信号扫描", "entrypoints/run_signal_scan.py"),
-        ScriptSpec.from_command("manage_pool_list", "列出手动池", "entrypoints/manage_pool.py list"),
-        ScriptSpec.from_command("manage_pool_stats", "双池统计", "entrypoints/manage_pool.py stats"),
-    ]
+    entries: List[ScriptSpec] = list(_ALL_SPECS.values())
 
     clicked: Optional[ScriptSpec] = None
     for spec in entries:
