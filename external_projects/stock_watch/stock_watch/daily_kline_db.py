@@ -829,6 +829,9 @@ class DailyKlineDB:
             from stock_watch.data_sources import fetch_kline, DataSourceError
             df = fetch_kline(symbol, prefix, days=300)
             if df is not None and not df.empty:
+                # 确保 date 列是 datetime 类型（某些数据源返回 string）
+                if df["date"].dtype == object:
+                    df["date"] = pd.to_datetime(df["date"])
                 df["date_str"] = df["date"].dt.strftime("%Y%m%d")
                 df = df[(df["date_str"] >= start_date) & (df["date_str"] <= end_date)]
                 df = df.drop(columns=["date_str"])
