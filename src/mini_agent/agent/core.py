@@ -24,7 +24,7 @@ from __future__ import annotations
 import copy
 import re as _re
 import threading
-from typing import Optional
+from typing import Callable, Optional
 
 from mini_agent.config import AppConfig, SessionStats, build_system_prompt
 from mini_agent.llm import (
@@ -139,6 +139,11 @@ class Agent(
             from mini_agent.orchestrator.agent_profiles import set_effective_profile_loader
             set_effective_profile_loader(agent_profile_loader)
         self._is_subagent = is_subagent
+        # [BUGFIX / cancel_task 状态栏仍显示 running] 协作式取消钩子。
+        # 默认 None（不启用，主 Agent 行为完全不变）；SubAgent 构建后注入
+        # `cancel_event.is_set`，_agentic_loop 每轮迭代顶部检查，返回 True 时
+        # 立即结束本轮（不再发起新的 LLM 调用 / 工具执行）。
+        self._cancel_check: Optional[Callable[[], bool]] = None
 
         # [SYS-TURN-JUDGE] 本轮是否撞到 max_turns 硬顶（供 TurnJudge 判定参考）；
         # 连续自动接管计数（每次真正进入真人输入等待后由 repl 重置为 0）。

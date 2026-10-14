@@ -394,6 +394,28 @@ class TestSubAgent(unittest.TestCase):
         sub.cancel()
         self.assertEqual(rec.status, TaskStatus.CANCELLED)
 
+    def test_cancel_running_becomes_cancelled_immediately(self):
+        """RUNNING 任务被取消后应立即变为 CANCELLED（修复：状态栏仍显示 running）。"""
+        from mini_agent.orchestrator.sub_agent import SubAgent
+        rec = TaskRecord(task=make_task("x"))
+        rec.status = TaskStatus.RUNNING
+        rec.started_at = time.time()
+        sub = SubAgent(rec, make_cfg())
+        sub.cancel()
+        self.assertEqual(rec.status, TaskStatus.CANCELLED)
+        self.assertTrue(rec.is_terminal)
+        self.assertIsNotNone(rec.finished_at)
+        self.assertTrue(sub._cancel_event.is_set())
+
+    def test_agentic_loop_stops_when_cancel_check_true(self):
+        """_cancel_check 返回 True 时 _agentic_loop 不再发起 LLM 调用。"""
+        from mini_agent.agent.turn_loop import TurnLoopMixin
+        obj = MagicMock()
+        obj._cancel_check = lambda: True
+        obj.cfg.max_turns = 5
+        out = TurnLoopMixin._agentic_loop(obj)
+        self.assertIn("cancelled", out)
+
     def test_is_alive_false_before_start(self):
         from mini_agent.orchestrator.sub_agent import SubAgent
         sub = SubAgent(TaskRecord(task=make_task()), make_cfg())

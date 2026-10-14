@@ -172,6 +172,16 @@ class SubAgent:
             if self.record.status == TaskStatus.PENDING:
                 self.record.status = TaskStatus.CANCELLED
                 self.record.finished_at = time.time()
+            elif self.record.status == TaskStatus.RUNNING:
+                # [BUGFIX] 原来 RUNNING 任务只置信号、状态保持 RUNNING，直到
+                # run_turn() 自然返回才变 CANCELLED（可能是很久之后），期间状态栏/
+                # /tasks 一直显示 running。现在立即置为终态；后台线程在下一次
+                # 循环检查点或当前 LLM 请求返回后退出，不会再覆盖该状态。
+                self.record.status = TaskStatus.CANCELLED
+                self.record.finished_at = time.time()
+                if self.record.result is None:
+                    self.record.result = TaskResult(output="", error="Cancelled by user")
+                self.record.append_log("Cancelled by user (agent thread will stop at next checkpoint)")
 
     @property
     def is_alive(self) -> bool:
@@ -230,6 +240,7 @@ class SubAgent:
         try:
             _debug_log(task.id, "building_agent", events_path=self._events_path)
             agent = self._build_agent(task)
+            agent._cancel_check = self._cancel_event.is_set  # 协作式取消
             self._log(f"Agent built, running turn...")
             _debug_log(task.id, "agent_built", {"stats": str(agent.stats)}, events_path=self._events_path)
 
@@ -267,8 +278,9 @@ class SubAgent:
             self._log(f"TIMEOUT: {exc}")
             _debug_log(task.id, "timeout", {"error": str(exc)}, events_path=self._events_path)
             with self._lock:
-                self.record.status = TaskStatus.FAILED
-                self.record.result = TaskResult(output="", error=f"Timeout: {exc}")
+                if not self._cancel_event.is_set():
+                    self.record.status = TaskStatus.FAILED
+                    self.record.result = TaskResult(output="", error=f"Timeout: {exc}")
 
         except Exception as exc:
             from mini_agent.errors import log_exception
@@ -278,17 +290,23 @@ class SubAgent:
             # 完整 traceback 写入 debug jsonl，方便离线排查
             _debug_log(task.id, "error", {"error": str(exc), "traceback": tb}, events_path=self._events_path)
             with self._lock:
-                self.record.status = TaskStatus.FAILED
+                if self._cancel_event.is_set():
+                    # 已被取消：保持 CANCELLED，不被取消过程中的异常改成 FAILED
+                    self.record.status = TaskStatus.CANCELLED
+                else:
+                    self.record.status = TaskStatus.FAILED
                 # error 字段保存完整 traceback，而不只是 str(exc)
                 # 这样 get_task_status 返回的 error 字段包含完整堆栈
-                self.record.result = TaskResult(output="", error=tb.strip())
+                if self.record.status == TaskStatus.FAILED:
+                    self.record.result = TaskResult(output="", error=tb.strip())
             # traceback 同时逐行写入 log_lines
             for line in tb.splitlines():
                 self.record.append_log(line)
 
         finally:
             with self._lock:
-                self.record.finished_at = time.time()
+                if self.record.finished_at is None:  # 取消时已记录则保留，耗时不再增长
+                    self.record.finished_at = time.time()
                 # 任务结束时补写 outcome 块到 manifest.json（DONE/FAILED/CANCELLED 三种终态统一处理）
                 if self.record.is_terminal:
                     self.record.write_manifest()

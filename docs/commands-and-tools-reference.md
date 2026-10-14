@@ -258,7 +258,7 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/tasks` | 显示所有 Sub-Agent 任务表格 |
 | `/tasks dashboard` | 实时任务看板（阻塞直到所有任务完成） |
 | `/tasks log <id>` | 显示指定任务的日志和输出 |
-| `/tasks cancel <id>` | 取消指定任务 |
+| `/tasks cancel <id>` | 取消指定任务（运行中任务立即显示为 cancelled） |
 | `/tasks cancel-all` | 取消所有 pending/running 任务 |
 | `/tasks workers <n>` | 动态调整最大并发工作线程数 |
 | `/tasks focus <id>` | 进入指定任务的焦点模式（实时查看日志） |
@@ -786,7 +786,7 @@ mini-agent self status
 | `get_task_status` | ❌ | `task_id`, `full` | 查询任务状态和结果；输出超 3000 字符且 `full=False` 时返回 `truncated`/`full_length` 字段，提示用 `full=True` 重新取完整内容 |
 | `update_task_progress` | ❌ | `task_id`, `current_step`, `steps_done`, `steps_remaining`, `blockers`, `note` | 主动记录长任务进度到 `manifest.json`，`note` 追加到 `decision_log` |
 | `list_tasks` | ❌ | `status`, `tag` | 列出所有任务 |
-| `cancel_task` | ❌ | `task_id` | 取消指定任务 |
+| `cancel_task` | ❌ | `task_id` | 取消指定任务；运行中的任务会立即变为 `cancelled` 状态（后台线程在下一个检查点退出，进行中的单次 LLM 请求/工具调用需等其返回） |
 | `wait_for_tasks` | ❌ | `task_ids`, `timeout_seconds` | 等待多个任务完成 |
 | `run_ensemble_llm` | ❌ | `prompt`, `system`, `n`, `execution`, `strategy` | 同一输入多次调用模型取优（粒度A，便宜快速），需 `ensemble.mode != off` |
 | `run_ensemble_subagents` | ❌ | `prompt`, `n`, `execution`, `strategy`, `variant_prompts` | 多个不同人设的 Sub-Agent 各自完整跑同一任务再取优（粒度B），需 `ensemble.mode != off` |

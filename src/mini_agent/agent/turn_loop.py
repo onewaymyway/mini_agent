@@ -228,6 +228,14 @@ class TurnLoopMixin:
         _turns_budget = self.cfg.max_turns
 
         while True:
+            # [BUGFIX / cancel_task] 协作式取消：被外部取消后不再发起新一轮
+            # LLM 调用 / 工具执行（正在进行中的单次 LLM 请求无法被打断，
+            # 会在其返回后于此处退出）。_cancel_check 默认 None，不影响主 Agent。
+            _cc = getattr(self, "_cancel_check", None)
+            if _cc is not None and _cc():
+                # 直接返回，跳过尾部的 token 估算 / 结果健全性校验（取消的结果本就会被丢弃）
+                self._last_turn_hit_max_turns = False
+                return final_text or "[cancelled]"
             if loop_count >= _turns_budget:
                 if _max_turns_policy in ("continue", "compact_continue") and loop_count < _max_turns_hard_limit:
                     # [SYS-TURN-JUDGE-LOGGING] 带上 agent_name 前缀：判官类

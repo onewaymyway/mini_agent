@@ -65,7 +65,7 @@ TaskManager 是并发任务调度器，负责：
 sub = SubAgent(record, base_cfg, on_log=my_callback)
 sub.start()       # 非阻塞，启动后台线程
 sub.join()        # 阻塞等待完成（可选）
-sub.cancel()      # 发送取消信号
+sub.cancel()      # 取消：PENDING/RUNNING 任务立即置为 CANCELLED，后台线程在检查点退出
 ```
 
 **状态流转：**
@@ -357,9 +357,22 @@ class TaskRecord:
 ### 6.5 如何取消任务？
 
 ```python
-mgr.cancel(task_id)  # 发送取消信号
-# SubAgent 在下一个检查点生效
+mgr.cancel(task_id)  # 取消任务
 ```
+
+**生效语义：**
+
+- `PENDING`（排队中）：立即置为 `CANCELLED`，获得并发槽位后直接退出，不会开始执行。
+- `RUNNING`（执行中）：**状态立即置为 `CANCELLED`**（同时记录 `finished_at`，耗时停止增长，
+  `result.error="Cancelled by user"`），因此状态栏 / `/tasks` / `list_tasks` 会马上反映真实状态。
+- 后台线程通过协作式取消钩子（`Agent._cancel_check`，由 SubAgent 注入 `cancel_event.is_set`）
+  在 `_agentic_loop` 每轮迭代顶部检查，不再发起新的 LLM 调用 / 工具执行；取消后任务不会再被
+  `DONE` / `FAILED` 覆盖。
+- 终态通知（`SubagentStop` hook、`TaskCompleted` hook、通知分发）仍在后台线程真正退出时触发一次。
+
+**已知局限：** 正在进行中的单次 LLM 请求或单个工具调用无法被强行打断，需等其返回后线程才会退出；
+在此期间该任务仍占用一个并发槽位（状态栏的 Tasks running 计数基于任务状态，已不再计入它）。
+背景与修复过程见 [subagent_cancel_status_bugfix.md](../next_doc/subagent_cancel_status_bugfix.md)。
 
 ---
 
