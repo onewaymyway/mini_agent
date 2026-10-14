@@ -154,7 +154,11 @@ def main() -> int:
     try:
         logger.info("正在抓取新浪 7x24 新闻...")
         with tracked_source(SOURCE_HEALTH_PATH, source="sina_telegraph", entrypoint="telegraph_scan") as h:
-            news_items = fetch_sina_telegraph(top_n=cfg.telegraph_top_n)
+            news_items = fetch_sina_telegraph(
+                top_n=cfg.telegraph_top_n,
+                max_pages=getattr(cfg, 'telegraph_max_pages', 5),
+                scroll_delay=getattr(cfg, 'telegraph_scroll_delay', 1.5),
+            )
             h.item_count = len(news_items)
     except DataSourceError as exc:
         logger.error("抓取新浪 7x24 失败: %s", exc)

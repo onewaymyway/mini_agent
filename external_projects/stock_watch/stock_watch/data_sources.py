@@ -1785,20 +1785,30 @@ def fetch_sector_rotation_analysis() -> Dict[str, Any]:
 _SINA_TELEGRAPH_URL = "https://finance.sina.com.cn/7x24/"
 
 
-def fetch_sina_telegraph(top_n: int = 50) -> List[Dict[str, Any]]:
-    """抓取新浪财经 7x24 直播流最新新闻。
+def fetch_sina_telegraph(top_n: int = 50, max_pages: int = 5, scroll_delay: float = 1.5) -> List[Dict[str, Any]]:
+    """抓取新浪财经 7x24 直播流最新新闻（支持滚动加载更多）。
 
-    返回格式：[{"title": str, "content": str, "time": str, "url": str}, ...]
+    参数:
+        top_n: 最多返回的新闻条数（默认 50，可通过 watchlist.yaml 的 telegraph.max_news 配置）
+        max_pages: 最大滚动加载页数（默认 5，防止无限滚动）
+        scroll_delay: 每次滚动后的等待秒数（默认 1.5）
 
-    使用 CDP 浏览器访问 SPA 页面，通过 JS 提取新闻列表。
+    返回格式：[{"content": str, "time": str, "url": str}, ...]，按时间倒序（最新在前）。
+
+    使用 CDP 浏览器访问 SPA 页面，滚动加载并提取新闻列表。
     失败时 raise DataSourceError，调用方负责记账和报告。
     """
     try:
         session, _ = _get_cdp_session()
         session.eval_js(f"location.href={json.dumps(_SINA_TELEGRAPH_URL)}", await_promise=True)
-        time.sleep(5)
+        time.sleep(3)
 
-        # 直接从页面文本提取新闻，格式为时间戳 + 新闻内容交替
+        # 滚动加载：每次滚动到顶部，触发懒加载，循环 max_pages 次
+        for page in range(max_pages):
+            session.eval_js("window.scrollTo(0, 0)", await_promise=True)
+            time.sleep(scroll_delay)
+
+        # 从页面文本提取新闻，格式为时间戳 + 新闻内容交替
         # IIFE 格式：避免 illegal return 错误
         js_extract = (
             "(function() { "
@@ -1808,7 +1818,7 @@ def fetch_sina_telegraph(top_n: int = 50) -> List[Dict[str, Any]]:
             "for (var i = 0; i < lines.length; i++) { "
             "var L = lines[i].trim(); "
             "if (/^\\d{2}:\\d{2}:\\d{2}$/.test(L)) { ct = L; } "
-            "else if (L && ct && items.length < 100) { "
+            "else if (L && ct) { "
             "if (!/^\\d+(\\.\\d+)?万?\\s*阅读$/.test(L)) "
             "items.push({time: ct, content: L, url: ''}); "
             "ct = ''; } } return items; "
@@ -1833,7 +1843,7 @@ def fetch_sina_telegraph(top_n: int = 50) -> List[Dict[str, Any]]:
                 try:
                     import json as _json2
                     results = _json2.loads(inner["value"])
-                except:
+                except Exception:
                     results = []
             else:
                 results = []
