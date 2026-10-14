@@ -190,6 +190,18 @@ class CronJobRunner:
         with self._lock:
             return len(self._running_job_ids - self._unmanaged_running)
 
+    def managed_job_ids_by_phase(self) -> tuple[list[str], list[str]]:
+        """[看板 Cron 计数口径修复] 在同一把锁内一次性返回
+        (正在执行的 managed job id 列表, 排队等槽位的 managed job id 列表)。
+        不含 unmanaged（它们不占槽位，另见 unmanaged_running_count）。
+        判定口径与 execution_phase() 完全一致：已进入 _sem_acquired 视为
+        正在执行，否则视为排队。"""
+        with self._lock:
+            managed = self._running_job_ids - self._unmanaged_running
+            running = sorted(j for j in managed if j in self._sem_acquired)
+            queued = sorted(j for j in managed if j not in self._sem_acquired)
+        return running, queued
+
     @property
     def unmanaged_running_count(self) -> int:
         """[cron_unmanaged_concurrency_plan.md] 正在执行的 unmanaged job 数（不占槽位）。"""

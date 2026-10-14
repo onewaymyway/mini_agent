@@ -1277,7 +1277,17 @@ def _render_daemon_current_tasks(client: AgentClient, autostat: dict) -> None:
                 continue
             (stale_wfs if r.get("is_stale") else running_wfs).append(r)
 
-    if not running_objs and not running_crons and not running_wfs and not stale_wfs and not stale_objs:
+    # [看板 Cron 计数口径修复] 已提交但还在排队等并发槽位的 cron job：
+    # 之前顶栏只取 execution_phase == "running"，排队的被直接丢掉，导致
+    # 并发面板显示 Cron 5/2 时，用户在顶栏只能看到 1 条，完全找不到另外
+    # 几条去了哪里。这里单独收集，在下方折叠区展示。
+    queued_crons = [
+        job for job in (cron_resp.get("jobs") or [])
+        if "_error" not in cron_resp and job.get("execution_phase") == "queued"
+    ]
+
+    if (not running_objs and not running_crons and not running_wfs
+            and not queued_crons and not stale_wfs and not stale_objs):
         return
 
     n = len(running_objs) + len(running_crons) + len(running_wfs)
@@ -1321,6 +1331,28 @@ def _render_daemon_current_tasks(client: AgentClient, autostat: dict) -> None:
                 if c2.button("🔍 查看并控制", key=f"jump_wf_{rid}"):
                     st.session_state["wf_active_run_id"] = rid
                     st.session_state["_active_tab"] = "workflow"
+                    st.rerun()
+
+    if queued_crons:
+        # 默认折叠（不打扰主视线）；排队的 job 尚未开始执行，不计入上方
+        # "正在执行 N 项"，但占用并发面板里的排队计数。
+        with st.expander(
+            f"🟡 另有 {len(queued_crons)} 个 Cron 任务在排队等待并发槽位（点击查看）",
+            expanded=False,
+        ):
+            st.caption(
+                "这些 job 已被调度器提交，但并发槽位已满，尚未开始执行；"
+                "槽位释放后会按优先级依次开始。可在下方调高「Cron 最大并发」"
+                "（🎛️ 任务并发上限）让它们更快开跑。"
+            )
+            for job in queued_crons:
+                job_id = job.get("id", "")
+                name = job.get("name") or job_id
+                c1, c2 = st.columns([6, 1])
+                c1.markdown(f"⏰ **来源：Cron 定时任务（排队中）**　{name}　`{job_id}`")
+                if c2.button("🔍 查看并控制", key=f"jump_cron_queued_{job_id}"):
+                    st.session_state["cron_focus_job_id"] = job_id
+                    st.session_state["_active_tab"] = "cron_jobs"
                     st.rerun()
 
     if stale_wfs:
@@ -1383,8 +1415,12 @@ def _render_concurrency_control(client: AgentClient) -> None:
     cron = task_snap.get("cron") or {}
 
     obj_label = f"目标 {obj.get('running', 0)}/{obj.get('current_cap', '—')}"
+    # [看板 Cron 计数口径修复] running 只算真正在执行的 job；排队的单独
+    # 标注，避免出现 "Cron 5/2" 这种超过上限的假象。
+    cron_queued = int(cron.get("queued") or 0)
     cron_label = (
         f"　Cron {cron.get('running', 0)}/{cron.get('current_cap', '—')}"
+        + (f"（排队 {cron_queued}）" if cron_queued else "")
         if cron.get("current_cap") is not None else ""
     )
 
@@ -1430,7 +1466,23 @@ def _render_concurrency_control(client: AgentClient) -> None:
                 st.metric(
                     "Cron 执行并发",
                     f"{cron.get('running', 0)} / {cron.get('current_cap', '—')}",
+                    help=(
+                        "只统计已拿到槽位、真正在执行的 job；排队等槽位的不计入"
+                        "分子，单独显示在下方。"
+                    ),
                 )
+                _unm = int(cron.get("unmanaged_running") or 0)
+                st.caption(
+                    f"排队等待 {cron_queued} 个"
+                    + (f"　·　unmanaged（不占槽位）运行中 {_unm} 个" if _unm else "")
+                )
+                _run_ids = cron.get("running_job_ids") or []
+                _q_ids = cron.get("queued_job_ids") or []
+                if _run_ids or _q_ids:
+                    st.caption(
+                        "执行中：" + ("、".join(f"`{i}`" for i in _run_ids) or "无")
+                        + "　排队中：" + ("、".join(f"`{i}`" for i in _q_ids) or "无")
+                    )
                 new_max_cron = st.number_input(
                     "最大并发 Cron job 数", min_value=1, step=1,
                     value=int(cron.get("current_cap", 2) or 2),

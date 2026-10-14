@@ -4858,8 +4858,14 @@ async def get_self_task_concurrency(request: Request):
     返回结构：
     {
       "objectives": {"current_cap": int, "running": int},
-      "cron":       {"current_cap": int | None, "running": int | None}
+      "cron":       {"current_cap": int | None, "running": int | None,
+                     "queued": int | None, "unmanaged_running": int | None,
+                     "managed_total": int, "running_job_ids": [str],
+                     "queued_job_ids": [str]}
     }
+    其中 cron.running 只统计真正拿到槽位在执行的 managed job，排队等槽位的
+    单独放在 cron.queued（[看板 Cron 计数口径修复]，此前 running 把排队的
+    也算进去，会显示成 5/2）。
 
     `objectives.current_cap` 就是当前生效的 Goal 并发上限，来自
     `autonomy.max_concurrent_objectives_cap`——没有额外的硬天花板，
@@ -4897,18 +4903,37 @@ async def get_self_task_concurrency(request: Request):
             from mini_agent.errors import log_exception
             log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_task_concurrency.objectives')
 
-    cron_info = {"current_cap": None, "running": None}
+    cron_info = {"current_cap": None, "running": None, "queued": None, "unmanaged_running": None}
     cs = _get_cron_scheduler(http_server)
     runner = getattr(cs, "_job_runner", None) if cs is not None else None
     if runner is not None:
         try:
+            # [看板 Cron 计数口径修复] managed_running_count 的语义是"占用
+            # 或正在排队等待槽位的 job 数"，把它直接当作"running"展示会出现
+            # 5/2 这种超过上限的假象（实际是 1 个在跑 + 4 个在排队）。
+            # 这里拆成 running / queued 两项，与 /v1/self/execution_model
+            # 的 cron_channel 口径一致：running 只算已拿到槽位（或 unmanaged）
+            # 真正在执行的 managed job，queued 只算还在等槽位的。
+            running_ids, queued_ids = runner.managed_job_ids_by_phase()
+            managed_total = len(running_ids) + len(queued_ids)
+            unmanaged_running = int(runner.unmanaged_running_count)
             cron_info = {
                 "current_cap": int(getattr(runner, "_max_concurrent", 2)),
                 # [bugfix] CronJobRunner.running_count 是 @property，不是
                 # 方法——之前误加了 () 调用，导致 TypeError: 'int' object
                 # is not callable。
-                # 只统计占槽位的 job；unmanaged 不受这个上限约束，不计入。
-                "running": runner.managed_running_count,
+                # running：已拿到槽位、真正在执行的 managed job 数（不含排队、
+                # 不含 unmanaged），所以始终 <= current_cap（调低上限后短暂
+                # 超出除外）。
+                "running": len(running_ids),
+                # queued：已提交、还在排队等槽位的 managed job 数。
+                "queued": len(queued_ids),
+                # 占槽位 + 排队的总数（旧版 running 字段的口径），保留供调试。
+                "managed_total": managed_total,
+                # unmanaged 不占槽位、不受上限约束，单独计数。
+                "unmanaged_running": unmanaged_running,
+                "running_job_ids": running_ids,
+                "queued_job_ids": queued_ids,
             }
         except Exception as _mini_agent_exc:
             from mini_agent.errors import log_exception
