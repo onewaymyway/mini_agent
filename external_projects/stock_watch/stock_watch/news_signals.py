@@ -615,3 +615,33 @@ def get_all_analyses_summary(state_path: Path, days: int = 7) -> Dict[str, Any]:
         "period_days": days,
     }
 
+
+def get_news_by_stock(state_path: Path, code: str, days: int = 7) -> List[Dict[str, Any]]:
+    """Ambil semua catatan analisis yang memuat stock code tertentu dalam N hari terakhir."""
+    from datetime import timedelta
+    state = load_analysis_state(state_path)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    recent = [
+        a for a in state.get("analyses", [])
+        if a.get("news_time", "") >= cutoff.strftime("%Y-%m-%dT%H:%M:%S")
+    ]
+    return [
+        a for a in recent
+        if any(s.get("code") == code for s in a.get("related_stocks", []))
+    ]
+
+
+def get_news_by_industry(state_path: Path, industry: str, days: int = 7) -> List[Dict[str, Any]]:
+    """Ambil semua catatan analisis yang memuat industry opportunity tertentu dalam N hari terakhir."""
+    from datetime import timedelta
+    state = load_analysis_state(state_path)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    recent = [
+        a for a in state.get("analyses", [])
+        if a.get("news_time", "") >= cutoff.strftime("%Y-%m-%dT%H:%M:%S")
+    ]
+    return [
+        a for a in recent
+        if industry in a.get("industry_opportunities", [])
+    ]
+

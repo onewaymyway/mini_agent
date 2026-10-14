@@ -1252,6 +1252,8 @@ def render_telegraph_news(algo: Dict, manual: Dict):
     from stock_watch.news_signals import (
         load_analysis_state,
         get_all_analyses_summary,
+        get_news_by_stock,
+        get_news_by_industry,
     )
     from stock_watch.config import DATA_DIR
 
@@ -1337,7 +1339,28 @@ def render_telegraph_news(algo: Dict, manual: Dict):
             if summary.get("top_stocks"):
                 st.markdown("### 高频提及股票")
                 df_stocks = pd.DataFrame(summary["top_stocks"])
-                st.dataframe(df_stocks, use_container_width=True)
+                for _, row in df_stocks.iterrows():
+                    code = row['code']
+                    name = row['name']
+                    cnt = int(row['count'])
+                    pos = int(row['positive'])
+                    neg = int(row['negative'])
+                    col_name, col_btn = st.columns([5, 1])
+                    with col_name:
+                        st.markdown(f"**{code}** {name} — {cnt}x (正 {pos} / 负 {neg})")
+                    with col_btn:
+                        with st.popover("🔍"):
+                            news_list = get_news_by_stock(state_path, code, days)
+                            if news_list:
+                                st.markdown(f"**{code} {name}** — {len(news_list)} catatan")
+                                for n in news_list:
+                                    with st.expander(f"[{n.get('news_time', '')}] {n.get('news_excerpt', '')[:50]}..."):
+                                        st.markdown(f"**Jenis**: {n.get('opportunity_type', '')} | **Arah**: {n.get('direction', '')}")
+                                        st.markdown(n.get('news_excerpt', ''))
+                                        if n.get('reasoning'):
+                                            st.caption(f"📝 {n['reasoning']}")
+                            else:
+                                st.info("Tidak ada catatan untuk saham ini.")
 
             if summary.get("top_industries"):
                 st.markdown("### 高频提及行业")
@@ -1345,7 +1368,25 @@ def render_telegraph_news(algo: Dict, manual: Dict):
                     {"行业": k, "提及次数": v}
                     for k, v in summary["top_industries"]
                 ])
-                st.dataframe(df_ind, use_container_width=True)
+                for _, row in df_ind.iterrows():
+                    ind = row['行业']
+                    cnt = int(row['提及次数'])
+                    col_name, col_btn = st.columns([5, 1])
+                    with col_name:
+                        st.markdown(f"**{ind}** — {cnt}x")
+                    with col_btn:
+                        with st.popover("🔍"):
+                            news_list = get_news_by_industry(state_path, ind, days)
+                            if news_list:
+                                st.markdown(f"**{ind}** — {len(news_list)} catatan")
+                                for n in news_list:
+                                    with st.expander(f"[{n.get('news_time', '')}] {n.get('news_excerpt', '')[:50]}..."):
+                                        st.markdown(f"**Jenis**: {n.get('opportunity_type', '')} | **Arah**: {n.get('direction', '')}")
+                                        st.markdown(n.get('news_excerpt', ''))
+                                        if n.get('reasoning'):
+                                            st.caption(f"📝 {n['reasoning']}")
+                            else:
+                                st.info("Tidak ada catatan untuk industri ini.")
 
         except Exception as e:
             st.error(f"加载统计数据失败: {e}")
