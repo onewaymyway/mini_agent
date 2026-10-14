@@ -833,6 +833,7 @@ class DailyKlineDB:
             logger.warning("akshare 数据源失败 (%s): %s", symbol, e)
         except Exception as e:
             logger.warning("akshare 数据源异常 (%s): %s", symbol, e)
+        logger.error("所有数据源均失败 (%s): baostock, sina, akshare", symbol)
         return None
 
     def _fetch_via_etf_api(self, symbol: str, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
