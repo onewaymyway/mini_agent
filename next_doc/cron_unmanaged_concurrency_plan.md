@@ -122,3 +122,10 @@ entrypoints:
 - 文档同步：`docs/external-projects-guide.md` §2.2、`docs/cron-dedicated-execution-guide.md` §3.5、
   `.claude/skills/external-project-manager/reference/project_yaml_schema.md` 与 `project.yaml.tmpl`。
 - 后续扩展：用户自建的执行命令型 job（`run_mode="command"`）同样适用本档位，见 [cron_command_job_plan.md](cron_command_job_plan.md)。
+- 2026-10 追加：`stock_watch` 的 `telegraph_scan` 声明 `concurrency: unmanaged`（只改配置，
+  `run_telegraph_scan.py` 实现不变）。注意该脚本内部仍会经 `LLMHelper.from_config()` 调 LLM
+  （受 `watchlist.yaml` 的 `sources.sina_telegraph` 开关控制）——LLM 调用发生在子进程内，不经
+  cron 槽位，原本就不受槽位限制；本次改动去掉的是它**自身**占槽位/受仲裁的约束。
+- 2026-10 追加（可观测性）：`GET /v1/cron/jobs` 新增 `slot_mode`
+  （`managed`/`unmanaged`/`goal_channel`/`local_handler`），看板 Cron 卡片与详情弹窗据此标注
+  类型与"是否受槽位管理"，见 `docs/kanban-dashboard-guide.md` Cron 任务 Tab。

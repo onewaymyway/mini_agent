@@ -963,6 +963,23 @@ Cron Job 列表、启用/禁用、手动触发、新建，`priority` 字段的�
 `docs/cron-jobs-reference.md`、`next_doc/scheduling_unification_and_kanban_
 visibility_improvement_plan.md`（P2）。
 
+**类型与槽位标记**：每张卡片名称后面带两个徽标，详情弹窗顶部再用一行文字说明：
+
+- 任务类型：`🛠️ 系统任务` / `🗂️ 外部项目` / `⌨️ 执行命令` / `🎯 Goal 周期` / `💬 消息任务`。
+- 与 cron 并发槽位的关系（`GET /v1/cron/jobs` 每个 job 新增 `slot_mode` 字段，由
+  `CronScheduler.slot_mode()` 给出，判定顺序与 `_fire()` 的实际分派顺序一致）：
+
+| `slot_mode` | 徽标 | 含义 |
+|---|---|---|
+| `managed` | 🎫 受槽位管理 | 占 cron 并发槽位，并受 ResourceArbiter 仲裁（blocked 时本次触发会被跳过） |
+| `unmanaged` | 🆓 不受槽位管理 | `external_entrypoint` / `command` 且声明了 `concurrency: unmanaged`，不占槽位、不过仲裁 |
+| `goal_channel` | 🎯 Goal 通道 | `run_mode=goal_cycle`，走 Goal 通道的并发控制，不占 cron 槽位 |
+| `local_handler` | ⚙️ 本地处理器 | 注册了本地处理器的 job（多为 `sys:*`），由 daemon 直接执行，不占 cron 槽位 |
+
+连接的是老版本 daemon（响应里没有 `slot_mode`）时，看板按 job 字段推断
+`managed` / `unmanaged` / `goal_channel`，推断不出 `local_handler`（系统任务会显示为
+`managed`）。此前只有执行命令型任务带"（不占槽位）"文字，现已统一替换为上述徽标。
+
 **删除**（`kanban_cron_delete_consistency_bugfix.md` 新增）：非 `sys:`
 前缀的自定义 job 现在可以直接在本 Tab 删除，不用再切到"📌 目标看板"
 Tab。流程与目标看板一致：点击"🗑️ 删除"进入二次确认态，"⚠️ 确认删除"

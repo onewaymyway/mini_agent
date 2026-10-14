@@ -1846,6 +1846,27 @@ class CronScheduler:
             return "dedicated_workspace"
         return "message_queue"
 
+    def slot_mode(self, job: "CronJob") -> str:
+        """job 与 cron 并发槽位的关系，供 API/看板展示（判定顺序与 `_fire()` 的
+        实际分派顺序一致，保证"看板看到的"就是"实际会发生的"）：
+
+          - "goal_channel"：run_mode=goal_cycle，走 Goal 通道，不占 cron 槽位；
+          - "local_handler"：注册了本地处理器的 job（多为 sys:*），由 tick 派发
+            线程直接执行，不经 job_runner，不占 cron 槽位；
+          - "unmanaged"：external_entrypoint/command 且 concurrency=unmanaged，
+            不占槽位、不过仲裁；
+          - "managed"：其余（message / 未声明 unmanaged 的 entrypoint 与 command），
+            占 cron 槽位、受 ResourceArbiter 仲裁。
+        """
+        if getattr(job, "run_mode", "message") == "goal_cycle":
+            return "goal_channel"
+        if job.id in self._local_handlers:
+            return "local_handler"
+        from mini_agent.evolution.cron_job_runner import CronJobRunner
+        if CronJobRunner._is_unmanaged(job):
+            return "unmanaged"
+        return "managed"
+
     def list_jobs(
         self,
         tags: Optional[list[str]] = None,

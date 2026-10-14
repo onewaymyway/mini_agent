@@ -13059,6 +13059,61 @@ def _render_cron_run_timeline(events: list[dict]) -> None:
 STEP_FULL_TEXT_MAX_CHARS_UI = 8000
 
 
+# [cron 类型/槽位标记] slot_mode → (卡片徽标, 详情说明)。slot_mode 由 daemon 的
+# `CronScheduler.slot_mode()` 经 GET /v1/cron/jobs 下发（判定顺序与实际分派一致）。
+_CRON_SLOT_MODE_LABEL = {
+    "managed": (
+        "🎫 受槽位管理",
+        "占用 cron 并发槽位，并受资源仲裁（用户在场/预算紧张时可能被跳过）约束。",
+    ),
+    "unmanaged": (
+        "🆓 不受槽位管理",
+        "不占 cron 并发槽位、不过资源仲裁，直接起独立线程执行"
+        "（project.yaml / 命令任务里声明了 `concurrency: unmanaged`）。",
+    ),
+    "goal_channel": (
+        "🎯 Goal 通道",
+        "绑定 Goal 的周期任务，走 Goal 通道的并发控制，不占 cron 并发槽位。",
+    ),
+    "local_handler": (
+        "⚙️ 本地处理器",
+        "由 daemon 内置处理器直接执行（多为系统任务），不占 cron 并发槽位、不过资源仲裁。",
+    ),
+}
+
+
+def _cron_slot_mode(job: dict) -> str:
+    """优先用 daemon 下发的 slot_mode；老版本 daemon 没有该字段时按 job 字段推断
+    （与 CronJobRunner._is_unmanaged / CronScheduler.slot_mode 同一规则，
+    推断不出 local_handler，系统任务按 managed 兜底）。"""
+    mode = job.get("slot_mode")
+    if mode in _CRON_SLOT_MODE_LABEL:
+        return mode
+    if job.get("run_mode") == "goal_cycle":
+        return "goal_channel"
+    if (
+        job.get("run_mode") in ("external_entrypoint", "command")
+        and job.get("concurrency") == "unmanaged"
+    ):
+        return "unmanaged"
+    return "managed"
+
+
+def _cron_type_label(job: dict) -> str:
+    """任务类型标记（系统/外部项目/命令/Goal/消息）。"""
+    job_id = job.get("id", "") or ""
+    if bool(job.get("is_system")) or job_id.startswith("sys:"):
+        return "🛠️ 系统任务"
+    if job_id.startswith("ext:") or job.get("run_mode") == "external_entrypoint":
+        return "🗂️ 外部项目"
+    run_mode = job.get("run_mode")
+    if run_mode == "command":
+        return "⌨️ 执行命令"
+    if run_mode == "goal_cycle":
+        return "🎯 Goal 周期"
+    return "💬 消息任务"
+
+
 def _render_cron_job_card(client: AgentClient, job: dict) -> None:
     """渲染单个 Cron 任务的精简卡片（默认视图）。
 
@@ -13076,15 +13131,13 @@ def _render_cron_job_card(client: AgentClient, job: dict) -> None:
     exec_phase = job.get("execution_phase", "not_running")
     with st.container(border=True):
         top1, top2, top3 = st.columns([3, 2, 2])
-        name_label = f"**{job.get('name', job_id)}**"
-        if is_system_job:
-            name_label += "　🛠️ 系统任务"
-        if is_external_job:
-            name_label += "　🗂️ 外部项目"
-        if job.get("run_mode") == "command":
-            name_label += "　⌨️ 执行命令"
-            if job.get("concurrency") == "unmanaged":
-                name_label += "（不占槽位）"
+        # [cron 类型/槽位标记] 统一用 _cron_type_label + _cron_slot_mode 渲染，
+        # 取代此前只有 command 型才带"（不占槽位）"的零散写法。
+        name_label = (
+            f"**{job.get('name', job_id)}**"
+            f"　{_cron_type_label(job)}"
+            f"　{_CRON_SLOT_MODE_LABEL[_cron_slot_mode(job)][0]}"
+        )
         top1.markdown(name_label)
         top1.caption(job_id)
         top2.caption(f"schedule: `{job.get('schedule', '')}`")
@@ -13302,6 +13355,8 @@ def _render_cron_job_details(client: AgentClient, job: dict) -> None:
     is_external_job = job_id.startswith("ext:")
     # 本弹窗内上一个操作（重置/运行/启停/保存等）留下的一次性结果提示。
     _pop_and_render_flash(_cron_dialog_flash_key(job_id))
+    _slot_badge, _slot_desc = _CRON_SLOT_MODE_LABEL[_cron_slot_mode(job)]
+    st.caption(f"{_cron_type_label(job)}　·　{_slot_badge}：{_slot_desc}")
     if is_external_job:
         # [external_projects_cron_dispatch_plan.md 3.4] ext:* job 的
         # schedule 权威来源是对应外部项目的 project.yaml，daemon 每次

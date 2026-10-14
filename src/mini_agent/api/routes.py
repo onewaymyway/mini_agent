@@ -9193,6 +9193,9 @@ async def list_cron_jobs(request: Request):
                 # 区分 "not_running"/"queued"/"running"，看板据此把
                 # "正在执行" 和 "排队等待" 分开展示，不再混为一谈。
                 "execution_phase": cs.execution_phase(j.id),
+                # 与 cron 并发槽位的关系（managed/unmanaged/goal_channel/
+                # local_handler），看板据此标注"是否受槽位管理"。
+                "slot_mode": cs.slot_mode(j),
             }
             for j in jobs
         ]
