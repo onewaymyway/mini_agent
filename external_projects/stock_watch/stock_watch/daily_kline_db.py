@@ -767,6 +767,7 @@ class DailyKlineDB:
                 df["date_str"] = df["date"].dt.strftime("%Y%m%d")
                 filtered = df[(df["date_str"] >= start_date) & (df["date_str"] <= end_date)]
                 if len(filtered) > 0:
+                    logger.info("数据源 baostock 成功: %s, %d 行", symbol, len(filtered))
                     return filtered.drop(columns=["date_str"])
         except Exception as e:
             logger.debug("baostock K线失败 (%s): %s", symbol, e)
