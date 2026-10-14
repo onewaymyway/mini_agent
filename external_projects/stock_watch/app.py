@@ -468,6 +468,7 @@ class ScriptSpec:
 SIGNAL_SCAN_SPEC = ScriptSpec.from_command("signal_scan", "信号扫描", "entrypoints/run_signal_scan.py")
 HOTLIST_SCAN_SPEC = ScriptSpec.from_command("hotlist_scan", "热点扫描", "entrypoints/run_hotlist_scan.py")
 KLINE_BATCH_SPEC = ScriptSpec.from_command("kline_batch", "K 线批量生成", "entrypoints/run_kline_batch.py")
+TELEGRAPH_SCAN_SPEC = ScriptSpec.from_command("telegraph_scan", "新浪 7x24 扫描", "entrypoints/run_telegraph_scan.py")
 
 
 def _persist_script_log(spec: ScriptSpec, lines: List[str]) -> Optional[Path]:
@@ -1373,56 +1374,9 @@ def render_telegraph_news(algo: Dict, manual: Dict):
     with tab4:
         st.subheader("手动触发扫描")
 
-        # 持久化：扫描结果保存在 session_state 中，刷新后仍可显示
-        if "telegraph_last_run" not in st.session_state:
-            st.session_state["telegraph_last_run"] = None
-        if "telegraph_output" not in st.session_state:
-            st.session_state["telegraph_output"] = None
-
-        if st.button("🚀 立即运行扫描", type="primary"):
-            with st.spinner("正在抓取和分析新闻..."):
-                try:
-                    # stderr+stdout 合并捕获：logging 默认写 stderr，Windows 下分开捕获易丢失
-                    result = subprocess.run(
-                        [sys.executable, "entrypoints/run_telegraph_scan.py"],
-                        cwd=str(PROJECT_ROOT),
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT,
-                        text=True,
-                        timeout=180,
-                    )
-                    combined = result.stdout or ""
-                    if result.returncode == 0:
-                        st.success("扫描完成！")
-                        st.session_state["telegraph_output"] = ("success", combined)
-                    else:
-                        st.error(f"扫描失败（退出码 {result.returncode}）")
-                        st.session_state["telegraph_output"] = ("error", combined)
-                except subprocess.TimeoutExpired:
-                    st.error("扫描超时（180秒）")
-                    st.session_state["telegraph_output"] = ("timeout", "")
-                except Exception as e:
-                    st.error(f"执行失败: {e}")
-                    st.session_state["telegraph_output"] = ("exception", str(e))
-
-        # 持久化显示上次扫描的输出
-        if st.session_state["telegraph_output"] is not None:
-            status, output = st.session_state["telegraph_output"]
-            if status == "success":
-                st.success("✅ 上次扫描完成！")
-                st.code(output, language="text")
-            elif status == "error":
-                st.error(f"❌ 上次扫描失败: {output}")
-            elif status == "timeout":
-                st.warning("⏱️ 上次扫描超时")
-            elif status == "exception":
-                st.error(f"⚠️ 上次扫描异常: {output}")
-
-        # 清空历史按钮
-        if st.button("🗑️ 清空扫描记录"):
-            st.session_state["telegraph_last_run"] = None
-            st.session_state["telegraph_output"] = None
-            st.rerun()
+        # 直接调用现有的脚本运行函数
+        clicked = st.button("🚀 立即运行扫描", type="primary", use_container_width=True)
+        render_script_output("telegraph", TELEGRAPH_SCAN_SPEC if clicked else None)
 
 
 # ─────────────────────────────────────────────────────────────

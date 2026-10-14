@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -142,13 +143,16 @@ def main() -> int:
 
     # 加载股票名称映射
     stock_name_map = _load_stock_name_map()
+    logger.info("已加载股票名称映射")
 
     # 加载候选池（用于构建股票池参考）
     algo_pool = load_pool(ALGO_POOL_PATH)
     algo_pool = ensure_seeds(algo_pool, cfg.seeds)
+    logger.info(f"已加载候选池 (算法池: {len(algo_pool)} 只)")
 
     # 抓取新浪 7x24 直播流
     try:
+        logger.info("正在抓取新浪 7x24 新闻...")
         with tracked_source(SOURCE_HEALTH_PATH, source="sina_telegraph", entrypoint="telegraph_scan") as h:
             news_items = fetch_sina_telegraph(top_n=cfg.telegraph_top_n)
             h.item_count = len(news_items)
@@ -158,14 +162,17 @@ def main() -> int:
 
     if not news_items:
         logger.warning("未获取到任何新闻，跳过信号分析")
+        logger.info("未获取到新闻，扫描结束")
         return 0
 
     logger.info("抓取到 %d 条新闻", len(news_items))
+    logger.info(f"抓取到 {len(news_items)} 条新闻")
 
     # 去重过滤：只处理新新闻
     TELEGRAPH_HISTORY_PATH = DATA_DIR / "telegraph_history.json"
     new_news, new_count = filter_dedup_news(news_items, TELEGRAPH_HISTORY_PATH)
     logger.info("去重后新增 %d 条新闻 (总数 %d)", new_count, len(news_items))
+    logger.info(f"去重后新增 {new_count} 条新闻")
 
     # LLM分析新新闻
     llm_analyses = []
@@ -173,6 +180,7 @@ def main() -> int:
         try:
             # 构建股票池代码列表
             pool_codes = list(algo_pool.keys())
+            logger.info(f"正在调用 LLM 分析 {len(new_news)} 条新闻...")
             # 分析新闻机会
             llm_analyses = analyze_telegraph_news_llm(
                 new_news,
@@ -190,15 +198,20 @@ def main() -> int:
                 llm_analyses,
             )
             logger.info("LLM分析完成，识别%d条投资机会", len(llm_analyses))
+            logger.info(f"LLM分析完成，识别 {len(llm_analyses)} 条投资机会")
         except Exception as e:
             logger.warning("LLM分析失败，跳过: %s", e)
+            logger.error(f"LLM分析失败: {e}")
 
     # 分析新闻，提取股票信号（使用去重后的新闻）
     stats = classify_telegraph_news(new_news, stock_name_map=stock_name_map)
+    logger.info(f"新闻分析完成，提及 {len(stats['stock_mentions'])} 只股票")
 
     # 生成报告
     report_path = TELEGRAPH_REPORT_DIR / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
     _generate_report(stats, report_path)
+    logger.info("报告已生成: %s", report_path)
+    logger.info("报告已生成")
 
     # 将正面信号合并进候选池（仅算法池）
     positive_threshold = cfg.telegraph_positive_threshold
@@ -237,6 +250,9 @@ def main() -> int:
         len(stats["stock_mentions"]),
         signals_added,
     )
+    
+    # 写入最终进度
+    logger.info("✅ 扫描完成")
 
     return 0
 
