@@ -95,8 +95,6 @@ def _error_log_path() -> Path:
 
         return AgentPaths().global_error_log
     except Exception as _mini_agent_exc:
-        from mini_agent.errors import log_exception
-        log_exception(_mini_agent_exc, where='mini_agent.errors._error_log_path')
         home_override = os.environ.get("MINI_AGENT_HOME")
         base = Path(home_override) if home_override else (Path.home() / ".agent")
         return base / "logs" / "error.jsonl"
@@ -130,8 +128,6 @@ def _infer_caller(depth: int = 3) -> str:
         frame = sys._getframe(depth)
         return f"{frame.f_globals.get('__name__', '?')}:{frame.f_lineno}"
     except Exception as _mini_agent_exc:
-        from mini_agent.errors import log_exception
-        log_exception(_mini_agent_exc, where='mini_agent.errors._infer_caller')
         return "?"
 
 
@@ -141,8 +137,6 @@ def _safe_json(obj: Any) -> Any:
         json.dumps(obj, ensure_ascii=False)
         return obj
     except Exception as _mini_agent_exc:
-        from mini_agent.errors import log_exception
-        log_exception(_mini_agent_exc, where='mini_agent.errors._safe_json')
         if isinstance(obj, dict):
             return {str(k): _safe_json_value(v) for k, v in obj.items()}
         return repr(obj)
@@ -153,8 +147,6 @@ def _safe_json_value(v: Any) -> Any:
         json.dumps(v, ensure_ascii=False)
         return v
     except Exception as _mini_agent_exc:
-        from mini_agent.errors import log_exception
-        log_exception(_mini_agent_exc, where='mini_agent.errors._safe_json_value')
         return repr(v)
 
 
@@ -209,8 +201,6 @@ def log_exception(
     try:
         _get_file_logger().log(level, json.dumps(record, ensure_ascii=False))
     except Exception as log_err:  # 日志系统自身故障不能中断主流程
-        from mini_agent.errors import log_exception
-        log_exception(log_err, where='mini_agent.errors.log_exception')
         sys.stderr.write(
             f"[mini_agent.errors] 写入全局错误日志失败: {log_err!r}; "
             f"原始异常: {record.get('exc_type')}: {record.get('message')}\n"
@@ -257,8 +247,6 @@ class _RootErrorRouteHandler(logging.Handler):
         except Exception as _mini_agent_exc:
             # handler 内部异常绝不能再抛出（logging 模块会用 self.handleError,
             # 这里直接吞掉即可，避免死循环）
-            from mini_agent.errors import log_exception
-            log_exception(_mini_agent_exc, where='mini_agent.errors._RootErrorRouteHandler.emit')
             pass
 
 
