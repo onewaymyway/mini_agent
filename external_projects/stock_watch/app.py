@@ -1476,22 +1476,44 @@ def render_telegraph_news(algo: Dict, manual: Dict):
     with tab3:
         st.subheader("原始抓取新闻")
 
-        # 从已处理队列读取新闻列表
-        news_list = get_processed_list()
-        total_processed = get_processed_total()
+        # 获取待处理和已处理队列
         pending_list = get_pending_list()
+        processed_list = get_processed_list()
+        total_processed = get_processed_total()
+
+        # 统计信息
+        col_stats1, col_stats2, col_stats3, col_filter = st.columns([2, 2, 2, 3])
+        with col_stats1:
+            st.metric("已处理", len(processed_list), delta=f"累计 {total_processed}")
+        with col_stats2:
+            st.metric("待处理", len(pending_list), delta=None if not pending_list else "需分析")
+        with col_stats3:
+            st.metric("总计", len(processed_list) + len(pending_list))
+
+        # 筛选选项：全部 / 已处理 / 待处理
+        filter_option = st.selectbox(
+            "筛选",
+            options=["全部", "已处理", "待处理"],
+            key="telegraph_filter_option",
+            label_visibility="collapsed",
+        )
+
+        # 根据筛选显示对应列表
+        if filter_option == "全部":
+            news_list = processed_list + pending_list
+            news_list.sort(key=lambda x: x.get("time", ""), reverse=True)
+        elif filter_option == "已处理":
+            news_list = processed_list
+        else:  # 待处理
+            news_list = pending_list
 
         if not news_list:
-            st.info("暂无历史新闻数据。")
+            st.info(f"暂无{filter_option}新闻数据。")
         else:
             n_total = len(news_list)
-            st.caption(f"共 {n_total} 条已处理新闻（按时间倒序，最新在前）| 待处理: {len(pending_list)} 条 | 累计处理: {total_processed} 条")
+            st.caption(f"共 {n_total} 条新闻（按时间倒序，最新在前）")
 
-            # 显示处理进度提示
-            if pending_list:
-                st.warning(f"⏳ 有 {len(pending_list)} 条新闻尚未分析，请耐心等待下次扫描...")
-
-            # 翻页控制：与「最新分析」保持一致
+            # 翻页控制
             _ps2 = st.selectbox("每页条数", options=[10, 20, 50, 100], index=1, key="telegraph_raw_page_size")
             total_pages2 = (n_total + _ps2 - 1) // _ps2
             cur_page2 = st.session_state.get("telegraph_raw_cur_page", 1)
@@ -1527,7 +1549,8 @@ def render_telegraph_news(algo: Dict, manual: Dict):
             start2 = (cur_page2 - 1) * _ps2
             page_items2 = news_list[start2:start2 + _ps2]
             for i, item in enumerate(page_items2, start=start2 + 1):
-                with st.expander(f"{i}. [{item.get('time', '')}] {item.get('content', '')[:60]}..."):
+                status_tag = "🔵待处理" if item in pending_list else "✅已处理"
+                with st.expander(f"{i}. [{item.get('time', '')}] {status_tag} {item.get('content', '')[:60]}..."):
                     st.markdown(item.get('content', ''))
 
     # ── Tab 4: 手动触发 ──
