@@ -1142,6 +1142,7 @@ def render_source_health():
     # 取每个数据源的最新一条：先按时间排序，再去重保留最后一条
     time_col = "recorded_at" if "recorded_at" in df.columns else ("last_updated" if "last_updated" in df.columns else None)
     if time_col:
+        df[time_col] = pd.to_datetime(df[time_col], utc=True).dt.tz_convert(_CN_TZ)
         df = df.sort_values(time_col)
     latest = df.drop_duplicates(subset=["source"], keep="last")
     if time_col:
@@ -1160,8 +1161,7 @@ def render_source_health():
     # 近期错误趋势
     st.subheader("📉 近期错误趋势（最近24小时）")
     if time_col:
-        df[time_col] = pd.to_datetime(df[time_col])
-        today = df[time_col].max().date()
+        today = pd.Timestamp.now(_CN_TZ).date()
         today_df = df[df[time_col].dt.date == today]
         if "last_status" in today_df.columns:
             errors_today = (today_df["last_status"] == "error").sum()
