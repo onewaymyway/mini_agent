@@ -1468,9 +1468,16 @@ def render_telegraph_news(algo: Dict, manual: Dict):
                     cnt = int(row['count'])
                     pos = int(row['positive'])
                     neg = int(row['negative'])
-                    col_name, col_btn = st.columns([5, 1])
+                    # 检查是否在手动池中
+                    in_manual = code in manual
+                    col_name, col_status, col_btn = st.columns([5, 2, 1])
                     with col_name:
                         st.markdown(f"**{code}** {name} — {cnt}x (正 {pos} / 负 {neg})")
+                    with col_status:
+                        if in_manual:
+                            st.markdown("📌 **在手动池**", unsafe_allow_html=True)
+                        else:
+                            st.markdown("⭕ 不在手动池", unsafe_allow_html=True)
                     with col_btn:
                         with st.popover("🔍"):
                             news_list = get_news_by_stock(state_path, code, days)
@@ -1504,6 +1511,25 @@ def render_telegraph_news(algo: Dict, manual: Dict):
                                                 st.caption(f"📝 {n['reasoning']}")
                             else:
                                 st.info("暂无该股票的分析记录。")
+                        if not in_manual:
+                            if st.button("➕ 加入手动池", key=f"add_manual_{code}"):
+                                # 添加股票到手动池
+                                from stock_watch.candidate_pool import CandidateEntry, StateEvent
+                                now = datetime.now().isoformat()
+                                entry = CandidateEntry(
+                                    code=code,
+                                    name=name,
+                                    state="watching",
+                                    score=0.0,
+                                    last_update=now,
+                                )
+                                entry.state_history.append(StateEvent(state="watching", entered_at=now, note="从高频股票加入"))
+                                manual[code] = entry
+                                save_pool(MANUAL_POOL_PATH, manual)
+                                st.success(f"已添加 {code} {name} 到手动池")
+                                st.rerun()
+                        else:
+                            st.markdown("✅")
 
             if summary.get("top_industries"):
                 st.markdown("### 高频提及行业")
