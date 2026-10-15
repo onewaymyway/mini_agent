@@ -1068,7 +1068,7 @@ def _iter_grep_candidates(root: Path, file_pattern: str) -> list[Path]:
     root 本身若就在排除目录内部（用户显式把 path 指向了 node_modules 下
     某个包），不受影响——排除只作用于遍历"路过"这些目录名的时候。"""
     results: list[Path] = []
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in os.walk(root, onerror=lambda _e: None):
         dirnames[:] = [d for d in dirnames if d not in _GREP_EXCLUDED_DIRS]
         for name in filenames:
             if fnmatch.fnmatch(name, file_pattern):
@@ -1290,6 +1290,7 @@ def grep(
     quota_remaining = [max_results]
     skipped_large = 0
     skipped_binary = 0
+    skipped_unreadable = 0  # 权限不足/被占用/中途消失等无法读取的文件
 
     for fpath in files:
         if not fpath.is_file():
@@ -1308,6 +1309,12 @@ def grep(
         rel = str(fpath.relative_to(root)) if root.is_dir() else str(fpath)
         try:
             file_total, file_out = _grep_file_streaming(fpath, regex, rel, context_lines, quota_remaining)
+        except (PermissionError, FileNotFoundError, IsADirectoryError, OSError):
+            # 预期内的文件系统问题（权限不足、被其它进程独占/锁定——如浏览器
+            # 缓存目录、文件在枚举后被删除、路径过长等）：不是 bug，不写错误
+            # 日志，只计数跳过，并在最终结果里告知用户。
+            skipped_unreadable += 1
+            continue
         except MemoryError:
             # 双重兜底：正常情况下不会走到这里（逐行读取 + 单行长度上限
             # 已经让内存占用与文件大小无关），但万一某种极端情况仍然
@@ -1331,6 +1338,8 @@ def grep(
             extra.append(f"{skipped_large} 个文件因体积超过 {max_file_size_mb:g}MB 被跳过（可传 skip_large_files=false 强制搜索）")
         if skipped_binary:
             extra.append(f"{skipped_binary} 个文件被判定为二进制而跳过（可传 skip_binary_files=false 强制搜索）")
+        if skipped_unreadable:
+            extra.append(f"{skipped_unreadable} 个文件因权限不足/被占用/不存在而无法读取，已跳过")
         if extra:
             note += f"（{'，'.join(extra)}）"
         return note
@@ -1343,6 +1352,8 @@ def grep(
         summary += f"\n[{skipped_large} 个文件因体积超过 {max_file_size_mb:g}MB 被跳过未搜索，可传 skip_large_files=false 强制搜索]"
     if skipped_binary:
         summary += f"\n[{skipped_binary} 个文件被判定为二进制而跳过，可传 skip_binary_files=false 强制搜索]"
+    if skipped_unreadable:
+        summary += f"\n[{skipped_unreadable} 个文件因权限不足/被占用/不存在而无法读取，已跳过]"
     out.append(summary)
 
     return "\n".join(out)
