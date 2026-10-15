@@ -83,6 +83,92 @@ def _is_tool_executor_where(where: str) -> bool:
     return bool(where) and where.startswith(_TOOL_EXECUTOR_WHERE_PREFIX)
 
 
+# ── 日志系统自身故障的专用落盘 ───────────────────────────────────────────────
+# 主错误日志（error.jsonl）写不进去时（磁盘满、权限、路径不可用、序列化失败……），
+# 不能再依赖同一套机制记录“记录失败”这件事（否则会递归/死锁）。这里用一个完全独立、
+# 只依赖标准库的最简写入通道：追加写纯文本，自己的锁，自己的大小上限，任何一步
+# 失败都只静默降级（最终退到 stderr），绝不向外抛异常。
+_INTERNAL_LOCK = threading.Lock()
+_INTERNAL_LOG_NAME = "logging_failures.log"
+_INTERNAL_LOG_MAX_BYTES = 1 * 1024 * 1024  # 超过后轮转为 .1，只保留一份旧文件
+
+
+def _internal_log_candidates() -> list[Path]:
+    """候选落盘位置，按优先级：~/.agent/logs（或 MINI_AGENT_HOME）→ 系统临时目录。
+    刻意不调用 AgentPaths/_error_log_path，避免它们自身出故障时形成循环依赖。"""
+    cands: list[Path] = []
+    try:
+        home_override = os.environ.get("MINI_AGENT_HOME")
+        base = Path(home_override) if home_override else (Path.home() / ".agent")
+        cands.append(base / "logs" / _INTERNAL_LOG_NAME)
+    except Exception:
+        pass
+    try:
+        import tempfile
+
+        cands.append(Path(tempfile.gettempdir()) / f"mini_agent_{_INTERNAL_LOG_NAME}")
+    except Exception:
+        pass
+    return cands
+
+
+def _log_internal_failure(where: str, err: BaseException, original: Optional[dict[str, Any]] = None) -> None:
+    """记录“日志系统自身出故障”的事件到专用文件 logging_failures.log。
+
+    Args:
+        where: 故障发生的位置，如 "mini_agent.errors.log_exception"。
+        err: 日志系统内部抛出的异常（不是业务异常）。
+        original: 本来要写入主日志、但因故障没写成的那条记录（可选），
+            这里会连同它一起保存，避免业务异常信息丢失。
+    本函数绝不抛出异常。
+    """
+    try:
+        try:
+            ts = iso_local()
+        except Exception:
+            import datetime as _dt
+
+            ts = _dt.datetime.now().isoformat()
+        lines = [
+            f"[{ts}] pid={os.getpid()} thread={threading.current_thread().name} where={where}",
+            f"  logging_error: {type(err).__name__}: {err}",
+        ]
+        if original:
+            lines.append(
+                f"  original_where: {original.get('where')}; "
+                f"original_exc: {original.get('exc_type')}: {original.get('message')}"
+            )
+            tb = original.get("traceback")
+            if tb:
+                lines.append("  original_traceback:\n" + "".join(f"    {ln}\n" for ln in str(tb).splitlines()).rstrip("\n"))
+        lines.append("  logging_error_traceback:\n" + "".join(
+            f"    {ln}\n" for ln in "".join(traceback.format_exception(type(err), err, err.__traceback__)).splitlines()
+        ).rstrip("\n"))
+        text = "\n".join(lines) + "\n\n"
+
+        with _INTERNAL_LOCK:
+            for path in _internal_log_candidates():
+                try:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        if path.exists() and path.stat().st_size > _INTERNAL_LOG_MAX_BYTES:
+                            os.replace(path, path.with_name(path.name + ".1"))
+                    except OSError:
+                        pass
+                    with open(path, "a", encoding="utf-8") as fh:
+                        fh.write(text)
+                    return
+                except Exception:
+                    continue
+        # 所有候选位置都写不进去：最后退到 stderr
+        sys.stderr.write(text)
+    except Exception:
+        try:
+            sys.stderr.write(f"[mini_agent.errors] 内部日志故障且无法落盘: {err!r}\n")
+        except Exception:
+            pass
+
+
 def _error_log_path() -> Path:
     """解析全局错误日志文件路径。
 
@@ -95,6 +181,7 @@ def _error_log_path() -> Path:
 
         return AgentPaths().global_error_log
     except Exception as _mini_agent_exc:
+        _log_internal_failure("mini_agent.errors._error_log_path", _mini_agent_exc)
         home_override = os.environ.get("MINI_AGENT_HOME")
         base = Path(home_override) if home_override else (Path.home() / ".agent")
         return base / "logs" / "error.jsonl"
@@ -128,6 +215,7 @@ def _infer_caller(depth: int = 3) -> str:
         frame = sys._getframe(depth)
         return f"{frame.f_globals.get('__name__', '?')}:{frame.f_lineno}"
     except Exception as _mini_agent_exc:
+        _log_internal_failure("mini_agent.errors._infer_caller", _mini_agent_exc)
         return "?"
 
 
@@ -137,6 +225,7 @@ def _safe_json(obj: Any) -> Any:
         json.dumps(obj, ensure_ascii=False)
         return obj
     except Exception as _mini_agent_exc:
+        _log_internal_failure("mini_agent.errors._safe_json", _mini_agent_exc)
         if isinstance(obj, dict):
             return {str(k): _safe_json_value(v) for k, v in obj.items()}
         return repr(obj)
@@ -147,6 +236,7 @@ def _safe_json_value(v: Any) -> Any:
         json.dumps(v, ensure_ascii=False)
         return v
     except Exception as _mini_agent_exc:
+        _log_internal_failure("mini_agent.errors._safe_json_value", _mini_agent_exc)
         return repr(v)
 
 
@@ -201,6 +291,8 @@ def log_exception(
     try:
         _get_file_logger().log(level, json.dumps(record, ensure_ascii=False))
     except Exception as log_err:  # 日志系统自身故障不能中断主流程
+        # 把本来要写入主日志的记录 + 故障原因，转存到专用文件 logging_failures.log
+        _log_internal_failure("mini_agent.errors.log_exception", log_err, original=record)
         sys.stderr.write(
             f"[mini_agent.errors] 写入全局错误日志失败: {log_err!r}; "
             f"原始异常: {record.get('exc_type')}: {record.get('message')}\n"
@@ -246,8 +338,8 @@ class _RootErrorRouteHandler(logging.Handler):
             _get_file_logger().error(json.dumps(payload, ensure_ascii=False))
         except Exception as _mini_agent_exc:
             # handler 内部异常绝不能再抛出（logging 模块会用 self.handleError,
-            # 这里直接吞掉即可，避免死循环）
-            pass
+            # 这里直接吞掉即可，避免死循环）；故障转存到专用文件
+            _log_internal_failure("mini_agent.errors._RootErrorRouteHandler.emit", _mini_agent_exc)
 
 
 def install_global_error_logging() -> None:
