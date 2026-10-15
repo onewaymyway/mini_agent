@@ -1314,6 +1314,11 @@ def render_telegraph_news(algo: Dict, manual: Dict):
     # ── Tab 1: 最新分析 ──
     with tab1:
         st.subheader("最近分析结果")
+        
+        # 刷新按钮
+        if st.button("🔄 刷新数据", key="telegraph_refresh_analysis"):
+            st.session_state["telegraph_refresh_trigger"] = datetime.now().timestamp()
+            st.rerun()
 
         if not state_path.exists():
             st.info("暂无分析数据，请先运行扫描任务。")
@@ -1328,6 +1333,10 @@ def render_telegraph_news(algo: Dict, manual: Dict):
                 sorted_analyses = sorted(analyses, key=lambda x: x.get("news_time", ""), reverse=True)
                 local_last_run = _to_local(last_run)
                 st.caption(f"最后更新: {local_last_run} | 总分析记录: {total_analyses}")
+                if st.session_state.get("telegraph_refresh_trigger"):
+                    st.success("数据已刷新")
+                    time.sleep(0.5)
+                    st.rerun()
 
                 if not sorted_analyses:
                     st.warning("暂无分析记录")
@@ -1476,6 +1485,13 @@ def render_telegraph_news(algo: Dict, manual: Dict):
     # ── Tab 3: 原始新闻 ──
     with tab3:
         st.subheader("原始抓取新闻")
+        
+        # 刷新按钮
+        col_refresh, _ = st.columns([1, 5])
+        with col_refresh:
+            if st.button("🔄 刷新数据", key="telegraph_refresh_raw"):
+                st.session_state["telegraph_refresh_raw_trigger"] = datetime.now().timestamp()
+                st.rerun()
 
         # 获取待处理和已处理队列
         pending_list = get_pending_list()
@@ -1490,6 +1506,11 @@ def render_telegraph_news(algo: Dict, manual: Dict):
             st.metric("待处理", len(pending_list), delta=None if not pending_list else "需分析")
         with col_stats3:
             st.metric("总计", len(processed_list) + len(pending_list))
+        
+        if st.session_state.get("telegraph_refresh_raw_trigger"):
+            st.success("数据已刷新")
+            time.sleep(0.5)
+            st.rerun()
 
         # 筛选选项：全部 / 已处理 / 待处理
         filter_option = st.selectbox(
