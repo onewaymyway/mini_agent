@@ -1348,7 +1348,7 @@ def render_telegraph_news(algo: Dict, manual: Dict):
                             st.session_state["telegraph_cur_page"] = cur_page
                     with col_num:
                         new_page = st.number_input(
-                            "",
+                            "页码",
                             min_value=1,
                             max_value=total_pages,
                             value=cur_page,
@@ -1528,7 +1528,7 @@ def render_telegraph_news(algo: Dict, manual: Dict):
                     st.session_state["telegraph_raw_cur_page"] = cur_page2
             with col_num2:
                 new_page2 = st.number_input(
-                    "",
+                    "页码",
                     min_value=1,
                     max_value=total_pages2,
                     value=cur_page2,
