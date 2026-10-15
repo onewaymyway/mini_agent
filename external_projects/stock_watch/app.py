@@ -1481,6 +1481,8 @@ def render_telegraph_news(algo: Dict, manual: Dict):
                     with col_btn:
                         with st.popover("🔍"):
                             news_list = get_news_by_stock(state_path, code, days)
+                            # 按时间倒序排列（最新的在前面）
+                            news_list = sorted(news_list, key=lambda x: x.get('news_time', ''), reverse=True)
                             if news_list:
                                 pos_list = [n for n in news_list if n.get("direction") == "positive"]
                                 neg_list = [n for n in news_list if n.get("direction") == "negative"]
@@ -1595,6 +1597,8 @@ def render_telegraph_news(algo: Dict, manual: Dict):
                                             st.markdown("✅")
                                 st.markdown("---")
                             news_list = get_news_by_industry(state_path, ind, days)
+                            # 按时间倒序排列（最新的在前面）
+                            news_list = sorted(news_list, key=lambda x: x.get('news_time', ''), reverse=True)
                             if news_list:
                                 pos_list = [n for n in news_list if n.get("direction") == "positive"]
                                 neg_list = [n for n in news_list if n.get("direction") == "negative"]
