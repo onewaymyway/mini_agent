@@ -1372,7 +1372,8 @@ def render_telegraph_news(algo: Dict, manual: Dict):
 
                     for i, item in enumerate(page_items, start=start + 1):
                         excerpt = item.get("news_excerpt", "")[:80]
-                        time_str = _to_local(item.get("news_time", ""))
+                        # news_time 已经是北京时间（来自新浪页面），不需要转换
+                        time_str = item.get("news_time", "")
                         with st.expander(f"{i}. [{time_str}] {excerpt}..."):
                             # 完整新闻内容
                             news_content = item.get("news_content", "") or item.get("news_excerpt", "")
