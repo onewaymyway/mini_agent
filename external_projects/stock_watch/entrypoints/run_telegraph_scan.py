@@ -203,6 +203,11 @@ def main() -> int:
             )
             logger.info("LLM分析完成，识别%d条投资机会", len(llm_analyses))
             logger.info(f"LLM分析完成，识别 {len(llm_analyses)} 条投资机会")
+
+            # 将已分析的新闻从pending移到processed
+            from stock_watch.news_signals import move_to_processed
+            moved = move_to_processed(new_news)
+            logger.info(f"已将 {moved} 条新闻移入已处理归档")
         except Exception as e:
             logger.warning("LLM分析失败，跳过: %s", e)
             logger.error(f"LLM分析失败: {e}")
