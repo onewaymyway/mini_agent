@@ -1276,15 +1276,18 @@ def render_screener(algo: Dict, manual: Dict):
     _screener_opts = ["多因子选股", "价格位置选股", "高级多因子选股"]
     if isinstance(_active_tab, str):
         _active_tab = _screener_opts.index(_active_tab) if _active_tab in _screener_opts else 0
-    st.session_state["screener_active_tab"] = _active_tab
     st.radio(
         label="切换页面",
         options=_screener_opts,
         index=_active_tab,
-        key="screener_active_tab",
         label_visibility="hidden",
         horizontal=True,
+        key="_screener_radio",
     )
+    # 手动同步：radio 选中后把字符串值转回整数索引
+    _radio_val = st.session_state.get("_screener_radio", _screener_opts[_active_tab])
+    if isinstance(_radio_val, str) and _radio_val in _screener_opts:
+        st.session_state["screener_active_tab"] = _screener_opts.index(_radio_val)
     current_tab = st.session_state.get("screener_active_tab", 0)
 
     if current_tab == 0:
@@ -1324,15 +1327,18 @@ def render_telegraph_news(algo: Dict, manual: Dict):
     _telegraph_opts = ["📊 最新分析", "📈 长期统计", "📜 原始新闻", "⚙️ 手动触发"]
     if isinstance(_active_tab, str):
         _active_tab = _telegraph_opts.index(_active_tab) if _active_tab in _telegraph_opts else 2
-    st.session_state["telegraph_active_tab"] = _active_tab
     st.radio(
         label="切换页面",
         options=_telegraph_opts,
         index=_active_tab,
-        key="telegraph_active_tab",
         label_visibility="hidden",
         horizontal=True,
+        key="_telegraph_radio",
     )
+    # 手动同步：radio 选中后把字符串值转回整数索引存入 telegraph_active_tab
+    _radio_val = st.session_state.get("_telegraph_radio", _telegraph_opts[_active_tab])
+    if isinstance(_radio_val, str) and _radio_val in _telegraph_opts:
+        st.session_state["telegraph_active_tab"] = _telegraph_opts.index(_radio_val)
     current_tab = st.session_state.get("telegraph_active_tab", 2)
 
     state_path = DATA_DIR / "telegraph_analysis_state.json"
