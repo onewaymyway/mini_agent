@@ -42,9 +42,9 @@ outcomes:
 
 # 新浪 7x24 直播流配置
 telegraph:
-  max_news: 100             # 最大抓取新闻条数上限（滚动加载后）
+  max_news: 300             # 最大抓取新闻条数上限（滚动加载后）
   top_n: 50                 # 每次抓取最近 N 条新闻
-  max_pages: 5              # 最大滚动加载页数（避免无限滚动）
+  max_pages: 15              # 最大滚动加载页数（避免无限滚动）
   scroll_delay: 1.5         # 每次滚动后等待秒数
   positive_threshold: 2     # 正面提及至少 N 次才入池
 
