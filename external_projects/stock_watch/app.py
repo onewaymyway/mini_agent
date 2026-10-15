@@ -1448,9 +1448,10 @@ def render_telegraph_news(algo: Dict, manual: Dict):
     elif current_tab == 1:
         st.subheader("长期统计分析")
         days = st.slider("统计天数", 1, 90, 7)
+        top_n = st.selectbox("显示数量", options=[5, 10, 20, 50, 100], index=1, key="summary_top_n")
 
         try:
-            summary = get_all_analyses_summary(state_path, days=days)
+            summary = get_all_analyses_summary(state_path, days=days, top_n=top_n)
             col1, col2, col3 = st.columns(3)
             with col1:
                 st.metric("总分析数", summary.get("total_analyses", 0))

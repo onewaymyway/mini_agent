@@ -694,7 +694,7 @@ def get_analyses_by_date(state_path: Path, date_str: str) -> List[Dict]:
     ]
 
 
-def get_all_analyses_summary(state_path: Path, days: int = 7) -> Dict[str, Any]:
+def get_all_analyses_summary(state_path: Path, days: int = 7, top_n: int = 10) -> Dict[str, Any]:
     """获取长期统计分析摘要。"""
     from datetime import timedelta
     state = load_analysis_state(state_path)
@@ -750,13 +750,13 @@ def get_all_analyses_summary(state_path: Path, days: int = 7) -> Dict[str, Any]:
         stock_mentions.values(),
         key=lambda x: x["count"],
         reverse=True,
-    )[:10]
+    )[:top_n]
 
     top_industries = sorted(
         industry_mentions.items(),
         key=lambda x: x[1]["count"],
         reverse=True,
-    )[:10]
+    )[:top_n]
 
     return {
         "total_analyses": len(recent),
