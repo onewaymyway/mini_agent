@@ -1657,6 +1657,8 @@ def render_telegraph_news(algo: Dict, manual: Dict):
         if st.session_state.get("telegraph_refresh_raw_trigger"):
             st.success("数据已刷新")
             time.sleep(0.5)
+            # 清除 trigger，防止无限 rerun
+            del st.session_state["telegraph_refresh_raw_trigger"]
             st.rerun()
 
         # 筛选选项：全部 / 已处理 / 待处理
