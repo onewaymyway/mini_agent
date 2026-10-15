@@ -88,6 +88,22 @@ logger = logging.getLogger("stock_watch.streamlit_app")
 # ─────────────────────────────────────────────────────────────
 
 
+def _stock_quote_url(code: str) -> str:
+    """生成东方财富股票/ETF行情页面URL。"""
+    code = str(code)
+    # 东方财富行情链接规则：
+    # 6开头=沪市，0/3开头=深市，ETF 51/16=沪市ETF，159=深市ETF
+    if code.startswith(("51", "16")):
+        return f"https://quote.eastmoney.com/sh{code}.html"
+    elif code.startswith("159"):
+        return f"https://quote.eastmoney.com/sz{code}.html"
+    elif code.startswith("0") or code.startswith("3"):
+        return f"https://quote.eastmoney.com/sz{code}.html"
+    elif code.startswith("6"):
+        return f"https://quote.eastmoney.com/sh{code}.html"
+    return f"https://quote.eastmoney.com/{code}.html"
+
+
 def load_all_pools() -> tuple[Dict[str, CandidateEntry], Dict[str, CandidateEntry]]:
     """加载算法池和手动池，返回 (algo_pool, manual_pool)。
 
@@ -1473,7 +1489,8 @@ def render_telegraph_news(algo: Dict, manual: Dict):
                     in_manual = code in manual
                     col_name, col_status, col_btn = st.columns([5, 2, 1])
                     with col_name:
-                        st.markdown(f"**{code}** {name} — {cnt}x (正 {pos} / 负 {neg})")
+                        quote_url = _stock_quote_url(code)
+                        st.markdown(f"**{code}** {name} — {cnt}x (正 {pos} / 负 {neg}) | [📈 行情]({quote_url})")
                     with col_status:
                         if in_manual:
                             st.markdown("📌 **在手动池**", unsafe_allow_html=True)
@@ -1570,7 +1587,8 @@ def render_telegraph_news(algo: Dict, manual: Dict):
                                     in_manual = code in manual
                                     col_etf_name, col_etf_status, col_etf_btn = st.columns([5, 2, 1])
                                     with col_etf_name:
-                                        st.markdown(f"**{code}** {name}")
+                                        quote_url = _stock_quote_url(code)
+                                        st.markdown(f"**{code}** {name} | [📈 行情]({quote_url})")
                                     with col_etf_status:
                                         if in_manual:
                                             st.markdown("📌 **在手动池**", unsafe_allow_html=True)
