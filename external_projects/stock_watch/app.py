@@ -1537,14 +1537,65 @@ def render_telegraph_news(algo: Dict, manual: Dict):
                     cnt = int(stats.get("count", 0))
                     pos = int(stats.get("positive", 0))
                     neg = int(stats.get("negative", 0))
-                    col_name, col_btn = st.columns([5, 1])
+                    col_name, col_status, col_btn = st.columns([4, 2, 1])
                     with col_name:
                         st.markdown(f"**{ind}** — {cnt}x (正 {pos} / 负 {neg})")
+                    with col_status:
+                        # 收集该行业相关ETF
+                        etf_list = []
+                        news_list = get_news_by_industry(state_path, ind, days)
+                        for n in news_list:
+                            for etf in n.get("related_etfs", []):
+                                if etf.get("sector", "") == ind:
+                                    etf_list.append(etf)
+                        etf_list = [{"code": e["code"], "name": e["name"]} for e in etf_list]
+                        if etf_list:
+                            st.markdown(f"📊 关联 {len(set(e['code'] for e in etf_list))} 只ETF")
+                        else:
+                            st.markdown("—")
                     with col_btn:
                         with st.popover("🔍"):
+                            if etf_list:
+                                st.markdown("#### 关联ETF")
+                                seen_codes = set()
+                                for etf in etf_list:
+                                    code = etf["code"]
+                                    if code in seen_codes:
+                                        continue
+                                    seen_codes.add(code)
+                                    name = etf["name"]
+                                    in_manual = code in manual
+                                    col_etf_name, col_etf_status, col_etf_btn = st.columns([5, 2, 1])
+                                    with col_etf_name:
+                                        st.markdown(f"**{code}** {name}")
+                                    with col_etf_status:
+                                        if in_manual:
+                                            st.markdown("📌 **在手动池**", unsafe_allow_html=True)
+                                        else:
+                                            st.markdown("⭕ 不在手动池", unsafe_allow_html=True)
+                                    with col_etf_btn:
+                                        if not in_manual:
+                                            if st.button("➕ 加入", key=f"add_etf_{code}"):
+                                                from stock_watch.candidate_pool import CandidateEntry, StateEvent
+                                                now = datetime.now().isoformat()
+                                                entry = CandidateEntry(
+                                                    code=code,
+                                                    name=name,
+                                                    type="etf",
+                                                    state="watching",
+                                                    score=0.0,
+                                                    last_update=now,
+                                                )
+                                                entry.state_history.append(StateEvent(state="watching", entered_at=now, note=f"从行业{ind}加入"))
+                                                manual[code] = entry
+                                                save_pool(MANUAL_POOL_PATH, manual)
+                                                st.success(f"已添加 {code} {name} 到手动池")
+                                                st.rerun()
+                                        else:
+                                            st.markdown("✅")
+                                st.markdown("---")
                             news_list = get_news_by_industry(state_path, ind, days)
                             if news_list:
-                                # 按方向分组显示
                                 pos_list = [n for n in news_list if n.get("direction") == "positive"]
                                 neg_list = [n for n in news_list if n.get("direction") == "negative"]
                                 neutral_list = [n for n in news_list if n.get("direction") not in ("positive", "negative")]
