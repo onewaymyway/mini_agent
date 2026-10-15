@@ -684,7 +684,8 @@ def get_all_analyses_summary(state_path: Path, days: int = 7) -> Dict[str, Any]:
 
     # 统计
     stock_mentions: Dict[str, Dict] = {}
-    industry_mentions: Dict[str, int] = {}
+    # industry -> {"count": int, "positive": int, "negative": int}
+    industry_mentions: Dict[str, Dict] = {}
     positive_count = 0
     negative_count = 0
 
@@ -712,7 +713,13 @@ def get_all_analyses_summary(state_path: Path, days: int = 7) -> Dict[str, Any]:
                 stock_mentions[code]["negative"] += 1
 
         for ind in a.get("industry_opportunities", []):
-            industry_mentions[ind] = industry_mentions.get(ind, 0) + 1
+            if ind not in industry_mentions:
+                industry_mentions[ind] = {"count": 0, "positive": 0, "negative": 0}
+            industry_mentions[ind]["count"] += 1
+            if direction == "positive":
+                industry_mentions[ind]["positive"] += 1
+            elif direction == "negative":
+                industry_mentions[ind]["negative"] += 1
 
     top_stocks = sorted(
         stock_mentions.values(),
@@ -722,7 +729,7 @@ def get_all_analyses_summary(state_path: Path, days: int = 7) -> Dict[str, Any]:
 
     top_industries = sorted(
         industry_mentions.items(),
-        key=lambda x: x[1],
+        key=lambda x: x[1]["count"],
         reverse=True,
     )[:10]
 

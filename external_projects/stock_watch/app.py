@@ -1475,41 +1475,79 @@ def render_telegraph_news(algo: Dict, manual: Dict):
                         with st.popover("🔍"):
                             news_list = get_news_by_stock(state_path, code, days)
                             if news_list:
-                                st.markdown(f"**{code} {name}** — {len(news_list)} catatan")
-                                for n in news_list:
-                                    with st.expander(f"[{n.get('news_time', '')}] {n.get('news_excerpt', '')[:50]}..."):
-                                        st.markdown(f"**Jenis**: {n.get('opportunity_type', '')} | **Arah**: {n.get('direction', '')}")
-                                        st.markdown(n.get('news_excerpt', ''))
-                                        if n.get('reasoning'):
-                                            st.caption(f"📝 {n['reasoning']}")
+                                pos_list = [n for n in news_list if n.get("direction") == "positive"]
+                                neg_list = [n for n in news_list if n.get("direction") == "negative"]
+                                neutral_list = [n for n in news_list if n.get("direction") not in ("positive", "negative")]
+                                if pos_list:
+                                    st.markdown(f"🟢 正面 ({len(pos_list)} 条)")
+                                    for n in pos_list:
+                                        with st.expander(f"[{n.get('news_time', '')}] {n.get('news_excerpt', '')[:50]}..."):
+                                            st.markdown(f"**类型**: {n.get('opportunity_type', '')}")
+                                            st.markdown(n.get('news_excerpt', ''))
+                                            if n.get('reasoning'):
+                                                st.caption(f"📝 {n['reasoning']}")
+                                if neg_list:
+                                    st.markdown(f"🔴 负面 ({len(neg_list)} 条)")
+                                    for n in neg_list:
+                                        with st.expander(f"[{n.get('news_time', '')}] {n.get('news_excerpt', '')[:50]}..."):
+                                            st.markdown(f"**类型**: {n.get('opportunity_type', '')}")
+                                            st.markdown(n.get('news_excerpt', ''))
+                                            if n.get('reasoning'):
+                                                st.caption(f"📝 {n['reasoning']}")
+                                if neutral_list:
+                                    st.markdown(f"⚪ 中性 ({len(neutral_list)} 条)")
+                                    for n in neutral_list:
+                                        with st.expander(f"[{n.get('news_time', '')}] {n.get('news_excerpt', '')[:50]}..."):
+                                            st.markdown(f"**类型**: {n.get('opportunity_type', '')}")
+                                            st.markdown(n.get('news_excerpt', ''))
+                                            if n.get('reasoning'):
+                                                st.caption(f"📝 {n['reasoning']}")
                             else:
-                                st.info("Tidak ada catatan untuk saham ini.")
+                                st.info("暂无该股票的分析记录。")
 
             if summary.get("top_industries"):
                 st.markdown("### 高频提及行业")
-                df_ind = pd.DataFrame([
-                    {"行业": k, "提及次数": v}
-                    for k, v in summary["top_industries"]
-                ])
-                for _, row in df_ind.iterrows():
-                    ind = row['行业']
-                    cnt = int(row['提及次数'])
+                for ind, stats in summary["top_industries"]:
+                    cnt = int(stats.get("count", 0))
+                    pos = int(stats.get("positive", 0))
+                    neg = int(stats.get("negative", 0))
                     col_name, col_btn = st.columns([5, 1])
                     with col_name:
-                        st.markdown(f"**{ind}** — {cnt}x")
+                        st.markdown(f"**{ind}** — {cnt}x (正 {pos} / 负 {neg})")
                     with col_btn:
                         with st.popover("🔍"):
                             news_list = get_news_by_industry(state_path, ind, days)
                             if news_list:
-                                st.markdown(f"**{ind}** — {len(news_list)} catatan")
-                                for n in news_list:
-                                    with st.expander(f"[{n.get('news_time', '')}] {n.get('news_excerpt', '')[:50]}..."):
-                                        st.markdown(f"**Jenis**: {n.get('opportunity_type', '')} | **Arah**: {n.get('direction', '')}")
-                                        st.markdown(n.get('news_excerpt', ''))
-                                        if n.get('reasoning'):
-                                            st.caption(f"📝 {n['reasoning']}")
+                                # 按方向分组显示
+                                pos_list = [n for n in news_list if n.get("direction") == "positive"]
+                                neg_list = [n for n in news_list if n.get("direction") == "negative"]
+                                neutral_list = [n for n in news_list if n.get("direction") not in ("positive", "negative")]
+                                if pos_list:
+                                    st.markdown(f"🟢 正面 ({len(pos_list)} 条)")
+                                    for n in pos_list:
+                                        with st.expander(f"[{n.get('news_time', '')}] {n.get('news_excerpt', '')[:50]}..."):
+                                            st.markdown(f"**类型**: {n.get('opportunity_type', '')}")
+                                            st.markdown(n.get('news_excerpt', ''))
+                                            if n.get('reasoning'):
+                                                st.caption(f"📝 {n['reasoning']}")
+                                if neg_list:
+                                    st.markdown(f"🔴 负面 ({len(neg_list)} 条)")
+                                    for n in neg_list:
+                                        with st.expander(f"[{n.get('news_time', '')}] {n.get('news_excerpt', '')[:50]}..."):
+                                            st.markdown(f"**类型**: {n.get('opportunity_type', '')}")
+                                            st.markdown(n.get('news_excerpt', ''))
+                                            if n.get('reasoning'):
+                                                st.caption(f"📝 {n['reasoning']}")
+                                if neutral_list:
+                                    st.markdown(f"⚪ 中性 ({len(neutral_list)} 条)")
+                                    for n in neutral_list:
+                                        with st.expander(f"[{n.get('news_time', '')}] {n.get('news_excerpt', '')[:50]}..."):
+                                            st.markdown(f"**类型**: {n.get('opportunity_type', '')}")
+                                            st.markdown(n.get('news_excerpt', ''))
+                                            if n.get('reasoning'):
+                                                st.caption(f"📝 {n['reasoning']}")
                             else:
-                                st.info("Tidak ada catatan untuk industri ini.")
+                                st.info("暂无该行业的分析记录。")
 
         except Exception as e:
             st.error(f"加载统计数据失败: {e}")
