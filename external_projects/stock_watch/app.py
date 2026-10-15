@@ -1575,7 +1575,7 @@ def render_telegraph_news(algo: Dict, manual: Dict):
                                             st.markdown("⭕ 不在手动池", unsafe_allow_html=True)
                                     with col_etf_btn:
                                         if not in_manual:
-                                            if st.button("➕ 加入", key=f"add_etf_{code}"):
+                                            if st.button("➕ 加入", key=f"add_etf_{ind}_{code}"):
                                                 from stock_watch.candidate_pool import CandidateEntry, StateEvent
                                                 now = datetime.now().isoformat()
                                                 entry = CandidateEntry(
