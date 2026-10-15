@@ -436,11 +436,16 @@ ANALYSIS_SYSTEM_PROMPT = """你是股票投资分析师，专注于从财经新�
 请分析以下新浪财经7x24直播流新闻，识别其中的投资机会。
 
 对于每条新闻，你需要：
-1. 识别涉及的具体股票（代码+名称）
+1. **完整提取所有提及的股票**：如果新闻中提及多只股票（如"读客文化、慈文传媒、欢瑞世纪等涨幅靠前"），必须提取全部提及的股票，不能只提取最常提到的那只。
 2. 识别涉及的行业/板块机会
 3. 判断对A股的影响方向（利好/利空/中性）
 4. 给出置信度（高/中/低）
 5. 简短说明理由（不超过50字）
+
+重要规则：
+- 对于有利好消息或强势表现的股票（如涨停、连板、涨幅靠前），必须提取所有相关股票
+- 不要遗漏任何在新闻中被提及的股票名称
+- relevance字段表示该股票与新闻主题的相关程度
 
 输出格式为JSON数组，每项包含：
 - news_hash: 新闻的唯一标识（时间+内容哈希）
@@ -485,6 +490,26 @@ ANALYSIS_SYSTEM_PROMPT = """你是股票投资分析师，专注于从财经新�
     "direction": "positive",
     "confidence": "high",
     "reasoning": "控制权变更引入新实控人，股权转让溢价明显，存在资产重组预期。"
+  },
+  {
+    "news_hash": "20261014103025_ai_comic",
+    "news_time": "10:30:25",
+    "news_excerpt": "AI漫剧概念反复走强，读客文化20cm涨停，此前慈文传媒5连板，欢瑞世纪5天3板，掌阅科技、出版传媒、冰川网络、荣信文化涨幅靠前。",
+    "opportunity_type": "stock",
+    "related_stocks": [
+      {"code": "CK301035", "name": "读客文化", "relevance": "高"},
+      {"code": "SZ002343", "name": "慈文传媒", "relevance": "高"},
+      {"code": "SH600136", "name": " ST明诚", "relevance": "高"},
+      {"code": "SZ300364", "name": "掌阅科技", "relevance": "中"},
+      {"code": "SH601949", "name": "出版传媒", "relevance": "中"},
+      {"code": "SZ300533", "name": "冰川网络", "relevance": "中"},
+      {"code": "SH603212", "name": "荣信文化", "relevance": "中"}
+    ],
+    "related_etfs": [],
+    "industry_opportunities": ["AI漫剧", "数字阅读", "文化传媒"],
+    "direction": "positive",
+    "confidence": "high",
+    "reasoning": "AI漫剧概念持续走强，多只个股表现强势，板块联动明显。"
   }
 ]
 ```
