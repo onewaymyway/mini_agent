@@ -1272,6 +1272,7 @@ def render_screener(algo: Dict, manual: Dict):
     st.caption("使用本地 K 线数据（kline.db）进行技术面选股，支持多种策略。")
 
     _active_tab = st.session_state.get("screener_active_tab", 0)
+    st.session_state["screener_active_tab"] = _active_tab
     st.radio(
         label="切换页面",
         options=["多因子选股", "价格位置选股", "高级多因子选股"],
@@ -1315,6 +1316,7 @@ def render_telegraph_news(algo: Dict, manual: Dict):
     st.caption("实时财经新闻抓取、LLM 机会分析、长期统计")
 
     _active_tab = st.session_state.get("telegraph_active_tab", 2)
+    st.session_state["telegraph_active_tab"] = _active_tab
     st.radio(
         label="切换页面",
         options=["📊 最新分析", "📈 长期统计", "📜 原始新闻", "⚙️ 手动触发"],
@@ -1323,6 +1325,7 @@ def render_telegraph_news(algo: Dict, manual: Dict):
         label_visibility="hidden",
         horizontal=True,
     )
+    st.session_state["telegraph_active_tab"] = _active_tab
     current_tab = st.session_state.get("telegraph_active_tab", 2)
 
     state_path = DATA_DIR / "telegraph_analysis_state.json"
