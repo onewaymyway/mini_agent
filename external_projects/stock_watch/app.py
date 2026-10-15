@@ -1271,18 +1271,27 @@ def render_screener(algo: Dict, manual: Dict):
     st.header("🔍 选股")
     st.caption("使用本地 K 线数据（kline.db）进行技术面选股，支持多种策略。")
 
-    tab1, tab2, tab3 = st.tabs(["多因子选股", "价格位置选股", "高级多因子选股"])
+    _active_tab = st.session_state.get("screener_active_tab", 0)
+    st.radio(
+        label="",
+        options=["多因子选股", "价格位置选股", "高级多因子选股"],
+        index=_active_tab,
+        key="screener_active_tab",
+        label_visibility="collapsed",
+        horizontal=True,
+    )
+    current_tab = st.session_state.get("screener_active_tab", 0)
 
-    with tab1:
+    if current_tab == 0:
         _screener_tab("screener1", "多因子选股", "基于 MACD/RSI/KDJ/MA/布林带/量能 六维度加权评分。",
                       "entrypoints/run_local_screener.py", manual)
 
-    with tab2:
+    elif current_tab == 1:
         _screener_tab("screener2", "价格位置选股", "统计 N 天历史最高/最低价，计算当前价格相对区间的位置。",
                       "entrypoints/run_price_position_screener.py",
                       lookback_arg="--lookback", manual=manual)
 
-    with tab3:
+    elif current_tab == 2:
         _screener_tab("screener3", "高级多因子选股", "四维度综合评分：趋势 30 + 动量 20 + 量能 15 + 价格位置 35 = 100 满分。",
                       "entrypoints/run_advanced_screener.py", manual=manual)
 
@@ -1305,14 +1314,21 @@ def render_telegraph_news(algo: Dict, manual: Dict):
     st.header("📰 新浪 7x24 直播流")
     st.caption("实时财经新闻抓取、LLM 机会分析、长期统计")
 
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "📊 最新分析", "📈 长期统计", "📜 原始新闻", "⚙️ 手动触发"
-    ])
+    _active_tab = st.session_state.get("telegraph_active_tab", 2)
+    st.radio(
+        label="",
+        options=["📊 最新分析", "📈 长期统计", "📜 原始新闻", "⚙️ 手动触发"],
+        index=_active_tab,
+        key="telegraph_active_tab",
+        label_visibility="visible",
+        horizontal=True,
+    )
+    current_tab = st.session_state.get("telegraph_active_tab", 2)
 
     state_path = DATA_DIR / "telegraph_analysis_state.json"
 
     # ── Tab 1: 最新分析 ──
-    with tab1:
+    if current_tab == 0:
         st.subheader("最近分析结果")
         
         # 刷新按钮
@@ -1413,7 +1429,7 @@ def render_telegraph_news(algo: Dict, manual: Dict):
                 st.error(f"加载分析数据失败: {e}")
 
     # ── Tab 2: 长期统计 ──
-    with tab2:
+    elif current_tab == 1:
         st.subheader("长期统计分析")
         days = st.slider("统计天数", 1, 90, 7)
 
@@ -1483,7 +1499,7 @@ def render_telegraph_news(algo: Dict, manual: Dict):
             st.error(f"加载统计数据失败: {e}")
 
     # ── Tab 3: 原始新闻 ──
-    with tab3:
+    elif current_tab == 2:
         st.subheader("原始抓取新闻")
         
         # 刷新按钮
@@ -1576,7 +1592,7 @@ def render_telegraph_news(algo: Dict, manual: Dict):
                     st.markdown(item.get('content', ''))
 
     # ── Tab 4: 手动触发 ──
-    with tab4:
+    elif current_tab == 3:
         st.subheader("手动触发扫描")
 
         # 直接调用现有的脚本运行函数
