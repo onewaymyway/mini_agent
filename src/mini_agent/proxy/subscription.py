@@ -343,6 +343,17 @@ def parse_subscription_text(text: str) -> list[ProxyNode]:
             log_exception(_mini_agent_exc, where='mini_agent.proxy.subscription.parse_subscription_text')
             pass
 
+    # 再尝试 Clash YAML 格式检测
+    try:
+        import yaml
+        obj = yaml.safe_load(text)
+        if isinstance(obj, dict) and "proxies" in obj and isinstance(obj["proxies"], list):
+            nodes = parse_clash_yaml(text)
+            if nodes:
+                return nodes
+    except Exception:
+        pass
+
     nodes: list[ProxyNode] = []
     for line in text.splitlines():
         line = line.strip()
