@@ -1294,6 +1294,11 @@ def render_telegraph_news(algo: Dict, manual: Dict):
         get_all_analyses_summary,
         get_news_by_stock,
         get_news_by_industry,
+        get_pending_list,
+        get_processed_list,
+        get_processed_total,
+        PENDING_MAX_SIZE,
+        PROCESSED_MAX_SIZE,
     )
     from stock_watch.config import DATA_DIR
 
@@ -1470,58 +1475,60 @@ def render_telegraph_news(algo: Dict, manual: Dict):
     # ── Tab 3: 原始新闻 ──
     with tab3:
         st.subheader("原始抓取新闻")
-        telegraph_history_path = DATA_DIR / "telegraph_history.json"
-        if not telegraph_history_path.exists():
+
+        # 从已处理队列读取新闻列表
+        news_list = get_processed_list()
+        total_processed = get_processed_total()
+        pending_list = get_pending_list()
+
+        if not news_list:
             st.info("暂无历史新闻数据。")
         else:
-            try:
-                history_data = json.loads(telegraph_history_path.read_text(encoding="utf-8"))
-                news_list = history_data.get("news", [])
-                if not news_list:
-                    st.info("暂无新闻记录。")
-                else:
-                    n_total = len(news_list)
-                    st.caption(f"共 {n_total} 条新闻（按时间倒序，最新在前）")
-                    # 翻页控制：与「最新分析」保持一致
-                    _ps2 = st.selectbox("每页条数", options=[10, 20, 50, 100], index=1, key="telegraph_raw_page_size")
-                    total_pages2 = (n_total + _ps2 - 1) // _ps2
-                    cur_page2 = st.session_state.get("telegraph_raw_cur_page", 1)
-                    if cur_page2 < 1:
-                        cur_page2 = 1
-                    elif cur_page2 > total_pages2:
-                        cur_page2 = total_pages2
-                    col_prev2, col_num2, col_next2, col_info2 = st.columns([1, 2, 1, 2])
-                    with col_prev2:
-                        if st.button("◀ 上一页", disabled=(cur_page2 <= 1), key="trprev_btn"):
-                            cur_page2 -= 1
-                            st.session_state["telegraph_raw_cur_page"] = cur_page2
-                    with col_num2:
-                        new_page2 = st.number_input(
-                            "",
-                            min_value=1,
-                            max_value=total_pages2,
-                            value=cur_page2,
-                            step=1,
-                            key="trpage_input",
-                            label_visibility="collapsed",
-                            width=80,
-                        )
-                        if new_page2 != cur_page2:
-                            st.session_state["telegraph_raw_cur_page"] = new_page2
-                            cur_page2 = new_page2
-                    with col_next2:
-                        if st.button("下一页 ▶", disabled=(cur_page2 >= total_pages2), key="trnext_btn"):
-                            cur_page2 += 1
-                            st.session_state["telegraph_raw_cur_page"] = cur_page2
-                    with col_info2:
-                        st.caption(f"第 {cur_page2} / {total_pages2} 页  （共 {n_total} 条）")
-                    start2 = (cur_page2 - 1) * _ps2
-                    page_items2 = news_list[start2:start2 + _ps2]
-                    for i, item in enumerate(page_items2, start=start2 + 1):
-                        with st.expander(f"{i}. [{item.get('time', '')}] {item.get('content', '')[:60]}..."):
-                            st.markdown(item.get('content', ''))
-            except Exception as e:
-                st.error(f"加载原始新闻失败: {e}")
+            n_total = len(news_list)
+            st.caption(f"共 {n_total} 条已处理新闻（按时间倒序，最新在前）| 待处理: {len(pending_list)} 条 | 累计处理: {total_processed} 条")
+
+            # 显示处理进度提示
+            if pending_list:
+                st.warning(f"⏳ 有 {len(pending_list)} 条新闻尚未分析，请耐心等待下次扫描...")
+
+            # 翻页控制：与「最新分析」保持一致
+            _ps2 = st.selectbox("每页条数", options=[10, 20, 50, 100], index=1, key="telegraph_raw_page_size")
+            total_pages2 = (n_total + _ps2 - 1) // _ps2
+            cur_page2 = st.session_state.get("telegraph_raw_cur_page", 1)
+            if cur_page2 < 1:
+                cur_page2 = 1
+            elif cur_page2 > total_pages2:
+                cur_page2 = total_pages2
+            col_prev2, col_num2, col_next2, col_info2 = st.columns([1, 2, 1, 2])
+            with col_prev2:
+                if st.button("◀ 上一页", disabled=(cur_page2 <= 1), key="trprev_btn"):
+                    cur_page2 -= 1
+                    st.session_state["telegraph_raw_cur_page"] = cur_page2
+            with col_num2:
+                new_page2 = st.number_input(
+                    "",
+                    min_value=1,
+                    max_value=total_pages2,
+                    value=cur_page2,
+                    step=1,
+                    key="trpage_input",
+                    label_visibility="collapsed",
+                    width=80,
+                )
+                if new_page2 != cur_page2:
+                    st.session_state["telegraph_raw_cur_page"] = new_page2
+                    cur_page2 = new_page2
+            with col_next2:
+                if st.button("下一页 ▶", disabled=(cur_page2 >= total_pages2), key="trnext_btn"):
+                    cur_page2 += 1
+                    st.session_state["telegraph_raw_cur_page"] = cur_page2
+            with col_info2:
+                st.caption(f"第 {cur_page2} / {total_pages2} 页  （共 {n_total} 条）")
+            start2 = (cur_page2 - 1) * _ps2
+            page_items2 = news_list[start2:start2 + _ps2]
+            for i, item in enumerate(page_items2, start=start2 + 1):
+                with st.expander(f"{i}. [{item.get('time', '')}] {item.get('content', '')[:60]}..."):
+                    st.markdown(item.get('content', ''))
 
     # ── Tab 4: 手动触发 ──
     with tab4:

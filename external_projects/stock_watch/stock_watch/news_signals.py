@@ -238,71 +238,191 @@ def _news_hash(content: str, time_str: str) -> str:
     return hashlib.md5(key.encode()).hexdigest()
 
 
-def load_telegraph_history(history_path: Path) -> dict:
-    """加载历史新闻记录（用于去重）。"""
-    if not history_path.exists():
-        return {"news": [], "hashes": set()}
+# ── 双文件队列管理 ──────────────────────────────────────────────────────
+
+PENDING_FILE = "telegraph_pending.json"      # 待处理新闻队列
+PROCESSED_FILE = "telegraph_processed.json"   # 已处理新闻归档
+PENDING_MAX_SIZE = 1000      # 待处理队列最大保留条数
+PROCESSED_MAX_SIZE = 5000    # 已处理新闻最大保留条数
+
+
+def load_pending() -> dict:
+    """加载待处理新闻队列。"""
+    from stock_watch.config import DATA_DIR
+    path = DATA_DIR / PENDING_FILE
+    if not path.exists():
+        return {"news": [], "updated_at": None}
     try:
-        data = json.loads(history_path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return {
+            "news": data.get("news", []),
+            "updated_at": data.get("updated_at"),
+        }
+    except (json.JSONDecodeError, Exception):
+        return {"news": [], "updated_at": None}
+
+
+def save_pending(news_list: list) -> None:
+    """保存待处理新闻队列。"""
+    from stock_watch.config import DATA_DIR
+    path = DATA_DIR / PENDING_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "news": news_list[-PENDING_MAX_SIZE:],  # 保留最近N条
+    }
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_processed() -> dict:
+    """加载已处理新闻归档（用于去重检查）。"""
+    from stock_watch.config import DATA_DIR
+    path = DATA_DIR / PROCESSED_FILE
+    if not path.exists():
+        return {"news": [], "hashes": set(), "total_processed": 0}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
         return {
             "news": data.get("news", []),
             "hashes": set(data.get("hashes", [])),
+            "total_processed": data.get("total_processed", 0),
         }
     except (json.JSONDecodeError, Exception):
-        return {"news": [], "hashes": set()}
+        return {"news": [], "hashes": set(), "total_processed": 0}
 
 
-def save_telegraph_history(history_path: Path, news_list: list, hashes: set):
-    """保存新闻历史（用于去重）。"""
-    history_path.parent.mkdir(parents=True, exist_ok=True)
+def save_processed(news_list: list, hashes: set, total_processed: int) -> None:
+    """保存已处理新闻归档。"""
+    from stock_watch.config import DATA_DIR
+    path = DATA_DIR / PROCESSED_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
     data = {
         "updated_at": datetime.now(timezone.utc).isoformat(),
-        "total_news": len(news_list),
-        "news": news_list[-500:],  # 保留最近500条
+        "total_processed": total_processed,
+        "news": news_list[-PROCESSED_MAX_SIZE:],  # 保留最近N条完整记录
         "hashes": list(hashes),
     }
-    history_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def filter_dedup_news(
     news_items: List[Dict[str, Any]],
-    history_path: Path,
 ) -> tuple:
-    """对新闻进行去重过滤。
+    """对新闻进行去重过滤，分离待处理和已处理。
 
-    参数:
-        news_items: 待检查的新闻列表
-        history_path: 历史记录文件路径
+    流程:
+    1. 加载待处理队列 + 已处理归档
+    2. 过滤出真正的新新闻（hash不在已处理集合中）
+    3. 新新闻加入待处理队列
+    4. 返回 (待处理新闻列表, 新增条数)
 
     返回:
-        (新新闻列表, 新增条数)
+        (new_news, new_count)
     """
-    history = load_telegraph_history(history_path)
-    existing_hashes = history["hashes"]
+    pending = load_pending()
+    processed = load_processed()
+
+    existing_hashes = processed["hashes"]
     new_news = []
-    new_hashes = set(existing_hashes)
 
     for item in news_items:
         h = _news_hash(item.get("content", ""), item.get("time", ""))
         if h not in existing_hashes:
-            new_news.append(item)
-            new_hashes.add(h)
+            new_news.append({
+                "time": item.get("time", ""),
+                "content": item.get("content", ""),
+                "hash": h,
+            })
 
-    # 保存更新后的历史（按时间排序，保留完整内容）
+    # 合并到待处理队列（新新闻在前，旧的可能还未被分析）
     if new_news:
-        all_news = history["news"][-500:] + [
-            {
-                "time": n.get("time", ""),
-                "content": n.get("content", ""),  # 保存完整内容
-                "hash": _news_hash(n.get("content", ""), n.get("time", "")),
-            }
-            for n in new_news
-        ]
-        # 按时间排序（新新闻在前）
-        all_news.sort(key=lambda x: x.get("time", ""), reverse=True)
-        save_telegraph_history(history_path, all_news, new_hashes)
+        all_pending = pending["news"] + new_news
+        # 按时间倒序排序
+        all_pending.sort(key=lambda x: x.get("time", ""), reverse=True)
+        save_pending(all_pending)
 
     return new_news, len(new_news)
+
+
+def move_to_processed(news_list: List[Dict[str, Any]]) -> int:
+    """将已分析的待处理新闻移到已处理归档。
+
+    返回: 实际移动的条数
+    """
+    if not news_list:
+        return 0
+
+    processed = load_processed()
+    existing_hashes = processed["hashes"]
+    existing_news = processed["news"]
+
+    # 添加到已处理集合
+    for item in news_list:
+        h = item.get("hash", _news_hash(item.get("content", ""), item.get("time", "")))
+        existing_hashes.add(h)
+        # 保存完整记录（包含hash）
+        existing_news.append({
+            "time": item.get("time", ""),
+            "content": item.get("content", ""),
+            "hash": h,
+        })
+
+    # 去重并排序
+    seen = set()
+    unique_news = []
+    for n in existing_news:
+        h = n.get("hash", "")
+        if h and h not in seen:
+            seen.add(h)
+            unique_news.append(n)
+    unique_news.sort(key=lambda x: x.get("time", ""), reverse=True)
+
+    total_processed = processed["total_processed"] + len(news_list)
+    save_processed(unique_news, existing_hashes, total_processed)
+
+    # 清理待处理队列中的这些新闻
+    _clear_pending_by_hashes({n.get("hash", "") for n in news_list})
+
+    return len(news_list)
+
+
+def _clear_pending_by_hashes(hash_set: Set[str]) -> None:
+    """从待处理队列中移除指定hash的新闻。"""
+    if not hash_set:
+        return
+    pending = load_pending()
+    remaining = [n for n in pending["news"] if n.get("hash", "") not in hash_set]
+    save_pending(remaining)
+
+
+def get_pending_list() -> List[Dict[str, Any]]:
+    """获取当前待处理新闻列表。"""
+    pending = load_pending()
+    return pending.get("news", [])
+
+
+def get_processed_list() -> List[Dict[str, Any]]:
+    """获取已处理新闻列表（最近5000条）。"""
+    processed = load_processed()
+    return processed.get("news", [])
+
+
+def get_processed_total() -> int:
+    """获取已处理新闻总数。"""
+    processed = load_processed()
+    return processed.get("total_processed", 0)
+
+
+# ── 向后兼容 ─────────────────────────────────────────────────────────────
+
+def load_telegraph_history(history_path: Path) -> dict:
+    """加载历史新闻记录（用于去重）。【已废弃，使用新队列函数】"""
+    return load_processed()
+
+
+def save_telegraph_history(history_path: Path, news_list: list, hashes: set):
+    """保存新闻历史（用于去重）。【已废弃，使用新队列函数】"""
+    save_processed(news_list, hashes, len(news_list))
 
 
 # ─────────────────────────────────────────────────────────────

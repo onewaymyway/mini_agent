@@ -172,9 +172,9 @@ def main() -> int:
     logger.info("抓取到 %d 条新闻", len(news_items))
     logger.info(f"抓取到 {len(news_items)} 条新闻")
 
-    # 去重过滤：只处理新新闻
-    TELEGRAPH_HISTORY_PATH = DATA_DIR / "telegraph_history.json"
-    new_news, new_count = filter_dedup_news(news_items, TELEGRAPH_HISTORY_PATH)
+    # 去重过滤：只处理新新闻（使用双文件队列）
+    from stock_watch.news_signals import filter_dedup_news as _filter_dedup
+    new_news, new_count = _filter_dedup(news_items)
     logger.info("去重后新增 %d 条新闻 (总数 %d)", new_count, len(news_items))
     logger.info(f"去重后新增 {new_count} 条新闻")
 
