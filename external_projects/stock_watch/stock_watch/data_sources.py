@@ -1850,12 +1850,28 @@ def fetch_sina_telegraph(top_n: int = 50, max_pages: int = 5, scroll_delay: floa
         else:
             results = []
         # 补全日期：页面只提供 HH:MM:SS，需加上当天日期才能正确跨天排序
-        from datetime import date as _date
-        today = _date.today().isoformat()  # "YYYY-MM-DD"
+        # 关键修正：使用扫描时刻的日期，而非 _date.today()，避免凌晨扫描时把
+        # 前一天 23:xx 的新闻错误标记为当天。
+        # 策略：以当前时间为基准，若新闻时间 >= 扫描时刻（如扫描 00:10，新闻 23:30），
+        # 说明该新闻属于"今天"（即扫描日的前一天），需减一天；否则用扫描日日期。
+        from datetime import datetime as _datetime, date as _date, timedelta as _timedelta
+        scan_now = _datetime.now()
+        scan_date = scan_now.date()
+        scan_time_parts = scan_now.time()
         for r in results:
             t = r.get("time", "")
             if t and ":" in t and len(t) == 8:  # HH:MM:SS 格式
-                r["time"] = f"{today} {t}"
+                try:
+                    news_time_parts = _datetime.strptime(t, "%H:%M:%S").time()
+                    # 若新闻时刻 >= 扫描时刻，说明是"昨天"的新闻（凌晨场景）
+                    if news_time_parts >= scan_time_parts:
+                        effective_date = scan_date - _timedelta(days=1)
+                    else:
+                        effective_date = scan_date
+                    r["time"] = f"{effective_date.isoformat()} {t}"
+                except ValueError:
+                    # 解析失败时回退到扫描日日期，避免静默丢失
+                    r["time"] = f"{scan_date.isoformat()} {t}"
         return results[:top_n] if isinstance(results, list) else []
     except Exception as exc:
         logger.warning("抓取新浪 7x24 直播流失败: %s", exc)
