@@ -1273,11 +1273,11 @@ def render_screener(algo: Dict, manual: Dict):
 
     _active_tab = st.session_state.get("screener_active_tab", 0)
     st.radio(
-        label="",
+        label="切换页面",
         options=["多因子选股", "价格位置选股", "高级多因子选股"],
         index=_active_tab,
         key="screener_active_tab",
-        label_visibility="collapsed",
+        label_visibility="hidden",
         horizontal=True,
     )
     current_tab = st.session_state.get("screener_active_tab", 0)
@@ -1316,11 +1316,11 @@ def render_telegraph_news(algo: Dict, manual: Dict):
 
     _active_tab = st.session_state.get("telegraph_active_tab", 2)
     st.radio(
-        label="",
+        label="切换页面",
         options=["📊 最新分析", "📈 长期统计", "📜 原始新闻", "⚙️ 手动触发"],
         index=_active_tab,
         key="telegraph_active_tab",
-        label_visibility="visible",
+        label_visibility="hidden",
         horizontal=True,
     )
     current_tab = st.session_state.get("telegraph_active_tab", 2)
