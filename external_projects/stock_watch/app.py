@@ -1374,7 +1374,7 @@ def render_telegraph_news(algo: Dict, manual: Dict):
                     st.warning("暂无分析记录")
                 else:
                     # 翻页控制：每页条数可选 + 上一页/下一页 + 数字跳转
-                    _ps = st.selectbox("每页条数", options=[10, 20, 50, 100], index=1, key="telegraph_page_size")
+                    _ps = st.selectbox("每页条数", options=[10, 20, 50, 100], index=2, key="telegraph_page_size")
                     total_pages = (len(sorted_analyses) + _ps - 1) // _ps
                     cur_page = st.session_state.get("telegraph_cur_page", 1)
                     if cur_page < 1:
@@ -1606,7 +1606,7 @@ def render_telegraph_news(algo: Dict, manual: Dict):
             st.caption(f"共 {n_total} 条新闻（按时间倒序，最新在前）")
 
             # 翻页控制
-            _ps2 = st.selectbox("每页条数", options=[10, 20, 50, 100], index=1, key="telegraph_raw_page_size")
+            _ps2 = st.selectbox("每页条数", options=[10, 20, 50, 100], index=2, key="telegraph_raw_page_size")
             total_pages2 = (n_total + _ps2 - 1) // _ps2
             cur_page2 = st.session_state.get("telegraph_raw_cur_page", 1)
             if cur_page2 < 1:
