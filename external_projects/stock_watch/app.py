@@ -1459,6 +1459,33 @@ def render_telegraph_news(algo: Dict, manual: Dict):
                                 st.markdown(", ".join(item["industry_opportunities"]))
 
                             st.markdown(f"**分析理由**:\n{item.get('reasoning', '')}")
+
+                    # 底部翻页控件（方便长列表时直接跳转）
+                    col_bottom_prev, col_bottom_num, col_bottom_next, col_bottom_info = st.columns([1, 2, 1, 2])
+                    with col_bottom_prev:
+                        if st.button("◀ 上一页", disabled=(cur_page <= 1), key="tprev_btn_bottom"):
+                            cur_page -= 1
+                            st.session_state["telegraph_cur_page"] = cur_page
+                    with col_bottom_num:
+                        new_page_bottom = st.number_input(
+                            "页码",
+                            min_value=1,
+                            max_value=total_pages,
+                            value=cur_page,
+                            step=1,
+                            key="tpage_input_bottom",
+                            label_visibility="collapsed",
+                            width=80,
+                        )
+                        if new_page_bottom != cur_page:
+                            st.session_state["telegraph_cur_page"] = new_page_bottom
+                            cur_page = new_page_bottom
+                    with col_bottom_next:
+                        if st.button("下一页 ▶", disabled=(cur_page >= total_pages), key="tnext_btn_bottom"):
+                            cur_page += 1
+                            st.session_state["telegraph_cur_page"] = cur_page
+                    with col_bottom_info:
+                        st.caption(f"第 {cur_page} / {total_pages} 页  （共 {len(sorted_analyses)} 条）")
             except Exception as e:
                 st.error(f"加载分析数据失败: {e}")
 
