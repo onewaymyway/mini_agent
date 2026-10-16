@@ -34,6 +34,7 @@ from typing import Optional
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
+from mini_agent.log_handlers import build_safe_rotating_handler
 from mini_agent.time_utils import iso_local, now_str
 
 _LOCK = threading.Lock()
@@ -85,8 +86,9 @@ def _get_logger(log_path: Path) -> logging.Logger:
         logger.setLevel(logging.DEBUG)
         logger.propagate = False
         if not logger.handlers:
-            handler = logging.handlers.RotatingFileHandler(
-                log_path, maxBytes=_MAX_BYTES, backupCount=_BACKUP_COUNT, encoding="utf-8"
+            # 写入时才打开文件、写完即关；轮转遇 PermissionError 时重试/跳过（见 log_handlers.py）
+            handler = build_safe_rotating_handler(
+                log_path, _MAX_BYTES, _BACKUP_COUNT
             )
             handler.setFormatter(logging.Formatter("%(message)s"))
             logger.addHandler(handler)

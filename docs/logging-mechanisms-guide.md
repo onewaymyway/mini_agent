@@ -56,6 +56,14 @@
    "message": "...", "traceback": "...", "extra": {"path": "..."}}
   ```
 - 轮转：`RotatingFileHandler`，单文件 10MB，保留最近 5 个备份
+- 多进程安全（2026-10）：daemon 与交互式 CLI 会同时写同一个 `error.jsonl`。
+  使用 `log_handlers.SafeRotatingFileHandler`（本文件、`api/http_log.py`、
+  `capability_debug.py` 共用）：**写入时才打开文件、写完立即关闭**，不再长期持有
+  句柄；轮转遇 `PermissionError`（Windows `WinError 32`）时短暂重试，仍失败则
+  跳过本次轮转继续追加（文件会暂时超过 10MB，记录不丢、备份链不破坏），并向
+  `logging_failures.log` 转存一条记录；失败后 30 秒冷却，期间不再重试。
+  详见 `next_doc/log_rotation_multiprocess_safe_plan.md`，测试见
+  `tests/test_log_handlers.py`。
   （`error.jsonl` / `error.jsonl.1` … `.5`）。
 
 ### 三层覆盖机制
