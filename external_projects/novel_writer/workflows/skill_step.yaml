@@ -1,0 +1,19 @@
+name: skill_step
+description: >-
+  novel_writer 的通用单步工作流（方案第 2 节 / Q7）。一个 skill_agent 步骤：运行时由
+  `novel_writer/runner.py::FrameworkInvoker` 改写 skill_name、result_file 与 prompt 占位符
+  （prompt 经 inputs 的 task_prompt 传入，避免 prompt 中的花括号被占位符解析器误处理）。
+  结果契约：执行方把回执写入 receipt.json（status / summary / outputs / needs_user），
+  引擎再用 validators.py 校验；产出文件由 runner 自行核对。
+version: "1.0"
+steps:
+  - id: skill_step
+    name: 执行一个创作类 skill
+    type: skill_agent
+    skill_name: novel-planner
+    prompt: "{task_prompt}"
+    max_turns: 50
+    timeout: 900
+    result_file: receipt.json
+    result_file_required_keys:
+      - status

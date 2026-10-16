@@ -425,11 +425,37 @@ docs/  tests/  data/(gitignore)
 | 期 | 状态 | 备注 |
 |---|---|---|
 | M0 脚手架 | **已完成（2026-10-17）** | 骨架、23 个 skill 原样落位、workspace/settings/shelf/skills_catalog/tool_api、3 个入口、简版界面、39 个测试通过；project.yaml 已通过框架 load_manifest 校验 |
-| M1 引擎内核 | 未开始 | |
+| M1 引擎内核 | **已完成（2026-10-17，待确认）** | 见下方「M1 实施记录」 |
 | M2 规划阶段 + UI 第一批 | 未开始 | |
 | M3 章节循环 + UI 第二批 | 未开始 | |
 | M4 幕末/修订/灵感/度量/设置矩阵 | 未开始 | |
 | M5 自动模式完善 | 未开始 | |
 | M6 质量增强（可选） | 待议 | 不属于已确认范围 |
+
+### M1 实施记录（2026-10-17）
+
+**交付范围**：`novel_writer/{steps,gates,state,pipeline,validators,runner,worker,service_cli}.py`、`workflows/skill_step.yaml`、`entrypoints/{run_novel,smoke_real_llm}.py`；`tool_api` 增加运行与步骤操作接口；`tests/test_engine_m1.py`（32 个用例，全部使用桩执行器）。全量测试 71 个通过（M0 39 + M1 32）。
+
+**验收对照（第 8 节 M1 行）**：
+- 暂停 / 停止：在两步之间生效，返回 `paused` / `stopped`，不打断正在执行的 LLM 调用。✔
+- 恢复：`paused` 后再次运行即从前沿续跑；预算耗尽同样可续跑。✔
+- 崩溃续跑：遗留 `running` 步骤在心跳超时后置为 `interrupted` 并可重跑（测试覆盖）。✔
+- 脏标记：上游产物哈希变化时下游 `passed` 步骤转为 `stale`，旧记录只补哈希、不误标。✔
+- 闸门：强制检查点不可被覆盖降级；挡位预设与阶段覆盖按方案 6.2 表格实现。✔
+- 预算：章数 / LLM 调用数 / 时长上限，耗尽即暂停（G2 的半自动批大小并入章数上限）。✔
+
+**与方案的偏差（有意为之，已记录）**：
+1. **章节 python 步骤未实现**：W1–W4、W9、W11、W14 注册为 `blocked`（错误信息提示 M3 实现），不做假成功。M1 能真实跑通的是 P0–P2 前三章设计；章节写作链路由 M3 接上。
+2. **W5–W7 未展开**：推演 / 场景 / 对话属于 M3/M4 范围，本期不进入流水线。
+3. **`model_overrides` 未接入**：设置里已有字段并校验，但 `FrameworkInvoker` 暂未使用；步骤×闸门矩阵 UI（M4）与模型覆盖一并接入。`max_turns_overrides` 已接入。
+4. **`run_novel` 未登记为 daemon 入口**：它需要 `--workspace`，daemon 调用 entrypoint 不会传参。批量入口放到 M5 的 `advance_all_auto`。
+5. **真实 LLM 未验证**：`FrameworkInvoker` 已对照 world_simulator 的 skill_agent 用法，且 `WorkflowStore` 能解析 `skill_step.yaml`（属性 `max_turns` / `timeout` / `result_file` 均存在）；端到端需要本机运行 `entrypoints/smoke_real_llm.py`。
+6. **跨进程并发**：状态写入同进程加锁，跨进程以"worker 每轮重读盘"收敛；极端竞争下以后写者为准（已在 PROJECT.md 注明）。
+
+**需要你重点观察的点（真实 LLM 下）**：
+- skill 是否真的按统一路径表写文件（而不是 skill 原文里的旧路径）；
+- 回执 `receipt.json` 是否在第一次就合格，重试频率是否可接受；
+- `plan_blueprint` 的 `needs_user` 是否能正常挂起并被 `answer` 续上；
+- 一次规划的 token 消耗（`_studio/usage.jsonl` 不记 token 数，目前只记耗时与结果，需要的话 M5 补充）。
 
 交付节奏（Q10）：每期完成后更新文档、跑测试、打包 diff zip（保持目录结构，可直接覆盖仓库），等用户确认再进入下一期。

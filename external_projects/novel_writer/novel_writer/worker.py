@@ -1,0 +1,192 @@
+"""novel_writer/worker.py — 后台 worker 循环（方案 6.5）。
+
+循环每一轮：读控制指令 → 重新展开流水线 → 标脏 → 确定前沿 → 查闸门/预算 → 执行 → 落盘。
+  * 停止点只在两步之间（协作式）；单步受 workflow 的 timeout / max_turns 约束。
+  * 任何一步需要人（waiting_review / waiting_user / manual 闸门 / 失败 / 阻塞 / 预算耗尽）都会让 worker 退出，
+    并在 `worker.json` 的 reason 里写明原因；预算耗尽是**暂停**，不是失败，可续跑。
+  * 启动时若发现遗留的 running 步骤（上一个 worker 被杀），一律置为 interrupted 再继续。
+  * 同一本书同一时刻只允许一个存活 worker（心跳 90 秒内视为存活）。
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+import traceback
+from typing import Any, Callable, Dict, List, Optional
+
+from novel_writer import gates as G
+from novel_writer import pipeline as P
+from novel_writer import runner as R
+from novel_writer import state as st
+from novel_writer import steps as S
+from novel_writer.workspace import Workspace
+
+MODES = ("until_gate", "single")
+HEARTBEAT_INTERVAL_SEC = 15.0
+
+
+class Budget:
+    """每次 worker 运行的预算（方案 6.3 第 5 条：耗尽 = 暂停）。None 表示不限。"""
+
+    def __init__(self, settings: Dict[str, Any], *, clock: Callable[[], float] = time.monotonic) -> None:
+        b = settings.get("budget") or {}
+        self.max_chapters = b.get("max_chapters_per_run")
+        if settings.get("gear") == "G2" and settings.get("semi_auto_batch_chapters"):
+            batch = int(settings["semi_auto_batch_chapters"])
+            self.max_chapters = min(self.max_chapters, batch) if self.max_chapters else batch
+        self.max_calls = b.get("max_llm_calls_per_run")
+        self.max_minutes = b.get("max_wall_minutes_per_run")
+        self.chapters: set = set()
+        self.calls = 0
+        self._clock = clock
+        self._t0 = clock()
+
+    def check(self, step: S.StepDef) -> Optional[str]:
+        if self.max_minutes and (self._clock() - self._t0) / 60.0 >= self.max_minutes:
+            return "budget_time"
+        if P.is_chapter_start(step) and step.chapter not in self.chapters:
+            if self.max_chapters and len(self.chapters) >= self.max_chapters:
+                return "budget_chapters"
+        if step.counts_as_llm_call and self.max_calls and self.calls >= self.max_calls:
+            return "budget_calls"
+        return None
+
+    def record(self, step: S.StepDef) -> None:
+        if P.is_chapter_start(step):
+            self.chapters.add(step.chapter)
+        if step.counts_as_llm_call:
+            self.calls += 1
+
+
+class _Heartbeat:
+    """执行一步期间定期刷新 worker.json 心跳，避免长步骤被误判为孤儿。"""
+
+    def __init__(self, ws: Workspace, interval: float) -> None:
+        self._ws = ws
+        self._interval = interval
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+
+    def _loop(self) -> None:
+        while not self._stop.wait(self._interval):
+            try:
+                st.heartbeat(self._ws)
+            except OSError:
+                pass
+
+    def __enter__(self) -> "_Heartbeat":
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self._stop.set()
+        self._thread.join(timeout=2)
+
+
+def run_worker(
+    ws: Workspace,
+    *,
+    mode: str = "until_gate",
+    invoker: Optional[R.Invoker] = None,
+    handlers: Optional[Dict[str, R.PyHandler]] = None,
+    heartbeat_interval: float = HEARTBEAT_INTERVAL_SEC,
+    max_steps: Optional[int] = None,
+) -> Dict[str, Any]:
+    """运行 worker 直到需要人介入、完成、暂停或停止。返回本次运行的摘要（不抛异常）。"""
+    if mode not in MODES:
+        return {"ok": False, "reason": "invalid_mode", "error": f"未知模式 {mode!r}，可选 {list(MODES)}"}
+    if not ws.is_initialized():
+        return {"ok": False, "reason": "not_initialized", "error": f"不是已初始化的工作目录：{ws.root}"}
+    if not st.acquire_worker(ws, mode=mode):
+        return {"ok": False, "reason": "already_running", "error": "该小说已有存活的 worker"}
+
+    executed: List[Dict[str, Any]] = []
+    stale_all: List[str] = []
+    orphans: List[str] = []
+    reason = "completed"
+    error: Optional[str] = None
+    try:
+        with _Heartbeat(ws, heartbeat_interval):
+            st.write_control(ws, command="run", mode=mode)
+            orphans.extend(st.mark_orphans_interrupted(ws))
+            budget = Budget(ws.settings())
+            reason = _loop(ws, mode=mode, invoker=invoker, handlers=handlers, budget=budget,
+                           executed=executed, stale_all=stale_all, max_steps=max_steps)
+    except Exception as exc:  # noqa: BLE001 - worker 顶层兜底，原因写入 worker.json
+        reason = "error"
+        error = f"{type(exc).__name__}: {exc}"
+        st.append_usage(ws, {"worker_error": error, "traceback": traceback.format_exc()[-2000:]})
+    finally:
+        st.release_worker(ws, reason)
+        control = st.read_control(ws)
+        if control.get("command") in ("pause", "stop"):
+            st.write_control(ws, command="none")
+
+    result: Dict[str, Any] = {
+        "ok": error is None,
+        "reason": reason,
+        "executed": executed,
+        "stale": stale_all,
+        "orphans": orphans,
+        "mode": mode,
+    }
+    if error:
+        result["error"] = error
+    return result
+
+
+def _loop(
+    ws: Workspace, *, mode: str, invoker: Optional[R.Invoker], handlers: Optional[Dict[str, R.PyHandler]],
+    budget: Budget, executed: List[Dict[str, Any]], stale_all: List[str], max_steps: Optional[int],
+) -> str:
+    while True:
+        if max_steps is not None and len(executed) >= max_steps:
+            return "max_steps"
+        control = st.read_control(ws)
+        if control.get("command") == "stop":
+            return "stopped"
+        if control.get("command") == "pause":
+            return "paused"
+
+        settings = ws.settings()
+        plan = P.build_plan(ws)
+        stale_all.extend(st.mark_stale(ws, plan))
+        statuses = {sid: entry.get("status", st.ST_PENDING) for sid, entry in st.load_state(ws)["steps"].items()}
+        index = P.plan_index(plan)
+
+        requested = control.get("run_step")
+        target: Optional[S.StepDef] = None
+        if requested and requested in index and statuses.get(requested, st.ST_PENDING) not in st.FINISHED_STATUSES:
+            target = index[requested]
+        if target is None:
+            target = P.frontier(plan, statuses, settings)
+        if target is None:
+            return "completed"
+
+        status = statuses.get(target.id, st.ST_PENDING)
+        if status in (st.ST_WAITING_REVIEW, st.ST_WAITING_USER, st.ST_FAILED, st.ST_BLOCKED, st.ST_RUNNING):
+            return status
+
+        decision = G.resolve_gate(target, settings)
+        if decision.gate == G.GATE_SKIP:
+            st.update_step(ws, target.id, status=st.ST_SKIPPED, note="闸门为 skip，已跳过")
+            continue
+        is_requested = target.id == requested
+        if decision.gate == G.GATE_MANUAL and not is_requested:
+            return "manual"
+
+        blocked_by = budget.check(target)
+        if blocked_by:
+            return blocked_by
+
+        if is_requested:
+            st.write_control(ws, run_step=None)
+        status_after = R.run_step(ws, target, invoker=invoker, settings=settings, handlers=handlers)
+        budget.record(target)
+        executed.append({"step": target.id, "status": status_after})
+
+        if status_after in (st.ST_FAILED, st.ST_BLOCKED, st.ST_WAITING_REVIEW, st.ST_WAITING_USER):
+            return status_after
+        if mode == "single":
+            return "single_done"

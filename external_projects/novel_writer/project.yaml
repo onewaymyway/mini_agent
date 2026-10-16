@@ -4,8 +4,9 @@
 # （对齐 src/mini_agent/external_projects/manifest.py 的实际校验规则）。
 #
 # 里程碑进度（next_doc/novel_writer_external_project_plan.md 第 11 节）：
-#   M0（当前）：create_novel / list_novels / health
-#   M1：run_novel（worker，运行一本书到下一个检查点/指定章数）
+#   M0：create_novel / list_novels / health
+#   M1（已完成，待确认）：引擎与 worker 已实现，但 run_novel 需要 --workspace 参数，
+#       由 UI/CLI（tool_api.run_novel）拉起，**未**登记为 daemon 入口。
 #   M5：advance_all_auto（批量推进所有自动挡小说，cron 默认关闭，opt-in）
 
 name: novel_writer

@@ -59,6 +59,9 @@ PATHS: Dict[str, str] = {
     # 核心蓝图
     "blueprint": "大纲规划/小说蓝图.json",
     "blueprint_readable": "大纲规划/章节大纲.md",
+    "theme_design": "大纲规划/主题设计.md",
+    "pacing_design": "大纲规划/节奏规划.md",
+    "opening_design": "大纲规划/前三章开篇设计.md",
     # 人物设定
     "characters": "大纲规划/人物设定/characters.json",
     "behavior_index": "大纲规划/人物设定/behavior_index.json",
@@ -88,6 +91,7 @@ PATHS: Dict[str, str] = {
     "chapter_drafts_dir": "正文/_drafts",
     # 一致性检查
     "review_report": "一致性检查/第{nn}章_检查报告.md",
+    "reader_report": "一致性检查/第{nn}章_读者体验报告.md",
     "act_health_report": "一致性检查/幕次健康报告/第{act}幕_健康报告.md",
     # 修订记录
     "revision_log": "修订记录/第{nn}章_修订记录.md",
