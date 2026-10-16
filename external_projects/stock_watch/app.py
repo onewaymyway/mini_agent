@@ -1394,6 +1394,13 @@ def render_telegraph_news(algo: Dict, manual: Dict):
                     # 翻页控制：只在底部显示，避免与顶部冲突导致按钮失效
                     _ps = st.selectbox("每页条数", options=[10, 20, 50, 100], index=2, key="telegraph_page_size")
                     total_pages = (len(sorted_analyses) + _ps - 1) // _ps
+                    # ⚠️ 必须在数据渲染之前从 session_state 读取 cur_page，
+                    # 否则 (cur_page-1)*_ps 会使用未定义变量报错
+                    cur_page = st.session_state.get("telegraph_cur_page", 1)
+                    if cur_page < 1:
+                        cur_page = 1
+                    elif total_pages > 0 and cur_page > total_pages:
+                        cur_page = total_pages
                     start = (cur_page - 1) * _ps
                     page_items = sorted_analyses[start:start + _ps]
 
@@ -1428,19 +1435,13 @@ def render_telegraph_news(algo: Dict, manual: Dict):
 
                             st.markdown(f"**分析理由**:\n{item.get('reasoning', '')}")
 
-                    # 底部翻页控件（方便长列表时直接跳转）
-                    # 注意：每次 rerun 都从 session_state 重新读取 cur_page，
-                    # 否则按钮点击后局部变量 cur_page 仍是旧值，导致需要点两下才生效。
-                    cur_page = st.session_state.get("telegraph_cur_page", 1)
-                    if cur_page < 1:
-                        cur_page = 1
-                    elif total_pages > 0 and cur_page > total_pages:
-                        cur_page = total_pages
+                    # 底部翻页控件
                     col_bottom_prev, col_bottom_num, col_bottom_next, col_bottom_info = st.columns([1, 2, 1, 2])
                     with col_bottom_prev:
                         if st.button("◀ 上一页", disabled=(cur_page <= 1), key="tprev_btn_bottom"):
                             cur_page -= 1
                             st.session_state["telegraph_cur_page"] = cur_page
+                            st.rerun()
                     with col_bottom_num:
                         new_page_bottom = st.number_input(
                             "页码",
@@ -1454,11 +1455,12 @@ def render_telegraph_news(algo: Dict, manual: Dict):
                         )
                         if new_page_bottom != cur_page:
                             st.session_state["telegraph_cur_page"] = new_page_bottom
-                            cur_page = new_page_bottom
+                            st.rerun()
                     with col_bottom_next:
                         if st.button("下一页 ▶", disabled=(cur_page >= total_pages), key="tnext_btn_bottom"):
                             cur_page += 1
                             st.session_state["telegraph_cur_page"] = cur_page
+                            st.rerun()
                     with col_bottom_info:
                         st.caption(f"第 {cur_page} / {total_pages} 页  （共 {len(sorted_analyses)} 条）")
             except Exception as e:
@@ -1726,19 +1728,13 @@ def render_telegraph_news(algo: Dict, manual: Dict):
                 with st.expander(f"{i}. [{item.get('time', '')}] {status_tag} {item.get('content', '')[:60]}..."):
                     st.markdown(item.get('content', ''))
 
-            # 底部翻页控件（方便长列表时直接跳转）
-            # 注意：每次 rerun 都从 session_state 重新读取 cur_page2，
-            # 否则按钮点击后局部变量 cur_page2 仍是旧值，导致需要点两下才生效。
-            cur_page2 = st.session_state.get("telegraph_raw_cur_page", 1)
-            if cur_page2 < 1:
-                cur_page2 = 1
-            elif total_pages2 > 0 and cur_page2 > total_pages2:
-                cur_page2 = total_pages2
+            # 底部翻页控件
             col_bottom_prev2, col_bottom_num2, col_bottom_next2, col_bottom_info2 = st.columns([1, 2, 1, 2])
             with col_bottom_prev2:
                 if st.button("◀ 上一页", disabled=(cur_page2 <= 1), key="trprev_btn_bottom"):
                     cur_page2 -= 1
                     st.session_state["telegraph_raw_cur_page"] = cur_page2
+                    st.rerun()
             with col_bottom_num2:
                 new_page_bottom2 = st.number_input(
                     "页码",
@@ -1752,11 +1748,12 @@ def render_telegraph_news(algo: Dict, manual: Dict):
                 )
                 if new_page_bottom2 != cur_page2:
                     st.session_state["telegraph_raw_cur_page"] = new_page_bottom2
-                    cur_page2 = new_page_bottom2
+                    st.rerun()
             with col_bottom_next2:
                 if st.button("下一页 ▶", disabled=(cur_page2 >= total_pages2), key="trnext_btn_bottom"):
                     cur_page2 += 1
                     st.session_state["telegraph_raw_cur_page"] = cur_page2
+                    st.rerun()
             with col_bottom_info2:
                 st.caption(f"第 {cur_page2} / {total_pages2} 页  （共 {n_total} 条）")
 
