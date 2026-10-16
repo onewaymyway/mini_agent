@@ -47,7 +47,7 @@ class SafeRotatingFileHandler(logging.handlers.RotatingFileHandler):
         encoding: Optional[str] = "utf-8",
         *,
         rotate_retries: int = 3,
-        rotate_retry_delay: float = 0.05,
+        rotate_retry_delay: float = 0.2,
         rotate_cooldown: float = 30.0,
         open_retries: int = 3,
         open_retry_delay: float = 0.02,

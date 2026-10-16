@@ -17,7 +17,7 @@ daemon 运行时，另开一个非 daemon 的 mini_agent 进程，一旦发生�
 新增 `src/mini_agent/log_handlers.py::SafeRotatingFileHandler`：
 - 写入时才打开文件，写完立即关闭（持有时间缩短到毫秒级）。
 - 轮转：先把当前文件改名为 `<file>.<pid>.rolling`（唯一可能被占用的一步），成功后才
-  移动旧备份；改名遇 `PermissionError` 重试 3 次（间隔 50ms），仍失败则跳过轮转继续
+  移动旧备份；改名遇 `PermissionError` 重试 3 次（间隔 200ms），仍失败则跳过轮转继续
   追加，并通过回调转存到 `logging_failures.log`。
 - 轮转失败后 30 秒冷却，避免文件持续超限时每条日志都额外阻塞。
 - 重试前复查文件大小，避免别的进程刚轮转完又把新的小文件轮转掉。
