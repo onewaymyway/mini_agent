@@ -1,6 +1,6 @@
 # novel_writer 外部项目设计方案（小说生成 + Streamlit 操作界面）
 
-> 状态：**方案草稿，待确认**。确认前不改任何代码/文件。
+> 状态：**已确认（2026-10-16），按 M0→M5 分期实施**。Q1–Q10 全部按推荐项确认，见第 10 节与第 11 节实施进度。
 > 落地位置（确认后）：`external_projects/novel_writer/`，本文件同步放入 `next_doc/novel_writer_external_project_plan.md`。
 > 依据：`skills.zip`（23 个小说创作 skill）、`external_projects/world_simulator`（参考实现）、`mini_agent` 的 `workflow` / `external_projects` 模块。
 
@@ -403,9 +403,9 @@ docs/  tests/  data/(gitignore)
 
 ---
 
-## 10. 待你确认的决策（括号内为我的推荐，全部同意可直接回复"确认"）
+## 10. 决策清单（2026-10-16 已全部按推荐确认）
 
-| # | 问题 | 推荐 |
+| # | 问题 | 确认结果 |
 |---|---|---|
 | Q1 | 项目名与位置 | `external_projects/novel_writer`（Python 包同名） |
 | Q2 | 工作目录默认位置 | `data/novels/<书名>_<时间戳>/`，创建时可改为任意绝对路径 |
@@ -417,3 +417,19 @@ docs/  tests/  data/(gitignore)
 | Q8 | UI 组织 | `app.py` 仅作入口，页面拆到 `ui/` 多模块（避免重蹈 8000 行单文件） |
 | Q9 | 文档与注释语言 | 中文（与你既有偏好一致） |
 | Q10 | 交付节奏 | 每个 M 期完成后更新文档、跑测试并打包 diff zip，等你确认再进入下一期 |
+
+---
+
+## 11. 实施进度
+
+| 期 | 状态 | 备注 |
+|---|---|---|
+| M0 脚手架 | **已完成（2026-10-17）** | 骨架、23 个 skill 原样落位、workspace/settings/shelf/skills_catalog/tool_api、3 个入口、简版界面、39 个测试通过；project.yaml 已通过框架 load_manifest 校验 |
+| M1 引擎内核 | 未开始 | |
+| M2 规划阶段 + UI 第一批 | 未开始 | |
+| M3 章节循环 + UI 第二批 | 未开始 | |
+| M4 幕末/修订/灵感/度量/设置矩阵 | 未开始 | |
+| M5 自动模式完善 | 未开始 | |
+| M6 质量增强（可选） | 待议 | 不属于已确认范围 |
+
+交付节奏（Q10）：每期完成后更新文档、跑测试、打包 diff zip（保持目录结构，可直接覆盖仓库），等用户确认再进入下一期。

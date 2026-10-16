@@ -1,0 +1,15 @@
+# novel_writer 的本地状态/密钥文件，不应该进版本库
+.venv/
+__pycache__/
+*.pyc
+config/secrets.local.yaml
+.agent/run_status.jsonl
+.agent/improvement_backlog.jsonl
+data/*.json
+data/*.jsonl
+reports/*
+!reports/.gitkeep
+# 小说工作目录（每本书的全部内容）与书架索引
+data/novels/
+data/shelf.json
+.agent/workflow_sessions
