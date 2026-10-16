@@ -270,7 +270,7 @@ def render_overview(algo: Dict, manual: Dict, summary: dict):
         # 显示最近几条
         show_cols = [c for c in ["code", "name", "state", "entered_at", "note"] if c in tracking_df.columns]
         latest = tracking_df.tail(10)[show_cols]
-        st.dataframe(latest, use_container_width=True, hide_index=True)
+        st.dataframe(latest, width="stretch", hide_index=True)
     else:
         st.info("暂无状态变更记录")
 
@@ -361,13 +361,13 @@ def render_manual_pool(algo: Dict, manual: Dict):
                     "最近活跃": entry.last_seen[:16] if entry.last_seen else "",
                 })
             df = pd.DataFrame(rows)
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(df, width="stretch", hide_index=True)
 
             # 状态筛选
             selected = st.multiselect("筛选状态", POOL_STATES, default=POOL_STATES)
             if selected != POOL_STATES:
                 df = df[df["状态"].isin(selected)]
-                st.dataframe(df, use_container_width=True, hide_index=True)
+                st.dataframe(df, width="stretch", hide_index=True)
 
             # 状态修改（点击选中后直接显示编辑面板）
             st.markdown("---")
@@ -398,7 +398,7 @@ def render_manual_pool(algo: Dict, manual: Dict):
                     
                     col_btn1, col_btn2 = st.columns([1, 2])
                     with col_btn1:
-                        if st.button("✅ 保存", type="primary", use_container_width=True, key=f"save_{chg_code}"):
+                        if st.button("✅ 保存", type="primary", width="stretch", key=f"save_{chg_code}"):
                             now = datetime.now().isoformat()
                             old = entry.state
                             entry.state = new_state
@@ -455,7 +455,7 @@ def render_algo_pool(algo: Dict, manual: Dict):
         s = filter_search.upper()
         df = df[df["代码"].str.contains(s, na=False) | df["名称"].str.contains(s, na=False)]
 
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(df, width="stretch", hide_index=True)
 
     # 选中标的的详情
     if not df.empty:
@@ -474,7 +474,7 @@ def render_algo_pool(algo: Dict, manual: Dict):
                 {"时间": h.entered_at[:19], "状态": h.state, "原因": h.note}
                 for h in entry.state_history
             ])
-            st.dataframe(hist_df, use_container_width=True, hide_index=True)
+            st.dataframe(hist_df, width="stretch", hide_index=True)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -819,7 +819,7 @@ def render_signals(algo: Dict, manual: Dict):
         # 选择要显示的列
         display_cols = ["code", "name", "type", "score", "state", "signal_sources", "signal_reasons", "updated_at"]
         available_cols = [c for c in display_cols if c in signal_results.columns]
-        st.dataframe(signal_results[available_cols], use_container_width=True, hide_index=True)
+        st.dataframe(signal_results[available_cols], width="stretch", hide_index=True)
 
         # 信号来源统计
         if "signal_sources" in signal_results.columns:
@@ -839,7 +839,7 @@ def render_signals(algo: Dict, manual: Dict):
     with btn_col1:
         st.markdown("**操作**")
     with btn_col2:
-        run_clicked = st.button("🔍 运行信号扫描", key="run_signal_scan", use_container_width=True, type="primary")
+        run_clicked = st.button("🔍 运行信号扫描", key="run_signal_scan", width="stretch", type="primary")
 
     # 输出区放在列外，占据完整宽度
     render_script_output("signals", SIGNAL_SCAN_SPEC if run_clicked else None)
@@ -858,10 +858,10 @@ def render_kline_viewer(algo: Dict, manual: Dict):
     c1, c2 = st.columns(2)
     clicked: Optional[ScriptSpec] = None
     with c1:
-        if st.button("🔄 运行热点扫描", key="kline_run_hotlist", use_container_width=True):
+        if st.button("🔄 运行热点扫描", key="kline_run_hotlist", width="stretch"):
             clicked = HOTLIST_SCAN_SPEC
     with c2:
-        if st.button("📊 运行 K 线批量生成", key="kline_run_batch", use_container_width=True):
+        if st.button("📊 运行 K 线批量生成", key="kline_run_batch", width="stretch"):
             clicked = KLINE_BATCH_SPEC
     render_script_output("kline", clicked)
 
@@ -869,7 +869,7 @@ def render_kline_viewer(algo: Dict, manual: Dict):
     st.markdown("---")
     st.subheader("🗑️ 清理历史 K 线数据")
     st.caption("一键删除除最新日期外的所有 K 线图数据，释放磁盘空间。")
-    if st.button("✅ 保留最新日期，删除其他所有 K 线数据", key="kline_cleanup_btn", use_container_width=True):
+    if st.button("✅ 保留最新日期，删除其他所有 K 线数据", key="kline_cleanup_btn", width="stretch"):
         deleted_count = 0
         deleted_dirs: list[str] = []
         for pool_type in ("algo", "manual"):
@@ -943,7 +943,7 @@ def _kline_detail_body(png_path: str, pool_type: str) -> None:
     st.subheader(f"{name}（{code}）")
 
     if png.exists():
-        st.image(str(png), use_container_width=True)  # 鼠标悬停图片右上角可再全屏
+        st.image(str(png), width="stretch")  # 鼠标悬停图片右上角可再全屏
         with open(png, "rb") as f:
             st.download_button("⬇️ 下载原图", f.read(), file_name=png.name, mime="image/png",
                                key=f"dl_{png.name}")
@@ -977,7 +977,7 @@ def _kline_detail_body(png_path: str, pool_type: str) -> None:
     with c2:
         note = st.text_input("变更原因（可选）", key=f"dlg_note_{code}")
 
-    if st.button("✅ 保存状态", type="primary", use_container_width=True, key=f"dlg_save_{code}"):
+    if st.button("✅ 保存状态", type="primary", width="stretch", key=f"dlg_save_{code}"):
         path = MANUAL_POOL_PATH if pool_key == "manual" else ALGO_POOL_PATH
         pool = pools[pool_key]
         old = entry.state
@@ -1010,7 +1010,7 @@ else:
 
 def _open_kline_detail(png: Path, pool_type: str, key: str) -> None:
     """渲染「放大 / 设置状态」按钮；点击后弹窗（旧版 streamlit 退化为内联展开）。"""
-    if st.button("🔍 放大 / 设置状态", key=key, use_container_width=True):
+    if st.button("🔍 放大 / 设置状态", key=key, width="stretch"):
         if _kline_detail_dialog is not None:
             _kline_detail_dialog(str(png), pool_type)
         else:
@@ -1084,7 +1084,7 @@ def _render_kline_gallery(all_codes: Dict, manual: Dict) -> None:
             return
         kline_file = date_dir / f"{selected_code}.png"
         if kline_file.exists():
-            st.image(str(kline_file), use_container_width=True)
+            st.image(str(kline_file), width="stretch")
             _m = read_kline_meta(kline_file)
             st.caption(
                 f"来源: {pool_type} 池 | 日期: {selected_date} | 文件: {kline_file.name}"
@@ -1100,7 +1100,7 @@ def _render_kline_gallery(all_codes: Dict, manual: Dict) -> None:
         cols = st.columns(min(4, len(png_files)))
         for i, pf in enumerate(png_files):
             with cols[i % 4]:
-                st.image(str(pf), use_container_width=True)
+                st.image(str(pf), width="stretch")
                 _ent = all_codes.get(_code_from_png(pf))
                 _src = read_kline_meta(pf).get("source", "?")
                 st.caption(f"{pf.stem} | {_state_label(_ent.state) if _ent else '不在池中'} | {_src}")
@@ -1131,7 +1131,7 @@ def _render_kline_gallery(all_codes: Dict, manual: Dict) -> None:
         kline_file = get_kline_file(code, pool_type, adjust=adjust)
 
         if kline_file and kline_file.exists():
-            st.image(str(kline_file), use_container_width=True)
+            st.image(str(kline_file), width="stretch")
             _m = read_kline_meta(kline_file)
             _act = _m.get("adjust_actual")
             _warn = f"（⚠️ 实际为 {_act}，数据源不支持复权）" if _act and _act != adjust else ""
@@ -1172,7 +1172,7 @@ def render_source_health():
         display_cols += ["ok", "error", time_col]
     else:
         display_cols += [time_col]
-    st.dataframe(latest[display_cols], use_container_width=True, hide_index=True)
+    st.dataframe(latest[display_cols], width="stretch", hide_index=True)
 
     # 近期错误趋势
     st.subheader("📉 近期错误趋势（最近24小时）")
@@ -1246,7 +1246,7 @@ def _screener_tab(key: str, title: str, description: str, script_path: str,
         if summary:
             st.caption(summary)
         # 显示完整 DataFrame 表格
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width="stretch", hide_index=True)
         st.divider()
         # 为每行提供"加入手动池"按钮
         for idx, row in df.iterrows():
@@ -1807,7 +1807,7 @@ def render_telegraph_news(algo: Dict, manual: Dict):
         st.subheader("手动触发扫描")
 
         # 直接调用现有的脚本运行函数
-        clicked = st.button("🚀 立即运行扫描", type="primary", use_container_width=True)
+        clicked = st.button("🚀 立即运行扫描", type="primary", width="stretch")
         render_script_output("telegraph", TELEGRAPH_SCAN_SPEC if clicked else None)
 
 
@@ -1837,7 +1837,7 @@ def main():
         )
         st.markdown("---")
         # 刷新按钮
-        if st.button("🔄 刷新数据", use_container_width=True):
+        if st.button("🔄 刷新数据", width="stretch"):
             st.cache_data.clear()
             st.rerun()
 
