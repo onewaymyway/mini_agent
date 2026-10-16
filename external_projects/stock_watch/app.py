@@ -1441,7 +1441,6 @@ def render_telegraph_news(algo: Dict, manual: Dict):
                         if st.button("◀ 上一页", disabled=(cur_page <= 1), key="tprev_btn_bottom"):
                             cur_page -= 1
                             st.session_state["telegraph_cur_page"] = cur_page
-                            st.rerun()
                     with col_bottom_num:
                         new_page_bottom = st.number_input(
                             "页码",
@@ -1455,12 +1454,10 @@ def render_telegraph_news(algo: Dict, manual: Dict):
                         )
                         if new_page_bottom != cur_page:
                             st.session_state["telegraph_cur_page"] = new_page_bottom
-                            st.rerun()
                     with col_bottom_next:
                         if st.button("下一页 ▶", disabled=(cur_page >= total_pages), key="tnext_btn_bottom"):
                             cur_page += 1
                             st.session_state["telegraph_cur_page"] = cur_page
-                            st.rerun()
                     with col_bottom_info:
                         st.caption(f"第 {cur_page} / {total_pages} 页  （共 {len(sorted_analyses)} 条）")
             except Exception as e:
@@ -1734,7 +1731,6 @@ def render_telegraph_news(algo: Dict, manual: Dict):
                 if st.button("◀ 上一页", disabled=(cur_page2 <= 1), key="trprev_btn_bottom"):
                     cur_page2 -= 1
                     st.session_state["telegraph_raw_cur_page"] = cur_page2
-                    st.rerun()
             with col_bottom_num2:
                 new_page_bottom2 = st.number_input(
                     "页码",
@@ -1748,12 +1744,10 @@ def render_telegraph_news(algo: Dict, manual: Dict):
                 )
                 if new_page_bottom2 != cur_page2:
                     st.session_state["telegraph_raw_cur_page"] = new_page_bottom2
-                    st.rerun()
             with col_bottom_next2:
                 if st.button("下一页 ▶", disabled=(cur_page2 >= total_pages2), key="trnext_btn_bottom"):
                     cur_page2 += 1
                     st.session_state["telegraph_raw_cur_page"] = cur_page2
-                    st.rerun()
             with col_bottom_info2:
                 st.caption(f"第 {cur_page2} / {total_pages2} 页  （共 {n_total} 条）")
 
