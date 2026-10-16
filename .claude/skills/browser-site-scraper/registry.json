@@ -43,8 +43,8 @@
       ]
     },
     "github": {
-      "status": "probation",
-      "status_changed_at": "2026-09-20 10:46:50",
+      "status": "trusted",
+      "status_changed_at": "2026-10-16 04:05:59",
       "intent_schema": {
         "type": "object",
         "required": [
@@ -56,11 +56,11 @@
           }
         }
       },
-      "success_count": 2,
-      "fail_count": 1,
+      "success_count": 4,
+      "fail_count": 2,
       "consecutive_failures": 0,
-      "last_success": "2026-09-20 10:53:29",
-      "last_failure": "2026-09-20 10:47:02",
+      "last_success": "2026-10-16 09:12:44",
+      "last_failure": "2026-10-16 04:20:20",
       "available_tiers": [
         "script"
       ]
@@ -107,6 +107,27 @@
       "consecutive_failures": 0,
       "last_success": null,
       "last_failure": null
+    },
+    "raw": {
+      "status": "probation",
+      "status_changed_at": "2026-10-16 09:10:24",
+      "intent_schema": {
+        "type": "object",
+        "required": [
+          "results"
+        ],
+        "properties": {
+          "results": {
+            "type": "array"
+          }
+        }
+      },
+      "success_count": 0,
+      "fail_count": 0,
+      "consecutive_failures": 0,
+      "last_success": null,
+      "last_failure": null,
+      "execution_tier": "skill_only"
     }
   }
 }

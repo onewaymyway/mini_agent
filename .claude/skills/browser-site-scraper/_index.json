@@ -54,6 +54,16 @@
           "抓取free-proxy-list.net的代理列表页面内容"
         ]
       }
+    },
+    {
+      "member_id": "raw",
+      "description": "探索自动生成(playbook): 从freeSub仓库README中提取所有订阅URL链接，包括sing-box.json、clash.yaml、v2ra",
+      "match": {
+        "domain_pattern": "*.raw.githubusercontent.com*",
+        "keyword": [
+          "从freeSub仓库README中提取所有订阅URL链接，包"
+        ]
+      }
     }
   ]
 }
