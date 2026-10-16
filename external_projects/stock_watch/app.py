@@ -1320,6 +1320,95 @@ def render_screener(algo: Dict, manual: Dict):
                       "entrypoints/run_advanced_screener.py", manual=manual)
 
 
+# ─────────────────────────────────────────────────────────────
+# 翻页公共逻辑（新浪 7x24 的「最新分析」「原始新闻」共用）
+# ─────────────────────────────────────────────────────────────
+# 设计要点（修复"下一页要点两下 / 页码无越界保护"）：
+# 1. 翻页按钮/页码输入框一律用 on_click / on_change 回调改页码。
+#    回调在"脚本重新执行之前"运行，所以本轮渲染内容时读到的就是最新页码；
+#    旧写法在按钮 if 分支里改 session_state，此时内容早已按旧页码渲染完，
+#    要等下一次交互才生效，表现为"要点两下"。
+# 2. 页码有两份状态：逻辑页码(page_key) 与 页码输入框自身的 widget 状态(input_key)。
+#    必须保持二者同步，否则输入框里的旧值会在下一轮把页码改回去。
+# 3. 越界保护集中在 _pager_clamp：每轮渲染内容之前先夹到 [1, total_pages]，
+#    并把夹紧后的值写回两份状态（数据变少、换每页条数、换筛选后都不会残留越界值）。
+
+def _pager_total_pages(total_items: int, page_size: int) -> int:
+    """总页数，至少为 1，避免空数据时出现 0 页。"""
+    return max(1, (total_items + page_size - 1) // page_size)
+
+
+def _pager_clamp(page_key: str, input_key: str, total_pages: int) -> int:
+    """渲染内容之前调用：夹紧页码并写回状态，返回本轮要展示的页码。"""
+    try:
+        cur = int(st.session_state.get(page_key, 1))
+    except (TypeError, ValueError):
+        cur = 1
+    cur = min(max(cur, 1), total_pages)
+    st.session_state[page_key] = cur
+    # 输入框尚未在本轮创建，此时允许直接改它的状态；同步后不会再出现旧值覆盖
+    st.session_state[input_key] = cur
+    return cur
+
+
+def _pager_goto(page_key: str, input_key: str, target: int, total_pages: int) -> None:
+    """回调：跳到指定页（自动夹紧）。"""
+    target = min(max(int(target), 1), total_pages)
+    st.session_state[page_key] = target
+    st.session_state[input_key] = target
+
+
+def _pager_on_input(page_key: str, input_key: str, total_pages: int) -> None:
+    """回调：页码输入框被修改。"""
+    try:
+        target = int(st.session_state.get(input_key, 1))
+    except (TypeError, ValueError):
+        target = 1
+    _pager_goto(page_key, input_key, target, total_pages)
+
+
+def _pager_reset(page_key: str, input_key: str) -> None:
+    """回调：每页条数 / 筛选条件变化后回到第 1 页。"""
+    _pager_goto(page_key, input_key, 1, 1)
+
+
+def _render_pager_controls(page_key: str, input_key: str, key_prefix: str,
+                           cur_page: int, total_pages: int, total_items: int) -> None:
+    """底部翻页控件：上一页 / 页码输入 / 下一页 / 页码信息。"""
+    col_prev, col_num, col_next, col_info = st.columns([1, 2, 1, 2])
+    with col_prev:
+        st.button(
+            "◀ 上一页",
+            disabled=(cur_page <= 1),
+            key=f"{key_prefix}_prev_btn",
+            on_click=_pager_goto,
+            args=(page_key, input_key, cur_page - 1, total_pages),
+        )
+    with col_num:
+        # 不传 value：初始值来自 _pager_clamp 写入的 session_state，避免 Streamlit 的"双重赋值"警告
+        st.number_input(
+            "页码",
+            min_value=1,
+            max_value=total_pages,
+            step=1,
+            key=input_key,
+            label_visibility="collapsed",
+            on_change=_pager_on_input,
+            args=(page_key, input_key, total_pages),
+            width=80,
+        )
+    with col_next:
+        st.button(
+            "下一页 ▶",
+            disabled=(cur_page >= total_pages),
+            key=f"{key_prefix}_next_btn",
+            on_click=_pager_goto,
+            args=(page_key, input_key, cur_page + 1, total_pages),
+        )
+    with col_info:
+        st.caption(f"第 {cur_page} / {total_pages} 页  （共 {total_items} 条）")
+
+
 def render_telegraph_news(algo: Dict, manual: Dict):
     """新浪 7x24 新闻分析页面。"""
     from stock_watch.news_signals import (
@@ -1391,16 +1480,15 @@ def render_telegraph_news(algo: Dict, manual: Dict):
                 if not sorted_analyses:
                     st.warning("暂无分析记录")
                 else:
-                    # 翻页控制：只在底部显示，避免与顶部冲突导致按钮失效
-                    _ps = st.selectbox("每页条数", options=[10, 20, 50, 100], index=2, key="telegraph_page_size")
-                    total_pages = (len(sorted_analyses) + _ps - 1) // _ps
-                    # ⚠️ 必须在数据渲染之前从 session_state 读取 cur_page，
-                    # 否则 (cur_page-1)*_ps 会使用未定义变量报错
-                    cur_page = st.session_state.get("telegraph_cur_page", 1)
-                    if cur_page < 1:
-                        cur_page = 1
-                    elif total_pages > 0 and cur_page > total_pages:
-                        cur_page = total_pages
+                    # 翻页控制：每页条数变化时回到第 1 页；页码在渲染前统一夹紧
+                    _ps = st.selectbox(
+                        "每页条数", options=[10, 20, 50, 100], index=2,
+                        key="telegraph_page_size",
+                        on_change=_pager_reset,
+                        args=("telegraph_cur_page", "tpage_input_bottom"),
+                    )
+                    total_pages = _pager_total_pages(len(sorted_analyses), _ps)
+                    cur_page = _pager_clamp("telegraph_cur_page", "tpage_input_bottom", total_pages)
                     start = (cur_page - 1) * _ps
                     page_items = sorted_analyses[start:start + _ps]
 
@@ -1436,30 +1524,10 @@ def render_telegraph_news(algo: Dict, manual: Dict):
                             st.markdown(f"**分析理由**:\n{item.get('reasoning', '')}")
 
                     # 底部翻页控件
-                    col_bottom_prev, col_bottom_num, col_bottom_next, col_bottom_info = st.columns([1, 2, 1, 2])
-                    with col_bottom_prev:
-                        if st.button("◀ 上一页", disabled=(cur_page <= 1), key="tprev_btn_bottom"):
-                            cur_page -= 1
-                            st.session_state["telegraph_cur_page"] = cur_page
-                    with col_bottom_num:
-                        new_page_bottom = st.number_input(
-                            "页码",
-                            min_value=1,
-                            max_value=max(total_pages, 1),
-                            value=cur_page,
-                            step=1,
-                            key="tpage_input_bottom",
-                            label_visibility="collapsed",
-                            width=80,
-                        )
-                        if new_page_bottom != cur_page:
-                            st.session_state["telegraph_cur_page"] = new_page_bottom
-                    with col_bottom_next:
-                        if st.button("下一页 ▶", disabled=(cur_page >= total_pages), key="tnext_btn_bottom"):
-                            cur_page += 1
-                            st.session_state["telegraph_cur_page"] = cur_page
-                    with col_bottom_info:
-                        st.caption(f"第 {cur_page} / {total_pages} 页  （共 {len(sorted_analyses)} 条）")
+                    _render_pager_controls(
+                        "telegraph_cur_page", "tpage_input_bottom", "tele",
+                        cur_page, total_pages, len(sorted_analyses),
+                    )
             except Exception as e:
                 st.error(f"加载分析数据失败: {e}")
 
@@ -1693,6 +1761,8 @@ def render_telegraph_news(algo: Dict, manual: Dict):
             options=["全部", "已处理", "待处理"],
             key="telegraph_filter_option",
             label_visibility="collapsed",
+            on_change=_pager_reset,
+            args=("telegraph_raw_cur_page", "trpage_input_bottom"),
         )
 
         # 根据筛选显示对应列表
@@ -1710,14 +1780,15 @@ def render_telegraph_news(algo: Dict, manual: Dict):
             n_total = len(news_list)
             st.caption(f"共 {n_total} 条新闻（按时间倒序，最新在前）")
 
-            # 翻页控制
-            _ps2 = st.selectbox("每页条数", options=[10, 20, 50, 100], index=2, key="telegraph_raw_page_size")
-            total_pages2 = (n_total + _ps2 - 1) // _ps2
-            cur_page2 = st.session_state.get("telegraph_raw_cur_page", 1)
-            if cur_page2 < 1:
-                cur_page2 = 1
-            elif cur_page2 > total_pages2:
-                cur_page2 = total_pages2
+            # 翻页控制：每页条数变化时回到第 1 页；页码在渲染前统一夹紧
+            _ps2 = st.selectbox(
+                "每页条数", options=[10, 20, 50, 100], index=2,
+                key="telegraph_raw_page_size",
+                on_change=_pager_reset,
+                args=("telegraph_raw_cur_page", "trpage_input_bottom"),
+            )
+            total_pages2 = _pager_total_pages(n_total, _ps2)
+            cur_page2 = _pager_clamp("telegraph_raw_cur_page", "trpage_input_bottom", total_pages2)
             start2 = (cur_page2 - 1) * _ps2
             page_items2 = news_list[start2:start2 + _ps2]
             for i, item in enumerate(page_items2, start=start2 + 1):
@@ -1726,30 +1797,10 @@ def render_telegraph_news(algo: Dict, manual: Dict):
                     st.markdown(item.get('content', ''))
 
             # 底部翻页控件
-            col_bottom_prev2, col_bottom_num2, col_bottom_next2, col_bottom_info2 = st.columns([1, 2, 1, 2])
-            with col_bottom_prev2:
-                if st.button("◀ 上一页", disabled=(cur_page2 <= 1), key="trprev_btn_bottom"):
-                    cur_page2 -= 1
-                    st.session_state["telegraph_raw_cur_page"] = cur_page2
-            with col_bottom_num2:
-                new_page_bottom2 = st.number_input(
-                    "页码",
-                    min_value=1,
-                    max_value=max(total_pages2, 1),
-                    value=cur_page2,
-                    step=1,
-                    key="trpage_input_bottom",
-                    label_visibility="collapsed",
-                    width=80,
-                )
-                if new_page_bottom2 != cur_page2:
-                    st.session_state["telegraph_raw_cur_page"] = new_page_bottom2
-            with col_bottom_next2:
-                if st.button("下一页 ▶", disabled=(cur_page2 >= total_pages2), key="trnext_btn_bottom"):
-                    cur_page2 += 1
-                    st.session_state["telegraph_raw_cur_page"] = cur_page2
-            with col_bottom_info2:
-                st.caption(f"第 {cur_page2} / {total_pages2} 页  （共 {n_total} 条）")
+            _render_pager_controls(
+                "telegraph_raw_cur_page", "trpage_input_bottom", "traw",
+                cur_page2, total_pages2, n_total,
+            )
 
     # ── Tab 4: 手动触发 ──
     elif current_tab == 3:
