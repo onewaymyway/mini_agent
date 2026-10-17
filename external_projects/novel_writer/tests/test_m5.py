@@ -373,7 +373,8 @@ def test_adopting_marks_downstream_stale(tmp_path):
     run_worker(ws, mode="single", invoker=inv, handlers=DEFAULT_PY_HANDLERS, heartbeat_interval=0.01)
     # 审稿步骤已通过（记录了采用前的输入哈希）；采用候选稿改动了正文，它必须被标为需重跑
     review = by_id(ws)["ch01.review"]
-    st.update_step(ws, "ch01.review", status=st.ST_PASSED, input_hash=st.input_hash(ws, review))
+    st.update_step(ws, "ch01.review", status=st.ST_PASSED, input_hash=st.input_hash(ws, review),
+                   input_digests=st.input_digests(ws, review))
     assert tool_api.adopt_assist(str(ws.root), rid)["ok"]
     assert st.get_step_state(ws, "ch01.review")["status"] == st.ST_STALE
 

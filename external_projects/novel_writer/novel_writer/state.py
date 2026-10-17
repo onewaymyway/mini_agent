@@ -173,8 +173,7 @@ def mark_stale(ws: Workspace, plan: List[StepDef]) -> List[str]:
     自己的下游造成的（例如章节的状态同步改写了人物档案，而核查在它之前），不算上游变化，
     否则会出现「核查 → 同步 → 核查」的无限回路。
 
-    没有输入指纹记录的旧步骤只按整体哈希补记录/比对（升级后至多重跑一次，之后稳定）。
-    返回新标脏的步骤 id 列表。
+    没有逐文件指纹的旧记录只补录、不标脏（见下方注释）。返回新标脏的步骤 id 列表。
     """
     stale_ids: List[str] = []
     index = {step.id: i for i, step in enumerate(plan)}
@@ -188,16 +187,12 @@ def mark_stale(ws: Workspace, plan: List[StepDef]) -> List[str]:
                 continue
             recorded_digests = entry.get("input_digests")
             if recorded_digests is None:
-                current = input_hash(ws, step)
-                recorded = entry.get("input_hash")
-                if recorded is None:
-                    entry["input_hash"] = current
-                    entry["input_digests"] = input_digests(ws, step)
-                    changed = True
-                elif recorded != current:
-                    entry.update(status=ST_STALE, note="上游产物已变化，需要重跑", updated_at=now_iso())
-                    stale_ids.append(step.id)
-                    changed = True
+                # 旧版本的记录只有整体哈希，无法区分「上游真正变化」与「流水线自己后来的写入」。
+                # 这里只补录逐文件指纹、不标脏：宁可漏报一次，也不能因升级自动重跑（蓝图等步骤会覆盖全书规划）。
+                # 补录之后的变化会被正常检测。
+                entry["input_hash"] = input_hash(ws, step)
+                entry["input_digests"] = input_digests(ws, step)
+                changed = True
                 continue
             upstream_changed = False
             for rel_path, recorded_sha in recorded_digests.items():

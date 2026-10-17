@@ -78,7 +78,9 @@ def test_planning_view_and_chapter_edit_marks_stale(isolated_data):
     assert v["exists"] and len(v["chapters"]) == 4 and "李凌云" in v["main_characters"]
 
     # 先把 design_theme 标为已通过（它依赖蓝图）
-    st.update_step(ws, "design_theme", status=st.ST_PASSED, input_hash=st.input_hash(ws, P.build_plan(ws)[2]))
+    dt = P.build_plan(ws)[2]
+    st.update_step(ws, "design_theme", status=st.ST_PASSED, input_hash=st.input_hash(ws, dt),
+                   input_digests=st.input_digests(ws, dt))
     rows = [dict(c) for c in v["chapters"]]
     rows[0]["title"] = "新的开篇"
     rows[1]["characters_present"] = "李凌云、新角色"

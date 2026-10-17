@@ -128,12 +128,22 @@ def test_step_and_stage_overrides_take_effect(ws):
 
 def test_stale_marked_when_upstream_changes_and_legacy_steps_not_marked(ws):
     plan = P.build_plan(ws)
-    st.update_step(ws, "design_theme", status=st.ST_PASSED)  # 旧记录：没有 input_hash
+    st.update_step(ws, "design_theme", status=st.ST_PASSED)  # 旧记录：没有 input_hash / 逐文件指纹
     assert st.mark_stale(ws, plan) == []
     assert st.get_step_state(ws, "design_theme")["input_hash"]
+    assert st.get_step_state(ws, "design_theme")["input_digests"] is not None
     ws.path("blueprint").write_text(json.dumps(make_blueprint(4), ensure_ascii=False, indent=2) + " ", encoding="utf-8")
     assert st.mark_stale(ws, plan) == ["design_theme"]
     assert st.get_step_state(ws, "design_theme")["status"] == st.ST_STALE
+
+
+def test_legacy_record_with_changed_hash_is_not_marked_stale_on_upgrade(ws):
+    """升级兼容：旧版本记录的整体哈希与当前不一致（通常是流水线后来改写了输入），不能自动重跑。"""
+    plan = P.build_plan(ws)
+    st.update_step(ws, "plan_blueprint", status=st.ST_PASSED, input_hash="0" * 64)
+    assert st.mark_stale(ws, plan) == []
+    assert st.get_step_state(ws, "plan_blueprint")["status"] == st.ST_PASSED
+    assert st.get_step_state(ws, "plan_blueprint")["input_digests"] is not None
 
 
 def test_orphaned_running_step_is_interrupted_and_rerun(ws):
