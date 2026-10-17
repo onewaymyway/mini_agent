@@ -279,6 +279,8 @@ def _yahoo_kline_fetch(code_6digit: str, days_back: int = 1500) -> Optional[pd.D
         for i, ts in enumerate(timestamps):
             if i >= len(use_close):
                 break
+            if use_close[i] is None:
+                continue
             d = _dt.datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
             rows.append({
                 "date": d,
