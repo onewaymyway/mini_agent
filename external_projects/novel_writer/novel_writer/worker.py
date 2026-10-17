@@ -111,6 +111,8 @@ def run_worker(
 
     executed: List[Dict[str, Any]] = []
     stale_all: List[str] = []
+    started_at = st.now_iso()
+    st.log_line(ws, f"═══ 运行开始（模式 {mode}）═══")
     orphans: List[str] = []
     reason = "completed"
     error: Optional[str] = None
@@ -127,6 +129,12 @@ def run_worker(
         st.append_usage(ws, {"worker_error": error, "traceback": traceback.format_exc()[-2000:]})
     finally:
         st.release_worker(ws, reason)
+        st.log_line(ws, f"═══ 运行结束：{reason}（本次执行 {len(executed)} 步）═══")
+        st.write_last_run(ws, {
+            "started_at": started_at, "finished_at": st.now_iso(), "mode": mode, "reason": reason,
+            "error": error,
+            "executed": executed,
+        })
         control = st.read_control(ws)
         if control.get("command") in ("pause", "stop"):
             st.write_control(ws, command="none")
@@ -203,7 +211,12 @@ def _loop(
             st.write_control(ws, run_step=None)
         status_after = R.run_step(ws, target, invoker=invoker, settings=settings, handlers=handlers)
         budget.record(target)
-        executed.append({"step": target.id, "status": status_after})
+        after = st.get_step_state(ws, target.id)
+        executed.append({
+            "step": target.id, "title": target.title, "status": status_after,
+            "summary": after.get("summary") or after.get("error") or "",
+            "duration_sec": after.get("duration_sec"),
+        })
 
         if status_after in (st.ST_FAILED, st.ST_BLOCKED, st.ST_WAITING_REVIEW, st.ST_WAITING_USER):
             return status_after

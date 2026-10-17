@@ -211,8 +211,48 @@ def heartbeat(ws: Workspace, **fields: Any) -> None:
 def release_worker(ws: Workspace, reason: str) -> None:
     with _LOCK:
         info = read_worker(ws)
-        info.update({"state": "stopped", "reason": reason, "step": None, "heartbeat": now_iso()})
+        info.update({"state": "stopped", "reason": reason, "step": None, "step_title": None,
+                     "step_started_at": None, "heartbeat": now_iso(), "finished_at": now_iso()})
         atomic_write_json(ws.path("studio_worker"), info)
+
+
+# ── 运行日志（实时输出；追加写入，不会被下一次运行覆盖，界面始终能看到上一次的结果）──
+
+
+def log_line(ws: Workspace, text: str) -> None:
+    """向 `_studio/run.log` 追加一行（带时间戳）。worker 与子 agent 的输出都写到这里。"""
+    path = ws.path("studio_log")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    stamp = _dt.datetime.now().strftime("%H:%M:%S")
+    with _LOCK:
+        with path.open("a", encoding="utf-8") as f:
+            f.write(f"[{stamp}] {text}\n")
+            f.flush()
+
+
+def read_log_tail(ws: Workspace, lines: int = 120, max_bytes: int = 200_000) -> List[str]:
+    path = ws.path("studio_log")
+    if not path.is_file():
+        return []
+    size = path.stat().st_size
+    with path.open("rb") as f:
+        if size > max_bytes:
+            f.seek(size - max_bytes)
+            f.readline()  # 丢弃可能不完整的第一行
+        data = f.read().decode("utf-8", errors="replace")
+    return [ln for ln in data.splitlines() if ln.strip()][-lines:]
+
+
+LAST_RUN_FILE = "last_run.json"
+
+
+def write_last_run(ws: Workspace, record: Dict[str, Any]) -> None:
+    atomic_write_json(ws.studio / LAST_RUN_FILE, record)
+
+
+def read_last_run(ws: Workspace) -> Optional[Dict[str, Any]]:
+    data = read_json(ws.studio / LAST_RUN_FILE, default=None)
+    return data if isinstance(data, dict) else None
 
 
 # ── 控制指令 ───────────────────────────────────────────────────────────────

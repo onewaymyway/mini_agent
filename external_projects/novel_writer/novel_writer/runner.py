@@ -180,6 +180,15 @@ class FrameworkInvoker:
             return InvokeResult(False, f"未检测到 mini_agent 框架（{exc}），无法执行 skill")
 
         cfg = self._cfg or config.load_llm_cfg()
+        # 子 agent 以 verbose 运行：工具调用与结果会打印到标准输出，worker 把它重定向到 run.log，
+        # 界面由此能看到运行中的中间输出（框架本身只在步骤结束时落盘会话，无法实时读取）。
+        try:
+            import copy as _copy
+
+            cfg = _copy.copy(cfg)
+            cfg.verbose = True
+        except Exception:  # noqa: BLE001 - 复制失败时退回原配置，只是少了实时输出
+            pass
         wf = WorkflowStore(config.PROJECT_ROOT).load(WORKFLOW_NAME)
         if wf is None or not getattr(wf, "steps", None):
             return InvokeResult(False, f"找不到工作流定义 workflows/{WORKFLOW_NAME}.yaml")
@@ -285,7 +294,11 @@ def run_step(
     started = time.monotonic()
     st.update_step(ws, step.id, status=st.ST_RUNNING, attempts=attempts, started_at=st.now_iso(),
                    error=None, finished_at=None, needs_user=None)
-    st.heartbeat(ws, step=step.id)
+    started_iso = st.now_iso()
+    st.heartbeat(ws, step=step.id, step_title=step.title, step_started_at=started_iso, attempt=attempts)
+    st.log_line(ws, f"▶ {step.id}　{step.title}（第 {attempts} 次）")
+    if step.skill:
+        st.log_line(ws, f"  调用 skill：{step.skill}")
 
     fields: Dict[str, Any] = {}
     try:
@@ -300,6 +313,9 @@ def run_step(
 
     duration = round(time.monotonic() - started, 2)
     final = {"status": status, "finished_at": st.now_iso(), "duration_sec": duration, **fields}
+    shown = fields.get("summary") or fields.get("error") or ""
+    mark = {"passed": "✔", "waiting_review": "⏸", "waiting_user": "❓"}.get(status, "✖")
+    st.log_line(ws, f"{mark} {step.id} → {status}　{shown}　（{duration}s）".rstrip())
     if status in (st.ST_PASSED, st.ST_WAITING_REVIEW):
         final["input_hash"] = st.input_hash(ws, step)
     st.update_step(ws, step.id, **final)

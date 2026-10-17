@@ -1,5 +1,5 @@
 # 本项目独立依赖
-streamlit>=1.32.0
+streamlit>=1.37.0  # st.fragment(run_every=...) 实时面板需要 1.37+
 pyyaml>=6.0
 graphviz>=0.19.0
 # ↑ graphviz：总控台流水线图（st.graphviz_chart 需要这个包来渲染 DOT）

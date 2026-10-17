@@ -178,7 +178,7 @@ def _spawn_worker(ws: Workspace, mode: str) -> int:
         kwargs["start_new_session"] = True
     with log_path.open("a", encoding="utf-8") as log:
         proc = _subprocess.Popen(
-            [_sys.executable, str(entry), "--workspace", str(ws.root), "--mode", mode],
+            [_sys.executable, "-u", str(entry), "--workspace", str(ws.root), "--mode", mode],
             cwd=str(config.PROJECT_ROOT), stdout=log, stderr=_subprocess.STDOUT, close_fds=True, **kwargs,
         )
     return proc.pid
@@ -494,7 +494,7 @@ def spawn_advance_all_auto(*, max_chapters: int = 1) -> Dict[str, Any]:
         entry = config.PROJECT_ROOT / "entrypoints" / "advance_all_auto.py"
         log_path = config.DATA_DIR / "advance_all_auto.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        cmd = [_sys.executable, str(entry), "--max-chapters", str(max_chapters)]
+        cmd = [_sys.executable, "-u", str(entry), "--max-chapters", str(max_chapters)]
         if _os.environ.get("NOVEL_WRITER_NO_SPAWN"):
             return _ok({"spawned_pid": None, "command": cmd})
         kwargs: Dict[str, Any] = {}
@@ -526,3 +526,32 @@ def assists(workspace: str, chapter: int) -> Dict[str, Any]:
 
 def adopt_assist(workspace: str, rid: str) -> Dict[str, Any]:
     return _guard(lambda: _ok(_views.adopt_assist(_workspace_or_raise(workspace), rid)))
+
+
+# ───────────────────────── 运行状态（实时输出与结束提示，M7 界面用）─────────────────────────
+
+
+def run_status(workspace: str, lines: int = 120) -> Dict[str, Any]:
+    """worker 实时状态 + 日志尾部 + 上一次运行结果。界面每 2 秒轮询一次，只读文件。"""
+
+    def run() -> Dict[str, Any]:
+        ws = _workspace_or_raise(workspace)
+        worker = _state.read_worker(ws)
+        alive = _state.worker_alive(ws)
+        return _ok({
+            "alive": alive,
+            "mode": worker.get("mode"),
+            "step": worker.get("step"),
+            "step_title": worker.get("step_title"),
+            "step_started_at": worker.get("step_started_at"),
+            "attempt": worker.get("attempt"),
+            "started_at": worker.get("started_at"),
+            "heartbeat": worker.get("heartbeat"),
+            "finished_at": worker.get("finished_at"),
+            "reason": worker.get("reason"),
+            "log": _state.read_log_tail(ws, lines=lines),
+            "last_run": _state.read_last_run(ws),
+        })
+
+    return _guard(run)
+

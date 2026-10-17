@@ -8,6 +8,7 @@ import streamlit as st
 from novel_writer import tool_api
 from novel_writer.settings import GEARS, QUALITIES
 from ui import codex as codex_page
+from ui import live as live_page
 from ui import ideas as ideas_page
 from ui import metrics as metrics_page
 from ui import settings_page
@@ -62,7 +63,7 @@ def render_control(ws: str) -> None:
     c3.metric("待你处理", counts.get("waiting_review", 0) + counts.get("waiting_user", 0) + counts.get("stale", 0))
     c4.metric("失败 / 阻塞", counts.get("failed", 0) + counts.get("blocked", 0))
     _render_settings(ws, data)
-    _render_worker(ws, data)
+    live_page.render_live_panel(ws)
     _render_inbox(ws)
     _render_run_buttons(ws)
 
@@ -132,12 +133,6 @@ def _render_inbox(ws: str) -> None:
         st.caption("收件箱由状态文件推导，worker 每次退出时刷新；点「刷新」查看最新内容。")
 
 
-def _render_worker(ws: str, data: dict) -> None:
-    w = data["worker"]
-    if w.get("alive"):
-        st.info(f"🔵 后台 worker 正在运行（步骤：{w.get('step') or '—'}）")
-    elif w.get("reason"):
-        st.caption(f"上次运行结束：{REASON_LABEL.get(w['reason'], w['reason'])}")
 
 
 def _render_run_buttons(ws: str) -> None:

@@ -46,6 +46,7 @@
 - **收件箱没有外部通知渠道**：快照写入 `_studio/inbox/index.json`，但不推送到 IM / 邮件；渠道未在方案中定义。
 - **手写旁路只检查产出存在**：不校验内容质量，也不检查字数或格式。
 - **AI 选段辅助**：不做 best-of-N；候选稿质量完全取决于所用模型；采用要求选段在正文中唯一匹配（润色/扩写）。
+- **实时输出的粒度受框架限制**：子 agent 的工具调用与结果会实时出现；模型的文字回复只在本轮结束后才能完整看到（框架在轮结束时才落盘会话，且非流式运行）。
 - **批量推进的成本**：`advance_all_auto` 每次运行会真实调用 LLM（每本至多 1 章），在启用 cron 前请先用 `--dry-run` 预览，并确认预算设置。
 - **结局设计与终审未做**：ending-designer（design_ending）与 final_review 属于方案 4.2 的收尾步骤，本期未加入流水线（归入 M6 或后续）。
 - **幕末的风格幕间对比**：只调用 style-guardian，没有区分「有意调整」与「有害漂移」的结构化结果，结论以报告文本呈现。
@@ -93,6 +94,7 @@ novel_writer/
 - 2026-10-17：M2 完成（待确认）。新增 intake / views 模块，tool_api 增加意图与规划/设定/线索接口；
   ui/ 拆分为 wizard / cockpit / planning / codex / threads / components；app.py 增加「🧭 驾驶舱」导航。
   测试 85 个全部通过（M0 39 + M1 32 + M2 14）。
+- 2026-10-17：运行输出与完成提示（M6 之后的界面修正）。驾驶舱原先只显示「后台 worker 正在运行（步骤：…）」且不更新。现在：子 agent 以 verbose 运行，工具调用与结果写入 `_studio/run.log`；worker 写入步骤开始、结束、耗时与摘要，并以「═══ 运行开始/结束」分隔、追加保留；`_studio/last_run.json` 保存上一次运行的每步结果；新增 `tool_api.run_status` 与 `ui/live.py`（2 秒轮询的 fragment，显示当前步骤与已用时、日志尾部、运行结束横幅与一次性 toast、上一次运行结果表）；`requirements.txt` 的 streamlit 下限升到 1.37；新增 `tests/test_live_output.py`（6 个用例）；全量 194 个通过。
 - 2026-10-17：M6 完成（待确认）。`steps.py` 增加 design_ending / final_review / alt_write / best_pick / patrol 与质量档参数；`pipeline.py` 按幕结构插入结局设计、末尾插入全书终审、精品档每 10 章插入巡检；`gates.py` 把 final_review 纳入「幕末审稿最低审批」；`chapter_ops.py` 增加 best_pick 处理器；新增 `exporter.py`；`views.export_book` / `tool_api.export` 支持 fmt；阅读页增加格式选择与下载；`test_engine_m1.py` 的预算用例改为 7 章蓝图（结局设计占用了第 6 章前的位置）；新增 `tests/test_m6.py`（15 个用例）；全量 188 个通过。
 - 2026-10-17：M5 完成（待确认）。挡位表增加两条「最低审批」规则（前三章章节写作、幕末深度审稿）；预算计数与 `chapter_limit` 收紧；新增 `inbox.py`、`batch.py`、`entrypoints/advance_all_auto.py`；`ondemand.py` 增加 `assist` 请求与采用逻辑；`views.py` / `tool_api.py` 增加收件箱、手写旁路、AI 辅助与批量接口；UI 驾驶舱增加收件箱与手写旁路，写作台增加 AI 辅助，书架增加全局收件箱与批量按钮；`test_engine_m1.py::test_budget_chapters_pauses_not_fails` 改为第 4 章起的场景（前三章逐章审批导致旧场景不再成立）；新增 `tests/test_m5.py`（60 个用例，含界面 AppTest）；全量 173 个通过。
 - 2026-10-17：M3 完成（待确认）。新增 chapter_ops 模块与 M3 界面（写作台 / 审校 / 阅读）；runner 处理器可接收 invoker，支持 NeedsUser 挂起；
