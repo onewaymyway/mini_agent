@@ -112,3 +112,29 @@ def test_review_question_answers_become_revision_feedback(isolated):
     assert "选哪个方向？" in inv.prompts["ch01.revise.r1"][-1]
     assert "作者答复：A" in inv.prompts["ch01.revise.r1"][-1]
     assert statuses(ws)["ch02.sync_plot"] == st.ST_PASSED
+
+
+def test_cycle_does_not_leave_check_steps_falsely_stale(isolated):
+    """修改循环改写正文后，核查与机器校验已在循环内重跑，不应被误判为「上游变化需重跑」。"""
+    from novel_writer import pipeline as P
+    from novel_writer import state as st2
+
+    ws, inv = _finished(isolated)
+    sid = tool_api.request_revision_cycle(str(ws.root), 1, "压缩第二段")["data"]["step"]
+    _run_single(ws, inv, sid)
+    stale = st2.mark_stale(ws, P.build_plan(ws))
+    assert "ch01.review" not in stale and "ch01.machine_check" not in stale
+
+
+def test_routed_review_answers_do_not_leave_check_steps_falsely_stale(isolated):
+    from novel_writer import pipeline as P
+    from novel_writer import state as st2
+
+    ws = new_book(isolated, total=2)
+    inv = FakeInvoker(ws.root, needs_user=["ch01.review"])
+    run_until(ws, inv, reasons=("waiting_review",))
+    qid = st.get_step_state(ws, "ch01.review")["needs_user"][0]["id"]
+    assert tool_api.answer_step(str(ws.root), "ch01.review", {qid: "A"})["ok"]
+    drive_to_completion(ws, inv, handlers=DEFAULT_PY_HANDLERS)
+    stale = st2.mark_stale(ws, P.build_plan(ws))
+    assert "ch01.review" not in stale and "ch01.machine_check" not in stale

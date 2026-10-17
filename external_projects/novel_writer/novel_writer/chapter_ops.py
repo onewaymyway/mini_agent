@@ -332,6 +332,29 @@ def _review_step(n: int) -> S.StepDef:
     raise ChapterOpError("找不到审稿步骤定义")
 
 
+def _chapter_step(n: int, suffix: str) -> S.StepDef:
+    for step in S.chapter_steps(n, "", total=n, prev_last="x"):
+        if step.id == f"ch{n:02d}.{suffix}":
+            return step
+    raise ChapterOpError(f"找不到步骤 ch{n:02d}.{suffix}")
+
+
+def _refresh_check_steps(ws: Workspace, n: int, *, clean: bool) -> None:
+    """修改循环改写了正文，但循环内每轮已重新核查与机器校验，结果是新的。
+
+    这两个步骤的输入指纹需要同步到当前正文，否则会被脏标记误判为「上游变化、需要重跑」。
+    核查通过则标为通过；未通过则只更新指纹，状态交给升级流程。
+    """
+    from novel_writer import state as st
+
+    for suffix in ("machine_check", "review"):
+        step = _chapter_step(n, suffix)
+        fields = {"input_hash": st.input_hash(ws, step)}
+        if clean:
+            fields.update(status=st.ST_PASSED, error=None, needs_user=None, note=None)
+        st.update_step(ws, step.id, **fields)
+
+
 def revise_cycle(ws: Workspace, n: int, *, stage: str, invoker, settings: Dict[str, Any],
                  id_prefix: str, feedback: str = "", max_rounds: int = MAX_REVISE_ROUNDS) -> Dict[str, Any]:
     """修改 → 核查 循环（通用）。
@@ -378,8 +401,10 @@ def revise_cycle(ws: Workspace, n: int, *, stage: str, invoker, settings: Dict[s
         _log(ws, n, f"第 {k} 轮修改后：🔴 {len(red)} 条，机器硬问题 {len(hard)} 条")
         feedback = ""
         if not red and not hard:
+            _refresh_check_steps(ws, n, clean=True)
             return {"clean": True, "rounds": k, "remaining": []}
 
+    _refresh_check_steps(ws, n, clean=False)
     return {"clean": False, "rounds": max_rounds,
             "remaining": red + [f"[机器] {h}" for h in hard]}
 
