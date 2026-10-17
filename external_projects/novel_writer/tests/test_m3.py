@@ -160,7 +160,8 @@ def test_hard_error_escalates_after_three_rounds_and_blocks_next_chapter(isolate
     assert "ch03.write_chapter" not in inv.calls
     assert (ws.studio / "inbox" / "ch02_escalation.json").is_file()
     entry = st.get_step_state(ws, "ch02.revise_loop")
-    assert entry["needs_user"][0]["options"] == ["重新核查（我已手动修改）", "接受风险继续"]
+    assert entry["needs_user"][0]["options"] == ["按审稿意见再修改一轮", "重新核查（我已手动修改）", "接受风险继续"]
+    assert entry["needs_user"][1]["id"] == "feedback"
     assert "修改 3 轮后仍有" in ws.path("revision_log", nn=2).read_text(encoding="utf-8")
 
 

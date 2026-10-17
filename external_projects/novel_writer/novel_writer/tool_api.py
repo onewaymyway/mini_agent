@@ -446,6 +446,10 @@ from novel_writer import batch as _batch  # noqa: E402
 from novel_writer import inbox as _inbox  # noqa: E402
 
 
+def request_revision_cycle(workspace: str, chapter: int, feedback: str) -> Dict[str, Any]:
+    return _guard(lambda: _ok(_views.request_revision_cycle(_workspace_or_raise(workspace), int(chapter), feedback)))
+
+
 def inbox(workspace: str) -> Dict[str, Any]:
     """单本收件箱（同时刷新快照文件）。"""
     return _guard(lambda: _ok(_inbox.refresh(_workspace_or_raise(workspace))))

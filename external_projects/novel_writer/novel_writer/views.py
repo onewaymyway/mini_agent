@@ -464,6 +464,18 @@ def request_revision(ws: Workspace, chapter: int, level: str, instruction: str) 
     return {"id": req["id"], "step": f"rev.{req['id']}", "level": level}
 
 
+def request_revision_cycle(ws: Workspace, chapter: int, feedback: str) -> Dict[str, Any]:
+    """作者反馈驱动的修改核查循环：大模型按反馈修改，再核查，直到清零或达到轮数上限。"""
+    if chapter not in _chapter_numbers(ws):
+        raise ViewError(f"第 {chapter} 章不在流水线中")
+    body = str(feedback or "").strip()
+    if not body:
+        raise ViewError("请写明修改意见")
+    req = _ondemand.create_request(ws, "revision", chapter=int(chapter), level="循环",
+                                   mode="cycle", instruction=body)
+    return {"id": req["id"], "step": f"rev.{req['id']}"}
+
+
 # ───────────────────────── M5：手写旁路 / AI 选段辅助 ─────────────────────────
 
 SELECTION_MAX_CHARS = 3000

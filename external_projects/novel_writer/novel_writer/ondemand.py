@@ -86,8 +86,9 @@ def ondemand_steps(ws: Workspace) -> List[S.StepDef]:
     for req in list_requests(ws):
         if req.get("kind") == "revision":
             n = int(req.get("chapter") or 0)
+            label = "修改核查" if req.get("mode") == "cycle" else f"修订 {req.get('level')}"
             steps.append(S.StepDef(
-                id=f"rev.{req['id']}", title=f"修订 第{n}章 {req.get('level')}：{req.get('instruction', '')[:20]}",
+                id=f"rev.{req['id']}", title=f"{label} 第{n}章：{req.get('instruction', '')[:20]}",
                 stage="ondemand", category=S.CAT_REVISE, executor=S.EXECUTOR_PYTHON, handler="revision",
                 chapter=0, extra={"optional": True, "request": f"revision_{req['id']}", "kind": "revision"},
             ))
@@ -123,6 +124,8 @@ def h_revision(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker
     req = load_request(ws, "revision", step.extra["request"].split("_", 1)[1])
     n, level = int(req["chapter"]), req["level"]
     instruction = str(req.get("instruction") or "")
+    if req.get("mode") == "cycle":
+        return _revision_cycle(ws, step, req, settings, invoker)
 
     if level == "L4":
         answers_path = _answers_file(ws, step.id)
@@ -185,6 +188,32 @@ def h_revision(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker
     save_request(ws, req)
     C._log(ws, n, f"修订 {level}（{instruction[:30]}）完成；标为需重跑的步骤 {len(stale)} 个")
     return {"summary": f"{level} 修订完成；下游需重跑 {len(stale)} 步"}
+
+
+def _revision_cycle(ws: Workspace, step: S.StepDef, req: Dict[str, Any], settings: Dict[str, Any],
+                    invoker) -> Dict[str, Any]:
+    """作者反馈 → 大模型修改 → 重新核查，循环至清零或达到轮数上限（不升级、不阻塞流水线）。"""
+    from novel_writer import chapter_ops as C
+    from novel_writer import state as st
+    from novel_writer.pipeline import build_plan
+
+    if invoker is None:
+        raise OnDemandError("修改需要执行器（invoker）")
+    n = int(req["chapter"])
+    feedback = str(req.get("instruction") or "")
+    result = C.revise_cycle(ws, n, stage=step.stage, invoker=invoker, settings=settings,
+                            id_prefix=step.id, feedback=feedback)
+    stale = st.mark_stale(ws, build_plan(ws)) if result["rounds"] else []
+    if result["clean"]:
+        outcome = f"修改核查完成（{result['rounds']} 轮清零）"
+    else:
+        outcome = (f"{result['rounds']} 轮修改后仍有 {len(result['remaining'])} 条问题，"
+                   "请查看审稿报告后再次发起")
+    req["result"] = {"outcome": outcome, "rounds": result["rounds"],
+                     "remaining": result["remaining"], "stale": stale}
+    save_request(ws, req)
+    C._log(ws, n, f"按作者反馈修改（{feedback[:30]}）：{outcome}")
+    return {"summary": outcome}
 
 
 def force_stale_from(ws: Workspace, chapter: int) -> List[str]:

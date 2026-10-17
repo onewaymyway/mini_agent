@@ -68,6 +68,7 @@ def render_control(ws: str) -> None:
     live_page.render_live_panel(ws)
     _render_inbox(ws)
     _render_run_buttons(ws, nxt)
+    _render_feedback_cycle(ws, data["steps"])
 
     st.subheader("流水线")
     rows = []
@@ -84,6 +85,24 @@ def render_control(ws: str) -> None:
         })
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True, height=min(520, 40 + 35 * len(rows)))
     _render_step_actions(ws, data["steps"], nxt)
+
+
+def _render_feedback_cycle(ws: str, steps: list) -> None:
+    """按作者反馈修改：大模型按意见修改 → 重新核查，循环至清零或达到轮数上限。"""
+    chapters = sorted({s["chapter"] for s in steps if s.get("chapter")})
+    if not chapters:
+        return
+    with st.expander("✍ 按反馈修改并核查（大模型修改 → 重新核查）", expanded=False):
+        st.caption("把修改意见交给大模型，它按意见最小修改本章，然后重新核查；有 🔴 或机器硬问题就继续修，最多 3 轮。"
+                   "审稿意见本身会自动作为修改依据，意见可留空。")
+        n = st.selectbox("章节", chapters, format_func=lambda c: f"第 {c} 章", key="cp_fb_chapter")
+        text = st.text_area("修改意见", key="cp_fb_text", placeholder="例如：第二场对话太直白，改成含蓄的表达；去掉主角第一段的重复心理描写")
+        if st.button("提交并运行", key="cp_fb_go", disabled=not text.strip()):
+            r = tool_api.request_revision_cycle(ws, int(n), text)
+            if not r["ok"]:
+                show_error(r)
+                return
+            _report(tool_api.run_novel(ws, mode="single", step_id=r["data"]["step"]))
 
 
 def _render_settings(ws: str, data: dict) -> None:

@@ -331,6 +331,58 @@ def _review_step(n: int) -> S.StepDef:
     raise ChapterOpError("找不到审稿步骤定义")
 
 
+def revise_cycle(ws: Workspace, n: int, *, stage: str, invoker, settings: Dict[str, Any],
+                 id_prefix: str, feedback: str = "", max_rounds: int = MAX_REVISE_ROUNDS) -> Dict[str, Any]:
+    """修改 → 核查 循环（通用）。
+
+    每一轮：chapter-writer 按「作者反馈（若有）+ 当前 🔴 与机器硬问题」做最小修改，
+    然后重新跑完章核查与机器校验。清零即停；否则进入下一轮，最多 `max_rounds` 轮。
+    作者反馈只在第一轮作为输入，之后的轮次只针对剩余问题。
+
+    返回 {"clean": bool, "rounds": int, "remaining": [str]}。不负责升级人工，由调用方决定。
+    """
+    from dataclasses import replace
+
+    from novel_writer.runner import run_skill_step
+
+    review = _review_step(n)
+    review_path = ws.path("review_report", nn=n)
+    red = red_items(_read(review_path))
+    hard = write_machine_report(ws, n, settings)["hard"]
+    feedback = (feedback or "").strip()
+    if not red and not hard and not feedback:
+        return {"clean": True, "rounds": 0, "remaining": []}
+
+    for k in range(1, max_rounds + 1):
+        requests = ([f"[作者反馈，若与审稿意见冲突以此为准] {feedback}"] if feedback else [])
+        requests += red + [f"[机器] {h}" for h in hard]
+        writer = S.StepDef(
+            id=f"{id_prefix}.revise.r{k}", title=f"第{n}章：修改第{k}轮", stage=stage,
+            category=S.CAT_CHAPTER_REVIEW, executor=S.EXECUTOR_SKILL, skill="chapter-writer", chapter=n,
+            instructions=(
+                f"这是第 {n} 章的修改（第 {k}/{max_rounds} 轮）。请只针对下列问题做**最小修改**："
+                "只改动指出问题的句段，不改动其它段落，不改变情节走向与出场设定，字数保持在配额附近。\n"
+                "问题与要求：\n" + "\n".join(f"- {i}" for i in requests) +
+                "\n完成后在回执 summary 中逐条说明改了什么。"
+            ),
+            inputs=(ws.path("review_report", nn=n).relative_to(ws.root).as_posix(),
+                    ws.path("machine_report", nn=n).relative_to(ws.root).as_posix()),
+            outputs=(S.glob_of("chapter_text", nn=n),),
+        )
+        run_skill_step(ws, writer, invoker=invoker, settings=settings, run_no=k)
+        run_skill_step(ws, replace(review, id=f"{id_prefix}.review.r{k}"),
+                       invoker=invoker, settings=settings, run_no=k)
+        red = red_items(_read(review_path))
+        hard = write_machine_report(ws, n, settings)["hard"]
+        _log(ws, n, f"第 {k} 轮修改后：🔴 {len(red)} 条，机器硬问题 {len(hard)} 条")
+        feedback = ""
+        if not red and not hard:
+            return {"clean": True, "rounds": k, "remaining": []}
+
+    return {"clean": False, "rounds": max_rounds,
+            "remaining": red + [f"[机器] {h}" for h in hard]}
+
+
 def h_revise_loop(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:
     from novel_writer.runner import NeedsUser, _answers_file, run_skill_step
 
@@ -340,9 +392,9 @@ def h_revise_loop(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invo
     answers_path = _answers_file(ws, step.id)
     answers = (read_json(answers_path, default=None) or {}).get("answers") or {}
     decision = str(answers.get("decision") or "")
+    feedback = str(answers.get("feedback") or "").strip()
     if answers_path.exists():
         answers_path.unlink()
-    review_path = ws.path("review_report", nn=n)
     review = _review_step(n)
 
     if decision.startswith("接受"):
@@ -352,35 +404,14 @@ def h_revise_loop(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invo
         run_skill_step(ws, review, invoker=invoker, settings=settings, run_no=1)
         _log(ws, n, "作者手动修改后重新核查")
 
-    red = red_items(_read(review_path))
-    hard = write_machine_report(ws, n, settings)["hard"]
-    if not red and not hard:
-        return {"summary": "无 🔴 硬问题，无需修改"}
+    result = revise_cycle(ws, n, stage=step.stage, invoker=invoker, settings=settings,
+                          id_prefix=f"ch{n:02d}", feedback=feedback)
+    if result["clean"]:
+        if result["rounds"] == 0:
+            return {"summary": "无 🔴 硬问题，无需修改"}
+        return {"summary": f"第 {result['rounds']} 轮修改后清零"}
 
-    for k in range(1, MAX_REVISE_ROUNDS + 1):
-        items = red + [f"[机器] {h}" for h in hard]
-        writer = S.StepDef(
-            id=f"ch{n:02d}.revise.r{k}", title=f"第{n}章：修改第{k}轮", stage=step.stage,
-            category=S.CAT_CHAPTER_REVIEW, executor=S.EXECUTOR_SKILL, skill="chapter-writer", chapter=n,
-            instructions=(
-                f"这是第 {n} 章的修改（第 {k}/{MAX_REVISE_ROUNDS} 轮）。请只针对下列问题做**最小修改**："
-                "只改动指出问题的句段，不改动其它段落，不改变情节走向与出场设定，字数保持在配额附近。\n"
-                "问题清单：\n" + "\n".join(f"- {i}" for i in items) +
-                "\n完成后在回执 summary 中逐条说明改了什么。"
-            ),
-            inputs=(ws.path("review_report", nn=n).relative_to(ws.root).as_posix(),
-                    ws.path("machine_report", nn=n).relative_to(ws.root).as_posix()),
-            outputs=(S.glob_of("chapter_text", nn=n),),
-        )
-        run_skill_step(ws, writer, invoker=invoker, settings=settings, run_no=k)
-        run_skill_step(ws, replace(review, id=f"ch{n:02d}.review.r{k}"), invoker=invoker, settings=settings, run_no=k)
-        red = red_items(_read(review_path))
-        hard = write_machine_report(ws, n, settings)["hard"]
-        _log(ws, n, f"第 {k} 轮修改后：🔴 {len(red)} 条，机器硬问题 {len(hard)} 条")
-        if not red and not hard:
-            return {"summary": f"第 {k} 轮修改后清零"}
-
-    remaining = red + [f"[机器] {h}" for h in hard]
+    remaining = result["remaining"]
     atomic_write_json(ws.studio / "inbox" / f"ch{n:02d}_escalation.json", {
         "chapter": n, "rounds": MAX_REVISE_ROUNDS, "remaining": remaining, "raised_at": _now(),
     })
@@ -390,7 +421,10 @@ def h_revise_loop(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invo
         [{
             "id": "decision",
             "question": "剩余问题：\n" + "\n".join(remaining[:8]) + "\n请选择：",
-            "options": ["重新核查（我已手动修改）", "接受风险继续"],
+            "options": ["按审稿意见再修改一轮", "重新核查（我已手动修改）", "接受风险继续"],
+        }, {
+            "id": "feedback",
+            "question": "修改意见（选「按审稿意见再修改一轮」时生效；可写具体要求，留空则只按剩余问题修改）",
         }],
     )
 
