@@ -219,3 +219,4 @@ output/
 .agent/decision_profile_state.json
 .agent/reports/
 .agent/last_sync
+external_projects/novel_writer/.agent/
