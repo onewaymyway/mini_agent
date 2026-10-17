@@ -29,6 +29,22 @@ logging.basicConfig(
 )
 
 
+def _force_utf8_stdio() -> None:
+    """Windows 控制台/重定向输出默认是 GBK（或本地代码页），打印 emoji（如 🟡）会抛
+    UnicodeEncodeError，导致 entrypoint 在结果已经写入状态之后仍以异常退出。
+    这里统一切到 UTF-8；无法编码的字符用 ? 替代，绝不让输出本身导致失败。
+    运行日志（_studio/run.log）按 UTF-8 读取，两边保持一致。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
+_force_utf8_stdio()
+
+
 @contextmanager
 def tracked_run(entrypoint: str, *, trigger: str = "external_cron") -> Iterator[object]:
     """让渡出账本 handle（`ledger.py::_RunHandle` 或降级场景下的占位对象），
