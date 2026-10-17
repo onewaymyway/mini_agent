@@ -241,7 +241,11 @@ def _render_step_actions(ws: str, steps: list, nxt: dict) -> None:
 
 def _render_answer_form(ws: str, step: dict) -> None:
     questions = step.get("needs_user") or []
-    st.warning("这一步需要你决定：")
+    is_review = step["id"].endswith(".review")
+    if is_review:
+        st.warning("完章核查提出了问题，请逐条决定。提交后，你的选择会作为修改意见交给大模型修改，修改后自动重新核查。")
+    else:
+        st.warning("这一步需要你决定：")
     with st.form(f"answer_{step['id']}"):
         answers = {}
         for q in questions:
@@ -249,11 +253,18 @@ def _render_answer_form(ws: str, step: dict) -> None:
             opts = q.get("options") or []
             text = str(q.get("question") or "")
             if opts:
-                answers[qid] = st.radio(text, opts, key=f"ans_{step['id']}_{qid}")
+                # index=None：默认不选中，避免未确认就提交了第一个选项
+                answers[qid] = st.radio(text, opts, index=None, key=f"ans_{step['id']}_{qid}")
             else:
                 answers[qid] = st.text_input(text, key=f"ans_{step['id']}_{qid}")
-        if st.form_submit_button("提交答复并重跑此步"):
-            _report_ok(tool_api.answer_step(ws, step["id"], answers))
+        label = "按答复修改并核查" if is_review else "提交答复并重跑此步"
+        if st.form_submit_button(label):
+            missing = [str(q.get("question") or "")[:20] for q in questions
+                       if q.get("options") and not answers.get(str(q.get("id") or "q"))]
+            if missing:
+                st.error("请为每个问题选择一个答复后再提交。")
+            else:
+                _report_ok(tool_api.answer_step(ws, step["id"], answers))
 
 
 def _report_ok(res: dict) -> None:

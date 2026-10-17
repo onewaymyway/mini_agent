@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import glob as _glob
+import re
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -381,6 +382,44 @@ def revise_cycle(ws: Workspace, n: int, *, stage: str, invoker, settings: Dict[s
 
     return {"clean": False, "rounds": max_rounds,
             "remaining": red + [f"[机器] {h}" for h in hard]}
+
+
+def route_review_answers(ws: Workspace, review_step_id: str, answers: Dict[str, Any],
+                         questions: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """完章核查待答复时，把作者的答复整理成修改意见，交给修改循环执行（修改由 chapter-writer 完成）。
+
+    核查步骤记为通过；修改循环的答复文件写入「按审稿意见再修改一轮 + 修改意见」，
+    然后把修改循环重置为待运行，由流水线接着执行：修改 → 重新核查 → 机器校验。
+    """
+    from novel_writer import state as st
+    from novel_writer.runner import _answers_file
+
+    m = re.fullmatch(r"ch(\d+)\.review", review_step_id)
+    if not m:
+        raise ChapterOpError(f"{review_step_id} 不是完章核查步骤")
+    n = int(m.group(1))
+    if not questions:
+        raise ChapterOpError("这一步没有待答复的问题")
+    lines = []
+    for q in questions:
+        qid = str(q.get("id") or "q")
+        text = str(q.get("question") or "").strip()
+        ans = str(answers.get(qid) or "").strip()
+        if not ans:
+            raise ChapterOpError(f"请回答：{text[:30]}")
+        lines.append(f"{text}\n  → 作者答复：{ans}")
+    feedback = "\n".join(lines)
+
+    loop_id = f"ch{n:02d}.revise_loop"
+    atomic_write_json(_answers_file(ws, loop_id), {
+        "answers": {"decision": "按审稿意见再修改一轮", "feedback": feedback},
+        "answered_at": _now(),
+    })
+    st.update_step(ws, review_step_id, status=st.ST_PASSED, error=None, needs_user=None,
+                   summary="作者答复已转为修改意见")
+    st.reset_step(ws, loop_id)
+    _log(ws, n, "作者对核查问题的答复已转为修改意见，进入修改核查循环")
+    return {"chapter": n, "routed_to": loop_id}
 
 
 def h_revise_loop(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:

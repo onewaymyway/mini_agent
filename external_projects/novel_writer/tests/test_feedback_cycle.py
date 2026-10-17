@@ -84,3 +84,27 @@ def test_escalation_answer_with_feedback_reenters_loop(isolated):
     assert new_writes, "升级答复后应重新进入修改"
     assert any("把结尾的独白删掉一半" in p for p in inv.prompts[new_writes[0]])
     assert statuses(ws)["ch03.sync_plot"] == st.ST_PASSED
+
+
+def test_review_question_answers_become_revision_feedback(isolated):
+    """完章核查待答复 → 作者选择 → 转为修改意见 → 修改循环用它改写 → 重新核查。"""
+    ws = new_book(isolated, total=2)
+    inv = FakeInvoker(ws.root, needs_user=["ch01.review"])
+    run_until(ws, inv, reasons=("waiting_review",))
+    assert statuses(ws)["ch01.review"] == st.ST_WAITING_USER
+    needs = st.get_step_state(ws, "ch01.review")["needs_user"]
+    qid = needs[0]["id"]
+    # 缺答复应被拒绝
+    assert not tool_api.answer_step(str(ws.root), "ch01.review", {})["ok"]
+    before = len(inv.calls)
+    res = tool_api.answer_step(str(ws.root), "ch01.review", {qid: "A"})
+    assert res["ok"], res
+    assert res["data"]["routed_to"] == "ch01.revise_loop"
+    assert statuses(ws)["ch01.review"] == st.ST_PASSED  # 核查不再重跑，直接转交修改
+    drive_to_completion(ws, inv, handlers=DEFAULT_PY_HANDLERS)
+    # 修改循环以作者答复为修改意见执行 chapter-writer
+    writes = [c for c in inv.calls[before:] if c == "ch01.revise.r1"]
+    assert writes, inv.calls[before:]
+    assert "选哪个方向？" in inv.prompts["ch01.revise.r1"][-1]
+    assert "作者答复：A" in inv.prompts["ch01.revise.r1"][-1]
+    assert statuses(ws)["ch02.sync_plot"] == st.ST_PASSED

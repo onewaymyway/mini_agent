@@ -8,6 +8,8 @@ M1 起在这里追加运行/暂停/步骤操作等接口。
 
 from __future__ import annotations
 
+import re
+
 import datetime as _dt
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -291,6 +293,11 @@ def answer_step(workspace: str, step_id: str, answers: Dict[str, Any]) -> Dict[s
             raise WorkspaceError(f"步骤 {step_id} 当前不需要答复（状态 {current['status']}）")
         if not isinstance(answers, dict) or not answers:
             raise WorkspaceError("answers 必须是非空对象")
+        if re.fullmatch(r"ch\d+\.review", step_id):
+            from novel_writer import chapter_ops as _C
+
+            routed = _C.route_review_answers(ws, step_id, answers, current.get("needs_user") or [])
+            return _ok({"step": step_id, "status": _state.ST_PASSED, **routed})
         _atomic_write_json(_answers_file(ws, step_id), {"answers": answers, "answered_at": _state.now_iso()})
         entry = _state.reset_step(ws, step_id)
         return _ok({"step": step_id, "status": entry["status"]})
