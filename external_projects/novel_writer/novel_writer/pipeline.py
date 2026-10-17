@@ -83,6 +83,7 @@ def build_plan(ws: Workspace) -> List[S.StepDef]:
     plan.append(S.design_opening_step())
 
     last = plan[-1].id
+    act_ends = _act_ends(blueprint, total)
     for n in range(1, total + 1):
         chapter = S.chapter_steps(n, "", total=total, prev_last=last)
         plan += chapter
@@ -94,7 +95,33 @@ def build_plan(ws: Workspace) -> List[S.StepDef]:
             style = S.init_style_b_step()
             plan.append(style)
             last = style.id
+        if n in act_ends:
+            acts = S.act_steps(act_ends[n])
+            plan += acts
+            last = acts[-1].id
+        if n % SNAPSHOT_INTERVAL == 0:
+            plan.append(S.snapshot_step(n))
+    from novel_writer import ondemand
+
+    plan += ondemand.ondemand_steps(ws)
     return plan
+
+
+SNAPSHOT_INTERVAL = 10
+
+
+def _act_ends(blueprint: Optional[Dict[str, Any]], total: int) -> Dict[int, int]:
+    """幕结束章号 -> 幕号（取自 structure.acts[].chapter_range）。"""
+    out: Dict[int, int] = {}
+    acts = ((blueprint or {}).get("structure") or {}).get("acts") or []
+    for a in acts:
+        if not isinstance(a, dict):
+            continue
+        rng = a.get("chapter_range") or []
+        act_no = a.get("act")
+        if isinstance(act_no, int) and len(rng) == 2 and isinstance(rng[1], int) and 1 <= rng[1] <= total:
+            out[rng[1]] = act_no
+    return out
 
 
 def _optional(step: S.StepDef) -> S.StepDef:

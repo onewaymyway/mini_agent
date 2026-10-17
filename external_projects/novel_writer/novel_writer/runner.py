@@ -139,8 +139,9 @@ def run_skill_step(
     run_dir.mkdir(parents=True, exist_ok=True)
     max_turns = int((settings.get("max_turns_overrides") or {}).get(step.id, DEFAULT_MAX_TURNS))
     hint = ""
-    for _ in range(MAX_RECEIPT_ATTEMPTS):
+    for attempt in range(MAX_RECEIPT_ATTEMPTS):
         prompt = build_prompt(ws, step, hint=hint)
+        (run_dir / f"prompt_{attempt + 1}.md").write_text(prompt, encoding="utf-8")
         result = invoker(
             skill=step.skill, prompt=prompt, export_dir=run_dir, step_id=step.id,
             max_turns=max_turns, timeout=DEFAULT_TIMEOUT_SEC,
@@ -261,6 +262,9 @@ DEFAULT_PY_HANDLERS: Dict[str, PyHandler] = {
 from novel_writer.chapter_ops import CHAPTER_HANDLERS as _CHAPTER_HANDLERS  # noqa: E402
 
 DEFAULT_PY_HANDLERS.update(_CHAPTER_HANDLERS)
+from novel_writer.ondemand import HANDLERS as _ONDEMAND_HANDLERS  # noqa: E402
+
+DEFAULT_PY_HANDLERS.update(_ONDEMAND_HANDLERS)
 
 
 # ── 单步总入口 ─────────────────────────────────────────────────────────────

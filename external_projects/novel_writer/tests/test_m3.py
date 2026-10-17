@@ -233,7 +233,7 @@ def test_ui_writing_review_reading_pages_and_escalation_button(isolated):
     at.session_state["ws"] = str(ws.root)
     at.sidebar.radio[0].set_value("🧭 驾驶舱").run()
     assert not at.exception, at.exception
-    assert len(at.tabs) == 7
+    assert len(at.tabs) == 10
 
     at.selectbox(key="wr_chapter").set_value(1).run()
     assert not at.exception, at.exception

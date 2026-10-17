@@ -54,8 +54,10 @@ class FakeInvoker:
     正文步骤写出接近字数配额的唯一段落（避免机器校验误报重复）。
     """
 
-    def __init__(self, root, *, fail=(), needs_user=(), skip_once=(), red=()):
+    def __init__(self, root, *, fail=(), needs_user=(), skip_once=(), red=(), writers=None, extra_receipt=None):
         self.root = Path(root)
+        self.writers = dict(writers or {})          # 子串 -> callable(ws)：按步骤 id 写额外产出
+        self.extra_receipt = dict(extra_receipt or {})  # 子串 -> dict：合并进回执
         self.fail = set(fail)
         self.needs_user = set(needs_user)
         self.skip_once = set(skip_once)
@@ -93,11 +95,17 @@ class FakeInvoker:
                     if not target.exists():
                         target.parent.mkdir(parents=True, exist_ok=True)
                         target.write_text("stub", encoding="utf-8")
+        for key, writer in self.writers.items():
+            if key in step_id:
+                writer(ws)
         if step_id in self.needs_user and n == 1:
             receipt = {"status": "needs_user", "summary": "需要作者选择",
                        "needs_user": [{"id": "q1", "question": "选哪个方向？", "options": ["A", "B"]}]}
         else:
             receipt = {"status": "done", "summary": f"{step_id} ok"}
+        for key, extra in self.extra_receipt.items():
+            if key in step_id:
+                receipt.update(extra)
         (export_dir / "receipt.json").write_text(json.dumps(receipt, ensure_ascii=False), encoding="utf-8")
         return InvokeResult(True)
 

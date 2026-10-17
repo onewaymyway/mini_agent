@@ -405,3 +405,35 @@ def save_chapter(workspace: str, n: int, text: str) -> Dict[str, Any]:
 
 def export(workspace: str) -> Dict[str, Any]:
     return _guard(lambda: _ok(_views.export_book(_workspace_or_raise(workspace))))
+
+
+# ───────────────────────── M4：矩阵 / 度量 / 灵感 / 修订 / 步骤详情 ─────────────────────────
+
+def matrix(workspace: str) -> Dict[str, Any]:
+    return _guard(lambda: _ok(_views.matrix_view(_workspace_or_raise(workspace))))
+
+
+def save_matrix(workspace: str, step_overrides: Dict[str, str], stage_gears: Dict[str, str],
+                extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    return _guard(lambda: _ok(_views.save_matrix(_workspace_or_raise(workspace), step_overrides or {},
+                                                 stage_gears or {}, extra or {})))
+
+
+def metrics(workspace: str) -> Dict[str, Any]:
+    return _guard(lambda: _ok(_views.metrics_view(_workspace_or_raise(workspace))))
+
+
+def step_detail(workspace: str, step_id: str) -> Dict[str, Any]:
+    return _guard(lambda: _ok(_views.step_detail(_workspace_or_raise(workspace), step_id)))
+
+
+def ideas(workspace: str) -> Dict[str, Any]:
+    return _guard(lambda: _ok(_views.ideas_view(_workspace_or_raise(workspace))))
+
+
+def add_idea(workspace: str, text: str) -> Dict[str, Any]:
+    return _guard(lambda: _ok(_views.add_idea(_workspace_or_raise(workspace), text)))
+
+
+def request_revision(workspace: str, chapter: int, level: str, instruction: str) -> Dict[str, Any]:
+    return _guard(lambda: _ok(_views.request_revision(_workspace_or_raise(workspace), int(chapter), level, instruction)))

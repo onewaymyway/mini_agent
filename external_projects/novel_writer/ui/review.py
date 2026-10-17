@@ -39,6 +39,7 @@ def render_review(ws: str) -> None:
             _report(tool_api.answer_step(ws, waiting["id"], {"decision": DECISIONS[1]}))
         st.caption("「接受风险继续」会把未清零的问题写入修订记录；请确认这是你的决定。")
 
+    render_request_form(ws, n)
     st.subheader("审稿报告")
     st.markdown(d["review"] or "尚未审稿。")
     machine = d["machine"] or {}
@@ -54,6 +55,26 @@ def render_review(ws: str) -> None:
     with st.expander("本章各步骤", expanded=False):
         st.table([{"步骤": s["id"].split(".", 1)[1], "状态": STATUS_LABEL.get(s["status"], s["status"]),
                    "说明": s.get("error") or s.get("summary") or ""} for s in d["steps"]])
+
+
+def render_request_form(ws: str, n: int) -> None:
+    """发起修订（M4）：修订会成为一个可选的手动步骤，在总控台或本页 ▶ 运行。"""
+    from novel_writer.ondemand import REVISION_LEVELS
+
+    with st.expander("发起修订（L1–L4）", expanded=False):
+        level = st.selectbox("级别", list(REVISION_LEVELS), format_func=lambda k: f"{k} · {REVISION_LEVELS[k]}",
+                             key=f"rq_level_{n}")
+        instruction = st.text_area("修订要求（越具体越好）", key=f"rq_text_{n}")
+        if st.button("提交修订请求", key=f"rq_submit_{n}"):
+            r = tool_api.request_revision(ws, n, level, instruction)
+            if r["ok"]:
+                st.session_state[f"rq_step_{n}"] = r["data"]["step"]
+                st.success(f"已创建 {r['data']['step']}。点下面的按钮运行，或到总控台运行。")
+            else:
+                show_error(r)
+        step_id = st.session_state.get(f"rq_step_{n}")
+        if step_id and st.button(f"▶ 运行 {step_id}", key=f"rq_run_{n}"):
+            _report(tool_api.run_novel(ws, mode="single", step_id=step_id))
 
 
 def _report(res: dict) -> None:

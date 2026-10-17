@@ -93,6 +93,9 @@ PATHS: Dict[str, str] = {
     "review_report": "一致性检查/第{nn}章_检查报告.md",
     "reader_report": "一致性检查/第{nn}章_读者体验报告.md",
     "act_health_report": "一致性检查/幕次健康报告/第{act}幕_健康报告.md",
+    "act_style_report": "一致性检查/幕次健康报告/第{act}幕_风格对比.md",
+    "act_pacing_report": "一致性检查/幕次健康报告/第{act}幕_节奏.md",
+    "act_theme_report": "一致性检查/幕次健康报告/第{act}幕_主题.md",
     # 修订记录
     "revision_log": "修订记录/第{nn}章_修订记录.md",
     "blueprint_changelog": "修订记录/蓝图变更日志.md",
@@ -112,6 +115,7 @@ PATHS: Dict[str, str] = {
     "chapter_tasks": "项目状态/memory/tasks_ch{n}.json",
     "quota_file": "项目状态/memory/quota_ch{n}.json",
     "machine_report": "一致性检查/第{nn}章_机器校验.json",
+    "revision_diag": "修订记录/第{nn}章_修订诊断.md",
     # 推演记录 / 导出
     "simulations_dir": "推演记录",  # [补定义] plot-simulator 的 simulations/
     "export_dir": "导出",
@@ -126,6 +130,7 @@ PATHS: Dict[str, str] = {
     "studio_steps_dir": f"{STUDIO_DIR}/steps",
     "studio_intake": f"{STUDIO_DIR}/intake.json",
     "studio_inbox": f"{STUDIO_DIR}/inbox",
+    "studio_requests": f"{STUDIO_DIR}/requests",
     "intake_note": f"{STUDIO_DIR}/intake_note.md",
 }
 

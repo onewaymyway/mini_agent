@@ -8,6 +8,9 @@ import streamlit as st
 from novel_writer import tool_api
 from novel_writer.settings import GEARS, QUALITIES
 from ui import codex as codex_page
+from ui import ideas as ideas_page
+from ui import metrics as metrics_page
+from ui import settings_page
 from ui import reading as reading_page
 from ui import review as review_page
 from ui import writing as writing_page
@@ -24,22 +27,24 @@ def page_cockpit() -> None:
         return
     st.header(f"🧭 {novel_title(ws)}")
     st.caption(ws)
-    names = ["🧭 总控台", "🗺 规划", "✍ 写作台", "🔍 审校", "📖 阅读", "👥 设定库", "🧵 线索"]
+    names = ["🧭 总控台", "🗺 规划", "✍ 写作台", "🔍 审校", "📖 阅读",
+             "💡 灵感箱", "📊 度量", "⚙ 设置", "👥 设定库", "🧵 线索"]
     tabs = st.tabs(names)
-    with tabs[0]:
-        render_control(ws)
-    with tabs[1]:
-        planning_page.render_planning(ws)
-    with tabs[2]:
-        writing_page.render_writing(ws)
-    with tabs[3]:
-        review_page.render_review(ws)
-    with tabs[4]:
-        reading_page.render_reading(ws)
-    with tabs[5]:
-        codex_page.render_codex(ws)
-    with tabs[6]:
-        threads_page.render_threads(ws)
+    pages = [
+        lambda: render_control(ws),
+        lambda: planning_page.render_planning(ws),
+        lambda: writing_page.render_writing(ws),
+        lambda: review_page.render_review(ws),
+        lambda: reading_page.render_reading(ws),
+        lambda: ideas_page.render_ideas(ws),
+        lambda: metrics_page.render_metrics(ws),
+        lambda: settings_page.render_settings(ws),
+        lambda: codex_page.render_codex(ws),
+        lambda: threads_page.render_threads(ws),
+    ]
+    for tab, page in zip(tabs, pages):
+        with tab:
+            page()
 
 
 def render_control(ws: str) -> None:

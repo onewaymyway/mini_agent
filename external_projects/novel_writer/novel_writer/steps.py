@@ -291,5 +291,53 @@ def chapter_steps(n: int, title: str, *, total: Optional[int], prev_last: str) -
     return steps
 
 
+# ── 幕末（方案 4.2 幕末表）────────────────────────────────────────────────────
+
+
+def act_steps(act: int) -> List[StepDef]:
+    """第 act 幕结束后的幕末步骤。全部是 skill 步骤，闸门随挡位（幕末类别）。"""
+    a = {"act": act}
+    return [
+        StepDef(id=f"act_review:{act}", title=f"第{act}幕：深度审稿", stage="act", category=CAT_ACT,
+                executor=EXECUTOR_SKILL, skill="consistency-checker", extra=a,
+                instructions=f"对第 {act} 幕做深度审稿（五维：事实/人物/世界规则/伏笔/主题），输出幕次健康报告。",
+                outputs=(rel("act_health_report", act=act),)),
+        StepDef(id=f"act_style:{act}", title=f"第{act}幕：风格幕间对比", stage="act", category=CAT_ACT,
+                executor=EXECUTOR_SKILL, skill="style-guardian", extra=a,
+                instructions=f"对比第 {act} 幕与风格指纹，区分「有意调整」与「有害漂移」。",
+                outputs=(rel("act_style_report", act=act),)),
+        StepDef(id=f"act_pacing:{act}", title=f"第{act}幕：节奏复盘", stage="act", category=CAT_ACT,
+                executor=EXECUTOR_SKILL, skill="pacing-architect", extra=a,
+                instructions=f"复盘第 {act} 幕的张力曲线，并重新规划下一幕的三章单元。",
+                outputs=(rel("act_pacing_report", act=act),)),
+        StepDef(id=f"act_theme:{act}", title=f"第{act}幕：主题一致性", stage="act", category=CAT_ACT,
+                executor=EXECUTOR_SKILL, skill="theme-architect", extra=a,
+                instructions=f"检查第 {act} 幕的主题表达是否一致、是否说教。",
+                outputs=(rel("act_theme_report", act=act),)),
+        StepDef(id=f"act_worldcheck:{act}", title=f"第{act}幕：世界设定巡检", stage="act", category=CAT_ACT,
+                executor=EXECUTOR_SKILL, skill="world-builder", extra=a,
+                instructions=f"巡检第 {act} 幕用到的世界设定，标出冗余与冲突。",
+                outputs=(rel("world_usage_report", n=act),)),
+        StepDef(id=f"act_ideas:{act}", title=f"第{act}幕：复查暂存灵感", stage="act", category=CAT_ACT,
+                executor=EXECUTOR_SKILL, skill="idea-catcher", extra=a,
+                instructions="复查灵感箱中暂存的灵感，判断是否现在整合进后续章节。",
+                outputs=()),
+        StepDef(id=f"act_simulate:{act}", title=f"第{act}幕：中层推演（可选）", stage="act", category=CAT_REVISE,
+                executor=EXECUTOR_SKILL, skill="plot-simulator", extra={**a, "optional": True},
+                instructions="在下一幕开始前做中层推演，验证伏笔与走向。",
+                outputs=(rel("simulations_dir") + "/*",)),
+    ]
+
+
+def snapshot_step(n: int) -> StepDef:
+    """每 10 章的全局快照（方案 4.2）。python 步骤，基础设施类别，所有挡位自动。"""
+    return StepDef(
+        id=f"snapshot:{n}", title=f"第{n}章后全局快照", stage="p3", category=CAT_INFRA,
+        executor=EXECUTOR_PYTHON, handler="snapshot", chapter=0,
+        inputs=(rel("characters"), rel("plot_tracker")), outputs=(rel("memory_snapshot", n=n),),
+        extra={"through_chapter": n},
+    )
+
+
 def _stage_of(n: int) -> str:
     return "p2" if n <= OPENING_CHAPTERS else "p3"

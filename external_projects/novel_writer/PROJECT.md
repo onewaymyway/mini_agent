@@ -23,7 +23,8 @@
 | M1 引擎内核 | **已完成（2026-10-17，待确认）** | 步骤定义/流水线展开、闸门（挡位/覆盖/强制检查点）、状态机与脏标记、孤儿自愈、worker 循环（暂停/停止/预算/审批/needs_user/重试）、skill_agent 运行（`FrameworkInvoker` + `workflows/skill_step.yaml`）、tool_api 运行接口、service_cli、冒烟脚本；32 个桩测试 |
 | M2 规划阶段 + UI 第一批 | **已完成（2026-10-17，待确认）** | 新建向导（意图表单）、书架（打开）、驾驶舱四分页：总控台（挡位/预算/流水线表/运行与审批/答复/闸门覆盖/作者指导）、规划（幕结构、章节表编辑、蓝图变更日志）、设定库（人设卡编辑、档案/世界圣经只读）、线索（伏笔/张力只读）；AppTest 冒烟 + 桩全链路 14 个用例 |
 | M3 章节循环 + UI 第二批 | **已完成（2026-10-17，待确认）** | 章节 python 步骤 W1–W4/W9/W11（配额与偏差补偿、情节任务、确定性上下文包、风格提示、机器校验、修改循环最多 3 轮、升级人工不推进下一章）；sync_plot（伏笔同步）；写作台、审校、阅读三页；连续三章桩全链路与硬错误升级验收；99 个用例 |
-| M4–M5 | 未开始 | 见方案第 8 节 |
+| M4 幕末 / 修订 / 灵感 / 度量 / 设置矩阵 | **已完成（2026-10-17，待确认）** | 幕末步骤（深度审稿、风格对比、节奏、主题、世界巡检、灵感复查、可选推演）与每 10 章快照；修订 L1–L4（L3 同步下游、L4 需确认并标记受影响步骤）；灵感箱（记录 → 评估 → 整合/暂存/丢弃）；度量页与步骤详情（prompt/回执）；设置页的步骤×闸门矩阵与检查点/预算/禁用词；13 个新用例 |
+| M5 | 未开始 | 见方案第 8 节 |
 
 ## 已知限制 / 待验证事项
 
@@ -37,6 +38,9 @@
 - **上下文包没有关键词/TF-IDF 检索**：目前只按固定段落与字符上限组装（方案 7.3 的检索部分留待后续）。
 - **机器校验的范围**：字数、禁用词、与前三章的段落重复、超长段落已实现；角色名白名单与伏笔 id 存在性检查未实现。
 - **修改循环的预算**：一次修改循环内最多 6 次 LLM 调用（3 轮写作 + 3 轮复核），预算检查只在步骤之间进行，不会在循环中途打断。
+- **结局设计与终审未做**：ending-designer（design_ending）与 final_review 属于方案 4.2 的收尾步骤，本期未加入流水线（归入 M5 或后续）。
+- **幕末的风格幕间对比**：只调用 style-guardian，没有区分「有意调整」与「有害漂移」的结构化结果，结论以报告文本呈现。
+- **修订与灵感是按需步骤**：它们以可选手动步骤出现，只能从总控台或审校/灵感箱页运行，不会自动排队。
 - **章号位数**：仍固定两位（`rel()` 的 nn），超过 99 章需要在后续版本补充。
 - **并发限制**：UI/CLI 对 `pipeline_state.json` 的写入与 worker 同时进行时，同进程内有锁，跨进程靠 worker 每轮重新读盘收敛；极端情况下（worker 执行中同一步被人同时批准/重跑）以后写者为准。
 - **章节号位数**：`rel()` 的 `nn` 固定两位；超过 99 章的书需要在 M3 引入 `chapter_number_width`（方案基线 40 章，暂不影响）。
@@ -52,11 +56,12 @@ novel_writer/
 ├── project.yaml          daemon 契约（create_novel / list_novels / health）
 ├── PROJECT.md            本文件
 ├── app.py                Streamlit 薄入口；页面在 ui/
-├── ui/                   shelf（书架）、wizard（新建向导）、cockpit（驾驶舱）、planning / writing / review / reading / codex / threads（分页）、components、skills_page
+├── ui/                   shelf（书架）、wizard（新建向导）、cockpit（驾驶舱）、planning / writing / review / reading / ideas / metrics / settings_page / codex / threads（分页）、components、skills_page
 ├── novel_writer/         config / fsutil / settings / workspace / shelf / skills_catalog / tool_api
 │                         M1: steps / gates / state / pipeline / validators / runner / worker / service_cli
 │                         M2: intake / views
 │                         M3: chapter_ops（章节 python 步骤与修改循环）
+│                         M4: ondemand（修订 / 灵感请求）
 ├── workflows/            skill_step.yaml（M1：通用单步 skill_agent 工作流）
 ├── skills/               23 个 skill（原样，未修改）
 ├── entrypoints/          create_novel / list_novels / health（+ _common）；M1: run_novel（worker）、smoke_real_llm

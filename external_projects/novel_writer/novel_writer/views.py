@@ -7,10 +7,12 @@
 from __future__ import annotations
 
 import datetime as _dt
+import json
 import re
 from typing import Any, Dict, List, Optional
 
 from novel_writer import pipeline as P
+from novel_writer import steps as S
 from novel_writer import state as st
 from novel_writer.fsutil import atomic_write_json, atomic_write_text, read_json
 from novel_writer.workspace import Workspace, WorkspaceError, count_words, sanitize_name
@@ -308,3 +310,143 @@ def export_book(ws: Workspace) -> Dict[str, Any]:
     out = ws.path("export_dir") / f"{sanitize_name(title, what='书名')}_全书合稿.md"
     atomic_write_text(out, "\n\n".join(parts) + "\n")
     return {"file": str(out.relative_to(ws.root)), "chapters": count, "words": words}
+
+
+# ── M4：设置矩阵 / 度量 / 灵感 / 修订请求 / 步骤详情 ──────────────────────────
+
+from novel_writer import gates as _gates  # noqa: E402
+from novel_writer import ondemand as _ondemand  # noqa: E402
+from novel_writer import settings as _settings_mod  # noqa: E402
+
+GATE_CHOICES = ["", "manual", "review", "auto", "skip"]
+
+
+def matrix_view(ws: Workspace) -> Dict[str, Any]:
+    settings = ws.settings()
+    rows = []
+    for step in P.build_plan(ws):
+        decision = _gates.resolve_gate(step, settings)
+        preset = _gates.GEAR_GATES.get(step.category, {}).get(settings["gear"]) if step.category != S.CAT_CHECKPOINT else "review"
+        rows.append({
+            "id": step.id, "title": step.title, "stage": step.stage, "category": step.category,
+            "preset": preset or "—", "override": (settings.get("step_overrides") or {}).get(step.id, ""),
+            "effective": decision.gate, "source": decision.source,
+        })
+    return {
+        "gear": settings["gear"],
+        "stage_gears": settings.get("stage_gear_overrides") or {},
+        "stages": sorted({r["stage"] for r in rows}),
+        "rows": rows,
+        "checkpoints": settings.get("checkpoints") or {},
+        "budget": settings.get("budget") or {},
+        "banned_words": settings.get("banned_words") or [],
+        "gear_table": _gates.gear_table_rows(),
+    }
+
+
+def save_matrix(ws: Workspace, step_overrides: Dict[str, str], stage_gears: Dict[str, str],
+                extra: Dict[str, Any]) -> Dict[str, Any]:
+    """保存矩阵：单步覆盖（空值 = 恢复预设）、阶段挡位、检查点豁免、预算与禁用词。"""
+    cur = ws.settings()
+    overrides = {k: v for k, v in (step_overrides or {}).items() if v}
+    stages = {k: v for k, v in (stage_gears or {}).items() if v}
+    merged = {**cur, "step_overrides": overrides, "stage_gear_overrides": stages}
+    for key, value in (extra or {}).items():
+        if key in ("checkpoints", "budget") and isinstance(value, dict):
+            merged[key] = {**(cur.get(key) or {}), **value}
+        elif key == "banned_words":
+            merged[key] = list(value)
+        elif key in ("gear", "quality"):
+            merged[key] = value
+    try:
+        saved = ws.save_settings(merged)
+    except _settings_mod.SettingsError as exc:
+        raise ViewError(str(exc)) from exc
+    return {"step_overrides": saved["step_overrides"], "stage_gear_overrides": saved["stage_gear_overrides"]}
+
+
+def metrics_view(ws: Workspace) -> Dict[str, Any]:
+    chapters = chapters_overview(ws)["chapters"]
+    rounds = {}
+    for n in _chapter_numbers(ws):
+        log = _read_text(ws.path("revision_log", nn=n)) or ""
+        rounds[n] = sum(1 for line in log.splitlines() if "轮修改后" in line)
+    for row in chapters:
+        row["revise_rounds"] = rounds.get(row["chapter"], 0)
+    records = []
+    path = ws.path("studio_usage")
+    if path.is_file():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                records.append(json.loads(line))
+            except ValueError:
+                continue
+    step_records = [r for r in records if "step" in r]
+    by_skill: Dict[str, Dict[str, Any]] = {}
+    for r in step_records:
+        key = r.get("skill") or r.get("executor") or "python"
+        agg = by_skill.setdefault(key, {"skill": key, "runs": 0, "failed": 0, "seconds": 0.0})
+        agg["runs"] += 1
+        agg["seconds"] = round(agg["seconds"] + float(r.get("duration_sec") or 0), 1)
+        if r.get("status") in (st.ST_FAILED, st.ST_BLOCKED):
+            agg["failed"] += 1
+    log_tail = ""
+    log = ws.path("studio_log")
+    if log.is_file():
+        log_tail = "\n".join(log.read_text(encoding="utf-8", errors="replace").splitlines()[-40:])
+    return {
+        "chapters": chapters,
+        "usage_by_skill": sorted(by_skill.values(), key=lambda a: -a["seconds"]),
+        "recent": step_records[-30:][::-1],
+        "total_runs": len(step_records),
+        "total_failed": sum(a["failed"] for a in by_skill.values()),
+        "log_tail": log_tail,
+    }
+
+
+def step_detail(ws: Workspace, step_id: str) -> Dict[str, Any]:
+    base = ws.step_dir(step_id, 1).parent
+    runs = sorted((p for p in base.glob("run_*") if p.is_dir()), key=lambda p: int(p.name.split("_")[1])) if base.is_dir() else []
+    if not runs:
+        return {"step": step_id, "runs": 0, "prompt": None, "receipt": None}
+    latest = runs[-1]
+    prompts = sorted(latest.glob("prompt_*.md"))
+    return {
+        "step": step_id,
+        "runs": len(runs),
+        "run_dir": str(latest.relative_to(ws.root)),
+        "prompt": prompts[-1].read_text(encoding="utf-8") if prompts else None,
+        "receipt": read_json(latest / "receipt.json", default=None),
+    }
+
+
+def ideas_view(ws: Workspace) -> Dict[str, Any]:
+    statuses = {sid: e for sid, e in st.load_state(ws)["steps"].items()}
+    rows = []
+    for req in _ondemand.list_requests(ws, kind="idea"):
+        entry = statuses.get(f"idea.{req['id']}", {})
+        result = req.get("result") or {}
+        rows.append({"id": req["id"], "text": req.get("text", ""), "created_at": req.get("created_at"),
+                     "state": entry.get("status", st.ST_PENDING), "decision": result.get("decision"),
+                     "target_chapter": result.get("target_chapter"), "summary": result.get("summary", "")})
+    return {"ideas": rows}
+
+
+def add_idea(ws: Workspace, text: str) -> Dict[str, Any]:
+    body = str(text or "").strip()
+    if not body:
+        raise ViewError("灵感内容不能为空")
+    req = _ondemand.create_request(ws, "idea", text=body)
+    return {"id": req["id"], "step": f"idea.{req['id']}"}
+
+
+def request_revision(ws: Workspace, chapter: int, level: str, instruction: str) -> Dict[str, Any]:
+    if level not in _ondemand.REVISION_LEVELS:
+        raise ViewError(f"未知修订级别 {level!r}")
+    if chapter not in _chapter_numbers(ws):
+        raise ViewError(f"第 {chapter} 章不在流水线中")
+    body = str(instruction or "").strip()
+    if not body:
+        raise ViewError("请写明修订要求")
+    req = _ondemand.create_request(ws, "revision", chapter=int(chapter), level=level, instruction=body)
+    return {"id": req["id"], "step": f"rev.{req['id']}", "level": level}

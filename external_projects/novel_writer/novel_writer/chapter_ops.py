@@ -395,7 +395,27 @@ def h_revise_loop(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invo
     )
 
 
+def h_snapshot(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:
+    """每 10 章的全局快照：人物档案、伏笔账本、全书字数（方案 4.2 snapshot）。"""
+    n = int(step.extra.get("through_chapter") or 0)
+    words = 0
+    for k in range(1, n + 1):
+        path = chapter_file(ws, k)
+        if path is not None:
+            words += count_words(path.read_text(encoding="utf-8"))
+    snap = {
+        "through_chapter": n,
+        "total_words": words,
+        "characters": read_json(ws.path("characters"), default=None),
+        "plot_tracker": read_json(ws.path("plot_tracker"), default=None),
+        "created_at": _now(),
+    }
+    atomic_write_json(ws.path("memory_snapshot", n=n), snap)
+    return {"summary": f"快照已保存（截至第 {n} 章，{words} 字）"}
+
+
 CHAPTER_HANDLERS = {
+    "snapshot": h_snapshot,
     "word_quota": h_word_quota,
     "plot_tasks": h_plot_tasks,
     "context_pack": h_context_pack,

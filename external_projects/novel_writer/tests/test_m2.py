@@ -227,4 +227,4 @@ def test_cockpit_and_planning_render_with_blueprint(isolated_data):
     at.sidebar.radio[0].set_value("🧭 驾驶舱").run()
     assert not at.exception, at.exception
     assert any("雨夜钟声" in h.value for h in at.header)
-    assert len(at.tabs) == 7
+    assert len(at.tabs) == 10

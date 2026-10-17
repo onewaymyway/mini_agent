@@ -28,7 +28,7 @@ skill 标准 6 个中文目录（大纲规划/正文/一致性检查/修订记�
 
 ## 测试
 
-`python -m pytest tests -q`（99 个用例：M0 39 + M1 32 + M2 14 + M3 14；含入口脚本子进程测试与 Streamlit AppTest 冒烟，均使用临时数据目录，
+`python -m pytest tests -q`（113 个用例：M0 39 + M1 32 + M2 14 + M3 14 + M4 14；含入口脚本子进程测试与 Streamlit AppTest 冒烟，均使用临时数据目录，
 不污染真实 `data/`）。
 
 
@@ -148,3 +148,37 @@ python entrypoints/smoke_real_llm.py --title 冒烟书 --intent "一个落魄少
 python -m novel_writer.service_cli status <工作目录>
 python -m novel_writer.service_cli answer <工作目录> ch02.revise_loop --json '{"decision": "接受风险继续"}'
 ```
+
+
+## M4：幕末、修订、灵感、度量与设置
+
+### 幕末步骤
+
+蓝图 `structure.acts[].chapter_range` 的最后一章完成后，依次出现：深度审稿（consistency-checker）、风格幕间对比（style-guardian）、节奏复盘（pacing-architect）、主题一致性（theme-architect）、世界设定巡检（world-builder）、灵感复查（idea-catcher），以及**可选**的中层推演（plot-simulator，始终手动，不阻塞流水线）。
+每 10 章还有一个全局快照（`项目状态/memory/snapshots/snapshot_chNN.json`）：人物档案、伏笔账本、截至该章的全书字数。
+
+### 修订（L1–L4）
+
+在审校页「发起修订」中选择级别并写明要求，系统生成一个可选的手动步骤（`rev.<id>`），在总控台或审校页点 ▶ 运行：
+
+| 级别 | 做什么 | 下游影响 |
+|---|---|---|
+| L1 | revision-editor 诊断 → chapter-writer 改句段 → 复核 | 无 |
+| L2 | 同上，并重写本章概述 | 概述变化使依赖它的步骤（如下一章上下文包）自动标为需重跑 |
+| L3 | 同 L2，并同步人物状态与伏笔状态 | 同上，且人物/伏笔变化会传播 |
+| L4 | **不改写任何文本**。先挂起要你确认；确认后，第 n 章及之后已通过的步骤标为「需重跑」，不自动执行 | 需要你之后手动重跑 |
+
+### 灵感箱
+
+记一条灵感 → ▶ 评估（idea-catcher 给出 整合 / 暂存 / 丢弃 的结论，整合时指出章号）。结论显示在灵感箱，不会自动改写正文。
+
+### 度量与步骤详情
+
+度量页汇总：每章字数与配额、🔴 数量、修改轮数、机器硬问题；技能用量与失败次数；最近的步骤记录；worker 日志尾部。
+选择任一步骤可以看到最近一次执行的 prompt 与回执（保存在 `_studio/steps/<步骤>/run_<n>/`）。
+
+### 设置矩阵
+
+设置页的表格每行是一个步骤：挡位预设、覆盖（可选 manual / review / auto / skip）、生效闸门及来源。
+阶段挡位可以按 p1 / p2 / p3 / act 分别设置。检查点（蓝图确认、前三章确认）只能更严格，不能被覆盖放松；只有「豁免蓝图确认」能让蓝图确认自动通过。
+预算（章数、LLM 调用数、分钟数）与禁用词也在这里设置，保存后从下一步起生效。
