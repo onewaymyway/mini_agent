@@ -430,7 +430,7 @@ docs/  tests/  data/(gitignore)
 | M3 章节循环 + UI 第二批 | **已完成（2026-10-17，待确认）** | 见下方「M3 实施记录」 |
 | M4 幕末/修订/灵感/度量/设置矩阵 | **已完成（2026-10-17，待确认）** | 见下方「M4 实施记录」 |
 | M5 自动模式完善 | **已完成（2026-10-17，待确认）** | 见下方「M5 实施记录」 |
-| M6 质量增强（可选） | 待议 | 不属于已确认范围：best-of-N、结局设计与终审、质量档位的步骤差异 |
+| M6 质量增强 | **已完成（2026-10-17，待确认）** | 见下方「M6 实施记录」 |
 
 ### M1 实施记录（2026-10-17）
 
@@ -563,4 +563,37 @@ docs/  tests/  data/(gitignore)
 - 手写旁路标记通过后，后续 stale 传播是否符合预期。
 
 交付节奏（Q10）：本期完成后更新文档、跑测试、打包修改文件（保持目录结构，可直接覆盖仓库），等你确认再进入 M6。
+
+### M6 实施记录（2026-10-17）
+
+**交付范围**（作者确认「都要做」后按四项实施）：
+
+- 结局设计与终审：`steps.ending_design_step`（CAT_DESIGN）插在最后一幕首章前（无幕结构则在末章前）；`steps.final_review_step`（CAT_ACT，consistency-checker）位于全部章节与幕末之后；`gates` 把 final_review 纳入幕末审稿的最低审批规则。
+- 质量档位步骤差异：`steps.chapter_steps(quality=...)`——草稿档 伏笔同步并入人物同步、关闭读者模拟；精品档读者模拟每 3 章；`pipeline` 在精品档每 10 章插入 `patrol:<n>`（revision-editor，报告型）。
+- best-of-N：精品档每章在写作后插入 `chNN.alt_write`（chapter-writer 写候选稿 B，不改正文）与 `chNN.best_pick`（python，`chapter_ops.h_best_pick`）；机器校验评分（硬问题、提示、字数偏离）更低者成为正文，平手保留 A，结果写入择优报告；机器校验改为检查 best_pick 之后的正文。
+- 导出：新增 `exporter.py`（txt / docx / epub，只依赖标准库）；`views.export_book(fmt)`、`tool_api.export(fmt)`；阅读页增加格式选择与下载按钮。
+
+**验收对照**：
+
+- 结局位置、终审位置与门控：`test_ending_design_placed_before_final_act`、`test_ending_design_falls_back_to_last_chapter_without_acts`、`test_final_review_is_last_and_reviewed_in_g3`。✔
+- 质量档差异：草稿 / 标准 / 精品三组断言（步骤存在性与依赖关系）。✔
+- 择优：平手保留 A、B 更优时替换正文、无候选稿时不改动、精品档端到端（桩候选稿被正确淘汰）。✔
+- 导出：docx 与 epub 的包结构、XML 良构性、转义正确、epub 的 mimetype 首位且不压缩；格式非法与空书的错误路径；界面导出 epub。✔
+- 真实阅读器 / Word / 电子书工具中打开：**未验证**，需要你本机检查。
+
+**与方案的偏差 / 决定（已记录）**：
+
+1. **质量档只实现了方案 6.4 的一部分**：未做「写后风格检查 / 每 5 章词频」、scene-architect 与 dialogue-crafter 的自动触发、plot-simulator 的转折章前推演。它们依赖 M3–M4 的可选步骤，留待后续。
+2. **best-of-N 为两稿且只用机器指标择优**：方案中的「择优」本意包括文笔判断，本期没有 LLM 评审（避免额外成本与「自己审自己」），因此择优只能发现硬性缺陷。N > 2 未实现。
+3. **结局设计插入位置是规则推断**：「进入末幕前」取最后一幕首章；没有幕结构时取末章。如果你的蓝图幕结构与此不符，需要调整 `pipeline._ending_chapter`。
+4. **导出不依赖 python-docx / ebooklib**：减少依赖，代价是格式最小化。
+5. **全书终审与结局设计都是 review 类**：G3 下仍需你批准，这是为了保持「幕末与结局必须有人看」的原则（方案 7.5）。
+
+**需要你重点观察的点（真实 LLM 下）**：
+
+- 精品档的 B 稿是否与 A 稿有实质差异（若 chapter-writer 几乎复制 A，择优没有意义）；
+- 结局设计的插入位置在你的蓝图里是否合理；
+- 导出的 docx / epub 在 Word / 阅读器中的排版是否可接受（如需封面或目录样式，属于后续增强）。
+
+交付节奏（Q10）：M6 为方案中的最后一期。本期完成后更新文档、跑测试、打包修改文件，等你确认后本项目的分期实施结束。
 

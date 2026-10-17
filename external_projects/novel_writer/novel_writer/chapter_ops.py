@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from novel_writer import steps as S
-from novel_writer.fsutil import atomic_write_json, read_json
+from novel_writer.fsutil import atomic_write_json, atomic_write_text, read_json
 from novel_writer.workspace import Workspace, count_words
 
 MAX_REVISE_ROUNDS = 3
@@ -242,10 +242,10 @@ def h_context_pack(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], inv
 # ── W9 机器校验（零 LLM 成本，7.2）──────────────────────────────────────────
 
 
-def machine_findings(ws: Workspace, n: int, settings: Dict[str, Any]) -> Dict[str, Any]:
+def machine_findings(ws: Workspace, n: int, settings: Dict[str, Any], path: Optional[Path] = None) -> Dict[str, Any]:
     hard: List[str] = []
     warn: List[str] = []
-    path = chapter_file(ws, n)
+    path = path or chapter_file(ws, n)
     if path is None:
         return {"chapter": n, "words": 0, "quota": 0, "hard": ["正文文件缺失"], "warn": [], "checked_at": _now()}
     text = path.read_text(encoding="utf-8")
@@ -414,6 +414,41 @@ def h_snapshot(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker
     return {"summary": f"快照已保存（截至第 {n} 章，{words} 字）"}
 
 
+def _score(findings: Dict[str, Any]) -> tuple:
+    """择优评分（越小越好）：硬问题数、提示数、字数偏离配额的绝对值。"""
+    quota = findings.get("quota") or 0
+    deviation = abs(findings.get("words", 0) - quota) if quota else 0
+    return (len(findings.get("hard") or []), len(findings.get("warn") or []), deviation)
+
+
+def h_best_pick(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:
+    """精品档 best-of-N（M6）：正文（A）与候选稿（B）各做一次机器校验，评分更优者成为正文。
+
+    平手保留 A（正文），避免无谓改动；无论哪种结果都写择优报告，便于在审校页核对。
+    """
+    n = step.chapter
+    a_path = chapter_file(ws, n)
+    b_path = ws.path("candidate_alt", nn=n)
+    if a_path is None:
+        raise ChapterOpError(f"第 {n} 章正文缺失，无法择优")
+    if not b_path.is_file():
+        return {"summary": "没有候选稿，保留正文"}
+    a_findings = machine_findings(ws, n, settings, path=a_path)
+    b_findings = machine_findings(ws, n, settings, path=b_path)
+    winner = "B" if _score(b_findings) < _score(a_findings) else "A"
+    if winner == "B":
+        atomic_write_text(a_path, b_path.read_text(encoding="utf-8"))
+    report = {
+        "chapter": n, "winner": winner,
+        "A": {"score": list(_score(a_findings)), "hard": a_findings["hard"], "warn": a_findings["warn"]},
+        "B": {"score": list(_score(b_findings)), "hard": b_findings["hard"], "warn": b_findings["warn"]},
+        "checked_at": _now(),
+    }
+    atomic_write_json(ws.path("best_pick_report", nn=n), report)
+    _log(ws, n, f"择优：采用{winner}稿（A 评分 {report['A']['score']}，B 评分 {report['B']['score']}）")
+    return {"summary": f"择优结果：采用{winner}稿"}
+
+
 CHAPTER_HANDLERS = {
     "snapshot": h_snapshot,
     "word_quota": h_word_quota,
@@ -422,4 +457,5 @@ CHAPTER_HANDLERS = {
     "style_hint": h_style_hint,
     "machine_check": h_machine_check,
     "revise_loop": h_revise_loop,
+    "best_pick": h_best_pick,
 }

@@ -195,7 +195,8 @@ def test_full_flow_g3_with_approvals_completes_and_skips_optional(ws):
 def test_budget_chapters_pauses_not_fails(ws):
     # M5 起：前三章逐章审批（方案 6.2），每章写完都会停在 review，预算计数是“每次运行”的，
     # 所以预算要在第 4 章起（非前三章、G3 自动写作）的连续运行中验证。
-    atomic_write_json(ws.path("blueprint"), make_blueprint(6))
+    # M6 起：无幕结构时结局设计插在最后一章前（设计审批会先停下），因此用 7 章蓝图，让预算落在普通章节上
+    atomic_write_json(ws.path("blueprint"), make_blueprint(7))
     set_settings(ws, gear="G3", budget={"max_chapters_per_run": 1})
     inv = FakeInvoker(ws.root)
     for _ in range(100):

@@ -294,7 +294,11 @@ def _append_log(path, line: str) -> None:
         f.write(f"- {stamp} {line}\n")
 
 
-def export_book(ws: Workspace) -> Dict[str, Any]:
+def export_book(ws: Workspace, fmt: str = "md") -> Dict[str, Any]:
+    from novel_writer import exporter as E
+
+    if fmt not in E.FORMATS:
+        raise ViewError(f"不支持的导出格式 {fmt!r}，可选：{list(E.FORMATS)}")
     parts, words, count = [], 0, 0
     title = read_json(ws.path("workspace_config"), default={}).get("novel_title") or "小说"
     for n in _chapter_numbers(ws):
@@ -307,9 +311,17 @@ def export_book(ws: Workspace) -> Dict[str, Any]:
         count += 1
     if not parts:
         raise ViewError("还没有任何正文可以导出")
-    out = ws.path("export_dir") / f"{sanitize_name(title, what='书名')}_全书合稿.md"
-    atomic_write_text(out, "\n\n".join(parts) + "\n")
-    return {"file": str(out.relative_to(ws.root)), "chapters": count, "words": words}
+    stem = f"{sanitize_name(title, what='书名')}_全书合稿"
+    out = ws.path("export_dir") / f"{stem}.{fmt}"
+    if fmt == "md":
+        atomic_write_text(out, "\n\n".join(parts) + "\n")
+    elif fmt == "txt":
+        atomic_write_text(out, E.to_txt(parts))
+    elif fmt == "docx":
+        E.write_docx(out, title, parts)
+    else:
+        E.write_epub(out, title, parts)
+    return {"file": str(out.relative_to(ws.root)), "chapters": count, "words": words, "format": fmt}
 
 
 # ── M4：设置矩阵 / 度量 / 灵感 / 修订请求 / 步骤详情 ──────────────────────────

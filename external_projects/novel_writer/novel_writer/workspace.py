@@ -119,6 +119,12 @@ PATHS: Dict[str, str] = {
     # 推演记录 / 导出
     "simulations_dir": "推演记录",  # [补定义] plot-simulator 的 simulations/
     "export_dir": "导出",
+    # M6
+    "candidate_alt": "正文/_drafts/第{nn}章_候选B.md",          # 精品档：best-of-N 的第二稿
+    "best_pick_report": "一致性检查/第{nn}章_择优.json",
+    "patrol_report": "修订记录/第{nn}章_巡检报告.md",            # 精品档：每 10 章巡检
+    "ending_design": "大纲规划/结局设计.md",
+    "final_report": "一致性检查/全书终审报告.md",
     # 本项目系统文件
     "studio_manifest": f"{STUDIO_DIR}/manifest.json",
     "studio_settings": f"{STUDIO_DIR}/settings.json",

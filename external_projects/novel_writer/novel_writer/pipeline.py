@@ -82,10 +82,17 @@ def build_plan(ws: Workspace) -> List[S.StepDef]:
     plan.append(_optional(simulate))
     plan.append(S.design_opening_step())
 
+    quality = ws.settings().get("quality", "standard")
     last = plan[-1].id
     act_ends = _act_ends(blueprint, total)
+    ending_at = _ending_chapter(blueprint, total)
     for n in range(1, total + 1):
-        chapter = S.chapter_steps(n, "", total=total, prev_last=last)
+        if n == ending_at:
+            # 结局设计（M6）：进入末幕前执行（方案 4.2）
+            ending = _with_deps(S.ending_design_step(), (last,))
+            plan.append(ending)
+            last = ending.id
+        chapter = S.chapter_steps(n, "", total=total, prev_last=last, quality=quality)
         plan += chapter
         last = chapter[-1].id
         if n == S.OPENING_CHAPTERS and total >= S.OPENING_CHAPTERS:
@@ -101,6 +108,12 @@ def build_plan(ws: Workspace) -> List[S.StepDef]:
             last = acts[-1].id
         if n % SNAPSHOT_INTERVAL == 0:
             plan.append(S.snapshot_step(n))
+        if quality == S.PREMIUM and n % S.PATROL_INTERVAL == 0:
+            plan.append(_with_deps(S.patrol_step(n), (last,)))
+            last = plan[-1].id
+    if total:
+        # 全书终审（M6，方案 4.2 收尾）：所有章节与幕末之后
+        plan.append(_with_deps(S.final_review_step(), (last,)))
     from novel_writer import ondemand
 
     plan += ondemand.ondemand_steps(ws)
@@ -122,6 +135,21 @@ def _act_ends(blueprint: Optional[Dict[str, Any]], total: int) -> Dict[int, int]
         if isinstance(act_no, int) and len(rng) == 2 and isinstance(rng[1], int) and 1 <= rng[1] <= total:
             out[rng[1]] = act_no
     return out
+
+
+def _ending_chapter(blueprint: Optional[Dict[str, Any]], total: int) -> int:
+    """结局设计插入的位置：最后一幕的第一章；没有幕结构时为最后一章。"""
+    if total <= 0:
+        return 0
+    acts = [a for a in (((blueprint or {}).get("structure") or {}).get("acts") or []) if isinstance(a, dict)]
+    starts = []
+    for a in acts:
+        rng = a.get("chapter_range") or []
+        if isinstance(a.get("act"), int) and len(rng) == 2 and isinstance(rng[0], int) and 1 <= rng[0] <= total:
+            starts.append((a["act"], rng[0]))
+    if not starts:
+        return total
+    return max(starts)[1]
 
 
 def _optional(step: S.StepDef) -> S.StepDef:

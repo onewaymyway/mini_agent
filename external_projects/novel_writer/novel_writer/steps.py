@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from novel_writer.workspace import PATHS
@@ -38,6 +38,11 @@ CATEGORIES = (
 OPENING_CHAPTERS = 3
 # 读者模拟的默认间隔（标准档：每 5 章；方案 6.4）
 READER_SIM_INTERVAL = 5
+# 质量档位（M6，方案 6.4）：读者模拟间隔（None = 关闭）
+QUALITY_READER_SIM_INTERVAL = {"draft": None, "standard": READER_SIM_INTERVAL, "premium": 3}
+PREMIUM = "premium"
+DRAFT = "draft"
+PATROL_INTERVAL = 10  # 精品档：每 10 章一次 8 维主动巡检
 
 
 @dataclass(frozen=True)
@@ -218,7 +223,8 @@ def init_style_b_step() -> StepDef:
 # ── 章节循环（P2/P3，方案 4.3）──────────────────────────────────────────────────
 
 
-def chapter_steps(n: int, title: str, *, total: Optional[int], prev_last: str) -> List[StepDef]:
+def chapter_steps(n: int, title: str, *, total: Optional[int], prev_last: str,
+                  quality: str = "standard") -> List[StepDef]:
     """第 n 章的单章循环（W1–W14）。
 
     返回的步骤按**线性顺序**排列，第一个步骤依赖 `prev_last`（上一个步骤 id）。
@@ -274,21 +280,89 @@ def chapter_steps(n: int, title: str, *, total: Optional[int], prev_last: str) -
                 inputs=(rel("chapter_summary", nn=n), rel("characters")),
                 outputs=(rel("characters"),), deps=(p("archive"),), **common),
     ]
-    steps.append(StepDef(
-        id=p("sync_plot"), title=f"第{n}章：伏笔状态同步", stage=_stage_of(n), category=CAT_CHAPTER_REVIEW,
-        executor=EXECUTOR_SKILL, skill="plot-tracker",
-        instructions=f"根据第 {n} 章的概述更新伏笔状态（埋设/推进/兑现）与故事线进度。",
-        inputs=(rel("chapter_summary", nn=n), rel("plot_tracker")),
-        outputs=(rel("plot_tracker"),), deps=(p("sync"),), **common,
-    ))
-    if n % READER_SIM_INTERVAL == 0:
+    if quality == DRAFT:
+        # 草稿档（方案 6.4）：伏笔同步并入人物同步，减少一次 LLM 调用
+        steps[-1] = replace(steps[-1],
+                            instructions=steps[-1].instructions + f"同时根据概述更新第 {n} 章涉及的伏笔状态。",
+                            outputs=(rel("characters"), rel("plot_tracker")))
+    else:
+        steps.append(StepDef(
+            id=p("sync_plot"), title=f"第{n}章：伏笔状态同步", stage=_stage_of(n), category=CAT_CHAPTER_REVIEW,
+            executor=EXECUTOR_SKILL, skill="plot-tracker",
+            instructions=f"根据第 {n} 章的概述更新伏笔状态（埋设/推进/兑现）与故事线进度。",
+            inputs=(rel("chapter_summary", nn=n), rel("plot_tracker")),
+            outputs=(rel("plot_tracker"),), deps=(p("sync"),), **common,
+        ))
+
+    if quality == PREMIUM:
+        # 精品档 best-of-N（M6）：写第二稿，机器校验择优，择优结果交给后续的校验与审稿
+        alt = alt_write_step(n, prev_last=p("write_chapter"))
+        pick = best_pick_step(n, deps=(alt.id,))
+        index = next(i for i, s in enumerate(steps) if s.id == p("machine_check"))
+        steps[index] = replace(steps[index], deps=(pick.id,))
+        steps[index:index] = [alt, pick]
+
+    interval = QUALITY_READER_SIM_INTERVAL.get(quality, READER_SIM_INTERVAL)
+    if interval and n % interval == 0:
         steps.append(StepDef(
             id=p("reader_sim"), title=f"第{n}章：读者体验模拟", stage=_stage_of(n), category=CAT_CHAPTER_REVIEW,
             executor=EXECUTOR_SKILL, skill="reader-simulator",
             instructions=f"以读者视角评估第 {n} 章（注意力/理解/情感/可信/节奏）。",
-            inputs=(chapter_text,), outputs=(rel("reader_report", nn=n),), deps=(p("sync_plot"),), **common,
+            inputs=(chapter_text,), outputs=(rel("reader_report", nn=n),),
+            deps=(p("sync") if quality == DRAFT else p("sync_plot"),), **common,
         ))
     return steps
+
+
+def alt_write_step(n: int, *, prev_last: str) -> StepDef:
+    """精品档 best-of-N 的第二稿：只写到候选文件，不改正文（M6）。"""
+    return StepDef(
+        id=chapter_id(n, "alt_write"), title=f"第{n}章：候选稿 B", stage=_stage_of(n), category=CAT_CHAPTER_WRITE,
+        executor=EXECUTOR_SKILL, skill="chapter-writer", chapter=n,
+        instructions=(f"另写第 {n} 章的一版替代稿：遵循同样的蓝图、上下文包与章前情节清单，"
+                      "叙述角度或措辞可以不同，但不能违背设定与伏笔。只写入候选文件，不要修改正文文件。"),
+        inputs=(rel("context_pack", n=n), rel("chapter_tasks", n=n), rel("quota_file", n=n)),
+        outputs=(rel("candidate_alt", nn=n),), deps=(prev_last,),
+    )
+
+
+def best_pick_step(n: int, *, deps: Tuple[str, ...]) -> StepDef:
+    """精品档择优（M6）：机器校验两稿，硬问题少者胜，平手保留正文。python 步骤。"""
+    return StepDef(
+        id=chapter_id(n, "best_pick"), title=f"第{n}章：择优", stage=_stage_of(n), category=CAT_CHAPTER_REVIEW,
+        executor=EXECUTOR_PYTHON, handler="best_pick", chapter=n,
+        inputs=(rel("candidate_alt", nn=n),), outputs=(rel("best_pick_report", nn=n),), deps=deps,
+    )
+
+
+def ending_design_step() -> StepDef:
+    """结局设计（M6，方案 4.2）：进入末幕前执行，设计收束方案。"""
+    return StepDef(
+        id="design_ending", title="结局设计", stage="p3", category=CAT_DESIGN,
+        executor=EXECUTOR_SKILL, skill="ending-designer",
+        instructions="基于蓝图与伏笔账本设计结局：收束哪些故事线、哪些问题留白、情感落点与最后一句话的方向。",
+        inputs=(rel("blueprint"), rel("plot_tracker")), outputs=(rel("ending_design"),),
+    )
+
+
+def final_review_step() -> StepDef:
+    """全书终审（M6，方案 4.2 收尾）：consistency-checker 全书五维校验。"""
+    return StepDef(
+        id="final_review", title="全书终审", stage="act", category=CAT_ACT,
+        executor=EXECUTOR_SKILL, skill="consistency-checker",
+        instructions="对全书做终审（事实/人物/世界规则/伏笔/主题），核对伏笔兑现率与字数偏差，输出全书终审报告。",
+        inputs=(rel("characters"), rel("plot_tracker")), outputs=(rel("final_report"),),
+    )
+
+
+def patrol_step(n: int) -> StepDef:
+    """精品档每 10 章的 8 维巡检（M6）：revision-editor 只出报告，不改正文。"""
+    return StepDef(
+        id=f"patrol:{n}", title=f"第{n}章后：8 维巡检", stage=_stage_of(n), category=CAT_ACT,
+        executor=EXECUTOR_SKILL, skill="revision-editor", chapter=0,
+        instructions=f"对第 1–{n} 章做 8 维主动巡检，列出隐性问题与建议，只出报告，不改正文。",
+        outputs=(rel("patrol_report", nn=n),), extra={"through_chapter": n},
+    )
 
 
 # ── 幕末（方案 4.2 幕末表）────────────────────────────────────────────────────

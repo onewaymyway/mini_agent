@@ -403,8 +403,8 @@ def save_chapter(workspace: str, n: int, text: str) -> Dict[str, Any]:
     return _guard(lambda: _ok(_views.save_chapter_text(_workspace_or_raise(workspace), int(n), text)))
 
 
-def export(workspace: str) -> Dict[str, Any]:
-    return _guard(lambda: _ok(_views.export_book(_workspace_or_raise(workspace))))
+def export(workspace: str, fmt: str = "md") -> Dict[str, Any]:
+    return _guard(lambda: _ok(_views.export_book(_workspace_or_raise(workspace), fmt)))
 
 
 # ───────────────────────── M4：矩阵 / 度量 / 灵感 / 修订 / 步骤详情 ─────────────────────────

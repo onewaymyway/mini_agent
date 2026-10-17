@@ -14,7 +14,7 @@
   4. 全局挡位 `gear` 的预设表；
   5. 挡位表之后的两条「最低审批」规则（M5，方案 6.2 表格中的注释行）：
      - 前三章的章节写作（W8）在 G1 起逐章审批：挡位表若给出 auto，改为 review；
-     - 幕末深度审稿（act_review）在 G3 下仍审批：挡位表若给出 auto，改为 review。
+     - 幕末深度审稿（act_review）与全书终审（final_review）在 G3 下仍审批：挡位表若给出 auto，改为 review。
      这两条只提高闸门严格度，且不覆盖显式的单步覆盖（覆盖在第 2 级已返回）。
 """
 
@@ -98,7 +98,7 @@ def _opening_write(step: S.StepDef) -> bool:
 
 def _act_review(step: S.StepDef) -> bool:
     """幕末深度审稿（方案 6.2：G3 下仍保留 review，可在覆盖里显式改为 auto）。"""
-    return step.id.startswith("act_review:")
+    return step.id.startswith("act_review:") or step.id == "final_review"
 
 
 # 各挡位的运行范围（方案 6.2 最后一行「连续运行范围」）。仅用于界面说明与批量入口的文档化，
