@@ -263,7 +263,9 @@ def test_skill_failure_marks_failed_and_stops(ws):
     r = run_worker(ws, mode="until_gate", invoker=inv, handlers=STUB_HANDLERS, heartbeat_interval=0.01)
     assert r["ok"] and r["reason"] == "failed"
     entry = st.get_step_state(ws, "plan_blueprint")
-    assert entry["status"] == st.ST_FAILED and "boom" in entry["error"] and entry["attempts"] == 1
+    # 失败后自动重跑最多 3 次（方案 M7 需求）：共 1 次原始执行 + 3 次自动重跑
+    assert entry["status"] == st.ST_FAILED and "boom" in entry["error"]
+    assert entry["attempts"] == 4 and entry["auto_retries"] == 3
 
 
 NO_WORD_QUOTA = {k: v for k, v in DEFAULT_PY_HANDLERS.items() if k != "word_quota"}

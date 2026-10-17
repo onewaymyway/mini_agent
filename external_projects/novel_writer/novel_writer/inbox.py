@@ -80,8 +80,10 @@ def collect(ws: Workspace) -> Dict[str, Any]:
             else:
                 items.append(_item(KIND_ANSWER, SEVERITY_WARN, view, "需要你回答一个问题后才能继续", "answer"))
         elif status == st.ST_FAILED:
+            retried = int(entry.get("auto_retries") or 0)
+            suffix = f"（已自动重跑 {retried} 次仍失败）" if retried else ""
             items.append(_item(KIND_FAILED, SEVERITY_BLOCK, {**view, "error": entry.get("error")},
-                               f"执行失败：{entry.get('error') or '未知原因'}", "rerun"))
+                               f"执行失败{suffix}：{entry.get('error') or '未知原因'}", "rerun"))
         elif status == st.ST_BLOCKED:
             items.append(_item(KIND_BLOCKED, SEVERITY_BLOCK, view,
                                entry.get("error") or "执行器尚未实现", "manual"))

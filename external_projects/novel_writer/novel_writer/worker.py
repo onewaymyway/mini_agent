@@ -22,6 +22,12 @@ from novel_writer import state as st
 from novel_writer import steps as S
 from novel_writer.workspace import Workspace
 
+# 步骤失败后的自动重跑（用户要求：最多自动重跑三次）。只针对 failed；
+# blocked（执行器未实现）、waiting_user、waiting_review 不重跑。
+MAX_AUTO_RETRIES = 3
+# 每次重跑前的等待秒数（给临时性故障，如接口限流，一点恢复时间）。测试中可改为 0。
+RETRY_BACKOFF_SEC = (5, 15, 30)
+
 MODES = ("until_gate", "single")
 HEARTBEAT_INTERVAL_SEC = 15.0
 
@@ -209,13 +215,32 @@ def _loop(
 
         if is_requested:
             st.write_control(ws, run_step=None)
+        st.update_step(ws, target.id, auto_retries=0)
         status_after = R.run_step(ws, target, invoker=invoker, settings=settings, handlers=handlers)
         budget.record(target)
+        retries = 0
+        while status_after == st.ST_FAILED and retries < MAX_AUTO_RETRIES:
+            if st.read_control(ws).get("command") in ("pause", "stop"):
+                st.log_line(ws, f"⏹ {target.id} 失败，但收到暂停/停止指令，不再自动重跑")
+                break
+            blocked_by = budget.check(target)
+            if blocked_by:
+                st.log_line(ws, f"⏹ {target.id} 失败，本次预算已用尽，不再自动重跑")
+                break
+            retries += 1
+            delay = RETRY_BACKOFF_SEC[min(retries - 1, len(RETRY_BACKOFF_SEC) - 1)] if RETRY_BACKOFF_SEC else 0
+            st.log_line(ws, f"↻ {target.id} 失败，{delay} 秒后自动重跑（第 {retries}/{MAX_AUTO_RETRIES} 次）")
+            st.update_step(ws, target.id, auto_retries=retries)
+            if delay:
+                time.sleep(delay)
+            status_after = R.run_step(ws, target, invoker=invoker, settings=settings, handlers=handlers)
+            budget.record(target)
         after = st.get_step_state(ws, target.id)
         executed.append({
             "step": target.id, "title": target.title, "status": status_after,
             "summary": after.get("summary") or after.get("error") or "",
             "duration_sec": after.get("duration_sec"),
+            "auto_retries": retries,
         })
 
         if status_after in (st.ST_FAILED, st.ST_BLOCKED, st.ST_WAITING_REVIEW, st.ST_WAITING_USER):

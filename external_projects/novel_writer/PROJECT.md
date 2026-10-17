@@ -94,6 +94,7 @@ novel_writer/
 - 2026-10-17：M2 完成（待确认）。新增 intake / views 模块，tool_api 增加意图与规划/设定/线索接口；
   ui/ 拆分为 wizard / cockpit / planning / codex / threads / components；app.py 增加「🧭 驾驶舱」导航。
   测试 85 个全部通过（M0 39 + M1 32 + M2 14）。
+- 2026-10-17：失败步骤自动重跑。`worker.MAX_AUTO_RETRIES = 3`，每次重跑前等待 `RETRY_BACKOFF_SEC`（5/15/30 秒）；仅针对 failed；暂停/停止、预算用尽时停止重跑；日志与 `last_run.json` 记录重跑次数；收件箱的失败提示注明已重跑次数。`test_engine_m1.py::test_skill_failure_marks_failed_and_stops` 的预期随之改为 4 次尝试；`conftest.py` 把退避时间设为 0；新增 `tests/test_auto_retry.py`（5 个用例）；全量 205 个通过。
 - 2026-10-17：「运行下一步」与单步选择的一致性修正。新增 `tool_api.next_step`（与 worker 同一个前沿函数）；「运行下一步」带上 next_step 返回的步骤 id 执行，按钮上方显示将运行的步骤；待批准/待答复时按钮禁用并说明原因（之前静默空转）；单步选择框默认跟随下一步，流水线表增加「下一步」列；新增 `tests/test_next_step.py`（6 个用例）；全量 200 个通过。
 - 2026-10-17：运行输出与完成提示（M6 之后的界面修正）。驾驶舱原先只显示「后台 worker 正在运行（步骤：…）」且不更新。现在：子 agent 以 verbose 运行，工具调用与结果写入 `_studio/run.log`；worker 写入步骤开始、结束、耗时与摘要，并以「═══ 运行开始/结束」分隔、追加保留；`_studio/last_run.json` 保存上一次运行的每步结果；新增 `tool_api.run_status` 与 `ui/live.py`（2 秒轮询的 fragment，显示当前步骤与已用时、日志尾部、运行结束横幅与一次性 toast、上一次运行结果表）；`requirements.txt` 的 streamlit 下限升到 1.37；新增 `tests/test_live_output.py`（6 个用例）；全量 194 个通过。
 - 2026-10-17：M6 完成（待确认）。`steps.py` 增加 design_ending / final_review / alt_write / best_pick / patrol 与质量档参数；`pipeline.py` 按幕结构插入结局设计、末尾插入全书终审、精品档每 10 章插入巡检；`gates.py` 把 final_review 纳入「幕末审稿最低审批」；`chapter_ops.py` 增加 best_pick 处理器；新增 `exporter.py`；`views.export_book` / `tool_api.export` 支持 fmt；阅读页增加格式选择与下载；`test_engine_m1.py` 的预算用例改为 7 章蓝图（结局设计占用了第 6 章前的位置）；新增 `tests/test_m6.py`（15 个用例）；全量 188 个通过。
