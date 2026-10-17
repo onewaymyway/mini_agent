@@ -179,10 +179,17 @@ def _render_run_buttons(ws: str, nxt: dict) -> None:
 
 
 def _report(res: dict) -> None:
-    if res["ok"]:
-        st.toast("已提交。后台运行中，稍后点「刷新」查看进度。")
-    else:
+    if not res["ok"]:
         show_error(res)
+        return
+    data = res.get("data") or {}
+    message = data.get("message") or "已提交。后台运行中，稍后点「刷新」查看进度。"
+    if data.get("outcome") in ("queued_behind_running", "not_spawned"):
+        st.warning(message)
+    elif data.get("outcome") == "spawned":
+        st.success(message)
+    else:
+        st.info(message)
 
 
 def _render_step_actions(ws: str, steps: list, nxt: dict) -> None:
@@ -266,8 +273,8 @@ def _render_answer_form(ws: str, step: dict) -> None:
             elif is_review:
                 res = tool_api.answer_step(ws, step["id"], answers)
                 if res["ok"]:
-                    st.toast("已转为修改意见，后台正在修改并核查。")
-                    st.success("已提交：正在按你的意见修改本章并重新核查。下方流水线会随进度更新，可点「刷新」查看。")
+                    run = (res.get("data") or {}).get("run") or {}
+                    st.success("已转为修改意见。" + (run.get("message") or "正在修改并核查，可点「刷新」查看进度。"))
                 else:
                     show_error(res)
             else:

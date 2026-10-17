@@ -138,3 +138,15 @@ def test_routed_review_answers_do_not_leave_check_steps_falsely_stale(isolated):
     drive_to_completion(ws, inv, handlers=DEFAULT_PY_HANDLERS)
     stale = st2.mark_stale(ws, P.build_plan(ws))
     assert "ch01.review" not in stale and "ch01.machine_check" not in stale
+
+
+def test_run_step_reports_queued_when_worker_busy(isolated):
+    """已有后台任务时，运行此步不能假装成功：要明确告诉作者它只是排队。"""
+    ws = new_book(isolated, total=2)
+    assert st.acquire_worker(ws, mode="until_gate")  # 占住一个存活的 worker
+    r = tool_api.run_novel(str(ws.root), mode="single", step_id="ch01.review", spawn=False)
+    assert r["ok"] and r["data"]["outcome"] == "queued_behind_running"
+    assert "排队" in r["data"]["message"]
+    st.release_worker(ws, "test")
+    r2 = tool_api.run_novel(str(ws.root), mode="single", step_id="ch01.review", spawn=False)
+    assert r2["data"]["outcome"] == "control_only"

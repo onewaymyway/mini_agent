@@ -240,7 +240,23 @@ def run_novel(workspace: str, *, mode: str = "until_gate", step_id: Optional[str
         allow_spawn = spawn and not _os.environ.get("NOVEL_WRITER_NO_SPAWN")
         if not alive and allow_spawn:
             pid = _spawn_worker(ws, mode)
-        return _ok({"queued": True, "worker_alive": alive, "spawned_pid": pid, "mode": mode, "run_step": step_id or None})
+        if alive:
+            info = _state.read_worker(ws)
+            state_text = (f"当前任务：{info.get('step') or '（启动中）'}" if info.get("step") else "当前任务启动中")
+            message = (f"已有后台任务在运行（{state_text}）。本步已排队，但当前任务结束后不会自动执行，"
+                       "请等它结束后再点一次「运行此步」。")
+            outcome = "queued_behind_running"
+        elif pid is not None:
+            message = f"已启动后台任务（pid {pid}）。进度见下方运行状态，日志在 studio/run.log。"
+            outcome = "spawned"
+        elif not allow_spawn:
+            message = "已写入运行指令（当前环境不拉起后台进程）。"
+            outcome = "control_only"
+        else:
+            message = "已写入运行指令，但没有拉起后台进程。"
+            outcome = "not_spawned"
+        return _ok({"queued": True, "worker_alive": alive, "spawned_pid": pid, "mode": mode,
+                    "run_step": step_id or None, "outcome": outcome, "message": message})
 
     return _guard(run)
 
