@@ -63,6 +63,8 @@ _PREAMBLE = """【运行环境】你在后台无人值守地执行本步骤，**
 【输入文件（先读取）】
 {inputs}
 
+【作者意图（新建向导）】{intake}
+
 【作者指导】{author_notes}
 
 【作者对待确认事项的答复】{answers}
@@ -118,6 +120,7 @@ def build_prompt(ws: Workspace, step: S.StepDef, *, hint: str = "") -> str:
         title=step.title,
         instructions=step.instructions or "（按 skill 说明执行）",
         inputs=_input_listing(ws, step),
+        intake=_read_text(ws.path("intake_note")) or "（无）",
         author_notes=note or "（无）",
         answers=answers,
         hint=hint_block,

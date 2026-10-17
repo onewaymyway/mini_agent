@@ -120,6 +120,8 @@ PATHS: Dict[str, str] = {
     "studio_usage": f"{STUDIO_DIR}/usage.jsonl",
     "studio_log": f"{STUDIO_DIR}/run.log",
     "studio_steps_dir": f"{STUDIO_DIR}/steps",
+    "studio_intake": f"{STUDIO_DIR}/intake.json",
+    "intake_note": f"{STUDIO_DIR}/intake_note.md",
 }
 
 # 项目恢复/体检时检查的关键文件：(路径键, 说明, 是否在规划完成后才需要)

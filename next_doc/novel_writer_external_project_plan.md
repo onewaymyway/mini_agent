@@ -426,7 +426,7 @@ docs/  tests/  data/(gitignore)
 |---|---|---|
 | M0 脚手架 | **已完成（2026-10-17）** | 骨架、23 个 skill 原样落位、workspace/settings/shelf/skills_catalog/tool_api、3 个入口、简版界面、39 个测试通过；project.yaml 已通过框架 load_manifest 校验 |
 | M1 引擎内核 | **已完成（2026-10-17，待确认）** | 见下方「M1 实施记录」 |
-| M2 规划阶段 + UI 第一批 | 未开始 | |
+| M2 规划阶段 + UI 第一批 | **已完成（2026-10-17，待确认）** | 见下方「M2 实施记录」 |
 | M3 章节循环 + UI 第二批 | 未开始 | |
 | M4 幕末/修订/灵感/度量/设置矩阵 | 未开始 | |
 | M5 自动模式完善 | 未开始 | |
@@ -457,5 +457,27 @@ docs/  tests/  data/(gitignore)
 - 回执 `receipt.json` 是否在第一次就合格，重试频率是否可接受；
 - `plan_blueprint` 的 `needs_user` 是否能正常挂起并被 `answer` 续上；
 - 一次规划的 token 消耗（`_studio/usage.jsonl` 不记 token 数，目前只记耗时与结果，需要的话 M5 补充）。
+
+### M2 实施记录（2026-10-17）
+
+**交付范围**：`novel_writer/intake.py`、`novel_writer/views.py`；`tool_api` 增加意图、规划、设定库、线索与闸门覆盖接口；`ui/` 拆分为 `wizard / cockpit / planning / codex / threads / components`（书架与 Skill 库沿用）；`app.py` 增加「🧭 驾驶舱」导航；`tests/fakes.py`（共享桩）与 `tests/test_m2.py`（14 个用例）。全量 85 个通过。
+
+**验收对照（第 8 节 M2 行）**：
+- Streamlit AppTest 跑通各页：书架、新建向导（填表→创建→意图落盘）、Skill 库、驾驶舱（含规划、设定库、线索分页）、驾驶舱内的批准操作。✔
+- 桩数据下向导→蓝图→建档全链路：意图注入 plan_blueprint 的 prompt，蓝图（桩）→ 主要角色人设 → 建档 → 人物档案/人设卡可在设定库读到。✔
+- 人工在浏览器里点一遍：**未完成**，需要你本机执行（见 PROJECT.md 已知限制）。
+
+**与方案的偏差 / 决定（已记录）**：
+1. **向导的意图不再是独立的 author_notes 文件**：统一写入 `_studio/intake.json` 与 `_studio/intake_note.md`，runner 在每一步 prompt 中注入「作者意图」段落（比只注入 plan_blueprint 更一致）。
+2. **参考风格文本只保存，不触发 init_style_a**：方案 P1 的 `init_style`（模式 A）未在 M2 实现，参考文本先存入意图，待风格步骤的里程碑接入。
+3. **规划页只允许修改已有章节**，不能增删行（增删需要重新生成蓝图）。保存会写入 `修订记录/蓝图变更日志.md`，并通过哈希标记受影响的已通过步骤。
+4. **线索页只读**；伏笔手动登记与兑现标记放到 M4（方案 5.1 中的交互）。
+5. **总控台未做流水线图（graphviz）**：流水线以表格呈现，图形化放到 M4 的度量/矩阵页一并处理；requirements 中的 graphviz 暂未使用。
+6. **设定库的人设卡编辑**：保存后仅标记下游 stale，不自动调用 character-designer 重设计（方案 5.1 提到的"核心欲望/恐惧改动应走 designer"的提示尚未实现）。
+
+**需要你重点观察的点（浏览器中）**：
+- 向导的表单字段是否够用，「计划章节数」与蓝图章节数的关系是否直观；
+- 章节表的编辑体验（data_editor 的数字列与「、」分隔的角色列）；
+- 挡位切换后，闸门来源标签（挡位/阶段/覆盖/强制）的显示是否清楚。
 
 交付节奏（Q10）：每期完成后更新文档、跑测试、打包 diff zip（保持目录结构，可直接覆盖仓库），等用户确认再进入下一期。

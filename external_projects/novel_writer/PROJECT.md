@@ -21,7 +21,8 @@
 |---|---|---|
 | M0 脚手架 | **已完成（2026-10-17）** | 骨架、23 个 skill 原样落位、workspace.py（路径表/初始化/恢复/体检）、settings、书架、skill 目录、create_novel/list_novels/health 入口、简版界面（书架/新建/Skill 库）、39 个测试 |
 | M1 引擎内核 | **已完成（2026-10-17，待确认）** | 步骤定义/流水线展开、闸门（挡位/覆盖/强制检查点）、状态机与脏标记、孤儿自愈、worker 循环（暂停/停止/预算/审批/needs_user/重试）、skill_agent 运行（`FrameworkInvoker` + `workflows/skill_step.yaml`）、tool_api 运行接口、service_cli、冒烟脚本；32 个桩测试 |
-| M2–M5 | 未开始 | 见方案第 8 节 |
+| M2 规划阶段 + UI 第一批 | **已完成（2026-10-17，待确认）** | 新建向导（意图表单）、书架（打开）、驾驶舱四分页：总控台（挡位/预算/流水线表/运行与审批/答复/闸门覆盖/作者指导）、规划（幕结构、章节表编辑、蓝图变更日志）、设定库（人设卡编辑、档案/世界圣经只读）、线索（伏笔/张力只读）；AppTest 冒烟 + 桩全链路 14 个用例 |
+| M3–M5 | 未开始 | 见方案第 8 节 |
 
 ## 已知限制 / 待验证事项
 
@@ -34,6 +35,9 @@
 - **M1 的章节写作链路暂时阻塞**：章节里的 python 步骤（word_quota / plot_tasks / context_pack / style_hint / machine_check / revise_loop / 以及 M3 的 W14）尚无处理器，运行到它们会以 `blocked` 停下，并提示在 M3 实现。规划阶段（P0/P1/P2 前三章设计）可以真实跑通。
 - **并发限制**：UI/CLI 对 `pipeline_state.json` 的写入与 worker 同时进行时，同进程内有锁，跨进程靠 worker 每轮重新读盘收敛；极端情况下（worker 执行中同一步被人同时批准/重跑）以后写者为准。
 - **章节号位数**：`rel()` 的 `nn` 固定两位；超过 99 章的书需要在 M3 引入 `chapter_number_width`（方案基线 40 章，暂不影响）。
+- **M2 界面未在真实浏览器里点过**：Streamlit AppTest 只能覆盖渲染与控件回调，请本机 `streamlit run app.py` 手动走一遍向导→总控台→规划。
+- **规划页只能改已有章节**：不能增删章节行（需要重新生成蓝图）；编辑会把受影响的已通过步骤标为 stale，由你决定何时重跑。
+- **线索页只读**：伏笔的手动登记与兑现标记放在 M4。
 - **daemon 入口**：`run_novel` 需要 `--workspace` 参数，**未**登记到 `project.yaml`（daemon 不会传参）。批量入口 `advance_all_auto` 在 M5 实现。
 
 ## 目录结构
@@ -43,9 +47,10 @@ novel_writer/
 ├── project.yaml          daemon 契约（create_novel / list_novels / health）
 ├── PROJECT.md            本文件
 ├── app.py                Streamlit 薄入口；页面在 ui/
-├── ui/                   shelf.py（书架+新建）、skills_page.py
+├── ui/                   shelf（书架）、wizard（新建向导）、cockpit（驾驶舱：总控台）、planning / codex / threads（分页）、components、skills_page
 ├── novel_writer/         config / fsutil / settings / workspace / shelf / skills_catalog / tool_api
 │                         M1: steps / gates / state / pipeline / validators / runner / worker / service_cli
+│                         M2: intake / views
 ├── workflows/            skill_step.yaml（M1：通用单步 skill_agent 工作流）
 ├── skills/               23 个 skill（原样，未修改）
 ├── entrypoints/          create_novel / list_novels / health（+ _common）；M1: run_novel（worker）、smoke_real_llm
@@ -64,3 +69,6 @@ novel_writer/
 - 2026-10-17：M1 引擎内核完成（待确认）。新增 steps/gates/state/pipeline/validators/runner/worker/service_cli、
   workflows/skill_step.yaml、entrypoints/run_novel.py 与 smoke_real_llm.py；tool_api 增加运行与步骤操作接口；
   测试 71 个全部通过（M0 39 + M1 32）。
+- 2026-10-17：M2 完成（待确认）。新增 intake / views 模块，tool_api 增加意图与规划/设定/线索接口；
+  ui/ 拆分为 wizard / cockpit / planning / codex / threads / components；app.py 增加「🧭 驾驶舱」导航。
+  测试 85 个全部通过（M0 39 + M1 32 + M2 14）。

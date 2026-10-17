@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import datetime as _dt
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from novel_writer import config, shelf, skills_catalog
 from novel_writer import settings as settings_mod
+from novel_writer.fsutil import read_json
 from novel_writer.workspace import Workspace, WorkspaceError, workspace_dir_name
 
 
@@ -233,7 +234,9 @@ def run_novel(workspace: str, *, mode: str = "until_gate", step_id: Optional[str
         _state.write_control(ws, command="run", mode=mode, run_step=step_id or None)
         alive = _state.worker_alive(ws)
         pid = None
-        if not alive and spawn:
+        # 测试/受限环境可设 NOVEL_WRITER_NO_SPAWN=1，只写控制指令、不拉起后台进程
+        allow_spawn = spawn and not _os.environ.get("NOVEL_WRITER_NO_SPAWN")
+        if not alive and allow_spawn:
             pid = _spawn_worker(ws, mode)
         return _ok({"queued": True, "worker_alive": alive, "spawned_pid": pid, "mode": mode, "run_step": step_id or None})
 
@@ -314,3 +317,73 @@ def write_author_note(workspace: str, step_id: str, text: str) -> Dict[str, Any]
 
 def _settings_error(message: str) -> Exception:
     return settings_mod.SettingsError(message)
+
+
+# ───────────────────────── M2：新建向导 / 规划 / 设定库 / 线索 ─────────────────────────
+
+from novel_writer import intake as _intake  # noqa: E402
+from novel_writer import views as _views  # noqa: E402
+
+
+def save_intake(workspace: str, intake: Dict[str, Any]) -> Dict[str, Any]:
+    """保存新建向导的意图：写 `_studio/intake.json` 与注入用的 `intake_note.md`。"""
+
+    def run() -> Dict[str, Any]:
+        ws = _workspace_or_raise(workspace)
+        clean = _intake.clean_intake(intake)
+        _atomic_write_json(ws.path("studio_intake"), {"intake": clean, "saved_at": _state.now_iso()})
+        note = _intake.intake_note(clean)
+        path = ws.path("intake_note")
+        if note:
+            _views.atomic_write_text(path, note + "\n")
+        elif path.exists():
+            path.unlink()
+        return _ok({"fields": sorted(k for k, v in clean.items() if v)})
+
+    return _guard(run)
+
+
+def get_intake(workspace: str) -> Dict[str, Any]:
+    def run() -> Dict[str, Any]:
+        ws = _workspace_or_raise(workspace)
+        data = read_json(ws.path("studio_intake"), default=None) or {}
+        return _ok({"intake": data.get("intake") or {k: "" for k in _intake.INTAKE_KEYS}})
+
+    return _guard(run)
+
+
+def planning(workspace: str) -> Dict[str, Any]:
+    return _guard(lambda: _ok(_views.planning_view(_workspace_or_raise(workspace))))
+
+
+def save_chapters(workspace: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    return _guard(lambda: _ok(_views.save_blueprint_chapters(_workspace_or_raise(workspace), rows)))
+
+
+def codex(workspace: str) -> Dict[str, Any]:
+    return _guard(lambda: _ok(_views.codex_view(_workspace_or_raise(workspace))))
+
+
+def save_card(workspace: str, name: str, text: str) -> Dict[str, Any]:
+    return _guard(lambda: _ok(_views.save_character_card(_workspace_or_raise(workspace), name, text)))
+
+
+def threads(workspace: str) -> Dict[str, Any]:
+    return _guard(lambda: _ok(_views.threads_view(_workspace_or_raise(workspace))))
+
+
+def set_step_gate(workspace: str, step_id: str, gate: Optional[str]) -> Dict[str, Any]:
+    """设置单步闸门覆盖；gate 为 None 表示恢复挡位预设。检查点的覆盖只能更严格（见 gates.py）。"""
+
+    def run() -> Dict[str, Any]:
+        ws = _workspace_or_raise(workspace)
+        _find_step(ws, step_id)
+        current = ws.settings()
+        overrides = dict(current.get("step_overrides") or {})
+        if gate is None:
+            overrides.pop(step_id, None)
+        else:
+            overrides[step_id] = gate
+        return _ok({"settings": ws.save_settings({**current, "step_overrides": overrides})["step_overrides"]})
+
+    return _guard(run)
