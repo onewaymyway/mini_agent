@@ -11,7 +11,11 @@
      仅 `checkpoints.waive_blueprint_confirm` 可显式豁免蓝图确认；
   2. 单步覆盖 `step_overrides[step_id]`；
   3. 阶段挡位覆盖 `stage_gear_overrides[stage]`；
-  4. 全局挡位 `gear` 的预设表。
+  4. 全局挡位 `gear` 的预设表；
+  5. 挡位表之后的两条「最低审批」规则（M5，方案 6.2 表格中的注释行）：
+     - 前三章的章节写作（W8）在 G1 起逐章审批：挡位表若给出 auto，改为 review；
+     - 幕末深度审稿（act_review）在 G3 下仍审批：挡位表若给出 auto，改为 review。
+     这两条只提高闸门严格度，且不覆盖显式的单步覆盖（覆盖在第 2 级已返回）。
 """
 
 from __future__ import annotations
@@ -75,7 +79,36 @@ def resolve_gate(step: S.StepDef, settings: Dict[str, Any]) -> GateDecision:
     table = GEAR_GATES.get(step.category)
     if table is None:
         raise KeyError(f"未知闸门类别 {step.category!r}（步骤 {step.id}）")
-    return GateDecision(table[gear], "stage_gear" if stage_hit else "gear")
+    gate = table[gear]
+    source = "stage_gear" if stage_hit else "gear"
+
+    # 最低审批规则（M5）：只能把 auto 提升为 review，不会放松任何闸门
+    if gate == GATE_AUTO and _opening_write(step):
+        return GateDecision(GATE_REVIEW, "opening")
+    if gate == GATE_AUTO and _act_review(step):
+        return GateDecision(GATE_REVIEW, "act_review")
+    return GateDecision(gate, source)
+
+
+def _opening_write(step: S.StepDef) -> bool:
+    """前三章的章节写作（方案 6.2：前三章 G1–G3 均为逐章 review）。"""
+    return (step.category == S.CAT_CHAPTER_WRITE
+            and 1 <= step.chapter <= S.OPENING_CHAPTERS)
+
+
+def _act_review(step: S.StepDef) -> bool:
+    """幕末深度审稿（方案 6.2：G3 下仍保留 review，可在覆盖里显式改为 auto）。"""
+    return step.id.startswith("act_review:")
+
+
+# 各挡位的运行范围（方案 6.2 最后一行「连续运行范围」）。仅用于界面说明与批量入口的文档化，
+# 实际停止点由闸门 + 预算共同决定（worker 在遇到 review / manual / 预算时返回）。
+RUN_SCOPE: Dict[str, Dict[str, str]] = {
+    "G0": {"scope": "single", "label": "单步：每次只跑一步"},
+    "G1": {"scope": "checkpoint", "label": "到下个检查点：遇到审批即停"},
+    "G2": {"scope": "batch", "label": "每批 N 章：达到批大小即暂停，可续跑"},
+    "G3": {"scope": "budget", "label": "到预算上限或全书完成：遇到审批即停"},
+}
 
 
 def gear_table_rows() -> list:

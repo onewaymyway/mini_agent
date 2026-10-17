@@ -16,7 +16,9 @@ from ui import review as review_page
 from ui import writing as writing_page
 from ui import planning as planning_page
 from ui import threads as threads_page
-from ui.components import GATE_LABEL, REASON_LABEL, STATUS_LABEL, novel_title, require_ws, show_error
+from ui.components import (
+    GATE_LABEL, INBOX_ICON, INBOX_LABEL, REASON_LABEL, STATUS_LABEL, novel_title, require_ws, show_error,
+)
 
 GATE_CHOICES = ["（挡位预设）", "manual", "review", "auto", "skip"]
 
@@ -61,6 +63,7 @@ def render_control(ws: str) -> None:
     c4.metric("失败 / 阻塞", counts.get("failed", 0) + counts.get("blocked", 0))
     _render_settings(ws, data)
     _render_worker(ws, data)
+    _render_inbox(ws)
     _render_run_buttons(ws)
 
     st.subheader("流水线")
@@ -104,11 +107,29 @@ def _render_settings(ws: str, data: dict) -> None:
 
 
 GEAR_HINT = {
-    "G0": "手动挡：每一步都要你点 ▶，只有强制检查点会停下来等你。",
-    "G1": "引导挡：设计类步骤运行后等你批准，其余写前/审校自动。",
-    "G2": "半自动挡：建档与章节写作自动，设计与前三章仍需批准。",
-    "G3": "全自动挡：除设计审批与强制检查点外全部自动，遇到问题即停。",
+    "G0": "手动挡：每一步都要你点 ▶，只有强制检查点会停下来等你。运行范围：单步。",
+    "G1": "引导挡：设计类与每章写作运行后等你批准，其余写前/审校自动。运行范围：到下个检查点。",
+    "G2": "半自动挡：建档与第 4 章起的写作自动；设计与前三章逐章仍需批准。运行范围：每批 N 章（见预算）。",
+    "G3": "全自动挡：第 4 章起全自动；设计、前三章、幕末深度审稿仍需批准。运行范围：到预算上限或全书完成。",
 }
+
+
+def _render_inbox(ws: str) -> None:
+    res = tool_api.inbox(ws)
+    if not res["ok"]:
+        show_error(res)
+        return
+    data = res["data"]
+    if not data["items"]:
+        st.caption("📥 收件箱为空：目前没有需要你处理的事项。")
+        return
+    title = f"📥 收件箱（{data['total']} 项，其中阻塞 {data['blocking']} 项）"
+    with st.expander(title, expanded=data["blocking"] > 0):
+        for it in data["items"]:
+            chapter = f"第{it['chapter']}章 " if it.get("chapter") else ""
+            st.markdown(f"{INBOX_ICON.get(it['severity'], '•')} **{INBOX_LABEL.get(it['kind'], it['kind'])}**　"
+                        f"{chapter}{it.get('title') or ''}　—　{it['message']}")
+        st.caption("收件箱由状态文件推导，worker 每次退出时刷新；点「刷新」查看最新内容。")
 
 
 def _render_worker(ws: str, data: dict) -> None:
@@ -162,6 +183,14 @@ def _render_step_actions(ws: str, steps: list) -> None:
         _report(tool_api.run_novel(ws, mode="single", step_id=pick))
     if b3.button("↺ 重跑（清除状态）", key=f"cp_rerun_{pick}"):
         _report_ok(tool_api.rerun_step(ws, pick))
+
+    if step.get("outputs") and step["status"] not in ("running", "passed", "skipped"):
+        with st.expander("✍ 我自己写 / 上传了产出（手写旁路）", expanded=False):
+            st.caption("系统只检查产出文件是否存在，然后把本步标为已通过；内容质量由你负责。")
+            st.code("\n".join(step["outputs"]), language=None)
+            note = st.text_input("备注（可选）", key=f"cp_manual_note_{pick}")
+            if st.button("标记为已通过", key=f"cp_manual_{pick}"):
+                _report_ok(tool_api.mark_manual(ws, pick, note))
 
     if step["status"] == "waiting_user":
         _render_answer_form(ws, step)

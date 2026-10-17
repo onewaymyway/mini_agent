@@ -1,4 +1,8 @@
-"""novel_writer/ondemand.py — 按需请求：修订（L1–L4）与灵感评估（M4，方案 5.1 / 5.2）。
+"""novel_writer/ondemand.py — 按需请求：修订（L1–L4）、灵感评估（M4）与 AI 选段辅助（M5）。
+
+AI 选段辅助（assist）：作者在写作台选中一段，选择「润色 / 扩写 / 续写」。结果只写入
+`正文/_drafts/assist_<id>.md` 作为候选稿，**不会直接改正文**；作者点「采用」后才替换选段
+（采用走正文保存，下游产物照常标为需重跑）。
 
 请求以文件形式保存在 `_studio/requests/<id>.json`，流水线展开时每个请求对应一个**可选的手动步骤**
 （id 为 `rev.<id>` 或 `idea.<id>`）。它们不会阻塞主流程，只有你在总控台或审校页点 ▶ 时才运行。
@@ -16,13 +20,21 @@ from novel_writer import steps as S
 from novel_writer.fsutil import atomic_write_json, read_json
 from novel_writer.workspace import Workspace
 
+from novel_writer import chapter_ops as C  # noqa: E402 - 放在这里避免与 chapter_ops 的循环导入
+
 REVISION_LEVELS: Dict[str, str] = {
     "L1": "文字润色：只改句段与用词，不改情节与设定",
     "L2": "章内情节调整：本章内容变化，本章概述同步更新",
     "L3": "章节级改动：可能影响人物状态与伏笔，需同步下游状态",
     "L4": "蓝图级改动：影响结构或主线，需作者确认后，受影响步骤标为需重跑",
 }
-KINDS = ("revision", "idea")
+KINDS = ("revision", "idea", "assist")
+
+ASSIST_MODES: Dict[str, str] = {
+    "polish": "润色：只改用词与句式，不改情节、事件顺序与设定",
+    "expand": "扩写：补充动作、感官与心理细节，不改变发生的事件",
+    "continue": "续写：接在选段之后，延续语气与情节，不回头改写选段",
+}
 
 
 class OnDemandError(ValueError):
@@ -84,6 +96,13 @@ def ondemand_steps(ws: Workspace) -> List[S.StepDef]:
                 id=f"idea.{req['id']}", title=f"评估灵感：{str(req.get('text', ''))[:20]}",
                 stage="ondemand", category=S.CAT_REVISE, executor=S.EXECUTOR_PYTHON, handler="idea",
                 chapter=0, extra={"optional": True, "request": f"idea_{req['id']}", "kind": "idea"},
+            ))
+        elif req.get("kind") == "assist":
+            n = int(req.get("chapter") or 0)
+            steps.append(S.StepDef(
+                id=f"asst.{req['id']}", title=f"AI 辅助 第{n}章 {req.get('mode')}",
+                stage="ondemand", category=S.CAT_REVISE, executor=S.EXECUTOR_PYTHON, handler="assist",
+                chapter=0, extra={"optional": True, "request": f"assist_{req['id']}", "kind": "assist"},
             ))
     return steps
 
@@ -207,4 +226,72 @@ def h_idea(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=Non
     return {"summary": f"评估结果：{decision}"}
 
 
-HANDLERS = {"revision": h_revision, "idea": h_idea}
+def assist_candidate_path(ws: Workspace, rid: str) -> Path:
+    return ws.path("chapter_drafts_dir") / f"assist_{rid}.md"
+
+
+def h_assist(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:
+    from novel_writer.runner import run_skill_step
+
+    if invoker is None:
+        raise OnDemandError("AI 辅助需要执行器（invoker）")
+    rid = step.extra["request"].split("_", 1)[1]
+    req = load_request(ws, "assist", rid)
+    mode = str(req.get("mode") or "")
+    if mode not in ASSIST_MODES:
+        raise OnDemandError(f"未知辅助模式 {mode!r}")
+    n = int(req.get("chapter") or 0)
+    selection = str(req.get("selection") or "")
+    instruction = str(req.get("instruction") or "").strip()
+    out_rel = str(assist_candidate_path(ws, rid).relative_to(ws.root))
+    skill = "revision-editor" if mode == "polish" else "chapter-writer"
+    brief = (f"对第 {n} 章的选段做「{ASSIST_MODES[mode]}」。选段原文：\n「{selection}」\n"
+             + (f"作者补充要求：{instruction}\n" if instruction else "")
+             + f"只输出候选文本到 {out_rel}，不要修改正文文件。")
+    if mode == "continue":
+        brief += "候选文本是接在选段之后的新内容，不要重复选段。"
+    job = S.StepDef(
+        id=f"{step.id}.run", title="AI 辅助", stage="ondemand", category=S.CAT_REVISE,
+        executor=S.EXECUTOR_SKILL, skill=skill, chapter=n, instructions=brief, outputs=(out_rel,),
+    )
+    run_skill_step(ws, job, invoker=invoker, settings=settings, run_no=1)
+    text = assist_candidate_path(ws, rid).read_text(encoding="utf-8").strip()
+    req["result"] = {"candidate": out_rel, "text": text}
+    save_request(ws, req)
+    return {"summary": f"候选稿已生成（{len(text)} 字符），请在写作台确认后采用"}
+
+
+def adopt_assist(ws: Workspace, rid: str) -> Dict[str, Any]:
+    """把候选稿采用进正文：润色/扩写替换选段（必须唯一匹配），续写接在选段之后。"""
+    from novel_writer import views
+
+    req = load_request(ws, "assist", rid)
+    result = req.get("result") or {}
+    candidate = str(result.get("text") or "").strip()
+    if not candidate:
+        raise OnDemandError("这个请求还没有候选稿")
+    if req.get("adopted_at"):
+        raise OnDemandError("这个候选稿已经采用过")
+    n = int(req.get("chapter") or 0)
+    selection = str(req.get("selection") or "")
+    path = C.chapter_file(ws, n)
+    if path is None:
+        raise OnDemandError(f"第 {n} 章的正文文件不存在")
+    body = path.read_text(encoding="utf-8")
+    if req.get("mode") == "continue":
+        if selection not in body:
+            raise OnDemandError("正文中找不到选段（可能已被改动），无法定位续写位置")
+        pos = body.index(selection) + len(selection)
+        new_body = body[:pos] + "\n\n" + candidate + body[pos:]
+    else:
+        count = body.count(selection) if selection else 0
+        if count != 1:
+            raise OnDemandError(f"选段在正文中出现 {count} 次（需要恰好 1 次才能安全替换）")
+        new_body = body.replace(selection, candidate, 1)
+    saved = views.save_chapter_text(ws, n, new_body)
+    req["adopted_at"] = _now()
+    save_request(ws, req)
+    return {"words": saved["words"], "stale": saved["stale"]}
+
+
+HANDLERS = {"revision": h_revision, "idea": h_idea, "assist": h_assist}

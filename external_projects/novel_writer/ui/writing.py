@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import streamlit as st
 
+from novel_writer import ondemand
 from novel_writer import tool_api
-from ui.components import STATUS_LABEL, show_error
+from ui.components import ASSIST_LABEL, STATUS_LABEL, show_error
 
 
 def _pick_chapter(ws: str, key: str):
@@ -66,6 +67,8 @@ def render_writing(ws: str) -> None:
         else:
             show_error(r)
 
+    _render_assist(ws, n)
+
     with st.expander("本章作者指导与运行", expanded=False):
         note = st.text_area("给写作步骤的指导（下次写作时注入 prompt）", key=f"wr_note_{n}")
         if st.button("保存指导", key=f"wr_note_save_{n}"):
@@ -74,3 +77,42 @@ def render_writing(ws: str) -> None:
             r = tool_api.write_author_note(ws, f"ch{n:02d}.write_chapter", note)
             st.success("已保存") if r["ok"] else _se(r)
         st.caption("运行请到「总控台」：可以用 ▶ 运行到检查点 推进本章及之后的步骤。")
+
+
+def _render_assist(ws: str, n: int) -> None:
+    """AI 选段辅助（M5）：粘贴选段 → 选方式 → 后台生成候选稿 → 确认后采用。候选稿不会直接改正文。"""
+    with st.expander("✨ AI 辅助（选段：润色 / 扩写 / 续写）", expanded=False):
+        sel = st.text_area("要处理的原文段落（需与正文完全一致，从正文复制）", key=f"as_sel_{n}", height=100)
+        c1, c2 = st.columns([1, 2])
+        mode = c1.selectbox("方式", list(ASSIST_LABEL), format_func=lambda m: ASSIST_LABEL[m], key=f"as_mode_{n}")
+        st.caption(ondemand.ASSIST_MODES[mode])
+        ins = c2.text_input("补充要求（可选）", key=f"as_ins_{n}")
+        if st.button("提交并在后台生成候选稿", key=f"as_go_{n}"):
+            req = tool_api.request_assist(ws, n, mode, sel, ins)
+            if not req["ok"]:
+                show_error(req)
+            else:
+                run = tool_api.run_novel(ws, mode="single", step_id=req["data"]["step"])
+                if run["ok"]:
+                    st.toast("已提交，稍后点「刷新」查看候选稿。")
+                else:
+                    show_error(run)
+
+        rows = (tool_api.assists(ws, n).get("data") or {}).get("assists") or []
+        for row in reversed(rows[-5:]):
+            st.markdown(f"**{ASSIST_LABEL.get(row['mode'], row['mode'])}**　{STATUS_LABEL.get(row['status'], row['status'])}")
+            if row.get("error"):
+                st.error(row["error"])
+            if row.get("adopted_at"):
+                st.caption("已采用。")
+            elif row.get("candidate"):
+                st.text_area("候选稿（确认后再采用）", value=row["candidate"], height=120,
+                             disabled=True, key=f"as_cand_{row['id']}")
+                if st.button("采用此候选稿", key=f"as_adopt_{row['id']}"):
+                    r = tool_api.adopt_assist(ws, row["id"])
+                    if r["ok"]:
+                        st.success(f"已采用（{r['data']['words']} 字）。")
+                        if r["data"]["stale"]:
+                            st.warning("以下已通过的步骤因此需要重跑：" + "、".join(r["data"]["stale"]))
+                    else:
+                        show_error(r)

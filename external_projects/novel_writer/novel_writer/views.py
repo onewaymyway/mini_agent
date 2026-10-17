@@ -450,3 +450,84 @@ def request_revision(ws: Workspace, chapter: int, level: str, instruction: str) 
         raise ViewError("请写明修订要求")
     req = _ondemand.create_request(ws, "revision", chapter=int(chapter), level=level, instruction=body)
     return {"id": req["id"], "step": f"rev.{req['id']}", "level": level}
+
+
+# ───────────────────────── M5：手写旁路 / AI 选段辅助 ─────────────────────────
+
+SELECTION_MAX_CHARS = 3000
+
+
+def mark_manual(ws: Workspace, step_id: str, note: str = "") -> Dict[str, Any]:
+    """手写旁路（方案 5.2）：作者自己写/上传了产出文件，系统只校验产出存在，然后把步骤标为已通过。
+
+    不运行 skill、不做质量判断——质量由作者负责；后续步骤照常运转。
+    没有产出文件（或没有声明产出）的步骤不能旁路，避免把「什么都没有」标成通过。
+    """
+    from novel_writer import validators as V
+    from novel_writer.pipeline import build_plan
+
+    plan = {s.id: s for s in build_plan(ws)}
+    step = plan.get(step_id)
+    if step is None:
+        raise ViewError(f"流水线里没有步骤 {step_id!r}")
+    current = st.get_step_state(ws, step_id)
+    if current["status"] == st.ST_RUNNING:
+        raise ViewError(f"步骤 {step_id} 正在执行，不能手动标记")
+    if not step.outputs:
+        raise ViewError(f"步骤 {step_id} 没有声明产出文件，不能用手写旁路（请运行或批准）")
+    missing = V.missing_outputs(ws, step.outputs)
+    if missing:
+        raise ViewError("还缺少产出文件，无法标记为通过：" + "、".join(missing))
+    entry = st.update_step(
+        ws, step_id, status=st.ST_PASSED, source="manual", error=None, needs_user=None,
+        input_hash=st.input_hash(ws, step), finished_at=st.now_iso(),
+        note=(note.strip() or "作者手写/上传（手写旁路）"),
+    )
+    st.append_usage(ws, {"step": step_id, "status": st.ST_PASSED, "source": "manual"})
+    return {"step": step_id, "status": entry["status"]}
+
+
+def request_assist(ws: Workspace, chapter: int, mode: str, selection: str, instruction: str = "") -> Dict[str, Any]:
+    """登记一次 AI 选段辅助请求（只登记，不运行；运行在总控台或写作台点 ▶）。"""
+    if mode not in _ondemand.ASSIST_MODES:
+        raise ViewError(f"未知辅助模式 {mode!r}，可选：{list(_ondemand.ASSIST_MODES)}")
+    if chapter not in _chapter_numbers(ws):
+        raise ViewError(f"第 {chapter} 章不在流水线中")
+    text = str(selection or "")
+    if not text.strip():
+        raise ViewError("请先选中（粘贴）要处理的段落")
+    if len(text) > SELECTION_MAX_CHARS:
+        raise ViewError(f"选段过长（{len(text)} 字符，上限 {SELECTION_MAX_CHARS}）；请分段处理")
+    path = C.chapter_file(ws, chapter)
+    body = path.read_text(encoding="utf-8") if path else ""
+    count = body.count(text)
+    if count == 0:
+        raise ViewError("选段在当前正文中找不到（请从正文原样复制）")
+    if mode != "continue" and count != 1:
+        raise ViewError(f"选段在正文中出现 {count} 次，润色/扩写需要恰好 1 次，请选更长的一段")
+    req = _ondemand.create_request(
+        ws, "assist", chapter=int(chapter), mode=mode, selection=text, instruction=str(instruction or "").strip(),
+    )
+    return {"id": req["id"], "step": f"asst.{req['id']}", "mode": mode}
+
+
+def assists_for_chapter(ws: Workspace, chapter: int) -> List[Dict[str, Any]]:
+    states = st.load_state(ws)["steps"]
+    rows = []
+    for req in _ondemand.list_requests(ws, "assist"):
+        if int(req.get("chapter") or 0) != chapter:
+            continue
+        step_id = f"asst.{req['id']}"
+        entry = states.get(step_id, {})
+        rows.append({
+            "id": req["id"], "step": step_id, "mode": req.get("mode"), "created_at": req.get("created_at"),
+            "selection": req.get("selection"), "instruction": req.get("instruction") or "",
+            "status": entry.get("status", st.ST_PENDING), "error": entry.get("error"),
+            "candidate": (req.get("result") or {}).get("text"),
+            "adopted_at": req.get("adopted_at"),
+        })
+    return rows
+
+
+def adopt_assist(ws: Workspace, rid: str) -> Dict[str, Any]:
+    return _ondemand.adopt_assist(ws, rid)

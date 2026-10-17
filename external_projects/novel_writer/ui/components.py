@@ -19,6 +19,17 @@ STATUS_LABEL = {
     "blocked": "⛔ 未实现",
 }
 GATE_LABEL = {"manual": "手动", "review": "审批", "auto": "自动", "skip": "跳过"}
+INBOX_LABEL = {
+    "approve": "待批准",
+    "answer": "待答复",
+    "escalate": "升级人工",
+    "failed": "失败",
+    "blocked": "未实现",
+    "stale": "需重跑",
+    "budget_pause": "预算暂停",
+}
+INBOX_ICON = {"block": "🔴", "warn": "🟡", "info": "🔵"}
+ASSIST_LABEL = {"polish": "润色", "expand": "扩写", "continue": "续写"}
 REASON_LABEL = {
     "completed": "流水线已完成",
     "waiting_review": "等待你批准一步",

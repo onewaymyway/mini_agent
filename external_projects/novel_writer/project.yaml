@@ -7,7 +7,8 @@
 #   M0：create_novel / list_novels / health
 #   M1（已完成，待确认）：引擎与 worker 已实现，但 run_novel 需要 --workspace 参数，
 #       由 UI/CLI（tool_api.run_novel）拉起，**未**登记为 daemon 入口。
-#   M5：advance_all_auto（批量推进所有自动挡小说，cron 默认关闭，opt-in）
+#   M5（已完成，待确认）：advance_all_auto（批量推进 G2/G3 自动挡小说，每本至多 N 章）。
+#       已登记为入口，但**没有**任何 cron 行：需要定时推进时手动在 daemon 中添加。
 
 name: novel_writer
 
@@ -21,6 +22,9 @@ entrypoints:
   health:
     cmd: "python entrypoints/health.py"
     timeout_sec: 120
+  advance_all_auto:
+    cmd: "python entrypoints/advance_all_auto.py"
+    timeout_sec: 7200
 health_check:
   cmd: "python entrypoints/health.py"
 

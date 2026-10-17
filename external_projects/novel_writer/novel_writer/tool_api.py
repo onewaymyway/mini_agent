@@ -437,3 +437,92 @@ def add_idea(workspace: str, text: str) -> Dict[str, Any]:
 
 def request_revision(workspace: str, chapter: int, level: str, instruction: str) -> Dict[str, Any]:
     return _guard(lambda: _ok(_views.request_revision(_workspace_or_raise(workspace), int(chapter), level, instruction)))
+
+
+# ───────────────────────── M5：收件箱 / 批量推进 / 手写旁路 / AI 选段辅助 ─────────────────────────
+
+from novel_writer import batch as _batch  # noqa: E402
+from novel_writer import inbox as _inbox  # noqa: E402
+
+
+def inbox(workspace: str) -> Dict[str, Any]:
+    """单本收件箱（同时刷新快照文件）。"""
+    return _guard(lambda: _ok(_inbox.refresh(_workspace_or_raise(workspace))))
+
+
+def inbox_all(*, novels_dir: Optional[str] = None, index_file: Optional[str] = None) -> Dict[str, Any]:
+    """书架上所有小说的收件箱汇总（只读，不刷新快照；快照由各书 worker 退出时写入）。"""
+
+    def run() -> Dict[str, Any]:
+        books = []
+        for root in shelf.discover(Path(novels_dir) if novels_dir else None,
+                                   Path(index_file) if index_file else None):
+            ws = Workspace(root)
+            data = _inbox.collect(ws)
+            books.append({"workspace": data["workspace"], "title": _batch._title(ws), "gear": data["gear"],
+                          "total": data["total"], "blocking": data["blocking"], "counts": data["counts"],
+                          "items": data["items"]})
+        return _ok({
+            "books": books,
+            "total": sum(b["total"] for b in books),
+            "blocking": sum(b["blocking"] for b in books),
+        })
+
+    return _guard(run)
+
+
+def advance_all_auto(*, novels_dir: Optional[str] = None, index_file: Optional[str] = None,
+                     max_chapters: int = 1, dry_run: bool = False, invoker=None) -> Dict[str, Any]:
+    """同步批量推进（入口脚本与测试使用）。界面请用 spawn_advance_all_auto 放到后台。"""
+
+    def run() -> Dict[str, Any]:
+        res = _batch.advance_all_auto(novels_dir=novels_dir, index_file=index_file,
+                                      max_chapters=int(max_chapters), dry_run=dry_run, invoker=invoker)
+        if not res.get("ok"):
+            raise _settings_error(res.get("error") or "批量参数错误")
+        return _ok(res)
+
+    return _guard(run)
+
+
+def spawn_advance_all_auto(*, max_chapters: int = 1) -> Dict[str, Any]:
+    """后台拉起批量入口（界面按钮用）。受 NOVEL_WRITER_NO_SPAWN 控制，测试时只返回命令不拉起。"""
+
+    def run() -> Dict[str, Any]:
+        if not isinstance(max_chapters, int) or max_chapters < 1:
+            raise _settings_error("max_chapters 必须是正整数")
+        entry = config.PROJECT_ROOT / "entrypoints" / "advance_all_auto.py"
+        log_path = config.DATA_DIR / "advance_all_auto.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        cmd = [_sys.executable, str(entry), "--max-chapters", str(max_chapters)]
+        if _os.environ.get("NOVEL_WRITER_NO_SPAWN"):
+            return _ok({"spawned_pid": None, "command": cmd})
+        kwargs: Dict[str, Any] = {}
+        if _os.name == "nt":
+            kwargs["creationflags"] = 0x00000008 | 0x00000200
+        else:
+            kwargs["start_new_session"] = True
+        with log_path.open("a", encoding="utf-8") as log:
+            proc = _subprocess.Popen(cmd, cwd=str(config.PROJECT_ROOT), stdout=log, stderr=_subprocess.STDOUT,
+                                     close_fds=True, **kwargs)
+        return _ok({"spawned_pid": proc.pid, "command": cmd, "log": str(log_path)})
+
+    return _guard(run)
+
+
+def mark_manual(workspace: str, step_id: str, note: str = "") -> Dict[str, Any]:
+    """手写旁路：产出文件已由作者写好/上传，直接把步骤标为通过（需产出存在）。"""
+    return _guard(lambda: _ok(_views.mark_manual(_workspace_or_raise(workspace), step_id, note)))
+
+
+def request_assist(workspace: str, chapter: int, mode: str, selection: str, instruction: str = "") -> Dict[str, Any]:
+    return _guard(lambda: _ok(_views.request_assist(_workspace_or_raise(workspace), int(chapter), mode,
+                                                    selection, instruction)))
+
+
+def assists(workspace: str, chapter: int) -> Dict[str, Any]:
+    return _guard(lambda: _ok({"assists": _views.assists_for_chapter(_workspace_or_raise(workspace), int(chapter))}))
+
+
+def adopt_assist(workspace: str, rid: str) -> Dict[str, Any]:
+    return _guard(lambda: _ok(_views.adopt_assist(_workspace_or_raise(workspace), rid)))

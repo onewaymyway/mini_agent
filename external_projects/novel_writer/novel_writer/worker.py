@@ -29,12 +29,16 @@ HEARTBEAT_INTERVAL_SEC = 15.0
 class Budget:
     """每次 worker 运行的预算（方案 6.3 第 5 条：耗尽 = 暂停）。None 表示不限。"""
 
-    def __init__(self, settings: Dict[str, Any], *, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(self, settings: Dict[str, Any], *, clock: Callable[[], float] = time.monotonic,
+                 chapter_limit: Optional[int] = None) -> None:
         b = settings.get("budget") or {}
         self.max_chapters = b.get("max_chapters_per_run")
         if settings.get("gear") == "G2" and settings.get("semi_auto_batch_chapters"):
             batch = int(settings["semi_auto_batch_chapters"])
             self.max_chapters = min(self.max_chapters, batch) if self.max_chapters else batch
+        # 调用方指定的章数上限（批量推进 advance_all_auto 用）只能收紧，不能放宽
+        if chapter_limit:
+            self.max_chapters = min(self.max_chapters, chapter_limit) if self.max_chapters else chapter_limit
         self.max_calls = b.get("max_llm_calls_per_run")
         self.max_minutes = b.get("max_wall_minutes_per_run")
         self.chapters: set = set()
@@ -92,8 +96,12 @@ def run_worker(
     handlers: Optional[Dict[str, R.PyHandler]] = None,
     heartbeat_interval: float = HEARTBEAT_INTERVAL_SEC,
     max_steps: Optional[int] = None,
+    max_chapters: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """运行 worker 直到需要人介入、完成、暂停或停止。返回本次运行的摘要（不抛异常）。"""
+    """运行 worker 直到需要人介入、完成、暂停或停止。返回本次运行的摘要（不抛异常）。
+
+    max_chapters：本次运行额外的章数上限（只能收紧设置里的预算；批量推进用它做「每本 1 章」）。
+    """
     if mode not in MODES:
         return {"ok": False, "reason": "invalid_mode", "error": f"未知模式 {mode!r}，可选 {list(MODES)}"}
     if not ws.is_initialized():
@@ -110,7 +118,7 @@ def run_worker(
         with _Heartbeat(ws, heartbeat_interval):
             st.write_control(ws, command="run", mode=mode)
             orphans.extend(st.mark_orphans_interrupted(ws))
-            budget = Budget(ws.settings())
+            budget = Budget(ws.settings(), chapter_limit=max_chapters)
             reason = _loop(ws, mode=mode, invoker=invoker, handlers=handlers, budget=budget,
                            executed=executed, stale_all=stale_all, max_steps=max_steps)
     except Exception as exc:  # noqa: BLE001 - worker 顶层兜底，原因写入 worker.json
@@ -122,6 +130,7 @@ def run_worker(
         control = st.read_control(ws)
         if control.get("command") in ("pause", "stop"):
             st.write_control(ws, command="none")
+        _refresh_inbox(ws)
 
     result: Dict[str, Any] = {
         "ok": error is None,
@@ -134,6 +143,16 @@ def run_worker(
     if error:
         result["error"] = error
     return result
+
+
+def _refresh_inbox(ws: Workspace) -> None:
+    """worker 退出时刷新收件箱快照；失败只记日志，不影响 worker 的结果。"""
+    from novel_writer import inbox
+
+    try:
+        inbox.refresh(ws)
+    except Exception as exc:  # noqa: BLE001 - 收件箱是视图，不能拖垮执行
+        st.append_usage(ws, {"inbox_error": f"{type(exc).__name__}: {exc}"})
 
 
 def _loop(

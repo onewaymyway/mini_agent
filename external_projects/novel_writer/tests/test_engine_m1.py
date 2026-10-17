@@ -193,17 +193,27 @@ def test_full_flow_g3_with_approvals_completes_and_skips_optional(ws):
 
 
 def test_budget_chapters_pauses_not_fails(ws):
+    # M5 起：前三章逐章审批（方案 6.2），每章写完都会停在 review，预算计数是“每次运行”的，
+    # 所以预算要在第 4 章起（非前三章、G3 自动写作）的连续运行中验证。
+    atomic_write_json(ws.path("blueprint"), make_blueprint(6))
     set_settings(ws, gear="G3", budget={"max_chapters_per_run": 1})
     inv = FakeInvoker(ws.root)
-    last = None
     for _ in range(100):
-        last = run_worker(ws, mode="until_gate", invoker=inv, handlers=STUB_HANDLERS, heartbeat_interval=0.01)
-        if last["reason"] != "waiting_review":
+        if statuses(ws)["ch03.sync_plot"] == st.ST_PASSED:
             break
+        last = run_worker(ws, mode="until_gate", invoker=inv, handlers=STUB_HANDLERS, heartbeat_interval=0.01)
+        assert last["reason"] == "waiting_review", last
         approve_waiting(ws)
-    assert last["reason"] == "budget_chapters"
+    last = run_worker(ws, mode="until_gate", invoker=inv, handlers=STUB_HANDLERS, heartbeat_interval=0.01)
+    assert last["reason"] == "budget_chapters", last
     s = statuses(ws)
-    assert s["ch01.sync"] == st.ST_PASSED and s["ch02.word_quota"] == st.ST_PENDING
+    assert s["ch04.sync_plot"] == st.ST_PASSED and s["ch05.word_quota"] == st.ST_PENDING
+    assert not any(v == st.ST_FAILED for v in s.values())
+    # 暂停可续跑：下一次运行从第 5 章开始，且第一章的运行不会被误判为失败
+    last = run_worker(ws, mode="until_gate", invoker=inv, handlers=STUB_HANDLERS, heartbeat_interval=0.01)
+    assert last["reason"] == "budget_chapters", last
+    s = statuses(ws)
+    assert s["ch05.sync_plot"] == st.ST_PASSED and s["ch06.word_quota"] == st.ST_PENDING
 
 
 def test_budget_llm_calls_limit_is_per_run_and_stops_mid_run(ws):
