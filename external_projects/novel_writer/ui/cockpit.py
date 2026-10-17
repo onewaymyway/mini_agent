@@ -174,8 +174,14 @@ def _render_run_buttons(ws: str, nxt: dict) -> None:
         _report(tool_api.pause_novel(ws))
     if c4.button("⏹ 停止", key="cp_stop", use_container_width=True):
         _report(tool_api.stop_novel(ws))
-    if c5.button("🔄 刷新", key="cp_refresh", use_container_width=True):
-        st.rerun()
+    c5.button("🔄 刷新", key="cp_refresh", use_container_width=True, on_click=_reset_step_pick)
+
+
+def _reset_step_pick() -> None:
+    """刷新 = 重新读取当前状态：清掉单步选择框的记忆，让它回到「下一步」。
+    （否则用户手动选过的步骤会一直留着，「待批准」的步骤就从面板上消失了。）"""
+    st.session_state.pop("cp_step_pick", None)
+    st.session_state.pop("cp_step_auto", None)
 
 
 def _report(res: dict) -> None:
@@ -198,6 +204,22 @@ def _render_step_actions(ws: str, steps: list, nxt: dict) -> None:
     if not ids:
         st.info("流水线为空。请先完成工作目录初始化。")
         return
+    # 需要作者处理的步骤单独列出，不依赖下面的选择框——选择框可能停在别的步骤上。
+    waiting = [s for s in steps if s["status"] in ("waiting_review", "waiting_user")]
+    if waiting:
+        with st.container(border=True):
+            st.markdown("**待你处理**")
+            for s in waiting:
+                c_text, c_btn = st.columns([4, 2])
+                label = "待批准" if s["status"] == "waiting_review" else "待回答"
+                c_text.markdown(f"🟠 {s['title']}（{label}）")
+                if s["status"] == "waiting_review":
+                    if c_btn.button("✅ 批准", key=f"cp_top_approve_{s['id']}", use_container_width=True):
+                        _report_ok(tool_api.approve_step(ws, s["id"]))
+                else:
+                    if c_btn.button("去回答", key=f"cp_top_answer_{s['id']}", use_container_width=True):
+                        st.session_state["cp_step_pick"] = s["id"]
+                        st.rerun()
     # 默认选中「下一步」（第一个未完成的步骤；待审核/待答复的步骤排在最前因为它阻塞流水线）。
     # 下一步变化时才自动跟随，之后用户手动选的值保持不变。
     default = nxt.get("step") if nxt.get("step") in ids else ids[0]
