@@ -263,6 +263,13 @@ def _render_answer_form(ws: str, step: dict) -> None:
                        if q.get("options") and not answers.get(str(q.get("id") or "q"))]
             if missing:
                 st.error("请为每个问题选择一个答复后再提交。")
+            elif is_review:
+                res = tool_api.answer_step(ws, step["id"], answers)
+                if res["ok"]:
+                    st.toast("已转为修改意见，后台正在修改并核查。")
+                    st.success("已提交：正在按你的意见修改本章并重新核查。下方流水线会随进度更新，可点「刷新」查看。")
+                else:
+                    show_error(res)
             else:
                 _report_ok(tool_api.answer_step(ws, step["id"], answers))
 

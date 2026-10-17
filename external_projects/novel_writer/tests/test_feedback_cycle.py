@@ -100,6 +100,10 @@ def test_review_question_answers_become_revision_feedback(isolated):
     res = tool_api.answer_step(str(ws.root), "ch01.review", {qid: "A"})
     assert res["ok"], res
     assert res["data"]["routed_to"] == "ch01.revise_loop"
+    # 答复后必须排入修改循环（不需要作者再点运行）
+    assert st.read_control(ws)["command"] == "run"
+    assert st.read_control(ws)["run_step"] == "ch01.revise_loop"
+    assert res["data"]["run"]["queued"] is True
     assert statuses(ws)["ch01.review"] == st.ST_PASSED  # 核查不再重跑，直接转交修改
     drive_to_completion(ws, inv, handlers=DEFAULT_PY_HANDLERS)
     # 修改循环以作者答复为修改意见执行 chapter-writer

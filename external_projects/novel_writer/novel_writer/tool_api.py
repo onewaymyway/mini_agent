@@ -297,7 +297,11 @@ def answer_step(workspace: str, step_id: str, answers: Dict[str, Any]) -> Dict[s
             from novel_writer import chapter_ops as _C
 
             routed = _C.route_review_answers(ws, step_id, answers, current.get("needs_user") or [])
-            return _ok({"step": step_id, "status": _state.ST_PASSED, **routed})
+            # 转交即排入修改循环并拉起后台 worker：修改 → 重新核查，不需要再手动点运行
+            queued = run_novel(workspace, mode="single", step_id=routed["routed_to"])
+            if not queued["ok"]:
+                return queued
+            return _ok({"step": step_id, "status": _state.ST_PASSED, **routed, "run": queued["data"]})
         _atomic_write_json(_answers_file(ws, step_id), {"answers": answers, "answered_at": _state.now_iso()})
         entry = _state.reset_step(ws, step_id)
         return _ok({"step": step_id, "status": entry["status"]})
