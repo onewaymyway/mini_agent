@@ -271,6 +271,22 @@ def stop_novel(workspace: str) -> Dict[str, Any]:
     return _guard(lambda: _ok({"command": _state.write_control(_workspace_or_raise(workspace), command="stop")["command"]}))
 
 
+def rebaseline_stale(workspace: str) -> Dict[str, Any]:
+    """作者确认：当前「上游产物已变化」的需重跑步骤产物无误，以现状重新基线（不执行任何步骤）。"""
+
+    def run() -> Dict[str, Any]:
+        from novel_writer import pipeline as P
+
+        ws = _workspace_or_raise(workspace)
+        plan = P.build_plan(ws)
+        ids = [sid for sid, e in _state.load_state(ws)["steps"].items()
+               if e.get("status") == _state.ST_STALE and str(e.get("note") or "").startswith("上游产物已变化")]
+        done = _state.rebaseline_stale(ws, plan, ids)
+        return _ok({"rebaselined": done})
+
+    return _guard(run)
+
+
 def approve_step(workspace: str, step_id: str) -> Dict[str, Any]:
     """批准一个 waiting_review 的步骤，置为 passed。"""
 

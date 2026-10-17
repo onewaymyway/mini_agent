@@ -15,6 +15,7 @@ from __future__ import annotations
 import datetime as _dt
 import hashlib
 import json
+import re
 import threading
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -156,6 +157,16 @@ def input_digests(ws: Workspace, step: StepDef) -> Dict[str, str]:
     return out
 
 
+def record_writer_paths(ws: Workspace, rel_paths: Iterable[str], writer_id: str) -> None:
+    """把若干文件的最后写入者记为 writer_id（agent 的实际写入，不依赖声明）。"""
+    with _LOCK:
+        state = load_state(ws)
+        writers = state.setdefault("file_writers", {})
+        for rel in rel_paths:
+            writers[rel] = writer_id
+        atomic_write_json(ws.path("studio_state"), state)
+
+
 def record_writers(ws: Workspace, step: StepDef) -> None:
     """步骤产出后，记录每个输出文件的最后写入者（步骤 id）。"""
     with _LOCK:
@@ -166,16 +177,45 @@ def record_writers(ws: Workspace, step: StepDef) -> None:
         atomic_write_json(ws.path("studio_state"), state)
 
 
+_UPSTREAM_NOTE = "上游产物已变化，需要重跑"
+
+
+def _writer_index(writer: Optional[str], index: Dict[str, int]) -> Optional[int]:
+    """写入者在计划中的位置。修改循环内部的写入（chNN.revise.rK 等）归到该章的修改循环。"""
+    if writer is None:
+        return None
+    if writer in index:
+        return index[writer]
+    m = re.match(r"ch(\d+)\.", writer)
+    if m:
+        return index.get(f"ch{int(m.group(1)):02d}.revise_loop")
+    return None
+
+
+def _upstream_changed(ws: Workspace, digests: Dict[str, str], i: int,
+                      index: Dict[str, int], writers: Dict[str, str]) -> bool:
+    """某步骤的输入中，是否有「来自它自己或之前步骤」的文件发生了变化。
+
+    排在它之后（或就是它自己）写入的文件，是它的下游结果，不算上游变化。
+    """
+    for rel_path, recorded_sha in digests.items():
+        owner = _writer_index(writers.get(rel_path), index)
+        if owner is not None and owner >= i:
+            continue
+        if _file_digest(ws.root / rel_path) != recorded_sha:
+            return True
+    return False
+
+
 def mark_stale(ws: Workspace, plan: List[StepDef]) -> List[str]:
-    """已通过的步骤若「来自上游」的输入变化（被重新生成/手改），标记为 stale。
+    """已通过的步骤若「来自上游」的输入变化，标记为 stale；已误判的 stale 步骤若复核后无上游变化则自愈。
 
-    关键规则：一个输入文件若最后是由计划中排在本步骤**之后**的步骤写入的，它的变化是本步骤
-    自己的下游造成的（例如章节的状态同步改写了人物档案，而核查在它之前），不算上游变化，
-    否则会出现「核查 → 同步 → 核查」的无限回路。
-
-    没有逐文件指纹的旧记录只补录、不标脏（见下方注释）。返回新标脏的步骤 id 列表。
+    关键规则：输入文件的变化若是由计划中排在本步骤之后（或本步骤自己）的步骤造成，不算上游变化。
+    这避免了「核查 → 同步 → 核查」的回路，也避免了归档顺手改了蓝图之后，早期规划步骤被连带重跑。
+    没有逐文件指纹的旧记录只补录、不标脏。返回新标脏的步骤 id 列表。
     """
     stale_ids: List[str] = []
+    restored: List[str] = []
     index = {step.id: i for i, step in enumerate(plan)}
     with _LOCK:
         state = load_state(ws)
@@ -183,32 +223,57 @@ def mark_stale(ws: Workspace, plan: List[StepDef]) -> List[str]:
         changed = False
         for i, step in enumerate(plan):
             entry = state["steps"].get(step.id)
-            if not entry or entry.get("status") != ST_PASSED:
+            if not entry:
                 continue
-            recorded_digests = entry.get("input_digests")
-            if recorded_digests is None:
+            status = entry.get("status")
+            digests = entry.get("input_digests")
+            if status == ST_STALE and digests is not None and str(entry.get("note") or "").startswith(_UPSTREAM_NOTE):
+                if not _upstream_changed(ws, digests, i, index, writers):
+                    entry.update(status=ST_PASSED, note=None, updated_at=now_iso())
+                    restored.append(step.id)
+                    changed = True
+                continue
+            if status != ST_PASSED:
+                continue
+            if digests is None:
                 # 旧版本的记录只有整体哈希，无法区分「上游真正变化」与「流水线自己后来的写入」。
-                # 这里只补录逐文件指纹、不标脏：宁可漏报一次，也不能因升级自动重跑（蓝图等步骤会覆盖全书规划）。
-                # 补录之后的变化会被正常检测。
+                # 只补录逐文件指纹、不标脏：宁可漏报，也不能因升级自动重跑（蓝图等步骤会覆盖全书规划）。
                 entry["input_hash"] = input_hash(ws, step)
                 entry["input_digests"] = input_digests(ws, step)
                 changed = True
                 continue
-            upstream_changed = False
-            for rel_path, recorded_sha in recorded_digests.items():
-                writer = writers.get(rel_path)
-                if writer in index and index[writer] >= i:
-                    continue  # 本步骤自己或之后写入的文件：是本步骤/下游的结果，不是上游变化
-                if _file_digest(ws.root / rel_path) != recorded_sha:
-                    upstream_changed = True
-                    break
-            if upstream_changed:
-                entry.update(status=ST_STALE, note="上游产物已变化，需要重跑", updated_at=now_iso())
+            if _upstream_changed(ws, digests, i, index, writers):
+                entry.update(status=ST_STALE, note=_UPSTREAM_NOTE, updated_at=now_iso())
                 stale_ids.append(step.id)
                 changed = True
         if changed:
             atomic_write_json(ws.path("studio_state"), state)
+    if restored:
+        log_line(ws, f"🩹 复核后恢复 {len(restored)} 个误判的需重跑步骤：{', '.join(restored[:8])}")
     return stale_ids
+
+
+def rebaseline_stale(ws: Workspace, plan: List[StepDef], step_ids: Iterable[str]) -> List[str]:
+    """作者确认这些需重跑步骤的产物无误：以当前文件状态重新基线，标为已通过（仅限「上游产物已变化」的标记）。"""
+    done: List[str] = []
+    by_id = {step.id: step for step in plan}
+    with _LOCK:
+        state = load_state(ws)
+        for sid in step_ids:
+            entry = state["steps"].get(sid)
+            step = by_id.get(sid)
+            if not entry or not step or entry.get("status") != ST_STALE:
+                continue
+            if not str(entry.get("note") or "").startswith(_UPSTREAM_NOTE):
+                continue
+            entry.update(status=ST_PASSED, note="作者确认产物无误，已重新基线", updated_at=now_iso(),
+                         input_hash=input_hash(ws, step), input_digests=input_digests(ws, step))
+            done.append(sid)
+        if done:
+            atomic_write_json(ws.path("studio_state"), state)
+    if done:
+        log_line(ws, f"🩹 作者确认 {len(done)} 个需重跑步骤的产物无误，已重新基线：{', '.join(done[:8])}")
+    return done
 
 
 def mark_orphans_interrupted(ws: Workspace) -> List[str]:

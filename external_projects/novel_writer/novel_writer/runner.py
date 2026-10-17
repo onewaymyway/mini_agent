@@ -134,7 +134,30 @@ def build_prompt(ws: Workspace, step: S.StepDef, *, hint: str = "") -> str:
 def run_skill_step(
     ws: Workspace, step: S.StepDef, *, invoker: Invoker, settings: Dict[str, Any], run_no: int,
 ) -> Dict[str, Any]:
-    """执行一个 skill 步骤，返回通过校验的回执。失败抛 StepFailed。"""
+    """执行一个 skill 步骤，返回通过校验的回执。失败抛 StepFailed。
+
+    agent 可能改写任何文件（不只是声明的产出）。这里对比执行前后所有受追踪文件的指纹，
+    把实际发生变化的文件记到本步骤名下，供脏标记判断「这次变化是谁造成的」。
+    """
+    from novel_writer import pipeline as P
+
+    tracked = sorted({
+        str(p.relative_to(ws.root))
+        for step_def in P.build_plan(ws)
+        for p in (list(st.expand_inputs(ws, step_def.inputs)) + list(st.expand_inputs(ws, step_def.outputs)))
+    })
+    before = {rel: st._file_digest(ws.root / rel) for rel in tracked}
+    try:
+        return _run_skill_step_inner(ws, step, invoker=invoker, settings=settings, run_no=run_no)
+    finally:
+        changed = [rel for rel in tracked if st._file_digest(ws.root / rel) != before[rel]]
+        if changed:
+            st.record_writer_paths(ws, changed, step.id)
+
+
+def _run_skill_step_inner(
+    ws: Workspace, step: S.StepDef, *, invoker: Invoker, settings: Dict[str, Any], run_no: int,
+) -> Dict[str, Any]:
     run_dir = ws.step_dir(step.id, run_no)
     run_dir.mkdir(parents=True, exist_ok=True)
     max_turns = int((settings.get("max_turns_overrides") or {}).get(step.id, DEFAULT_MAX_TURNS))

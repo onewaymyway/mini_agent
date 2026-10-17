@@ -70,6 +70,16 @@ def render_control(ws: str) -> None:
     _render_run_buttons(ws, nxt)
     _render_feedback_cycle(ws, data["steps"])
 
+    stale_up = [x for x in data["steps"] if x["status"] == "stale" and str(x.get("note") or "").startswith("上游产物已变化")]
+    if stale_up:
+        with st.expander(f"🩹 {len(stale_up)} 个步骤因「上游产物已变化」需重跑（若核对后确认无误，可清除标记）", expanded=True):
+            st.caption("这些步骤的标记可能是误判（比如归档 agent 顺手改了蓝图）。"
+                       "确认产物无误后，清除标记；若确有问题，请直接运行对应步骤。")
+            st.write("、".join(x["title"] for x in stale_up[:12]) + (" 等" if len(stale_up) > 12 else ""))
+            confirmed = st.checkbox("我已核对：这些步骤的产物无误", key="cp_rebase_confirm")
+            if st.button("清除这些需重跑标记", key="cp_rebase_go", disabled=not confirmed):
+                _report_ok(tool_api.rebaseline_stale(ws))
+
     st.subheader("流水线")
     rows = []
     for s in data["steps"]:
