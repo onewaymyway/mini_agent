@@ -11,6 +11,11 @@ python entrypoints/list_novels.py
 streamlit run app.py                               # 书架 / 新建小说 / Skill 库
 ```
 
+```bash
+cd external_projects/stock_watch
+nohup streamlit run app.py --server.port 8504 > streamlit.log 2>&1 &
+```
+
 `create_novel` 可选参数：`--workspace <任意绝对路径>`（会登记到 `data/shelf.json`）、`--gear G0..G3`、
 `--quality draft|standard|premium`、`--total-chapters N`。
 
