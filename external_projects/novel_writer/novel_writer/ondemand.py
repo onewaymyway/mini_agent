@@ -81,6 +81,29 @@ def save_request(ws: Workspace, data: Dict[str, Any]) -> None:
     atomic_write_json(requests_dir(ws) / f"{data['kind']}_{data['id']}.json", data)
 
 
+REQUEST_STEP_PREFIX = {"revision": "rev", "idea": "idea", "assist": "asst"}
+
+
+def request_step_id(kind: str, rid: str) -> str:
+    return f"{REQUEST_STEP_PREFIX[kind]}.{rid}"
+
+
+def delete_request(ws: Workspace, kind: str, rid: str) -> None:
+    """删除按需请求的文件及其答复文件，并移除对应步骤的状态（调用方负责确认步骤没有在运行）。"""
+    path = requests_dir(ws) / f"{kind}_{rid}.json"
+    if not path.is_file():
+        raise OnDemandError(f"找不到请求 {kind}_{rid}")
+    path.unlink()
+    from novel_writer import state as st
+    from novel_writer.runner import _answers_file
+
+    sid = request_step_id(kind, rid)
+    answers = _answers_file(ws, sid)
+    if answers.exists():
+        answers.unlink()
+    st.drop_step(ws, sid)
+
+
 def ondemand_steps(ws: Workspace) -> List[S.StepDef]:
     steps: List[S.StepDef] = []
     for req in list_requests(ws):

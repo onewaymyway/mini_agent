@@ -467,6 +467,34 @@ def request_revision(workspace: str, chapter: int, level: str, instruction: str)
     return _guard(lambda: _ok(_views.request_revision(_workspace_or_raise(workspace), int(chapter), level, instruction)))
 
 
+# ───────────────────────── 后台任务总览与管理 ─────────────────────────
+
+
+def list_tasks(*, novels_dir: Optional[str] = None, index_file: Optional[str] = None) -> Dict[str, Any]:
+    from novel_writer import tasks as _tasks
+
+    return _guard(lambda: _ok({"tasks": _tasks.list_tasks(
+        Path(novels_dir) if novels_dir else None, Path(index_file) if index_file else None)}))
+
+
+def cancel_queued(workspace: str) -> Dict[str, Any]:
+    from novel_writer import tasks as _tasks
+
+    return _guard(lambda: _ok(_tasks.cancel_queued(workspace)))
+
+
+def clear_stale_worker(workspace: str) -> Dict[str, Any]:
+    from novel_writer import tasks as _tasks
+
+    return _guard(lambda: _ok(_tasks.clear_stale_worker(workspace)))
+
+
+def delete_request(workspace: str, request_kind: str, request_id: str) -> Dict[str, Any]:
+    from novel_writer import tasks as _tasks
+
+    return _guard(lambda: _ok(_tasks.delete_request(workspace, request_kind, request_id)))
+
+
 # ───────────────────────── M5：收件箱 / 批量推进 / 手写旁路 / AI 选段辅助 ─────────────────────────
 
 from novel_writer import batch as _batch  # noqa: E402

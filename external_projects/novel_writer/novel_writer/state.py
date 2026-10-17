@@ -98,6 +98,14 @@ def update_step(ws: Workspace, step_id: str, **fields: Any) -> Dict[str, Any]:
         return entry
 
 
+def drop_step(ws: Workspace, step_id: str) -> None:
+    """删除一个步骤的状态记录（用于删除按需请求）。"""
+    with _LOCK:
+        state = load_state(ws)
+        if state["steps"].pop(step_id, None) is not None:
+            atomic_write_json(ws.path("studio_state"), state)
+
+
 def reset_step(ws: Workspace, step_id: str) -> Dict[str, Any]:
     """回到 pending（用于重跑）。保留 attempts 与历史，清除错误与待答复项。"""
     return update_step(ws, step_id, status=ST_PENDING, error=None, needs_user=None)
