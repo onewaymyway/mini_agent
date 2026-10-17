@@ -477,6 +477,12 @@ def list_tasks(*, novels_dir: Optional[str] = None, index_file: Optional[str] = 
         Path(novels_dir) if novels_dir else None, Path(index_file) if index_file else None)}))
 
 
+def force_stop(workspace: str) -> Dict[str, Any]:
+    from novel_writer import tasks as _tasks
+
+    return _guard(lambda: _ok(_tasks.force_stop(workspace)))
+
+
 def cancel_queued(workspace: str) -> Dict[str, Any]:
     from novel_writer import tasks as _tasks
 

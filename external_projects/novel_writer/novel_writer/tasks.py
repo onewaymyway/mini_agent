@@ -11,11 +11,13 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from novel_writer import batch as _batch
 from novel_writer import ondemand as _ondemand
+from novel_writer import procs
 from novel_writer import shelf
 from novel_writer import state as st
 from novel_writer.workspace import Workspace, WorkspaceError
@@ -100,6 +102,48 @@ def _resolve(workspace: str) -> Workspace:
     if not ws.is_initialized():
         raise TaskError(f"不是已初始化的工作目录：{workspace}")
     return ws
+
+
+def force_stop(workspace: str) -> Dict[str, Any]:
+    """立即停止：终止 worker 进程及其子进程，正在运行的步骤标为「已中断」，清空排队。
+
+    安全约束：
+      * 只终止 worker 记录的那个进程，且必须通过「进程号 + 创建时间」双重校验；
+      * 不终止界面自身所在的进程（同进程运行的 worker 只能温和停止）；
+      * 进程已不存在时只清理状态，不做任何终止。
+    中断的步骤产出可能不完整，重跑前应检查对应文件。
+    """
+    ws = _resolve(workspace)
+    info = st.read_worker(ws)
+    if info.get("state") != "running":
+        raise TaskError("没有正在运行的任务")
+    pid = info.get("pid")
+    create_time = info.get("pid_create_time")
+    if pid == os.getpid():
+        raise TaskError("该任务与界面在同一进程中，不能强制终止，请使用「停止」")
+
+    st.write_control(ws, command="stop", run_step=None)
+    if procs.is_same_process(pid, create_time):
+        try:
+            outcome = procs.terminate_tree(int(pid), float(create_time))
+        except procs.ProcessControlError as exc:
+            raise TaskError(str(exc)) from exc
+        terminated = True
+    else:
+        outcome = {"children": 0, "killed_by_force": 0, "still_running": []}
+        terminated = False  # 进程已不存在（或号被复用，不能确认是我们的进程），只清理状态
+
+    interrupted = []
+    for sid, entry in st.load_state(ws)["steps"].items():
+        if entry.get("status") == st.ST_RUNNING:
+            st.update_step(ws, sid, status=st.ST_INTERRUPTED,
+                           error="强制停止（作者手动）：产出可能不完整，重跑前请检查对应文件")
+            interrupted.append(sid)
+    st.release_worker(ws, "force_stopped")
+    st.write_control(ws, command="none")
+    st.log_line(ws, f"⛔ 强制停止：进程 {pid} {'已终止' if terminated else '已不存在'}，"
+                    f"子进程 {outcome['children']} 个，中断步骤 {len(interrupted)} 个（作者手动）")
+    return {"terminated": terminated, "pid": pid, "interrupted": interrupted, **outcome}
 
 
 def cancel_queued(workspace: str) -> Dict[str, Any]:

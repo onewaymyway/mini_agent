@@ -4,3 +4,4 @@ pyyaml>=6.0
 graphviz>=0.19.0
 # ↑ graphviz：总控台流水线图（st.graphviz_chart 需要这个包来渲染 DOT）
 # 测试：pytest（开发依赖，不装也不影响运行）
+psutil>=5.9  # 后台任务的强制终止（进程号 + 创建时间校验）

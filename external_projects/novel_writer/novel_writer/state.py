@@ -249,8 +249,10 @@ def acquire_worker(ws: Workspace, *, mode: str) -> bool:
     with _LOCK:
         if worker_alive(ws):
             return False
+        from novel_writer.procs import process_create_time
+
         atomic_write_json(ws.path("studio_worker"), {
-            "pid": os.getpid(), "state": "running", "mode": mode,
+            "pid": os.getpid(), "pid_create_time": process_create_time(), "state": "running", "mode": mode,
             "started_at": now_iso(), "heartbeat": now_iso(), "step": None, "reason": None,
         })
         return True
