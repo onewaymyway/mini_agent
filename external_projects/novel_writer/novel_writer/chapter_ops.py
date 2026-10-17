@@ -349,7 +349,7 @@ def _refresh_check_steps(ws: Workspace, n: int, *, clean: bool) -> None:
 
     for suffix in ("machine_check", "review"):
         step = _chapter_step(n, suffix)
-        fields = {"input_hash": st.input_hash(ws, step)}
+        fields = {"input_hash": st.input_hash(ws, step), "input_digests": st.input_digests(ws, step)}
         if clean:
             fields.update(status=st.ST_PASSED, error=None, needs_user=None, note=None)
         st.update_step(ws, step.id, **fields)

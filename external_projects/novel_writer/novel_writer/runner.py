@@ -318,6 +318,8 @@ def run_step(
     st.log_line(ws, f"{mark} {step.id} → {status}　{shown}　（{duration}s）".rstrip())
     if status in (st.ST_PASSED, st.ST_WAITING_REVIEW):
         final["input_hash"] = st.input_hash(ws, step)
+        final["input_digests"] = st.input_digests(ws, step)
+        st.record_writers(ws, step)
     st.update_step(ws, step.id, **final)
     st.append_usage(ws, {
         "step": step.id, "attempt": attempts, "executor": step.executor, "skill": step.skill or None,

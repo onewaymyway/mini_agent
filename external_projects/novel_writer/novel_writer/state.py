@@ -134,26 +134,72 @@ def input_hash(ws: Workspace, step: StepDef) -> str:
     return h.hexdigest()
 
 
-def mark_stale(ws: Workspace, plan: List[StepDef]) -> List[str]:
-    """已通过的步骤若输入哈希变化（上游被重新生成/手改），标记为 stale。
+def _file_digest(path: Path) -> str:
+    if not path.is_file():
+        return "MISSING"
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
-    没有记录过哈希的旧步骤只补记录，不标脏（避免升级后整本书被误判）。
+
+def input_digests(ws: Workspace, step: StepDef) -> Dict[str, str]:
+    """步骤每个输入文件的指纹（相对路径 -> sha256），步骤通过时记录。"""
+    out: Dict[str, str] = {}
+    for path in expand_inputs(ws, step.inputs):
+        out[str(path.relative_to(ws.root))] = _file_digest(path)
+    return out
+
+
+def record_writers(ws: Workspace, step: StepDef) -> None:
+    """步骤产出后，记录每个输出文件的最后写入者（步骤 id）。"""
+    with _LOCK:
+        state = load_state(ws)
+        writers = state.setdefault("file_writers", {})
+        for path in expand_inputs(ws, step.outputs):
+            writers[str(path.relative_to(ws.root))] = step.id
+        atomic_write_json(ws.path("studio_state"), state)
+
+
+def mark_stale(ws: Workspace, plan: List[StepDef]) -> List[str]:
+    """已通过的步骤若「来自上游」的输入变化（被重新生成/手改），标记为 stale。
+
+    关键规则：一个输入文件若最后是由计划中排在本步骤**之后**的步骤写入的，它的变化是本步骤
+    自己的下游造成的（例如章节的状态同步改写了人物档案，而核查在它之前），不算上游变化，
+    否则会出现「核查 → 同步 → 核查」的无限回路。
+
+    没有输入指纹记录的旧步骤只按整体哈希补记录/比对（升级后至多重跑一次，之后稳定）。
     返回新标脏的步骤 id 列表。
     """
     stale_ids: List[str] = []
+    index = {step.id: i for i, step in enumerate(plan)}
     with _LOCK:
         state = load_state(ws)
+        writers = state.get("file_writers") or {}
         changed = False
-        for step in plan:
+        for i, step in enumerate(plan):
             entry = state["steps"].get(step.id)
             if not entry or entry.get("status") != ST_PASSED:
                 continue
-            current = input_hash(ws, step)
-            recorded = entry.get("input_hash")
-            if recorded is None:
-                entry["input_hash"] = current
-                changed = True
-            elif recorded != current:
+            recorded_digests = entry.get("input_digests")
+            if recorded_digests is None:
+                current = input_hash(ws, step)
+                recorded = entry.get("input_hash")
+                if recorded is None:
+                    entry["input_hash"] = current
+                    entry["input_digests"] = input_digests(ws, step)
+                    changed = True
+                elif recorded != current:
+                    entry.update(status=ST_STALE, note="上游产物已变化，需要重跑", updated_at=now_iso())
+                    stale_ids.append(step.id)
+                    changed = True
+                continue
+            upstream_changed = False
+            for rel_path, recorded_sha in recorded_digests.items():
+                writer = writers.get(rel_path)
+                if writer in index and index[writer] >= i:
+                    continue  # 本步骤自己或之后写入的文件：是本步骤/下游的结果，不是上游变化
+                if _file_digest(ws.root / rel_path) != recorded_sha:
+                    upstream_changed = True
+                    break
+            if upstream_changed:
                 entry.update(status=ST_STALE, note="上游产物已变化，需要重跑", updated_at=now_iso())
                 stale_ids.append(step.id)
                 changed = True
