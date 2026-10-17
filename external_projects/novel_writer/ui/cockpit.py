@@ -8,6 +8,9 @@ import streamlit as st
 from novel_writer import tool_api
 from novel_writer.settings import GEARS, QUALITIES
 from ui import codex as codex_page
+from ui import reading as reading_page
+from ui import review as review_page
+from ui import writing as writing_page
 from ui import planning as planning_page
 from ui import threads as threads_page
 from ui.components import GATE_LABEL, REASON_LABEL, STATUS_LABEL, novel_title, require_ws, show_error
@@ -21,14 +24,21 @@ def page_cockpit() -> None:
         return
     st.header(f"🧭 {novel_title(ws)}")
     st.caption(ws)
-    tab_ctrl, tab_plan, tab_codex, tab_thread = st.tabs(["🧭 总控台", "🗺 规划", "👥 设定库", "🧵 线索"])
-    with tab_ctrl:
+    names = ["🧭 总控台", "🗺 规划", "✍ 写作台", "🔍 审校", "📖 阅读", "👥 设定库", "🧵 线索"]
+    tabs = st.tabs(names)
+    with tabs[0]:
         render_control(ws)
-    with tab_plan:
+    with tabs[1]:
         planning_page.render_planning(ws)
-    with tab_codex:
+    with tabs[2]:
+        writing_page.render_writing(ws)
+    with tabs[3]:
+        review_page.render_review(ws)
+    with tabs[4]:
+        reading_page.render_reading(ws)
+    with tabs[5]:
         codex_page.render_codex(ws)
-    with tab_thread:
+    with tabs[6]:
         threads_page.render_threads(ws)
 
 

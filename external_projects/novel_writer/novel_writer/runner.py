@@ -210,16 +210,25 @@ def _ensure_framework_on_path() -> None:
 
 # ── python 步骤处理器 ──────────────────────────────────────────────────────
 
-PyHandler = Callable[[Workspace, S.StepDef, Dict[str, Any]], Optional[Dict[str, Any]]]
+PyHandler = Callable[..., Optional[Dict[str, Any]]]  # (ws, step, settings, invoker=None) -> dict | None
 
 
-def _h_init_workspace(ws: Workspace, step: S.StepDef, settings: Dict[str, Any]) -> Dict[str, Any]:
+class NeedsUser(Exception):
+    """处理器内部需要作者决定（例如修改循环超过 3 轮）：步骤挂起为 waiting_user。"""
+
+    def __init__(self, summary: str, items: List[Dict[str, Any]]) -> None:
+        super().__init__(summary)
+        self.summary = summary
+        self.items = items
+
+
+def _h_init_workspace(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:
     if not ws.is_initialized():
         raise StepFailed("工作目录未初始化（缺少 _studio/manifest.json）")
     return {"summary": "工作目录已就绪"}
 
 
-def _h_init_word_count(ws: Workspace, step: S.StepDef, settings: Dict[str, Any]) -> Dict[str, Any]:
+def _h_init_word_count(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:
     blueprint = read_json(ws.path("blueprint"), default=None)
     if not isinstance(blueprint, dict):
         raise StepFailed("缺少蓝图，无法计算字数配额")
@@ -238,7 +247,7 @@ def _h_init_word_count(ws: Workspace, step: S.StepDef, settings: Dict[str, Any])
     return {"summary": f"字数配额已写入（{len(per_chapter)} 章）"}
 
 
-def _h_checkpoint(ws: Workspace, step: S.StepDef, settings: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _h_checkpoint(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Optional[Dict[str, Any]]:
     # 检查点本身不执行任何工作：由 runner 直接置为 waiting_review
     return None
 
@@ -248,6 +257,10 @@ DEFAULT_PY_HANDLERS: Dict[str, PyHandler] = {
     "init_word_count": _h_init_word_count,
     "checkpoint": _h_checkpoint,
 }
+# 章节循环的 python 步骤（M3）。放在模块末尾导入：chapter_ops 只在函数内部反向导入本模块。
+from novel_writer.chapter_ops import CHAPTER_HANDLERS as _CHAPTER_HANDLERS  # noqa: E402
+
+DEFAULT_PY_HANDLERS.update(_CHAPTER_HANDLERS)
 
 
 # ── 单步总入口 ─────────────────────────────────────────────────────────────
@@ -273,7 +286,7 @@ def run_step(
     fields: Dict[str, Any] = {}
     try:
         if step.executor == S.EXECUTOR_PYTHON:
-            status, fields = _run_python(ws, step, handlers, settings)
+            status, fields = _run_python(ws, step, handlers, settings, invoker)
         else:
             status, fields = _run_skill(ws, step, invoker, settings, attempts)
     except StepFailed as exc:
@@ -295,13 +308,17 @@ def run_step(
 
 def _run_python(
     ws: Workspace, step: S.StepDef, handlers: Dict[str, PyHandler], settings: Dict[str, Any],
+    invoker: Optional[Invoker] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     if step.handler == "checkpoint":
         return st.ST_WAITING_REVIEW, {"note": "强制检查点：等待作者确认"}
     handler = handlers.get(step.handler)
     if handler is None:
         return st.ST_BLOCKED, {"error": f"{step.handler}：{_blocked_hint()}"}
-    result = handler(ws, step, settings) or {}
+    try:
+        result = handler(ws, step, settings, invoker=invoker) or {}
+    except NeedsUser as exc:
+        return st.ST_WAITING_USER, {"summary": exc.summary, "needs_user": exc.items}
     fields = {k: v for k, v in result.items() if k == "summary"}
     return _gate_status(step, settings), fields
 

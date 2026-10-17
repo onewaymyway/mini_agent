@@ -28,7 +28,7 @@ skill 标准 6 个中文目录（大纲规划/正文/一致性检查/修订记�
 
 ## 测试
 
-`python -m pytest tests -q`（85 个用例：M0 39 + M1 32 + M2 14；含入口脚本子进程测试与 Streamlit AppTest 冒烟，均使用临时数据目录，
+`python -m pytest tests -q`（99 个用例：M0 39 + M1 32 + M2 14 + M3 14；含入口脚本子进程测试与 Streamlit AppTest 冒烟，均使用临时数据目录，
 不污染真实 `data/`）。
 
 
@@ -108,3 +108,43 @@ python entrypoints/smoke_real_llm.py --title 冒烟书 --intent "一个落魄少
 典型流程：新建（填意图）→ 进入驾驶舱 → 运行到检查点 → plan_blueprint 完成后在「规划」里看蓝图、改章节 → 回到总控台批准 → 运行到下个检查点 → 批准设计步骤 → 建档完成。
 
 后台 worker 由界面拉起，界面只写控制文件并轮询状态。测试环境可设 `NOVEL_WRITER_NO_SPAWN=1` 禁止拉起子进程。
+
+
+## M3：章节循环与写作/审校/阅读
+
+### 单章流程（第 n 章）
+
+| 步骤 | 执行器 | 作用 |
+|---|---|---|
+| `chNN.word_quota` | Python | 字数配额 = 蓝图基准 ±（上一章短缺/超出的补偿，上限基准的 20%，偏差不足 15% 不补偿） |
+| `chNN.plot_tasks` | Python | 本章要埋设/兑现的伏笔（来自 plot_tracker） |
+| `chNN.context_pack` | Python | 确定性组装上下文包（蓝图要求、配额、情节任务、出场人设、最近 3 章概述、角色与世界摘要、作者意图），每段有字符上限 |
+| `chNN.style_hint` | Python | 风格提示与禁用词（风格指纹 + 设置） |
+| `chNN.write_chapter` | skill（chapter-writer） | 写正文，产出 `正文/第NN章 标题.md` |
+| `chNN.machine_check` | Python | 机器校验，结果写入 `一致性检查/第NN章_机器校验.json` |
+| `chNN.review` | skill（chapter-review） | 审稿；问题条目以 🔴（硬错误）或 🟡（建议）开头 |
+| `chNN.revise_loop` | Python 编排 | 有 🔴 或机器硬问题时，最多 3 轮「修改 → 复核」，每轮都是新的 agent |
+| `chNN.archive` | skill（chapter-review） | 章节概述与索引 |
+| `chNN.sync` / `chNN.sync_plot` | skill | 同步人物状态、伏笔状态 |
+| `chNN.reader_sim` | skill | 每 5 章的读者体验模拟 |
+
+### 修改循环与升级
+
+- 第 1–3 轮：chapter-writer 按 🔴 清单做**最小修改**，随后 chapter-review 复核，同时重跑机器校验。
+- 三轮后仍有硬问题：步骤挂起为 `waiting_user`，写入 `_studio/inbox/chNN_escalation.json`，**下一章不会开始**。
+- 审校页提供两个决定：「重新核查（我已手动修改）」（不再修改，直接复核）与「接受风险继续」（写入修订记录，流程继续）。两者都要你主动点击。
+
+### 写作台 / 审校 / 阅读
+
+- **写作台**：选章后显示字数与配额、蓝图要求、情节任务与步骤状态、上下文包；可以直接编辑正文并保存。保存后，已通过的下游步骤（审稿、归档、同步）会标为需重跑。
+- **审校**：🔴 数量、机器校验结果、审稿报告、修改记录；升级时在这里做决定。
+- **阅读**：章节目录与字数，预览正文，导出全书合稿到 `导出/`。
+
+### 命令行
+
+升级时的决定要用 `answer`（不是 `approve`）：
+
+```bash
+python -m novel_writer.service_cli status <工作目录>
+python -m novel_writer.service_cli answer <工作目录> ch02.revise_loop --json '{"decision": "接受风险继续"}'
+```

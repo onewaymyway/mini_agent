@@ -53,7 +53,7 @@ def test_plan_has_planning_then_chapters_with_confirm_after_third(ws):
     assert ids[0] == "init_workspace" and ids[1] == "plan_blueprint"
     assert "design_character:李凌云" in ids and "design_character:王道长" in ids
     i_confirm = ids.index("confirm_first3")
-    assert ids[i_confirm - 1] == "ch03.sync"
+    assert ids[i_confirm - 1] == "ch03.sync_plot"
     assert ids.index("ch04.word_quota") > ids.index("init_style_b")
     assert ids.index("ch01.word_quota") > ids.index("design_opening")
     assert {"ch01.write_chapter", "ch04.sync"} <= set(ids)
@@ -255,12 +255,15 @@ def test_skill_failure_marks_failed_and_stops(ws):
     assert entry["status"] == st.ST_FAILED and "boom" in entry["error"] and entry["attempts"] == 1
 
 
+NO_WORD_QUOTA = {k: v for k, v in DEFAULT_PY_HANDLERS.items() if k != "word_quota"}
+
+
 def test_missing_python_handler_is_blocked_not_faked(ws):
     set_settings(ws, gear="G3", budget={"max_chapters_per_run": None})
     inv = FakeInvoker(ws.root)
     last = None
     for _ in range(100):
-        last = run_worker(ws, mode="until_gate", invoker=inv, handlers=DEFAULT_PY_HANDLERS, heartbeat_interval=0.01)
+        last = run_worker(ws, mode="until_gate", invoker=inv, handlers=NO_WORD_QUOTA, heartbeat_interval=0.01)
         if last["reason"] != "waiting_review":
             break
         approve_waiting(ws)
@@ -277,11 +280,11 @@ def test_single_mode_runs_one_step(ws):
 
 def test_pause_and_stop_take_effect_between_steps(ws):
     set_settings(ws, gear="G3")
-    handlers = {**STUB_HANDLERS, "init_workspace": lambda w, s, c: (st.write_control(w, command="pause"), {"summary": "x"})[1]}
+    handlers = {**STUB_HANDLERS, "init_workspace": lambda w, s, c, **kw: (st.write_control(w, command="pause"), {"summary": "x"})[1]}
     r = run_worker(ws, mode="until_gate", invoker=FakeInvoker(ws.root), handlers=handlers, heartbeat_interval=0.01)
     assert r["reason"] == "paused" and statuses(ws)["init_workspace"] == st.ST_PASSED
     assert st.read_control(ws)["command"] == "none"
-    handlers2 = {**STUB_HANDLERS, "init_workspace": lambda w, s, c: (st.write_control(w, command="stop"), {"summary": "x"})[1]}
+    handlers2 = {**STUB_HANDLERS, "init_workspace": lambda w, s, c, **kw: (st.write_control(w, command="stop"), {"summary": "x"})[1]}
     set_settings(ws, gear="G3")
     st.update_step(ws, "init_workspace", status=st.ST_PENDING)
     r2 = run_worker(ws, mode="until_gate", invoker=FakeInvoker(ws.root), handlers=handlers2, heartbeat_interval=0.01)

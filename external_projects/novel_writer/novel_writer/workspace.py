@@ -108,6 +108,10 @@ PATHS: Dict[str, str] = {
     "memory_snapshot": "项目状态/memory/snapshots/snapshot_ch{n}.json",
     "memory_index": "项目状态/memory/search_index.json",
     "context_pack": "项目状态/memory/context_ch{n}.md",
+    "style_hint": "项目状态/memory/style_hint_ch{n}.md",
+    "chapter_tasks": "项目状态/memory/tasks_ch{n}.json",
+    "quota_file": "项目状态/memory/quota_ch{n}.json",
+    "machine_report": "一致性检查/第{nn}章_机器校验.json",
     # 推演记录 / 导出
     "simulations_dir": "推演记录",  # [补定义] plot-simulator 的 simulations/
     "export_dir": "导出",
@@ -121,6 +125,7 @@ PATHS: Dict[str, str] = {
     "studio_log": f"{STUDIO_DIR}/run.log",
     "studio_steps_dir": f"{STUDIO_DIR}/steps",
     "studio_intake": f"{STUDIO_DIR}/intake.json",
+    "studio_inbox": f"{STUDIO_DIR}/inbox",
     "intake_note": f"{STUDIO_DIR}/intake_note.md",
 }
 

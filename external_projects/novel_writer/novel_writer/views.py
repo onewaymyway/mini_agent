@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 from novel_writer import pipeline as P
 from novel_writer import state as st
 from novel_writer.fsutil import atomic_write_json, atomic_write_text, read_json
-from novel_writer.workspace import Workspace, WorkspaceError, sanitize_name
+from novel_writer.workspace import Workspace, WorkspaceError, count_words, sanitize_name
 
 CHAPTER_EDIT_FIELDS = ("title", "function", "word_budget", "tension_level", "characters_present")
 _SPLIT_RE = re.compile(r"[、,，;；]")
@@ -188,3 +188,123 @@ def threads_view(ws: Workspace) -> Dict[str, Any]:
         "foreshadowing_md": _read_text(ws.path("foreshadowing_list")),
         "tension_md": _read_text(ws.path("tension_curve")),
     }
+
+
+# ── M3：写作台 / 审校 / 阅读 ────────────────────────────────────────────────
+
+from novel_writer import chapter_ops as C  # noqa: E402
+
+_CHAPTER_STEP_SUFFIXES = ("word_quota", "plot_tasks", "context_pack", "style_hint", "write_chapter",
+                          "machine_check", "review", "revise_loop", "archive", "sync", "sync_plot", "reader_sim")
+
+
+def _chapter_numbers(ws: Workspace) -> List[int]:
+    nums = [s.chapter for s in P.build_plan(ws) if s.chapter]
+    return sorted(set(nums))
+
+
+def chapters_overview(ws: Workspace) -> Dict[str, Any]:
+    plan_ids = {s.id for s in P.build_plan(ws)}
+    statuses = {sid: e.get("status", st.ST_PENDING) for sid, e in st.load_state(ws)["steps"].items()}
+    titles = {c["id"]: c["title"] for c in planning_view(ws).get("chapters", [])}
+    rows = []
+    for n in _chapter_numbers(ws):
+        steps = [f"ch{n:02d}.{suffix}" for suffix in _CHAPTER_STEP_SUFFIXES]
+        present = [sid for sid in steps if sid in plan_ids]
+        done = sum(1 for sid in present if statuses.get(sid) in st.FINISHED_STATUSES)
+        path = C.chapter_file(ws, n)
+        text = path.read_text(encoding="utf-8") if path else ""
+        review = _read_text(ws.path("review_report", nn=n)) or ""
+        machine = read_json(ws.path("machine_report", nn=n), default=None) or {}
+        current = next((sid for sid in present if statuses.get(sid, st.ST_PENDING) not in st.FINISHED_STATUSES), None)
+        rows.append({
+            "chapter": n,
+            "title": titles.get(n) or (path.stem if path else ""),
+            "file": path.name if path else None,
+            "words": count_words(text),
+            "quota": C.quota_of(ws, n),
+            "red": C.count_red(review),
+            "machine_hard": len(machine.get("hard") or []),
+            "progress": f"{done}/{len(present)}",
+            "current": current.split(".", 1)[1] if current else "已完成",
+            "needs_attention": any(statuses.get(sid) in (st.ST_WAITING_USER, st.ST_FAILED, st.ST_BLOCKED) for sid in present),
+        })
+    return {"chapters": rows}
+
+
+def chapter_detail(ws: Workspace, n: int) -> Dict[str, Any]:
+    if n not in _chapter_numbers(ws):
+        raise ViewError(f"第 {n} 章不在流水线中（章节数以蓝图为准）")
+    path = C.chapter_file(ws, n)
+    plan_steps = {s.id: s for s in P.build_plan(ws)}
+    state_steps = st.load_state(ws)["steps"]
+    steps = []
+    for suffix in _CHAPTER_STEP_SUFFIXES:
+        sid = f"ch{n:02d}.{suffix}"
+        if sid in plan_steps:
+            entry = state_steps.get(sid, {})
+            steps.append({"id": sid, "title": plan_steps[sid].title, "status": entry.get("status", st.ST_PENDING),
+                          "error": entry.get("error"), "summary": entry.get("summary"),
+                          "needs_user": entry.get("needs_user")})
+    return {
+        "chapter": n,
+        "entry": C.chapter_entry(ws, n),
+        "text": path.read_text(encoding="utf-8") if path else "",
+        "file": path.name if path else None,
+        "words": count_words(path.read_text(encoding="utf-8")) if path else 0,
+        "quota": C.quota_of(ws, n),
+        "context": _read_text(ws.path("context_pack", n=n)),
+        "tasks": read_json(ws.path("chapter_tasks", n=n), default=None),
+        "machine": read_json(ws.path("machine_report", nn=n), default=None),
+        "review": _read_text(ws.path("review_report", nn=n)),
+        "summary": _read_text(ws.path("chapter_summary", nn=n)),
+        "revision_log": _read_text(ws.path("revision_log", nn=n)),
+        "steps": steps,
+    }
+
+
+def save_chapter_text(ws: Workspace, n: int, text: str) -> Dict[str, Any]:
+    """作者手动保存正文。下游产物（审稿、归档、同步）会因输入变化而标为 stale。"""
+    body = str(text or "")
+    if not body.strip():
+        raise ViewError("正文不能为空")
+    path = C.chapter_file(ws, n)
+    if path is None:
+        title = str(chapter_entry_title(ws, n) or f"第{n}章")
+        path = ws.chapter_path(n, title, total_chapters=len(_chapter_numbers(ws)))
+    atomic_write_text(path, body.rstrip() + "\n")
+    _append_log(ws.path("revision_log", nn=n), f"作者手动保存正文（{count_words(body)} 字）")
+    stale = st.mark_stale(ws, P.build_plan(ws))
+    return {"file": path.name, "words": count_words(body), "stale": stale}
+
+
+def chapter_entry_title(ws: Workspace, n: int) -> Optional[str]:
+    for c in planning_view(ws).get("chapters", []):
+        if c["id"] == n:
+            return c["title"]
+    return None
+
+
+def _append_log(path, line: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    stamp = _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+    with path.open("a", encoding="utf-8") as f:
+        f.write(f"- {stamp} {line}\n")
+
+
+def export_book(ws: Workspace) -> Dict[str, Any]:
+    parts, words, count = [], 0, 0
+    title = read_json(ws.path("workspace_config"), default={}).get("novel_title") or "小说"
+    for n in _chapter_numbers(ws):
+        path = C.chapter_file(ws, n)
+        if path is None:
+            continue
+        text = path.read_text(encoding="utf-8").strip()
+        parts.append(text)
+        words += count_words(text)
+        count += 1
+    if not parts:
+        raise ViewError("还没有任何正文可以导出")
+    out = ws.path("export_dir") / f"{sanitize_name(title, what='书名')}_全书合稿.md"
+    atomic_write_text(out, "\n\n".join(parts) + "\n")
+    return {"file": str(out.relative_to(ws.root)), "chapters": count, "words": words}

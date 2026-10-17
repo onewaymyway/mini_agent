@@ -248,14 +248,16 @@ def chapter_steps(n: int, title: str, *, total: Optional[int], prev_last: str) -
         StepDef(id=p("write_chapter"), title=f"第{n}章：写作", stage=_stage_of(n), category=CAT_CHAPTER_WRITE,
                 executor=EXECUTOR_SKILL, skill="chapter-writer",
                 instructions=f"写第 {n} 章正文。严格遵循上下文包与章前情节清单；产出正文并在回执里给出字数与写作备注。",
-                inputs=(rel("context_pack", n=n), rel("word_count")),
+                inputs=(rel("context_pack", n=n), rel("style_hint", n=n), rel("chapter_tasks", n=n),
+                        rel("quota_file", n=n)),
                 outputs=(chapter_text,), deps=(p("style_hint"),), **common),
         StepDef(id=p("machine_check"), title=f"第{n}章：机器校验", stage=_stage_of(n), category=CAT_CHAPTER_REVIEW,
                 executor=EXECUTOR_PYTHON, handler="machine_check", inputs=(chapter_text,),
                 deps=(p("write_chapter"),), **common),
         StepDef(id=p("review"), title=f"第{n}章：完章核查", stage=_stage_of(n), category=CAT_CHAPTER_REVIEW,
                 executor=EXECUTOR_SKILL, skill="chapter-review",
-                instructions=f"对第 {n} 章做一致性核查，按 🔴/🟡 分级列出问题（原文定位）。",
+                instructions=(f"对第 {n} 章做一致性核查。问题清单的每一条必须以 🔴（硬错误）或 🟡（建议）开头，"
+                              "并给出原文定位；没有问题时写明「无 🔴」。"),
                 inputs=(chapter_text, rel("characters"), rel("plot_tracker")),
                 outputs=(rel("review_report", nn=n),), deps=(p("machine_check"),), **common),
         StepDef(id=p("revise_loop"), title=f"第{n}章：修改循环", stage=_stage_of(n), category=CAT_CHAPTER_REVIEW,
@@ -272,12 +274,19 @@ def chapter_steps(n: int, title: str, *, total: Optional[int], prev_last: str) -
                 inputs=(rel("chapter_summary", nn=n), rel("characters")),
                 outputs=(rel("characters"),), deps=(p("archive"),), **common),
     ]
+    steps.append(StepDef(
+        id=p("sync_plot"), title=f"第{n}章：伏笔状态同步", stage=_stage_of(n), category=CAT_CHAPTER_REVIEW,
+        executor=EXECUTOR_SKILL, skill="plot-tracker",
+        instructions=f"根据第 {n} 章的概述更新伏笔状态（埋设/推进/兑现）与故事线进度。",
+        inputs=(rel("chapter_summary", nn=n), rel("plot_tracker")),
+        outputs=(rel("plot_tracker"),), deps=(p("sync"),), **common,
+    ))
     if n % READER_SIM_INTERVAL == 0:
         steps.append(StepDef(
             id=p("reader_sim"), title=f"第{n}章：读者体验模拟", stage=_stage_of(n), category=CAT_CHAPTER_REVIEW,
             executor=EXECUTOR_SKILL, skill="reader-simulator",
             instructions=f"以读者视角评估第 {n} 章（注意力/理解/情感/可信/节奏）。",
-            inputs=(chapter_text,), outputs=(rel("reader_report", nn=n),), deps=(p("sync"),), **common,
+            inputs=(chapter_text,), outputs=(rel("reader_report", nn=n),), deps=(p("sync_plot"),), **common,
         ))
     return steps
 

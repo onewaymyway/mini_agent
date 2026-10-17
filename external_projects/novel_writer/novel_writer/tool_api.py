@@ -387,3 +387,21 @@ def set_step_gate(workspace: str, step_id: str, gate: Optional[str]) -> Dict[str
         return _ok({"settings": ws.save_settings({**current, "step_overrides": overrides})["step_overrides"]})
 
     return _guard(run)
+
+
+# ───────────────────────── M3：章节（写作台 / 审校 / 阅读）─────────────────────────
+
+def chapters(workspace: str) -> Dict[str, Any]:
+    return _guard(lambda: _ok(_views.chapters_overview(_workspace_or_raise(workspace))))
+
+
+def chapter(workspace: str, n: int) -> Dict[str, Any]:
+    return _guard(lambda: _ok(_views.chapter_detail(_workspace_or_raise(workspace), int(n))))
+
+
+def save_chapter(workspace: str, n: int, text: str) -> Dict[str, Any]:
+    return _guard(lambda: _ok(_views.save_chapter_text(_workspace_or_raise(workspace), int(n), text)))
+
+
+def export(workspace: str) -> Dict[str, Any]:
+    return _guard(lambda: _ok(_views.export_book(_workspace_or_raise(workspace))))
