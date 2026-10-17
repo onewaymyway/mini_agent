@@ -97,6 +97,31 @@ def _bs_query_with_timeout(func, *args, timeout=10, **kwargs):
     return result
 
 
+# ── 交易日历辅助函数 ─────────────────────────────────────────────────────
+def _get_recent_trade_date(ref_date: Optional[str] = None) -> str:
+    """返回 ref_date 当天或之前最近的交易日期（YYYYMMDD）。
+
+    通过 akshare 获取新浪交易日历，自动跳过周末和法定节假日。
+    若 akshare 不可用则退化为最近工作日（不含周末）。
+    """
+    import pandas as pd
+    try:
+        from akshare import tool_trade_date_hist_sina
+        df = tool_trade_date_hist_sina()
+        df["trade_date"] = pd.to_datetime(df["trade_date"])
+        ref = pd.Timestamp(ref_date) if ref_date else pd.Timestamp("now")
+        last = df[df["trade_date"] <= ref]["trade_date"].max()
+        if pd.notna(last):
+            return last.strftime("%Y%m%d")
+    except Exception:
+        pass
+    # 退化为最近工作日（不含周六日）
+    from datetime import date as _date
+    ref_d = _date.fromisoformat(ref_date) if ref_date else _date.today()
+    while ref_d.weekday() >= 5:  # 5=周六,6=周日
+        ref_d -= timedelta(days=1)
+    return ref_d.strftime("%Y%m%d")
+
 # ── akshare 超时+重试包装器（解决 EastMoney 网络不稳定）────────────────────
 
 def _akshare_with_timeout(func, *args, timeout=10, retries=3, backoff=2.0, **kwargs):
@@ -472,10 +497,10 @@ class DailyKlineDB:
         last = self.get_last_date(symbol)
         if last is None:
             # 首次拉取：取 max_days_back 天的历史
-            end_date = datetime.now().strftime("%Y%m%d")
+            end_date = _get_recent_trade_date()
             start_date = (datetime.now() - timedelta(days=max_days_back)).strftime("%Y%m%d")
         else:
-            end_date = datetime.now().strftime("%Y%m%d")
+            end_date = _get_recent_trade_date()
             start_date = (datetime.strptime(last, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y%m%d")
 
         if start_date > end_date:
@@ -515,7 +540,7 @@ class DailyKlineDB:
                         self.conn.execute("DELETE FROM kline WHERE symbol=?", (symbol,))
                         self.conn.commit()
                         # 首次拉取模式，从头覆盖
-                        end_date2 = datetime.now().strftime("%Y%m%d")
+                        end_date2 = _get_recent_trade_date()
                         start_date2 = (datetime.now() - timedelta(days=max_days_back)).strftime("%Y%m%d")
                         df = self._fetch_kline_rows(symbol, start_date2, end_date2)
                         if df is None or df.empty:
@@ -632,7 +657,7 @@ class DailyKlineDB:
                     "sh.600519",  # 贵州茅台，长期活跃
                     "date",
                     start_date=(datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d"),
-                    end_date=datetime.now().strftime("%Y-%m-%d"),
+                    end_date=_get_recent_trade_date(),
                     frequency="d",
                     adjustflag="1",
                 ),
@@ -646,8 +671,8 @@ class DailyKlineDB:
         except Exception as e:
             logger.debug("获取最新交易日失败: %s", e)
 
-        # 3. 兜底：返回今天（可能是非交易日，但后续增量逻辑会处理）
-        return datetime.now().strftime("%Y-%m-%d")
+        # 3. 兜底：退化为最近工作日
+        return _get_recent_trade_date()
 
     # ── 全市场增量更新（收盘后定时任务用）───────────────────────────────
     def update_all_market(self, *, symbols: Optional[List[str]] = None, max_days_back: int = 3000) -> Dict[str, int]:
