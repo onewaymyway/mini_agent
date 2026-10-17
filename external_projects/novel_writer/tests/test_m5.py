@@ -143,7 +143,7 @@ def test_checkpoints_cannot_be_loosened_by_override():
 
 def test_every_gear_has_a_run_scope_description():
     assert set(G.RUN_SCOPE) == set(settings_mod.GEARS)
-    assert {v["scope"] for v in G.RUN_SCOPE.values()} == {"single", "checkpoint", "batch", "budget"}
+    assert {v["scope"] for v in G.RUN_SCOPE.values()} == {"single", "checkpoint", "batch", "budget", "until_stop"}
 
 
 def test_real_pipeline_gates_for_g3_book(tmp_path):

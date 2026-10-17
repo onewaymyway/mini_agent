@@ -15,6 +15,7 @@ import time
 import traceback
 from typing import Any, Callable, Dict, List, Optional
 
+from novel_writer import autopilot as AP
 from novel_writer import gates as G
 from novel_writer import pipeline as P
 from novel_writer import runner as R
@@ -198,6 +199,11 @@ def _loop(
             return "completed"
 
         status = statuses.get(target.id, st.ST_PENDING)
+        autopilot = settings.get("gear") == "G4" and mode == "until_gate"
+        if autopilot and status in (st.ST_WAITING_REVIEW, st.ST_WAITING_USER):
+            if AP.handle_waiting(ws, target, status):
+                continue
+            return status
         if status in (st.ST_WAITING_REVIEW, st.ST_WAITING_USER, st.ST_FAILED, st.ST_BLOCKED, st.ST_RUNNING):
             return status
 
@@ -209,7 +215,7 @@ def _loop(
         if decision.gate == G.GATE_MANUAL and not is_requested:
             return "manual"
 
-        blocked_by = budget.check(target)
+        blocked_by = None if autopilot else budget.check(target)  # 托管挡：不受预算限制，只受暂停/停止约束
         if blocked_by:
             return blocked_by
 
@@ -243,6 +249,8 @@ def _loop(
             "auto_retries": retries,
         })
 
+        if autopilot and status_after in (st.ST_WAITING_REVIEW, st.ST_WAITING_USER):
+            continue  # 托管：下一轮循环里自动处理
         if status_after in (st.ST_FAILED, st.ST_BLOCKED, st.ST_WAITING_REVIEW, st.ST_WAITING_USER):
             return status_after
         if mode == "single":

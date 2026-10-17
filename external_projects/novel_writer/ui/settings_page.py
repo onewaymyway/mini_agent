@@ -11,7 +11,7 @@ from novel_writer.settings import GEARS
 from ui.components import GATE_LABEL, show_error
 
 OVERRIDE_CHOICES = ["", "manual", "review", "auto", "skip"]
-GEAR_CHOICES = ["", "G0", "G1", "G2", "G3"]
+GEAR_CHOICES = ["", "G0", "G1", "G2", "G3", "G4"]
 
 
 def render_settings(ws: str) -> None:
