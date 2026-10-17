@@ -63,8 +63,15 @@ def _parse_iso(text: Optional[str]) -> Optional[_dt.datetime]:
 # ── 流水线状态 ─────────────────────────────────────────────────────────────
 
 
+class StateReadError(RuntimeError):
+    """状态文件存在但读不出来。宁可报错，也不能当作空状态再写回去（那会清空全部进度）。"""
+
+
 def load_state(ws: Workspace) -> Dict[str, Any]:
-    data = read_json(ws.path("studio_state"), default=None)
+    path = ws.path("studio_state")
+    data = read_json(path, default=None)
+    if data is None and path.exists():
+        raise StateReadError(f"状态文件无法读取（可能被占用或已损坏）：{path.name}，请稍后重试")
     if not isinstance(data, dict):
         data = {}
     data.setdefault("schema_version", SCHEMA_VERSION)
