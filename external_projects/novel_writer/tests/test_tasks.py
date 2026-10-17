@@ -180,3 +180,21 @@ def test_force_stop_never_kills_on_pid_reuse(isolated):
 def test_force_stop_without_running_worker_is_rejected(isolated):
     ws = new_book(isolated, total=2)
     assert not tool_api.force_stop(str(ws.root))["ok"]
+
+
+def test_force_stop_refuses_when_live_process_identity_unknown(isolated):
+    """旧版本启动的 worker 没有创建时间：进程仍活着就必须拒绝，且不能清理状态。"""
+    ws = new_book(isolated, total=2)
+    proc, p = _spawn_fake_worker(ws)
+    info = st.read_worker(ws)
+    info.pop("pid_create_time", None)
+    atomic_write_json(ws.path("studio_worker"), info)
+    try:
+        res = tool_api.force_stop(str(ws.root))
+        assert not res["ok"] and "无法校验" in res["error"]["message"]
+        assert p.is_running()
+        assert st.read_worker(ws)["state"] == "running"  # 状态未被清理
+        assert st.get_step_state(ws, "ch01.review")["status"] == st.ST_RUNNING
+    finally:
+        proc.kill()
+        proc.wait(timeout=10)

@@ -82,7 +82,7 @@ def list_tasks(novels_dir: Optional[Path] = None, index_file: Optional[Path] = N
             rows.append(_task(
                 ws, title, kind, step=info.get("step"), step_title=info.get("step_title"),
                 started_at=info.get("step_started_at") or info.get("started_at"), mode=info.get("mode"),
-                detail=f"心跳 {str(info.get('heartbeat') or '')[11:19]} · 第 {info.get('attempt') or 1} 次尝试",
+                detail=f"进程 {info.get('pid')} · 心跳 {str(info.get('heartbeat') or '')[11:19]} · 第 {info.get('attempt') or 1} 次尝试",
             ))
         control = st.read_control(ws)
         queued = control.get("run_step")
@@ -121,6 +121,13 @@ def force_stop(workspace: str) -> Dict[str, Any]:
     create_time = info.get("pid_create_time")
     if pid == os.getpid():
         raise TaskError("该任务与界面在同一进程中，不能强制终止，请使用「停止」")
+
+    if create_time is None and procs.pid_exists(pid):
+        # 进程仍在，但无法确认是不是我们的 worker（旧版本未记录创建时间）。
+        # 绝不能在这种情况下清理状态：进程还在写文件，状态清掉会造成假象。
+        # 注意：创建时间存在但不匹配 = 进程号已被复用，原 worker 已不在，允许只清理状态。
+        raise TaskError(f"进程 {pid} 仍在运行，但无法校验其身份（多见于旧版本启动的任务）。"
+                        f"请在任务管理器中结束该进程后再清除残留")
 
     st.write_control(ws, command="stop", run_step=None)
     if procs.is_same_process(pid, create_time):

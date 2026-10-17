@@ -32,6 +32,15 @@ def process_create_time(pid: Optional[int] = None) -> Optional[float]:
         return None
 
 
+def pid_exists(pid: Optional[int]) -> bool:
+    if not pid:
+        return False
+    try:
+        return bool(_psutil().pid_exists(int(pid)))
+    except ProcessControlError:
+        return False
+
+
 def is_same_process(pid: Optional[int], create_time: Optional[float]) -> bool:
     """进程仍然存在，且创建时间与记录一致（排除进程号被复用的情况）。"""
     if not pid or create_time is None:
