@@ -321,6 +321,7 @@ def _settings_error(message: str) -> Exception:
 
 # ───────────────────────── M2：新建向导 / 规划 / 设定库 / 线索 ─────────────────────────
 
+from novel_writer import gates as _gates  # noqa: E402
 from novel_writer import intake as _intake  # noqa: E402
 from novel_writer import views as _views  # noqa: E402
 
@@ -555,3 +556,43 @@ def run_status(workspace: str, lines: int = 120) -> Dict[str, Any]:
 
     return _guard(run)
 
+
+def next_step(workspace: str) -> Dict[str, Any]:
+    """「下一步」的唯一定义：与 worker 选步骤用的是同一个前沿函数（pipeline.frontier）。
+
+    界面的「运行下一步」按钮、单步选择框的默认值、流水线表的 ▶ 标记都读这里，
+    按钮执行时把返回的 step 明确传给 worker，保证显示的步骤就是运行的步骤。
+    action：run（可以直接运行）/ approve（等你批准）/ answer（等你回答）/
+            rerun（失败，需重跑）/ wait（正在运行）/ none（阻塞，无法自动处理）/ completed。
+    """
+
+    def run() -> Dict[str, Any]:
+        ws = _workspace_or_raise(workspace)
+        settings = ws.settings()
+        plan = _pipeline.build_plan(ws)
+        states = _state.load_state(ws)["steps"]
+        statuses = {sid: e.get("status", _state.ST_PENDING) for sid, e in states.items()}
+        step = _pipeline.frontier(plan, statuses, settings)
+        if step is None:
+            return _ok({"step": None, "title": None, "status": None, "gate": None, "action": "completed",
+                        "message": "流水线已完成，没有待运行的步骤。"})
+        status = statuses.get(step.id, _state.ST_PENDING)
+        gate = _gates.resolve_gate(step, settings).gate
+        if status == _state.ST_WAITING_REVIEW:
+            action, message = "approve", f"下一步是「{step.title}」，它正在等待你批准。请先批准，或改为重跑。"
+        elif status == _state.ST_WAITING_USER:
+            action, message = "answer", f"下一步是「{step.title}」，需要你先回答它的问题。"
+        elif status == _state.ST_RUNNING:
+            action, message = "wait", f"「{step.title}」正在运行，请等待它结束。"
+        elif status == _state.ST_FAILED:
+            action, message = "rerun", f"下一步是「{step.title}」，上次执行失败，需要先重跑。"
+        elif status == _state.ST_BLOCKED:
+            action, message = "none", f"下一步是「{step.title}」，但它的执行器尚未实现，无法自动运行。"
+        else:
+            action = "run"
+            note = "（手动步骤：点击后会运行它）" if gate == _gates.GATE_MANUAL else ""
+            message = f"下一步将运行：{step.title}{note}"
+        return _ok({"step": step.id, "title": step.title, "status": status, "gate": gate,
+                    "action": action, "message": message})
+
+    return _guard(run)

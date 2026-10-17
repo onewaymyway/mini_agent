@@ -11,11 +11,6 @@ python entrypoints/list_novels.py
 streamlit run app.py                               # 书架 / 新建小说 / Skill 库
 ```
 
-```bash
-cd external_projects/stock_watch
-nohup streamlit run app.py --server.port 8504 > streamlit.log 2>&1 &
-```
-
 `create_novel` 可选参数：`--workspace <任意绝对路径>`（会登记到 `data/shelf.json`）、`--gear G0..G3`、
 `--quality draft|standard|premium`、`--total-chapters N`。
 
@@ -298,3 +293,13 @@ python -m pytest tests/test_m6.py -q        # M6 测试（15 个）
 - 「上一次运行结果」表：每一步的状态、耗时与摘要，保存在 `_studio/last_run.json`，直到下一次运行开始才会替换。
 
 注意：模型自己的文字回复要等本轮结束才会完整出现（框架在轮结束时才保存会话、且非流式），实时部分主要是工具调用与结果。
+
+## 下一步与单步运行
+
+- **运行下一步**：按钮上方的文字写明它将运行哪一步（例如「下一步将运行：生成全书蓝图」）。点击时明确运行这一步，不再由后台临时决定，所以显示的步骤就是运行的步骤。
+- **待批准 / 待答复时**：下一步就是那个等待的步骤，按钮会被禁用，并提示需要先批准或回答。之前这种情况会静默返回、什么也不做。
+- **手动步骤**：点击后会运行它（提示里会注明「手动步骤」）。
+- **单步选择框**：默认选中下一步（第一个未完成的步骤；待审核的步骤会排在最前，因为它阻塞流水线）。下一步变化后会自动跟随；你手动选过的值在下一步不变时保持不变。
+- **流水线表**：「下一步」列用 ▶ 标出同一个步骤。
+
+「下一步」的唯一定义在 `tool_api.next_step`，与 worker 选步骤使用同一个前沿函数。

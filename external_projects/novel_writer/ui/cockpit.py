@@ -56,6 +56,8 @@ def render_control(ws: str) -> None:
         show_error(res)
         return
     data = res["data"]
+    nxt_res = tool_api.next_step(ws)
+    nxt = nxt_res["data"] if nxt_res["ok"] else {"step": None, "action": "none", "message": ""}
     counts = data["counts"]
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("前沿步骤", data["frontier"] or "—")
@@ -65,12 +67,13 @@ def render_control(ws: str) -> None:
     _render_settings(ws, data)
     live_page.render_live_panel(ws)
     _render_inbox(ws)
-    _render_run_buttons(ws)
+    _render_run_buttons(ws, nxt)
 
     st.subheader("流水线")
     rows = []
     for s in data["steps"]:
         rows.append({
+            "下一步": "▶" if s["id"] == nxt.get("step") else "",
             "步骤": s["id"],
             "标题": s["title"],
             "阶段": s["stage"],
@@ -80,7 +83,7 @@ def render_control(ws: str) -> None:
             "说明": s.get("error") or s.get("summary") or s.get("note") or "",
         })
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True, height=min(520, 40 + 35 * len(rows)))
-    _render_step_actions(ws, data["steps"])
+    _render_step_actions(ws, data["steps"], nxt)
 
 
 def _render_settings(ws: str, data: dict) -> None:
@@ -135,10 +138,17 @@ def _render_inbox(ws: str) -> None:
 
 
 
-def _render_run_buttons(ws: str) -> None:
+def _render_run_buttons(ws: str, nxt: dict) -> None:
+    # 「运行下一步」明确运行 next_step 返回的那一步（与界面显示一致），不再由 worker 临时决定
+    if nxt.get("step"):
+        st.caption(f"▶ {nxt.get('message') or ''}")
+    elif nxt.get("message"):
+        st.caption(nxt["message"])
     c1, c2, c3, c4, c5 = st.columns(5)
-    if c1.button("▶ 运行下一步", key="cp_run_single", use_container_width=True):
-        _report(tool_api.run_novel(ws, mode="single"))
+    runnable = nxt.get("action") == "run"
+    if c1.button("▶ 运行下一步", key="cp_run_single", use_container_width=True, disabled=not runnable,
+                 help=nxt.get("message") or None):
+        _report(tool_api.run_novel(ws, mode="single", step_id=nxt["step"]))
     if c2.button("▶▶ 运行到检查点", key="cp_run_until", use_container_width=True):
         _report(tool_api.run_novel(ws, mode="until_gate"))
     if c3.button("⏸ 暂停", key="cp_pause", use_container_width=True):
@@ -156,13 +166,20 @@ def _report(res: dict) -> None:
         show_error(res)
 
 
-def _render_step_actions(ws: str, steps: list) -> None:
+def _render_step_actions(ws: str, steps: list, nxt: dict) -> None:
     st.subheader("单步操作")
     ids = [s["id"] for s in steps]
     if not ids:
         st.info("流水线为空。请先完成工作目录初始化。")
         return
-    pick = st.selectbox("选择步骤", ids, key="cp_step_pick")
+    # 默认选中「下一步」（第一个未完成的步骤；待审核/待答复的步骤排在最前因为它阻塞流水线）。
+    # 下一步变化时才自动跟随，之后用户手动选的值保持不变。
+    default = nxt.get("step") if nxt.get("step") in ids else ids[0]
+    if st.session_state.get("cp_step_auto") != default:
+        st.session_state["cp_step_auto"] = default
+        st.session_state["cp_step_pick"] = default
+    pick = st.selectbox("选择步骤", ids, key="cp_step_pick",
+                        help="默认是下一步（第一个未完成的步骤）；下一步变化后会自动跟随。")
     step = next(s for s in steps if s["id"] == pick)
     st.markdown(f"**{step['title']}**　{STATUS_LABEL.get(step['status'], step['status'])}　"
                 f"闸门：{GATE_LABEL.get(step['gate'], step['gate'])}（{step['gate_source']}）")
