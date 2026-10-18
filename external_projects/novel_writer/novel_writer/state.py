@@ -387,33 +387,46 @@ def rebaseline_stale(ws: Workspace, plan: List[StepDef], step_ids: Iterable[str]
     return done
 
 
-def adopt_legacy_picks(ws: Workspace) -> List[str]:
-    """迁移：择优旧版本是单步 python 步骤（best_pick）。新版拆成 准备 → 择优 → 应用 三步。
+# 迁移规则：旧版本的数据里，某个「锚点」步骤已通过，但它后来拆出的新步骤还没有记录。
+# 判断「这是旧数据」的依据是：新步骤组中的第一个（哨兵）没有记录。新流程里哨兵一定先于锚点执行，
+# 因此「锚点已通过且哨兵缺失」只可能出现在旧版本数据上。满足时，整组一起认领为已通过。
+# 新增拆分步骤时在这里加一行即可。格式：(锚点步骤后缀, (新步骤后缀…), 说明)
+LEGACY_ADOPTION_RULES = (
+    ("best_pick", ("best_pick_prep", "best_pick_apply"), "旧版本择优为单步，已完成的择优包含机检准备与结果应用"),
+)
 
-    已经按旧版本完成择优的章节，不能因为新增的两步是「待运行」而重新择优（那会再次改动已定稿的正文）。
-    所以：若旧的 best_pick 已通过，且新增的准备/应用步骤没有记录，则视为已完成。
+
+def adopt_legacy_steps(ws: Workspace) -> List[str]:
+    """按 LEGACY_ADOPTION_RULES 把旧版本已完成的工作认领给新拆出的步骤。
+
+    幂等，可以在每轮循环、每次评估流水线时安全调用。只认领「从未出现过」的新步骤，
+    不会覆盖任何真实运行过的步骤，也不会在新流程中途误认领尚未运行的步骤。
     """
-    import re as _re
-
     adopted: List[str] = []
     with _LOCK:
         state = load_state(ws)
         steps = state["steps"]
         for sid, entry in list(steps.items()):
-            m = _re.fullmatch(r"ch(\d+)\.best_pick", sid)
+            m = re.fullmatch(r"ch(\d+)\.(\w+)", sid)
             if not m or entry.get("status") != ST_PASSED:
                 continue
-            n = m.group(1)
-            for suffix in ("best_pick_prep", "best_pick_apply"):
-                new_id = f"ch{n}.{suffix}"
-                if new_id not in steps:
-                    steps[new_id] = {"status": ST_PASSED, "attempts": 0,
-                                     "note": "迁移：旧版本择优已完成，视为已通过", "updated_at": now_iso()}
-                    adopted.append(new_id)
+            n, suffix = m.group(1), m.group(2)
+            for anchor, group, why in LEGACY_ADOPTION_RULES:
+                if suffix != anchor:
+                    continue
+                sentinel = f"ch{n}.{group[0]}"
+                if sentinel in steps:
+                    continue  # 新流程数据：哨兵已存在，不认领
+                for new_suffix in group:
+                    new_id = f"ch{n}.{new_suffix}"
+                    if new_id not in steps:
+                        steps[new_id] = {"status": ST_PASSED, "attempts": 0,
+                                         "note": f"迁移：{why}", "updated_at": now_iso()}
+                        adopted.append(new_id)
         if adopted:
             atomic_write_json(ws.path("studio_state"), state)
     if adopted:
-        log_line(ws, f"🔁 迁移：{len(adopted)} 个择优新步骤沿用旧版本的结果，不重新择优")
+        log_line(ws, f"🔁 迁移：{len(adopted)} 个新步骤沿用旧版本的结果：{', '.join(adopted[:6])}")
     return adopted
 
 

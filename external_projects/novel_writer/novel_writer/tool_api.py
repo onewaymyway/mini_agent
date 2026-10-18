@@ -193,6 +193,7 @@ def pipeline_status(workspace: str) -> Dict[str, Any]:
         ws = _workspace_or_raise(workspace)
         settings = ws.settings()
         plan = _pipeline.build_plan(ws)
+        _state.adopt_legacy_steps(ws)  # 改版后的老数据：先认领旧结果，避免界面上出现一串「待运行」
         states = _state.load_state(ws)["steps"]
         statuses = {sid: e.get("status", _state.ST_PENDING) for sid, e in states.items()}
         rows = _pipeline.describe_plan(plan, statuses, settings)
