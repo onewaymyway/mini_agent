@@ -157,24 +157,76 @@ def input_digests(ws: Workspace, step: StepDef) -> Dict[str, str]:
     return out
 
 
-def record_writer_paths(ws: Workspace, rel_paths: Iterable[str], writer_id: str) -> None:
-    """把若干文件的最后写入者记为 writer_id（agent 的实际写入，不依赖声明）。"""
+WRITE_HISTORY_FILE = "write_history.jsonl"
+
+
+def _chapter_of_writer(writer: Optional[str]) -> Optional[int]:
+    m = re.match(r"ch(\d+)\.", writer or "")
+    return int(m.group(1)) if m else None
+
+
+def _append_history(ws: Workspace, events: List[Dict[str, Any]]) -> None:
+    """追加写入历史（每行一条 JSON，只追加不改写，便于事后追溯）。调用方须持有 _LOCK。"""
+    if not events:
+        return
+    path = ws.studio / WRITE_HISTORY_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as f:
+        for ev in events:
+            f.write(json.dumps(ev, ensure_ascii=False) + "\n")
+
+
+def record_writer_paths(ws: Workspace, rel_paths: Iterable[str], writer_id: str,
+                        before: Optional[Dict[str, str]] = None, kind: str = "agent") -> None:
+    """记录若干文件的写入：更新「最后写入者」，并追加一条写入历史。
+
+    before：写入前各文件的指纹（没有则为 None，如作者手改时未知）。
+    kind：agent（执行器实际写入）/ declared（步骤声明的产出）/ author（作者手动修改）。
+    """
+    now = now_iso()
     with _LOCK:
         state = load_state(ws)
         writers = state.setdefault("file_writers", {})
+        events = []
         for rel in rel_paths:
             writers[rel] = writer_id
+            events.append({
+                "ts": now, "path": rel, "writer": writer_id, "kind": kind,
+                "chapter": _chapter_of_writer(writer_id),
+                "before": (before or {}).get(rel),
+                "after": _file_digest(ws.root / rel),
+            })
         atomic_write_json(ws.path("studio_state"), state)
+        _append_history(ws, events)
 
 
 def record_writers(ws: Workspace, step: StepDef) -> None:
-    """步骤产出后，记录每个输出文件的最后写入者（步骤 id）。"""
-    with _LOCK:
-        state = load_state(ws)
-        writers = state.setdefault("file_writers", {})
-        for path in expand_inputs(ws, step.outputs):
-            writers[str(path.relative_to(ws.root))] = step.id
-        atomic_write_json(ws.path("studio_state"), state)
+    """步骤产出后，记录每个声明的输出文件的写入者（步骤 id）。"""
+    rels = [str(path.relative_to(ws.root)) for path in expand_inputs(ws, step.outputs)]
+    if rels:
+        record_writer_paths(ws, rels, step.id, kind="declared")
+
+
+def read_write_history(ws: Workspace, *, path: Optional[str] = None, writer: Optional[str] = None,
+                       limit: int = 200) -> List[Dict[str, Any]]:
+    """写入历史，最新的在前。可按文件路径或写入者过滤。"""
+    file = ws.studio / WRITE_HISTORY_FILE
+    if not file.is_file():
+        return []
+    events: List[Dict[str, Any]] = []
+    for line in file.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if path and ev.get("path") != path:
+            continue
+        if writer and ev.get("writer") != writer:
+            continue
+        events.append(ev)
+    return list(reversed(events))[:max(1, int(limit))]
 
 
 _UPSTREAM_NOTE = "上游产物已变化，需要重跑"
@@ -202,8 +254,8 @@ def _writer_chapter(writer: Optional[str]) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
-def _upstream_changed(ws: Workspace, digests: Dict[str, str], i: int, reader_chapter: int,
-                      index: Dict[str, int], writers: Dict[str, str]) -> bool:
+def _upstream_cause(ws: Workspace, digests: Dict[str, str], i: int, reader_chapter: int,
+                    index: Dict[str, int], writers: Dict[str, str]) -> Optional[str]:
     """某步骤的输入是否发生了需要它重跑的变化。
 
     规则（显式、与计划顺序解耦）：
@@ -221,8 +273,8 @@ def _upstream_changed(ws: Workspace, digests: Dict[str, str], i: int, reader_cha
         if owner is not None and owner >= i:
             continue  # 规则 2：本步骤自己或之后写入的，是下游结果
         if _file_digest(ws.root / rel_path) != recorded_sha:
-            return True
-    return False
+            return f"{writer or '未知'} 写入 {rel_path}"
+    return None
 
 
 def mark_stale(ws: Workspace, plan: List[StepDef]) -> List[str]:
@@ -246,7 +298,7 @@ def mark_stale(ws: Workspace, plan: List[StepDef]) -> List[str]:
             status = entry.get("status")
             digests = entry.get("input_digests")
             if status == ST_STALE and digests is not None and str(entry.get("note") or "").startswith(_UPSTREAM_NOTE):
-                if not _upstream_changed(ws, digests, i, _chapter_of(step), index, writers):
+                if _upstream_cause(ws, digests, i, _chapter_of(step), index, writers) is None:
                     entry.update(status=ST_PASSED, note=None, updated_at=now_iso())
                     restored.append(step.id)
                     changed = True
@@ -260,8 +312,9 @@ def mark_stale(ws: Workspace, plan: List[StepDef]) -> List[str]:
                 entry["input_digests"] = input_digests(ws, step)
                 changed = True
                 continue
-            if _upstream_changed(ws, digests, i, _chapter_of(step), index, writers):
-                entry.update(status=ST_STALE, note=_UPSTREAM_NOTE, updated_at=now_iso())
+            cause = _upstream_cause(ws, digests, i, _chapter_of(step), index, writers)
+            if cause is not None:
+                entry.update(status=ST_STALE, note=f"{_UPSTREAM_NOTE}（{cause}）", updated_at=now_iso())
                 stale_ids.append(step.id)
                 changed = True
         if changed:

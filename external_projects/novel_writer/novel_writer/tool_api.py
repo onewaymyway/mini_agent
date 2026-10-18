@@ -287,6 +287,17 @@ def rebaseline_stale(workspace: str) -> Dict[str, Any]:
     return _guard(run)
 
 
+def write_history(workspace: str, *, path: Optional[str] = None, writer: Optional[str] = None,
+                  limit: int = 200) -> Dict[str, Any]:
+    """写入历史（最新在前）：谁在什么时候改写了哪个文件，前后指纹各是什么。"""
+
+    def run() -> Dict[str, Any]:
+        ws = _workspace_or_raise(workspace)
+        return _ok({"events": _state.read_write_history(ws, path=path, writer=writer, limit=limit)})
+
+    return _guard(run)
+
+
 def approve_step(workspace: str, step_id: str) -> Dict[str, Any]:
     """批准一个 waiting_review 的步骤，置为 passed。"""
 

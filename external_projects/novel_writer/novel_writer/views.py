@@ -113,7 +113,7 @@ def save_blueprint_chapters(ws: Workspace, rows: List[Dict[str, Any]]) -> Dict[s
         return {"changed_chapters": [], "stale": [], "main_characters_changed": False}
 
     atomic_write_json(ws.path("blueprint"), bp)
-    st.record_writer_paths(ws, [ws.path("blueprint").relative_to(ws.root).as_posix()], "author")  # 作者手改：真正的上游变化
+    st.record_writer_paths(ws, [ws.path("blueprint").relative_to(ws.root).as_posix()], "author", kind="author")  # 作者手改：真正的上游变化
     _append_changelog(ws, f"章节表修改：第 {', '.join(str(i) for i in changed)} 章")
     stale = st.mark_stale(ws, P.build_plan(ws))
     after_main = P.main_characters(bp)
@@ -177,7 +177,7 @@ def save_character_card(ws: Workspace, name: str, text: str) -> Dict[str, Any]:
     if not body:
         raise ViewError("人设卡内容不能为空")
     atomic_write_text(ws.path("character_card", name=safe), body + "\n")
-    st.record_writer_paths(ws, [ws.path("character_card", name=safe).relative_to(ws.root).as_posix()], "author")
+    st.record_writer_paths(ws, [ws.path("character_card", name=safe).relative_to(ws.root).as_posix()], "author", kind="author")
     stale = st.mark_stale(ws, P.build_plan(ws))
     return {"name": safe, "stale": stale}
 
@@ -277,7 +277,7 @@ def save_chapter_text(ws: Workspace, n: int, text: str) -> Dict[str, Any]:
         title = str(chapter_entry_title(ws, n) or f"第{n}章")
         path = ws.chapter_path(n, title, total_chapters=len(_chapter_numbers(ws)))
     atomic_write_text(path, body.rstrip() + "\n")
-    st.record_writer_paths(ws, [path.relative_to(ws.root).as_posix()], "author")
+    st.record_writer_paths(ws, [path.relative_to(ws.root).as_posix()], "author", kind="author")
     _append_log(ws.path("revision_log", nn=n), f"作者手动保存正文（{count_words(body)} 字）")
     stale = st.mark_stale(ws, P.build_plan(ws))
     return {"file": path.name, "words": count_words(body), "stale": stale}

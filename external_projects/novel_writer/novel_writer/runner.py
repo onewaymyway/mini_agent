@@ -152,7 +152,7 @@ def run_skill_step(
     finally:
         changed = [rel for rel in tracked if st._file_digest(ws.root / rel) != before[rel]]
         if changed:
-            st.record_writer_paths(ws, changed, step.id)
+            st.record_writer_paths(ws, changed, step.id, before={rel: before[rel] for rel in changed}, kind="agent")
 
 
 def _run_skill_step_inner(
