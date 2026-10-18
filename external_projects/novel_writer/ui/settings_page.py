@@ -38,7 +38,7 @@ def render_settings(ws: str) -> None:
         "生效": GATE_LABEL.get(r["effective"], r["effective"]), "来源": r["source"],
     } for r in m["rows"]])
     edited = st.data_editor(
-        df, key="mx_editor", hide_index=True, use_container_width=True, height=min(560, 40 + 35 * len(df)),
+        df, key="mx_editor", hide_index=True, width="stretch", height=min(560, 40 + 35 * len(df)),
         disabled=["步骤", "标题", "阶段", "类别", "挡位预设", "生效", "来源"],
         column_config={"覆盖": st.column_config.SelectboxColumn("覆盖", options=OVERRIDE_CHOICES, required=False)},
     )
@@ -78,4 +78,4 @@ def render_settings(ws: str) -> None:
         rows = []
         for cat, cols in GEAR_GATES.items():
             rows.append({"类别": cat, **{g: GATE_LABEL[cols[g]] for g in GEARS}})
-        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")

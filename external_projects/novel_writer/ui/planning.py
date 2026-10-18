@@ -36,13 +36,13 @@ def render_planning(ws: str) -> None:
                 {"幕": a.get("act"), "名称": a.get("name"), "章节": str(a.get("chapter_range")),
                  "核心任务": a.get("core_mission"), "字数预算": a.get("word_budget")}
                 for a in view["acts"]
-            ]), use_container_width=True, hide_index=True)
+            ]), width="stretch", hide_index=True)
 
     st.subheader("章节表")
     st.caption("可编辑标题、功能、字数、张力与出场角色（用「、」分隔）。行数不能增减。保存后，受影响的已通过步骤会标为「需重跑」。")
     df = pd.DataFrame([{k: c.get(k) for k in _EDIT_COLS} for c in view["chapters"]], columns=_EDIT_COLS)
     edited = st.data_editor(
-        df, key="chapter_editor", hide_index=True, use_container_width=True, num_rows="fixed",
+        df, key="chapter_editor", hide_index=True, width="stretch", num_rows="fixed",
         disabled=["id", "act", "chapter_type"],
         column_config={
             "title": st.column_config.TextColumn("标题"),

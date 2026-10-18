@@ -97,7 +97,7 @@ def render_control(ws: str) -> None:
             "尝试": s.get("attempts") or 0,
             "说明": s.get("error") or s.get("summary") or s.get("note") or "",
         })
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True, height=min(520, 40 + 35 * len(rows)))
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True, height=min(520, 40 + 35 * len(rows)))
     _render_step_actions(ws, data["steps"], nxt)
 
 
@@ -180,16 +180,16 @@ def _render_run_buttons(ws: str, nxt: dict) -> None:
         st.caption(nxt["message"])
     c1, c2, c3, c4, c5 = st.columns(5)
     runnable = nxt.get("action") == "run"
-    if c1.button("▶ 运行下一步", key="cp_run_single", use_container_width=True, disabled=not runnable,
+    if c1.button("▶ 运行下一步", key="cp_run_single", width="stretch", disabled=not runnable,
                  help=nxt.get("message") or None):
         _report(tool_api.run_novel(ws, mode="single", step_id=nxt["step"]))
-    if c2.button("▶▶ 运行到检查点", key="cp_run_until", use_container_width=True):
+    if c2.button("▶▶ 运行到检查点", key="cp_run_until", width="stretch"):
         _report(tool_api.run_novel(ws, mode="until_gate"))
-    if c3.button("⏸ 暂停", key="cp_pause", use_container_width=True):
+    if c3.button("⏸ 暂停", key="cp_pause", width="stretch"):
         _report(tool_api.pause_novel(ws))
-    if c4.button("⏹ 停止", key="cp_stop", use_container_width=True):
+    if c4.button("⏹ 停止", key="cp_stop", width="stretch"):
         _report(tool_api.stop_novel(ws))
-    c5.button("🔄 刷新", key="cp_refresh", use_container_width=True, on_click=_reset_step_pick)
+    c5.button("🔄 刷新", key="cp_refresh", width="stretch", on_click=_reset_step_pick)
 
 
 def _render_write_history(ws: str) -> None:
@@ -230,7 +230,7 @@ def _render_write_history(ws: str) -> None:
             "文件": e.get("path") or "",
             "内容变化": "是" if e.get("before") != e.get("after") else "否",
         } for e in events]
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 
 def _reset_step_pick() -> None:
@@ -270,10 +270,10 @@ def _render_step_actions(ws: str, steps: list, nxt: dict) -> None:
                 label = "待批准" if s["status"] == "waiting_review" else "待回答"
                 c_text.markdown(f"🟠 {s['title']}（{label}）")
                 if s["status"] == "waiting_review":
-                    if c_btn.button("✅ 批准", key=f"cp_top_approve_{s['id']}", use_container_width=True):
+                    if c_btn.button("✅ 批准", key=f"cp_top_approve_{s['id']}", width="stretch"):
                         _report_ok(tool_api.approve_step(ws, s["id"]))
                 else:
-                    if c_btn.button("去回答", key=f"cp_top_answer_{s['id']}", use_container_width=True):
+                    if c_btn.button("去回答", key=f"cp_top_answer_{s['id']}", width="stretch"):
                         st.session_state["cp_step_pick"] = s["id"]
                         st.rerun()
     # 默认选中「下一步」（第一个未完成的步骤；待审核/待答复的步骤排在最前因为它阻塞流水线）。

@@ -24,7 +24,7 @@ def render_reading(ws: str) -> None:
     total = sum(r["words"] for r in rows)
     st.caption(f"共 {len(rows)} 章 · {total} 字")
     st.dataframe([{"章": r["chapter"], "标题": r["title"], "字数": r["words"], "文件": r["file"] or "—"} for r in rows],
-                 use_container_width=True, hide_index=True)
+                 width="stretch", hide_index=True)
     c_fmt, c_btn = st.columns([1, 2])
     fmt = c_fmt.selectbox("导出格式", list(EXPORT_LABELS), format_func=lambda f: EXPORT_LABELS[f], key="rd_fmt")
     if c_btn.button("导出全书合稿", key="rd_export", type="primary"):

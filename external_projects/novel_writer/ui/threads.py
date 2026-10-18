@@ -27,7 +27,7 @@ def render_threads(ws: str) -> None:
                     for it in items if isinstance(it, dict)]
             if rows:
                 st.subheader("伏笔")
-                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
     if data["foreshadowing_md"]:
         with st.expander("伏笔注册表（Markdown）", expanded=False):
             st.markdown(data["foreshadowing_md"])

@@ -51,24 +51,24 @@ def page_tasks() -> None:
                 st.caption(f"{step}　{title}".strip() + (f"　｜　{t['detail']}" if t.get("detail") else ""))
             with right:
                 if t["kind"] == "running":
-                    if st.button("⏹ 温和停止", key=f"{key}_stop", use_container_width=True,
+                    if st.button("⏹ 温和停止", key=f"{key}_stop", width="stretch",
                                  help="当前步骤结束后生效，不中断正在进行的调用。"):
                         r = tool_api.stop_novel(t["workspace"])
                         _after(r, "已请求停止，当前步骤结束后生效。")
                     confirmed = st.checkbox("确认立即终止", key=f"{key}_confirm",
                                             help="会中断正在进行的 LLM 调用，进程及其子进程被强制结束，"
                                                  "正在运行的步骤标为「已中断」，排队指令一并清空。")
-                    if st.button("⛔ 立即停止", key=f"{key}_force", use_container_width=True,
+                    if st.button("⛔ 立即停止", key=f"{key}_force", width="stretch",
                                  disabled=not confirmed, type="primary" if confirmed else "secondary"):
                         _after(tool_api.force_stop(t["workspace"]), "已强制终止，步骤已标为「已中断」。")
                 elif t["kind"] == "queued":
-                    if st.button("✖ 取消排队", key=f"{key}_cancel", use_container_width=True):
+                    if st.button("✖ 取消排队", key=f"{key}_cancel", width="stretch"):
                         _after(tool_api.cancel_queued(t["workspace"]), "已取消排队。")
                 elif t["kind"] == "stale":
-                    if st.button("🧹 清除残留", key=f"{key}_clear", use_container_width=True):
+                    if st.button("🧹 清除残留", key=f"{key}_clear", width="stretch"):
                         _after(tool_api.clear_stale_worker(t["workspace"]), "已清除残留状态。")
                 elif t["kind"] == "request":
-                    if st.button("🗑 删除请求", key=f"{key}_del", use_container_width=True):
+                    if st.button("🗑 删除请求", key=f"{key}_del", width="stretch"):
                         _after(tool_api.delete_request(t["workspace"], t["request_kind"], t["request_id"]),
                                "已删除该请求。")
 

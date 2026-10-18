@@ -28,7 +28,7 @@ def page_skills() -> None:
         }
         for r in rows
     ]
-    st.dataframe(table, use_container_width=True, hide_index=True)
+    st.dataframe(table, width="stretch", hide_index=True)
     names = [r["name"] for r in rows if r["present"]]
     pick = st.selectbox("查看 SKILL.md", names)
     row = next(r for r in rows if r["name"] == pick)
