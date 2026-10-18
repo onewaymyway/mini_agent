@@ -6,7 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from novel_writer import tool_api
-from ui.components import show_error
+from ui.components import show_error, show_df
 
 
 def render_metrics(ws: str) -> None:
@@ -24,17 +24,17 @@ def render_metrics(ws: str) -> None:
         c1.bar_chart(df[["words", "quota"]])
         c2.markdown("**🔴 硬错误 与 修改轮数**")
         c2.bar_chart(df[["red", "revise_rounds"]])
-        st.dataframe(df[["title", "words", "quota", "red", "machine_hard", "revise_rounds", "progress", "current"]],
+        show_df(df[["title", "words", "quota", "red", "machine_hard", "revise_rounds", "progress", "current"]],
                      width="stretch")
     c3, c4 = st.columns(2)
     c3.metric("LLM / 步骤执行次数", m["total_runs"])
     c4.metric("失败或阻塞", m["total_failed"])
     if m["usage_by_skill"]:
         st.markdown("**按技能的用量**")
-        st.dataframe(pd.DataFrame(m["usage_by_skill"]), hide_index=True, width="stretch")
+        show_df(pd.DataFrame(m["usage_by_skill"]), hide_index=True, width="stretch")
 
     with st.expander("最近的步骤记录", expanded=False):
-        st.dataframe(pd.DataFrame([{"步骤": r.get("step"), "状态": r.get("status"), "耗时(秒)": r.get("duration_sec"),
+        show_df(pd.DataFrame([{"步骤": r.get("step"), "状态": r.get("status"), "耗时(秒)": r.get("duration_sec"),
                                     "尝试": r.get("attempt"), "错误": r.get("error") or ""} for r in m["recent"]]),
                      hide_index=True, width="stretch")
 

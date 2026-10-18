@@ -7,7 +7,7 @@ from pathlib import Path
 import streamlit as st
 
 from novel_writer import tool_api
-from ui.components import show_error
+from ui.components import show_error, show_df
 
 EXPORT_LABELS = {"md": "Markdown", "txt": "纯文本 (txt)", "docx": "Word (docx)", "epub": "电子书 (epub)"}
 
@@ -23,7 +23,7 @@ def render_reading(ws: str) -> None:
         return
     total = sum(r["words"] for r in rows)
     st.caption(f"共 {len(rows)} 章 · {total} 字")
-    st.dataframe([{"章": r["chapter"], "标题": r["title"], "字数": r["words"], "文件": r["file"] or "—"} for r in rows],
+    show_df([{"章": r["chapter"], "标题": r["title"], "字数": r["words"], "文件": r["file"] or "—"} for r in rows],
                  width="stretch", hide_index=True)
     c_fmt, c_btn = st.columns([1, 2])
     fmt = c_fmt.selectbox("导出格式", list(EXPORT_LABELS), format_func=lambda f: EXPORT_LABELS[f], key="rd_fmt")

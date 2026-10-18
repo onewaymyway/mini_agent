@@ -18,7 +18,7 @@ from ui import writing as writing_page
 from ui import planning as planning_page
 from ui import threads as threads_page
 from ui.components import (
-    GATE_LABEL, INBOX_ICON, INBOX_LABEL, REASON_LABEL, STATUS_LABEL, novel_title, require_ws, show_error,
+    GATE_LABEL, INBOX_ICON, INBOX_LABEL, REASON_LABEL, STATUS_LABEL, novel_title, require_ws, show_df, show_error,
 )
 
 GATE_CHOICES = ["（挡位预设）", "manual", "review", "auto", "skip"]
@@ -97,7 +97,7 @@ def render_control(ws: str) -> None:
             "尝试": s.get("attempts") or 0,
             "说明": s.get("error") or s.get("summary") or s.get("note") or "",
         })
-    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True, height=min(520, 40 + 35 * len(rows)))
+    show_df(pd.DataFrame(rows), width="stretch", hide_index=True, height=min(520, 40 + 35 * len(rows)))
     _render_step_actions(ws, data["steps"], nxt)
 
 
@@ -230,7 +230,7 @@ def _render_write_history(ws: str) -> None:
             "文件": e.get("path") or "",
             "内容变化": "是" if e.get("before") != e.get("after") else "否",
         } for e in events]
-        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+        show_df(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 
 def _reset_step_pick() -> None:

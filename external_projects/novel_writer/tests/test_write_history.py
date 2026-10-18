@@ -8,6 +8,7 @@ from novel_writer import state as st
 from novel_writer import tool_api
 from novel_writer.fsutil import atomic_write_json, read_json
 from novel_writer.runner import DEFAULT_PY_HANDLERS
+import pytest
 from test_m3 import isolated, new_book  # noqa: F401  (fixture)
 
 BP = "大纲规划/小说蓝图.json"
@@ -103,3 +104,25 @@ def test_ui_write_history_panel_renders(isolated):
     assert not at.exception, at.exception
     assert at.selectbox(key="wh_kind") is not None
     assert len(at.dataframe) >= 1
+
+
+def test_read_only_tables_are_arrow_safe_with_mixed_types():
+    """回归：列里同时有整数与空串时，Arrow 转换会失败（界面报 Serialization of dataframe 错误）。"""
+    import pandas as pd
+    import pyarrow as pa
+
+    from ui.components import arrow_safe
+
+    df = pd.DataFrame([{"章节": 1, "文件": "a"}, {"章节": "", "文件": "b"}, {"章节": None, "文件": None}])
+    with pytest.raises(Exception):
+        pa.Table.from_pandas(df)  # 原始数据确实无法转换
+    pa.Table.from_pandas(arrow_safe(df))  # 处理后可以
+
+
+def test_all_readonly_table_call_sites_use_show_df():
+    from pathlib import Path
+
+    ui = Path(__file__).resolve().parent.parent / "ui"
+    offenders = [p.name for p in ui.glob("*.py") if "st.dataframe(" in p.read_text(encoding="utf-8")
+                 and p.name != "components.py"]
+    assert offenders == [], offenders

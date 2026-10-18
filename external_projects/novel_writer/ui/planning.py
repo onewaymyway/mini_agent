@@ -6,7 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from novel_writer import tool_api
-from ui.components import show_error
+from ui.components import show_error, show_df
 
 _EDIT_COLS = ["id", "title", "act", "chapter_type", "function", "word_budget", "tension_level", "characters_present"]
 
@@ -32,7 +32,7 @@ def render_planning(ws: str) -> None:
 
     if view["acts"]:
         with st.expander("幕结构", expanded=False):
-            st.dataframe(pd.DataFrame([
+            show_df(pd.DataFrame([
                 {"幕": a.get("act"), "名称": a.get("name"), "章节": str(a.get("chapter_range")),
                  "核心任务": a.get("core_mission"), "字数预算": a.get("word_budget")}
                 for a in view["acts"]

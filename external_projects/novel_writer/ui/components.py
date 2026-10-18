@@ -74,3 +74,42 @@ def novel_title(path: str) -> str:
     if res["ok"]:
         return res["data"]["recover"]["title"] or path
     return path
+
+
+# ── 只读表格 ─────────────────────────────────────────────────────────────────
+
+def _cell_to_text(value):
+    """单元格统一为文本：None / NaN 变成空串。混合类型（如整数与空串）会让 Arrow 无法转换。"""
+    if value is None:
+        return ""
+    try:
+        if value != value:  # NaN
+            return ""
+    except Exception:  # noqa: BLE001
+        pass
+    return str(value)
+
+
+def arrow_safe(df):
+    """返回一份可被 Arrow 序列化的副本：所有 object 列（以及对象索引）统一转为文本。
+
+    列表（字典列表）先转为 DataFrame；其它类型原样返回，交给 st.dataframe 处理。
+    """
+    import pandas as pd
+
+    if isinstance(df, list):
+        df = pd.DataFrame(df)
+    if not isinstance(df, pd.DataFrame):
+        return df
+    out = df.copy()
+    for col in out.columns:
+        if out[col].dtype == object:
+            out[col] = out[col].map(_cell_to_text)
+    if out.index.dtype == object:
+        out.index = out.index.map(_cell_to_text)
+    return out
+
+
+def show_df(df, **kwargs):
+    """只读表格的统一入口：先做 Arrow 兼容处理，再交给 st.dataframe。"""
+    return st.dataframe(arrow_safe(df), **kwargs)

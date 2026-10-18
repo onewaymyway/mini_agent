@@ -5,6 +5,7 @@ from __future__ import annotations
 import streamlit as st
 
 from novel_writer import tool_api
+from ui.components import show_df
 
 _EXECUTOR_LABEL = {"python": "Python 代码", "llm": "LLM（skill_agent）", "hybrid": "混合"}
 
@@ -28,7 +29,7 @@ def page_skills() -> None:
         }
         for r in rows
     ]
-    st.dataframe(table, width="stretch", hide_index=True)
+    show_df(table, width="stretch", hide_index=True)
     names = [r["name"] for r in rows if r["present"]]
     pick = st.selectbox("查看 SKILL.md", names)
     row = next(r for r in rows if r["name"] == pick)

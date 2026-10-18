@@ -5,7 +5,7 @@ from __future__ import annotations
 import streamlit as st
 
 from novel_writer import tool_api
-from ui.components import show_error
+from ui.components import show_error, show_df
 
 
 def render_threads(ws: str) -> None:
@@ -27,7 +27,7 @@ def render_threads(ws: str) -> None:
                     for it in items if isinstance(it, dict)]
             if rows:
                 st.subheader("伏笔")
-                st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+                show_df(pd.DataFrame(rows), width="stretch", hide_index=True)
     if data["foreshadowing_md"]:
         with st.expander("伏笔注册表（Markdown）", expanded=False):
             st.markdown(data["foreshadowing_md"])

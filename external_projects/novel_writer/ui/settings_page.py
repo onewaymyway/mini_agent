@@ -8,7 +8,7 @@ import streamlit as st
 from novel_writer import tool_api
 from novel_writer.gates import GEAR_GATES
 from novel_writer.settings import GEARS
-from ui.components import GATE_LABEL, show_error
+from ui.components import GATE_LABEL, show_error, show_df
 
 OVERRIDE_CHOICES = ["", "manual", "review", "auto", "skip"]
 GEAR_CHOICES = ["", "G0", "G1", "G2", "G3", "G4"]
@@ -78,4 +78,4 @@ def render_settings(ws: str) -> None:
         rows = []
         for cat, cols in GEAR_GATES.items():
             rows.append({"类别": cat, **{g: GATE_LABEL[cols[g]] for g in GEARS}})
-        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+        show_df(pd.DataFrame(rows), hide_index=True, width="stretch")
