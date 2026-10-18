@@ -192,16 +192,34 @@ def _writer_index(writer: Optional[str], index: Dict[str, int]) -> Optional[int]
     return None
 
 
-def _upstream_changed(ws: Workspace, digests: Dict[str, str], i: int,
-                      index: Dict[str, int], writers: Dict[str, str]) -> bool:
-    """某步骤的输入中，是否有「来自它自己或之前步骤」的文件发生了变化。
+def _chapter_of(step: StepDef) -> int:
+    return int(getattr(step, "chapter", 0) or 0)
 
-    排在它之后（或就是它自己）写入的文件，是它的下游结果，不算上游变化。
+
+def _writer_chapter(writer: Optional[str]) -> Optional[int]:
+    """写入者所属章节：chNN.* → NN；设计/规划步骤与作者手动修改 → None。"""
+    m = re.match(r"ch(\d+)\.", writer or "")
+    return int(m.group(1)) if m else None
+
+
+def _upstream_changed(ws: Workspace, digests: Dict[str, str], i: int, reader_chapter: int,
+                      index: Dict[str, int], writers: Dict[str, str]) -> bool:
+    """某步骤的输入是否发生了需要它重跑的变化。
+
+    规则（显式、与计划顺序解耦）：
+      1. 章节写作的更新只属于它所在的章节：对其他章节、以及设计/规划步骤，它是「为后续章节准备」，
+         绝不回溯标记已完成的步骤（写完第 N 章后更新蓝图/伏笔/人物，不影响前面的章节和设计）。
+      2. 同一章内部，按计划顺序传播（例如修改循环改了正文，本章的归档要重做）。
+      3. 设计/规划步骤的产物变化，以及作者手动修改，是真正的上游变化，按依赖传播（托管挡会停下来确认）。
     """
     for rel_path, recorded_sha in digests.items():
-        owner = _writer_index(writers.get(rel_path), index)
+        writer = writers.get(rel_path)
+        wc = _writer_chapter(writer)
+        if wc is not None and wc != reader_chapter:
+            continue  # 规则 1
+        owner = _writer_index(writer, index)
         if owner is not None and owner >= i:
-            continue
+            continue  # 规则 2：本步骤自己或之后写入的，是下游结果
         if _file_digest(ws.root / rel_path) != recorded_sha:
             return True
     return False
@@ -228,7 +246,7 @@ def mark_stale(ws: Workspace, plan: List[StepDef]) -> List[str]:
             status = entry.get("status")
             digests = entry.get("input_digests")
             if status == ST_STALE and digests is not None and str(entry.get("note") or "").startswith(_UPSTREAM_NOTE):
-                if not _upstream_changed(ws, digests, i, index, writers):
+                if not _upstream_changed(ws, digests, i, _chapter_of(step), index, writers):
                     entry.update(status=ST_PASSED, note=None, updated_at=now_iso())
                     restored.append(step.id)
                     changed = True
@@ -242,7 +260,7 @@ def mark_stale(ws: Workspace, plan: List[StepDef]) -> List[str]:
                 entry["input_digests"] = input_digests(ws, step)
                 changed = True
                 continue
-            if _upstream_changed(ws, digests, i, index, writers):
+            if _upstream_changed(ws, digests, i, _chapter_of(step), index, writers):
                 entry.update(status=ST_STALE, note=_UPSTREAM_NOTE, updated_at=now_iso())
                 stale_ids.append(step.id)
                 changed = True
