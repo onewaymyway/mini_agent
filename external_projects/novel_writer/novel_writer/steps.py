@@ -322,7 +322,10 @@ def alt_write_step(n: int, *, prev_last: str) -> StepDef:
         id=chapter_id(n, "alt_write"), title=f"第{n}章：候选稿 B", stage=_stage_of(n), category=CAT_CHAPTER_WRITE,
         executor=EXECUTOR_SKILL, skill="chapter-writer", chapter=n,
         instructions=(f"另写第 {n} 章的一版替代稿：遵循同样的蓝图、上下文包与章前情节清单，"
-                      "叙述角度或措辞可以不同，但不能违背设定与伏笔。只写入候选文件，不要修改正文文件。"),
+                      "叙述角度或措辞可以不同，但不能违背设定与伏笔。只写入候选文件，不要修改正文文件。\n"
+                      f"【输出路径（必须精确使用，不得改名）】{rel('candidate_alt', nn=n)}\n"
+                      "这是候选稿，文件名固定为 第NN章_候选B.md，不得加入章节标题或其它字样；"
+                      "不要使用正文文件的「第NN章 标题.md」命名规则。"),
         inputs=(rel("context_pack", n=n), rel("chapter_tasks", n=n), rel("quota_file", n=n)),
         outputs=(rel("candidate_alt", nn=n),), deps=(prev_last,),
     )

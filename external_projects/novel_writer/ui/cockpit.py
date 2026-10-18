@@ -279,8 +279,10 @@ def _render_step_actions(ws: str, steps: list, nxt: dict) -> None:
     # 默认选中「下一步」（第一个未完成的步骤；待审核/待答复的步骤排在最前因为它阻塞流水线）。
     # 下一步变化时才自动跟随，之后用户手动选的值保持不变。
     default = nxt.get("step") if nxt.get("step") in ids else ids[0]
-    if st.session_state.get("cp_step_auto") != default:
-        st.session_state["cp_step_auto"] = default
+    # 「下一步」的步骤或其状态变化（如待运行 → 失败）都要重新跟随，否则手动选过别的步骤时会卡住
+    follow_key = f"{default}|{nxt.get('status')}|{nxt.get('action')}"
+    if st.session_state.get("cp_step_auto") != follow_key:
+        st.session_state["cp_step_auto"] = follow_key
         st.session_state["cp_step_pick"] = default
     pick = st.selectbox("选择步骤", ids, key="cp_step_pick",
                         help="默认是下一步（第一个未完成的步骤）；下一步变化后会自动跟随。")

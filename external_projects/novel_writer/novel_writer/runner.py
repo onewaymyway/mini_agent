@@ -155,6 +155,40 @@ def run_skill_step(
             st.record_writer_paths(ws, changed, step.id, before={rel: before[rel] for rel in changed}, kind="agent")
 
 
+def _normalize_outputs(ws: Workspace, step: S.StepDef, *, since: float) -> List[str]:
+    """智能体有时会把文件起成别的名字（如把章节标题加进文件名）。
+
+    对每个缺失的、普通路径的产出：在同一目录里找本次运行新写入、且与预期文件「前缀_…后缀」
+    结构相同的文件。恰好一个则改名为规范路径并记入日志；有多个则不猜，保持缺失并列出候选。
+    返回实际改名的 (旧→新) 列表。
+    """
+    import os
+
+    renamed: List[str] = []
+    for spec in step.outputs:
+        if V._is_glob(spec) or (ws.root / spec).is_file():
+            continue
+        target = ws.root / spec
+        name = target.name
+        if "_" not in name:
+            continue
+        prefix = name.split("_", 1)[0]          # 第11章
+        suffix = "_" + name.rsplit("_", 1)[1]    # _候选B.md
+        if not target.parent.is_dir():
+            continue
+        candidates = [
+            f for f in target.parent.iterdir()
+            if f.is_file() and f.name.startswith(prefix) and f.name.endswith(suffix)
+            and f.name != name and f.stat().st_mtime >= since - 1
+        ]
+        if len(candidates) == 1:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(candidates[0], target)
+            renamed.append(f"{candidates[0].name} → {name}")
+            st.log_line(ws, f"🔧 {step.id}：产出文件名不符，已归一化：{candidates[0].name} → {name}")
+    return renamed
+
+
 def _run_skill_step_inner(
     ws: Workspace, step: S.StepDef, *, invoker: Invoker, settings: Dict[str, Any], run_no: int,
 ) -> Dict[str, Any]:
@@ -162,6 +196,7 @@ def _run_skill_step_inner(
     run_dir.mkdir(parents=True, exist_ok=True)
     max_turns = int((settings.get("max_turns_overrides") or {}).get(step.id, DEFAULT_MAX_TURNS))
     hint = ""
+    started = time.time()
     for attempt in range(MAX_RECEIPT_ATTEMPTS):
         prompt = build_prompt(ws, step, hint=hint)
         (run_dir / f"prompt_{attempt + 1}.md").write_text(prompt, encoding="utf-8")
@@ -174,6 +209,7 @@ def _run_skill_step_inner(
         receipt = read_json(run_dir / RECEIPT_FILE, default=None)
         problems = V.receipt_problems(receipt) if receipt is not None else [f"缺少回执 {RECEIPT_FILE}"]
         if not problems and receipt.get("status") == "done":
+            _normalize_outputs(ws, step, since=started)
             problems = [f"缺少产出 {m}" for m in V.missing_outputs(ws, step.outputs)]
         if not problems:
             return receipt
