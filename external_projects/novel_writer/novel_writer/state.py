@@ -157,7 +157,9 @@ def input_digests(ws: Workspace, step: StepDef) -> Dict[str, str]:
     return out
 
 
-WRITE_HISTORY_FILE = "write_history.jsonl"
+WRITE_HISTORY_FILE = "write_history.jsonl"     # 当前活动分段
+WRITE_HISTORY_MAX_BYTES = 1_000_000            # 超过即封存为分段 write_history.NNNNNN.jsonl，再开新文件
+_SEGMENT_RE = re.compile(r"^write_history\.(\d{6})\.jsonl$")
 
 
 def _chapter_of_writer(writer: Optional[str]) -> Optional[int]:
@@ -165,12 +167,40 @@ def _chapter_of_writer(writer: Optional[str]) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
+def _history_segments(ws: Workspace) -> List[Path]:
+    """所有分段，从旧到新（封存分段按序号，活动分段最后）。"""
+    studio = ws.studio
+    if not studio.is_dir():
+        return []
+    segs = []
+    for f in studio.iterdir():
+        m = _SEGMENT_RE.match(f.name)
+        if m:
+            segs.append((int(m.group(1)), f))
+    out = [f for _, f in sorted(segs)]
+    active = studio / WRITE_HISTORY_FILE
+    if active.is_file():
+        out.append(active)
+    return out
+
+
+def _rotate_if_needed(ws: Workspace) -> None:
+    """活动分段过大时封存（改名），之后的写入进入新的活动分段。调用方须持有 _LOCK。"""
+    active = ws.studio / WRITE_HISTORY_FILE
+    if not active.is_file() or active.stat().st_size < WRITE_HISTORY_MAX_BYTES:
+        return
+    next_no = 1 + max((int(_SEGMENT_RE.match(f.name).group(1)) for f in ws.studio.iterdir()
+                       if _SEGMENT_RE.match(f.name)), default=0)
+    active.rename(ws.studio / f"write_history.{next_no:06d}.jsonl")
+
+
 def _append_history(ws: Workspace, events: List[Dict[str, Any]]) -> None:
-    """追加写入历史（每行一条 JSON，只追加不改写，便于事后追溯）。调用方须持有 _LOCK。"""
+    """追加写入历史（每行一条 JSON，只追加不改写）。调用方须持有 _LOCK。"""
     if not events:
         return
     path = ws.studio / WRITE_HISTORY_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
+    _rotate_if_needed(ws)
     with path.open("a", encoding="utf-8", newline="\n") as f:
         for ev in events:
             f.write(json.dumps(ev, ensure_ascii=False) + "\n")
@@ -208,25 +238,35 @@ def record_writers(ws: Workspace, step: StepDef) -> None:
 
 
 def read_write_history(ws: Workspace, *, path: Optional[str] = None, writer: Optional[str] = None,
+                       kind: Optional[str] = None, chapter: Optional[int] = None,
                        limit: int = 200) -> List[Dict[str, Any]]:
-    """写入历史，最新的在前。可按文件路径或写入者过滤。"""
-    file = ws.studio / WRITE_HISTORY_FILE
-    if not file.is_file():
-        return []
+    """写入历史，最新的在前。跨所有分段读取，可按文件路径、写入者、类型过滤。
+
+    从最新的分段开始读，凑够 limit 条即停止，不必整体加载全部历史。
+    """
+    want = max(1, int(limit))
     events: List[Dict[str, Any]] = []
-    for line in file.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        try:
-            ev = json.loads(line)
-        except ValueError:
-            continue
-        if path and ev.get("path") != path:
-            continue
-        if writer and ev.get("writer") != writer:
-            continue
-        events.append(ev)
-    return list(reversed(events))[:max(1, int(limit))]
+    for seg in reversed(_history_segments(ws)):
+        lines = seg.read_text(encoding="utf-8").splitlines()
+        for line in reversed(lines):
+            if not line.strip():
+                continue
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            if path and ev.get("path") != path:
+                continue
+            if writer and ev.get("writer") != writer:
+                continue
+            if kind and ev.get("kind") != kind:
+                continue
+            if chapter is not None and ev.get("chapter") != chapter:
+                continue
+            events.append(ev)
+            if len(events) >= want:
+                return events
+    return events
 
 
 _UPSTREAM_NOTE = "上游产物已变化，需要重跑"

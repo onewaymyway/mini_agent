@@ -288,12 +288,13 @@ def rebaseline_stale(workspace: str) -> Dict[str, Any]:
 
 
 def write_history(workspace: str, *, path: Optional[str] = None, writer: Optional[str] = None,
-                  limit: int = 200) -> Dict[str, Any]:
-    """写入历史（最新在前）：谁在什么时候改写了哪个文件，前后指纹各是什么。"""
+                  kind: Optional[str] = None, chapter: Optional[int] = None, limit: int = 200) -> Dict[str, Any]:
+    """写入历史（最新在前）：谁在什么时候改写了哪个文件，前后指纹各是什么。跨分段读取。"""
 
     def run() -> Dict[str, Any]:
         ws = _workspace_or_raise(workspace)
-        return _ok({"events": _state.read_write_history(ws, path=path, writer=writer, limit=limit)})
+        return _ok({"events": _state.read_write_history(ws, path=path, writer=writer, kind=kind,
+                                                       chapter=chapter, limit=limit)})
 
     return _guard(run)
 

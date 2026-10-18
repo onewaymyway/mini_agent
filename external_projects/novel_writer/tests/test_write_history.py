@@ -60,3 +60,46 @@ def test_author_edit_is_recorded_and_stale_note_names_the_cause(isolated):
     note = st.get_step_state(ws, "build_world")["note"]
     assert "author" in note and BP in note
     assert st.read_write_history(ws, path=BP, writer="author")[0]["kind"] == "author"
+
+
+# ── 轮转、跨分段读取、过滤与界面 ──────────────────────────────────────────────
+
+def test_history_rotates_into_segments_and_reads_back_everything(isolated, monkeypatch):
+    ws = new_book(isolated, total=2)
+    monkeypatch.setattr(st, "WRITE_HISTORY_MAX_BYTES", 400)  # 很小的阈值，强制多次轮转
+    for i in range(30):
+        st.record_writer_paths(ws, [BP], f"ch0{i % 2 + 1}.archive", kind="agent",
+                               before={BP: f"b{i}"})
+    segs = sorted(p.name for p in ws.studio.iterdir() if p.name.startswith("write_history"))
+    assert any(n.startswith("write_history.0") for n in segs), segs
+    assert "write_history.jsonl" in segs
+    events = st.read_write_history(ws, limit=1000)
+    assert len(events) == 30  # 没有丢失
+    assert events[0]["before"] == "b29" and events[-1]["before"] == "b0"  # 最新在前，跨分段有序
+
+
+def test_filters_by_chapter_and_kind(isolated):
+    ws = new_book(isolated, total=2)
+    st.record_writer_paths(ws, [BP], "ch01.archive", kind="agent", before={BP: "x"})
+    st.record_writer_paths(ws, [BP], "ch02.sync", kind="agent", before={BP: "y"})
+    st.record_writer_paths(ws, [BP], "author", kind="author")
+    assert {e["writer"] for e in st.read_write_history(ws, chapter=2)} == {"ch02.sync"}
+    assert {e["kind"] for e in st.read_write_history(ws, kind="author")} == {"author"}
+    res = tool_api.write_history(str(ws.root), chapter=1, limit=10)
+    assert res["ok"] and all(e["chapter"] == 1 for e in res["data"]["events"])
+
+
+def test_ui_write_history_panel_renders(isolated):
+    from pathlib import Path
+
+    from streamlit.testing.v1 import AppTest
+
+    ws = new_book(isolated, total=2)
+    st.record_writer_paths(ws, [BP], "ch01.archive", kind="agent", before={BP: "x"}, )
+    root_app = Path(__file__).resolve().parent.parent / "app.py"
+    at = AppTest.from_file(str(root_app), default_timeout=60).run()
+    at.session_state["ws"] = str(ws.root)
+    at.sidebar.radio[0].set_value("🧭 驾驶舱").run()
+    assert not at.exception, at.exception
+    assert at.selectbox(key="wh_kind") is not None
+    assert len(at.dataframe) >= 1

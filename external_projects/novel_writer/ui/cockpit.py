@@ -69,6 +69,7 @@ def render_control(ws: str) -> None:
     _render_inbox(ws)
     _render_run_buttons(ws, nxt)
     _render_feedback_cycle(ws, data["steps"])
+    _render_write_history(ws)
 
     stale_up = [x for x in data["steps"] if x["status"] == "stale" and str(x.get("note") or "").startswith("上游产物已变化")]
     if stale_up:
@@ -186,6 +187,47 @@ def _render_run_buttons(ws: str, nxt: dict) -> None:
     if c4.button("⏹ 停止", key="cp_stop", use_container_width=True):
         _report(tool_api.stop_novel(ws))
     c5.button("🔄 刷新", key="cp_refresh", use_container_width=True, on_click=_reset_step_pick)
+
+
+def _render_write_history(ws: str) -> None:
+    """📜 写入记录：谁在什么时候改写了哪个文件。用于追溯「为什么某步骤被标为需重跑」。"""
+    import pandas as pd
+
+    with st.expander("📜 写入记录（追溯文件是谁、何时改写的）", expanded=False):
+        st.caption("每次写入都会记录：写入者（步骤或作者）、所属章节、文件、前后指纹是否变化。"
+                   "这是只读的追溯信息，不影响流水线的判断。")
+        c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
+        path = c1.text_input("文件（完整相对路径，留空=全部）", key="wh_path")
+        writer = c2.text_input("写入者（如 ch02.archive，留空=全部）", key="wh_writer")
+        kind_label = c3.selectbox("类型", ["全部", "agent（执行器写入）", "declared（声明产出）", "author（作者修改）"],
+                                  key="wh_kind")
+        chapter = c4.number_input("章节（0=全部）", min_value=0, value=0, step=1, key="wh_chapter")
+        c5, c6 = st.columns([2, 3])
+        limit = c5.selectbox("条数", [50, 200, 500], index=0, key="wh_limit")
+        only_changed = c6.checkbox("只看内容确实变化的写入", value=True, key="wh_changed")
+        kind = None if kind_label.startswith("全部") else kind_label.split("（")[0]
+
+        res = tool_api.write_history(ws, path=path.strip() or None, writer=writer.strip() or None,
+                                     kind=kind, chapter=int(chapter) if chapter else None,
+                                     limit=int(limit))
+        if not res["ok"]:
+            show_error(res)
+            return
+        events = res["data"]["events"]
+        if only_changed:
+            events = [e for e in events if e.get("before") != e.get("after")]
+        if not events:
+            st.info("没有符合条件的写入记录。")
+            return
+        rows = [{
+            "时间": str(e.get("ts", ""))[:19].replace("T", " "),
+            "写入者": e.get("writer") or "",
+            "章节": e.get("chapter") or "",
+            "类型": e.get("kind") or "",
+            "文件": e.get("path") or "",
+            "内容变化": "是" if e.get("before") != e.get("after") else "否",
+        } for e in events]
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
 def _reset_step_pick() -> None:
