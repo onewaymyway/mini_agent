@@ -80,3 +80,22 @@ def test_manual_gate_and_revise_stay_manual_in_autopilot(isolated):
     from novel_writer import pipeline as P
     bp = [s for s in P.build_plan(ws) if s.id == "plan_blueprint"][0]
     assert G.resolve_gate(bp, plan).gate == G.GATE_MANUAL
+
+
+def test_autopilot_does_not_auto_rerun_stale_steps(isolated):
+    """托管挡遇到「上游变化需重跑」的步骤必须停下，不能自动执行（可能覆盖已确认的内容）。"""
+    ws = new_book(isolated, total=2)
+    _set_g4(ws)
+    st.update_step(ws, "init_workspace", status=st.ST_PASSED)
+    st.update_step(ws, "plan_blueprint", status=st.ST_PASSED)
+    st.update_step(ws, "design_theme", status=st.ST_PASSED)
+    st.update_step(ws, "design_pacing", status=st.ST_PASSED)
+    st.update_step(ws, "build_world", status=st.ST_STALE, note="上游产物已变化，需要重跑")
+    inv = FakeInvoker(ws.root)
+    res = run_worker(ws, mode="until_gate", invoker=inv, handlers=DEFAULT_PY_HANDLERS, heartbeat_interval=0.01)
+    assert res["reason"] == "stale_confirm"
+    assert "build_world" not in inv.calls
+    assert st.get_step_state(ws, "build_world")["status"] == st.ST_STALE
+    # 作者明确要求运行，才执行
+    res2 = run_worker(ws, mode="single", invoker=inv, handlers=DEFAULT_PY_HANDLERS, heartbeat_interval=0.01)
+    assert st.get_step_state(ws, "build_world")["status"] != st.ST_STALE

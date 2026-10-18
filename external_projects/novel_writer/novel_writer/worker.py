@@ -204,6 +204,10 @@ def _loop(
             if AP.handle_waiting(ws, target, status):
                 continue
             return status
+        if autopilot and status == st.ST_STALE and not requested == target.id:
+            # 托管挡不自动重跑「因上游变化而需重跑」的步骤：这类重跑可能覆盖已确认的内容，必须由作者确认。
+            st.log_line(ws, f"⏸ 托管：{target.id} 因上游产物变化需要重跑，已暂停，等待你确认后再继续")
+            return "stale_confirm"
         if status in (st.ST_WAITING_REVIEW, st.ST_WAITING_USER, st.ST_FAILED, st.ST_BLOCKED, st.ST_RUNNING):
             return status
 
