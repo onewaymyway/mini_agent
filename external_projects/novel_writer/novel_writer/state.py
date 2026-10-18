@@ -387,6 +387,36 @@ def rebaseline_stale(ws: Workspace, plan: List[StepDef], step_ids: Iterable[str]
     return done
 
 
+def adopt_legacy_picks(ws: Workspace) -> List[str]:
+    """迁移：择优旧版本是单步 python 步骤（best_pick）。新版拆成 准备 → 择优 → 应用 三步。
+
+    已经按旧版本完成择优的章节，不能因为新增的两步是「待运行」而重新择优（那会再次改动已定稿的正文）。
+    所以：若旧的 best_pick 已通过，且新增的准备/应用步骤没有记录，则视为已完成。
+    """
+    import re as _re
+
+    adopted: List[str] = []
+    with _LOCK:
+        state = load_state(ws)
+        steps = state["steps"]
+        for sid, entry in list(steps.items()):
+            m = _re.fullmatch(r"ch(\d+)\.best_pick", sid)
+            if not m or entry.get("status") != ST_PASSED:
+                continue
+            n = m.group(1)
+            for suffix in ("best_pick_prep", "best_pick_apply"):
+                new_id = f"ch{n}.{suffix}"
+                if new_id not in steps:
+                    steps[new_id] = {"status": ST_PASSED, "attempts": 0,
+                                     "note": "迁移：旧版本择优已完成，视为已通过", "updated_at": now_iso()}
+                    adopted.append(new_id)
+        if adopted:
+            atomic_write_json(ws.path("studio_state"), state)
+    if adopted:
+        log_line(ws, f"🔁 迁移：{len(adopted)} 个择优新步骤沿用旧版本的结果，不重新择优")
+    return adopted
+
+
 def mark_orphans_interrupted(ws: Workspace) -> List[str]:
     """worker 启动时调用（已持有 worker 锁）：遗留的 running 步骤一律视为中断。"""
     fixed: List[str] = []

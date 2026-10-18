@@ -297,10 +297,12 @@ def chapter_steps(n: int, title: str, *, total: Optional[int], prev_last: str,
     if quality == PREMIUM:
         # 精品档 best-of-N（M6）：写第二稿，机器校验择优，择优结果交给后续的校验与审稿
         alt = alt_write_step(n, prev_last=p("write_chapter"))
-        pick = best_pick_step(n, deps=(alt.id,))
+        prep = best_pick_prep_step(n, deps=(alt.id,))
+        pick = best_pick_step(n, deps=(prep.id,))
+        apply_ = best_pick_apply_step(n, deps=(pick.id,))
         index = next(i for i, s in enumerate(steps) if s.id == p("machine_check"))
-        steps[index] = replace(steps[index], deps=(pick.id,))
-        steps[index:index] = [alt, pick]
+        steps[index] = replace(steps[index], deps=(apply_.id,))
+        steps[index:index] = [alt, prep, pick, apply_]
 
     interval = QUALITY_READER_SIM_INTERVAL.get(quality, READER_SIM_INTERVAL)
     if interval and n % interval == 0:
@@ -326,12 +328,35 @@ def alt_write_step(n: int, *, prev_last: str) -> StepDef:
     )
 
 
+def best_pick_prep_step(n: int, *, deps: Tuple[str, ...]) -> StepDef:
+    """精品档择优·准备（python）：对正文与候选稿各做机器校验，结果写入文件供 LLM 择优参考。"""
+    return StepDef(
+        id=chapter_id(n, "best_pick_prep"), title=f"第{n}章：择优准备（机检）", stage=_stage_of(n),
+        category=CAT_CHAPTER_REVIEW, executor=EXECUTOR_PYTHON, handler="best_pick_prep", chapter=n,
+        inputs=(rel("candidate_alt", nn=n),), outputs=(rel("best_pick_check", nn=n),), deps=deps,
+    )
+
+
 def best_pick_step(n: int, *, deps: Tuple[str, ...]) -> StepDef:
-    """精品档择优（M6）：机器校验两稿，硬问题少者胜，平手保留正文。python 步骤。"""
+    """精品档择优（LLM）：阅读正文（A）与候选稿（B），按设定、伏笔、节奏、质量判断采用哪一稿，并给出理由。"""
     return StepDef(
         id=chapter_id(n, "best_pick"), title=f"第{n}章：择优", stage=_stage_of(n), category=CAT_CHAPTER_REVIEW,
-        executor=EXECUTOR_PYTHON, handler="best_pick", chapter=n,
-        inputs=(rel("candidate_alt", nn=n),), outputs=(rel("best_pick_report", nn=n),), deps=deps,
+        executor=EXECUTOR_SKILL, skill="chapter-picker", chapter=n,
+        instructions=(f"第 {n} 章有两版：正文（A）与候选稿（B）。逐项比较后选出更好的一版，写择优报告；"
+                      "只写报告，不要修改任何正文文件。"),
+        inputs=(glob_of("chapter_text", nn=n), rel("candidate_alt", nn=n), rel("best_pick_check", nn=n),
+                rel("context_pack", n=n), rel("chapter_tasks", n=n)),
+        outputs=(rel("best_pick_report", nn=n),), deps=deps,
+    )
+
+
+def best_pick_apply_step(n: int, *, deps: Tuple[str, ...]) -> StepDef:
+    """精品档择优·应用（python）：按择优报告决定正文；选 B 则以候选稿替换正文，选 A 则保持不变。"""
+    return StepDef(
+        id=chapter_id(n, "best_pick_apply"), title=f"第{n}章：择优应用", stage=_stage_of(n),
+        category=CAT_CHAPTER_REVIEW, executor=EXECUTOR_PYTHON, handler="best_pick_apply", chapter=n,
+        inputs=(rel("best_pick_report", nn=n), rel("candidate_alt", nn=n)), outputs=(glob_of("chapter_text", nn=n),),
+        deps=deps,
     )
 
 

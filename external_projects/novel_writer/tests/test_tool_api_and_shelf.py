@@ -60,4 +60,4 @@ def test_project_health_ok(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "REPORTS_DIR", tmp_path / "reports")
     r = tool_api.project_health()
     assert r["ok"] and r["data"]["ok"], r
-    assert r["data"]["skills_total"] == 23
+    assert r["data"]["skills_total"] == 24

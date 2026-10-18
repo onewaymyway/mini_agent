@@ -127,6 +127,7 @@ def run_worker(
         with _Heartbeat(ws, heartbeat_interval):
             st.write_control(ws, command="run", mode=mode)
             orphans.extend(st.mark_orphans_interrupted(ws))
+            st.adopt_legacy_picks(ws)
             budget = Budget(ws.settings(), chapter_limit=max_chapters)
             reason = _loop(ws, mode=mode, invoker=invoker, handlers=handlers, budget=budget,
                            executed=executed, stale_all=stale_all, max_steps=max_steps)

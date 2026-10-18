@@ -121,7 +121,8 @@ PATHS: Dict[str, str] = {
     "export_dir": "导出",
     # M6
     "candidate_alt": "正文/_drafts/第{nn}章_候选B.md",          # 精品档：best-of-N 的第二稿
-    "best_pick_report": "一致性检查/第{nn}章_择优.json",
+    "best_pick_check": "一致性检查/第{nn}章_择优机检.json",   # 择优前的机器校验结果（供 LLM 参考）
+    "best_pick_report": "一致性检查/第{nn}章_择优.json",     # LLM 的择优结论
     "patrol_report": "修订记录/第{nn}章_巡检报告.md",            # 精品档：每 10 章巡检
     "ending_design": "大纲规划/结局设计.md",
     "final_report": "一致性检查/全书终审报告.md",

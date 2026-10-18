@@ -1,4 +1,4 @@
-"""novel_writer/skills_catalog.py — 23 个 skill 在本项目中的角色目录。
+"""novel_writer/skills_catalog.py — 24 个 skill 在本项目中的角色目录。
 
 数据来自方案第 1.1 节与第 5.1 节：每个 skill 属于哪一层、由谁执行（Python /
 LLM / 混合）、主要在哪个界面页面使用。界面的"Skill 库"页和健康检查都读这里；
@@ -36,6 +36,7 @@ SKILL_CATALOG: Dict[str, Dict[str, Any]] = {
     "idea-catcher": {"layer": "设计", "executor": LLM, "pages": ["灵感箱"], "summary": "灵感捕捉、评估、整合/暂存"},
     "chapter-writer": {"layer": "执行", "executor": LLM, "pages": ["写作台"], "summary": "唯一内容生产者，7 种 chapter_type 模板"},
     "chapter-review": {"layer": "执行", "executor": LLM, "pages": ["审校"], "summary": "完章闭环：核查→修改→归档→状态同步（拆 4 步）"},
+    "chapter-picker": {"layer": "质检", "executor": LLM, "pages": ["审校"], "summary": "精品档择优：两版正文比较，给出采用哪一版的理由"},
     "dialogue-crafter": {"layer": "执行", "executor": LLM, "pages": ["写作台"], "summary": "关键对话：潜台词/冲突/群体"},
     "consistency-checker": {"layer": "质检", "executor": LLM, "pages": ["审校"], "summary": "事实/人物/世界/伏笔/主题五维校验、幕末深度审稿"},
     "style-guardian": {"layer": "质检", "executor": HYBRID, "pages": ["审校"], "summary": "风格指纹、写前提示、写后检查、幕间对比"},

@@ -16,7 +16,6 @@ from novel_writer import pipeline as P
 from novel_writer import exporter
 from novel_writer import state as st
 from novel_writer import steps as S
-from novel_writer.chapter_ops import h_best_pick
 from novel_writer.fsutil import atomic_write_json
 from novel_writer.runner import DEFAULT_PY_HANDLERS
 from novel_writer.worker import run_worker
@@ -97,62 +96,35 @@ def test_standard_quality_keeps_current_behaviour(tmp_path):
 def test_premium_quality_adds_best_of_n_reader_sim_every_three_and_patrol(tmp_path):
     ws = new_book(tmp_path, total=10, quality="premium")
     plan = by_id(ws)
-    assert plan["ch01.machine_check"].deps == ("ch01.best_pick",)
-    assert plan["ch01.best_pick"].deps == ("ch01.alt_write",)
+    assert plan["ch01.machine_check"].deps == ("ch01.best_pick_apply",)
+    assert plan["ch01.best_pick_apply"].deps == ("ch01.best_pick",)
+    assert plan["ch01.best_pick"].deps == ("ch01.best_pick_prep",)
+    assert plan["ch01.best_pick_prep"].deps == ("ch01.alt_write",)
     assert plan["ch01.alt_write"].deps == ("ch01.write_chapter",)
     assert "ch03.reader_sim" in plan and "ch06.reader_sim" in plan and "ch05.reader_sim" not in plan
     assert "patrol:10" in plan and plan["patrol:10"].skill == "revision-editor"
 
 
-# ── 三、best-of-N 择优 ─────────────────────────────────────────────────────
+# ── 三、best-of-N 择优（LLM 判断，详见 tests/test_best_pick_llm.py）────────────
 
 
-def _pick(ws, n=1):
-    step = by_id(ws)[f"ch{n:02d}.best_pick"]
-    return h_best_pick(ws, step, ws.settings())
-
-
-def test_best_pick_keeps_a_on_tie_and_prefers_b_when_a_is_worse(tmp_path):
-    ws = new_book(tmp_path, total=2, quality="premium", gear="G0")
-    good = "他站在门口，雨一直下。\n\n她没有回头，只是把伞收起。\n"
-    chapter = ws.chapter_path(1, "测试", total_chapters=2)
-    chapter.parent.mkdir(parents=True, exist_ok=True)
-    chapter.write_text("# 第1章\n\n" + good, encoding="utf-8")
-    cand = ws.path("candidate_alt", nn=1)
-    cand.parent.mkdir(parents=True, exist_ok=True)
-    cand.write_text("# 第1章\n\n" + good, encoding="utf-8")
-    assert _pick(ws)["summary"].endswith("A稿")
-    assert "他站在门口" in chapter.read_text(encoding="utf-8")
-
-    # 只有正文 A 含禁用词（硬问题），候选稿 B 干净 -> 采用 B
-    atomic_write_json(ws.path("studio_settings"), {**ws.settings(), "banned_words": ["黑夜"]})
-    chapter.write_text("# 第1章\n\n" + good + "黑夜里有人敲门。\n", encoding="utf-8")
-    cand.write_text("# 第1章\n\n" + good, encoding="utf-8")
-    assert _pick(ws)["summary"].endswith("B稿")
-    assert "黑夜" not in chapter.read_text(encoding="utf-8")
-    assert ws.path("best_pick_report", nn=1).is_file()
-
-
-def test_best_pick_without_candidate_is_noop(tmp_path):
-    ws = new_book(tmp_path, total=2, quality="premium", gear="G0")
-    chapter = ws.chapter_path(1, "测试", total_chapters=2)
-    chapter.parent.mkdir(parents=True, exist_ok=True)
-    chapter.write_text("# 第1章\n\n他推门而入。\n", encoding="utf-8")
-    assert "保留正文" in _pick(ws)["summary"]
-
-
-def test_premium_chapter_end_to_end_keeps_clean_a(tmp_path):
-    # 桩执行器写出的候选稿只有几个字，字数偏离很大 -> 择优应保留 A（正文）
+def test_premium_chapter_end_to_end_applies_llm_choice(tmp_path):
     ws = new_book(tmp_path, total=3, quality="premium", gear="G3")
-    inv = FakeInvoker(ws.root)
+    import json
+
+    def pick_a(w):
+        atomic_write_json(w.path("best_pick_report", nn=1), {
+            "chapter": 1, "winner": "A", "reason": "正文更贴合设定",
+            "A": {"strengths": [], "problems": []}, "B": {"strengths": [], "problems": []}})
+
+    inv = FakeInvoker(ws.root, writers={"ch01.best_pick": pick_a})
     for _ in range(200):
-        if statuses(ws).get("ch01.best_pick") == st.ST_PASSED:
+        if statuses(ws).get("ch01.best_pick_apply") == st.ST_PASSED:
             break
         run_worker(ws, mode="until_gate", invoker=inv, handlers=STUB_HANDLERS, heartbeat_interval=0.01)
         approve_waiting(ws)
     assert statuses(ws)["ch01.best_pick"] == st.ST_PASSED
-    assert "ch01.alt_write" in inv.calls
-    import json
+    assert "ch01.alt_write" in inv.calls and "ch01.best_pick" in inv.calls
     report = json.loads(ws.path("best_pick_report", nn=1).read_text(encoding="utf-8"))
     assert report["winner"] == "A"
 

@@ -4,7 +4,7 @@ from novel_writer.config import SKILLS_DIR
 
 def test_catalog_matches_skills_dir_exactly():
     dirs = {d.name for d in SKILLS_DIR.iterdir() if d.is_dir()}
-    assert len(dirs) == 23
+    assert len(dirs) == 24
     assert dirs == set(C.SKILL_CATALOG)
 
 
