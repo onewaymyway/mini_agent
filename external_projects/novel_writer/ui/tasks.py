@@ -11,7 +11,11 @@ _KIND_ICON = {"running": "🔵", "stale": "🟤", "queued": "🟡", "request": "
 
 
 def page_tasks() -> None:
+    from ui.autorefresh import enable_tasks_auto_refresh
+
     st.header("⚙ 后台任务")
+    st.caption("任务状态有变化时自动刷新。")
+    enable_tasks_auto_refresh()
     st.caption("书架上所有小说的后台运行、排队和待运行请求。停止是协作式的：当前步骤结束后生效。")
     if st.button("🔄 刷新", key="tk_refresh"):
         st.rerun()

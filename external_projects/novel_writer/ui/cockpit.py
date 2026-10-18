@@ -51,6 +51,9 @@ def page_cockpit() -> None:
 
 
 def render_control(ws: str) -> None:
+    from ui.autorefresh import enable_auto_refresh
+
+    enable_auto_refresh(ws)
     res = tool_api.pipeline_status(ws)
     if not res["ok"]:
         show_error(res)
