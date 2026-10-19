@@ -5674,6 +5674,9 @@ def _render_goal_tree_node_body(
                     st.success(f"生成了 {n} 条候选" if n else "本次没有生成新候选（可能已有未处理候选，或节奏治理拦截）")
                     st.rerun()
 
+        # [目标树删除节点] 删除自身，或连同全部子节点一起删除。根节点不允许删除。
+        _render_goal_tree_delete_section(client, node_id, node, level=level, child_count=len(children))
+
         # 新建子节点。
         with st.form(f"_gt_addchild_{node_id}"):
             st.caption("➕ 新建子节点")
@@ -6493,6 +6496,45 @@ def _gt_render_perf_panel(placeholder, entry: dict) -> None:
                 st.markdown("\n".join(rows))
 
 
+def _render_goal_tree_delete_section(client: AgentClient, node_id: str, node: dict, *, level: str, child_count: int) -> None:
+    """[目标树删除节点] 节点的删除入口，放在「⚙️ 管理」折叠区里。
+
+    两个动作：
+      - 🗑️ 删除此节点：仅当没有子节点时可用；
+      - 🗑️ 删除此节点及全部子节点：连同子树一起删除。
+    两者都需要先勾选确认框。删除是不可恢复的硬删除。
+    """
+    title = node.get("title", "")
+    st.caption("🗑️ 删除节点")
+    if node.get("parent_id") is None:
+        st.caption("根节点不能删除。要清空整棵目标树，请使用「一键删除所有目标」。")
+        return
+    if child_count:
+        st.caption(f"该节点还有 {child_count} 个子节点，只能连同子节点一起删除。")
+        confirm_key = f"_gt_del_confirm_{node_id}"
+        btn_key = f"_gt_del_subtree_btn_{node_id}"
+        btn_label = f"🗑️ 删除此节点及全部子节点（{child_count}+）"
+        action_include = True
+    else:
+        confirm_key = f"_gt_del_confirm_{node_id}"
+        btn_key = f"_gt_del_self_btn_{node_id}"
+        btn_label = "🗑️ 删除此节点"
+        action_include = False
+    confirmed = st.checkbox(
+        "我确认删除，删除不可恢复（产出项目目录不会被删除）",
+        key=confirm_key,
+    )
+    if st.button(btn_label, key=btn_key, disabled=not confirmed):
+        res = client.delete_goal_tree_node(node_id, include_children=action_include)
+        if isinstance(res, dict) and res.get("_error"):
+            st.error(f"删除失败：{res['_error']}")
+            return
+        removed = len((res or {}).get("deleted_node_ids") or [])
+        st.session_state.pop(confirm_key, None)
+        st.session_state["_gt_delete_notice"] = f"已删除「{title}」（共 {removed} 个节点）"
+        st.rerun()
+
+
 def _collect_pending_decompose(tree: dict) -> list[tuple[str, str, list]]:
     """遍历树，收集 (节点id, 节点标题, 待确认候选列表)。只读、不发请求。"""
     out: list[tuple[str, str, list]] = []
@@ -6603,6 +6645,10 @@ def _render_goal_tree_view(client: AgentClient) -> None:
                     st.caption("日志文件还不存在——点一次 📄/📖 按钮后再回来看。")
             except Exception as e:
                 st.caption(f"读取日志文件失败：{e}")
+
+    _gt_notice = st.session_state.pop("_gt_delete_notice", None)
+    if _gt_notice:
+        st.success(_gt_notice)
 
     # [S1 子目标推荐] 全树待确认的子目标推荐汇总：不用展开父节点就能看到
     # 所有待采纳/忽略的候选，每条带父节点标题，直接在这里采纳或忽略。

@@ -6586,47 +6586,68 @@ def _cascade_delete_goal(http_server, paths, backlog, goal) -> dict:
 
     # 1. 级联删除 GoalBacklog 里的节点（goal 本身 + 全部子孙）。
     deleted_node_ids = backlog.delete_goal(goal_id)
-    deleted_ids_set = set(deleted_node_ids)
+    removed_job_ids, failed_job_ids = _remove_cron_jobs_for_nodes(http_server, set(deleted_node_ids))
 
-    # 2. 清理 cron job：统一走 _get_cron_scheduler()（理由见
-    #    list_cron_jobs() 的说明），扫描所有 job.goal_id 命中被删节点的
-    #    job（包括但不限于 recurrence_cron_job_id 指向的那一个）。
+    # 3. 清理外部文件（见 _cleanup_goal_artifacts）。
+    file_cleanup_errors, user_output_dir_preserved = _cleanup_goal_artifacts(paths, goal)
+
+    return {
+        "goal_id": goal_id,
+        "title": goal.title,
+        "deleted_node_ids": deleted_node_ids,
+        "removed_cron_job_ids": removed_job_ids,
+        "failed_cron_job_ids": failed_job_ids,
+        "file_cleanup_errors": file_cleanup_errors,
+        "user_output_dir_preserved": user_output_dir_preserved,
+    }
+
+
+def _remove_cron_jobs_for_nodes(http_server, deleted_ids: set) -> tuple[list[str], list[str]]:
+    """[目标树删除节点] 删除所有 `goal_id` 指向被删节点的 cron job。
+
+    返回 (已删除的 job id 列表, 删除失败的 job id 列表)。cron 调度器不可用时
+    返回两个空列表，不抛异常。
+    """
     removed_job_ids: list[str] = []
     failed_job_ids: list[str] = []
     cs = _get_cron_scheduler(http_server)
-    if cs is not None and deleted_ids_set:
-        try:
-            for job in cs.list_jobs():
-                if getattr(job, "goal_id", None) in deleted_ids_set:
-                    try:
-                        if cs.remove_job(job.id):
-                            removed_job_ids.append(job.id)
-                        else:
-                            failed_job_ids.append(job.id)
-                    except Exception as e:
-                        from mini_agent.errors import log_exception
-                        log_exception(e, where="mini_agent.api.routes._cascade_delete_goal(remove_job)")
+    if cs is None or not deleted_ids:
+        return removed_job_ids, failed_job_ids
+    try:
+        for job in cs.list_jobs():
+            if getattr(job, "goal_id", None) in deleted_ids:
+                try:
+                    if cs.remove_job(job.id):
+                        removed_job_ids.append(job.id)
+                    else:
                         failed_job_ids.append(job.id)
-        except Exception as e:
-            from mini_agent.errors import log_exception
-            log_exception(e, where="mini_agent.api.routes._cascade_delete_goal(list_jobs)")
+                except Exception as e:
+                    from mini_agent.errors import log_exception
+                    log_exception(e, where="mini_agent.api.routes._remove_cron_jobs_for_nodes(remove_job)")
+                    failed_job_ids.append(job.id)
+    except Exception as e:
+        from mini_agent.errors import log_exception
+        log_exception(e, where="mini_agent.api.routes._remove_cron_jobs_for_nodes(list_jobs)")
+    return removed_job_ids, failed_job_ids
 
-    # 3. 清理外部文件（只需针对被删除的顶层 goal_id 本身——output_workspace/
-    #    execution_spec/execution_phase/cycle_tuning 四套存储都是以"Goal"
-    #    为粒度建目录/文件，不会给单个 Objective 单独开一份）。
+
+def _cleanup_goal_artifacts(paths, goal) -> tuple[list[str], bool]:
+    """[目标树删除节点] 清理单个 Goal 的外部文件：daemon_run_outputs、执行规范、
+    执行阶段、调优草案。用户设置过 user_output_dir 的产出目录永远不删。
+
+    返回 (清理失败项列表, user_output_dir 是否被保护未删除)。
+    """
     import shutil
     from mini_agent.evolution import output_workspace as ow
     from mini_agent.perception import goal_execution_spec as ges
     from mini_agent.perception import execution_phase as ephase
     from mini_agent.perception import cycle_tuning as ctuning
 
+    goal_id = goal.id
     file_cleanup_errors: list[str] = []
     user_output_dir_preserved = False
     try:
         output_dir = ow.goal_output_base_dir(paths, goal_id).resolve()
-        # 用户设置过 user_output_dir 时，真正的产出目录会解析到别处（见
-        # goal_output_dir()）；这里显式核实 output_dir 没有"逃逸"成用户
-        # 自定义目录本身或其祖先目录，防止任何未来重构不小心让两者重合。
         unsafe = False
         if goal.user_output_dir:
             custom_dir = ow.goal_output_dir(paths, goal_id, user_output_dir=goal.user_output_dir).resolve()
@@ -6639,7 +6660,7 @@ def _cascade_delete_goal(http_server, paths, backlog, goal) -> dict:
             shutil.rmtree(output_dir)
     except Exception as e:
         from mini_agent.errors import log_exception
-        log_exception(e, where="mini_agent.api.routes._cascade_delete_goal(rmtree output_dir)")
+        log_exception(e, where="mini_agent.api.routes._cleanup_goal_artifacts(rmtree output_dir)")
         file_cleanup_errors.append("daemon_run_outputs")
     if not ges.delete_spec(paths, goal_id):
         file_cleanup_errors.append("execution_spec")
@@ -6647,15 +6668,78 @@ def _cascade_delete_goal(http_server, paths, backlog, goal) -> dict:
         file_cleanup_errors.append("execution_phase")
     if not ctuning.delete_proposals(paths, goal_id):
         file_cleanup_errors.append("tuning_proposals")
+    return file_cleanup_errors, user_output_dir_preserved
+
+
+@router.delete("/goal_tree/nodes/{node_id}")
+async def delete_goal_tree_node(node_id: str, request: Request, include_children: bool = False):
+    """DELETE /v1/goal_tree/nodes/{node_id}?include_children=false|true — [目标树删除节点]
+
+    删除任意层级的节点（ultimate 根节点除外）。
+    - include_children=false：只删自身。节点有子节点时返回 409，不做任何修改。
+    - include_children=true：连同全部子孙一起删除。
+    被删节点（含子孙）的 cron job 一并移除；其中 goal 层级的节点同时清理
+    `.agent/daemon_run_outputs/goals/<id>/` 等内部数据，用户设置过的
+    user_output_dir 永远保留。产出项目（output_projects）不会被删除；若被删的
+    节点是管理项目或有关联，关联会变成断链，由产出巡检报告出来。
+    """
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    from mini_agent.storage.paths import AgentPaths
+    from mini_agent.perception.goal_backlog import load_goal_backlog
+
+    self_agent = http_server.bridge.agent
+    project_root = getattr(self_agent.cfg, "project_root", None) if self_agent else None
+    if not project_root:
+        raise HTTPException(status_code=503, detail="project_root not configured")
+    paths = AgentPaths(project_root)
+    backlog = load_goal_backlog(paths)
+
+    node = backlog.get(node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail=f"节点 '{node_id}' 不存在")
+    if node.parent_id is None:
+        raise HTTPException(status_code=400, detail="根节点不能删除；要清空整棵目标树请使用「一键删除所有目标」")
+    child_count = len(node.children_ids)
+    if child_count and not include_children:
+        raise HTTPException(
+            status_code=409,
+            detail=f"该节点还有 {child_count} 个子节点；请选择连同子节点一起删除",
+        )
+
+    # 删除前快照：goal 层级节点需要 user_output_dir 等字段做文件清理
+    subtree = backlog.subtree_ids(node_id)
+    goal_snapshots = [backlog.get(nid) for nid in subtree]
+    goal_snapshots = [g for g in goal_snapshots if g is not None and g.is_goal]
+
+    try:
+        deleted_node_ids = backlog.delete_node(node_id, include_descendants=include_children)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    if not deleted_node_ids:
+        raise HTTPException(status_code=404, detail=f"节点 '{node_id}' 不存在")
+
+    removed_job_ids, failed_job_ids = _remove_cron_jobs_for_nodes(http_server, set(deleted_node_ids))
+
+    file_cleanup_errors: list[str] = []
+    preserved = False
+    for g in goal_snapshots:
+        errs, kept = _cleanup_goal_artifacts(paths, g)
+        file_cleanup_errors.extend(f"{g.id}:{e}" for e in errs)
+        preserved = preserved or kept
 
     return {
-        "goal_id": goal_id,
-        "title": goal.title,
+        "deleted": True,
+        "node_id": node_id,
+        "title": node.title,
         "deleted_node_ids": deleted_node_ids,
         "removed_cron_job_ids": removed_job_ids,
         "failed_cron_job_ids": failed_job_ids,
         "file_cleanup_errors": file_cleanup_errors,
-        "user_output_dir_preserved": user_output_dir_preserved,
+        "user_output_dir_preserved": preserved,
     }
 
 

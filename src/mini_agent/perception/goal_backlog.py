@@ -1866,47 +1866,78 @@ class GoalBacklog:
             node.last_touched_at = time.time()
         return True
 
-    def delete_goal(self, goal_id: str) -> list[str]:
-        """[看板目标删除功能] 硬删除一个 Goal 及其全部子孙节点（Objective）。
+    def subtree_ids(self, node_id: str) -> list[str]:
+        """返回以 node_id 为根的子树全部节点 id（自身排第一个）。只读。
 
-        与 `set_status(..., "abandoned")` 不同——那只是状态迁移，节点本身
-        （以及 goals.json 里的记录）仍然保留；这里是真正从 `goals.json`
-        里物理移除，配合调用方（API 路由层）清理 cron job 绑定、
-        `.agent/daemon_run_outputs/goals/<goal_id>/`、执行规范/执行阶段/
-        调优草案等外部文件，做到"删除即彻底清干净，不留孤儿数据"。
+        节点不存在时返回空列表。不加锁：调用方需要的是删除前的快照。
+        """
+        if node_id not in self._nodes:
+            return []
+        out: list[str] = []
+        frontier = [node_id]
+        seen: set[str] = set()
+        while frontier:
+            nid = frontier.pop(0)
+            if nid in seen or nid not in self._nodes:
+                continue
+            seen.add(nid)
+            out.append(nid)
+            frontier.extend(self._nodes[nid].children_ids)
+        return out
 
-        只接受 `level == "goal"` 的节点——不允许单独删除某个 Objective
-        （那属于"取消这个子任务"的语义，已有 `ObjectiveExecutor.cancel()`/
-        `set_status()` 覆盖，不需要额外的硬删除入口）。
+    def delete_node(self, node_id: str, *, include_descendants: bool, _only_goal: bool = False) -> list[str]:
+        """[目标树删除节点] 硬删除任意层级的节点。
 
-        级联规则：递归收集 `children_ids`（虽然当前数据模型里 Objective
-        一般不再有自己的子节点，这里仍按树形结构递归，对未来可能出现的
-        多级结构保持健壮）。
+        - include_descendants=False：只删自身。节点有子节点时拒绝（抛 ValueError），
+          不会把子节点悄悄挂到别处，避免层级约束被破坏或子树被意外打散。
+        - include_descendants=True：连同全部子孙一起删。
+        - 根节点（没有父节点的 ultimate）不允许删除，抛 ValueError；
+          要清空整棵树请用 `delete_all_goals`。
+        - 从父节点的 `children_ids` 里摘掉被删的 id，并从所有节点的
+          `current_focus_ids` 里清理，避免留下悬空引用。
 
-        返回被删除的全部节点 id 列表（goal 本身排在最前面），调用方据此
-        去清理各自 keyed by node id 的外部文件/cron job；节点不存在或不是
-        Goal 时返回空列表，不做任何修改。
+        返回被删除的全部节点 id（自身排第一个）；节点不存在返回空列表。
+        外部数据（cron、产出目录、执行规范等）不在这里处理，由 API 层负责。
+
+        _only_goal：内部参数，给 delete_goal 用。检查必须放在加锁（重新加载磁盘
+        状态）之后，否则拿到的可能是别的进程/实例已经删掉的旧内存状态。
         """
         with self._locked():
-            goal = self._nodes.get(goal_id)
-            if goal is None or not goal.is_goal:
+            node = self._nodes.get(node_id)
+            if node is None:
                 return []
-
-            to_delete: list[str] = []
-            frontier = [goal_id]
-            seen: set[str] = set()
-            while frontier:
-                nid = frontier.pop()
-                if nid in seen or nid not in self._nodes:
-                    continue
-                seen.add(nid)
-                to_delete.append(nid)
-                frontier.extend(self._nodes[nid].children_ids)
-
+            if _only_goal:
+                # 兼容入口（delete_goal）：只要求是 Goal，与旧语义一致（不要求有父节点）
+                if not node.is_goal:
+                    return []
+            elif node.parent_id is None:
+                raise ValueError("根节点不能删除；要清空整棵目标树请使用「一键删除所有目标」")
+            if node.children_ids and not include_descendants:
+                raise ValueError(
+                    f"该节点还有 {len(node.children_ids)} 个子节点；"
+                    "请选择连同子节点一起删除"
+                )
+            to_delete = self.subtree_ids(node_id)
+            parent = self._nodes.get(node.parent_id)
+            if parent is not None and node_id in parent.children_ids:
+                parent.children_ids.remove(node_id)
+            doomed = set(to_delete)
             for nid in to_delete:
                 self._nodes.pop(nid, None)
-
+            for other in self._nodes.values():
+                if other.current_focus_ids and any(i in doomed for i in other.current_focus_ids):
+                    other.current_focus_ids = [i for i in other.current_focus_ids if i not in doomed]
         return to_delete
+
+    def delete_goal(self, goal_id: str) -> list[str]:
+        """[看板目标删除功能] 硬删除一个 Goal 及其全部子孙节点。
+
+        保留给既有调用方（看板 Goal 卡片、一键删除所有目标）使用，语义不变：
+        只接受 `level == "goal"` 的节点，连同子孙一起删除。内部委托给
+        `delete_node(..., include_descendants=True)`。节点不存在或不是 Goal
+        时返回空列表。
+        """
+        return self.delete_node(goal_id, include_descendants=True, _only_goal=True)
 
     def add_user_feedback(self, node_id: str, text: str, *, about: Optional[str] = None, _sync: bool = True) -> bool:
         """[goal_cron_feedback_and_output_policy_plan.md Track B /

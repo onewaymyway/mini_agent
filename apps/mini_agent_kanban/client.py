@@ -879,6 +879,12 @@ class AgentClient:
     def update_goal(self, goal_id: str, **fields):
         return self._patch(f"/goals/{goal_id}", fields)
 
+    def delete_goal_tree_node(self, node_id: str, include_children: bool = False):
+        """[目标树删除节点] 删除任意层级的节点。include_children=False 时，
+        有子节点会返回 409（`_error`），不做任何修改。"""
+        params = {"include_children": "true" if include_children else "false"}
+        return self._delete(f"/goal_tree/nodes/{node_id}", params=params, timeout=30)
+
     def delete_goal(self, goal_id: str):
         """DELETE /v1/goals/{goal_id} — [看板目标看板删除功能] 彻底删除一个
         Goal（含全部子 Objective），后端同时级联清理绑定的 cron job、
