@@ -6026,6 +6026,18 @@ def _serialize_tree(tree: Optional[dict]) -> Optional[dict]:
     }
 
 
+@router.get("/goals/tree/output_links")
+async def get_goals_tree_output_links(request: Request):
+    """GET /v1/goals/tree/output_links — 整棵目标树的产出关联批量视图（只读，S4）。
+
+    一次返回所有节点的生效关联（含继承）与待确认，供看板渲染徽标与关联子区块，
+    避免逐节点请求。结构见 output_registry/tree_links.py。
+    """
+    project_root = _output_registry_root(request)
+    from mini_agent.output_registry.tree_links import build_tree_output_links
+    return await asyncio.to_thread(build_tree_output_links, project_root)
+
+
 @router.get("/goals/tree")
 async def get_goal_tree(request: Request, root_id: Optional[str] = Query(default=None)):
     """GET /v1/goals/tree?root_id=... — [goal_tree_system_plan.md §4.5/阶段四]

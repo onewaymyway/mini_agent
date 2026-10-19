@@ -1,6 +1,6 @@
 # Goal 执行期自动关联产出项目 — 计划
 
-> 状态：**分阶段实施中**（S1–S3 已完成，见 `goal_output_project_auto_link_impl_s1.md` / `_s2.md` / `_s3.md`；§12 三点已按建议决议）
+> 状态：**分阶段实施中**（S1–S4 已完成，见 `goal_output_project_auto_link_impl_s1.md` 至 `_s4.md`；§12 三点已按建议决议）
 > 上位文档：`management_output_project_model_plan.md`（§5.5 关联、§8.3 产出路由、§8.5 游离项目、§12 已决议）
 > 关联实施记录：`management_output_project_model_impl_p2.md`（关联）、`_p4.md`（路由）、`_p7.md`（看板管理区）
 > 约束：保守、默认关闭；不改动现有注册表数据结构；待确认关联**不参与**产出路由。
@@ -194,7 +194,7 @@ auto_link_detect_enabled    false   执行后目录差异检测（第二层）
 | S1 ✅ | 待确认账本模块 + 确认/忽略的纯函数与单测（手动关联/解除复用 `registry.py` 既有函数）；`routing` 不变的特征测试 | 账本幂等、可删除可重建；确认后路由生效、待确认不生效 |
 | S2 ✅ | `goal_exec_context` + 工具 `link_output_project` + 提示词注入（开关 `auto_link_tool_enabled`）；实现细节偏差见 impl_s2 §2 | 开关关闭时提示词与工具列表与现状一致；开启后工具可在 goal cycle / objective 内关联 |
 | S3 ✅ | REST 端点 + client 方法 | 端点单测通过；真实 daemon 的手动 curl 验证待可运行环境补做（见 impl_s3 §5） |
-| S4 | 目标树界面：徽标、「🔗 关联项目」子区块、批量接口与缓存、详情弹窗 | 节点上可见已关联与待确认，可就地确认/忽略 |
+| S4 ✅ | 目标树界面：徽标、「🔗 关联项目」子区块、批量接口与缓存、详情弹窗；来源列因正式关联未存来源而省略（见 impl_s4 §4）；浏览器端到端验证未做 | 代码与单测完成；浏览器验证待补 |
 | S5 | 第二层目录差异检测（开关 `auto_link_detect_enabled`）+ 管理页「待确认关联」子页 | 漏调工具的执行也能产生待确认项；检测异常不影响 cycle |
 | S6 | 文档：看板指南、HTTP API 指南、实施记录；打 diff-only zip | — |
 

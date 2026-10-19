@@ -1421,6 +1421,10 @@ class AgentClient:
     def output_registry_patrol_latest(self):
         return self._get("/output_registry/patrol/latest")
 
+    # ── 目标树产出关联批量视图（goal_output_project_auto_link_plan.md §6.3，S4）──
+    def goal_tree_output_links(self):
+        return self._get("/goals/tree/output_links", timeout=10)
+
     # ── 待确认关联（goal_output_project_auto_link_plan.md §7，S3）──
     def output_registry_pending_links(self, state: str = "pending"):
         return self._get("/output_registry/pending_links", params={"state": state})

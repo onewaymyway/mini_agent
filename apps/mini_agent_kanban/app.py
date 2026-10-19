@@ -5153,6 +5153,27 @@ def _gt_research_summary_cached(client: AgentClient) -> dict:
     return resp
 
 
+def _gt_output_links_cached(client: AgentClient) -> dict:
+    """[goal_output_project_auto_link S4] 带 TTL 的 `client.goal_tree_output_links()`。
+    写操作（确认/忽略/关联/解除）后调用 `_gt_invalidate_output_links_cache()` 主动失效。
+    错误结果不缓存，避免一次失败把后续正常数据挡住。"""
+    cache_key, ts_key = "_gt_output_links_cache", "_gt_output_links_cache_ts"
+    now = time.time()
+    cached = st.session_state.get(cache_key)
+    if cached is not None and (now - st.session_state.get(ts_key, 0.0)) < _GT_SIDE_CACHE_TTL_SECONDS:
+        return cached
+    resp = client.goal_tree_output_links() or {}
+    if not (isinstance(resp, dict) and resp.get("_error")):
+        st.session_state[cache_key] = resp
+        st.session_state[ts_key] = now
+    return resp
+
+
+def _gt_invalidate_output_links_cache() -> None:
+    st.session_state.pop("_gt_output_links_cache", None)
+    st.session_state.pop("_gt_output_links_cache_ts", None)
+
+
 def _gt_invalidate_research_summary_cache() -> None:
     """`goal_tree_research_summary()` 缓存的主动失效入口——"🔍 立即调研"
     成功生成/更新候选后调用，避免用户要等到 TTL 过期才能在树上看到。"""
@@ -5412,10 +5433,119 @@ def _gt_button_col_weights(depth: int, has_toggle: bool) -> list[float]:
     return [_BASE_TITLE_LEAF, button_w, button_w]
 
 
+# ── 产出关联（goal_output_project_auto_link_plan.md §6，S4）──────────────────
+_GT_OUTPUT_ROLE_OPTIONS = ["build", "iterate", "reference"]
+
+
+def _gt_output_badges(entry: dict | None) -> str:
+    """节点标题行的关联徽标：🗂️N = 生效关联数（含继承），⏳N = 待确认数。无关联时返回空串。"""
+    entry = entry or {}
+    linked_n = len(entry.get("linked") or [])
+    pending_n = len(entry.get("pending") or [])
+    out = ""
+    if linked_n:
+        out += f" 🗂️{linked_n}"
+    if pending_n:
+        out += f" ⏳{pending_n}"
+    return out
+
+
+def _gt_output_link_label(link: dict) -> str:
+    """单条正式关联的一行展示：slug｜角色｜最新版本｜产出路径。"""
+    ver = link.get("latest_version") or "未发布"
+    return (
+        f"`{link.get('slug', '')}`｜角色 `{link.get('role', '')}`｜"
+        f"最新版本 `{ver}`｜路径 `{link.get('output_dir', '')}`"
+    )
+
+
+def _gt_output_action_result(res) -> bool:
+    """写操作结果处理：成功返回 True（调用方随后刷新）；失败显示错误并返回 False。"""
+    if isinstance(res, dict) and res.get("_error"):
+        st.error(f"操作失败：{res['_error']}")
+        return False
+    return True
+
+
+def _render_goal_tree_output_links_section(
+    client: AgentClient, node_id: str, entry: dict | None, id_to_title: dict,
+) -> None:
+    """「⚙️ 管理」内的「🔗 关联项目」子区块。仅在管理区展开时调用（懒加载）。
+
+    - 继承的关联只读，提示去所属管理根修改；
+    - 管理根自身的正式关联可解除（需勾选确认）；
+    - 待确认可确认（可改角色）或忽略；
+    - 手动关联：从已登记项目中选择，需勾选确认。
+    """
+    entry = entry or {}
+    st.markdown("**🔗 关联项目**")
+    inherited_from = entry.get("inherited_from")
+    linked = entry.get("linked") or []
+    if inherited_from:
+        st.caption(
+            f"继承自管理根「{id_to_title.get(inherited_from, inherited_from)}」（只读；请到该管理根下修改）"
+        )
+    elif linked:
+        for link in linked:
+            st.markdown(_gt_output_link_label(link))
+            ck_key = f"_gt_unlink_ok_{node_id}_{link.get('slug')}_{link.get('role')}"
+            confirmed = st.checkbox("确认解除该关联", key=ck_key)
+            if st.button("解除关联", key=f"{ck_key}_btn", disabled=not confirmed):
+                res = client.output_registry_unlink(link.get("slug", ""), node_id, link.get("role", ""))
+                if _gt_output_action_result(res):
+                    _gt_invalidate_output_links_cache()
+                    st.rerun()
+    else:
+        st.caption("暂无关联的产出项目。")
+
+    pending = entry.get("pending") or []
+    if pending:
+        st.markdown("**⏳ 待确认**")
+        for p in pending:
+            pid = p.get("id", "")
+            note = f"｜理由：{p['note']}" if p.get("note") else ""
+            st.markdown(f"`{p.get('slug', '')}`｜建议角色 `{p.get('role', '')}`｜来源 `{p.get('origin', '')}`{note}")
+            default_role = p.get("role") if p.get("role") in _GT_OUTPUT_ROLE_OPTIONS else _GT_OUTPUT_ROLE_OPTIONS[0]
+            role = st.selectbox(
+                "角色", _GT_OUTPUT_ROLE_OPTIONS,
+                index=_GT_OUTPUT_ROLE_OPTIONS.index(default_role),
+                key=f"_gt_pend_role_{pid}",
+            )
+            c_ok, c_no = st.columns([1, 1])
+            with c_ok:
+                if st.button("✅ 确认", key=f"_gt_pend_ok_{pid}"):
+                    if _gt_output_action_result(client.output_registry_pending_confirm(pid, role=role)):
+                        _gt_invalidate_output_links_cache()
+                        st.rerun()
+            with c_no:
+                if st.button("✖️ 忽略", key=f"_gt_pend_no_{pid}"):
+                    if _gt_output_action_result(client.output_registry_pending_reject(pid)):
+                        _gt_invalidate_output_links_cache()
+                        st.rerun()
+
+    st.markdown("**➕ 手动关联**")
+    proj_resp = client.output_registry_projects() or {}
+    if proj_resp.get("_error"):
+        st.caption(f"产出项目列表获取失败：{proj_resp['_error']}")
+        return
+    slugs = [p.get("slug") for p in (proj_resp.get("projects") or []) if p.get("slug")]
+    if not slugs:
+        st.caption("暂无已登记的产出项目（可先在「🧰 产出项目管理」中接入）。")
+        return
+    slug = st.selectbox("产出项目", slugs, key=f"_gt_link_slug_{node_id}")
+    role = st.selectbox("角色", _GT_OUTPUT_ROLE_OPTIONS, key=f"_gt_link_role_{node_id}")
+    link_ok = st.checkbox("确认建立正式关联（会影响产出路径）", key=f"_gt_link_ok_{node_id}")
+    if st.button("➕ 建立关联", key=f"_gt_link_btn_{node_id}", disabled=not link_ok):
+        if _gt_output_action_result(client.output_registry_link(slug, node_id, role)):
+            _gt_invalidate_output_links_cache()
+            st.rerun()
+
+
 def _render_goal_tree_node(
     client: AgentClient, tree_node: dict, id_to_title: dict, depth: int = 0,
     next_step_node_ids: set | None = None, is_focus: bool = False,
     research_by_node: dict | None = None,
+    output_links_by_node: dict | None = None,
 ) -> None:
     """[goal_tree_system_plan.md §4.4] 递归渲染树形结构。
 
@@ -5453,12 +5583,12 @@ def _render_goal_tree_node(
         with content_col:
             _render_goal_tree_node_body(
                 client, tree_node, id_to_title, depth, next_step_node_ids, is_focus,
-                research_by_node,
+                research_by_node, output_links_by_node,
             )
     else:
         _render_goal_tree_node_body(
             client, tree_node, id_to_title, depth, next_step_node_ids, is_focus,
-            research_by_node,
+            research_by_node, output_links_by_node,
         )
 
 
@@ -5466,6 +5596,7 @@ def _render_goal_tree_node_body(
     client: AgentClient, tree_node: dict, id_to_title: dict, depth: int,
     next_step_node_ids: set | None, is_focus: bool,
     research_by_node: dict | None = None,
+    output_links_by_node: dict | None = None,
 ) -> None:
     """`_render_goal_tree_node()` 缩进列内部实际渲染的内容，拆出来是为了
     让缩进包裹逻辑（`st.columns`）跟内容本身分开，避免每次改内容都要
@@ -5485,9 +5616,11 @@ def _render_goal_tree_node_body(
     # 节点] 改成直接在该节点自己的标题行末尾加"⭐"，跟"💡"同样是"贴在
     # 当事节点自己身上"的标记方式，不再需要额外一行说明文字。
     focus_badge = " ⭐" if is_focus else ""
+    # [goal_output_project_auto_link S4] 🗂️N 生效关联数 / ⏳N 待确认数
+    output_badge = _gt_output_badges((output_links_by_node or {}).get(node_id))
     title_markdown = (
         f"{icon} **{node.get('title', '（无标题）')}** &nbsp;`{status_label}`"
-        f"{focus_badge}{next_step_badge}"
+        f"{focus_badge}{next_step_badge}{output_badge}"
     )
     # [goal_tree_collapse_plan.md] 只有"有子节点"的节点才需要折叠箭头，
     # 叶子节点（没有子节点的 objective）不显示，避免视觉噪音；箭头状态
@@ -5583,6 +5716,12 @@ def _render_goal_tree_node_body(
         st.caption(f"id: `{node_id}`　level: `{level}`")
         if node.get("description"):
             st.caption(node["description"])
+
+        # [goal_output_project_auto_link S4] 「🔗 关联项目」子区块（随管理区懒加载）
+        _render_goal_tree_output_links_section(
+            client, node_id, (output_links_by_node or {}).get(node_id), id_to_title,
+        )
+        st.divider()
 
         with st.form(f"_gt_edit_{node_id}"):
             new_title = st.text_input("标题", value=node.get("title", ""))
@@ -5754,6 +5893,7 @@ def _render_goal_tree_node_body(
                 client, child, id_to_title, depth=depth + 1,
                 next_step_node_ids=next_step_node_ids, is_focus=(c_id in focus_ids),
                 research_by_node=research_by_node,
+                output_links_by_node=output_links_by_node,
             )
 
 
@@ -6320,6 +6460,25 @@ def _show_goal_node_detail_dialog(client: AgentClient, goal_id: str) -> None:
         st.error(f"打开节点详情弹窗失败：{e}（已清空弹窗状态，请重新点击）")
 
 
+def _render_goal_detail_output_links(client: AgentClient, goal_id: str) -> None:
+    """节点详情里的「关联的产出项目」：只读列出生效关联（含继承）与待确认数量。"""
+    resp = _gt_output_links_cached(client)
+    if isinstance(resp, dict) and resp.get("_error"):
+        return
+    entry = (resp.get("by_node") or {}).get(goal_id) or {}
+    linked = entry.get("linked") or []
+    pending = entry.get("pending") or []
+    if not linked and not pending:
+        return
+    with st.expander(f"🔗 关联的产出项目（{len(linked)}）", expanded=False):
+        if entry.get("inherited_from"):
+            st.caption(f"继承自管理根 `{entry['inherited_from']}`")
+        for link in linked:
+            st.markdown(_gt_output_link_label(link))
+        if pending:
+            st.caption(f"另有 {len(pending)} 条待确认，请到「⚙️ 管理」中处理。")
+
+
 def _render_goal_node_detail_panel(client: AgentClient, goal_id: str) -> None:
     """节点详情面板正文：面包屑/进度/产出/子节点导航/待处理项/反馈历史 +
     反馈输入框。数据来自 `GET /goals/{id}/page`（`GoalNodePage`），首版
@@ -6366,6 +6525,9 @@ def _render_goal_node_detail_panel(client: AgentClient, goal_id: str) -> None:
         with st.expander(f"🔁 最近执行摘要（{len(summaries)}）", expanded=False):
             for s in summaries:
                 st.caption(f"{s.get('at', '')}：{s.get('summary', s)}" if isinstance(s, dict) else str(s))
+
+    # [goal_output_project_auto_link S4] 节点详情中直接看到关联的产出项目
+    _render_goal_detail_output_links(client, goal_id)
 
     readme_text = page.get("output_readme_text")
     if readme_text:
@@ -6759,10 +6921,18 @@ def _render_goal_tree_view(client: AgentClient) -> None:
     st.session_state["_gt_node_timing"] = {
         "header_ms": 0.0, "manage_ms": 0.0, "manage_open_count": 0, "candidates_ms": 0.0,
     }
+    # [goal_output_project_auto_link S4] 产出关联批量视图：一次请求，整棵树共用
+    output_links_resp = _gt_output_links_cached(client)
+    if isinstance(output_links_resp, dict) and output_links_resp.get("_error"):
+        output_links_by_node = {}
+    else:
+        output_links_by_node = (output_links_resp or {}).get("by_node") or {}
+
     _t_render_start = time.time()
     _render_goal_tree_node(
         client, tree, id_to_title, depth=0, next_step_node_ids=next_step_node_ids,
         research_by_node=research_by_node,
+        output_links_by_node=output_links_by_node,
     )
     _t_render_ms = (time.time() - _t_render_start) * 1000
     _gt_node_timing = st.session_state.get("_gt_node_timing", {})
