@@ -21,6 +21,7 @@ from novel_writer import pipeline as P
 from novel_writer import runner as R
 from novel_writer import state as st
 from novel_writer import steps as S
+from novel_writer import textio as TX
 from novel_writer.workspace import Workspace
 
 # 步骤失败后的自动重跑（用户要求：最多自动重跑三次）。只针对 failed；
@@ -130,7 +131,7 @@ def run_worker(
             st.adopt_legacy_steps(ws)
             budget = Budget(ws.settings(), chapter_limit=max_chapters)
             reason = _loop(ws, mode=mode, invoker=invoker, handlers=handlers, budget=budget,
-                           executed=executed, stale_all=stale_all, max_steps=max_steps)
+                           executed=executed, stale_all=stale_all, max_steps=max_steps, started_at=started_at)
     except Exception as exc:  # noqa: BLE001 - worker 顶层兜底，原因写入 worker.json
         reason = "error"
         error = f"{type(exc).__name__}: {exc}"
@@ -141,6 +142,7 @@ def run_worker(
         st.write_last_run(ws, {
             "started_at": started_at, "finished_at": st.now_iso(), "mode": mode, "reason": reason,
             "error": error,
+            "running": False,
             "executed": executed,
         })
         control = st.read_control(ws)
@@ -161,6 +163,31 @@ def run_worker(
     return result
 
 
+def _log_encoding_repairs(ws: Workspace, record: Dict[str, Any]) -> None:
+    """把本步期间发生的「非 UTF-8 文件自动转存」写进运行日志，并记入该步的执行记录。"""
+    repairs = TX.drain_repairs()
+    for r in repairs:
+        st.log_line(ws, f"🔧 已将 {r['path']} 从 {r['from']} 转存为 UTF-8（{r['reason']}），原文件备份为 {r['backup']}")
+    if repairs:
+        record["encoding_fixed"] = [{"path": r["path"], "from": r["from"]} for r in repairs]
+
+
+def _checkpoint(ws: Workspace, *, mode: str, started_at: Optional[str], executed: List[Dict[str, Any]]) -> None:
+    """每执行完一步就写一份「进行中」的运行记录并刷新收件箱，让界面不必等整轮结束才看到进展。
+
+    `running: True` 表示这一轮还没结束；结束时 `run_worker` 的 finally 会用最终记录（running: False）覆盖。
+    只是进度视图，写失败不影响执行。
+    """
+    try:
+        st.write_last_run(ws, {
+            "started_at": started_at, "finished_at": None, "mode": mode, "reason": None,
+            "error": None, "running": True, "executed": list(executed),
+        })
+    except OSError as exc:
+        st.log_line(ws, f"⚠ 写入进行中的运行记录失败（不影响执行）：{exc}")
+    _refresh_inbox(ws)
+
+
 def _refresh_inbox(ws: Workspace) -> None:
     """worker 退出时刷新收件箱快照；失败只记日志，不影响 worker 的结果。"""
     from novel_writer import inbox
@@ -174,6 +201,7 @@ def _refresh_inbox(ws: Workspace) -> None:
 def _loop(
     ws: Workspace, *, mode: str, invoker: Optional[R.Invoker], handlers: Optional[Dict[str, R.PyHandler]],
     budget: Budget, executed: List[Dict[str, Any]], stale_all: List[str], max_steps: Optional[int],
+    started_at: Optional[str] = None,
 ) -> str:
     while True:
         st.adopt_legacy_steps(ws)
@@ -254,6 +282,8 @@ def _loop(
             "duration_sec": after.get("duration_sec"),
             "auto_retries": retries,
         })
+        _log_encoding_repairs(ws, executed[-1])
+        _checkpoint(ws, mode=mode, started_at=started_at, executed=executed)
 
         if autopilot and status_after in (st.ST_WAITING_REVIEW, st.ST_WAITING_USER):
             continue  # 托管：下一轮循环里自动处理

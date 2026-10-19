@@ -167,7 +167,7 @@ def _render_inbox(ws: str) -> None:
             chapter = f"第{it['chapter']}章 " if it.get("chapter") else ""
             st.markdown(f"{INBOX_ICON.get(it['severity'], '•')} **{INBOX_LABEL.get(it['kind'], it['kind'])}**　"
                         f"{chapter}{it.get('title') or ''}　—　{it['message']}")
-        st.caption("收件箱由状态文件推导，worker 每次退出时刷新；点「刷新」查看最新内容。")
+        st.caption("收件箱由状态文件推导，worker 每执行完一步及退出时刷新快照；页面不自动轮询，点「刷新」查看最新内容。")
 
 
 

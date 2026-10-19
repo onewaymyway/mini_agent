@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from novel_writer.textio import read_text_utf8
 from novel_writer import config
 from novel_writer import gates as G
 from novel_writer import state as st
@@ -94,7 +95,7 @@ def _answers_file(ws: Workspace, step_id: str) -> Path:
 
 def _read_text(path: Path) -> str:
     try:
-        return path.read_text(encoding="utf-8").strip()
+        return read_text_utf8(path).strip()
     except OSError:
         return ""
 

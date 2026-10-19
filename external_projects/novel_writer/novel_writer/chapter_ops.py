@@ -14,6 +14,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from novel_writer.textio import read_text_utf8
 from novel_writer import steps as S
 from novel_writer.fsutil import atomic_write_json, atomic_write_text, read_json
 from novel_writer.workspace import Workspace, count_words
@@ -42,7 +43,7 @@ class ChapterOpError(RuntimeError):
 
 def _read(path: Path) -> Optional[str]:
     try:
-        return path.read_text(encoding="utf-8")
+        return read_text_utf8(path)
     except OSError:
         return None
 
@@ -118,7 +119,7 @@ def h_word_quota(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invok
         prev = chapter_file(ws, n - 1)
         if prev is not None:
             prev_quota = quota_of(ws, n - 1)
-            prev_actual = count_words(prev.read_text(encoding="utf-8"))
+            prev_actual = count_words(read_text_utf8(prev))
             short = prev_quota - prev_actual
             if prev_quota and abs(short) / prev_quota > CARRY_THRESHOLD:
                 cap = int(base * CARRY_CAP_RATIO)
@@ -249,7 +250,7 @@ def machine_findings(ws: Workspace, n: int, settings: Dict[str, Any], path: Opti
     path = path or chapter_file(ws, n)
     if path is None:
         return {"chapter": n, "words": 0, "quota": 0, "hard": ["正文文件缺失"], "warn": [], "checked_at": _now()}
-    text = path.read_text(encoding="utf-8")
+    text = read_text_utf8(path)
     words = count_words(text)
     quota = quota_of(ws, n)
     if words == 0:
@@ -269,7 +270,7 @@ def machine_findings(ws: Workspace, n: int, settings: Dict[str, Any], path: Opti
     for k in range(max(1, n - 3), n):
         other = chapter_file(ws, k)
         if other is not None:
-            previous.update(_paragraphs(other.read_text(encoding="utf-8")))
+            previous.update(_paragraphs(read_text_utf8(other)))
     for para in _paragraphs(text):
         if para in previous and len(para) >= DUP_MIN_CHARS:
             hard.append(f"段落与前几章重复：「{para[:20]}…」")
@@ -500,7 +501,7 @@ def h_snapshot(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker
     for k in range(1, n + 1):
         path = chapter_file(ws, k)
         if path is not None:
-            words += count_words(path.read_text(encoding="utf-8"))
+            words += count_words(read_text_utf8(path))
     snap = {
         "through_chapter": n,
         "total_words": words,
@@ -546,7 +547,7 @@ def h_best_pick_apply(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], 
     if winner == "B":
         if not b_path.is_file():
             raise ChapterOpError("择优选择了候选稿 B，但候选稿文件不存在")
-        atomic_write_text(a_path, b_path.read_text(encoding="utf-8"))
+        atomic_write_text(a_path, read_text_utf8(b_path))
     reason = str(report.get("reason") or "").strip()[:80]
     _log(ws, n, f"择优（LLM）：采用{winner}稿" + (f"，理由：{reason}" if reason else ""))
     return {"summary": f"择优结果：采用{winner}稿" + (f"（{reason}）" if reason else "")}

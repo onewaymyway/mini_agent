@@ -58,17 +58,24 @@ def _finish_banner(status: dict) -> None:
         st.warning("⏸ 运行结束：" + text)
 
 
-def _last_run_table(last: dict) -> None:
+def _last_run_table(last: dict, alive: bool = False) -> None:
     rows = last.get("executed") or []
+    # 进行中的记录由 worker 每步结束后写入（running=True）；只有 worker 仍存活时才显示「进行中」，
+    # 避免 worker 被强杀后遗留的 running 标记让界面一直显示进行中。
+    running = bool(last.get("running")) and alive
     if not rows:
-        st.caption("上一次运行没有执行任何步骤。")
+        st.caption("本次运行还没有执行完任何步骤。" if running else "上一次运行没有执行任何步骤。")
         return
-    st.markdown(f"**上一次运行结果**（{_clock(last.get('started_at'))} – {_clock(last.get('finished_at'))}）")
+    if running:
+        st.markdown(f"**本次运行进度（进行中）**（{_clock(last.get('started_at'))} 起，已完成 {len(rows)} 步）")
+    else:
+        st.markdown(f"**上一次运行结果**（{_clock(last.get('started_at'))} – {_clock(last.get('finished_at'))}）")
     st.table([{
         "步骤": r.get("step", ""),
         "状态": f"{_STEP_MARK.get(r.get('status'), '•')} {r.get('status', '')}",
         "耗时": f"{r['duration_sec']}s" if r.get("duration_sec") is not None else "—",
-        "结果摘要": r.get("summary") or "",
+        "结果摘要": (r.get("summary") or "")
+                    + (f"　🔧 已转存为 UTF-8：{len(r['encoding_fixed'])} 个文件" if r.get("encoding_fixed") else ""),
     } for r in rows])
 
 
@@ -108,7 +115,7 @@ def _panel(ws: str) -> None:
         st.caption(f"日志保存在 _studio/run.log，每次运行以「═══ 运行开始」分隔；这里显示最近 {len(lines)} 行。")
 
     if status.get("last_run"):
-        _last_run_table(status["last_run"])
+        _last_run_table(status["last_run"], alive=alive)
 
 
 def render_live_panel(ws: str) -> None:

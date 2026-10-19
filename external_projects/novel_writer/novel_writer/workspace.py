@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from novel_writer.textio import read_text_utf8
 from novel_writer import settings as settings_mod
 from novel_writer.fsutil import atomic_write_json, atomic_write_text, read_json
 
@@ -370,8 +371,8 @@ class Workspace:
             if not (p.is_file() and m):
                 continue
             try:
-                words = count_words(p.read_text(encoding="utf-8"))
-            except OSError:
+                words = count_words(read_text_utf8(p))
+            except (OSError, ValueError):
                 words = 0
             out.append(ChapterFile(number=int(m.group(1)), title=(m.group(2) or "").strip(), path=p, words=words))
         out.sort(key=lambda c: c.number)

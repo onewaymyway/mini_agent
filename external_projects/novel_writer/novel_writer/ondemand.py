@@ -16,6 +16,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from novel_writer.textio import read_text_utf8
 from novel_writer import steps as S
 from novel_writer.fsutil import atomic_write_json, read_json
 from novel_writer.workspace import Workspace
@@ -307,7 +308,7 @@ def h_assist(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=N
         executor=S.EXECUTOR_SKILL, skill=skill, chapter=n, instructions=brief, outputs=(out_rel,),
     )
     run_skill_step(ws, job, invoker=invoker, settings=settings, run_no=1)
-    text = assist_candidate_path(ws, rid).read_text(encoding="utf-8").strip()
+    text = read_text_utf8(assist_candidate_path(ws, rid)).strip()
     req["result"] = {"candidate": out_rel, "text": text}
     save_request(ws, req)
     return {"summary": f"候选稿已生成（{len(text)} 字符），请在写作台确认后采用"}
@@ -329,7 +330,7 @@ def adopt_assist(ws: Workspace, rid: str) -> Dict[str, Any]:
     path = C.chapter_file(ws, n)
     if path is None:
         raise OnDemandError(f"第 {n} 章的正文文件不存在")
-    body = path.read_text(encoding="utf-8")
+    body = read_text_utf8(path)
     if req.get("mode") == "continue":
         if selection not in body:
             raise OnDemandError("正文中找不到选段（可能已被改动），无法定位续写位置")

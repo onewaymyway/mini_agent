@@ -11,6 +11,7 @@ import json
 import re
 from typing import Any, Dict, List, Optional
 
+from novel_writer.textio import read_text_utf8
 from novel_writer import pipeline as P
 from novel_writer import steps as S
 from novel_writer import state as st
@@ -27,7 +28,7 @@ class ViewError(WorkspaceError):
 
 def _read_text(path) -> Optional[str]:
     try:
-        return path.read_text(encoding="utf-8")
+        return read_text_utf8(path)
     except OSError:
         return None
 
@@ -217,7 +218,7 @@ def chapters_overview(ws: Workspace) -> Dict[str, Any]:
         present = [sid for sid in steps if sid in plan_ids]
         done = sum(1 for sid in present if statuses.get(sid) in st.FINISHED_STATUSES)
         path = C.chapter_file(ws, n)
-        text = path.read_text(encoding="utf-8") if path else ""
+        text = read_text_utf8(path) if path else ""
         review = _read_text(ws.path("review_report", nn=n)) or ""
         machine = read_json(ws.path("machine_report", nn=n), default=None) or {}
         current = next((sid for sid in present if statuses.get(sid, st.ST_PENDING) not in st.FINISHED_STATUSES), None)
@@ -253,9 +254,9 @@ def chapter_detail(ws: Workspace, n: int) -> Dict[str, Any]:
     return {
         "chapter": n,
         "entry": C.chapter_entry(ws, n),
-        "text": path.read_text(encoding="utf-8") if path else "",
+        "text": read_text_utf8(path) if path else "",
         "file": path.name if path else None,
-        "words": count_words(path.read_text(encoding="utf-8")) if path else 0,
+        "words": count_words(read_text_utf8(path)) if path else 0,
         "quota": C.quota_of(ws, n),
         "context": _read_text(ws.path("context_pack", n=n)),
         "tasks": read_json(ws.path("chapter_tasks", n=n), default=None),
@@ -308,7 +309,7 @@ def export_book(ws: Workspace, fmt: str = "md") -> Dict[str, Any]:
         path = C.chapter_file(ws, n)
         if path is None:
             continue
-        text = path.read_text(encoding="utf-8").strip()
+        text = read_text_utf8(path).strip()
         parts.append(text)
         words += count_words(text)
         count += 1
@@ -391,7 +392,7 @@ def metrics_view(ws: Workspace) -> Dict[str, Any]:
     records = []
     path = ws.path("studio_usage")
     if path.is_file():
-        for line in path.read_text(encoding="utf-8").splitlines():
+        for line in read_text_utf8(path).splitlines():
             try:
                 records.append(json.loads(line))
             except ValueError:
@@ -430,7 +431,7 @@ def step_detail(ws: Workspace, step_id: str) -> Dict[str, Any]:
         "step": step_id,
         "runs": len(runs),
         "run_dir": str(latest.relative_to(ws.root)),
-        "prompt": prompts[-1].read_text(encoding="utf-8") if prompts else None,
+        "prompt": read_text_utf8(prompts[-1]) if prompts else None,
         "receipt": read_json(latest / "receipt.json", default=None),
     }
 
@@ -526,7 +527,7 @@ def request_assist(ws: Workspace, chapter: int, mode: str, selection: str, instr
     if len(text) > SELECTION_MAX_CHARS:
         raise ViewError(f"选段过长（{len(text)} 字符，上限 {SELECTION_MAX_CHARS}）；请分段处理")
     path = C.chapter_file(ws, chapter)
-    body = path.read_text(encoding="utf-8") if path else ""
+    body = read_text_utf8(path) if path else ""
     count = body.count(text)
     if count == 0:
         raise ViewError("选段在当前正文中找不到（请从正文原样复制）")
