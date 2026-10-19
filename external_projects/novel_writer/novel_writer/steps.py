@@ -280,6 +280,14 @@ def chapter_steps(n: int, title: str, *, total: Optional[int], prev_last: str,
                 inputs=(rel("chapter_summary", nn=n), rel("characters")),
                 outputs=(rel("characters"),), deps=(p("archive"),), **common),
     ]
+    # 乱码守卫（写作后、机器校验前）：命中乱码则自动重新生成，三次仍失败挂起给作者
+    guard = StepDef(id=p("garble_guard"), title=f"第{n}章：乱码守卫", stage=_stage_of(n), category=CAT_CHAPTER_REVIEW,
+                    executor=EXECUTOR_PYTHON, handler="garble_guard", inputs=(chapter_text,),
+                    deps=(p("write_chapter"),), **common)
+    idx = next(i for i, s_ in enumerate(steps) if s_.id == p("machine_check"))
+    steps[idx] = replace(steps[idx], deps=(guard.id,))
+    steps.insert(idx, guard)
+
     if quality == DRAFT:
         # 草稿档（方案 6.4）：伏笔同步并入人物同步，减少一次 LLM 调用
         steps[-1] = replace(steps[-1],

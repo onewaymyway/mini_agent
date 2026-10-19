@@ -12,7 +12,7 @@ from novel_writer.runner import DEFAULT_PY_HANDLERS, InvokeResult
 from novel_writer.worker import run_worker
 from novel_writer.workspace import Workspace
 
-CHAPTER_HANDLER_NAMES = ("word_quota", "plot_tasks", "context_pack", "style_hint", "machine_check", "revise_loop")
+CHAPTER_HANDLER_NAMES = ("word_quota", "plot_tasks", "context_pack", "style_hint", "machine_check", "revise_loop", "garble_guard")
 STUB_HANDLERS = {
     **DEFAULT_PY_HANDLERS,
     **{name: (lambda ws, step, settings, **kw: {"summary": "stub"}) for name in CHAPTER_HANDLER_NAMES},

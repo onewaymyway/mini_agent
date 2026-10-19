@@ -20,6 +20,7 @@ from novel_writer.fsutil import atomic_write_json, atomic_write_text, read_json
 from novel_writer.workspace import Workspace, count_words
 
 MAX_REVISE_ROUNDS = 3
+MAX_GARBLE_REGENS = 3        # 乱码守卫：每轮最多自动重新生成的次数（用户要求：三次仍失败即停下）
 HARD_UNDER_RATIO = 0.5       # 字数低于配额 50% = 硬问题
 HARD_OVER_RATIO = 1.5        # 高于配额 150% = 硬问题
 WARN_DEVIATION = 0.10        # 偏离配额 ±10% = 提示
@@ -301,6 +302,77 @@ def h_machine_check(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], in
     return {"summary": f"机器硬问题 {len(report['hard'])} · 提示 {len(report['warn'])}"}
 
 
+# ── 乱码守卫（写作后、机器校验前）────────────────────────────────────────────
+
+GARBLE_OPTIONS = ["再重新生成（再试三次）", "我手动修改后重新核查", "接受当前内容（风险自负）"]
+
+
+def h_garble_guard(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:
+    """正文乱码检测：命中则自动重新生成，最多 MAX_GARBLE_REGENS 次；仍乱码则挂起给作者。
+
+    决策（来自上一次挂起的作者回答）：
+      * 无 / 「再重新生成」：自动重新生成，最多三次；
+      * 「我手动修改后重新核查」：不再生成，只重新检测；
+      * 「接受」：记录风险后继续推进。
+    挂起后下一章不会开始（与修改循环的升级一致）。
+    """
+    from novel_writer.garble import is_garbled
+    from novel_writer.runner import NeedsUser, StepFailed, _answers_file, run_skill_step
+
+    n = step.chapter
+    if invoker is None:
+        raise ChapterOpError("乱码守卫需要执行器（invoker）")
+    answers_path = _answers_file(ws, step.id)
+    answers = (read_json(answers_path, default=None) or {}).get("answers") or {}
+    decision = str(answers.get("decision") or "")
+    if answers_path.exists():
+        answers_path.unlink()
+
+    path = chapter_file(ws, n)
+    if path is None:
+        raise ChapterOpError("正文文件缺失，无法做乱码检测")
+
+    def check() -> Any:
+        return is_garbled(read_text_utf8(path))
+
+    report = check()
+    if not report.garbled:
+        return {"summary": "乱码守卫：未发现乱码"}
+
+    if decision.startswith("接受"):
+        _log(ws, n, f"乱码守卫：作者接受风险，继续推进（{'；'.join(report.reasons)}）")
+        return {"summary": "作者接受乱码风险，继续推进"}
+
+    if decision.startswith("我手动修改"):
+        _log(ws, n, "乱码守卫：作者手动修改后重新检测")
+    else:
+        write = _chapter_step(n, "write_chapter")
+        for k in range(1, MAX_GARBLE_REGENS + 1):
+            _log(ws, n, f"乱码守卫：检测到乱码（{'；'.join(report.reasons)}），自动重新生成第 {k}/{MAX_GARBLE_REGENS} 次")
+            try:
+                run_skill_step(ws, write, invoker=invoker, settings=settings, run_no=k + 1)
+            except StepFailed as exc:
+                _log(ws, n, f"乱码守卫：重新生成第 {k} 次失败：{exc}")
+                continue
+            report = check()
+            if not report.garbled:
+                _log(ws, n, f"乱码守卫：第 {k} 次重新生成后通过检测")
+                return {"summary": f"乱码守卫：重新生成 {k} 次后通过"}
+
+    if not report.garbled:
+        return {"summary": "乱码守卫：手动修改后通过检测"}
+
+    _log(ws, n, f"乱码守卫：仍为乱码，挂起等待作者决定（{'；'.join(report.reasons)}）")
+    raise NeedsUser(
+        f"第 {n} 章正文疑似乱码，已自动重新生成 {MAX_GARBLE_REGENS} 次仍未通过，已暂停，下一章不会开始。",
+        [{
+            "id": "decision",
+            "question": "检测结果：" + "；".join(report.reasons) + "\n请选择：",
+            "options": GARBLE_OPTIONS,
+        }],
+    )
+
+
 # ── W11 修改循环（7.4）────────────────────────────────────────────────────────
 
 
@@ -559,6 +631,7 @@ CHAPTER_HANDLERS = {
     "plot_tasks": h_plot_tasks,
     "context_pack": h_context_pack,
     "style_hint": h_style_hint,
+    "garble_guard": h_garble_guard,
     "machine_check": h_machine_check,
     "revise_loop": h_revise_loop,
     "best_pick_prep": h_best_pick_prep,
