@@ -73,3 +73,57 @@
 
 1. 巡检仍然是手动触发（`output_patrol.py report`），没有定期调度，所以通知也只在手动运行时产生。定期调度需要在 cron 中注册，留到后续确认频率后再做。
 2. 只登记档不记录 `title` 之外的介绍信息；若之后需要介绍，升级为受管时再补。
+
+---
+
+## 阶段二：看板（路由 / 客户端 / 产出项目管理 Tab）
+
+### 1. 范围
+
+| 用户要求 | 本阶段做法 |
+|---|---|
+| 看板增加"一键接入"按钮 | 「🧰 产出项目管理」→「📥 未登记目录」，每个候选两个提交按钮：只登记 / 一键接入（受管） |
+| 看板里有个区域专门管理本次新增功能 | 新 Tab「🧰 产出项目管理」，四个子区：未登记目录、已登记项目（含升级）、发布版本、巡检 |
+| 巡检报告通知在看板可见 | 通知经 kanban 渠道进入既有「🔔 关注与通知」tab，分类「关注提醒」；巡检子区展示最近报告 |
+
+### 2. 设计要点
+
+- **路由**（`api/routes.py`）：6 个端点，全部 owner-only，复用 `output_registry` 已有函数，不重新实现判断逻辑。
+  - `adopt` / `publish` 请求体必须带 `confirm=true`，否则 400，并且在调用函数之前就返回，不产生写入。
+  - 阻塞 IO 用 `asyncio.to_thread`，不占 event loop（吸取外部项目卡顿的教训）。
+- **客户端**（`apps/mini_agent_kanban/client.py`）：6 个方法，与路由一一对应。
+- **看板**（`apps/mini_agent_kanban/app.py`）：
+  - 写操作全部放在 `st.form` 内，表单内编辑不触发整页重跑（吸取外部项目参数输入卡顿的教训）。
+  - 每个写操作都要先勾选确认框，未勾选只显示提示。
+  - 接入/升级/发布成功后显示提示，列表需点「🔄 刷新」查看最新状态（避免成功后立刻 rerun 把提示冲掉）。
+- **通知分类**（`notification/reports_store.py`）：`output_patrol` 映射到既有「关注提醒」，没有新增分类，因此分类相关测试不需要改。
+
+### 3. 新增与改动文件
+
+| 文件 | 类型 | 说明 |
+|---|---|---|
+| `src/mini_agent/api/routes.py` | 修改 | 新增 6 个 `/v1/output_registry/*` 端点 |
+| `src/mini_agent/notification/reports_store.py` | 修改 | `output_patrol` → 关注提醒 |
+| `apps/mini_agent_kanban/client.py` | 修改 | 6 个客户端方法 |
+| `apps/mini_agent_kanban/app.py` | 修改 | 新 Tab「🧰 产出项目管理」及其四个子区渲染函数 |
+| `tests/test_output_registry_routes.py` | 新增（5 项） | confirm 门槛、两档接入与升级、发布语义化校验、巡检 run/latest、只读列表 |
+| `docs/kanban-dashboard-guide.md` | 修改 | Tab 一览、专节、AgentClient 端点表 |
+| `next_doc/management_output_project_model_impl_p7.md` | 修改 | 本节 |
+
+### 4. 验证
+
+| 测试集 | 结果 |
+|---|---|
+| 路由测试（新增） | 5/5 通过 |
+| P7 阶段一 + 产出注册表全部 + 通知 + 配置相关 | 309 通过，1 失败 |
+
+**唯一失败**：`tests/test_notification_dispatcher.py::test_kanban_writes_alert_record`。这是**原始代码就已失败**的既有问题（在未修改的原始包中同样失败）：测试期待 kanban 渠道写 `alerts.jsonl`，但该渠道早已改为写 `reports.jsonl`（见 `reports_store.py` 顶部说明）。本次没有修改它，建议单独修测试。
+
+`app.py` 与 `client.py` 已通过编译检查。Streamlit 页面没有在浏览器中实际点击验证，这一点需要在真实看板上确认。
+
+### 5. 已知限制
+
+1. 巡检没有定期调度，只能手动触发（看板按钮或命令行）。定期调度需要确认频率后在 cron 中注册。
+2. 看板无法把已登记项目绑定到管理项目（P2 的绑定操作仍然只有函数/命令行入口），本阶段只覆盖 P6/P7 的接入、升级、发布与巡检。
+3. 接入后的 `unregistered` 建议随即消失，但"游离"建议仍在，因为项目仍未绑定管理项目，这是有意的。
+4. 通知去重依据是 `(项目, 类型, 描述)`。描述里若包含会变化的数字（如"已 4 天没有文件变动"），每次天数变化都会被当作新建议重新推送。这是后续需要观察的点，可能需要改成只按 `(项目, 类型)` 去重。

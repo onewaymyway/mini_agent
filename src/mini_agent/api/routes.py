@@ -895,6 +895,122 @@ async def get_output_projects(request: Request):
         return {"root": "", "projects": []}
 
 
+# ── 产出项目管理（management_output P6/P7，next_doc/management_output_project_model_impl_p7.md）──
+# 背景：output_registry 的接入（两档）、版本发布、巡检与通知此前只有命令行入口，
+# 看板无法操作。这里只做接线：每个端点都直接复用 output_registry 里已有的函数，
+# 不重新实现判断逻辑。所有写操作都要求请求体显式带 confirm=true（用户确认门槛）。
+# 巡检通知不在这里处理——巡检写入的通知由 KanbanChannel 落到「关注与通知」tab。
+
+def _output_registry_root(request: Request):
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+    self_agent = http_server.bridge.agent
+    cfg = getattr(self_agent, "cfg", None) if self_agent else None
+    project_root = getattr(cfg, "project_root", None) if cfg is not None else None
+    if project_root is None:
+        raise HTTPException(status_code=503, detail="project_root not available")
+    return project_root
+
+
+def _registry_error(exc: Exception) -> HTTPException:
+    from mini_agent.output_registry import RegistryError
+    if isinstance(exc, RegistryError):
+        return HTTPException(status_code=400, detail=str(exc))
+    return HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
+
+
+@router.get("/output_registry/candidates")
+async def get_output_registry_candidates(request: Request):
+    """GET /v1/output_registry/candidates — 产出根下未登记的目录（只读）。"""
+    project_root = _output_registry_root(request)
+    from mini_agent.output_registry.adoption import list_unregistered
+    rows = await asyncio.to_thread(list_unregistered, project_root)
+    return {"candidates": rows}
+
+
+@router.get("/output_registry/projects")
+async def get_output_registry_projects(request: Request):
+    """GET /v1/output_registry/projects — 已登记项目（总表摘要）。"""
+    project_root = _output_registry_root(request)
+    from mini_agent.output_registry import load_index
+    index = await asyncio.to_thread(load_index, project_root)
+    projects = sorted(index.get("projects", {}).values(), key=lambda p: p.get("slug", ""))
+    return {"projects": projects, "management_root_count": len(index.get("management_roots", {}))}
+
+
+@router.post("/output_registry/adopt")
+async def post_output_registry_adopt(request: Request):
+    """POST /v1/output_registry/adopt — 接入未登记目录，或把只登记项目升级为受管。
+
+    请求体：{"slug": str, "mode": "registered"|"managed", "confirm": true, "title"?: str, "intro"?: str}
+    """
+    project_root = _output_registry_root(request)
+    body = await request.json()
+    if body.get("confirm") is not True:
+        raise HTTPException(status_code=400, detail="接入需要用户确认：请求体必须带 confirm=true")
+    from mini_agent.output_registry.adoption import adopt_output_project
+    try:
+        return await asyncio.to_thread(
+            adopt_output_project, project_root, str(body.get("slug") or ""),
+            confirm=True, mode=str(body.get("mode") or "managed"),
+            title=str(body.get("title") or ""), intro=str(body.get("intro") or ""),
+        )
+    except Exception as exc:
+        raise _registry_error(exc)
+
+
+@router.post("/output_registry/publish")
+async def post_output_registry_publish(request: Request):
+    """POST /v1/output_registry/publish — 手动发布版本（需 confirm=true）。
+
+    请求体：{"slug": str, "version": "MAJOR.MINOR.PATCH", "changelog"?: str, "confirm": true}
+    """
+    project_root = _output_registry_root(request)
+    body = await request.json()
+    if body.get("confirm") is not True:
+        raise HTTPException(status_code=400, detail="发布版本需要用户确认：请求体必须带 confirm=true")
+    from mini_agent.output_registry.lifecycle import publish_version
+    try:
+        return await asyncio.to_thread(
+            publish_version, project_root, str(body.get("slug") or ""), str(body.get("version") or ""),
+            changelog=str(body.get("changelog") or ""),
+        )
+    except Exception as exc:
+        raise _registry_error(exc)
+
+
+@router.post("/output_registry/patrol/run")
+async def post_output_registry_patrol_run(request: Request):
+    """POST /v1/output_registry/patrol/run — 立即运行一次巡检（只读建议 + 新建议通知）。"""
+    project_root = _output_registry_root(request)
+    from mini_agent.output_registry.patrol import run_report
+    try:
+        report = await asyncio.to_thread(run_report, project_root)
+    except Exception as exc:
+        raise _registry_error(exc)
+    return {k: report[k] for k in (
+        "generated_at", "projects_scanned", "findings_total", "new_findings_total",
+        "notified", "thresholds", "findings",
+    )}
+
+
+@router.get("/output_registry/patrol/latest")
+async def get_output_registry_patrol_latest(request: Request):
+    """GET /v1/output_registry/patrol/latest — 最近一次巡检报告（无则 report=null）。"""
+    project_root = _output_registry_root(request)
+    from mini_agent.output_registry.patrol import LATEST_FILENAME, PATROL_SUBDIR, _patrol_dir
+    path = _patrol_dir(project_root) / PATROL_SUBDIR / LATEST_FILENAME
+    if not path.is_file():
+        return {"report": None}
+    import json as _json
+    try:
+        return {"report": _json.loads(path.read_text(encoding="utf-8"))}
+    except (OSError, ValueError):
+        return {"report": None}
+
+
 # ── 外部项目管理接入看板（external_projects_kanban_integration_plan.md 阶段1）──
 # 背景：上面的 GET /v1/self/external_projects 只读聚合状态已经存在，但
 # "注册/手动触发/账本/backlog/review 预览"这些此前只有 CLI（`mini-agent

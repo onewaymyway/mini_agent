@@ -161,6 +161,8 @@ _SOURCE_CATEGORY_MAP: dict[str, str] = {
     "growth_report": "关注汇报",
     "cycle_patrol": "关注汇报",
     "capability_learning": "关注汇报",
+    # 产出项目巡检：有新的停滞/版本缺口/未登记等建议，需要用户留意但不是故障
+    "output_patrol": "关注提醒",
 }
 CATEGORY_OTHER = "其他"
 ALL_CATEGORIES = ["执行失败", "关注提醒", "关注汇报", CATEGORY_OTHER]

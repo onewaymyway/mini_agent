@@ -151,6 +151,7 @@ streamlit run app.py
 | 🧬 进化提案 | Skill 提案列表、git worktree diff、批准/拒绝 |
 | 🗂️ 外部项目 | 外部项目（`mini-agent projects`）管理接入看板：注册项目、健康状态总览、手动触发 entrypoint、改进积压 backlog 查看/新增、周期性 review 任务模板预览（见下方专节） |
 | 🗺️ 产出项目 | 只读展示 `output_projects_root` 下的调研/产出类项目列表及各自 `PROJECT_INFO.md` 介绍信息（见下方专节） |
+| 🧰 产出项目管理 | 未登记目录接入（只登记 / 受管）、只登记项目升级为受管、版本发布、立即巡检；所有写操作需勾选确认（见下方专节） |
 | ⏰ Cron 任务 | Cron Job 列表（含 priority）、启用/禁用、手动触发、新建、删除（非 sys: job） |
 | 🗓️ 全局日程 | cron job 到期时间线 / 周期性 Goal 下次触发 / 仲裁状态变化时间线，三类合并展示（见下方专节） |
 | 🔌 外部输入 | 外部输入网关配置与最近事件 |
@@ -956,6 +957,23 @@ git 管理。
   介绍文件"的旧产出或不规范产出。
 - 不提供新建/删除/注册操作按钮——纯浏览用途。
 
+### 🧰 产出项目管理 Tab
+
+管理 `output_projects_root` 下产出项目的登记、受管状态、版本与巡检。与「🗺️ 产出项目」（只读展示）分开：这里有写操作，每一个都要先勾选确认框，后端也会再校验一次。
+
+四个子区：
+
+| 子区 | 作用 | 写操作 |
+|---|---|---|
+| 📥 未登记目录 | 列出产出根下没有登记记录的目录，每个目录提供两个按钮：**只登记**（目录内不产生任何文件，项目不受管）和 **一键接入（受管）**（额外写入 `PROJECT.json` 镜像，进入版本管理）。标题与介绍可在提交前修改；介绍只在受管档、且目录内没有 `PROJECT_INFO.md` 时写入 | 是 |
+| 🗂️ 已登记项目 | 表格展示接入档位（受管 / 只登记）、状态、最新版本、所属管理项目。只登记的项目可在此升级为受管 | 是（升级） |
+| 📦 发布版本 | 仅受管项目可选。填写 `MAJOR.MINOR.PATCH` 版本号与变更说明，勾选确认后发布；快照复制项目全部内容并设为只读 | 是 |
+| 🔍 巡检 | 「▶️ 立即巡检」生成一次报告并展示建议表。阈值来自 `agent_config.json` 的 `output_registry` 块（默认停滞 3 天、版本缺口 3 天）。新出现的建议会推送到「🔔 关注与通知」（分类「关注提醒」），重复的不再推送 | 否（只生成建议） |
+
+**关于确认**：表单里改文本不会触发整页重跑，只有提交按钮才发请求。未勾选确认时只显示提示，不发请求。
+
+**关于巡检通知**：通知由巡检的 `run_report` 在发现新建议时派发，kanban 渠道恒开启，所以一定能在「🔔 关注与通知」里看到。可以用 `output_registry.notify_enabled: false` 关闭推送，报告仍然生成。目前巡检只在点击「立即巡检」或运行 `scripts/output_patrol.py report` 时触发，还没有定期调度。
+
 ### ⏰ Cron 任务 Tab
 
 Cron Job 列表、启用/禁用、手动触发、新建，`priority` 字段的展示与编辑
@@ -1164,6 +1182,12 @@ plan.md`）：纯只读快照，回答"P2 公平轮询/P3 老化加成/P4 时间
 | `external_project_review(name)` | `GET /v1/external_projects/{name}/review` | 生成该项目的 review 任务模板预览（不实际发起 review） |
 | `external_project_kanban_data(name)` | `GET /v1/external_projects/{name}/kanban_data` | 通用看板视图的结构化数据；未声明 `dashboard.kanban_view` 或数据文件尚未产出时返回 `available: false` |
 | `output_projects()` | `GET /v1/output_projects` | `output_projects_root` 下调研/产出类项目一级子目录列表 + 各自 `PROJECT_INFO.md` 介绍摘要（只读），"🗺️ 产出项目"Tab 数据来源 |
+| `output_registry_candidates()` | `GET /v1/output_registry/candidates` | 产出根下未登记目录（只读），"🧰 产出项目管理"Tab |
+| `output_registry_projects()` | `GET /v1/output_registry/projects` | 已登记项目总表摘要（只读） |
+| `output_registry_adopt(slug, mode, title, intro)` | `POST /v1/output_registry/adopt` | 接入（`mode=registered`/`managed`）或只登记升级为受管；请求体必须带 `confirm=true` |
+| `output_registry_publish(slug, version, changelog)` | `POST /v1/output_registry/publish` | 发布版本；必须带 `confirm=true`，版本号非语义化或不递增时 400 |
+| `output_registry_patrol_run()` | `POST /v1/output_registry/patrol/run` | 立即巡检，返回报告摘要；新建议会推送通知 |
+| `output_registry_patrol_latest()` | `GET /v1/output_registry/patrol/latest` | 最近一次巡检报告（无则 `report=null`） |
 | `sentinel_summary(cron_failure_threshold=2)` | `GET /v1/sentinel/summary` | 哨兵聚合面板：cron 连续失败 + Objective 重试热点 + wiki 隔离区积压 + LLM 故障转移状态 + 近 7 天仲裁降级/阻塞占比一次性拉取（只读，方向 A） |
 | `concurrency_status()` | `GET /v1/self/concurrency` | SubAgent/LLM 请求这两个底层信号量的并发状态快照（只读，高级用法） |
 | `set_concurrency(max_tasks=, max_llm_calls=)` | `POST /v1/self/concurrency` | 运行时热改最大并发 SubAgent 数 / 最大并发 LLM 调用数，立即生效、不写回配置文件 |

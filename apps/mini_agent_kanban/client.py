@@ -1390,6 +1390,27 @@ class AgentClient:
         `{"root": "<绝对路径>", "projects": [...]}`。"""
         return self._get("/output_projects")
 
+    # ── 产出项目管理（management_output P7）──
+    def output_registry_candidates(self):
+        return self._get("/output_registry/candidates")
+
+    def output_registry_projects(self):
+        return self._get("/output_registry/projects")
+
+    def output_registry_adopt(self, slug: str, mode: str, title: str = "", intro: str = ""):
+        body = {"slug": slug, "mode": mode, "confirm": True, "title": title, "intro": intro}
+        return self._post("/output_registry/adopt", json_body=body, timeout=30)
+
+    def output_registry_publish(self, slug: str, version: str, changelog: str = ""):
+        body = {"slug": slug, "version": version, "changelog": changelog, "confirm": True}
+        return self._post("/output_registry/publish", json_body=body, timeout=30)
+
+    def output_registry_patrol_run(self):
+        return self._post("/output_registry/patrol/run", json_body={}, timeout=120)
+
+    def output_registry_patrol_latest(self):
+        return self._get("/output_registry/patrol/latest")
+
     def register_external_project(self, path: str, name: str = "", validate: bool = True):
         """注册一个新的外部项目。`name` 留空时后端用路径最后一段目录名。"""
         body = {"path": path, "validate": validate}

@@ -12300,6 +12300,189 @@ def _to_local_time_str(value, fmt: str = "%Y-%m-%d %H:%M:%S") -> str:
         return str(value)
 
 
+# ── 产出项目管理（management_output P7 阶段二）────────────────────────────
+# 把 output_registry 的两档接入、受管升级、版本发布、巡检接到看板上。
+# 写操作全部放在 st.form 里：表单内改文本不会触发整页重跑，只有提交按钮才发请求；
+# 每个写操作都必须先勾选确认框，后端也会再校验一次 confirm=true。
+_OREG_KIND_LABELS = {
+    "unregistered": "未登记",
+    "missing_intro": "缺介绍",
+    "stale": "停滞",
+    "version_gap": "版本缺口",
+    "never_released": "从未发布",
+    "orphan": "孤儿（所属管理项目已结束）",
+    "broken_link": "断链",
+    "floating": "游离",
+}
+
+
+def _oreg_error(resp) -> bool:
+    if resp and "_error" in resp:
+        st.error(f"请求失败：{resp['_error']}")
+        return True
+    return False
+
+
+def _oreg_candidates_section(client: AgentClient):
+    resp = client.output_registry_candidates()
+    if _oreg_error(resp):
+        return
+    cands = (resp or {}).get("candidates") or []
+    st.caption("产出根下存在、但还没登记进注册表的目录。两档可选：**只登记**（目录内不产生任何文件，之后可升级）；"
+               "**一键接入（受管）**（额外写入 PROJECT.json 镜像，进入版本管理）。接入都不会修改目录中已有文件。")
+    if not cands:
+        st.info("没有未登记的目录。")
+        return
+    for c in cands:
+        slug = c["slug"]
+        note = "（文件数已截断）" if c.get("file_count_truncated") else ""
+        with st.form(f"oreg_adopt_form_{slug}"):
+            st.markdown(f"**`{slug}`** · {c.get('file_count', 0)} 个文件{note}")
+            title = st.text_input("标题", value=c.get("suggested_title") or slug, key=f"oreg_title_{slug}")
+            intro = st.text_area(
+                "介绍（仅受管档，且目录内没有 PROJECT_INFO.md 时写入）",
+                key=f"oreg_intro_{slug}", height=68,
+            )
+            confirmed = st.checkbox("我确认接入这个目录", key=f"oreg_confirm_{slug}")
+            col_reg, col_man = st.columns(2)
+            with col_reg:
+                submit_reg = st.form_submit_button("只登记")
+            with col_man:
+                submit_man = st.form_submit_button("一键接入（受管）")
+        if submit_reg or submit_man:
+            if not confirmed:
+                st.warning("请先勾选确认框。")
+            else:
+                mode = "registered" if submit_reg else "managed"
+                r = client.output_registry_adopt(slug, mode, title, intro)
+                if not _oreg_error(r):
+                    label = "只登记" if mode == "registered" else "受管接入"
+                    st.success(f"已{label}：`{slug}`。点击上方「🔄 刷新」查看最新列表。")
+
+
+def _oreg_projects_section(client: AgentClient) -> list[dict]:
+    resp = client.output_registry_projects()
+    if _oreg_error(resp):
+        return []
+    projects = (resp or {}).get("projects") or []
+    if not projects:
+        st.info("还没有已登记的产出项目。")
+        return projects
+    st.dataframe(
+        [{
+            "项目": p.get("slug"),
+            "接入档位": "受管" if p.get("managed") else "只登记",
+            "状态": p.get("status"),
+            "最新版本": p.get("latest_version") or "-",
+            "所属管理项目": p.get("owner_goal_id") or "-",
+        } for p in projects],
+        use_container_width=True, hide_index=True,
+    )
+    unmanaged = [p["slug"] for p in projects if not p.get("managed")]
+    if unmanaged:
+        st.markdown("##### 升级为受管")
+        with st.form("oreg_upgrade_form"):
+            slug = st.selectbox("只登记的项目", unmanaged, key="oreg_upgrade_slug")
+            confirmed = st.checkbox("我确认升级（会写入 PROJECT.json 镜像，不修改目录中已有文件）",
+                                    key="oreg_upgrade_confirm")
+            submit = st.form_submit_button("升级为受管")
+        if submit:
+            if not confirmed:
+                st.warning("请先勾选确认框。")
+            else:
+                r = client.output_registry_adopt(slug, "managed")
+                if not _oreg_error(r):
+                    st.success(f"已升级为受管：`{slug}`。点击「🔄 刷新」查看最新状态。")
+    return projects
+
+
+def _oreg_publish_section(projects: list[dict], client: AgentClient):
+    managed = [p["slug"] for p in projects if p.get("managed")]
+    if not managed:
+        st.info("只有受管项目可以发布版本。请先在「已登记项目」里接入或升级为受管。")
+        return
+    with st.form("oreg_publish_form"):
+        slug = st.selectbox("项目", managed, key="oreg_publish_slug")
+        version = st.text_input("版本号（MAJOR.MINOR.PATCH）", placeholder="0.1.0", key="oreg_publish_version")
+        changelog = st.text_area("变更说明", key="oreg_publish_changelog", height=68)
+        confirmed = st.checkbox("我确认发布此版本（快照复制项目全部内容，之后只读）", key="oreg_publish_confirm")
+        submit = st.form_submit_button("发布版本")
+    if submit:
+        if not confirmed:
+            st.warning("请先勾选确认框。")
+        elif not version.strip():
+            st.warning("请填写版本号。")
+        else:
+            r = client.output_registry_publish(slug, version.strip(), changelog)
+            if not _oreg_error(r):
+                st.success(f"已发布 `{slug}` v{version.strip()}。")
+
+
+def _oreg_patrol_section(client: AgentClient):
+    st.caption("巡检只生成建议，不会执行任何归档、删除或关联。新出现的建议会推送到「🔔 关注与通知」，"
+               "重复的不再推送。阈值在 `agent_config.json` 的 `output_registry` 块中配置（默认 3 天）。")
+    last_run = st.session_state.get("oreg_patrol_last_run")
+    if st.button("▶️ 立即巡检", key="oreg_patrol_run"):
+        with st.spinner("正在巡检..."):
+            r = client.output_registry_patrol_run()
+        if not _oreg_error(r):
+            st.session_state["oreg_patrol_last_run"] = r
+            last_run = r
+            if r.get("notified"):
+                st.info(f"本次新增 {r.get('new_findings_total', 0)} 条建议，已推送到「🔔 关注与通知」。")
+            elif r.get("findings_total"):
+                st.caption("没有新的建议，未重复推送。")
+    report = last_run
+    if report is None:
+        latest = client.output_registry_patrol_latest()
+        if _oreg_error(latest):
+            return
+        report = (latest or {}).get("report")
+    if not report:
+        st.info("尚未巡检。")
+        return
+    th = report.get("thresholds") or {}
+    st.caption(
+        f"生成于 {report.get('generated_at', '')} · 扫描 {report.get('projects_scanned', 0)} 个项目 · "
+        f"建议 {report.get('findings_total', 0)} 条 · 阈值：停滞 {th.get('stale_days')} 天 / "
+        f"版本缺口 {th.get('version_gap_days')} 天"
+    )
+    findings = report.get("findings") or []
+    if not findings:
+        st.success("没有需要处理的建议。")
+        return
+    st.dataframe(
+        [{
+            "项目": f.get("slug"),
+            "类型": _OREG_KIND_LABELS.get(f.get("kind"), f.get("kind")),
+            "说明": f.get("detail"),
+            "建议": f.get("suggestion"),
+        } for f in findings],
+        use_container_width=True, hide_index=True,
+    )
+
+
+def render_output_registry_tab(client: AgentClient):
+    """[management_output P7] 产出项目管理区：未登记目录接入（两档）、已登记项目与受管升级、
+    版本发布、巡检。所有写操作都需要用户勾选确认。"""
+    st.markdown("#### 🧰 产出项目管理")
+    st.caption("管理 output_projects 下产出项目的登记、受管状态、版本发布与巡检。"
+               "这里的写操作都需要先勾选确认；只读展示见「🗺️ 产出项目」。")
+    if st.button("🔄 刷新", key="output_registry_refresh"):
+        st.rerun()
+    sec_cand, sec_proj, sec_pub, sec_patrol = st.tabs(
+        ["📥 未登记目录", "🗂️ 已登记项目", "📦 发布版本", "🔍 巡检"]
+    )
+    with sec_cand:
+        _oreg_candidates_section(client)
+    with sec_proj:
+        projects = _oreg_projects_section(client)
+    with sec_pub:
+        _oreg_publish_section(projects, client)
+    with sec_patrol:
+        _oreg_patrol_section(client)
+
+
 def render_output_projects_tab(client: AgentClient):
     """[next_doc/output_projects_intro_and_kanban_plan.md] 展示
     `output_projects_root`（调研/产出类项目统一落脚目录，见
@@ -15958,6 +16141,7 @@ _BASE_TAB_DEFS = [
     ("evolution", "🧬 进化提案", lambda client: render_evolution_proposals_tab(client)),
     ("external_projects", "🗂️ 外部项目", lambda client: render_external_projects_tab(client)),
     ("output_projects", "🗺️ 产出项目", lambda client: render_output_projects_tab(client)),
+    ("output_registry", "🧰 产出项目管理", lambda client: render_output_registry_tab(client)),
     ("wiki", "📚 wiki 知识库", lambda client: render_wiki_tab(client)),
     ("cron_jobs", "⏰ Cron 任务", lambda client: render_cron_jobs_tab(client)),
     ("global_schedule", "🗓️ 全局日程", lambda client: render_global_schedule_tab(client)),
