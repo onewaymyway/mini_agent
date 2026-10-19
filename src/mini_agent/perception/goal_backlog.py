@@ -1451,7 +1451,10 @@ class GoalBacklog:
                 id=f"{id_prefix}_{uuid.uuid4().hex[:8]}",
                 level=level,
                 title=title,
-                source="agent_derived",
+                # 用户采纳的子目标是用户决定，不是 agent 推导；source 若仍是
+                # "agent_derived"，它会被「📥 主动建议」当成待处理的软目标，
+                # 也会计入 SoftGoalDeriver 的配额。
+                source="user_decompose",
                 status="active",
                 created_at=time.time(),
                 last_touched_at=time.time(),

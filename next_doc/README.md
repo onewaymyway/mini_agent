@@ -77,6 +77,7 @@ Goal/Objective 执行阶段、公平调度、输出目录、进度判定。
 7. `management_output_project_model_impl_p5.md` — 实施记录：P4.5 数据采集与 P5 全局巡检
 8. `management_output_project_model_impl_p6.md` — 实施记录：P6 接入辅助
 9. `management_output_project_model_impl_p7.md` — 实施记录：P7 接入两档、阈值配置、巡检通知与看板管理（阶段一后端 / 阶段二看板）
+10. `goal_tree_child_recommendation_impl_s1.md` — 目标树子目标推荐：S1 候选采纳/忽略（S2–S4 待确认）
 
 ## growth_advisor（成长顾问，19 篇）
 

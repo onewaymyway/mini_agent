@@ -5193,9 +5193,14 @@ def _goal_tree_collect_branch_ids(tree_node: dict, out: set) -> None:
         _goal_tree_collect_branch_ids(child, out)
 
 
-def _render_goal_tree_candidates(client: AgentClient, node_id: str, candidates: list) -> None:
+def _render_goal_tree_candidates(
+    client: AgentClient, node_id: str, candidates: list, *, key_prefix: str = "",
+) -> None:
     """[goal_tree_system_plan.md §4.4] 待确认候选：✅ 采纳 / ✖️ 忽略 /
-    ✏️ 编辑后采纳，三个按钮，以虚线样式挂在父节点下方。"""
+    ✏️ 编辑后采纳，三个按钮，以虚线样式挂在父节点下方。
+
+    key_prefix：同一个候选可能同时出现在树顶部汇总面板和父节点下方，
+    两处必须用不同前缀，否则 Streamlit 会报重复 widget key。"""
     for cand in candidates:
         cid = cand.get("id")
         with st.container(border=True):
@@ -5207,25 +5212,25 @@ def _render_goal_tree_candidates(client: AgentClient, node_id: str, candidates: 
                 st.caption(cand["description"])
             if cand.get("reason"):
                 st.caption(f"生成理由：{cand['reason']}")
-            edit_key = f"_gt_cand_edit_{node_id}_{cid}"
+            edit_key = f"{key_prefix}_gt_cand_edit_{node_id}_{cid}"
             c1, c2, c3 = st.columns(3)
-            if c1.button("✅ 采纳", key=f"_gt_cand_accept_{node_id}_{cid}"):
+            if c1.button("✅ 采纳", key=f"{key_prefix}_gt_cand_accept_{node_id}_{cid}"):
                 res = client.accept_goal_tree_candidate(node_id, cid)
                 if isinstance(res, dict) and res.get("_error"):
                     st.error(f"采纳失败：{res['_error']}")
                 else:
                     st.rerun()
-            if c2.button("✖️ 忽略", key=f"_gt_cand_reject_{node_id}_{cid}"):
+            if c2.button("✖️ 忽略", key=f"{key_prefix}_gt_cand_reject_{node_id}_{cid}"):
                 res = client.reject_goal_tree_candidate(node_id, cid)
                 if isinstance(res, dict) and res.get("_error"):
                     st.error(f"忽略失败：{res['_error']}")
                 else:
                     st.rerun()
-            if c3.button("✏️ 编辑后采纳", key=f"_gt_cand_editbtn_{node_id}_{cid}"):
+            if c3.button("✏️ 编辑后采纳", key=f"{key_prefix}_gt_cand_editbtn_{node_id}_{cid}"):
                 st.session_state[edit_key] = True
                 st.rerun()
             if st.session_state.get(edit_key):
-                with st.form(f"_gt_cand_editform_{node_id}_{cid}"):
+                with st.form(f"{key_prefix}_gt_cand_editform_{node_id}_{cid}"):
                     new_title = st.text_input("标题", value=cand.get("title", ""))
                     new_desc = st.text_area("描述", value=cand.get("description", ""), height=60)
                     if st.form_submit_button("确认采纳"):
@@ -6488,6 +6493,40 @@ def _gt_render_perf_panel(placeholder, entry: dict) -> None:
                 st.markdown("\n".join(rows))
 
 
+def _collect_pending_decompose(tree: dict) -> list[tuple[str, str, list]]:
+    """遍历树，收集 (节点id, 节点标题, 待确认候选列表)。只读、不发请求。"""
+    out: list[tuple[str, str, list]] = []
+    stack = [tree]
+    while stack:
+        item = stack.pop()
+        if not isinstance(item, dict):
+            continue
+        node = item.get("node") or {}
+        cands = node.get("decompose_candidates") or []
+        if cands:
+            out.append((node.get("id", ""), node.get("title", ""), cands))
+        stack.extend(item.get("children") or [])
+    return out
+
+
+def _render_pending_decompose_panel(client: AgentClient, tree: dict) -> None:
+    """[S1 子目标推荐] 树页面顶部：全树待确认的子目标推荐（采纳 / 忽略）。
+
+    候选由分解器生成，只有用户在这里采纳后才会变成真正的子节点；
+    忽略的候选会记入去重（30 天内同主题不再推荐）。复用父节点展开时
+    使用的同一套候选卡片，行为一致。
+    """
+    pending = _collect_pending_decompose(tree)
+    total = sum(len(c) for _, _, c in pending)
+    with st.expander(f"🪄 待确认的子目标推荐（{total}）", expanded=total > 0):
+        if not total:
+            st.caption("目前没有待确认的子目标推荐。在节点的「⚙️ 管理」里点「🪄 帮我拆解此节点」可以生成。")
+            return
+        for node_id, title, cands in pending:
+            st.caption(f"父节点：**{title}**")
+            _render_goal_tree_candidates(client, node_id, cands, key_prefix="pending")
+
+
 def _render_goal_tree_view(client: AgentClient) -> None:
     """[goal_tree_system_plan.md §4.4/阶段四] Streamlit"🌳 目标树"子页：
     从根节点开始的完整层级 + 候选采纳/忽略 + 手动管理（新建/编辑/pin），
@@ -6564,6 +6603,10 @@ def _render_goal_tree_view(client: AgentClient) -> None:
                     st.caption("日志文件还不存在——点一次 📄/📖 按钮后再回来看。")
             except Exception as e:
                 st.caption(f"读取日志文件失败：{e}")
+
+    # [S1 子目标推荐] 全树待确认的子目标推荐汇总：不用展开父节点就能看到
+    # 所有待采纳/忽略的候选，每条带父节点标题，直接在这里采纳或忽略。
+    _render_pending_decompose_panel(client, tree)
 
     # [goal_tree_kanban_integration_plan.md Stage 6] 树级汇总报告/产出
     # Wiki 折叠区，挂在树形结构渲染之前，root_id 用当前树的根节点。
