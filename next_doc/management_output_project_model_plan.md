@@ -7,7 +7,7 @@
 | 阶段 | 状态 | 实施记录 |
 |---|---|---|
 | P0 只读盘点 | ✅ 已实施 | `management_output_project_model_impl_p0.md` |
-| P1 目标属性化 | ⏳ 待实施 | — |
+| P1 目标属性化 | ✅ 已实施 | `management_output_project_model_impl_p1.md` |
 | P2 管理项目与关联 | ⏳ 待实施 | — |
 | P3 受管新建与版本 | ⏳ 待实施 | — |
 | P4 产出路由 | ⏳ 待实施 | — |

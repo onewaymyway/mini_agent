@@ -291,6 +291,17 @@ class GoalNode:
     # 取消不算失败）。
     consecutive_failures: int = 0
 
+    # [next_doc/management_output_project_model_plan.md 第 5.1 节 / P1] 节点属性。
+    # 取值 None 表示"由 level 推导"（旧数据兼容：未写入这三个键的节点行为不变）。
+    # 显式设为 True/False 时覆盖推导结果。`recurring` 已有独立字段，不在此重复。
+    #   verifiable  — 有可判定的完成标准（P1 仅存储与暴露，尚无消费者）
+    #   executable  — 能被一次执行推进；为 False 时节点是"结构节点"，不参与执行
+    #                 （is_structural 由它推导）
+    #   deliverable — 会留下可持久的交付物（P1 仅存储与暴露，留给 P2/P4 使用）
+    verifiable: Optional[bool] = None
+    executable: Optional[bool] = None
+    deliverable: Optional[bool] = None
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -330,6 +341,9 @@ class GoalNode:
             "focus_pinned_ids": self.focus_pinned_ids,
             "decompose_candidates": self.decompose_candidates,
             "consecutive_failures": self.consecutive_failures,
+            "verifiable": self.verifiable,
+            "executable": self.executable,
+            "deliverable": self.deliverable,
         }
 
     @staticmethod
@@ -375,6 +389,9 @@ class GoalNode:
             focus_pinned_ids=d.get("focus_pinned_ids", []),
             decompose_candidates=d.get("decompose_candidates", []),
             consecutive_failures=d.get("consecutive_failures", 0),
+            verifiable=d.get("verifiable"),
+            executable=d.get("executable"),
+            deliverable=d.get("deliverable"),
         )
 
     @property
@@ -389,12 +406,42 @@ class GoalNode:
     def is_active(self) -> bool:
         return self.status == "active"
 
+    def _effective(self, explicit: Optional[bool], index: int) -> bool:
+        """显式值优先；为 None 时按 level 推导（见 _LEVEL_DEFAULT_ATTRIBUTES）。"""
+        if explicit is not None:
+            return bool(explicit)
+        return _LEVEL_DEFAULT_ATTRIBUTES.get(self.level, _FALLBACK_ATTRIBUTES)[index]
+
+    @property
+    def effective_verifiable(self) -> bool:
+        return self._effective(self.verifiable, 0)
+
+    @property
+    def effective_executable(self) -> bool:
+        return self._effective(self.executable, 1)
+
+    @property
+    def effective_deliverable(self) -> bool:
+        return self._effective(self.deliverable, 2)
+
+    @property
+    def attributes(self) -> dict:
+        """节点的四个属性的有效值（显式值或推导值），供看板与巡检读取。"""
+        return {
+            "verifiable": self.effective_verifiable,
+            "executable": self.effective_executable,
+            "recurring": bool(self.recurring),
+            "deliverable": self.effective_deliverable,
+        }
+
     @property
     def is_structural(self) -> bool:
-        """[goal_tree_system_plan.md §三] "ultimate"/"domain"/"stage" 三层是
-        纯结构+说明+聚合展示，不接入 GoalJudge、不会进入 completed 终态
-        判定、不会被 GoalRunner/cron 调度执行。"""
-        return self.level in _STRUCTURAL_LEVELS
+        """[goal_tree_system_plan.md §三 / management_output P1] 结构节点 =
+        不可执行节点。执行语义由 `executable` 属性决定，层级只是推导默认值的
+        来源：旧数据的 ultimate/domain/stage 推导为不可执行，因此行为与改造前
+        一致（不接入 GoalJudge、不进入 completed 终态判定、不被 GoalRunner/cron
+        调度执行）。"""
+        return not self.effective_executable
 
 
 # [next_doc/goal_tree_system_plan.md §4.1] 允许的父子层级顺序（可跳级，
@@ -405,6 +452,20 @@ LEVEL_ORDER: tuple = ("ultimate", "domain", "stage", "goal", "objective")
 # 不接入 GoalJudge/GoalRunner/cron 调度、不进入 completed 终态判定的层级
 # （见方案文档§三"执行语义只在树的下半段生效"）。
 _STRUCTURAL_LEVELS = frozenset({"ultimate", "domain", "stage"})
+
+# [management_output P1] 属性的 level 推导默认值，顺序为
+# (verifiable, executable, deliverable)。
+# 数值来自 P1 特征测试锁定的现有行为：结构层不可执行；goal / objective 可执行。
+# deliverable 默认全部 False：交付判定需要用户确认（见计划第 5.2 节），
+# 不允许系统据 level 自动认定某个目标有交付物。
+_LEVEL_DEFAULT_ATTRIBUTES: dict = {
+    "ultimate": (False, False, False),
+    "domain": (False, False, False),
+    "stage": (False, False, False),
+    "goal": (True, True, False),
+    "objective": (True, True, False),
+}
+_FALLBACK_ATTRIBUTES = (False, False, False)
 
 # 每个 level 允许挂靠的父节点 level 集合。None 代表"只能是根"。
 # - ultimate：全局唯一根节点，parent 必须为 None。
