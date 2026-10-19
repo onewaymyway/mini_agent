@@ -99,6 +99,53 @@ def _write_record(project_root: Path | str, record: dict[str, Any]) -> None:
     path = _record_path(project_root, record["id"])
     path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_json(path, record)
+    # [P3 / 计划 13 章问题 A] 受管项目在目录内同步一份 PROJECT.json 镜像，
+    # 使注册表删除后版本历史等信息可以从目录恢复。旧项目（managed=False）不写入。
+    if record.get("managed"):
+        project_dir = resolve_root(Path(project_root)) / record["slug"]
+        if project_dir.is_dir():
+            atomic_write_json(project_dir / "PROJECT.json", record)
+
+
+def _record_from_project_json(project_dir: Path) -> Optional[dict[str, Any]]:
+    """从受管项目目录内的 PROJECT.json 恢复记录（用于 rebuild）。仅对 managed=True 生效。"""
+    data = _read_json(project_dir / "PROJECT.json")
+    if not data or not data.get("managed"):
+        return None
+    record = _new_record(project_dir.name)
+    for key in ("title", "legacy", "managed", "status", "owner_goal_id", "goal_refs",
+                "links", "versions", "status_history", "created_at"):
+        if key in data:
+            record[key] = data[key]
+    return record
+
+
+def _latest_version(record: dict[str, Any]) -> Optional[str]:
+    versions = [v.get("version") for v in record.get("versions", []) if v.get("version")]
+    if not versions:
+        return None
+    return max(versions, key=lambda s: tuple(int(x) for x in s.split(".")))
+
+
+def save_project_record(project_root: Path | str, record: dict[str, Any]) -> dict[str, Any]:
+    """在文件锁内保存一条项目记录并同步总表（供 lifecycle 模块使用）。"""
+    with ExclusiveFileLock(_index_path(project_root)):
+        index = load_index(project_root)
+        _write_record(project_root, record)
+        _refresh_index_entry(index, record)
+        _save_index(project_root, index)
+    return record
+
+
+def append_management_history(project_root: Path | str, goal_id: str, event: dict[str, Any]) -> None:
+    """为管理项目追加一条历史事件（只追加，不修改已有条目）。"""
+    with ExclusiveFileLock(_index_path(project_root)):
+        index = load_index(project_root)
+        entry = index["management_roots"].get(goal_id)
+        if entry is None:
+            raise RegistryError(f"{goal_id!r} 尚未标记为管理项目")
+        entry.setdefault("history", []).append({"at": _now(), **event})
+        _save_index(project_root, index)
 
 
 def _summary_of(record: dict[str, Any]) -> dict[str, Any]:
@@ -109,6 +156,7 @@ def _summary_of(record: dict[str, Any]) -> dict[str, Any]:
         "goal_refs": list(record.get("goal_refs", [])),
         "legacy": bool(record.get("legacy", True)),
         "managed": bool(record.get("managed", False)),
+        "latest_version": _latest_version(record),
     }
 
 
@@ -341,7 +389,11 @@ def rebuild_index(project_root: Path | str) -> dict[str, Any]:
             for entry in sorted(root.iterdir(), key=lambda p: p.name):
                 if not entry.is_dir() or entry.name.startswith(("_", ".")):
                     continue
-                record = load_record(project_root, entry.name) or _new_record(entry.name)
+                record = (
+                    load_record(project_root, entry.name)
+                    or _record_from_project_json(entry)
+                    or _new_record(entry.name)
+                )
                 _write_record(project_root, record)
                 _refresh_index_entry(index, record)
                 for link in record.get("links", []):
