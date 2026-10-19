@@ -322,6 +322,13 @@ def goal_output_dir(paths: "AgentPaths", goal_id: str, *, user_output_dir: Optio
         if p.is_absolute():
             return p
         return Path(paths.project_root) / p
+    # [management_output P4] 目标（或其祖先）绑定了产出项目时，正式产出写入该项目的
+    # output/。用户显式设置的 user_output_dir 优先（上面已返回）。未绑定时退回默认路径，
+    # 行为与改造前完全一致。解析失败返回 None，同样退回默认路径。
+    from mini_agent.output_registry.routing import resolve_bound_output_dir
+    bound = resolve_bound_output_dir(paths.project_root, goal_id)
+    if bound is not None:
+        return bound
     return goal_output_base_dir(paths, goal_id) / "output"
 
 
