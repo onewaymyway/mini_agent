@@ -7,6 +7,7 @@
     python scripts/output_patrol.py --project <项目根> collect          # P4.5：只采集，不告警
     python scripts/output_patrol.py --project <项目根> report           # P5：生成巡检报告
     python scripts/output_patrol.py --project <项目根> report --stale-days 60 --version-gap-days 45
+    python scripts/output_patrol.py --project <项目根> candidates      # P6：列出未登记目录（只读）
 
 只读：不修改产出项目、注册表或 goals.json。只写 .agent/output_registry/ 下。
 阈值默认值是未校准的，报告中会标注 calibration=uncalibrated。
@@ -23,6 +24,7 @@ _SRC = Path(__file__).resolve().parent.parent / "src"
 if _SRC.is_dir() and str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
+from mini_agent.output_registry.adoption import list_unregistered  # noqa: E402
 from mini_agent.output_registry.patrol import run_collect, run_report  # noqa: E402
 
 
@@ -31,6 +33,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--project", default=".", help="项目根目录")
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("collect")
+    sub.add_parser("candidates")
     rp = sub.add_parser("report")
     rp.add_argument("--stale-days", type=float, default=None)
     rp.add_argument("--version-gap-days", type=float, default=None)
@@ -39,6 +42,9 @@ def main(argv: list[str] | None = None) -> int:
     project = Path(args.project).resolve()
     if args.cmd == "collect":
         print(json.dumps(run_collect(project), ensure_ascii=False, indent=2))
+        return 0
+    if args.cmd == "candidates":
+        print(json.dumps(list_unregistered(project), ensure_ascii=False, indent=2))
         return 0
     overrides = {}
     if args.stale_days is not None:

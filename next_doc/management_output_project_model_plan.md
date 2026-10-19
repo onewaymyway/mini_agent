@@ -1,6 +1,6 @@
 # 管理项目与产出项目模型改进计划
 
-> 状态：**设计已确认（含第 12 章决议），待实施，尚未动代码**
+> 状态：**P0–P6 已全部实施（P4.5 / P5 阈值待真实数据校准，见对应实施记录）**
 
 ## 实施进度
 
@@ -13,7 +13,7 @@
 | P4 产出路由 | ✅ 已实施 | `management_output_project_model_impl_p4.md` |
 | P4.5 数据采集 | ⚠️ 机制已实施，样本待积累 | `management_output_project_model_impl_p5.md` |
 | P5 全局巡检 | ⚠️ 已实施，阈值未校准 | `management_output_project_model_impl_p5.md` |
-| P6 接入辅助 | ⏳ 待实施 | — |
+| P6 接入辅助 | ✅ 已实施 | `management_output_project_model_impl_p6.md` |
 > 关联文档：`goal_tree_system_plan.md`、`output_projects_root_and_git_isolation_plan.md`、`output_projects_intro_and_kanban_plan.md`、`goal_cron_output_directory_convention_plan.md`、`mini-agent-philosophy-and-roadmap.md`
 
 ---

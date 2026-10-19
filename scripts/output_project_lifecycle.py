@@ -7,6 +7,7 @@
     python scripts/output_project_lifecycle.py --project <项目根> create <slug> [--title T] [--intro 文本]
     python scripts/output_project_lifecycle.py --project <项目根> publish <slug> <version> --confirm [--changelog T] [--goal <goal_id>]
     python scripts/output_project_lifecycle.py --project <项目根> reopen <goal_id> --reason 原因 --confirm
+    python scripts/output_project_lifecycle.py --project <项目根> adopt <slug> [--title T] [--intro 文本] --confirm
 
 发布版本与重新打开管理项目都是用户确认的动作，必须带 --confirm。
 """
@@ -22,7 +23,7 @@ _SRC = Path(__file__).resolve().parent.parent / "src"
 if _SRC.is_dir() and str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from mini_agent.output_registry import RegistryError  # noqa: E402
+from mini_agent.output_registry import RegistryError, adopt_output_project  # noqa: E402
 from mini_agent.output_registry.lifecycle import (  # noqa: E402
     create_output_project,
     publish_version,
@@ -53,6 +54,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--goal", default=None, help="来源管理项目（目标节点 id）")
     p.add_argument("--confirm", action="store_true", help="确认发布（必需）")
 
+    a = sub.add_parser("adopt")
+    a.add_argument("slug")
+    a.add_argument("--title", default="")
+    a.add_argument("--intro", default="")
+    a.add_argument("--confirm", action="store_true", help="确认接入（必需）")
+
     r = sub.add_parser("reopen")
     r.add_argument("goal_id")
     r.add_argument("--reason", required=True)
@@ -69,6 +76,12 @@ def main(argv: list[str] | None = None) -> int:
                 return 3
             _dump(publish_version(project, args.slug, args.version,
                                   changelog=args.changelog, source_goal_id=args.goal))
+        elif args.cmd == "adopt":
+            if not args.confirm:
+                print("错误：接入产出项目需要 --confirm 确认", file=sys.stderr)
+                return 3
+            _dump(adopt_output_project(project, args.slug, confirm=True,
+                                       title=args.title, intro=args.intro))
         elif args.cmd == "reopen":
             if not args.confirm:
                 print("错误：重新打开管理项目需要 --confirm 确认", file=sys.stderr)

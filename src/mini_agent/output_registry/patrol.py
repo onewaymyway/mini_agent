@@ -116,7 +116,9 @@ def collect_metrics(project_root: Path | str, now: Optional[datetime] = None) ->
             continue
         slug = entry.name
         latest_mtime, file_count, truncated = _latest_file_mtime(entry)
-        record = load_record(project_root, slug) or {}
+        record = load_record(project_root, slug)
+        registered = record is not None
+        record = record or {}
         versions = record.get("versions", [])
         latest_release_ts = None
         latest_version = None
@@ -156,6 +158,7 @@ def collect_metrics(project_root: Path | str, now: Optional[datetime] = None) ->
             "link_count": len(links),
             "broken_link_targets": broken,
             "managed": bool(record.get("managed", False)),
+            "registered": registered,
         })
     return rows
 
@@ -179,6 +182,9 @@ def evaluate(rows: list[dict[str, Any]], thresholds: dict[str, Any]) -> list[dic
         def add(kind: str, detail: str, suggestion: str) -> None:
             findings.append({"slug": slug, "kind": kind, "detail": detail, "suggestion": suggestion})
 
+        if not r.get("registered", True):
+            add("unregistered", "目录存在但未登记进注册表",
+                "确认后一键接入（scripts/output_project_lifecycle.py adopt）")
         if not r["has_project_info"]:
             add("missing_intro", "缺少 PROJECT_INFO.md", "补充项目介绍")
         if r["days_since_update"] is not None and r["days_since_update"] > thresholds["stale_days"]:

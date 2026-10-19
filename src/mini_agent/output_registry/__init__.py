@@ -19,6 +19,7 @@ from .inventory import (  # noqa: F401
     build_inventory,
     write_inventory_draft,
 )
+from .adoption import adopt_output_project, list_unregistered  # noqa: F401
 from .registry import (  # noqa: F401
     ROLE_BUILD,
     ROLE_ITERATE,
@@ -38,6 +39,7 @@ from .registry import (  # noqa: F401
 
 __all__ = [
     "DRAFT_FILENAME", "INVENTORY_SCHEMA", "build_inventory", "write_inventory_draft",
+    "adopt_output_project", "list_unregistered",
     "ROLE_BUILD", "ROLE_ITERATE", "ROLE_REFERENCE", "RegistryError",
     "bind_floating_project", "derive_management_from_project", "fill_management_titles",
     "link_management_output", "list_links", "load_index", "mark_management_root",
