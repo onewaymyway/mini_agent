@@ -2119,6 +2119,46 @@ class ObjectiveExecutor:
             self.save()
         return submitted_ids
 
+    def _auto_link_detect_enabled(self) -> bool:
+        ocfg = getattr(self._cfg, "output_registry", None) if self._cfg is not None else None
+        return bool(getattr(ocfg, "auto_link_detect_enabled", False))
+
+    def _auto_link_snapshot(self, ex: "ObjectiveExecution") -> None:
+        """[goal_output_project_auto_link S5] 记录执行开始时的产出目录快照（仅开关开启时）。
+
+        快照保存在内存中，按 execution_id 索引；守护进程重启后丢失，该次执行不做检测。
+        任何异常只记日志，不影响 step 提交。
+        """
+        try:
+            if not self._auto_link_detect_enabled():
+                return
+            store = self.__dict__.setdefault("_auto_link_snapshots", {})
+            if ex.execution_id in store:
+                return
+            from mini_agent.output_registry.auto_detect import snapshot_project_names
+            store[ex.execution_id] = snapshot_project_names(self._paths.project_root)
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where="mini_agent.evolution.objective_executor._auto_link_snapshot")
+
+    def _auto_link_detect_finish(self, ex: "ObjectiveExecution", *, detect: bool = True) -> None:
+        """[goal_output_project_auto_link S5] 执行结束后做第二层检测（完成/失败），并清理快照。
+
+        取消（detect=False）只清理快照。整个过程 try/except，绝不影响执行收尾。
+        """
+        try:
+            store = self.__dict__.get("_auto_link_snapshots") or {}
+            before = store.pop(ex.execution_id, None)
+            if not detect or before is None or not self._auto_link_detect_enabled():
+                return
+            from mini_agent.output_registry.auto_detect import detect_new_project_links
+            detect_new_project_links(
+                self._paths.project_root, before=before, trigger_node_id=ex.objective_id,
+            )
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where="mini_agent.evolution.objective_executor._auto_link_detect_finish")
+
     def _auto_link_step_context(self, ex: "ObjectiveExecution") -> tuple[str, Optional[dict]]:
         """[goal_output_project_auto_link S2] 返回 (提示词片段, meta 中的 goal_exec 字段)。
 
@@ -2161,6 +2201,9 @@ class ObjectiveExecutor:
         """
         if self._submit_fn is None:
             return False
+        if step_idx == 0:
+            # [goal_output_project_auto_link S5] 第二层检测：执行开始前记录产出目录快照
+            self._auto_link_snapshot(ex)
         step = ex.steps[step_idx]
         # [tick_dispatch_only 阶段二] 异步准备：路径尚未声明时不在当前线程里同步等
         # LLM，而是派发到后台、step 置为 preparing 并返回 False（调用方按"暂时
@@ -2442,6 +2485,7 @@ class ObjectiveExecutor:
         self._record_theme_outcome(ex, "completed")
         self._write_output_manifest(ex, "completed")
         self._maybe_close_parent_goal(ex)
+        self._auto_link_detect_finish(ex)
         try:
             from mini_agent.evolution.resource_arbiter import append_activity_digest
             append_activity_digest(self._paths, {
@@ -2463,6 +2507,7 @@ class ObjectiveExecutor:
         self._sync_goal_status(ex.objective_id, "failed")
         self._record_theme_outcome(ex, "failed")
         self._write_output_manifest(ex, "failed")
+        self._auto_link_detect_finish(ex)
         try:
             from mini_agent.evolution.resource_arbiter import append_activity_digest
             append_activity_digest(self._paths, {
@@ -2507,6 +2552,7 @@ class ObjectiveExecutor:
         if sync_goal_status:
             self._sync_goal_status(ex.objective_id, "cancelled")
         self._write_output_manifest(ex, "cancelled")
+        self._auto_link_detect_finish(ex, detect=False)
         try:
             from mini_agent.evolution.resource_arbiter import append_activity_digest
             append_activity_digest(self._paths, {

@@ -12734,6 +12734,101 @@ def _oreg_patrol_section(client: AgentClient):
     )
 
 
+# ── 待确认关联（goal_output_project_auto_link_plan.md §6.5，S5）──────────────
+_OREG_ORIGIN_LABEL = {
+    "agent_tool": "执行中 agent 主动关联",
+    "auto_detect": "执行后目录差异检测",
+}
+
+
+def _oreg_origin_label(origin: str) -> str:
+    return _OREG_ORIGIN_LABEL.get(origin, origin or "未知来源")
+
+
+def _oreg_pending_breadcrumb(item: dict) -> str:
+    """待确认条目的面包屑：管理项目 ← 触发的 goal/objective。缺标题时退回 id。"""
+    mgmt = item.get("management_title") or item.get("management_id") or "（未知管理项目）"
+    trigger = item.get("goal_title") or item.get("goal_id") or "（未知节点）"
+    return f"{mgmt} ← {trigger}"
+
+
+def _oreg_pending_links_section(client: AgentClient) -> None:
+    """「🔗 待确认关联」：全局汇总所有待确认条目，支持逐条与批量确认/忽略。
+    与目标树共用同一批 REST 端点，写后同时失效目标树的关联缓存。"""
+    st.caption(
+        "执行过程中 agent 关联的产出项目、以及执行后检测到的新增目录，都先在这里待确认。"
+        "确认后才会影响产出路径；忽略后同一项目不再提示。"
+    )
+    if st.button("🔄 刷新", key="_oreg_pend_refresh"):
+        st.rerun()
+    resp = client.output_registry_pending_links(state="pending") or {}
+    if resp.get("_error"):
+        st.error(f"获取待确认关联失败：{resp['_error']}")
+        return
+    items = resp.get("items") or []
+    if not items:
+        st.info("当前没有待确认的关联。")
+        return
+    st.caption(f"共 {len(items)} 条待确认")
+
+    for it in items:
+        pid = it.get("id", "")
+        with st.container(border=True):
+            st.checkbox("选中", key=f"_oreg_pend_chk_{pid}")
+            st.markdown(
+                f"`{it.get('slug', '')}`｜建议角色 `{it.get('role', '')}`｜"
+                f"来源：{_oreg_origin_label(it.get('origin', ''))}"
+            )
+            st.caption(_oreg_pending_breadcrumb(it) + (f"｜理由：{it['note']}" if it.get("note") else ""))
+            default_role = it.get("role") if it.get("role") in _GT_OUTPUT_ROLE_OPTIONS else _GT_OUTPUT_ROLE_OPTIONS[0]
+            role = st.selectbox(
+                "角色", _GT_OUTPUT_ROLE_OPTIONS,
+                index=_GT_OUTPUT_ROLE_OPTIONS.index(default_role),
+                key=f"_oreg_pend_role_{pid}",
+            )
+            c_ok, c_no, _spacer = st.columns([1, 1, 4])
+            with c_ok:
+                if st.button("✅ 确认", key=f"_oreg_pend_ok_{pid}"):
+                    if _gt_output_action_result(client.output_registry_pending_confirm(pid, role=role)):
+                        _gt_invalidate_output_links_cache()
+                        st.rerun()
+            with c_no:
+                if st.button("✖️ 忽略", key=f"_oreg_pend_no_{pid}"):
+                    if _gt_output_action_result(client.output_registry_pending_reject(pid)):
+                        _gt_invalidate_output_links_cache()
+                        st.rerun()
+
+    selected = [it.get("id") for it in items if st.session_state.get(f"_oreg_pend_chk_{it.get('id')}")]
+    st.markdown(f"**批量操作**（已选 {len(selected)} 条）")
+    batch_ok = st.checkbox("确认执行批量操作", key="_oreg_pend_batch_ok", disabled=not selected)
+    b1, b2 = st.columns([1, 1])
+    with b1:
+        if st.button("✅ 批量确认选中项", key="_oreg_pend_batch_confirm", disabled=not (selected and batch_ok)):
+            failed = []
+            for it in items:
+                if it.get("id") in selected:
+                    res = client.output_registry_pending_confirm(it["id"], role=it.get("role") or "")
+                    if isinstance(res, dict) and res.get("_error"):
+                        failed.append(f"{it.get('slug', '')}：{res['_error']}")
+            _gt_invalidate_output_links_cache()
+            if failed:
+                st.error("以下条目确认失败：\n\n" + "\n\n".join(failed))
+            else:
+                st.rerun()
+    with b2:
+        if st.button("✖️ 批量忽略选中项", key="_oreg_pend_batch_reject", disabled=not (selected and batch_ok)):
+            failed = []
+            for pid in selected:
+                res = client.output_registry_pending_reject(pid)
+                if isinstance(res, dict) and res.get("_error"):
+                    failed.append(f"{pid}：{res['_error']}")
+            _gt_invalidate_output_links_cache()
+            if failed:
+                st.error("以下条目忽略失败：\n\n" + "\n\n".join(failed))
+            else:
+                st.rerun()
+
+
 def render_output_registry_tab(client: AgentClient):
     """[management_output P7] 产出项目管理区：未登记目录接入（两档）、已登记项目与受管升级、
     版本发布、巡检。所有写操作都需要用户勾选确认。"""
@@ -12742,8 +12837,8 @@ def render_output_registry_tab(client: AgentClient):
                "这里的写操作都需要先勾选确认；只读展示见「🗺️ 产出项目」。")
     if st.button("🔄 刷新", key="output_registry_refresh"):
         st.rerun()
-    sec_cand, sec_proj, sec_pub, sec_patrol = st.tabs(
-        ["📥 未登记目录", "🗂️ 已登记项目", "📦 发布版本", "🔍 巡检"]
+    sec_cand, sec_proj, sec_pub, sec_patrol, sec_pending = st.tabs(
+        ["📥 未登记目录", "🗂️ 已登记项目", "📦 发布版本", "🔍 巡检", "🔗 待确认关联"]
     )
     with sec_cand:
         _oreg_candidates_section(client)
@@ -12753,6 +12848,8 @@ def render_output_registry_tab(client: AgentClient):
         _oreg_publish_section(projects, client)
     with sec_patrol:
         _oreg_patrol_section(client)
+    with sec_pending:
+        _oreg_pending_links_section(client)
 
 
 def render_output_projects_tab(client: AgentClient):

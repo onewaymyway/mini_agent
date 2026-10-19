@@ -38,10 +38,12 @@ LATEST_FILENAME = "latest.json"
 # 这个值是用户指定的初始值，不是经真实数据校准的结论；报告中以 calibration="configured" 标注。
 DEFAULT_STALE_DAYS = 3.0
 DEFAULT_VERSION_GAP_DAYS = 3.0
+DEFAULT_PENDING_LINK_STALE_DAYS = 7.0
 UNCALIBRATED_THRESHOLDS: dict[str, Any] = {
     "calibration": "configured",
     "stale_days": DEFAULT_STALE_DAYS,        # 停滞：超过该天数没有任何文件变动
     "version_gap_days": DEFAULT_VERSION_GAP_DAYS,  # 版本缺口：有未发布变更且距上次发布超过该天数
+    "pending_link_stale_days": DEFAULT_PENDING_LINK_STALE_DAYS,  # [S5] 待确认关联超过该天数未处理
     "file_scan_limit": 5000,                 # 单项目文件统计上限
 }
 
@@ -211,6 +213,31 @@ def evaluate(rows: list[dict[str, Any]], thresholds: dict[str, Any]) -> list[dic
     return findings
 
 
+def pending_link_findings(project_root: Path | str, stale_days: float, now: Optional[datetime] = None) -> list[dict[str, Any]]:
+    """[goal_output_project_auto_link S5 / §9] 待确认关联超过 stale_days 天未处理 → 一条提示。
+
+    只报告，不清理（§12-1 决议）。detail 中不包含随时间变化的数字，保证同一条待确认
+    在多次巡检之间的去重键稳定，不会每次都重复推送通知。
+    """
+    from mini_agent.output_registry.pending_links import list_pending
+
+    now_ts = _now(now).timestamp()
+    out: list[dict[str, Any]] = []
+    for item in list_pending(project_root, state="pending"):
+        created = item.get("created_at")
+        if not isinstance(created, (int, float)):
+            continue
+        age_days = (now_ts - float(created)) / 86400.0
+        if age_days > float(stale_days):
+            out.append({
+                "slug": item.get("slug", ""),
+                "kind": "pending_link_stale",
+                "detail": f"待确认关联超过 {stale_days:g} 天未处理（来源：{item.get('origin', '')}）",
+                "suggestion": "到「🧰 产出项目管理 → 🔗 待确认关联」确认或忽略",
+            })
+    return out
+
+
 def _config_thresholds(project_root: Path | str) -> dict[str, Any]:
     """从 agent_config.json 的 output_registry 块读取阈值；读取失败则用默认值。"""
     try:
@@ -218,7 +245,11 @@ def _config_thresholds(project_root: Path | str) -> dict[str, Any]:
 
         cfg = load_config(Path(project_root))
         block = cfg.output_registry
-        return {"stale_days": float(block.stale_days), "version_gap_days": float(block.version_gap_days)}
+        return {
+            "stale_days": float(block.stale_days),
+            "version_gap_days": float(block.version_gap_days),
+            "pending_link_stale_days": float(block.pending_link_stale_days),
+        }
     except Exception:  # 配置读取失败不影响巡检本身
         return {}
 
@@ -285,6 +316,8 @@ def run_report(
 
     rows = collect_metrics(project_root, now_dt)
     findings = evaluate(rows, th)
+    # [S5] 待确认关联超时提示：与项目指标无关，按条目逐条给出；只报告，不清理
+    findings += pending_link_findings(project_root, th.get("pending_link_stale_days", DEFAULT_PENDING_LINK_STALE_DAYS))
     report = {
         "schema": "output_registry.patrol.v1",
         "generated_at": now_dt.isoformat(),

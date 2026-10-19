@@ -2984,6 +2984,10 @@ class OutputRegistryConfig:
     # [goal_output_project_auto_link S2] goal/objective 执行期内置工具 link_output_project 与提示词注入。
     # 默认关闭：关闭时工具不出现在工具列表中，执行上下文也不写入，行为与此前完全一致。
     auto_link_tool_enabled: bool = False
+    # [goal_output_project_auto_link S5] 第二层：执行后目录差异检测（只处理新增目录）。默认关闭。
+    auto_link_detect_enabled: bool = False
+    # [goal_output_project_auto_link S5] 待确认关联超过该天数未处理时，巡检给出提示（只报告，不自动清理）。
+    pending_link_stale_days: float = 7.0
 
 
 @dataclass

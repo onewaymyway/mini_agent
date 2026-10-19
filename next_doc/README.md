@@ -85,6 +85,7 @@ Goal/Objective 执行阶段、公平调度、输出目录、进度判定。
 15. `goal_output_project_auto_link_impl_s2.md` — 实施记录：自动关联 S2 执行期上下文、内置工具与提示词注入（开关默认关闭）
 16. `goal_output_project_auto_link_impl_s3.md` — 实施记录：自动关联 S3 待确认关联 REST 端点与客户端方法
 17. `goal_output_project_auto_link_impl_s4.md` — 实施记录：自动关联 S4 目标树界面（徽标、关联子区块、详情列表、批量接口）
+18. `goal_output_project_auto_link_impl_s5.md` — 实施记录：自动关联 S5 第二层目录检测、待确认子页、超时提示
 
 ## growth_advisor（成长顾问，19 篇）
 

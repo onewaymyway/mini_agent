@@ -26,6 +26,7 @@ from typing import Any, Optional
 from . import tool
 from mini_agent.evolution.goal_exec_context import get_current_goal_exec
 from mini_agent.evolution.output_projects_root import resolve_root
+from mini_agent.output_registry.resolve import auto_role, resolve_management_root
 
 _SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
@@ -37,42 +38,6 @@ def _available() -> bool:
 
 def _err(message: str, **extra: Any) -> str:
     return json.dumps({"ok": False, "error": message, **extra}, ensure_ascii=False)
-
-
-def _resolve_management_root(
-    trigger: str, nodes: dict[str, dict[str, Any]], management_ids: set[str],
-) -> Optional[str]:
-    """计划 §4.3：优先最近的已标记管理根，其次最近的 goal 祖先（均含自身）。"""
-    seen: set[str] = set()
-    cur: Optional[str] = trigger
-    while cur is not None and cur in nodes and cur not in seen:
-        seen.add(cur)
-        if cur in management_ids:
-            return cur
-        cur = nodes[cur].get("parent_id")
-
-    seen.clear()
-    cur = trigger
-    while cur is not None and cur in nodes and cur not in seen:
-        seen.add(cur)
-        if nodes[cur].get("level") == "goal":
-            return cur
-        cur = nodes[cur].get("parent_id")
-    return None
-
-
-def _auto_role(project_root: Path, slug: str, management_id: str) -> str:
-    """默认 build；若该项目已被其他管理项目以 build 关联，则为 iterate。拿不准一律 build。"""
-    from mini_agent.output_registry.registry import list_links, ROLE_BUILD, ROLE_ITERATE
-
-    for link in list_links(project_root):
-        if (
-            link.get("output_id") == slug
-            and link.get("role") == ROLE_BUILD
-            and link.get("management_id") != management_id
-        ):
-            return ROLE_ITERATE
-    return ROLE_BUILD
 
 
 @tool(
@@ -136,7 +101,7 @@ def link_output_project(
     if nodes is None:
         return _err("目标树（.agent/goals.json）不可读")
     management_ids = set(load_index(project_root)["management_roots"])
-    management_id = _resolve_management_root(trigger, nodes, management_ids)
+    management_id = resolve_management_root(trigger, nodes, management_ids)
     if management_id is None:
         return _err("无法确定管理项目（目标树中找不到 goal 祖先）", floating=True)
 
@@ -150,7 +115,7 @@ def link_output_project(
             return _err(str(exc))
         created = True
 
-    final_role = role or _auto_role(project_root, slug, management_id)
+    final_role = role or auto_role(project_root, slug, management_id)
     try:
         res = add_pending(
             project_root,
