@@ -63,6 +63,14 @@ Goal/Objective 执行阶段、公平调度、输出目录、进度判定。
 1. `goal_tree_system_plan.md` — 计划：整体设计方案（数据模型/自动分解/
    现阶段焦点/看板树形视图/分阶段实施规划）
 
+## management_output（管理项目与产出项目模型，新主线）
+
+统一"目标、管理项目、产出项目、版本"的概念与关系，并把现有分散在多处的产出
+纳入全局注册表。按阶段推进，每阶段一篇实施记录。
+
+1. `management_output_project_model_plan.md` — 计划：整体模型与分阶段路线（P0–P6）
+2. `management_output_project_model_impl_p0.md` — 实施记录：P0 只读盘点
+
 ## growth_advisor（成长顾问，19 篇）
 
 扫描记忆信号、生成成长方向候选、调研报告、自主搜索与生命周期管理。
