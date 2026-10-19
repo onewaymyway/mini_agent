@@ -780,6 +780,7 @@ class TurnLoopMixin:
 
     def _build_tool_schemas(self) -> list[ToolSchema]:
         """将 ToolRegistry 的工具定义转换为 provider 无关的 ToolSchema 列表。"""
+        from mini_agent.tools import _tool_is_available
         return [
             ToolSchema(
                 name=td.name,
@@ -787,5 +788,5 @@ class TurnLoopMixin:
                 input_schema=td.input_schema,
             )
             for td in (self.registry.get(n) for n in self.registry.names)
-            if td is not None
+            if td is not None and _tool_is_available(td)
         ]

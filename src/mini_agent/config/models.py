@@ -2981,6 +2981,9 @@ class OutputRegistryConfig:
     patrol_interval_days: float = 3.0
     # 是否注册定期巡检 job。关闭后 job 保留但 disabled，不再自动运行。
     patrol_schedule_enabled: bool = True
+    # [goal_output_project_auto_link S2] goal/objective 执行期内置工具 link_output_project 与提示词注入。
+    # 默认关闭：关闭时工具不出现在工具列表中，执行上下文也不写入，行为与此前完全一致。
+    auto_link_tool_enabled: bool = False
 
 
 @dataclass

@@ -1421,6 +1421,27 @@ class AgentClient:
     def output_registry_patrol_latest(self):
         return self._get("/output_registry/patrol/latest")
 
+    # ── 待确认关联（goal_output_project_auto_link_plan.md §7，S3）──
+    def output_registry_pending_links(self, state: str = "pending"):
+        return self._get("/output_registry/pending_links", params={"state": state})
+
+    def output_registry_pending_confirm(self, pending_id: str, role: str = ""):
+        body = {"confirm": True}
+        if role:
+            body["role"] = role
+        return self._post(f"/output_registry/pending_links/{pending_id}/confirm", json_body=body, timeout=30)
+
+    def output_registry_pending_reject(self, pending_id: str):
+        return self._post(f"/output_registry/pending_links/{pending_id}/reject", json_body={}, timeout=15)
+
+    def output_registry_link(self, slug: str, management_id: str, role: str):
+        body = {"confirm": True, "slug": slug, "management_id": management_id, "role": role}
+        return self._post("/output_registry/links", json_body=body, timeout=30)
+
+    def output_registry_unlink(self, slug: str, management_id: str, role: str):
+        body = {"confirm": True, "slug": slug, "management_id": management_id, "role": role}
+        return self._delete("/output_registry/links", json_body=body, timeout=15)
+
     def register_external_project(self, path: str, name: str = "", validate: bool = True):
         """注册一个新的外部项目。`name` 留空时后端用路径最后一段目录名。"""
         body = {"path": path, "validate": validate}

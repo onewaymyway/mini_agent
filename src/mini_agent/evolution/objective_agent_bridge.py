@@ -37,6 +37,7 @@ from typing import Any, Callable, Optional
 
 from mini_agent.config import AppConfig, load_config
 from mini_agent.agent import Agent
+from mini_agent.evolution.goal_exec_context import goal_exec_scope
 from mini_agent.llm.base import LLMConfig
 from mini_agent.llm.factory import create_client
 from mini_agent.permissions import PermissionGuard
@@ -404,7 +405,9 @@ class ObjectiveIsolatedRunner:
 
     def _run_step(self, turn_id: str, message: str, meta: dict) -> None:
         try:
-            self._run_step_inner(turn_id, message, meta)
+            # [auto_link S2] 执行期上下文只在本 step 的线程内有效，退出即清除
+            with goal_exec_scope(meta):
+                self._run_step_inner(turn_id, message, meta)
         finally:
             # [阶段四] 无论正常完成、异常，还是（迟到的）被 check_health()
             # 判定为卡死后整体重建了线程池，都要摘除 in-flight 记录——
@@ -579,6 +582,11 @@ class ObjectivePersistentRunner:
         return turn_id
 
     def _run_step(self, turn_id: str, execution_id: str, message: str, meta: dict) -> None:
+        # [auto_link S2] 执行期上下文：只在本 step 所在 worker 线程内有效
+        with goal_exec_scope(meta):
+            self._run_step_body(turn_id, execution_id, message, meta)
+
+    def _run_step_body(self, turn_id: str, execution_id: str, message: str, meta: dict) -> None:
         from mini_agent.perception.format_correction_detector import is_valid_final_result
 
         objective_title = meta.get("objective_id", "") or "(unknown)"

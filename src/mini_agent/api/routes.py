@@ -1011,6 +1011,142 @@ async def get_output_registry_patrol_latest(request: Request):
         return {"report": None}
 
 
+# ── 待确认关联（goal_output_project_auto_link_plan.md §7，S3）────────────────
+# 背景：执行期工具 link_output_project（S2）只写待确认账本，正式关联必须由用户确认。
+# 这里只做接线：每个端点复用 output_registry.pending_links / registry 中已有函数。
+# 规则与 patrol/adopt 一致：写操作要求请求体显式 confirm=true；忽略是"不再建议"的
+# 低风险操作，不要求 confirm。
+
+_PENDING_STATES = ("pending", "rejected", "all")
+
+
+def _goal_title(nodes: dict, goal_id: str) -> str:
+    return (nodes.get(goal_id) or {}).get("title", "") if nodes else ""
+
+
+async def _json_body_or_empty(request: Request) -> dict:
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 — DELETE/空体允许不带 JSON
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+@router.get("/output_registry/pending_links")
+async def get_output_registry_pending_links(request: Request, state: str = "pending"):
+    """GET /v1/output_registry/pending_links?state=pending|rejected|all — 待确认关联列表（只读）。"""
+    project_root = _output_registry_root(request)
+    if state not in _PENDING_STATES:
+        raise HTTPException(status_code=400, detail=f"state 必须是 {_PENDING_STATES} 之一")
+    from mini_agent.output_registry.pending_links import list_pending, read_goal_nodes
+    items = await asyncio.to_thread(
+        list_pending, project_root, None if state == "all" else state,
+    )
+    nodes = await asyncio.to_thread(read_goal_nodes, project_root) or {}
+    for item in items:
+        item["goal_title"] = _goal_title(nodes, item.get("goal_id", ""))
+        item["management_title"] = _goal_title(nodes, item.get("management_id", ""))
+    return {"items": items}
+
+
+@router.post("/output_registry/pending_links/{pending_id}/confirm")
+async def post_output_registry_pending_confirm(pending_id: str, request: Request):
+    """POST /v1/output_registry/pending_links/{id}/confirm — 确认待确认关联（需 confirm=true）。
+
+    请求体：{"confirm": true, "role"?: "build"|"iterate"|"reference"}
+    确认 = 标记管理根（若尚未标记）+ 写入正式关联 + 删除账本条目。角色可覆盖建议值。
+    """
+    project_root = _output_registry_root(request)
+    body = await _json_body_or_empty(request)
+    if body.get("confirm") is not True:
+        raise HTTPException(status_code=400, detail="确认关联需要用户确认：请求体必须带 confirm=true")
+    from mini_agent.output_registry.pending_links import (
+        confirm_pending, get_pending, read_goal_nodes,
+    )
+    from mini_agent.output_registry import RegistryError
+    item = await asyncio.to_thread(get_pending, project_root, pending_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"待确认条目不存在：{pending_id}")
+    nodes = await asyncio.to_thread(read_goal_nodes, project_root) or {}
+    role = str(body.get("role") or "") or None
+    try:
+        record = await asyncio.to_thread(
+            confirm_pending, project_root, pending_id,
+            confirm=True, role=role,
+            title=_goal_title(nodes, item.get("management_id", "")),
+        )
+    except RegistryError as exc:
+        raise _registry_error(exc)
+    return {"ok": True, "record": record}
+
+
+@router.post("/output_registry/pending_links/{pending_id}/reject")
+async def post_output_registry_pending_reject(pending_id: str, request: Request):
+    """POST /v1/output_registry/pending_links/{id}/reject — 忽略（不再建议同一 slug+goal）。"""
+    project_root = _output_registry_root(request)
+    from mini_agent.output_registry.pending_links import reject_pending
+    from mini_agent.output_registry import RegistryError
+    try:
+        item = await asyncio.to_thread(reject_pending, project_root, pending_id)
+    except RegistryError as exc:
+        raise _registry_error(exc)
+    return {"ok": True, "item": item}
+
+
+@router.post("/output_registry/links")
+async def post_output_registry_link(request: Request):
+    """POST /v1/output_registry/links — 手动关联：已登记项目 + 目标节点 + 角色（需 confirm=true）。
+
+    请求体：{"confirm": true, "slug": str, "management_id": str, "role": str}
+    节点尚未标记为管理项目时，先按目标树标题标记（与确认路径一致）。
+    """
+    project_root = _output_registry_root(request)
+    body = await request.json()
+    if body.get("confirm") is not True:
+        raise HTTPException(status_code=400, detail="手动关联需要用户确认：请求体必须带 confirm=true")
+    from mini_agent.output_registry.pending_links import read_goal_nodes
+    from mini_agent.output_registry import RegistryError, link_management_output, mark_management_root
+    slug = str(body.get("slug") or "")
+    mid = str(body.get("management_id") or "")
+    role = str(body.get("role") or "")
+    nodes = await asyncio.to_thread(read_goal_nodes, project_root)
+    if nodes is None:
+        raise HTTPException(status_code=503, detail="目标树不可读")
+    if mid not in nodes:
+        raise HTTPException(status_code=400, detail=f"目标节点不存在：{mid!r}")
+    try:
+        await asyncio.to_thread(
+            mark_management_root, project_root, mid, nodes[mid].get("title", ""),
+            valid_goal_ids=nodes.keys(),
+        )
+        record = await asyncio.to_thread(link_management_output, project_root, mid, slug, role)
+    except RegistryError as exc:
+        raise _registry_error(exc)
+    return {"ok": True, "record": record}
+
+
+@router.delete("/output_registry/links")
+async def delete_output_registry_link(request: Request):
+    """DELETE /v1/output_registry/links — 解除正式关联（需 confirm=true）。
+
+    请求体：{"confirm": true, "slug": str, "management_id": str, "role": str}
+    """
+    project_root = _output_registry_root(request)
+    body = await _json_body_or_empty(request)
+    if body.get("confirm") is not True:
+        raise HTTPException(status_code=400, detail="解除关联需要用户确认：请求体必须带 confirm=true")
+    from mini_agent.output_registry import RegistryError, unlink_management_output
+    try:
+        record = await asyncio.to_thread(
+            unlink_management_output, project_root,
+            str(body.get("management_id") or ""), str(body.get("slug") or ""),
+            str(body.get("role") or ""),
+        )
+    except RegistryError as exc:
+        raise _registry_error(exc)
+    return {"ok": True, "record": record}
+
+
 # ── 外部项目管理接入看板（external_projects_kanban_integration_plan.md 阶段1）──
 # 背景：上面的 GET /v1/self/external_projects 只读聚合状态已经存在，但
 # "注册/手动触发/账本/backlog/review 预览"这些此前只有 CLI（`mini-agent

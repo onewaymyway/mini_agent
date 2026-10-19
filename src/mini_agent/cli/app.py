@@ -192,6 +192,7 @@ def _main_inner() -> None:
     import mini_agent.tools.env_facts     # noqa: F401  [环境事实库] record_env_fact/get_env_fact
     import mini_agent.tools.recall_history  # noqa: F401  [compact_mechanism_improvement_plan P2-B] recall_from_raw_history
     import mini_agent.tools.ask_user_async  # noqa: F401  [cron_async_user_feedback_mechanism_plan] ask_user_async
+    import mini_agent.tools.output_registry  # noqa: F401  [goal_output_project_auto_link S2] link_output_project（仅 goal 执行上下文可见）
     # tools.skill_manager 由 Agent.__init__ 懒注册（需要 SkillLoader 实例）
 
     from mini_agent.cli.parser import build_parser

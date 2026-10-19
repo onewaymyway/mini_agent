@@ -274,6 +274,7 @@
     "version_gap_days": 3,
     "notify_enabled": true,
     "patrol_interval_days": 3,
-    "patrol_schedule_enabled": true
+    "patrol_schedule_enabled": true,
+    "auto_link_tool_enabled": true
   }
 }

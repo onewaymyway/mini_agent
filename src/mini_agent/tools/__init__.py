@@ -31,6 +31,18 @@ class ToolDef:
     # [platform_filter] 平台/tag 限制：空 = 不限制，见 mini_agent.platform_filter
     platforms: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
+    # [auto_link S2] 运行期可用性判定：返回 False 时工具不出现在模型可见的工具列表中，
+    # 也拒绝被调用。None = 始终可用（所有既有工具保持原行为）。
+    available: Optional[Callable[[], bool]] = None
+
+
+def _tool_is_available(td: "ToolDef") -> bool:
+    if td.available is None:
+        return True
+    try:
+        return bool(td.available())
+    except Exception:  # noqa: BLE001 — 判定函数出错时按不可用处理，不影响其他工具
+        return False
 
 
 class ToolRegistry:
@@ -81,6 +93,7 @@ class ToolRegistry:
         override: bool = False,
         platforms: Optional[list] = None,
         tags: Optional[list] = None,
+        available: Optional[Callable[[], bool]] = None,
     ) -> None:
         tool_name = name or fn.__name__
         desc = description or (inspect.getdoc(fn) or "").split("\n")[0]
@@ -95,6 +108,7 @@ class ToolRegistry:
                 group=group,
                 platforms=list(platforms or []),
                 tags=list(tags or []),
+                available=available,
             ),
             override=override,
         )
@@ -189,12 +203,17 @@ class ToolRegistry:
     def call(self, name: str, tool_input: dict) -> Any:
         """Execute a tool by name. Returns the result (str or dict)."""
         td = self._tools.get(name)
-        if not td:
+        if not td or not _tool_is_available(td):
             raise ValueError(f"Unknown tool: {name!r} (namespace={self.namespace!r})")
         coerced = _coerce_tool_input(td.fn, tool_input)
         return td.fn(**coerced)
 
     # ── Anthropic API format ───────────────────────────────────────────────────
+
+    def is_available(self, name: str) -> bool:
+        """工具已注册且当前可用（available 判定通过）。"""
+        td = self._tools.get(name)
+        return td is not None and _tool_is_available(td)
 
     def to_api_tools(self) -> list[dict]:
         """Return tool definitions in Anthropic Messages API format."""
@@ -205,6 +224,7 @@ class ToolRegistry:
                 "input_schema": td.input_schema,
             }
             for td in self._tools.values()
+            if _tool_is_available(td)
         ]
 
 
@@ -223,6 +243,7 @@ def tool(
     override: bool = False,
     platforms: Optional[list] = None,
     tags: Optional[list] = None,
+    available: Optional[Callable[[], bool]] = None,
 ):
     """
     Decorator to register a function as a tool in the default registry.
@@ -248,6 +269,7 @@ def tool(
             override=override,
             platforms=platforms,
             tags=tags,
+            available=available,
         )
         return fn
     return decorator

@@ -103,6 +103,29 @@ def _formal_link_exists(project_root: Path | str, slug: str, management_id: str,
     return {"management_id": management_id, "role": role} in record.get("links", [])
 
 
+
+def read_goal_nodes(project_root: Path | str) -> Optional[dict[str, dict[str, Any]]]:
+    """只读解析 .agent/goals.json：id → {parent_id, level, title}。不可读时返回 None。
+
+    与 routing.py 相同的只读方式，不调用 GoalBacklog.load()，无写盘副作用。
+    """
+    goals_path = Path(project_root) / ".agent" / "goals.json"
+    if not goals_path.is_file():
+        return None
+    try:
+        data = json.loads(goals_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    nodes: dict[str, dict[str, Any]] = {}
+    for g in data.get("goals", []) or []:
+        if isinstance(g, dict) and "id" in g:
+            nodes[g["id"]] = {
+                "parent_id": g.get("parent_id"),
+                "level": g.get("level"),
+                "title": g.get("title", "") or "",
+            }
+    return nodes
+
 def list_pending(project_root: Path | str, state: Optional[str] = None) -> list[dict[str, Any]]:
     """列出账本条目；state 为空时返回全部（pending 与 rejected）。"""
     items = _read_ledger(project_root)["items"]
@@ -255,4 +278,5 @@ __all__ = [
     "add_pending",
     "confirm_pending",
     "reject_pending",
+    "read_goal_nodes",
 ]

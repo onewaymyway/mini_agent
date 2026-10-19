@@ -2119,6 +2119,38 @@ class ObjectiveExecutor:
             self.save()
         return submitted_ids
 
+    def _auto_link_step_context(self, ex: "ObjectiveExecution") -> tuple[str, Optional[dict]]:
+        """[goal_output_project_auto_link S2] 返回 (提示词片段, meta 中的 goal_exec 字段)。
+
+        开关关闭或任何异常时返回 ("", None)——关联能力是增强，绝不能影响 step 提交。
+        """
+        try:
+            ocfg = getattr(self._cfg, "output_registry", None) if self._cfg is not None else None
+            if not getattr(ocfg, "auto_link_tool_enabled", False):
+                return "", None
+            goal_id = self._goal_id_of_objective(ex.objective_id)
+            title = ""
+            try:
+                node = self._goal_backlog.get(goal_id) if self._goal_backlog is not None else None
+                title = (node.title if node is not None else "") or ""
+            except Exception:  # noqa: BLE001
+                title = ""
+            hint = (
+                "\n\n[产出项目关联]\n"
+                f"本次执行属于目标 {goal_id}《{title}》。如果你在 output_projects_root 下新建了独立产出项目，"
+                "或继续向已有项目写入，请调用 link_output_project(slug=..., role=...) 把它关联到本目标。"
+                "关联会先进入待确认，由用户在目标树里确认后才影响产出路径。"
+            )
+            meta = {
+                "trigger_node_id": ex.objective_id,
+                "project_root": str(self._paths.project_root),
+            }
+            return hint, meta
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where="mini_agent.evolution.objective_executor._auto_link_step_context")
+            return "", None
+
     def _submit_step(self, ex: ObjectiveExecution, step_idx: int) -> bool:
         """提交指定 step，记录 turn_id。
 
@@ -2238,21 +2270,29 @@ class ObjectiveExecutor:
                     where="mini_agent.evolution.objective_executor.ObjectiveExecutor._submit_step.policy_ctx",
                 )
 
+            # [goal_output_project_auto_link S2] 产出项目关联：仅在开关开启时注入提示词
+            # 并把执行上下文放进 meta（worker 线程据此设置 thread-local）。关闭时两者都为空，
+            # 消息与 meta 与此前完全一致。
+            link_ctx, goal_exec_meta = self._auto_link_step_context(ex)
+
             message = (
                 f"[自主任务 - {ex.objective_title}]\n"
                 f"步骤 {step_idx+1}/{len(ex.steps)}: {step.description}"
-                f"{goal_ctx}{progress_ctx}{guidance_ctx}{retry_ctx}{pattern_ctx}{policy_ctx}"
+                f"{goal_ctx}{progress_ctx}{guidance_ctx}{retry_ctx}{pattern_ctx}{policy_ctx}{link_ctx}"
             )
             step.submitted_message = message
+            submit_meta = {
+                "execution_id": ex.execution_id,
+                "objective_id": ex.objective_id,
+                "step_index": step_idx,
+                "step_id": step.step_id,
+            }
+            if goal_exec_meta is not None:
+                submit_meta["goal_exec"] = goal_exec_meta
             turn_id = self._submit_fn(
                 message,
                 "autonomous",
-                {
-                    "execution_id": ex.execution_id,
-                    "objective_id": ex.objective_id,
-                    "step_index": step_idx,
-                    "step_id": step.step_id,
-                },
+                submit_meta,
             )
             if turn_id:
                 step.turn_id = str(turn_id)
