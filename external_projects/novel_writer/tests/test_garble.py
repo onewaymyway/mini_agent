@@ -162,3 +162,73 @@ def test_contamination_clean_book_reports_no_findings(book):
         _touch(book.path("chapter_summary", nn=n), base + 10)
     report = scan_contamination(book, garbled_chapter=19, chapters=[20, 21])
     assert report["findings"] == [] and report["contaminated"] is False
+
+
+# ── 候选稿 B 乱码 / 择优 ────────────────────────────────────────────────────
+
+from novel_writer import steps as S  # noqa: E402
+
+
+def test_premium_chain_puts_candidate_guard_before_best_pick():
+    steps = {s.id: s for s in S.chapter_steps(1, "测试", total=3, prev_last="x", quality=S.PREMIUM)}
+    assert steps["ch01.alt_guard"].deps == ("ch01.alt_write",)
+    assert steps["ch01.best_pick_prep"].deps == ("ch01.alt_guard",)
+    assert steps["ch01.machine_check"].deps == ("ch01.best_pick_apply",)
+
+
+def test_alt_guard_regenerates_only_candidate_b(book):
+    write_chapter_file(book, 1, NORMAL * 5)
+    cand = book.path("candidate_alt", nn=1)
+    cand.parent.mkdir(parents=True, exist_ok=True)
+    cand.write_text(mojibake(NORMAL * 5), encoding="utf-8")
+    inv = FakeInvoker(book.root, writers={"alt_write": lambda ws: ws.path("candidate_alt", nn=1).write_text(
+        NORMAL * 5, encoding="utf-8")})
+    step = S.chapter_steps(1, "测试", total=3, prev_last="x", quality=S.PREMIUM)
+    alt_guard = next(s for s in step if s.id == "ch01.alt_guard")
+    result = C.h_garble_guard_alt(book, alt_guard, book.settings(), invoker=inv)
+    assert "通过" in result["summary"]
+    assert sum("alt_write" in c for c in inv.calls) == 1
+    assert not any("write_chapter" in c for c in inv.calls)  # 正文 A 未被动
+    assert not is_garbled(cand.read_text(encoding="utf-8")).garbled
+
+
+def _write_pick_report(ws, winner):
+    atomic_write_json(ws.path("best_pick_report", nn=1), {"winner": winner, "reason": "测试"})
+
+
+def test_apply_never_picks_garbled_candidate_b(book):
+    a = write_chapter_file(book, 1, NORMAL * 5)
+    cand = book.path("candidate_alt", nn=1)
+    cand.parent.mkdir(parents=True, exist_ok=True)
+    cand.write_text(mojibake(NORMAL * 5), encoding="utf-8")
+    _write_pick_report(book, "B")
+    step = next(s for s in S.chapter_steps(1, "测试", total=3, prev_last="x", quality=S.PREMIUM)
+                if s.id == "ch01.best_pick_apply")
+    before = a.read_text(encoding="utf-8")
+    C.h_best_pick_apply(book, step, book.settings())
+    assert a.read_text(encoding="utf-8") == before
+    assert not is_garbled(a.read_text(encoding="utf-8")).garbled
+
+
+def test_apply_replaces_garbled_a_with_clean_b(book):
+    a = write_chapter_file(book, 1, mojibake(NORMAL * 5))
+    cand = book.path("candidate_alt", nn=1)
+    cand.parent.mkdir(parents=True, exist_ok=True)
+    cand.write_text(NORMAL * 5, encoding="utf-8")
+    _write_pick_report(book, "A")
+    step = next(s for s in S.chapter_steps(1, "测试", total=3, prev_last="x", quality=S.PREMIUM)
+                if s.id == "ch01.best_pick_apply")
+    C.h_best_pick_apply(book, step, book.settings())
+    assert not is_garbled(a.read_text(encoding="utf-8")).garbled
+
+
+def test_apply_suspends_when_both_candidates_garbled(book):
+    write_chapter_file(book, 1, mojibake(NORMAL * 5))
+    cand = book.path("candidate_alt", nn=1)
+    cand.parent.mkdir(parents=True, exist_ok=True)
+    cand.write_text(mojibake(NORMAL * 5), encoding="utf-8")
+    _write_pick_report(book, "A")
+    step = next(s for s in S.chapter_steps(1, "测试", total=3, prev_last="x", quality=S.PREMIUM)
+                if s.id == "ch01.best_pick_apply")
+    with pytest.raises(NeedsUser):
+        C.h_best_pick_apply(book, step, book.settings())

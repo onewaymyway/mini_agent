@@ -41,7 +41,7 @@ def test_premium_plan_has_prep_llm_pick_and_apply_in_order(isolated):
     ws = _premium_book(isolated)
     ids = [s.id for s in P.build_plan(ws)]
     i = ids.index("ch01.alt_write")
-    assert ids[i:i + 4] == ["ch01.alt_write", "ch01.best_pick_prep", "ch01.best_pick", "ch01.best_pick_apply"]
+    assert ids[i:i + 5] == ["ch01.alt_write", "ch01.alt_guard", "ch01.best_pick_prep", "ch01.best_pick", "ch01.best_pick_apply"]
     pick = next(s for s in P.build_plan(ws) if s.id == "ch01.best_pick")
     assert pick.executor == S.EXECUTOR_SKILL and pick.skill == "chapter-picker"
     mc = next(s for s in P.build_plan(ws) if s.id == "ch01.machine_check")

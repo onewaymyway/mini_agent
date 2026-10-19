@@ -302,19 +302,19 @@ def h_machine_check(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], in
     return {"summary": f"机器硬问题 {len(report['hard'])} · 提示 {len(report['warn'])}"}
 
 
-# ── 乱码守卫（写作后、机器校验前）────────────────────────────────────────────
+# ── 乱码守卫（写作后、机器校验 / 择优前）────────────────────────────────────
 
 GARBLE_OPTIONS = ["再重新生成（再试三次）", "我手动修改后重新核查", "接受当前内容（风险自负）"]
 
 
-def h_garble_guard(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:
-    """正文乱码检测：命中则自动重新生成，最多 MAX_GARBLE_REGENS 次；仍乱码则挂起给作者。
+def _garble_guard(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker, *,
+                  path: Optional[Path], regen: S.StepDef, label: str) -> Dict[str, Any]:
+    """对一个文件做乱码检测：命中则用 regen 步骤重新生成，最多 MAX_GARBLE_REGENS 次；仍乱码则挂起给作者。
 
     决策（来自上一次挂起的作者回答）：
       * 无 / 「再重新生成」：自动重新生成，最多三次；
       * 「我手动修改后重新核查」：不再生成，只重新检测；
       * 「接受」：记录风险后继续推进。
-    挂起后下一章不会开始（与修改循环的升级一致）。
     """
     from novel_writer.garble import is_garbled
     from novel_writer.runner import NeedsUser, StepFailed, _answers_file, run_skill_step
@@ -328,49 +328,62 @@ def h_garble_guard(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], inv
     if answers_path.exists():
         answers_path.unlink()
 
-    path = chapter_file(ws, n)
-    if path is None:
-        raise ChapterOpError("正文文件缺失，无法做乱码检测")
+    if path is None or not path.is_file():
+        raise ChapterOpError(f"第 {n} 章{label}文件缺失，无法做乱码检测")
 
     def check() -> Any:
         return is_garbled(read_text_utf8(path))
 
     report = check()
     if not report.garbled:
-        return {"summary": "乱码守卫：未发现乱码"}
+        return {"summary": f"乱码守卫：{label}未发现乱码"}
 
     if decision.startswith("接受"):
-        _log(ws, n, f"乱码守卫：作者接受风险，继续推进（{'；'.join(report.reasons)}）")
-        return {"summary": "作者接受乱码风险，继续推进"}
+        _log(ws, n, f"乱码守卫：作者接受{label}风险，继续推进（{'；'.join(report.reasons)}）")
+        return {"summary": f"作者接受{label}乱码风险，继续推进"}
 
     if decision.startswith("我手动修改"):
-        _log(ws, n, "乱码守卫：作者手动修改后重新检测")
+        _log(ws, n, f"乱码守卫：作者手动修改{label}后重新检测")
     else:
-        write = _chapter_step(n, "write_chapter")
         for k in range(1, MAX_GARBLE_REGENS + 1):
-            _log(ws, n, f"乱码守卫：检测到乱码（{'；'.join(report.reasons)}），自动重新生成第 {k}/{MAX_GARBLE_REGENS} 次")
+            _log(ws, n, f"乱码守卫：{label}检测到乱码（{'；'.join(report.reasons)}），自动重新生成第 {k}/{MAX_GARBLE_REGENS} 次")
             try:
-                run_skill_step(ws, write, invoker=invoker, settings=settings, run_no=k + 1)
+                run_skill_step(ws, regen, invoker=invoker, settings=settings, run_no=k + 1)
             except StepFailed as exc:
-                _log(ws, n, f"乱码守卫：重新生成第 {k} 次失败：{exc}")
+                _log(ws, n, f"乱码守卫：{label}重新生成第 {k} 次失败：{exc}")
                 continue
             report = check()
             if not report.garbled:
-                _log(ws, n, f"乱码守卫：第 {k} 次重新生成后通过检测")
-                return {"summary": f"乱码守卫：重新生成 {k} 次后通过"}
+                _log(ws, n, f"乱码守卫：{label}第 {k} 次重新生成后通过检测")
+                return {"summary": f"乱码守卫：{label}重新生成 {k} 次后通过"}
 
     if not report.garbled:
-        return {"summary": "乱码守卫：手动修改后通过检测"}
+        return {"summary": f"乱码守卫：{label}手动修改后通过检测"}
 
-    _log(ws, n, f"乱码守卫：仍为乱码，挂起等待作者决定（{'；'.join(report.reasons)}）")
+    _log(ws, n, f"乱码守卫：{label}仍为乱码，挂起等待作者决定（{'；'.join(report.reasons)}）")
     raise NeedsUser(
-        f"第 {n} 章正文疑似乱码，已自动重新生成 {MAX_GARBLE_REGENS} 次仍未通过，已暂停，下一章不会开始。",
+        f"第 {n} 章{label}疑似乱码，已自动重新生成 {MAX_GARBLE_REGENS} 次仍未通过，已暂停，下一章不会开始。",
         [{
             "id": "decision",
-            "question": "检测结果：" + "；".join(report.reasons) + "\n请选择：",
+            "question": f"{label}检测结果：" + "；".join(report.reasons) + "\n请选择：",
             "options": GARBLE_OPTIONS,
         }],
     )
+
+
+def h_garble_guard(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:
+    """正文 A 的乱码守卫。"""
+    n = step.chapter
+    return _garble_guard(ws, step, settings, invoker, path=chapter_file(ws, n),
+                         regen=_chapter_step(n, "write_chapter"), label="正文")
+
+
+def h_garble_guard_alt(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:
+    """候选稿 B 的乱码守卫：B 乱码时只重新生成 B，不动正文 A。"""
+    n = step.chapter
+    regen = S.alt_write_step(n, prev_last=S.chapter_id(n, "write_chapter"))
+    return _garble_guard(ws, step, settings, invoker, path=ws.path("candidate_alt", nn=n),
+                         regen=regen, label="候选稿B")
 
 
 # ── W11 修改循环（7.4）────────────────────────────────────────────────────────
@@ -585,6 +598,15 @@ def h_snapshot(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker
     return {"summary": f"快照已保存（截至第 {n} 章，{words} 字）"}
 
 
+def garble_reasons_of(path: Optional[Path]) -> List[str]:
+    """文件的乱码理由；无乱码或文件不存在返回空列表。"""
+    from novel_writer.garble import is_garbled
+    if path is None or not path.is_file():
+        return []
+    report = is_garbled(read_text_utf8(path))
+    return report.reasons if report.garbled else []
+
+
 def h_best_pick_prep(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:
     """精品档择优·准备：对正文（A）与候选稿（B）各做一次机器校验，结果供 LLM 择优时参考。"""
     n = step.chapter
@@ -596,10 +618,12 @@ def h_best_pick_prep(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], i
         raise ChapterOpError(f"第 {n} 章没有候选稿，无法择优")
     a = machine_findings(ws, n, settings, path=a_path)
     b = machine_findings(ws, n, settings, path=b_path)
+    a_garble = garble_reasons_of(a_path)
+    b_garble = garble_reasons_of(b_path)
     atomic_write_json(ws.path("best_pick_check", nn=n), {
         "chapter": n, "checked_at": _now(),
-        "A": {"hard": a["hard"], "warn": a["warn"], "words": a.get("words"), "quota": a.get("quota")},
-        "B": {"hard": b["hard"], "warn": b["warn"], "words": b.get("words"), "quota": b.get("quota")},
+        "A": {"hard": a["hard"], "warn": a["warn"], "words": a.get("words"), "quota": a.get("quota"), "garble": a_garble},
+        "B": {"hard": b["hard"], "warn": b["warn"], "words": b.get("words"), "quota": b.get("quota"), "garble": b_garble},
     })
     return {"summary": f"机检完成：A 硬问题 {len(a['hard'])} 条，B 硬问题 {len(b['hard'])} 条"}
 
@@ -616,6 +640,21 @@ def h_best_pick_apply(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], 
     if not isinstance(report, dict) or report.get("winner") not in ("A", "B"):
         raise ChapterOpError("择优报告缺失或 winner 不是 A/B，无法应用择优结果")
     winner = report["winner"]
+    # 乱码稿不参与择优：LLM 选了乱码的一方，改用另一方（两方都乱码则挂起给作者）
+    a_bad = bool(garble_reasons_of(a_path))
+    b_bad = bool(garble_reasons_of(b_path))
+    if winner == "B" and b_bad and not a_bad:
+        _log(ws, n, "择优：LLM 选了乱码的候选稿 B，已改用正文 A（B 未通过乱码检测）")
+        winner = "A"
+    elif winner == "A" and a_bad and not b_bad:
+        _log(ws, n, "择优：正文 A 乱码，已改用候选稿 B（B 通过乱码检测）")
+        winner = "B"
+    elif a_bad and b_bad:
+        from novel_writer.runner import NeedsUser
+        raise NeedsUser(
+            f"第 {n} 章正文与候选稿都疑似乱码，无法择优，已暂停，下一章不会开始。",
+            [{"id": "decision", "question": "请选择：", "options": GARBLE_OPTIONS}],
+        )
     if winner == "B":
         if not b_path.is_file():
             raise ChapterOpError("择优选择了候选稿 B，但候选稿文件不存在")
@@ -632,6 +671,7 @@ CHAPTER_HANDLERS = {
     "context_pack": h_context_pack,
     "style_hint": h_style_hint,
     "garble_guard": h_garble_guard,
+    "garble_guard_alt": h_garble_guard_alt,
     "machine_check": h_machine_check,
     "revise_loop": h_revise_loop,
     "best_pick_prep": h_best_pick_prep,

@@ -99,7 +99,8 @@ def test_premium_quality_adds_best_of_n_reader_sim_every_three_and_patrol(tmp_pa
     assert plan["ch01.machine_check"].deps == ("ch01.best_pick_apply",)
     assert plan["ch01.best_pick_apply"].deps == ("ch01.best_pick",)
     assert plan["ch01.best_pick"].deps == ("ch01.best_pick_prep",)
-    assert plan["ch01.best_pick_prep"].deps == ("ch01.alt_write",)
+    assert plan["ch01.best_pick_prep"].deps == ("ch01.alt_guard",)
+    assert plan["ch01.alt_guard"].deps == ("ch01.alt_write",)
     assert plan["ch01.alt_write"].deps == ("ch01.write_chapter",)
     assert "ch03.reader_sim" in plan and "ch06.reader_sim" in plan and "ch05.reader_sim" not in plan
     assert "patrol:10" in plan and plan["patrol:10"].skill == "revision-editor"
