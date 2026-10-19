@@ -1210,6 +1210,85 @@ session 尚未创建 Agent 时，由 `_save_cognitive_anchor()` 自身的 no-op 
 （锚点内容由 LLM 生成，可能因为 history 太短、LLM 调用失败等原因静默跳过——
 与本地模式的行为一致）。
 
+### /v1/output_registry/pending_links 与 /v1/goals/tree/output_links — 产出关联 REST API（owner only）
+
+对应 `next_doc/goal_output_project_auto_link_plan.md` §7。执行期 agent 通过 `link_output_project` 登记的产出项目，以及执行后目录检测发现的新增目录，先进入**待确认**；只有确认后才建立正式关联，影响产出路径。
+
+```
+GET    /v1/output_registry/pending_links?state=pending|rejected|all   待确认列表（默认 pending）
+POST   /v1/output_registry/pending_links/{id}/confirm                确认（需 confirm=true，可带 role）
+POST   /v1/output_registry/pending_links/{id}/reject                 忽略（不需要 confirm）
+POST   /v1/output_registry/links                                     手动关联（需 confirm=true）
+DELETE /v1/output_registry/links                                     解除正式关联（需 confirm=true）
+GET    /v1/goals/tree/output_links                                   整棵目标树的关联批量视图
+```
+
+**确认门槛**：会改变正式关联（确认、手动关联、解除）的请求体必须显式带 `"confirm": true`，否则返回 400 且不产生任何写入。忽略只把建议标为不再提示，不改变路由，因此不要求 confirm。
+
+请求示例：
+
+```bash
+# 列出待确认
+curl -s "http://127.0.0.1:8765/v1/output_registry/pending_links" -H "Authorization: Bearer $TOKEN"
+
+# 确认一条（可覆盖角色：build / iterate / reference）
+curl -s -X POST "http://127.0.0.1:8765/v1/output_registry/pending_links/pl_ab12cd34ef56/confirm" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"confirm": true, "role": "iterate"}'
+
+# 手动关联到某个目标节点
+curl -s -X POST "http://127.0.0.1:8765/v1/output_registry/links" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"confirm": true, "slug": "alpha", "management_id": "goal_xxx", "role": "build"}'
+
+# 解除（DELETE 带请求体）
+curl -s -X DELETE "http://127.0.0.1:8765/v1/output_registry/links" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"confirm": true, "slug": "alpha", "management_id": "goal_xxx", "role": "build"}'
+```
+
+列表响应中的每一条包含 `id`、`slug`、`goal_id`（触发关联的 objective 或 goal）、`management_id`（管理项目根）、`role`、`origin`（`agent_tool` 或 `auto_detect`）、`state`、`note`、`created_at`，并附加 `goal_title` 与 `management_title`（目标树中找不到时为空串）。
+
+错误码：
+
+| 状态码 | 含义 |
+|---|---|
+| 400 | 缺少 `confirm=true`；角色非法；节点不存在；忽略一个不存在的条目；解除一个不存在的关联 |
+| 404 | 确认时条目不存在 |
+| 503 | 目标树不可读（仅手动关联） |
+
+**`GET /v1/goals/tree/output_links`** 一次返回整棵树的关联，避免前端逐节点请求。响应结构：
+
+```json
+{
+  "by_node": {
+    "goal_xxx": {
+      "is_management_root": true,
+      "linked": [{"slug": "alpha", "role": "build", "latest_version": "1.2.0", "output_dir": "output_projects/alpha/output"}],
+      "inherited_from": null,
+      "pending": [{"id": "pl_...", "slug": "beta", "role": "iterate", "origin": "agent_tool", "note": "", "goal_id": "objective_yyy"}]
+    },
+    "objective_yyy": {
+      "is_management_root": false,
+      "linked": [{"slug": "alpha", "role": "build", "latest_version": "1.2.0", "output_dir": "output_projects/alpha/output"}],
+      "inherited_from": "goal_xxx",
+      "pending": []
+    }
+  },
+  "pending_total": 1
+}
+```
+
+只输出"有生效关联、有待确认或本身是管理根"的节点。`inherited_from` 非空表示关联取自祖先管理根，界面应只读展示。`pending` 只挂在管理根节点上。`goals.json` 不可读时返回 `{"by_node": {}, "pending_total": 0, "error": "..."}`，不返回 500。
+
+相关配置（`agent_config.json` 的 `output_registry` 块，三项相互独立；修改后需重启 daemon 才生效）：
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `auto_link_tool_enabled` | `false` | 注册执行期工具 `link_output_project` 并在 step 提示中注入关联说明。关闭时工具不出现在 agent 的工具列表中 |
+| `auto_link_detect_enabled` | `false` | 执行结束后检测本轮新增的产出目录并进入待确认（只处理新增目录） |
+| `pending_link_stale_days` | `7` | 待确认超过该天数未处理时，巡检给出一条只读提示 |
+
 ### /v1/external_projects/* — 外部项目管理 REST API（owner only）
 
 `next_doc/external_projects_kanban_integration_plan.md` 第一期新增，

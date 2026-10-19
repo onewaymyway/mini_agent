@@ -1,6 +1,6 @@
 # Goal 执行期自动关联产出项目 — 计划
 
-> 状态：**分阶段实施中**（S1–S5 已完成，见 `goal_output_project_auto_link_impl_s1.md` 至 `_s5.md`；§12 三点已按建议决议）
+> 状态：**S1–S6 代码与文档已完成**，真实环境验证待补（实施记录见 `goal_output_project_auto_link_impl_s1.md` 至 `_s6.md`；§12 三点已按建议决议）
 > 上位文档：`management_output_project_model_plan.md`（§5.5 关联、§8.3 产出路由、§8.5 游离项目、§12 已决议）
 > 关联实施记录：`management_output_project_model_impl_p2.md`（关联）、`_p4.md`（路由）、`_p7.md`（看板管理区）
 > 约束：保守、默认关闭；不改动现有注册表数据结构；待确认关联**不参与**产出路由。
@@ -196,7 +196,7 @@ auto_link_detect_enabled    false   执行后目录差异检测（第二层）
 | S3 ✅ | REST 端点 + client 方法 | 端点单测通过；真实 daemon 的手动 curl 验证待可运行环境补做（见 impl_s3 §5） |
 | S4 ✅ | 目标树界面：徽标、「🔗 关联项目」子区块、批量接口与缓存、详情弹窗；来源列因正式关联未存来源而省略（见 impl_s4 §4）；浏览器端到端验证未做 | 代码与单测完成；浏览器验证待补 |
 | S5 ✅ | 第二层目录差异检测（`auto_link_detect_enabled`，默认关闭，只处理新增目录）+ 「🔗 待确认关联」子页 + 巡检超时提示（只报告） | 代码与单测完成；真实 daemon 端到端验证待补（见 impl_s5 §6） |
-| S6 | 文档：看板指南、HTTP API 指南、实施记录；打 diff-only zip | — |
+| S6 ✅ | 文档：`docs/kanban-dashboard-guide.md`、`docs/http-api-guide.md`；实施记录；累积打包 | 文档完成；真实环境验证待补（见 impl_s6 §4） |
 
 ## 11. 与理念文档的对齐检查
 

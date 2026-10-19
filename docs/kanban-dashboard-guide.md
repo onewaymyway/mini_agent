@@ -963,6 +963,16 @@ git 管理。
 
 删除会一并移除这些节点绑定的 cron job；goal 层级节点的内部数据（`daemon_run_outputs` 等）也会清理，但设置过 `user_output_dir` 的产出目录永远不删。产出项目不会被删除，若与被删节点有关联，关联会变成断链，由产出巡检报告出来。根节点不能删除，清空整棵树请用「一键删除所有目标」。
 
+### 🌳 目标树：产出关联（徽标、🔗 关联项目）
+
+目标 Goal 执行时 agent 产生的产出项目（`output_projects_root` 下的目录），会关联到对应的管理项目节点，目标树上直接可见：
+
+- **标题行徽标**：`🗂️N` 表示该节点生效的关联产出项目数；子节点会显示所属管理根的关联数（继承）。`⏳N` 表示待确认的关联数，**挂在管理根上**，确认入口也在管理根的「⚙️ 管理」里，不挂在触发它的 objective 上。
+- **「⚙️ 管理」里的「🔗 关联项目」**：列出生效关联（slug、角色、最新版本、产出路径）。继承来的关联只读，提示去所属管理根修改；管理根自己的关联可以解除（需勾选确认）。待确认条目显示 slug、建议角色、来源与理由，可改角色后「✅ 确认」，或「✖️ 忽略」。下方「➕ 手动关联」从已登记项目中选择并建立正式关联（需勾选确认，会影响产出路径）。
+- **📄 节点详情**：「🔗 关联的产出项目」折叠区列出该节点的生效关联与产出路径，方便从节点直接找到产出。
+
+待确认的关联**不影响产出路径**，只有确认之后才生效。忽略后，同一产出项目对同一目标不再提示。
+
 ### 🌳 目标树：待确认的子目标推荐
 
 目标树页面顶部有「🪄 待确认的子目标推荐（N）」面板，汇总全树所有待确认的推荐。每条推荐附父节点标题，可以直接点 ✅ 采纳、✖️ 忽略或 ✏️ 编辑后采纳，不需要先展开父节点。采纳后的子节点来源标记为 `user_decompose`，不会出现在「📥 主动建议」里。推荐由节点「⚙️ 管理」中的「🪄 帮我拆解此节点」生成。
@@ -971,14 +981,17 @@ git 管理。
 
 管理 `output_projects_root` 下产出项目的登记、受管状态、版本与巡检。与「🗺️ 产出项目」（只读展示）分开：这里有写操作，每一个都要先勾选确认框，后端也会再校验一次。
 
-四个子区：
+五个子区：
 
 | 子区 | 作用 | 写操作 |
 |---|---|---|
 | 📥 未登记目录 | 列出产出根下没有登记记录的目录，每个目录提供两个按钮：**只登记**（目录内不产生任何文件，项目不受管）和 **一键接入（受管）**（额外写入 `PROJECT.json` 镜像，进入版本管理）。标题与介绍可在提交前修改；介绍只在受管档、且目录内没有 `PROJECT_INFO.md` 时写入 | 是 |
 | 🗂️ 已登记项目 | 表格展示接入档位（受管 / 只登记）、状态、最新版本、所属管理项目。只登记的项目可在此升级为受管 | 是（升级） |
 | 📦 发布版本 | 仅受管项目可选。填写 `MAJOR.MINOR.PATCH` 版本号与变更说明，勾选确认后发布；快照复制项目全部内容并设为只读 | 是 |
-| 🔍 巡检 | 「▶️ 立即巡检」生成一次报告并展示建议表。阈值来自 `agent_config.json` 的 `output_registry` 块（默认停滞 3 天、版本缺口 3 天）。新出现的建议会推送到「🔔 关注与通知」（分类「关注提醒」），重复的不再推送 | 否（只生成建议） |
+| 🔍 巡检 | 「▶️ 立即巡检」生成一次报告并展示建议表。阈值来自 `agent_config.json` 的 `output_registry` 块（默认停滞 3 天、版本缺口 3 天）。待确认关联超过 `pending_link_stale_days`（默认 7 天）未处理也会出现一条提示。新出现的建议会推送到「🔔 关注与通知」（分类「关注提醒」），重复的不再推送 | 否（只生成建议） |
+| 🔗 待确认关联 | 汇总所有待确认的关联，每条显示 slug、建议角色、来源（执行中 agent 关联 / 执行后目录检测）、理由，以及面包屑「管理项目 ← 触发节点」。可逐条确认（可改角色）或忽略；也可勾选多条后批量确认或忽略，批量操作需先勾选「确认执行批量操作」 | 是（确认 / 忽略，需勾选确认） |
+
+**关于产出关联的两个来源**：执行过程中 agent 主动调用 `link_output_project` 登记的，来源为「执行中 agent 主动关联」；执行结束后检测到本轮新增、但 agent 没有登记的目录，来源为「执行后目录检测」（默认关闭，需 `output_registry.auto_link_detect_enabled: true`）。前者需要 `output_registry.auto_link_tool_enabled: true` 才会出现在 agent 的工具列表里（默认关闭）。两者都只进入待确认，不会自动生效。
 
 **关于确认**：表单里改文本不会触发整页重跑，只有提交按钮才发请求。未勾选确认时只显示提示，不发请求。
 
@@ -1198,6 +1211,12 @@ plan.md`）：纯只读快照，回答"P2 公平轮询/P3 老化加成/P4 时间
 | `output_registry_publish(slug, version, changelog)` | `POST /v1/output_registry/publish` | 发布版本；必须带 `confirm=true`，版本号非语义化或不递增时 400 |
 | `output_registry_patrol_run()` | `POST /v1/output_registry/patrol/run` | 立即巡检，返回报告摘要；新建议会推送通知 |
 | `output_registry_patrol_latest()` | `GET /v1/output_registry/patrol/latest` | 最近一次巡检报告（无则 `report=null`） |
+| `output_registry_pending_links(state)` | `GET /v1/output_registry/pending_links` | 待确认关联列表，`state` 为 `pending` / `rejected` / `all` |
+| `output_registry_pending_confirm(pid, role)` | `POST /v1/output_registry/pending_links/{id}/confirm` | 确认待确认关联（可覆盖角色）；必须带 `confirm=true` |
+| `output_registry_pending_reject(pid)` | `POST /v1/output_registry/pending_links/{id}/reject` | 忽略待确认关联，不再重复提示 |
+| `output_registry_link(slug, management_id, role)` | `POST /v1/output_registry/links` | 手动关联；必须带 `confirm=true` |
+| `output_registry_unlink(slug, management_id, role)` | `DELETE /v1/output_registry/links` | 解除正式关联；必须带 `confirm=true` |
+| `goal_tree_output_links()` | `GET /v1/goals/tree/output_links` | 整棵目标树的产出关联批量视图，目标树徽标与关联子区块共用 |
 | `sentinel_summary(cron_failure_threshold=2)` | `GET /v1/sentinel/summary` | 哨兵聚合面板：cron 连续失败 + Objective 重试热点 + wiki 隔离区积压 + LLM 故障转移状态 + 近 7 天仲裁降级/阻塞占比一次性拉取（只读，方向 A） |
 | `concurrency_status()` | `GET /v1/self/concurrency` | SubAgent/LLM 请求这两个底层信号量的并发状态快照（只读，高级用法） |
 | `set_concurrency(max_tasks=, max_llm_calls=)` | `POST /v1/self/concurrency` | 运行时热改最大并发 SubAgent 数 / 最大并发 LLM 调用数，立即生效、不写回配置文件 |
