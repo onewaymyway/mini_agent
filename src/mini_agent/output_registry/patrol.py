@@ -12,7 +12,9 @@
   2. 唯一写入位置：<project_root>/.agent/output_registry/ 下；
   3. 阈值目前为**未校准**的默认值（UNCALIBRATED），报告中明确标注。
      校准需要 collect 模式积累的真实数据，测试数据不能作为校准依据；
-  4. 巡检只建议，不执行任何归档、删除或关联动作。
+  4. 巡检只建议，不执行任何归档、删除或关联动作；
+  5. 写入范围扩展为 .agent/output_registry/（报告）与 .agent/notification/（通知），
+     仍不触碰产出项目目录、_registry/ 与 goals.json。
 """
 
 from __future__ import annotations
@@ -32,12 +34,15 @@ METRICS_FILENAME = "metrics.jsonl"
 PATROL_SUBDIR = "patrol"
 LATEST_FILENAME = "latest.json"
 
-# 未校准的默认阈值。report 模式的报告会原样附上这些值与 calibration="uncalibrated"。
+# 默认阈值（用户 P7 决定：3 天，可在 agent_config.json 的 output_registry 块中修改）。
+# 这个值是用户指定的初始值，不是经真实数据校准的结论；报告中以 calibration="configured" 标注。
+DEFAULT_STALE_DAYS = 3.0
+DEFAULT_VERSION_GAP_DAYS = 3.0
 UNCALIBRATED_THRESHOLDS: dict[str, Any] = {
-    "calibration": "uncalibrated",
-    "stale_days": 30,          # 停滞：超过该天数没有任何文件变动
-    "version_gap_days": 30,    # 版本缺口：有未发布的变更，且距上次发布超过该天数
-    "file_scan_limit": 5000,   # 单项目文件统计上限
+    "calibration": "configured",
+    "stale_days": DEFAULT_STALE_DAYS,        # 停滞：超过该天数没有任何文件变动
+    "version_gap_days": DEFAULT_VERSION_GAP_DAYS,  # 版本缺口：有未发布变更且距上次发布超过该天数
+    "file_scan_limit": 5000,                 # 单项目文件统计上限
 }
 
 _TERMINAL_GOAL_STATUSES = ("completed", "abandoned", "cancelled", "failed")
@@ -206,15 +211,78 @@ def evaluate(rows: list[dict[str, Any]], thresholds: dict[str, Any]) -> list[dic
     return findings
 
 
+def _config_thresholds(project_root: Path | str) -> dict[str, Any]:
+    """从 agent_config.json 的 output_registry 块读取阈值；读取失败则用默认值。"""
+    try:
+        from mini_agent.config.loader import load_config
+
+        cfg = load_config(Path(project_root))
+        block = cfg.output_registry
+        return {"stale_days": float(block.stale_days), "version_gap_days": float(block.version_gap_days)}
+    except Exception:  # 配置读取失败不影响巡检本身
+        return {}
+
+
+def _finding_keys(findings: list[dict[str, Any]]) -> set[tuple[str, str, str]]:
+    return {(f["slug"], f["kind"], f["detail"]) for f in findings}
+
+
+def _notify_new_findings(
+    project_root: Path | str, report: dict[str, Any], new_keys: set[tuple[str, str, str]]
+) -> bool:
+    """只对新出现的建议推送一条通知（去重）。通知落到看板「关注与通知」。
+
+    返回是否实际派发了通知。派发失败不影响巡检结果本身。
+    """
+    if not new_keys:
+        return False
+    try:
+        from mini_agent.notification.dispatcher import NotificationDispatcher, NotificationMessage
+        from mini_agent.storage.paths import AgentPaths
+
+        new_findings = [f for f in report["findings"] if (f["slug"], f["kind"], f["detail"]) in new_keys]
+        lines = [f"- **{f['slug']}** · {f['kind']}：{f['detail']}（建议：{f['suggestion']}）" for f in new_findings]
+        body = (
+            f"产出项目巡检发现 {len(new_findings)} 条新建议（共 {report['findings_total']} 条）。\n\n"
+            + "\n".join(lines)
+            + "\n\n所有建议只读生成，不会自动执行任何动作。"
+        )
+        msg = NotificationMessage(
+            title=f"产出项目巡检：{len(new_findings)} 条新建议",
+            body=body,
+            source="output_patrol",
+            meta={"findings_total": report["findings_total"], "new_findings": len(new_findings)},
+        )
+        results = NotificationDispatcher(AgentPaths(project_root=Path(project_root))).dispatch(msg)
+        return any(results.values())
+    except Exception as exc:
+        from mini_agent.errors import log_exception
+
+        log_exception(exc, where="mini_agent.output_registry.patrol._notify_new_findings")
+        return False
+
+
 def run_report(
     project_root: Path | str,
     thresholds: Optional[dict[str, Any]] = None,
     now: Optional[datetime] = None,
+    *,
+    notify: Optional[bool] = None,
 ) -> dict[str, Any]:
-    """P5：采集 + 评估，写入报告文件。只写 .agent/output_registry/patrol/。"""
+    """P5：采集 + 评估，写入报告文件。写入 .agent/output_registry/patrol/，并按需推送通知。
+
+    阈值优先级：显式参数 > agent_config.json 的 output_registry 块 > 默认值（3 天）。
+    notify：None 时读取配置的 notify_enabled；只有出现新的建议才会推送，重复的不再打扰。
+    """
     th = dict(UNCALIBRATED_THRESHOLDS)
+    th.update(_config_thresholds(project_root))
     th.update(thresholds or {})
     now_dt = _now(now)
+
+    out_dir = _patrol_dir(project_root) / PATROL_SUBDIR
+    previous = _read_json_file(out_dir / LATEST_FILENAME)
+    previous_keys = _finding_keys(previous.get("findings", [])) if previous else set()
+
     rows = collect_metrics(project_root, now_dt)
     findings = evaluate(rows, th)
     report = {
@@ -226,12 +294,36 @@ def run_report(
         "findings": findings,
         "read_only": True,
     }
-    out_dir = _patrol_dir(project_root) / PATROL_SUBDIR
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = now_dt.strftime("%Y%m%dT%H%M%S")
     atomic_write_json(out_dir / f"{stamp}.json", report)
     atomic_write_json(out_dir / LATEST_FILENAME, report)
+
+    new_keys = _finding_keys(findings) - previous_keys
+    if notify is None:
+        notify = _config_notify_enabled(project_root)
+    report["new_findings_total"] = len(new_keys)
+    report["notified"] = bool(notify) and _notify_new_findings(project_root, report, new_keys)
     return report
+
+
+def _config_notify_enabled(project_root: Path | str) -> bool:
+    try:
+        from mini_agent.config.loader import load_config
+
+        return bool(load_config(Path(project_root)).output_registry.notify_enabled)
+    except Exception:
+        return True
+
+
+def _read_json_file(path: Path) -> Optional[dict[str, Any]]:
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def run_collect(project_root: Path | str, now: Optional[datetime] = None) -> dict[str, Any]:

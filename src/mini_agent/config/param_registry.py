@@ -297,6 +297,7 @@ def _build_nested_blocks() -> list:
         # 本文件头部提到的"新增子配置块忘了接入 loader.py，agent_config.json
         # 里写了 persona_candidates.enabled=true 也不起作用"问题。
         NestedBlockSpec("persona_candidates", _m.PersonaCandidateConfig),
+        NestedBlockSpec("output_registry", _m.OutputRegistryConfig),
         NestedBlockSpec("generative_capability", _m.GenerativeCapabilityConfig),
         NestedBlockSpec("cron", _m.CronConfig),
         NestedBlockSpec("autonomy", _m.AutonomyConfig),

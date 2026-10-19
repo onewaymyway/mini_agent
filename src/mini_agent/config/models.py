@@ -2964,6 +2964,21 @@ class PrivacyConfig:
 # ════════════════════════════════════════════════════════════════════════════════
 
 @dataclass
+class OutputRegistryConfig:
+    """[management_output P5/P6/P7] 产出项目巡检与接入配置。
+
+    stale_days：停滞阈值（天）。超过该天数没有任何文件变动即给出 stale 建议。
+    version_gap_days：版本缺口阈值（天）。有未发布变更且距上次发布超过该天数即给出 version_gap 建议。
+    notify_enabled：巡检出现新的建议时是否推送通知（看板「关注与通知」可见）。
+    默认 3 天是用户指定的初始值，尚未经真实数据校准，可在 agent_config.json 的
+    output_registry 块中修改。
+    """
+    stale_days: float = 3.0
+    version_gap_days: float = 3.0
+    notify_enabled: bool = True
+
+
+@dataclass
 class AppConfig:
     """
     应用主配置。
@@ -3131,6 +3146,7 @@ class AppConfig:
     growth_advisor: GrowthAdvisorConfig = field(default_factory=GrowthAdvisorConfig)
     capability_learning: CapabilityLearningConfig = field(default_factory=CapabilityLearningConfig)
     persona_candidates: PersonaCandidateConfig = field(default_factory=PersonaCandidateConfig)
+    output_registry: OutputRegistryConfig = field(default_factory=OutputRegistryConfig)
     # [next_doc/generative_capability_three_tier_improvement_plan.md]
     # generative-capability 引擎 script→skill→explore 三档机制的全局默认值。
     generative_capability: GenerativeCapabilityConfig = field(default_factory=GenerativeCapabilityConfig)

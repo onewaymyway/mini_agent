@@ -873,6 +873,8 @@ def load_config(
     # 配置，同样走通用加载——紧跟 capability_learning_cfg 之后取值，避免
     # 分散在文件各处导致后续遗漏。
     persona_candidates_cfg = _nested_blocks["persona_candidates"]
+    # [management_output P5/P6] 产出项目巡检阈值与通知开关
+    output_registry_cfg = _nested_blocks["output_registry"]
     # [next_doc/generative_capability_three_tier_improvement_plan.md]
     generative_capability_cfg = _nested_blocks["generative_capability"]
     cron_cfg = _nested_blocks["cron"]
@@ -976,6 +978,7 @@ def load_config(
         growth_advisor=growth_advisor_cfg,
         capability_learning=capability_learning_cfg,
         persona_candidates=persona_candidates_cfg,
+        output_registry=output_registry_cfg,
         generative_capability=generative_capability_cfg,
         cron=cron_cfg,
         autonomy=autonomy_cfg,

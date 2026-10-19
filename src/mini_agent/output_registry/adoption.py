@@ -7,13 +7,19 @@
   - adopt_output_project：用户确认后，把一个未登记目录接入注册表（managed=True），
     并写入 PROJECT.json 镜像。
 
+接入有两档（用户 P7 决定）：
+  - "registered"（只登记）：只在 _registry/ 下写入登记记录，目录内不产生任何文件，
+    项目不受管（managed=False），不做版本管理与 PROJECT.json 镜像；
+  - "managed"（受管）：登记并写入 PROJECT.json 镜像，项目进入版本管理与巡检的受管规则。
+  已只登记的项目可以之后升级为受管（upgrade），升级同样需要确认。
+
 约束（计划第 7 节与 P6 退出条件）：
   1. 接入必须 confirm=True，否则拒绝，且不产生任何写入；
-  2. 接入只新增文件（PROJECT.json，以及调用方明确给出介绍时的 PROJECT_INFO.md），
-     从不修改、移动或删除目录中已有的文件；
-  3. PROJECT_INFO.md 仅在缺失且用户给出介绍时才创建，已存在则绝不覆盖；
+  2. 任何一档都不修改、移动或删除目录中已有的文件；受管档只新增 PROJECT.json，
+     以及调用方明确给出介绍且目录内缺失时的 PROJECT_INFO.md；
+  3. PROJECT_INFO.md 绝不覆盖已有文件；
   4. 接入不改变项目状态（保持 floating），不关联任何管理项目；
-  5. 重复接入是幂等的：已登记的项目直接返回，不做任何写入。
+  5. 重复接入是幂等的：已登记且档位不需升级的项目直接返回，不做任何写入。
 """
 
 from __future__ import annotations
@@ -38,6 +44,12 @@ from mini_agent.output_registry.registry import (
 )
 
 _ADOPTED_EVENT = "adopted"
+_REGISTERED_EVENT = "registered"
+_UPGRADED_EVENT = "upgraded_to_managed"
+
+MODE_REGISTERED = "registered"
+MODE_MANAGED = "managed"
+VALID_MODES = (MODE_REGISTERED, MODE_MANAGED)
 
 
 def _now() -> str:
@@ -99,15 +111,18 @@ def adopt_output_project(
     slug: str,
     *,
     confirm: bool,
+    mode: str = MODE_MANAGED,
     title: str = "",
     intro: str = "",
 ) -> dict[str, Any]:
-    """用户确认后，把未登记目录接入注册表。
+    """用户确认后，把未登记目录接入注册表（两档，见模块说明）。
 
-    返回接入后的摘要。若已登记，则返回 already_registered=True 且不做任何写入。
+    返回摘要。已登记且无需升级时返回 already_registered=True，不做任何写入。
     """
     if not confirm:
         raise RegistryError("接入产出项目需要用户确认（confirm=True）")
+    if mode not in VALID_MODES:
+        raise RegistryError(f"接入档位非法：{mode!r}，合法取值为 {VALID_MODES}")
     if not _SLUG_RE.match(slug or ""):
         raise RegistryError(f"项目名不合法：{slug!r}")
     root = resolve_root(Path(project_root))
@@ -115,30 +130,41 @@ def adopt_output_project(
     if not entry.is_dir():
         raise RegistryError(f"产出项目目录不存在：{slug!r}")
 
-    existing = load_record(project_root, slug)
-    if existing is not None:
-        return {"slug": slug, "already_registered": True, "managed": bool(existing.get("managed"))}
-
     with ExclusiveFileLock(_index_path(project_root)):
-        # 锁内再次确认，防止并发接入同一目录
-        if load_record(project_root, slug) is not None:
-            return {"slug": slug, "already_registered": True, "managed": True}
+        index = load_index(project_root)
+        existing = load_record(project_root, slug)
+
+        if existing is not None:
+            # 已登记：只有"只登记 → 受管"需要升级，其它情况幂等返回
+            if mode == MODE_MANAGED and not existing.get("managed"):
+                existing["managed"] = True
+                existing["legacy"] = False
+                existing.setdefault("status_history", []).append({"at": _now(), "event": _UPGRADED_EVENT})
+                _write_record(project_root, existing)
+                _refresh_index_entry(index, existing)
+                _save_index(project_root, index)
+                return {"slug": slug, "already_registered": True, "upgraded": True,
+                        "managed": True, "project_json_written": (entry / "PROJECT.json").is_file()}
+            return {"slug": slug, "already_registered": True, "upgraded": False,
+                    "managed": bool(existing.get("managed")),
+                    "project_json_written": (entry / "PROJECT.json").is_file()}
 
         display = (title or "").strip() or _title_from_intro_file(entry) or slug
-        intro_path = entry / PROJECT_INFO_FILENAME
-        if intro and intro.strip() and not intro_path.exists():
-            # 仅在缺失时补充介绍，已有文件绝不覆盖
-            intro_path.write_text(f"# {display}\n\n{intro.strip()}\n", encoding="utf-8")
-
         record = _new_record(slug)
-        record.update({
-            "title": display,
-            "legacy": False,
-            "managed": True,
-            "created_at": _now(),
-        })
-        record.setdefault("status_history", []).append({"at": _now(), "event": _ADOPTED_EVENT})
-        index = load_index(project_root)
+        record.update({"title": display, "created_at": _now()})
+
+        if mode == MODE_REGISTERED:
+            # 只登记：目录内不写任何文件
+            record.update({"legacy": True, "managed": False})
+            record["status_history"].append({"at": _now(), "event": _REGISTERED_EVENT})
+        else:
+            intro_path = entry / PROJECT_INFO_FILENAME
+            if intro and intro.strip() and not intro_path.exists():
+                # 仅在缺失时补充介绍，已有文件绝不覆盖
+                intro_path.write_text(f"# {display}\n\n{intro.strip()}\n", encoding="utf-8")
+            record.update({"legacy": False, "managed": True})
+            record["status_history"].append({"at": _now(), "event": _ADOPTED_EVENT})
+
         _write_record(project_root, record)
         _refresh_index_entry(index, record)
         _save_index(project_root, index)
@@ -146,7 +172,9 @@ def adopt_output_project(
     return {
         "slug": slug,
         "already_registered": False,
-        "managed": True,
+        "upgraded": False,
+        "mode": mode,
+        "managed": bool(record["managed"]),
         "status": record["status"],
         "title": display,
         "project_json_written": (entry / "PROJECT.json").is_file(),

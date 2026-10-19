@@ -114,7 +114,7 @@ def test_report_flags_stale_missing_intro_and_floating(proj: Path):
 
 def test_report_is_marked_uncalibrated(proj: Path):
     report = run_report(proj, now=NOW)
-    assert report["thresholds"]["calibration"] == "uncalibrated"
+    assert report["thresholds"]["calibration"] == "configured"
     assert report["thresholds"]["stale_days"] == UNCALIBRATED_THRESHOLDS["stale_days"]
 
 
