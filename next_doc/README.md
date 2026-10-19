@@ -80,6 +80,7 @@ Goal/Objective 执行阶段、公平调度、输出目录、进度判定。
 10. `goal_tree_child_recommendation_impl_s1.md` — 目标树子目标推荐：S1 候选采纳/忽略（S2–S4 待确认）
 11. `goal_tree_node_delete_impl.md` — 目标树删除节点（只删自身 / 连同子节点）
 12. `goal_tree_children_only_delete_impl.md` — 目标树只删除子节点（保留自身）
+13. `goal_output_project_auto_link_plan.md` — 计划：goal 执行期自动关联产出项目（内置工具 + 事后检测补救 + 目标树确认）
 
 ## growth_advisor（成长顾问，19 篇）
 
