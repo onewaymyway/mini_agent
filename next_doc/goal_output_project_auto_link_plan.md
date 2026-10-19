@@ -1,6 +1,6 @@
 # Goal 执行期自动关联产出项目 — 计划
 
-> 状态：**计划（待确认后实施）**
+> 状态：**分阶段实施中**（S1 已完成，见 `goal_output_project_auto_link_impl_s1.md`；§12 三点已按建议决议）
 > 上位文档：`management_output_project_model_plan.md`（§5.5 关联、§8.3 产出路由、§8.5 游离项目、§12 已决议）
 > 关联实施记录：`management_output_project_model_impl_p2.md`（关联）、`_p4.md`（路由）、`_p7.md`（看板管理区）
 > 约束：保守、默认关闭；不改动现有注册表数据结构；待确认关联**不参与**产出路由。
@@ -171,7 +171,7 @@ link_output_project(slug, role="build", note="", create=false, title="")
 ```
 auto_link_tool_enabled      false   注册工具并在提示词里注入关联说明（第一层）
 auto_link_detect_enabled    false   执行后目录差异检测（第二层）
-auto_link_auto_confirm      false   true 时跳过待确认，直接建立正式关联（不建议，默认不开）
+（`auto_link_auto_confirm` 已按 §12-2 决议不实现）
 ```
 
 三个开关独立。全部为 false 时，行为与现状完全一致。
@@ -191,7 +191,7 @@ auto_link_auto_confirm      false   true 时跳过待确认，直接建立正式
 
 | 阶段 | 内容 | 退出条件 |
 |---|---|---|
-| S1 | 待确认账本模块 + 确认/忽略/手动关联/解除的纯函数与单测；`routing` 不变的特征测试 | 账本幂等、可删除可重建；确认后路由生效、待确认不生效 |
+| S1 ✅ | 待确认账本模块 + 确认/忽略的纯函数与单测（手动关联/解除复用 `registry.py` 既有函数）；`routing` 不变的特征测试 | 账本幂等、可删除可重建；确认后路由生效、待确认不生效 |
 | S2 | `goal_exec_context` + 工具 `link_output_project` + 提示词注入（开关 `auto_link_tool_enabled`） | 开关关闭时提示词与工具列表与现状一致；开启后工具可在 goal cycle / objective 内关联 |
 | S3 | REST 端点 + client 方法 | 端点单测 + 手动 curl 验证 |
 | S4 | 目标树界面：徽标、「🔗 关联项目」子区块、批量接口与缓存、详情弹窗 | 节点上可见已关联与待确认，可就地确认/忽略 |
@@ -205,8 +205,8 @@ auto_link_auto_confirm      false   true 时跳过待确认，直接建立正式
 - **可靠先于主动**：全部开关默认关；自动产生的只是待确认建议，不改变产出路径。
 - **自我诊断**：来源（agent_tool / auto_detect）可统计第一层漏调率，作为后续调整提示词的依据。
 
-## 12. 待确认的小问题
+## 12. 待确认的小问题（已决议）
 
-1. 待确认关联是否需要过期自动清理（建议不清理，只在巡检里提示）；
-2. `auto_link_auto_confirm` 是否保留（建议先不实现，保持必须人工确认）；
-3. 第二层是否需要处理"已有目录被本轮修改"的情形（建议首版不做，只处理新增目录）。
+1. **待确认关联不做自动过期清理**，只在巡检里提示（"待确认超过 N 天"）。——决议：采纳建议。巡检提示归入 S5。
+2. **不实现 `auto_link_auto_confirm`**，保持必须人工确认。——决议：采纳建议。因此第 8 章配置表中的 `auto_link_auto_confirm` 不新增，S2 起只实现 `auto_link_tool_enabled` 与 `auto_link_detect_enabled` 两个开关。
+3. **第二层首版只处理"新增目录"**，不处理"已有目录被本轮修改"。——决议：采纳建议。第 5 章中"已有目录被修改"的分支记录为后续可选项，不在 S5 实现范围内。

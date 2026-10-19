@@ -20,6 +20,17 @@ from .inventory import (  # noqa: F401
     write_inventory_draft,
 )
 from .adoption import adopt_output_project, list_unregistered  # noqa: F401
+from .pending_links import (  # noqa: F401
+    OUTCOME_CONFIRMED,
+    OUTCOME_CREATED,
+    OUTCOME_EXISTING,
+    OUTCOME_REJECTED,
+    add_pending,
+    confirm_pending,
+    get_pending,
+    list_pending,
+    reject_pending,
+)
 from .registry import (  # noqa: F401
     ROLE_BUILD,
     ROLE_ITERATE,
@@ -44,4 +55,6 @@ __all__ = [
     "bind_floating_project", "derive_management_from_project", "fill_management_titles",
     "link_management_output", "list_links", "load_index", "mark_management_root",
     "rebuild_index", "register_project", "unlink_management_output",
+    "add_pending", "confirm_pending", "get_pending", "list_pending", "reject_pending",
+    "OUTCOME_CREATED", "OUTCOME_EXISTING", "OUTCOME_REJECTED", "OUTCOME_CONFIRMED",
 ]
