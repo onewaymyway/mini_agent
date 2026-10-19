@@ -14,7 +14,7 @@
 | P4.5 数据采集 | ⚠️ 机制已实施，样本待积累 | `management_output_project_model_impl_p5.md` |
 | P5 全局巡检 | ⚠️ 已实施，阈值未校准 | `management_output_project_model_impl_p5.md` |
 | P6 接入辅助 | ✅ 已实施 | `management_output_project_model_impl_p6.md` |
-| P7 接入两档 / 阈值配置 / 巡检通知 / 看板管理区 | ✅ 已实施（阶段一后端、阶段二看板） | `management_output_project_model_impl_p7.md` |
+| P7 接入两档 / 阈值配置 / 巡检通知 / 看板管理区 / 定期巡检 | ✅ 已实施（阶段一后端、阶段二看板、阶段三定期调度） | `management_output_project_model_impl_p7.md` |
 > 关联文档：`goal_tree_system_plan.md`、`output_projects_root_and_git_isolation_plan.md`、`output_projects_intro_and_kanban_plan.md`、`goal_cron_output_directory_convention_plan.md`、`mini-agent-philosophy-and-roadmap.md`
 
 ---

@@ -71,7 +71,7 @@
 
 ### 5. 已知限制（阶段一）
 
-1. 巡检仍然是手动触发（`output_patrol.py report`），没有定期调度，所以通知也只在手动运行时产生。定期调度需要在 cron 中注册，留到后续确认频率后再做。
+1. （已在阶段三解决：定期调度见下节。）
 2. 只登记档不记录 `title` 之外的介绍信息；若之后需要介绍，升级为受管时再补。
 
 ---
@@ -123,7 +123,65 @@
 
 ### 5. 已知限制
 
-1. 巡检没有定期调度，只能手动触发（看板按钮或命令行）。定期调度需要确认频率后在 cron 中注册。
+1. （已在阶段三解决：定期调度见下节。）
 2. 看板无法把已登记项目绑定到管理项目（P2 的绑定操作仍然只有函数/命令行入口），本阶段只覆盖 P6/P7 的接入、升级、发布与巡检。
 3. 接入后的 `unregistered` 建议随即消失，但"游离"建议仍在，因为项目仍未绑定管理项目，这是有意的。
 4. 通知去重依据是 `(项目, 类型, 描述)`。描述里若包含会变化的数字（如"已 4 天没有文件变动"），每次天数变化都会被当作新建议重新推送。这是后续需要观察的点，可能需要改成只按 `(项目, 类型)` 去重。
+
+---
+
+## 阶段三：定期巡检调度
+
+### 1. 用户决定
+
+- 巡检需要定期调度，默认 3 天，可通过 `agent_config.json` 修改。
+- 这里的"3 天"指**巡检运行间隔**，与阶段一的停滞/版本缺口阈值（同样默认 3 天）是两个独立配置。
+
+### 2. 设计
+
+| 项 | 值 |
+|---|---|
+| job id | `sys:output_patrol` |
+| 调度 | `interval:<天数×86400>`，默认 `interval:259200` |
+| 执行方式 | 本地回调（零 LLM 成本），调用 `run_report` |
+| 通知 | 沿用 `run_report` 的去重与 `notify_enabled` 逻辑 |
+| 可见位置 | 「⏰ Cron 任务」Tab（可手动触发）、「🔔 关注与通知」Tab（新建议） |
+
+**配置**（`agent_config.json` 的 `output_registry` 块）
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `patrol_interval_days` | 3 | 巡检间隔（天） |
+| `patrol_schedule_enabled` | true | false 时 job 保留但 disabled |
+| `stale_days` / `version_gap_days` | 3 | 阈值（与间隔无关） |
+| `notify_enabled` | true | 新建议是否推送 |
+
+**启动对齐**：`ensure_output_patrol_job` 在 daemon 启动时运行。job 已存在时不会覆盖用户手动改过的其它属性，但会把 `schedule` 与 `enabled` 对齐到配置，并重算 `next_run_at`。因此改配置后**下次启动**生效，无需改代码。
+
+### 3. 新增与改动文件
+
+| 文件 | 类型 | 说明 |
+|---|---|---|
+| `src/mini_agent/output_registry/patrol_job.py` | 新增 | `ensure_output_patrol_job`、`interval_schedule`、本地回调 |
+| `src/mini_agent/api/server.py` | 修改 | daemon 启动时注册 `sys:output_patrol` |
+| `src/mini_agent/config/models.py` | 修改 | `OutputRegistryConfig` 新增 `patrol_interval_days`、`patrol_schedule_enabled` |
+| `agent_config.json` | 修改 | 增加两个字段（3 天、启用） |
+| `tests/test_output_patrol_job.py` | 新增（6 项） | 默认间隔、配置变更对齐、禁用、幂等、回调运行、配置默认值 |
+| `docs/kanban-dashboard-guide.md` | 修改 | 去掉"无定期调度"的旧说明 |
+
+### 4. 验证
+
+| 测试集 | 结果 |
+|---|---|
+| 定期巡检 job（新增） | 6/6 通过 |
+| 产出注册表、通知、cron、配置相关回归 | 673 通过，1 失败 |
+
+**唯一失败**：`tests/test_cron_command_job.py::test_cli_add_cmd_end_to_end`。在未修改的原始包上同样失败，与本次改动无关。
+
+真实 `agent_config.json` 加载结果：`OutputRegistryConfig(stale_days=3.0, version_gap_days=3.0, notify_enabled=True, patrol_interval_days=3.0, patrol_schedule_enabled=True)`，`api/server.py` 可正常导入。
+
+### 5. 已知限制
+
+1. 修改间隔需要重启 daemon 才生效（启动时对齐，而不是运行中热更新）。
+2. 没有在真实 daemon 中跑满一个周期做端到端观察，间隔逻辑靠 cron 既有机制与单元测试覆盖。
+3. 巡检本身仍然是只读建议，定期运行不会执行任何归档、删除或关联。

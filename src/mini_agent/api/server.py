@@ -1574,6 +1574,22 @@ class HttpServer:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_candidate_queue_triage_job')
 
+            # 产出项目定期巡检（management_output P7 阶段三）：按
+            # output_registry.patrol_interval_days（默认 3 天）注册 sys:output_patrol，
+            # 启动时与配置对齐；零 LLM 成本的本地回调。
+            try:
+                from mini_agent.output_registry.patrol_job import ensure_output_patrol_job
+
+                _or_cfg = agent.cfg.output_registry
+                ensure_output_patrol_job(
+                    paths, cron_scheduler,
+                    interval_days=_or_cfg.patrol_interval_days,
+                    enabled=_or_cfg.patrol_schedule_enabled,
+                )
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_output_patrol_job')
+
             # 外部知识反馈闭环计划 P2：daemon 启动时补注册
             # sys:wiki_utility_audit（聚合 wiki/search.py 检索命中埋点为每页
             # 利用率统计，并修剪日志，零 LLM 成本，本地回调），见

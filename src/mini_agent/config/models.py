@@ -2976,6 +2976,11 @@ class OutputRegistryConfig:
     stale_days: float = 3.0
     version_gap_days: float = 3.0
     notify_enabled: bool = True
+    # 定期巡检（sys:output_patrol cron job）：每隔多少天自动运行一次。默认 3 天。
+    # 修改后下次 daemon 启动时生效（启动时按这里的值对齐 job 的 schedule）。
+    patrol_interval_days: float = 3.0
+    # 是否注册定期巡检 job。关闭后 job 保留但 disabled，不再自动运行。
+    patrol_schedule_enabled: bool = True
 
 
 @dataclass

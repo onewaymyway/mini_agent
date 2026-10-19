@@ -972,7 +972,7 @@ git 管理。
 
 **关于确认**：表单里改文本不会触发整页重跑，只有提交按钮才发请求。未勾选确认时只显示提示，不发请求。
 
-**关于巡检通知**：通知由巡检的 `run_report` 在发现新建议时派发，kanban 渠道恒开启，所以一定能在「🔔 关注与通知」里看到。可以用 `output_registry.notify_enabled: false` 关闭推送，报告仍然生成。目前巡检只在点击「立即巡检」或运行 `scripts/output_patrol.py report` 时触发，还没有定期调度。
+**关于巡检通知**：通知由巡检的 `run_report` 在发现新建议时派发，kanban 渠道恒开启，所以一定能在「🔔 关注与通知」里看到。可以用 `output_registry.notify_enabled: false` 关闭推送，报告仍然生成。巡检还会按 `output_registry.patrol_interval_days`（默认 3 天）定期自动运行，对应 cron job `sys:output_patrol`，可在「⏰ Cron 任务」Tab 查看与手动触发；`patrol_schedule_enabled: false` 可关闭定期运行（job 保留为 disabled）。修改间隔后，下次 daemon 启动生效。
 
 ### ⏰ Cron 任务 Tab
 

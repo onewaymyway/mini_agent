@@ -272,6 +272,8 @@
   "output_registry": {
     "stale_days": 3,
     "version_gap_days": 3,
-    "notify_enabled": true
+    "notify_enabled": true,
+    "patrol_interval_days": 3,
+    "patrol_schedule_enabled": true
   }
 }
