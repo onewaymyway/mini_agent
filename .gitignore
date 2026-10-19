@@ -220,3 +220,4 @@ output/
 .agent/reports/
 .agent/last_sync
 external_projects/novel_writer/.agent/
+.agent/output_registry/
