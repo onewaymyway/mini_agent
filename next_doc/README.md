@@ -74,6 +74,7 @@ Goal/Objective 执行阶段、公平调度、输出目录、进度判定。
 4. `management_output_project_model_impl_p2.md` — 实施记录：P2 管理项目与关联
 5. `management_output_project_model_impl_p3.md` — 实施记录：P3 受管新建、版本与重新打开
 6. `management_output_project_model_impl_p4.md` — 实施记录：P4 产出路由
+7. `management_output_project_model_impl_p5.md` — 实施记录：P4.5 数据采集与 P5 全局巡检
 
 ## growth_advisor（成长顾问，19 篇）
 

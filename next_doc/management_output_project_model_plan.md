@@ -11,8 +11,8 @@
 | P2 管理项目与关联 | ✅ 已实施 | `management_output_project_model_impl_p2.md` |
 | P3 受管新建与版本 | ✅ 已实施 | `management_output_project_model_impl_p3.md` |
 | P4 产出路由 | ✅ 已实施 | `management_output_project_model_impl_p4.md` |
-| P4.5 数据采集 | ⏳ 待实施 | — |
-| P5 全局巡检 | ⏳ 待实施 | — |
+| P4.5 数据采集 | ⚠️ 机制已实施，样本待积累 | `management_output_project_model_impl_p5.md` |
+| P5 全局巡检 | ⚠️ 已实施，阈值未校准 | `management_output_project_model_impl_p5.md` |
 | P6 接入辅助 | ⏳ 待实施 | — |
 > 关联文档：`goal_tree_system_plan.md`、`output_projects_root_and_git_isolation_plan.md`、`output_projects_intro_and_kanban_plan.md`、`goal_cron_output_directory_convention_plan.md`、`mini-agent-philosophy-and-roadmap.md`
 
