@@ -8,7 +8,7 @@
 |---|---|---|
 | P0 只读盘点 | ✅ 已实施 | `management_output_project_model_impl_p0.md` |
 | P1 目标属性化 | ✅ 已实施 | `management_output_project_model_impl_p1.md` |
-| P2 管理项目与关联 | ⏳ 待实施 | — |
+| P2 管理项目与关联 | ✅ 已实施 | `management_output_project_model_impl_p2.md` |
 | P3 受管新建与版本 | ⏳ 待实施 | — |
 | P4 产出路由 | ⏳ 待实施 | — |
 | P4.5 数据采集 | ⏳ 待实施 | — |

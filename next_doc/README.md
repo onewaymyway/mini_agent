@@ -71,6 +71,7 @@ Goal/Objective 执行阶段、公平调度、输出目录、进度判定。
 1. `management_output_project_model_plan.md` — 计划：整体模型与分阶段路线（P0–P6）
 2. `management_output_project_model_impl_p0.md` — 实施记录：P0 只读盘点
 3. `management_output_project_model_impl_p1.md` — 实施记录：P1 目标节点属性化
+4. `management_output_project_model_impl_p2.md` — 实施记录：P2 管理项目与关联
 
 ## growth_advisor（成长顾问，19 篇）
 

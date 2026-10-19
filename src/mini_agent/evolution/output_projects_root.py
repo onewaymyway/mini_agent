@@ -180,6 +180,10 @@ def list_projects(cfg_or_project_root) -> list[dict]:
         try:
             if not entry.is_dir():
                 continue
+            # [management_output P2] 下划线开头的目录是内部保留目录（如 _registry/），
+            # 不是产出项目，列表中排除。
+            if entry.name.startswith("_"):
+                continue
             info_path = project_info_path(entry)
             has_intro = info_path.is_file()
             intro_excerpt = ""

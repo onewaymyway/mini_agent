@@ -19,5 +19,27 @@ from .inventory import (  # noqa: F401
     build_inventory,
     write_inventory_draft,
 )
+from .registry import (  # noqa: F401
+    ROLE_BUILD,
+    ROLE_ITERATE,
+    ROLE_REFERENCE,
+    RegistryError,
+    bind_floating_project,
+    derive_management_from_project,
+    fill_management_titles,
+    link_management_output,
+    list_links,
+    load_index,
+    mark_management_root,
+    rebuild_index,
+    register_project,
+    unlink_management_output,
+)
 
-__all__ = ["DRAFT_FILENAME", "INVENTORY_SCHEMA", "build_inventory", "write_inventory_draft"]
+__all__ = [
+    "DRAFT_FILENAME", "INVENTORY_SCHEMA", "build_inventory", "write_inventory_draft",
+    "ROLE_BUILD", "ROLE_ITERATE", "ROLE_REFERENCE", "RegistryError",
+    "bind_floating_project", "derive_management_from_project", "fill_management_titles",
+    "link_management_output", "list_links", "load_index", "mark_management_root",
+    "rebuild_index", "register_project", "unlink_management_output",
+]
