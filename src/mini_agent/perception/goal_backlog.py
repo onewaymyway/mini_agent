@@ -1929,6 +1929,28 @@ class GoalBacklog:
                     other.current_focus_ids = [i for i in other.current_focus_ids if i not in doomed]
         return to_delete
 
+    def delete_children(self, node_id: str) -> list[str]:
+        """[目标树删除节点] 只删除 node_id 的全部子孙，保留节点本身。
+
+        节点本身不变（包括它的父引用和自身字段），只把 children_ids 清空。
+        没有子节点或节点不存在时返回空列表，不做任何修改。返回被删除的子孙 id。
+        """
+        with self._locked():
+            node = self._nodes.get(node_id)
+            if node is None or not node.children_ids:
+                return []
+            to_delete: list[str] = []
+            for cid in list(node.children_ids):
+                to_delete.extend(self.subtree_ids(cid))
+            doomed = set(to_delete)
+            for nid in to_delete:
+                self._nodes.pop(nid, None)
+            node.children_ids = []
+            for other in self._nodes.values():
+                if other.current_focus_ids and any(i in doomed for i in other.current_focus_ids):
+                    other.current_focus_ids = [i for i in other.current_focus_ids if i not in doomed]
+        return to_delete
+
     def delete_goal(self, goal_id: str) -> list[str]:
         """[看板目标删除功能] 硬删除一个 Goal 及其全部子孙节点。
 

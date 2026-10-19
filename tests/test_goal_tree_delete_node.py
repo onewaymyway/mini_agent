@@ -189,3 +189,69 @@ def test_route_missing_is_404(client):
     c, *_ = client
     r = c.delete("/v1/goal_tree/nodes/nope", params={"include_children": "true"})
     assert r.status_code == 404
+
+
+# ── 只删除子节点、保留自身 ──────────────────────────────────────────────
+
+def test_delete_children_keeps_self_and_siblings(tree):
+    _, paths, b, n = tree
+    deleted = b.delete_children(n.g1.id)
+    assert set(deleted) == {n.o1.id, n.o2.id}
+    b2 = _reload(paths)
+    assert b2.get(n.g1.id) is not None          # 自身保留
+    assert b2.get(n.g1.id).children_ids == []   # 子节点清空
+    assert b2.get(n.o1.id) is None and b2.get(n.o2.id) is None
+    assert b2.get(n.g2.id) is not None          # 兄弟不受影响
+    assert n.g1.id in b2.get(n.dom.id).children_ids  # 自身仍挂在父节点下
+
+
+def test_delete_children_without_children_is_noop(tree):
+    _, paths, b, n = tree
+    assert b.delete_children(n.o1.id) == []
+    assert _reload(paths).get(n.o1.id) is not None
+
+
+def test_delete_children_allowed_on_root_but_root_kept(tree):
+    _, paths, b, n = tree
+    deleted = b.delete_children(n.top.id)
+    assert set(deleted) == {n.dom.id, n.g1.id, n.o1.id, n.o2.id, n.g2.id}
+    b2 = _reload(paths)
+    assert b2.get(n.top.id) is not None
+    assert b2.get(n.top.id).children_ids == []
+
+
+def test_route_delete_children_keeps_self_cron_and_artifacts(client):
+    c, root, paths, n, cron = client
+    own = root / ".agent" / "daemon_run_outputs" / "goals" / n.g1.id
+    own.mkdir(parents=True)
+    (own / "keep.txt").write_text("keep", encoding="utf-8")
+    r = c.delete(f"/v1/goal_tree/nodes/{n.g1.id}/children")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["kept_node"] is True
+    assert set(body["deleted_node_ids"]) == {n.o1.id, n.o2.id}
+    assert body["removed_cron_job_ids"] == ["job_o1"]
+    assert "job_g1" not in cron.removed          # 自身的 cron 保留
+    assert own.exists()                          # 自身的内部数据保留
+    b2 = _reload(paths)
+    assert b2.get(n.g1.id) is not None and b2.get(n.g1.id).children_ids == []
+    assert b2.get(n.g2.id) is not None
+
+
+def test_route_delete_children_cleans_goal_child_artifacts(client):
+    c, root, paths, n, cron = client
+    # 再给 g1 挂一个 goal 层级的子目标，它的内部数据应随子树清理
+    b = _reload(paths)
+    child_goal = b.add_node("goal", "子目标", parent_id=n.g1.id)
+    art = root / ".agent" / "daemon_run_outputs" / "goals" / child_goal.id
+    art.mkdir(parents=True)
+    r = c.delete(f"/v1/goal_tree/nodes/{n.g1.id}/children")
+    assert r.status_code == 200
+    assert child_goal.id in r.json()["deleted_node_ids"]
+    assert not art.exists()
+
+
+def test_route_delete_children_no_children_is_404(client):
+    c, root, paths, n, cron = client
+    r = c.delete(f"/v1/goal_tree/nodes/{n.o1.id}/children")
+    assert r.status_code == 404

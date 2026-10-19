@@ -885,6 +885,10 @@ class AgentClient:
         params = {"include_children": "true" if include_children else "false"}
         return self._delete(f"/goal_tree/nodes/{node_id}", params=params, timeout=30)
 
+    def delete_goal_tree_children(self, node_id: str):
+        """[目标树删除节点] 只删除全部子节点，保留节点本身。"""
+        return self._delete(f"/goal_tree/nodes/{node_id}/children", timeout=30)
+
     def delete_goal(self, goal_id: str):
         """DELETE /v1/goals/{goal_id} — [看板目标看板删除功能] 彻底删除一个
         Goal（含全部子 Objective），后端同时级联清理绑定的 cron job、

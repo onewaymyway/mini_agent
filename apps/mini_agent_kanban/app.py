@@ -6510,7 +6510,20 @@ def _render_goal_tree_delete_section(client: AgentClient, node_id: str, node: di
         st.caption("根节点不能删除。要清空整棵目标树，请使用「一键删除所有目标」。")
         return
     if child_count:
-        st.caption(f"该节点还有 {child_count} 个子节点，只能连同子节点一起删除。")
+        st.caption(f"该节点还有 {child_count} 个子节点。可以只删子节点、保留本节点，或连同本节点一起删除。")
+        # 动作一：只删子节点，保留自身
+        children_confirm_key = f"_gt_del_children_confirm_{node_id}"
+        if st.checkbox("我确认只删除全部子节点（保留本节点），删除不可恢复", key=children_confirm_key):
+            if st.button(f"🧹 只删除子节点（保留「{title}」）", key=f"_gt_del_children_btn_{node_id}"):
+                res = client.delete_goal_tree_children(node_id)
+                if isinstance(res, dict) and res.get("_error"):
+                    st.error(f"删除失败：{res['_error']}")
+                    return
+                removed = len((res or {}).get("deleted_node_ids") or [])
+                st.session_state.pop(children_confirm_key, None)
+                st.session_state["_gt_delete_notice"] = f"已删除「{title}」的全部子节点（共 {removed} 个），保留本节点"
+                st.rerun()
+        # 动作二：连同子节点一起删除
         confirm_key = f"_gt_del_confirm_{node_id}"
         btn_key = f"_gt_del_subtree_btn_{node_id}"
         btn_label = f"🗑️ 删除此节点及全部子节点（{child_count}+）"

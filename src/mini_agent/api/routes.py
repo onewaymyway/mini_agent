@@ -6671,6 +6671,64 @@ def _cleanup_goal_artifacts(paths, goal) -> tuple[list[str], bool]:
     return file_cleanup_errors, user_output_dir_preserved
 
 
+@router.delete("/goal_tree/nodes/{node_id}/children")
+async def delete_goal_tree_node_children(node_id: str, request: Request):
+    """DELETE /v1/goal_tree/nodes/{node_id}/children — [目标树删除节点] 只删除
+    全部子孙，保留节点本身。被删子孙的 cron job 与 goal 层级的内部数据一并清理；
+    节点自身的 cron job、内部数据和产出目录保持不变。没有子节点时返回 404。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    from mini_agent.storage.paths import AgentPaths
+    from mini_agent.perception.goal_backlog import load_goal_backlog
+
+    self_agent = http_server.bridge.agent
+    project_root = getattr(self_agent.cfg, "project_root", None) if self_agent else None
+    if not project_root:
+        raise HTTPException(status_code=503, detail="project_root not configured")
+    paths = AgentPaths(project_root)
+    backlog = load_goal_backlog(paths)
+
+    node = backlog.get(node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail=f"节点 '{node_id}' 不存在")
+    if not node.children_ids:
+        raise HTTPException(status_code=404, detail="该节点没有子节点")
+
+    # 删除前快照：只有被删的 goal 层级子孙需要清理内部数据
+    descendants: list[str] = []
+    for cid in node.children_ids:
+        descendants.extend(backlog.subtree_ids(cid))
+    goal_snapshots = [backlog.get(nid) for nid in descendants]
+    goal_snapshots = [g for g in goal_snapshots if g is not None and g.is_goal]
+
+    deleted_node_ids = backlog.delete_children(node_id)
+    if not deleted_node_ids:
+        raise HTTPException(status_code=404, detail="该节点没有子节点")
+
+    removed_job_ids, failed_job_ids = _remove_cron_jobs_for_nodes(http_server, set(deleted_node_ids))
+    file_cleanup_errors: list[str] = []
+    preserved = False
+    for g in goal_snapshots:
+        errs, kept = _cleanup_goal_artifacts(paths, g)
+        file_cleanup_errors.extend(f"{g.id}:{e}" for e in errs)
+        preserved = preserved or kept
+
+    return {
+        "deleted": True,
+        "node_id": node_id,
+        "title": node.title,
+        "kept_node": True,
+        "deleted_node_ids": deleted_node_ids,
+        "removed_cron_job_ids": removed_job_ids,
+        "failed_cron_job_ids": failed_job_ids,
+        "file_cleanup_errors": file_cleanup_errors,
+        "user_output_dir_preserved": preserved,
+    }
+
+
 @router.delete("/goal_tree/nodes/{node_id}")
 async def delete_goal_tree_node(node_id: str, request: Request, include_children: bool = False):
     """DELETE /v1/goal_tree/nodes/{node_id}?include_children=false|true — [目标树删除节点]
