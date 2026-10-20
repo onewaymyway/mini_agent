@@ -80,7 +80,9 @@ def test_draft_quality_merges_plot_sync_and_drops_reader_sim(tmp_path):
     ws = new_book(tmp_path, total=6, quality="draft")
     plan = by_id(ws)
     assert "ch01.sync_plot" not in plan
-    assert S.rel("plot_tracker") in plan["ch01.sync"].outputs
+    assert S.rel("plot_delta", nn=1) in plan["ch01.sync"].outputs     # 草稿档也只输出增量
+    assert S.rel("plot_tracker") not in plan["ch01.sync"].outputs     # 不再整体重写账本
+    assert plan["ch01.plot_merge"].deps == ("ch01.sync",)             # 合并步骤紧随同步之后
     assert not any(i.endswith(".reader_sim") for i in plan)
     assert "ch01.alt_write" not in plan
 

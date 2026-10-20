@@ -87,6 +87,8 @@ novel_writer/
 
 ## 变更记录
 
+- 2026-10-20：第三阶段（部分）。①记忆快照瘦身：快照不再整份复制人物档案与伏笔账本，只记录章节字数、人物数量、伏笔总数与各状态计数（此前快照体积随章数平方增长）。已确认没有技能或界面读取快照的完整内容。②草稿档伏笔同步统一：草稿档的 sync 步骤改为只输出伏笔增量 plot_delta，并与精品档共用 plot_merge 步骤（抽成 `_plot_merge_step`），不再整体重写账本。新增 `tests/test_phase3_slim.py`（2 例），更新 `tests/test_m6.py` 中草稿档用例的断言。
+  - 未完成（需先确认方案）：人物档案 characters.json 拆分与蓝图 blueprint 拆分。两者的同步步骤同样每章整体重写整个文件，需要先设计与伏笔一致的增量与合并方式，再做存储拆分。
 - 2026-10-20：损坏旧账本改由 LLM 直接转换（替代此前的逐条 JSON 修复方案，已撤销）。
   - 健康的旧 JSON：确定性迁移，不调用 LLM，自动提交。
   - 损坏的旧 JSON：`tool_api.migrate_plot_ledger(use_llm=True)` 调用技能 `ledger-convert`，LLM 直接读取损坏原文，按目标布局写出 `伏笔/F*.md` 与 `_applied/` 小文件。Python 用同一套严格解析器读回校验（字段、状态枚举、章号、id 与文件名一致），不合格则把具体错误反馈给 LLM 重写，最多 3 次（`novel_writer/llm_convert.py` 的通用重试框架，后续阶段复用）。

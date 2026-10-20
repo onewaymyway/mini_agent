@@ -301,10 +301,15 @@ def chapter_steps(n: int, title: str, *, total: Optional[int], prev_last: str,
     steps.insert(idx, guard)
 
     if quality == DRAFT:
-        # 草稿档（方案 6.4）：伏笔同步并入人物同步，减少一次 LLM 调用
+        # 草稿档（方案 6.4）：伏笔同步并入人物同步，减少一次 LLM 调用。
+        # 与精品档一致：只输出本章伏笔增量，由 plot_merge 合并，不再整体重写账本（M9 第三阶段）。
         steps[-1] = replace(steps[-1],
-                            instructions=steps[-1].instructions + f"同时根据概述更新第 {n} 章涉及的伏笔状态。",
-                            outputs=(rel("characters"), rel("plot_tracker")))
+                            instructions=(steps[-1].instructions
+                                          + f"同时根据概述列出第 {n} 章的伏笔增量（planted / advanced / resolved，只写本章动作，"
+                                            f"不复述整本账本），输出到：{rel('plot_delta', nn=n)}"),
+                            outputs=(rel("characters"), rel("plot_delta", nn=n)),
+                            extra={"output_check": "plot_delta"})
+        steps.append(_plot_merge_step(n, p("sync"), common))
     else:
         steps.append(StepDef(
             id=p("sync_plot"), title=f"第{n}章：伏笔状态同步", stage=_stage_of(n), category=CAT_CHAPTER_REVIEW,
@@ -320,12 +325,7 @@ def chapter_steps(n: int, title: str, *, total: Optional[int], prev_last: str,
             outputs=(rel("plot_delta", nn=n),), deps=(p("sync"),),
             extra={"output_check": "plot_delta"}, **common,
         ))
-        steps.append(StepDef(
-            id=p("plot_merge"), title=f"第{n}章：伏笔合并", stage=_stage_of(n), category=CAT_CHAPTER_REVIEW,
-            executor=EXECUTOR_PYTHON, handler="plot_merge",
-            inputs=(rel("plot_delta", nn=n), rel("plot_tracker")), outputs=(rel("plot_tracker"),),
-            deps=(p("sync_plot"),), **common,
-        ))
+        steps.append(_plot_merge_step(n, p("sync_plot"), common))
 
     if quality == PREMIUM:
         # 精品档 best-of-N（M6）：写第二稿，机器校验择优，择优结果交给后续的校验与审稿
@@ -352,6 +352,16 @@ def chapter_steps(n: int, title: str, *, total: Optional[int], prev_last: str,
         ))
     return steps
 
+
+def _plot_merge_step(n: int, dep: str, common: Dict[str, Any]) -> StepDef:
+    """伏笔合并步骤（确定性 Python）：把本章增量合并进账本；精品档与草稿档共用。"""
+    return StepDef(
+        id=chapter_id(n, "plot_merge"),
+        title=f"第{n}章：伏笔合并", stage=_stage_of(n), category=CAT_CHAPTER_REVIEW,
+        executor=EXECUTOR_PYTHON, handler="plot_merge",
+        inputs=(rel("plot_delta", nn=n), rel("plot_tracker")), outputs=(rel("plot_tracker"),),
+        deps=(dep,), **common,
+    )
 
 def alt_write_step(n: int, *, prev_last: str) -> StepDef:
     """精品档 best-of-N 的第二稿：只写到候选文件，不改正文（M6）。"""

@@ -750,11 +750,21 @@ def h_snapshot(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker
         path = chapter_file(ws, k)
         if path is not None:
             words += count_words(read_text_utf8(path))
+    # 快照只记录轻量摘要：不再整份复制人物档案与伏笔账本（过去每章复制一次，体积随章数平方增长）。
+    # 需要完整状态时，以当前的 characters 与伏笔小文件为准。
+    from novel_writer import plot_delta as PD
+    ledger = _ledger_or_raise(ws)
+    items = ledger.get(PD.list_key(ledger), [])
+    by_status: Dict[str, int] = {}
+    for it in items:
+        st = str(it.get("status") or "planted")
+        by_status[st] = by_status.get(st, 0) + 1
+    chars = read_json(ws.path("characters"), default=None)
     snap = {
         "through_chapter": n,
         "total_words": words,
-        "characters": read_json(ws.path("characters"), default=None),
-        "plot_tracker": _ledger_or_raise(ws),
+        "characters_count": len(chars) if isinstance(chars, (dict, list)) else None,
+        "foreshadowing": {"total": len(items), "by_status": by_status},
         "created_at": _now(),
     }
     atomic_write_json(ws.path("memory_snapshot", n=n), snap)
