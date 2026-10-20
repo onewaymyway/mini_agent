@@ -47,3 +47,23 @@ def test_payload_json_is_safe_inside_script_tag():
     js = payload_to_js(payload)
     assert "</script>" not in js
     assert json.loads(js.replace("<\\/", "</")) == payload
+
+
+def test_short_paragraphs_are_merged_and_no_text_is_lost():
+    from novel_writer.listen import MIN_CHARS, chapter_segments
+    text = "\n".join(["他走了。", "她没说话。", "风停了。"] + ["长" * 50 + "。"] + ["好。"])
+    segs = chapter_segments(1, "t", text)
+    body = segs[1:]
+    assert "".join(body) == "".join(["他走了。", "她没说话。", "风停了。", "长" * 50 + "。", "好。"])
+    assert all(len(x) <= MAX_CHARS for x in body)
+    # 除非两侧都无法再合并，否则不应留下短段
+    assert all(len(x) >= MIN_CHARS for x in body[:-1]) or len(body) == 1
+    assert segs[0] == "第1章，t"                          # 标题仍然独立
+
+
+def test_merge_short_respects_max_and_keeps_short_when_impossible():
+    from novel_writer.listen import merge_short
+    assert merge_short(["甲" * 10, "乙" * 10], min_chars=60, max_chars=180) == ["甲" * 10 + "乙" * 10]
+    big = ["丙" * 170, "丁" * 5]
+    assert merge_short(big, min_chars=60, max_chars=180) == ["丙" * 170 + "丁" * 5]   # 175 ≤ 180，合并
+    assert merge_short(["甲" * 170, "乙" * 100], min_chars=60, max_chars=180) == ["甲" * 170, "乙" * 100]

@@ -13,6 +13,9 @@ import re
 from typing import Any, Dict, Iterable, List
 
 MAX_CHARS = 180
+# 每段最少字数：过短的段落朗读几秒就会停顿一次，体验很差，所以与相邻片段合并。
+# 60 字约 12 秒（按常见语速）。合并后仍不超过 MAX_CHARS。
+MIN_CHARS = 60
 
 _SENT_END = re.compile(r"(?<=[。！？!?；;])")
 _CLAUSE_END = re.compile(r"(?<=[，,、：:])")
@@ -68,8 +71,21 @@ def _pack(units: Iterable[str], max_chars: int) -> List[str]:
     return chunks
 
 
-def chapter_segments(number: int, title: str, text: str, max_chars: int = MAX_CHARS) -> List[str]:
-    """一章的朗读片段：第一段是标题，之后是正文。正文为空时只返回空列表（该章跳过）。"""
+def merge_short(chunks: List[str], min_chars: int = MIN_CHARS, max_chars: int = MAX_CHARS) -> List[str]:
+    """把短于 min_chars 的片段与相邻片段合并，合并后不超过 max_chars。
+    只合并文字，不丢字；若两侧合并都会超过上限，则保留短片段（无法再合并）。"""
+    out: List[str] = []
+    for c in chunks:
+        if out and (len(out[-1]) < min_chars or len(c) < min_chars) and len(out[-1]) + len(c) <= max_chars:
+            out[-1] += c
+        else:
+            out.append(c)
+    return out
+
+
+def chapter_segments(number: int, title: str, text: str, max_chars: int = MAX_CHARS,
+                     min_chars: int = MIN_CHARS) -> List[str]:
+    """一章的朗读片段：第一段是标题（保持独立），之后是正文（短段已合并）。正文为空时返回空列表（该章跳过）。"""
     body: List[str] = []
     for raw in text.splitlines():
         line = clean_line(raw)
@@ -77,11 +93,13 @@ def chapter_segments(number: int, title: str, text: str, max_chars: int = MAX_CH
             body.extend(_pack(_units(line, max_chars), max_chars))
     if not body:
         return []
+    body = merge_short(body, min_chars, max_chars)
     head = f"第{number}章，{title}" if title else f"第{number}章"
     return [head] + body
 
 
-def build_payload(chapters: Iterable[Dict[str, Any]], max_chars: int = MAX_CHARS) -> Dict[str, Any]:
+def build_payload(chapters: Iterable[Dict[str, Any]], max_chars: int = MAX_CHARS,
+                  min_chars: int = MIN_CHARS) -> Dict[str, Any]:
     """chapters: [{"chapter": int, "title": str, "text": str}, ...]（按章节号升序）。
 
     返回 {"segments": [str, ...], "chapters": [{"ch", "title", "start"}, ...]}，
@@ -90,7 +108,8 @@ def build_payload(chapters: Iterable[Dict[str, Any]], max_chars: int = MAX_CHARS
     segments: List[str] = []
     index: List[Dict[str, Any]] = []
     for ch in chapters:
-        segs = chapter_segments(int(ch["chapter"]), ch.get("title") or "", ch.get("text") or "", max_chars)
+        segs = chapter_segments(int(ch["chapter"]), ch.get("title") or "", ch.get("text") or "",
+                                max_chars, min_chars)
         if not segs:
             continue
         index.append({"ch": int(ch["chapter"]), "title": ch.get("title") or "", "start": len(segments)})
