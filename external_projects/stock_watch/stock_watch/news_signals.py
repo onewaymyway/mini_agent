@@ -269,7 +269,9 @@ def save_pending(news_list: list) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     data = {
         "updated_at": datetime.now(timezone.utc).isoformat(),
-        "news": news_list[-PENDING_MAX_SIZE:],  # 保留最近N条
+        # 队列按时间倒序（最新在前），超限时必须保留最新的前 N 条；
+        # 先显式排序再截取，避免依赖调用方的顺序。
+        "news": sorted(news_list, key=lambda x: x.get("time", ""), reverse=True)[:PENDING_MAX_SIZE],
     }
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -299,7 +301,8 @@ def save_processed(news_list: list, hashes: set, total_processed: int) -> None:
     data = {
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "total_processed": total_processed,
-        "news": news_list[-PROCESSED_MAX_SIZE:],  # 保留最近N条完整记录
+        # 同上：按时间倒序后保留最新的前 N 条完整记录（旧写法 [-N:] 会丢掉最新的）
+        "news": sorted(news_list, key=lambda x: x.get("time", ""), reverse=True)[:PROCESSED_MAX_SIZE],
         "hashes": list(hashes),
     }
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -446,6 +449,7 @@ ANALYSIS_SYSTEM_PROMPT = """你是股票投资分析师，专注于从财经新�
 - 对于有利好消息或强势表现的股票（如涨停、连板、涨幅靠前），必须提取所有相关股票
 - 不要遗漏任何在新闻中被提及的股票名称
 - relevance字段表示该股票与新闻主题的相关程度
+- news_time 必须原样照抄新闻列表方括号里的完整时间（含日期，如 2026-10-13 21:02:18），不要改写、省略日期或自行推断日期
 
 输出格式为JSON数组，每项包含：
 - news_hash: 新闻的唯一标识（时间+内容哈希）
@@ -464,7 +468,7 @@ ANALYSIS_SYSTEM_PROMPT = """你是股票投资分析师，专注于从财经新�
 [
   {
     "news_hash": "20261013210218_ocp_workgroup",
-    "news_time": "21:02:18",
+    "news_time": "2026-10-13 21:02:18",
     "news_excerpt": "Marvell、微软和甲骨文成立OCP工作组，推动开放计算项目标准。",
     "opportunity_type": "industry",
     "related_stocks": [],
@@ -479,7 +483,7 @@ ANALYSIS_SYSTEM_PROMPT = """你是股票投资分析师，专注于从财经新�
   },
   {
     "news_hash": "20261013215212_luchang_tech",
-    "news_time": "21:52:12",
+    "news_time": "2026-10-13 21:52:12",
     "news_excerpt": "路畅科技公告称，控股股东中联重科拟转让29.99%股份给远卓天使，转让价25元/股。",
     "opportunity_type": "stock",
     "related_stocks": [
@@ -493,7 +497,7 @@ ANALYSIS_SYSTEM_PROMPT = """你是股票投资分析师，专注于从财经新�
   },
   {
     "news_hash": "20261014103025_ai_comic",
-    "news_time": "10:30:25",
+    "news_time": "2026-10-14 10:30:25",
     "news_excerpt": "AI漫剧概念反复走强，读客文化20cm涨停，此前慈文传媒5连板，欢瑞世纪5天3板，掌阅科技、出版传媒、冰川网络、荣信文化涨幅靠前。",
     "opportunity_type": "stock",
     "related_stocks": [

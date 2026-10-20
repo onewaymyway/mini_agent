@@ -88,3 +88,20 @@ def test_config_batch_size_default_and_invalid():
     assert WatchlistConfig(telegraph={"llm_batch_size": 10}).telegraph_llm_batch_size == 10
     assert WatchlistConfig(telegraph={"llm_batch_size": 0}).telegraph_llm_batch_size == 25
     assert WatchlistConfig(telegraph={"llm_batch_size": "x"}).telegraph_llm_batch_size == 25
+
+
+def test_archive_trim_keeps_newest(monkeypatch, tmp_path):
+    """归档/待处理队列超限时应保留最新的，而不是最旧的（回归测试）。"""
+    import stock_watch.config as cfg
+
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(ns, "PROCESSED_MAX_SIZE", 5)
+    monkeypatch.setattr(ns, "PENDING_MAX_SIZE", 5)
+    old = [{"time": f"2026-10-18 10:00:0{i}", "content": f"o{i}", "hash": f"o{i}"} for i in range(5)]
+    ns.save_processed(old, {n["hash"] for n in old}, 5)
+    new = [{"time": "2026-10-20 07:00:00", "content": "n", "hash": "n"}]
+    ns.move_to_processed(new)
+    assert ns.load_processed()["news"][0]["time"] == "2026-10-20 07:00:00"
+
+    ns.save_pending(old + new)
+    assert ns.load_pending()["news"][0]["time"] == "2026-10-20 07:00:00"
