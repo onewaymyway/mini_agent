@@ -492,6 +492,24 @@ def h_garble_guard(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], inv
                          regen=_chapter_step(n, "write_chapter"), label="正文", pin_chapter=True)
 
 
+def h_plot_merge(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:
+    """把本章伏笔增量合并进账本（M9）。确定性合并，内容无实质变化则不写盘。"""
+    from novel_writer import plot_delta as PD
+    n = step.chapter
+    try:
+        tracker = PD.load_tracker_strict(ws.path("plot_tracker"))
+        delta = read_json(ws.path("plot_delta", nn=n), default=None)
+        if delta is None:
+            raise ChapterOpError(f"第 {n} 章伏笔增量缺失或损坏")
+        merged = PD.merge_result(tracker, delta, n)
+    except PD.PlotDeltaError as exc:
+        raise ChapterOpError("伏笔合并失败：" + "；".join(exc.problems))
+    changed = PD.canonical(merged) != PD.canonical(tracker)
+    if changed:
+        atomic_write_json(ws.path("plot_tracker"), merged)
+    return {"summary": f"第 {n} 章伏笔已合并" + ("" if changed else "（无实质变化，未写盘）")}
+
+
 def h_garble_guard_alt(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:
     """候选稿 B 的乱码守卫：B 乱码时只重新生成 B，不动正文 A。"""
     n = step.chapter
@@ -788,6 +806,7 @@ CHAPTER_HANDLERS = {
     "style_hint": h_style_hint,
     "garble_guard": h_garble_guard,
     "garble_guard_alt": h_garble_guard_alt,
+    "plot_merge": h_plot_merge,
     "machine_check": h_machine_check,
     "revise_loop": h_revise_loop,
     "best_pick_prep": h_best_pick_prep,

@@ -238,10 +238,32 @@ def _check_plot_tracker(ws: Workspace, step: Any) -> List[str]:
     return plot_tracker_problems(ws.path("plot_tracker"))
 
 
+def _check_plot_delta(ws: Workspace, step: Any) -> List[str]:
+    """伏笔增量：JSON 结构合法，且能应用到当前账本（引用的 id 存在、状态流转合法）。"""
+    from novel_writer import plot_delta as PD
+    path = ws.path("plot_delta", nn=step.chapter)
+    if not path.is_file():
+        return [f"伏笔增量不存在：{path.name}"]
+    data, err, fenced = _read_json_loose(path)
+    if err is not None:
+        return [f"伏笔增量不是合法 JSON（{err}）。请只输出一个 JSON 对象。"]
+    try:
+        base = PD.undo_chapter(PD.load_tracker_strict(ws.path("plot_tracker")), step.chapter)
+    except PD.PlotDeltaError as exc:
+        return exc.problems
+    problems = PD.delta_problems(data, base, step.chapter)
+    if problems:
+        return problems
+    if fenced:
+        atomic_write_json(path, data)
+    return []
+
+
 OUTPUT_CHECKS: Dict[str, Callable[[Workspace, Any], List[str]]] = {
     "best_pick_report": _check_best_pick,
     "blueprint": _check_blueprint,
     "plot_tracker": _check_plot_tracker,
+    "plot_delta": _check_plot_delta,
 }
 
 

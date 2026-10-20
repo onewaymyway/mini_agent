@@ -50,6 +50,8 @@ def _placeholder_for(target: Path, ws) -> str:
     import json as _json
     if target.name == "小说蓝图.json":
         return _json.dumps(make_blueprint(4), ensure_ascii=False)
+    if target.name.endswith("_伏笔增量.json"):
+        return _json.dumps({"planted": [], "advanced": [], "resolved": []}, ensure_ascii=False)
     if target.name == "plot_tracker.json":
         return _json.dumps({"foreshadowing": [{"id": "F1", "name": "测试伏笔", "plant_chapter": 1}]}, ensure_ascii=False)
     return "stub"

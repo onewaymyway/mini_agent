@@ -112,7 +112,9 @@ def test_structured_steps_declare_their_checks(tmp_path):
     plan = {s.id: s for s in P.build_plan(ws)}
     assert plan["plan_blueprint"].extra.get("output_check") == "blueprint"
     assert plan["register_plot"].extra.get("output_check") == "plot_tracker"
-    assert plan["ch01.sync_plot"].extra.get("output_check") == "plot_tracker"
+    assert plan["ch01.sync_plot"].extra.get("output_check") == "plot_delta"   # sync_plot 只产出增量
+    assert plan["ch01.plot_merge"].handler == "plot_merge"
+    assert S.rel("plot_tracker") in plan["ch01.plot_merge"].outputs
 
 
 def test_content_problems_dispatch_through_registry(tmp_path):

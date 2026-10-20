@@ -299,9 +299,22 @@ def chapter_steps(n: int, title: str, *, total: Optional[int], prev_last: str,
         steps.append(StepDef(
             id=p("sync_plot"), title=f"第{n}章：伏笔状态同步", stage=_stage_of(n), category=CAT_CHAPTER_REVIEW,
             executor=EXECUTOR_SKILL, skill="plot-tracker",
-            instructions=f"根据第 {n} 章的概述更新伏笔状态（埋设/推进/兑现）与故事线进度。",
+            instructions=(f"根据第 {n} 章的概述，列出本章对伏笔的增量动作：埋设了哪些新伏笔（planted）、"
+                          "推进了哪些已有伏笔（advanced）、兑现了哪些伏笔（resolved）。"
+                          "只输出增量，不要复述整本伏笔账本；每个动作引用的伏笔 id 必须来自账本（埋设则为新 id）。\n"
+                          f"【输出路径（必须精确使用）】{rel('plot_delta', nn=n)}\n"
+                          "【格式】一个 JSON 对象：{\"planted\": [{\"id\", \"name\", \"note\"}], "
+                          "\"advanced\": [{\"id\", \"note\"}], \"resolved\": [{\"id\", \"note\"}]}；"
+                          "没有就给空数组。"),
             inputs=(rel("chapter_summary", nn=n), rel("plot_tracker")),
-            outputs=(rel("plot_tracker"),), deps=(p("sync"),), extra={"output_check": "plot_tracker"}, **common,
+            outputs=(rel("plot_delta", nn=n),), deps=(p("sync"),),
+            extra={"output_check": "plot_delta"}, **common,
+        ))
+        steps.append(StepDef(
+            id=p("plot_merge"), title=f"第{n}章：伏笔合并", stage=_stage_of(n), category=CAT_CHAPTER_REVIEW,
+            executor=EXECUTOR_PYTHON, handler="plot_merge",
+            inputs=(rel("plot_delta", nn=n), rel("plot_tracker")), outputs=(rel("plot_tracker"),),
+            deps=(p("sync_plot"),), **common,
         ))
 
     if quality == PREMIUM:
@@ -325,7 +338,7 @@ def chapter_steps(n: int, title: str, *, total: Optional[int], prev_last: str,
             executor=EXECUTOR_SKILL, skill="reader-simulator",
             instructions=f"以读者视角评估第 {n} 章（注意力/理解/情感/可信/节奏）。",
             inputs=(chapter_text,), outputs=(rel("reader_report", nn=n),),
-            deps=(p("sync") if quality == DRAFT else p("sync_plot"),), **common,
+            deps=(p("sync") if quality == DRAFT else p("plot_merge"),), **common,
         ))
     return steps
 

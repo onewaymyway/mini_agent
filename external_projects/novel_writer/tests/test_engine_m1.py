@@ -53,7 +53,7 @@ def test_plan_has_planning_then_chapters_with_confirm_after_third(ws):
     assert ids[0] == "init_workspace" and ids[1] == "plan_blueprint"
     assert "design_character:李凌云" in ids and "design_character:王道长" in ids
     i_confirm = ids.index("confirm_first3")
-    assert ids[i_confirm - 1] == "ch03.sync_plot"
+    assert ids[i_confirm - 1] == "ch03.plot_merge"   # 第三章最后一步（伏笔增量已合并）
     assert ids.index("ch04.word_quota") > ids.index("init_style_b")
     assert ids.index("ch01.word_quota") > ids.index("design_opening")
     assert {"ch01.write_chapter", "ch04.sync"} <= set(ids)
