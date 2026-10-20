@@ -3,20 +3,39 @@
 <head>
 <meta charset="utf-8">
 <style>
-  html, body { margin: 0; padding: 0; }
-  body { font-family: system-ui, 'Microsoft YaHei', sans-serif; font-size: 14px; color: #222; padding: 2px 2px 6px; }
-  button, select, input { font-size: 14px; }
-  button { cursor: pointer; }
-  input[type=number] { width: 72px; }
-  input[type=text] { width: 200px; }
-  #now { font-weight: 600; font-size: 16px; margin-bottom: 2px; }
-  #prog { color: #666; margin-bottom: 8px; }
-  #text { white-space: pre-wrap; line-height: 1.8; font-size: 15px; background: #f7f7f5; border: 1px solid #e3e3df;
-          border-radius: 6px; padding: 10px 12px; max-height: 140px; overflow-y: auto; margin-bottom: 10px; }
-  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
-  .label { color: #555; }
-  #found { color: #666; font-size: 13px; min-height: 16px; margin-top: 2px; }
-  .hint { color: #888; font-size: 12px; margin-top: 6px; }
+  /* 颜色与字体由 applyTheme() 从 Streamlit 主题写入，这里只给出浅色默认值 */
+  :root {
+    --bg: #FFFFFF; --bg2: #F0F2F6; --text: #31333F; --primary: #FF4B4B;
+    --border: rgba(49, 51, 63, 0.2); --muted: rgba(49, 51, 63, 0.6); --on-primary: #FFFFFF;
+    --font: "Source Sans Pro", "Source Sans 3", system-ui, -apple-system, "Microsoft YaHei", sans-serif;
+  }
+  html, body { margin: 0; padding: 0; background: var(--bg); }
+  body { font-family: var(--font); font-size: 1rem; color: var(--text); padding: 2px 2px 6px; }
+  button, select, input { font-family: var(--font); font-size: 0.95rem; color: var(--text); }
+  button {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 0.5rem;
+    padding: 0.25rem 0.75rem; cursor: pointer; min-height: 2.25rem;
+  }
+  button:hover { border-color: var(--primary); color: var(--primary); }
+  button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+  button.primary { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
+  button.primary:hover { color: var(--on-primary); opacity: 0.9; }
+  select, input[type=number], input[type=text] {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 0.5rem;
+    padding: 0.35rem 0.6rem; min-height: 2.25rem; box-sizing: border-box;
+  }
+  select:focus, input:focus { border-color: var(--primary); outline: none; }
+  input[type=number] { width: 4.5rem; }
+  input[type=text] { width: 14rem; }
+  #now { font-weight: 600; font-size: 1.1rem; margin-bottom: 2px; }
+  #prog { color: var(--muted); font-size: 0.9rem; margin-bottom: 8px; }
+  #text { white-space: pre-wrap; line-height: 1.75; font-size: 1rem; background: var(--bg2);
+          border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.75rem 1rem;
+          max-height: 9rem; overflow-y: auto; margin-bottom: 10px; }
+  .row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin-bottom: 0.5rem; }
+  .label { color: var(--muted); font-size: 0.9rem; }
+  #found { color: var(--muted); font-size: 0.85rem; min-height: 1rem; margin-top: 2px; }
+  .hint { color: var(--muted); font-size: 0.8rem; margin-top: 6px; }
 </style>
 </head>
 <body>
@@ -26,7 +45,7 @@
 
 <div class="row">
   <button id="prev">⏮ 上一章</button>
-  <button id="toggle" style="min-width:90px">▶ 播放</button>
+  <button id="toggle" class="primary" style="min-width:6rem">▶ 播放</button>
   <button id="stop">⏹ 停止</button>
   <button id="next">⏭ 下一章</button>
 </div>
@@ -70,6 +89,30 @@
   // 高度随内容变化同步，避免控件加载或换行后被裁剪
   function fitHeight() {
     send("streamlit:setFrameHeight", { height: Math.ceil(document.body.scrollHeight) + 8 });
+  }
+
+  // ---- 主题：与 Streamlit 当前的浅色/深色主题保持一致 ----
+  function isDarkColor(hex) {
+    const m = /^#?([0-9a-f]{6})$/i.exec(hex || "");
+    if (!m) return false;
+    const n = parseInt(m[1], 16);
+    const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+    return (0.299 * r + 0.587 * g + 0.114 * b) < 128;
+  }
+  function applyTheme(t) {
+    if (!t) return;
+    const bg = t.backgroundColor || "#FFFFFF";
+    const dark = isDarkColor(bg);
+    const root = document.documentElement.style;
+    root.setProperty("--bg", bg);
+    root.setProperty("--bg2", t.secondaryBackgroundColor || (dark ? "#262730" : "#F0F2F6"));
+    root.setProperty("--text", t.textColor || (dark ? "#FAFAFA" : "#31333F"));
+    root.setProperty("--primary", t.primaryColor || "#FF4B4B");
+    root.setProperty("--border", dark ? "rgba(250, 250, 250, 0.2)" : "rgba(49, 51, 63, 0.2)");
+    root.setProperty("--muted", dark ? "rgba(250, 250, 250, 0.6)" : "rgba(49, 51, 63, 0.6)");
+    root.setProperty("--on-primary", "#FFFFFF");
+    if (t.font) root.setProperty("--font", '"' + t.font + '", system-ui, sans-serif');
+    fitHeight();
   }
 
   // ---- 位置上报：{ch, seg}，seg 为该章内的段落下标 ----
@@ -273,7 +316,10 @@
   // 只在首次渲染时初始化；之后 Streamlit 的重渲染会被忽略，避免播放中被打断。
   window.addEventListener("message", function (ev) {
     const d = ev.data;
-    if (!d || d.type !== "streamlit:render" || started) return;
+    if (!d || d.type !== "streamlit:render") return;
+    const theme = d.theme || (d.args && d.args.theme);
+    if (theme) applyTheme(theme);
+    if (started) return;   // 之后的重渲染只同步主题，不重建播放器
     started = true;
     init(d.args || {});
   });
