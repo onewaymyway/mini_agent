@@ -57,19 +57,24 @@ def render_listen(ws: str, rows: list) -> None:
         st.caption(f"共 {len(payload['chapters'])} 章 · {len(payload['segments'])} 段。播放会一直连到末章。")
 
         # key 只随用户选择的起始章节变化：播放中自动切章不会重建 iframe，也不会打断朗读。
+        # 续播：若保存的收听章节就是当前起始章节，则从保存的段落继续；否则从该章开头。
+        resume_seg = reading_state.resume_segment(state, start)
         report = _player(
             payload=payload,
             rate=state.get("listen_rate", 1.0),
             voice=state.get("listen_voice", ""),
+            resume_ch=start if resume_seg is not None else None,
+            resume_seg=resume_seg or 0,
             key=f"novel_listen_{start}",
             default=None,
         )
         if isinstance(report, dict):
-            ch = report.get("ch")
-            if isinstance(ch, int) and ch in numbers:
+            ch, seg = report.get("ch"), report.get("seg")
+            if isinstance(ch, int) and ch in numbers and isinstance(seg, int) and seg >= 0:
                 reading_state.update(
                     ws,
                     last_listen_chapter=ch,
+                    listen_segment=seg,
                     listen_rate=float(report.get("rate", 1.0)),
                     listen_voice=str(report.get("voice", "")),
                 )

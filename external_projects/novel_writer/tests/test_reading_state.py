@@ -52,3 +52,22 @@ def test_file_is_plain_json_for_inspection(tmp_path):
     rs.update(tmp_path, last_listen_chapter=4)
     data = json.loads((tmp_path / "_studio" / rs.STATE_NAME).read_text(encoding="utf-8"))
     assert data["last_listen_chapter"] == 4
+
+
+def test_resume_segment_only_for_saved_chapter():
+    state = {"last_listen_chapter": 4, "listen_segment": 17}
+    assert rs.resume_segment(state, 4) == 17      # 同一章：接着听
+    assert rs.resume_segment(state, 2) is None    # 换了起始章：从该章开头
+    assert rs.resume_segment({"last_listen_chapter": 4, "listen_segment": None}, 4) is None
+    assert rs.resume_segment({"last_listen_chapter": 4, "listen_segment": True}, 4) is None
+    assert rs.resume_segment({"last_listen_chapter": 4, "listen_segment": -1}, 4) is None
+
+
+def test_position_is_per_book(tmp_path):
+    book_a, book_b = tmp_path / "a", tmp_path / "b"
+    rs.update(book_a, last_listen_chapter=3, listen_segment=12)
+    rs.update(book_b, last_listen_chapter=1, listen_segment=2)
+    a, b = rs.load(book_a), rs.load(book_b)
+    assert (a["last_listen_chapter"], a["listen_segment"]) == (3, 12)
+    assert (b["last_listen_chapter"], b["listen_segment"]) == (1, 2)
+    assert rs.load(tmp_path / "c")["listen_segment"] is None   # 第三本书没有记录

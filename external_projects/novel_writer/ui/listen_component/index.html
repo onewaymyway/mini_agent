@@ -26,42 +26,49 @@
   <label>语速 <select id="rate"></select></label>
   <label>音色 <select id="voice" style="max-width:260px"></select></label>
 </div>
-<div class="hint">语速与音色在下一段生效。切换标签页时浏览器可能暂停朗读，请保持本页可见。上次收听的章节与参数会自动记住。</div>
+<div class="hint">语速与音色在下一段生效。切换标签页时浏览器可能暂停朗读，请保持本页可见。本书的收听位置（精确到段落）会自动记住，下次从该处继续。</div>
 <script>
 (function () {
   "use strict";
   const RATES = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 3.5, 4, 4.5, 5];
+  const REPORT_EVERY = 5;   // 每播放 5 段（约一两分钟）回传一次位置，避免频繁触发 Streamlit 重跑
   const synth = window.speechSynthesis;
   const $ = id => document.getElementById(id);
 
   let started = false, DATA = null, idx = 0, state = "idle", token = 0;
-  let keepRef = null, lastCh = null, rate = 1, pendingVoice = "";
+  let keepRef = null, lastCh = null, lastReportedIdx = -1, rate = 1, pendingVoice = "";
 
   // ---- Streamlit 组件协议 ----
   function send(type, data) {
     window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, data || {}), "*");
   }
+  function setHeight() { send("streamlit:setFrameHeight", { height: document.body.scrollHeight + 8 }); }
+
+  // ---- 位置上报：{ch, seg}，seg 为该章内的段落下标 ----
   function report() {
     if (!DATA || !DATA.segments.length) return;
-    const c = chapterOf(Math.min(idx, DATA.segments.length - 1));
+    const i = Math.min(idx, DATA.segments.length - 1);
+    const c = chapterOf(i);
+    lastReportedIdx = i;
+    lastCh = c.ch;
     send("streamlit:setComponentValue", {
-      value: { ch: c.ch, rate: rate, voice: $("voice").value || "" },
+      value: { ch: c.ch, seg: i - c.start, rate: rate, voice: $("voice").value || "" },
       dataType: "json"
     });
   }
-  function setHeight() { send("streamlit:setFrameHeight", { height: document.body.scrollHeight + 8 }); }
+  function maybeReport() {
+    if (!DATA || !DATA.segments.length) return;
+    const i = Math.min(idx, DATA.segments.length - 1);
+    if (chapterOf(i).ch !== lastCh || Math.abs(i - lastReportedIdx) >= REPORT_EVERY) report();
+  }
 
   // ---- 播放逻辑 ----
-  function chapterOf(i) {
-    let k = 0;
-    for (let j = 0; j < DATA.chapters.length; j++) if (DATA.chapters[j].start <= i) k = j;
-    return DATA.chapters[k];
-  }
   function chapterIndexOf(i) {
     let k = 0;
     for (let j = 0; j < DATA.chapters.length; j++) if (DATA.chapters[j].start <= i) k = j;
     return k;
   }
+  function chapterOf(i) { return DATA.chapters[chapterIndexOf(i)]; }
   function render() {
     const segs = DATA.segments, chs = DATA.chapters;
     if (!segs.length) { $("now").textContent = "没有可朗读的正文"; return; }
@@ -70,7 +77,6 @@
     $("now").textContent = "第" + c.ch + "章 " + c.title;
     $("prog").textContent = "第 " + (k + 1) + "/" + chs.length + " 章 · 段落 " + (i + 1) + "/" + segs.length;
     $("toggle").textContent = state === "playing" ? "⏸ 暂停" : (state === "paused" ? "▶ 继续" : "▶ 播放");
-    if (c.ch !== lastCh) { lastCh = c.ch; report(); }
     setHeight();
   }
   function zhVoices() {
@@ -103,18 +109,23 @@
     u.onend = () => {
       if (my !== token) return;
       idx++;
-      if (idx >= segs.length) { idx = 0; state = "idle"; keepRef = null; render(); return; }
+      if (idx >= segs.length) {
+        // 读完全书：位置回到开头，下次从头开始
+        idx = 0; state = "idle"; keepRef = null;
+        render(); report(); return;
+      }
       speakCurrent(my);
-      render();
+      maybeReport();
     };
     u.onerror = e => {
       if (my !== token) return;
       if (e.error === "interrupted" || e.error === "canceled") return;
-      state = "idle"; keepRef = null; render();
+      state = "idle"; keepRef = null; render(); report();
     };
     keepRef = u;   // 保留引用，防止 Chrome 垃圾回收导致 onend 不触发
     state = "playing";
     render();
+    maybeReport();
     synth.speak(u);
   }
   function speakFrom(i) {
@@ -124,11 +135,12 @@
     idx = i;
     speakCurrent(token);
   }
-  function stopAll() {
+  // 停止：保留当前位置（下次播放从这里接着读），只结束朗读
+  function stopKeepPosition() {
     token++;
     synth.cancel();
-    state = "idle"; idx = 0; keepRef = null;
-    render();
+    state = "idle"; keepRef = null;
+    render(); report();
   }
   function jumpChapter(delta) {
     const chs = DATA.chapters;
@@ -141,6 +153,19 @@
     DATA = args.payload || { segments: [], chapters: [] };
     rate = RATES.indexOf(Number(args.rate)) >= 0 ? Number(args.rate) : 1;
     pendingVoice = args.voice || "";
+
+    // 恢复位置：resume_ch 对应的章节 + 章内段落下标（越界则夹到该章末段）
+    idx = 0;
+    if (args.resume_ch !== null && args.resume_ch !== undefined && DATA.chapters.length) {
+      const k = DATA.chapters.findIndex(c => c.ch === Number(args.resume_ch));
+      if (k >= 0) {
+        const start = DATA.chapters[k].start;
+        const end = k + 1 < DATA.chapters.length ? DATA.chapters[k + 1].start : DATA.segments.length;
+        const seg = Math.max(0, Math.min(Number(args.resume_seg) || 0, end - start - 1));
+        idx = start + seg;
+      }
+    }
+
     const rsel = $("rate");
     RATES.forEach(r => {
       const o = document.createElement("option");
@@ -151,17 +176,19 @@
     rsel.onchange = () => { rate = parseFloat(rsel.value); report(); };
     $("voice").onchange = () => report();
     $("toggle").onclick = () => {
-      if (state === "playing") { synth.pause(); state = "paused"; render(); }
+      if (state === "playing") { synth.pause(); state = "paused"; render(); report(); }
       else if (state === "paused") { synth.resume(); state = "playing"; render(); }
       else speakFrom(idx);
     };
-    $("stop").onclick = stopAll;
+    $("stop").onclick = stopKeepPosition;
     $("prev").onclick = () => jumpChapter(-1);
     $("next").onclick = () => jumpChapter(1);
     if (synth.onvoiceschanged !== undefined) synth.onvoiceschanged = fillVoices;
     fillVoices();
-    // 初始化不上报：起始章节来自已保存的状态，只有用户真正切章/改参数时才回传
-    lastCh = DATA.chapters.length ? DATA.chapters[0].ch : null;
+
+    // 初始化不上报：起点来自已保存的位置，只有真正播放、切章、改参数时才回传
+    lastCh = DATA.segments.length ? chapterOf(Math.min(idx, DATA.segments.length - 1)).ch : null;
+    lastReportedIdx = idx;
     render();
   }
 
@@ -171,6 +198,10 @@
     if (!d || d.type !== "streamlit:render" || started) return;
     started = true;
     init(d.args || {});
+  });
+  // 关闭或刷新页面前尽力保存当前位置
+  window.addEventListener("pagehide", function () {
+    if (DATA && (state === "playing" || state === "paused")) report();
   });
   send("streamlit:componentReady", { apiVersion: 1 });
   setHeight();

@@ -1,6 +1,7 @@
 """novel_writer/reading_state.py — 阅读与听书的持久化状态（M7）。
 
-记录：上次阅读的章节、上次收听的章节、听书语速与音色。
+记录：上次阅读的章节、上次收听的位置（章节 + 章内段落）、听书语速与音色。
+每本书的状态文件位于各自工作目录的 _studio/ 下，因此天然按书区分。
 存于 `_studio/reading_state.json`，刷新浏览器或重启 Streamlit 后都能恢复。
 文件损坏或缺失时返回默认值，不抛异常（状态只是便利信息，不影响正文）。
 """
@@ -16,6 +17,7 @@ STATE_NAME = "reading_state.json"
 DEFAULTS: Dict[str, Any] = {
     "last_read_chapter": None,
     "last_listen_chapter": None,
+    "listen_segment": None,   # 上次收听位置：该章内的段落下标（0 为标题）
     "listen_rate": 1.0,
     "listen_voice": "",
 }
@@ -50,6 +52,14 @@ def update(root: Path | str, **patch: Any) -> Dict[str, Any]:
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_json(path, state)
     return state
+
+
+def resume_segment(state: Dict[str, Any], start: int) -> Optional[int]:
+    """从保存的收听位置续播：仅当保存的章节就是当前起始章节时，返回章内段落下标；否则 None（从该章开头）。"""
+    seg = state.get("listen_segment")
+    if state.get("last_listen_chapter") == start and isinstance(seg, int) and not isinstance(seg, bool) and seg >= 0:
+        return seg
+    return None
 
 
 def chapter_or_none(value: Optional[Any], available: list) -> Optional[int]:
