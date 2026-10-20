@@ -143,18 +143,19 @@ def design_character_step(name: str) -> StepDef:
 
 def build_characters_step(card_names: Sequence[str]) -> StepDef:
     """建档（第四阶段）：每张人设卡写成一个角色文件；索引由 characters_refresh 生成。"""
-    outputs: Tuple[str, ...] = (rel("behavior_index"),)
+    # 行为边界已写在每个角色文件的 behavior_guide 中，不再单独生成 behavior_index.json（重复且无人读取）。
+    outputs: Tuple[str, ...] = ()
     extra: Dict[str, Any] = {}
     if card_names:
-        outputs = (rel("characters_dir") + "/*.md", rel("behavior_index"))
+        outputs = (rel("characters_dir") + "/*.md",)
         extra = {"output_check": "character_files"}
     return StepDef(
         id="build_characters", title="建立人物档案", stage="p1", category=CAT_BUILD,
         executor=EXECUTOR_SKILL, skill="character-manager",
         instructions=("把人设卡转换为角色文件：为每张人设卡在角色目录下建立一个角色文件（一卡一文件，"
                       "id 取 char_ 加三位编号），把身份、心理、行为边界、能力、弧线写入对应字段；"
-                      "state_log 为空数组，current_state.as_of_chapter 为 0。"
-                      f"同时写出行为边界索引：{rel('behavior_index')}。\n" + LAYOUT_RULES),
+                      "state_log 为空数组，current_state.as_of_chapter 为 0；"
+                      "「他会做 / 他不会做」写入 behavior_guide.will_do / wont_do。\n" + LAYOUT_RULES),
         inputs=tuple(rel("character_card", name=n) for n in card_names),
         outputs=outputs,
         deps=tuple(f"design_character:{n}" for n in card_names),

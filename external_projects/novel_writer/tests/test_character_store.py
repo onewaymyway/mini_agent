@@ -220,6 +220,7 @@ def test_draft_sync_checks_both_characters_and_plot_delta():
 def test_build_characters_outputs_files_and_refresh_follows_it():
     build = S.build_characters_step(["李凌云"])
     assert build.outputs[0] == S.rel("characters_dir") + "/*.md"
+    assert S.rel("behavior_index") not in build.outputs     # 行为边界已在角色文件中，不再单独产出
     assert build.extra.get("output_check") == "character_files"
     refresh = S.characters_refresh_step()
     assert refresh.deps == ("build_characters",) and refresh.outputs == (S.rel("characters"),)
