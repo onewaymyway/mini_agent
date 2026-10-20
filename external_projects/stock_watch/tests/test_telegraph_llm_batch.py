@@ -180,3 +180,50 @@ def test_retention_limits_from_config(monkeypatch, tmp_path):
     ns.save_analysis_state(state_path, 0, [{"news_time": f"t{i}"} for i in range(5)])
     kept = [a["news_time"] for a in ns.load_analysis_state(state_path)["analyses"]]
     assert kept == ["t2", "t3", "t4"]
+
+
+def _write_state(path, analyses):
+    path.write_text(json.dumps({"last_analysis_index": 0, "analyses": analyses}, ensure_ascii=False), encoding="utf-8")
+
+
+def test_summary_tolerates_dict_industries_and_dirty_fields(tmp_path):
+    """回归：industry_opportunities 里出现 dict 时曾导致 unhashable type: 'dict'。"""
+    from datetime import datetime
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    p = tmp_path / "state.json"
+    _write_state(p, [
+        {"news_time": now, "direction": "positive",
+         "industry_opportunities": [{"name": "AI算力"}, "半导体", {"industry": "半导体"}, {}, None],
+         "related_stocks": [{"code": "SZ000001", "name": "平安银行"}, "无代码字符串", {"code": "SZ000001", "name": {"x": 1}}]},
+        {"news_time": now, "direction": "negative", "industry_opportunities": "半导体",
+         "related_stocks": None, "related_etfs": ["芯片ETF"]},
+    ])
+    summary = ns.get_all_analyses_summary(p, days=7, top_n=10)
+    assert summary["total_analyses"] == 2
+    inds = dict(summary["top_industries"])
+    assert inds["半导体"]["count"] == 2 and inds["AI算力"]["count"] == 1
+    assert summary["top_stocks"][0]["code"] == "SZ000001" and summary["top_stocks"][0]["count"] == 2
+    assert len(ns.get_news_by_industry(p, "半导体", 7)) == 2
+    assert len(ns.get_news_by_stock(p, "SZ000001", 7)) == 1
+
+
+def test_recent_filter_uses_local_date_and_keeps_undated(tmp_path):
+    from datetime import datetime, timedelta
+
+    fmt = "%Y-%m-%d %H:%M:%S"
+    p = tmp_path / "state.json"
+    _write_state(p, [
+        {"news_time": (datetime.now() - timedelta(days=1)).strftime(fmt), "direction": "positive"},
+        {"news_time": (datetime.now() - timedelta(days=30)).strftime(fmt), "direction": "positive"},
+        {"news_time": "21:02:18", "direction": "positive"},   # 旧格式无日期：保留
+    ])
+    assert ns.get_all_analyses_summary(p, days=7)["total_analyses"] == 2
+
+
+def test_new_results_are_normalized():
+    r = ns._normalize_analysis({"industry_opportunities": [{"name": "AI"}], "related_stocks": ["x"],
+                                "direction": " Positive ", "confidence": None})
+    assert r["industry_opportunities"] == ["AI"]
+    assert r["related_stocks"] == [{"code": "", "name": "x"}]
+    assert r["direction"] == "positive" and r["confidence"] == ""

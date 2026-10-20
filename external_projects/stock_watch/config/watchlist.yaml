@@ -48,7 +48,7 @@ telegraph:
   scroll_delay: 1.5         # 每次滚动后等待秒数
   positive_threshold: 2     # 正面提及至少 N 次才入池
   llm_max_news_per_run: 100 # 单次扫描最多送 LLM 分析多少条（含待处理积压，最新优先）；0=不限制
-  analysis_max_records: 5000  # 分析结果最多保留条数（超出丢弃最旧的）
+  analysis_max_records: 2000  # 分析结果最多保留条数（超出丢弃最旧的）
   pending_max_size: 1000    # 待处理新闻队列最多保留条数（超出丢弃最旧的）
   processed_max_size: 5000  # 已处理新闻归档最多保留条数（超出丢弃最旧的）
   llm_batch_size: 25        # 每次 LLM 调用分析的新闻条数；末批不足则按剩余条数

@@ -648,6 +648,7 @@ def _analyze_one_batch(
     results = _parse_llm_json(response)
     if results is None:
         raise ValueError("LLM 返回内容无法解析为 JSON 数组")
+    results = [_normalize_analysis(r) for r in results]
 
     # 将完整新闻内容补充到分析结果中 - 按 news_time 匹配
     time_map = {item.get("time", ""): item for item in batch}
@@ -742,6 +743,87 @@ def analyze_telegraph_news_llm(
     return results
 
 
+def _as_name(value: Any) -> str:
+    """把 LLM 返回的"名称"字段规范成字符串：字符串原样、dict 取 name/industry/sector 等、其它转 str。"""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        for key in ("name", "industry", "sector", "title", "label", "行业", "名称"):
+            v = value.get(key)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return ""
+    return str(value).strip()
+
+
+def _as_stock_items(value: Any) -> List[Dict[str, Any]]:
+    """规范 related_stocks / related_etfs：只保留 dict 项；字符串项当作名称（无代码）。"""
+    items: List[Dict[str, Any]] = []
+    if not isinstance(value, list):
+        return items
+    for v in value:
+        if isinstance(v, dict):
+            items.append(v)
+        elif isinstance(v, str) and v.strip():
+            items.append({"code": "", "name": v.strip()})
+    return items
+
+
+def _industry_names(analysis: Dict[str, Any]) -> List[str]:
+    """一条分析记录里的行业名列表（去空、去重、保持顺序），兼容 LLM 返回 dict/字符串混杂。"""
+    raw = analysis.get("industry_opportunities", [])
+    if isinstance(raw, (str, dict)):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    names: List[str] = []
+    for v in raw:
+        name = _as_name(v)
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _normalize_analysis(result: Dict[str, Any]) -> Dict[str, Any]:
+    """落盘前规范 LLM 返回的一条分析记录，避免下游统计遇到意外类型。"""
+    result["industry_opportunities"] = _industry_names(result)
+    result["related_stocks"] = _as_stock_items(result.get("related_stocks"))
+    result["related_etfs"] = _as_stock_items(result.get("related_etfs"))
+    for key in ("direction", "confidence"):
+        v = result.get(key)
+        result[key] = v.strip().lower() if isinstance(v, str) else ""
+    return result
+
+
+def _news_datetime(analysis: Dict[str, Any]) -> Optional[datetime]:
+    """解析分析记录的新闻时间（北京本地时间，带或不带 T）；只有 HH:MM:SS 等无日期格式返回 None。"""
+    raw = str(analysis.get("news_time", "") or "").strip().replace("T", " ")
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(raw[:19] if fmt != "%Y-%m-%d" else raw[:10], fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _recent_analyses(state_path: Path, days: int) -> List[Dict[str, Any]]:
+    """最近 N 天的分析记录。新闻时间是本地时间，所以截止点也用本地时间；
+    无法解析日期的旧记录（只有 HH:MM:SS）无法判断新旧，保留而不是悄悄丢弃。"""
+    from datetime import timedelta
+
+    cutoff = datetime.now() - timedelta(days=days)
+    recent: List[Dict[str, Any]] = []
+    for a in load_analysis_state(state_path).get("analyses", []):
+        if not isinstance(a, dict):
+            continue
+        dt = _news_datetime(a)
+        if dt is None or dt >= cutoff:
+            recent.append(a)
+    return recent
+
+
 def load_analysis_state(state_path: Path) -> Dict[str, Any]:
     """加载分析状态（包含cursor）。"""
     if not state_path.exists():
@@ -786,16 +868,7 @@ def get_analyses_by_date(state_path: Path, date_str: str) -> List[Dict]:
 
 def get_all_analyses_summary(state_path: Path, days: int = 7, top_n: int = 10) -> Dict[str, Any]:
     """获取长期统计分析摘要。"""
-    from datetime import timedelta
-    state = load_analysis_state(state_path)
-    analyses = state.get("analyses", [])
-
-    # 过滤最近N天的分析（使用news_time作为时间戳）
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    recent = [
-        a for a in analyses
-        if a.get("news_time", "") >= cutoff.strftime("%Y-%m-%dT%H:%M:%S")
-    ]
+    recent = _recent_analyses(state_path, days)
 
     # 统计
     stock_mentions: Dict[str, Dict] = {}
@@ -811,12 +884,14 @@ def get_all_analyses_summary(state_path: Path, days: int = 7, top_n: int = 10) -
         elif direction == "negative":
             negative_count += 1
 
-        for stock in a.get("related_stocks", []):
-            code = stock.get("code", "")
+        for stock in _as_stock_items(a.get("related_stocks")):
+            code = str(stock.get("code", "") or "").strip()
+            if not code:
+                continue
             if code not in stock_mentions:
                 stock_mentions[code] = {
                     "code": code,
-                    "name": stock.get("name", code),
+                    "name": _as_name(stock.get("name")) or code,
                     "count": 0,
                     "positive": 0,
                     "negative": 0,
@@ -827,7 +902,7 @@ def get_all_analyses_summary(state_path: Path, days: int = 7, top_n: int = 10) -
             elif direction == "negative":
                 stock_mentions[code]["negative"] += 1
 
-        for ind in a.get("industry_opportunities", []):
+        for ind in _industry_names(a):
             if ind not in industry_mentions:
                 industry_mentions[ind] = {"count": 0, "positive": 0, "negative": 0}
             industry_mentions[ind]["count"] += 1
@@ -859,31 +934,13 @@ def get_all_analyses_summary(state_path: Path, days: int = 7, top_n: int = 10) -
 
 
 def get_news_by_stock(state_path: Path, code: str, days: int = 7) -> List[Dict[str, Any]]:
-    """Ambil semua catatan analisis yang memuat stock code tertentu dalam N hari terakhir."""
-    from datetime import timedelta
-    state = load_analysis_state(state_path)
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    recent = [
-        a for a in state.get("analyses", [])
-        if a.get("news_time", "") >= cutoff.strftime("%Y-%m-%dT%H:%M:%S")
-    ]
+    """获取最近 N 天内涉及某只股票的所有分析记录。"""
     return [
-        a for a in recent
-        if any(s.get("code") == code for s in a.get("related_stocks", []))
+        a for a in _recent_analyses(state_path, days)
+        if any(str(s.get("code", "")) == code for s in _as_stock_items(a.get("related_stocks")))
     ]
 
 
 def get_news_by_industry(state_path: Path, industry: str, days: int = 7) -> List[Dict[str, Any]]:
-    """Ambil semua catatan analisis yang memuat industry opportunity tertentu dalam N hari terakhir."""
-    from datetime import timedelta
-    state = load_analysis_state(state_path)
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    recent = [
-        a for a in state.get("analyses", [])
-        if a.get("news_time", "") >= cutoff.strftime("%Y-%m-%dT%H:%M:%S")
-    ]
-    return [
-        a for a in recent
-        if industry in a.get("industry_opportunities", [])
-    ]
-
+    """获取最近 N 天内涉及某个行业机会的所有分析记录。"""
+    return [a for a in _recent_analyses(state_path, days) if industry in _industry_names(a)]

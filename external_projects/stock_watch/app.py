@@ -1419,6 +1419,8 @@ def render_telegraph_news(algo: Dict, manual: Dict):
         get_pending_list,
         get_processed_list,
         get_processed_total,
+        _as_stock_items,
+        _industry_names,
         PENDING_MAX_SIZE,
         PROCESSED_MAX_SIZE,
     )
@@ -1507,19 +1509,22 @@ def render_telegraph_news(algo: Dict, manual: Dict):
                             st.markdown(f"**类型**: {item.get('opportunity_type', '')}")
                             st.markdown(f"**置信度**: {item.get('confidence', '')}")
 
-                            if item.get("related_stocks"):
+                            _stocks = _as_stock_items(item.get("related_stocks"))
+                            _etfs = _as_stock_items(item.get("related_etfs"))
+                            _inds = _industry_names(item)
+                            if _stocks:
                                 st.markdown("**相关股票**:")
-                                for s in item["related_stocks"]:
+                                for s in _stocks:
                                     st.markdown(f"- {s.get('code', '')} ({s.get('name', '')}) - 相关性: {s.get('relevance', '')}")
 
-                            if item.get("related_etfs"):
+                            if _etfs:
                                 st.markdown("**相关ETF**:")
-                                for e in item["related_etfs"]:
+                                for e in _etfs:
                                     st.markdown(f"- {e.get('code', '')} ({e.get('name', '')}) - 行业: {e.get('sector', '')}")
 
-                            if item.get("industry_opportunities"):
+                            if _inds:
                                 st.markdown("**行业机会**:")
-                                st.markdown(", ".join(item["industry_opportunities"]))
+                                st.markdown(", ".join(_inds))
 
                             st.markdown(f"**分析理由**:\n{item.get('reasoning', '')}")
 
@@ -1636,7 +1641,7 @@ def render_telegraph_news(algo: Dict, manual: Dict):
                         etf_list = []
                         news_list = get_news_by_industry(state_path, ind, days)
                         for n in news_list:
-                            for etf in n.get("related_etfs", []):
+                            for etf in _as_stock_items(n.get("related_etfs")):
                                 if etf.get("sector", "") == ind:
                                     etf_list.append(etf)
                         etf_list = [{"code": e["code"], "name": e["name"]} for e in etf_list]
