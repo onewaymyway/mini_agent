@@ -8,6 +8,7 @@ import streamlit as st
 
 from novel_writer import tool_api
 from ui.components import show_error, show_df
+from ui.listen import render_listen
 
 EXPORT_LABELS = {"md": "Markdown", "txt": "纯文本 (txt)", "docx": "Word (docx)", "epub": "电子书 (epub)"}
 
@@ -44,3 +45,4 @@ def render_reading(ws: str) -> None:
     detail = tool_api.chapter(ws, chosen)
     if detail["ok"]:
         st.markdown(detail["data"]["text"] or "（尚无正文）")
+    render_listen(ws, rows)

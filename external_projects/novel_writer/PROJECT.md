@@ -66,7 +66,7 @@ novel_writer/
 ├── project.yaml          daemon 契约（create_novel / list_novels / health）
 ├── PROJECT.md            本文件
 ├── app.py                Streamlit 薄入口；页面在 ui/
-├── ui/                   shelf（书架）、wizard（新建向导）、cockpit（驾驶舱）、planning / writing / review / reading / ideas / metrics / settings_page / codex / threads（分页）、components、skills_page
+├── ui/                   listen（听书，M7）、shelf（书架）、wizard（新建向导）、cockpit（驾驶舱）、planning / writing / review / reading / ideas / metrics / settings_page / codex / threads（分页）、components、skills_page
 ├── novel_writer/         config / fsutil / settings / workspace / shelf / skills_catalog / tool_api
 │                         M1: steps / gates / state / pipeline / validators / runner / worker / service_cli
 │                         M2: intake / views
@@ -87,6 +87,7 @@ novel_writer/
 
 ## 变更记录
 
+- 2026-10-20：M7 听书（纯前端朗读，自动连播）。阅读页新增「🎧 听书」折叠区：从所选章节起，浏览器 speechSynthesis 逐段朗读到末章，自动切章，章节标题作为每章第一段朗读；支持暂停/继续/停止、上一章/下一章、语速与音色（仅列出中文语音）。数据组装在 `novel_writer/listen.py`（纯逻辑，每段 ≤180 字以规避 Chrome 长文本中断），界面在 `ui/listen.py`。不生成音频、不调用 LLM、不改动流水线。新增 `tests/test_listen.py`（5 个用例）。已知限制：语音列表取决于浏览器与系统；切换语速/音色在下一段生效；需在 Edge 与 Chrome 中手动验证；切到后台标签页可能被浏览器暂停。
 - 2026-10-17：M0 完成（见上表）。
 - 2026-10-17：M1 引擎内核完成（待确认）。新增 steps/gates/state/pipeline/validators/runner/worker/service_cli、
   workflows/skill_step.yaml、entrypoints/run_novel.py 与 smoke_real_llm.py；tool_api 增加运行与步骤操作接口；
