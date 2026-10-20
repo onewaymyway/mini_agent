@@ -109,12 +109,12 @@ def test_migration_converts_verifies_and_keeps_backup(tmp_path):
     assert PS.migrate_legacy(legacy, base)["status"] in ("nothing", "already")   # 重复迁移是安全的
 
 
-def test_corrupt_legacy_without_records_needs_review_and_keeps_original(tmp_path):
+def test_corrupt_legacy_without_llm_asks_for_conversion_and_keeps_original(tmp_path):
     legacy = tmp_path / "plot_tracker.json"
     legacy.write_text("{坏掉的", encoding="utf-8")
     r = PS.migrate_legacy(legacy, tmp_path / "伏笔")
-    assert r["status"] == "needs_review"                       # 无法抢救出任何条目：必须人工确认
-    assert legacy.read_text(encoding="utf-8") == "{坏掉的"       # 原文件不动
+    assert r["status"] == "needs_llm"                          # 损坏且未提供转换：不猜测、不改动
+    assert legacy.read_text(encoding="utf-8") == "{坏掉的"
     assert not PS.is_store(tmp_path / "伏笔")
 
 

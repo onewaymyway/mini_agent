@@ -87,6 +87,14 @@ novel_writer/
 
 ## 变更记录
 
+- 2026-10-20：损坏旧账本改由 LLM 直接转换（替代此前的逐条 JSON 修复方案，已撤销）。
+  - 健康的旧 JSON：确定性迁移，不调用 LLM，自动提交。
+  - 损坏的旧 JSON：`tool_api.migrate_plot_ledger(use_llm=True)` 调用技能 `ledger-convert`，LLM 直接读取损坏原文，按目标布局写出 `伏笔/F*.md` 与 `_applied/` 小文件。Python 用同一套严格解析器读回校验（字段、状态枚举、章号、id 与文件名一致），不合格则把具体错误反馈给 LLM 重写，最多 3 次（`novel_writer/llm_convert.py` 的通用重试框架，后续阶段复用）。
+  - 原文原因不明的疑似遗漏（原文 id 数量多于转换结果）会作为提示写入复核报告。
+  - LLM 转换的结果一律需要复核：生成「伏笔迁移报告.md」，confirm=True 才提交；未启用 LLM 时返回 needs_llm，不做任何改动。旧文件不删除，提交后改名 .bak。
+  - 已删除：逐条 JSON 修复模块 `json_repair.py` 及其技能 `json-repair`。
+  - 约定（后续阶段）：任何损坏的旧文件（人物档案、蓝图、快照等）迁移，都走「LLM 直接转换 → 严格校验 → 重试 → 复核后提交」这一流程，不再做 JSON 修复。
+  - 新增 `tests/test_llm_convert.py`（8 例）；`tests/test_plot_store.py` 中损坏用例改为「需要 LLM 转换、原文件不动」。
 - 2026-10-20：损坏旧账本的抢救与修复（通用规则，适用于伏笔账本及后续所有 JSON→Markdown 迁移）。
   - 分层抢救（`novel_writer/json_repair.py`）：严格解析 → 确定性清洗（代码围栏、尾逗号）→ 按数组条目拆分逐条解析。只有无法解析的条目才进入修复，其余条目保持原样；每条都标记来源（strict / lenient / llm）。
   - 修复：待修复条目交给技能 `json-repair`（`skills/json-repair/`），每条单独调用一次；修复结果必须通过结构校验才被接受；修复器异常不中断迁移。

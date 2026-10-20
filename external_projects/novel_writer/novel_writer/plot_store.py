@@ -20,9 +20,8 @@ import re
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from novel_writer import json_repair as JR
 from novel_writer import plot_delta as PD
 from novel_writer.fsutil import atomic_write_json, atomic_write_text
 
@@ -207,83 +206,97 @@ def _normalized(data: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-# ── 迁移（含损坏旧账本的抢救与修复）────────────────────────────────
+# ── 迁移 ────────────────────────────────────────────────────────────
 
-REPAIR_HINT = "伏笔条目：必须是对象，含 id（字母数字下划线连字符）、name、status（planted/advanced/resolved）、"\
-              "plant_chapter、resolve_chapter，progress 为对象数组。"
+ALLOWED_STATUS = ("planted", "advanced", "resolved")
+
+# LLM 转换的目标布局说明（写入技能提示词）。这是唯一的格式契约，校验函数与之一致。
+LAYOUT_INSTRUCTIONS = """【目标布局】在写出目录下创建一个名为「伏笔」的目录，内容如下：
+1. 每条伏笔一个文件 `伏笔/F<编号>.md`（编号只含字母、数字、下划线、连字符，例如 F001、F12）。
+   文件格式：第一行和最后一个分隔行都是 `---`，中间每行是 `字段名: JSON值`（值必须是单行合法 JSON），然后是一个 `---` 闭合行。
+   必需字段：`id`（与文件名一致，字符串）、`name`（字符串）、`status`（只能是 planted / advanced / resolved）、
+   `plant_chapter`（整数章号，未知则 null）、`resolve_chapter`（整数章号或 null）、`progress`（数组，元素为 {"chapter": 整数, "note": 字符串}，可为空数组）。
+   可以额外保留原文中的其它字段（如 `note`、`description`），值同样用单行 JSON。
+   示例：
+   ---
+   id: "F001"
+   name: "玉佩"
+   status: "advanced"
+   plant_chapter: 3
+   resolve_chapter: null
+   progress: [{"chapter":4,"note":"玉佩在市集出现"}]
+   ---
+   # F001 玉佩
+2. 若原文记录了章节增量的撤销信息，可写入 `伏笔/_applied/第NN章.md`（NN 为两位章号），文件头字段为
+   `chapter`（整数）、`before`（对象，记录该章变更前的各伏笔状态，未出现的伏笔值为 null）、`delta`（对象，该章增量）。无法确定则不写。
+3. 不要写 `_index.md`（由系统生成）。
+4. 不要遗漏原文中的任何伏笔；无法确定的字段填 null，不要编造内容。
+"""
 
 
-def _record_problem(obj: Any) -> Optional[str]:
-    if not isinstance(obj, dict):
-        return "不是对象"
-    iid = str(obj.get("id") or "")
-    if not ITEM_ID.match(iid):
-        return f"id 不合法：{obj.get('id')!r}"
-    return None
-
-
-def _review_report(summary: Dict[str, Any], quarantined: List[str]) -> str:
-    lines = ["# 伏笔账本迁移报告", "",
-             f"- 合法条目：{summary['items']}（严格解析 {summary['origins'].get('strict', 0)}，"
-             f"确定性清洗 {summary['origins'].get('lenient', 0)}，LLM 修复 {summary['origins'].get('llm', 0)}）",
-             f"- 隔离条目：{len(quarantined)}（原文保存在 伏笔/_quarantine/，未进入账本）",
-             f"- 已记录的章节增量：{summary['applied_chapters']}" + ("（撤销记录已丢失，重跑相关章节将无法撤销旧效果）"
-                                                              if summary.get("applied_lost") else ""),
-             ""]
-    if summary.get("notes"):
-        lines += ["## 说明"] + [f"- {n}" for n in summary["notes"]] + [""]
-    if summary.get("llm_ids"):
-        lines += ["## 由 LLM 修复的条目（请逐条核对）"] + [f"- {i}" for i in summary["llm_ids"]] + [""]
-    if quarantined:
-        lines += ["## 隔离的原文（摘要）"] + [f"- 第 {i + 1} 条：{q[:80]!r}" for i, q in enumerate(quarantined)] + [""]
-    lines += ["确认无误后，以 confirm=True 重新执行迁移即可提交。"]
-    return "\n".join(lines) + "\n"
+def _plot_stage_validator(source_text: str) -> Callable[[Path], Tuple[Optional[Dict[str, Any]], List[str]]]:
+    def validate(out: Path) -> Tuple[Optional[Dict[str, Any]], List[str]]:
+        base = Path(out) / "伏笔"
+        if not base.is_dir():
+            return None, [f"没有写出「伏笔」目录（应在 {out} 下创建 伏笔/）"]
+        try:
+            data = read_store(base)
+        except LedgerError as exc:
+            return None, exc.problems
+        errors: List[str] = []
+        items = data.get(ITEM_KEY, [])
+        if not items:
+            errors.append("没有写出任何伏笔文件（伏笔/F*.md）")
+        for it in items:
+            iid = it.get("id")
+            if not isinstance(it.get("name"), str):
+                errors.append(f"{iid}：name 必须是字符串")
+            if it.get("status") not in ALLOWED_STATUS:
+                errors.append(f"{iid}：status 必须是 planted / advanced / resolved，当前为 {it.get('status')!r}")
+            for ck in ("plant_chapter", "resolve_chapter"):
+                if it.get(ck) is not None and not (isinstance(it.get(ck), int) and not isinstance(it.get(ck), bool)):
+                    errors.append(f"{iid}：{ck} 必须是整数或 null")
+            prog = it.get("progress")
+            if prog is not None and (not isinstance(prog, list) or not all(
+                    isinstance(p, dict) and isinstance(p.get("chapter"), int) for p in prog)):
+                errors.append(f"{iid}：progress 必须是 {{chapter, note}} 对象的数组")
+        return data, errors
+    return validate
 
 
 def migrate_legacy(legacy_path: Path, base: Path, *, dry_run: bool = False,
-                   register_path: Optional[Path] = None, repair: Optional[Callable[[str, str], Optional[str]]] = None,
+                   register_path: Optional[Path] = None,
+                   convert: Optional[Callable[[Path], Any]] = None,
                    confirm: bool = False) -> Dict[str, Any]:
     """把旧版 JSON 账本迁移为小文件存储。
 
-    流程：抢救（严格 → 清洗 → 按条目拆分）→ 待修复条目交给 repair（LLM）→ 不合格的隔离 →
-    写入临时目录并回读比对 → 落盘。
-
-    自动提交的条件：没有 LLM 修复、没有隔离、没有丢失的撤销记录、没有结构问题。
-    否则只生成复核报告（伏笔迁移报告.md），需要 confirm=True 才会提交。
-    旧文件不删除，提交后改名为 .bak；隔离的原文保存在 伏笔/_quarantine/。
+    - 旧文件合法：确定性迁移，自动提交。
+    - 旧文件损坏：若提供 convert（通常是 LLM 直接转换），由它读取原文生成小文件，经严格校验后作为候选；
+      这种结果一律需要复核，生成「伏笔迁移报告.md」，confirm=True 才提交。未提供 convert 则返回 needs_llm。
+    旧文件始终不删除；提交后改名为 .bak。
     """
     legacy_path, base = Path(legacy_path), Path(base)
     if not legacy_path.is_file():
         return {"status": "nothing", "message": "没有旧版伏笔账本，无需迁移"}
     if is_store(base):
         return {"status": "already", "message": "伏笔账本已是小文件格式，无需迁移"}
-    text = legacy_path.read_bytes().decode("utf-8", errors="replace")
-    sv = JR.salvage_ledger(text, ITEM_KEY, PD.APPLIED_KEY)
-    fixed, quarantined_raw = JR.repair_pending(sv.pending, repair, REPAIR_HINT, _record_problem)
 
-    items: List[Dict[str, Any]] = []
-    origins: Dict[str, int] = {}
-    llm_ids: List[str] = []
-    seen: set = set()
-    for obj, origin in list(sv.records) + list(fixed):
-        problem = _record_problem(obj)
-        if problem is None and str(obj["id"]) in seen:
-            problem = f"id 重复：{obj['id']}"
-        if problem is not None:
-            quarantined_raw.append(json.dumps(obj, ensure_ascii=False) if isinstance(obj, dict) else str(obj))
-            continue
-        seen.add(str(obj["id"]))
-        items.append(obj)
-        origins[origin] = origins.get(origin, 0) + 1
-        if origin == "llm":
-            llm_ids.append(str(obj["id"]))
-    notes = list(sv.notes)
-    if quarantined_raw:
-        notes.append(f"{len(quarantined_raw)} 条无法修复或不合格，已隔离")
-    applied = sv.applied or {}
-    data: Dict[str, Any] = {ITEM_KEY: items}
-    if applied:
-        data[PD.APPLIED_KEY] = applied
+    warnings: List[str] = []
+    source = "json"
+    try:
+        data = PD.load_tracker_strict(legacy_path)
+    except PD.PlotDeltaError as exc:
+        if convert is None:
+            return {"status": "needs_llm", "legacy_problem": exc.problems,
+                    "message": "旧账本已损坏，无法直接读取。请以 use_llm=True 运行迁移，由 LLM 直接读取原文并生成小文件（之后需复核）"}
+        res = convert(legacy_path)
+        if not res.ok or res.data is None:
+            return {"status": "failed", "legacy_problem": exc.problems, "errors": res.errors,
+                    "attempts": res.attempts,
+                    "message": f"LLM 转换失败（已尝试 {res.attempts} 次），旧文件未改动。最后的问题：" + "；".join(res.errors[:5])}
+        data = res.data
+        source = "llm"
+        warnings = list(res.warnings)
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_base = Path(tmp) / "伏笔"
@@ -292,39 +305,57 @@ def migrate_legacy(legacy_path: Path, base: Path, *, dry_run: bool = False,
         if PD.canonical(_normalized(back)) != PD.canonical(_normalized(data)):
             raise LedgerError(["迁移回读比对不一致，已中止（旧文件未改动）"])
 
-    needs_review = bool(llm_ids or quarantined_raw or sv.applied_lost or notes)
+    items = data.get(ITEM_KEY, [])
+    applied = data.get(PD.APPLIED_KEY) or {}
+    needs_review = source == "llm" or bool(warnings)
     summary: Dict[str, Any] = {
         "status": "dry_run" if dry_run else ("needs_review" if needs_review and not confirm else "migrated"),
-        "items": len(items), "origins": origins, "quarantined": len(quarantined_raw),
-        "applied_chapters": len(applied), "applied_lost": sv.applied_lost,
-        "notes": notes, "llm_ids": llm_ids, "needs_review": needs_review, "legacy": str(legacy_path),
+        "source": source, "items": len(items), "applied_chapters": len(applied),
+        "item_ids": [str(i.get("id")) for i in items], "warnings": warnings,
+        "needs_review": needs_review, "legacy": str(legacy_path),
     }
     if dry_run:
-        summary["message"] = f"将迁移 {len(items)} 条伏笔；隔离 {len(quarantined_raw)} 条；" \
-                             + ("需要复核后再确认提交" if needs_review else "可直接提交")
+        summary["message"] = f"将迁移 {len(items)} 条伏笔（来源：{'LLM 转换' if source == 'llm' else '原 JSON'}）；" \
+                             + ("需要复核后确认提交" if needs_review else "可直接提交")
         return summary
     if needs_review and not confirm:
         report = base.parent / "伏笔迁移报告.md"
-        atomic_write_text(report, _review_report(summary, quarantined_raw))
+        lines = ["# 伏笔账本迁移报告", "",
+                 f"- 来源：{'LLM 直接转换（旧文件已损坏）' if source == 'llm' else '原 JSON'}",
+                 f"- 伏笔条数：{len(items)}；已记录的章节增量：{len(applied)}", ""]
+        if warnings:
+            lines += ["## 提示"] + [f"- {w}" for w in warnings] + [""]
+        lines += ["## 转换结果（请逐条核对）"] + [f"- {i.get('id')} {i.get('name', '')}（{i.get('status')}）" for i in items]
+        lines += ["", "确认无误后，以 confirm=True 重新执行迁移即可提交。"]
+        atomic_write_text(report, "\n".join(lines) + "\n")
         summary["report"] = str(report)
-        summary["message"] = "存在需要复核的内容（LLM 修复 / 隔离 / 结构问题），未提交。请查看报告后以 confirm=True 确认。"
+        summary["message"] = "由 LLM 转换的结果需要复核，未提交。请查看报告后以 confirm=True 确认。"
         return summary
 
     write_store(base, data)
-    qdir = base / "_quarantine"
-    if quarantined_raw:
-        qdir.mkdir(parents=True, exist_ok=True)
-        for i, raw in enumerate(quarantined_raw, start=1):
-            atomic_write_text(qdir / f"第{i:02d}条_原文.md", "# 迁移时隔离的原文（未进入账本）\n\n" + raw + "\n")
     if register_path is not None:
         atomic_write_json(Path(register_path), data)
     backup = legacy_path.with_name(legacy_path.name + ".bak")
     if backup.exists():
         backup.unlink()
     shutil.move(str(legacy_path), str(backup))
-    if needs_review:
-        atomic_write_text(base.parent / "伏笔迁移报告.md", _review_report(summary, quarantined_raw))
     summary["backup"] = str(backup)
-    summary["message"] = f"已迁移 {len(items)} 条伏笔" + (f"，隔离 {len(quarantined_raw)} 条" if quarantined_raw else "") \
-                         + f"；旧文件已备份为 {backup.name}"
+    summary["message"] = f"已迁移 {len(items)} 条伏笔；旧文件已备份为 {backup.name}"
     return summary
+
+
+def llm_convert_legacy(legacy_path: Path, workdir: Path, invoker: Callable[..., Any],
+                       max_attempts: int = 3) -> Any:
+    """供 migrate_legacy 使用的 LLM 转换：让技能 ledger-convert 直接读取损坏原文，校验后返回结果。"""
+    from novel_writer import llm_convert as LC
+    text = Path(legacy_path).read_bytes().decode("utf-8", errors="replace")
+    res = LC.convert_with_llm(
+        source=Path(legacy_path), workdir=Path(workdir), invoker=invoker, skill="ledger-convert",
+        instructions=LAYOUT_INSTRUCTIONS, validate=_plot_stage_validator(text),
+        max_attempts=max_attempts, step_id="ledger_convert",
+    )
+    if res.ok:
+        hint_ids = set(LC.id_count_hint(text))
+        if hint_ids and len(res.data.get(ITEM_KEY, [])) < len(hint_ids):
+            res.warnings.append(f"疑似遗漏：原文中出现 {len(hint_ids)} 个不同的 id，转换得到 {len(res.data.get(ITEM_KEY, []))} 条")
+    return res
