@@ -24,8 +24,7 @@ _PLAYER_HTML = """
     <button id="next">⏭ 下一章</button>
   </div>
   <div style="margin-top:10px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-    <label>语速 <input id="rate" type="range" min="0.5" max="2" step="0.1" value="1" style="vertical-align:middle">
-      <span id="rv">1.0x</span></label>
+    <label>语速 <select id="rate">__RATE_OPTIONS__</select></label>
     <label>音色 <select id="voice" style="max-width:260px"></select></label>
   </div>
   <div style="color:#888;font-size:12px;margin-top:8px">
@@ -123,7 +122,6 @@ _PLAYER_HTML = """
   $("stop").onclick = stopAll;
   $("prev").onclick = () => jumpChapter(-1);
   $("next").onclick = () => jumpChapter(1);
-  $("rate").oninput = () => { $("rv").textContent = parseFloat($("rate").value).toFixed(1) + "x"; };
   if (synth.onvoiceschanged !== undefined) synth.onvoiceschanged = fillVoices;
   fillVoices();
   render();
@@ -132,8 +130,18 @@ _PLAYER_HTML = """
 """
 
 
+RATE_OPTIONS = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0]
+
+
+def _rate_options_html() -> str:
+    return "".join(
+        f'<option value="{r}"{" selected" if r == 1.0 else ""}>{r:g}x</option>' for r in RATE_OPTIONS
+    )
+
+
 def _player_html(payload: dict) -> str:
-    return _PLAYER_HTML.replace("__PAYLOAD__", payload_to_js(payload))
+    return (_PLAYER_HTML.replace("__RATE_OPTIONS__", _rate_options_html())
+            .replace("__PAYLOAD__", payload_to_js(payload)))
 
 
 def render_listen(ws: str, rows: list) -> None:

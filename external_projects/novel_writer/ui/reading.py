@@ -22,6 +22,7 @@ def render_reading(ws: str) -> None:
     if not rows:
         st.info("还没有章节。")
         return
+    render_listen(ws, rows)
     total = sum(r["words"] for r in rows)
     st.caption(f"共 {len(rows)} 章 · {total} 字")
     show_df([{"章": r["chapter"], "标题": r["title"], "字数": r["words"], "文件": r["file"] or "—"} for r in rows],
@@ -45,4 +46,3 @@ def render_reading(ws: str) -> None:
     detail = tool_api.chapter(ws, chosen)
     if detail["ok"]:
         st.markdown(detail["data"]["text"] or "（尚无正文）")
-    render_listen(ws, rows)
