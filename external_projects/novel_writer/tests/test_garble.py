@@ -232,3 +232,83 @@ def test_apply_suspends_when_both_candidates_garbled(book):
                 if s.id == "ch01.best_pick_apply")
     with pytest.raises(NeedsUser):
         C.h_best_pick_apply(book, step, book.settings())
+
+
+# ── 重新生成换标题 → 多个同章号文件（回归）────────────────────────────────
+
+class _RetitlingInvoker(FakeInvoker):
+    """模拟故障：重新生成时智能体每次都换一个新标题写正文，而不覆盖原文件。"""
+
+    def __init__(self, root, *, clean=True, per_call=1, **kw):
+        super().__init__(root, **kw)
+        self.clean = clean
+        self.per_call = per_call    # 每次调用写出几个不同标题的文件
+        self.writes = 0
+
+    def _write_chapter(self, ws, n):
+        text = NORMAL * 5 if self.clean else mojibake(NORMAL * 5)
+        for _ in range(self.per_call):
+            self.writes += 1
+            path = ws.root / "正文" / f"第{n:02d}章 新标题{self.writes}.md"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+
+
+def chapter_files(ws, n):
+    return sorted(p.name for p in (ws.root / "正文").glob(f"第{n:02d}章*.md"))
+
+
+def test_regen_with_new_title_replaces_garbled_file_and_leaves_single_chapter(book):
+    path = write_chapter_file(book, 1, mojibake(NORMAL * 5))
+    inv = _RetitlingInvoker(book.root, clean=True)
+    result = C.h_garble_guard(book, guard_step(1), book.settings(), invoker=inv)
+    assert "通过" in result["summary"]
+    # 正文目录里同一章只剩原文件名，且内容已是新的正常稿
+    assert chapter_files(book, 1) == [path.name]
+    assert not is_garbled(path.read_text(encoding="utf-8")).garbled
+    assert not list((book.root / "正文").glob("第01章 新标题*.md"))
+
+
+def test_extra_retitled_files_are_stashed_not_deleted(book):
+    path = write_chapter_file(book, 1, mojibake(NORMAL * 5))
+    inv = _RetitlingInvoker(book.root, clean=True, per_call=3)
+    C.h_garble_guard(book, guard_step(1), book.settings(), invoker=inv)
+    assert chapter_files(book, 1) == [path.name]
+    drafts = list((book.root / "正文" / "_drafts").glob("第01章*重复残留*.md"))
+    assert len(drafts) == 2   # 3 个新文件：1 个覆盖原文件，另外 2 个移入 _drafts
+
+
+def test_regen_with_new_titles_still_garbled_keeps_single_chapter_file(book):
+    path = write_chapter_file(book, 1, mojibake(NORMAL * 5))
+    inv = _RetitlingInvoker(book.root, clean=False)
+    with pytest.raises(NeedsUser):
+        C.h_garble_guard(book, guard_step(1), book.settings(), invoker=inv)
+    assert chapter_files(book, 1) == [path.name]
+
+
+def test_regen_prompt_pins_existing_file(book):
+    path = write_chapter_file(book, 1, mojibake(NORMAL * 5))
+    inv = FakeInvoker(book.root)
+    C.h_garble_guard(book, guard_step(1), book.settings(), invoker=inv)
+    prompt = inv.prompts["ch01.write_chapter"][0]
+    assert "覆盖写入该文件" in prompt and path.name in prompt
+
+
+def test_existing_duplicates_clean_one_replaces_garbled_without_regen(book):
+    bad = write_chapter_file(book, 1, mojibake(NORMAL * 5))
+    good = book.root / "正文" / "第01章 另一个标题.md"
+    good.write_text(NORMAL * 5, encoding="utf-8")
+    os.utime(bad, (1_000_000_000, 1_000_000_000))  # 乱码的是旧文件；好稿较新，chapter_file 会选好稿
+    inv = FakeInvoker(book.root)
+    result = C.h_garble_guard(book, guard_step(1), book.settings(), invoker=inv)
+    assert "未发现乱码" in result["summary"]
+    assert not inv.calls
+    assert len(chapter_files(book, 1)) == 1
+
+
+def test_chapter_file_prefers_newest_when_duplicates(book):
+    a = write_chapter_file(book, 1, NORMAL)
+    b = book.root / "正文" / "第01章 另一个标题.md"
+    b.write_text(NORMAL, encoding="utf-8")
+    os.utime(a, (1_000_000_000, 1_000_000_000))
+    assert C.chapter_file(book, 1) == b

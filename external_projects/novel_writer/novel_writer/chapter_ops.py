@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as _dt
 import glob as _glob
 import re
+import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -63,13 +64,41 @@ def _int(value: Any, default: int = -1) -> int:
         return default
 
 
-def chapter_file(ws: Workspace, n: int) -> Optional[Path]:
-    """第 n 章的正文文件（兼容两位与三位章号）。没有则返回 None。"""
+def _chapter_candidates(ws: Workspace, n: int) -> List[Path]:
+    """正文目录下所有章号为 n 的文件（兼容两位与三位章号），不含 `_drafts/` 子目录。"""
+    out: List[Path] = []
     for width in (2, 3):
-        matches = sorted(_glob.glob(str(ws.root / "正文" / f"第{n:0{width}d}章*.md")))
-        if matches:
-            return Path(matches[0])
-    return None
+        for m in sorted(_glob.glob(str(ws.root / "正文" / f"第{n:0{width}d}章*.md"))):
+            p = Path(m)
+            if p not in out:
+                out.append(p)
+    return out
+
+
+def chapter_file(ws: Workspace, n: int) -> Optional[Path]:
+    """第 n 章的正文文件（兼容两位与三位章号）。没有则返回 None。
+
+    同一章号出现多个文件（重新生成时标题变了会产生「第26章 甲.md」「第26章 乙.md」）时，
+    不能再取字典序第一个——那往往是旧的乱码文件。规则：优先蓝图标题对应的规范文件名，
+    否则取最近修改的那个。
+    """
+    cands = _chapter_candidates(ws, n)
+    if not cands:
+        return None
+    if len(cands) == 1:
+        return cands[0]
+    title = str(chapter_entry(ws, n).get("title") or "").strip()
+    if title:
+        from novel_writer.workspace import chapter_filename
+
+        try:
+            canonical = {chapter_filename(n, title, None), chapter_filename(n, title, 100)}
+        except Exception:  # noqa: BLE001 - 标题含非法字符等情况：退回按修改时间选
+            canonical = set()
+        for p in cands:
+            if p.name in canonical:
+                return p
+    return max(cands, key=lambda p: p.stat().st_mtime)
 
 
 def chapter_entry(ws: Workspace, n: int) -> Dict[str, Any]:
@@ -307,8 +336,67 @@ def h_machine_check(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], in
 GARBLE_OPTIONS = ["再重新生成（再试三次）", "我手动修改后重新核查", "接受当前内容（风险自负）"]
 
 
+def _is_garbled_file(path: Path) -> bool:
+    """读不出来（编码错误等）也按乱码处理。"""
+    from novel_writer.garble import is_garbled
+
+    try:
+        return is_garbled(read_text_utf8(path)).garbled
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _stash_chapter_strays(ws: Workspace, n: int, keep: Path) -> List[str]:
+    """把同章号的其它正文文件移到 `正文/_drafts/`（改名保留，不删除），避免出现多个「第N章」。"""
+    import os
+
+    stamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    drafts = ws.root / "正文" / "_drafts"
+    moved: List[str] = []
+    for p in _chapter_candidates(ws, n):
+        if p == keep:
+            continue
+        drafts.mkdir(parents=True, exist_ok=True)
+        dest = drafts / f"{p.stem}_重复残留_{stamp}{p.suffix}"
+        k = 1
+        while dest.exists():
+            k += 1
+            dest = drafts / f"{p.stem}_重复残留_{stamp}_{k}{p.suffix}"
+        os.replace(p, dest)
+        moved.append(f"{p.name} → _drafts/{dest.name}")
+    return moved
+
+
+def _reconcile_regen_result(ws: Workspace, n: int, target: Path, started: float) -> None:
+    """重新生成后收敛：只保留 `target` 一个第 n 章文件。
+
+    重新生成的智能体可能换了标题，写出「第n章 别的标题.md」而没动原文件。这时：
+      * 原文件仍是乱码、而本次新写的文件正常 → 用新内容覆盖原文件（文件名保持规范）；
+      * 其余同章号文件一律移入 `正文/_drafts/`，保证目录里同一章只有一个文件。
+    """
+    import os
+
+    fresh = [p for p in _chapter_candidates(ws, n) if p != target and p.stat().st_mtime >= started - 1]
+    if fresh and target.is_file() and _is_garbled_file(target):
+        for best in sorted(fresh, key=lambda p: p.stat().st_mtime, reverse=True):
+            if not _is_garbled_file(best):
+                os.replace(best, target)
+                _log(ws, n, f"乱码守卫：重新生成的内容写成了「{best.name}」，已用它覆盖「{target.name}」")
+                break
+    for moved in _stash_chapter_strays(ws, n, keep=target):
+        _log(ws, n, f"乱码守卫：同章号多余文件已移出正文目录：{moved}")
+
+
+def _pin_regen_output(ws: Workspace, regen: S.StepDef, target: Path, label: str) -> S.StepDef:
+    """让重新生成的步骤必须覆盖写入 `target`（不得换标题/换文件名）。"""
+    rel_path = target.relative_to(ws.root).as_posix()
+    note = (f"\n【重新生成】上一版 `{rel_path}` 疑似乱码。请重写{label}全文，并**覆盖写入该文件**："
+            f"文件名与标题保持不变，不要新建其它文件名（例如换了标题的「第N章 xxx.md」）。")
+    return replace(regen, outputs=(rel_path,), instructions=(regen.instructions or "") + note)
+
+
 def _garble_guard(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker, *,
-                  path: Optional[Path], regen: S.StepDef, label: str) -> Dict[str, Any]:
+                  path: Optional[Path], regen: S.StepDef, label: str, pin_chapter: bool = False) -> Dict[str, Any]:
     """对一个文件做乱码检测：命中则用 regen 步骤重新生成，最多 MAX_GARBLE_REGENS 次；仍乱码则挂起给作者。
 
     决策（来自上一次挂起的作者回答）：
@@ -334,6 +422,22 @@ def _garble_guard(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invo
     def check() -> Any:
         return is_garbled(read_text_utf8(path))
 
+    if pin_chapter:
+        # 正文：重新生成必须覆盖当前这个文件；同时先收敛历史遗留的同章号重复文件
+        regen = _pin_regen_output(ws, regen, path, label)
+        if _is_garbled_file(path):
+            # 历史遗留的重复文件里若有正常的（比如之前换标题重生成出的好稿），先拿来顶替，省一次生成
+            import os
+
+            others = [p for p in _chapter_candidates(ws, n) if p != path]
+            for cand in sorted(others, key=lambda p: p.stat().st_mtime, reverse=True):
+                if not _is_garbled_file(cand):
+                    os.replace(cand, path)
+                    _log(ws, n, f"乱码守卫：同章号文件「{cand.name}」内容正常，已用它覆盖乱码的「{path.name}」")
+                    break
+        for moved in _stash_chapter_strays(ws, n, keep=path):
+            _log(ws, n, f"乱码守卫：同章号多余文件已移出正文目录：{moved}")
+
     report = check()
     if not report.garbled:
         return {"summary": f"乱码守卫：{label}未发现乱码"}
@@ -347,11 +451,20 @@ def _garble_guard(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invo
     else:
         for k in range(1, MAX_GARBLE_REGENS + 1):
             _log(ws, n, f"乱码守卫：{label}检测到乱码（{'；'.join(report.reasons)}），自动重新生成第 {k}/{MAX_GARBLE_REGENS} 次")
+            started = time.time()
             try:
                 run_skill_step(ws, regen, invoker=invoker, settings=settings, run_no=k + 1)
             except StepFailed as exc:
                 _log(ws, n, f"乱码守卫：{label}重新生成第 {k} 次失败：{exc}")
+                if pin_chapter:
+                    _reconcile_regen_result(ws, n, path, started)
+                    report = check()
+                    if not report.garbled:
+                        _log(ws, n, f"乱码守卫：{label}第 {k} 次重新生成虽报失败，但文件已正常，通过检测")
+                        return {"summary": f"乱码守卫：{label}重新生成 {k} 次后通过"}
                 continue
+            if pin_chapter:
+                _reconcile_regen_result(ws, n, path, started)
             report = check()
             if not report.garbled:
                 _log(ws, n, f"乱码守卫：{label}第 {k} 次重新生成后通过检测")
@@ -375,7 +488,7 @@ def h_garble_guard(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], inv
     """正文 A 的乱码守卫。"""
     n = step.chapter
     return _garble_guard(ws, step, settings, invoker, path=chapter_file(ws, n),
-                         regen=_chapter_step(n, "write_chapter"), label="正文")
+                         regen=_chapter_step(n, "write_chapter"), label="正文", pin_chapter=True)
 
 
 def h_garble_guard_alt(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:
