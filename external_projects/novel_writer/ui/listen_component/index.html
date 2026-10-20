@@ -3,35 +3,60 @@
 <head>
 <meta charset="utf-8">
 <style>
-  body { margin: 0; font-family: system-ui, 'Microsoft YaHei', sans-serif; font-size: 14px; color: #222; }
+  html, body { margin: 0; padding: 0; }
+  body { font-family: system-ui, 'Microsoft YaHei', sans-serif; font-size: 14px; color: #222; padding: 2px 2px 6px; }
+  button, select, input { font-size: 14px; }
   button { cursor: pointer; }
-  select, button { font-size: 14px; }
-  #now { font-weight: 600; font-size: 16px; margin-bottom: 4px; }
-  #prog { color: #666; margin-bottom: 10px; }
-  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-  .opts { margin-top: 10px; }
-  .hint { color: #888; font-size: 12px; margin-top: 8px; }
+  input[type=number] { width: 72px; }
+  input[type=text] { width: 200px; }
+  #now { font-weight: 600; font-size: 16px; margin-bottom: 2px; }
+  #prog { color: #666; margin-bottom: 8px; }
+  #text { white-space: pre-wrap; line-height: 1.8; font-size: 15px; background: #f7f7f5; border: 1px solid #e3e3df;
+          border-radius: 6px; padding: 10px 12px; max-height: 140px; overflow-y: auto; margin-bottom: 10px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+  .label { color: #555; }
+  #found { color: #666; font-size: 13px; min-height: 16px; margin-top: 2px; }
+  .hint { color: #888; font-size: 12px; margin-top: 6px; }
 </style>
 </head>
 <body>
 <div id="now">准备就绪</div>
 <div id="prog"></div>
+<div id="text"></div>
+
 <div class="row">
   <button id="prev">⏮ 上一章</button>
   <button id="toggle" style="min-width:90px">▶ 播放</button>
   <button id="stop">⏹ 停止</button>
   <button id="next">⏭ 下一章</button>
 </div>
-<div class="row opts">
+
+<div class="row">
+  <button id="segPrev">◀ 上一段</button>
+  <button id="segNext">下一段 ▶</button>
+  <span class="label">本章第</span>
+  <input id="segNum" type="number" min="1" value="1">
+  <span class="label">段</span>
+  <button id="segGo">跳转</button>
+</div>
+
+<div class="row">
+  <input id="find" type="text" placeholder="输入文字，跳到含有它的段落">
+  <button id="findGo">查找并跳转</button>
+</div>
+<div id="found"></div>
+
+<div class="row">
   <label>语速 <select id="rate"></select></label>
   <label>音色 <select id="voice" style="max-width:260px"></select></label>
 </div>
-<div class="hint">语速与音色在下一段生效。切换标签页时浏览器可能暂停朗读，请保持本页可见。本书的收听位置（精确到段落）会自动记住，下次从该处继续。</div>
+<div class="hint">语速与音色在下一段生效。切换标签页时浏览器可能暂停朗读，请保持本页可见。本书的收听位置（精确到段落）会自动记住。</div>
+
 <script>
 (function () {
   "use strict";
   const RATES = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 3.5, 4, 4.5, 5];
-  const REPORT_EVERY = 5;   // 每播放 5 段（约一两分钟）回传一次位置，避免频繁触发 Streamlit 重跑
+  const REPORT_EVERY = 5;   // 每播放 5 段回传一次位置，避免频繁触发 Streamlit 重跑
   const synth = window.speechSynthesis;
   const $ = id => document.getElementById(id);
 
@@ -42,12 +67,15 @@
   function send(type, data) {
     window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, data || {}), "*");
   }
-  function setHeight() { send("streamlit:setFrameHeight", { height: document.body.scrollHeight + 8 }); }
+  // 高度随内容变化同步，避免控件加载或换行后被裁剪
+  function fitHeight() {
+    send("streamlit:setFrameHeight", { height: Math.ceil(document.body.scrollHeight) + 8 });
+  }
 
   // ---- 位置上报：{ch, seg}，seg 为该章内的段落下标 ----
   function report() {
     if (!DATA || !DATA.segments.length) return;
-    const i = Math.min(idx, DATA.segments.length - 1);
+    const i = clampIdx(idx);
     const c = chapterOf(i);
     lastReportedIdx = i;
     lastCh = c.ch;
@@ -58,26 +86,38 @@
   }
   function maybeReport() {
     if (!DATA || !DATA.segments.length) return;
-    const i = Math.min(idx, DATA.segments.length - 1);
+    const i = clampIdx(idx);
     if (chapterOf(i).ch !== lastCh || Math.abs(i - lastReportedIdx) >= REPORT_EVERY) report();
   }
 
-  // ---- 播放逻辑 ----
+  // ---- 章节/段落辅助 ----
+  function clampIdx(i) { return Math.max(0, Math.min(i, DATA.segments.length - 1)); }
   function chapterIndexOf(i) {
     let k = 0;
     for (let j = 0; j < DATA.chapters.length; j++) if (DATA.chapters[j].start <= i) k = j;
     return k;
   }
   function chapterOf(i) { return DATA.chapters[chapterIndexOf(i)]; }
+  function chapterRange(k) {
+    const start = DATA.chapters[k].start;
+    const end = k + 1 < DATA.chapters.length ? DATA.chapters[k + 1].start : DATA.segments.length;
+    return { start: start, end: end };   // [start, end)
+  }
+
+  // ---- 显示 ----
   function render() {
     const segs = DATA.segments, chs = DATA.chapters;
     if (!segs.length) { $("now").textContent = "没有可朗读的正文"; return; }
-    const i = Math.min(idx, segs.length - 1);
-    const k = chapterIndexOf(i), c = chs[k];
+    const i = clampIdx(idx);
+    const k = chapterIndexOf(i), c = chs[k], r = chapterRange(k);
     $("now").textContent = "第" + c.ch + "章 " + c.title;
-    $("prog").textContent = "第 " + (k + 1) + "/" + chs.length + " 章 · 段落 " + (i + 1) + "/" + segs.length;
+    $("prog").textContent = "第 " + (k + 1) + "/" + chs.length + " 章 · 全书段落 " + (i + 1) + "/" + segs.length
+      + " · 本章第 " + (i - r.start + 1) + "/" + (r.end - r.start) + " 段";
+    $("text").textContent = segs[i];
+    $("segNum").max = r.end - r.start;
+    if (document.activeElement !== $("segNum")) $("segNum").value = i - r.start + 1;
     $("toggle").textContent = state === "playing" ? "⏸ 暂停" : (state === "paused" ? "▶ 继续" : "▶ 播放");
-    setHeight();
+    fitHeight();
   }
   function zhVoices() {
     return synth.getVoices().filter(v => (v.lang || "").toLowerCase().startsWith("zh"))
@@ -97,6 +137,8 @@
     });
     if (prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
   }
+
+  // ---- 播放 ----
   function speakCurrent(my) {
     if (my !== token) return;
     const segs = DATA.segments;
@@ -110,8 +152,7 @@
       if (my !== token) return;
       idx++;
       if (idx >= segs.length) {
-        // 读完全书：位置回到开头，下次从头开始
-        idx = 0; state = "idle"; keepRef = null;
+        idx = 0; state = "idle"; keepRef = null;   // 读完全书：位置回到开头
         render(); report(); return;
       }
       speakCurrent(my);
@@ -132,21 +173,52 @@
     token++;
     synth.cancel();
     synth.resume();
-    idx = i;
+    idx = clampIdx(i);
     speakCurrent(token);
   }
-  // 停止：保留当前位置（下次播放从这里接着读），只结束朗读
+  // 停止：保留当前位置，下次播放从这里接着读
   function stopKeepPosition() {
     token++;
     synth.cancel();
     state = "idle"; keepRef = null;
     render(); report();
   }
+
+  // ---- 跳转 ----
+  // 空闲时只移动位置；播放或暂停中则直接从新位置开始朗读
+  function jumpTo(i) {
+    idx = clampIdx(i);
+    if (state === "idle") { render(); report(); }
+    else { speakFrom(idx); report(); }
+  }
   function jumpChapter(delta) {
-    const chs = DATA.chapters;
-    const k = chapterIndexOf(Math.min(idx, DATA.segments.length - 1));
-    const target = Math.max(0, Math.min(chs.length - 1, k + delta));
-    speakFrom(chs[target].start);
+    const k = chapterIndexOf(clampIdx(idx));
+    const target = Math.max(0, Math.min(DATA.chapters.length - 1, k + delta));
+    jumpTo(DATA.chapters[target].start);
+  }
+  function gotoInChapter() {
+    const k = chapterIndexOf(clampIdx(idx)), r = chapterRange(k);
+    let n = parseInt($("segNum").value, 10);
+    if (isNaN(n)) return;
+    n = Math.max(1, Math.min(r.end - r.start, n));
+    jumpTo(r.start + n - 1);
+  }
+  function findText() {
+    const q = $("find").value.trim();
+    const found = $("found");
+    if (!q) { found.textContent = "请输入要查找的文字。"; return; }
+    const segs = DATA.segments, n = segs.length;
+    // 从当前段之后开始向后查找，到末尾后回绕到开头
+    for (let step = 1; step <= n; step++) {
+      const j = (clampIdx(idx) + step) % n;
+      if (segs[j].indexOf(q) >= 0) {
+        const k = chapterIndexOf(j), r = chapterRange(k);
+        found.textContent = "已跳转：第" + DATA.chapters[k].ch + "章 第 " + (j - r.start + 1) + " 段";
+        jumpTo(j);
+        return;
+      }
+    }
+    found.textContent = "没有找到包含「" + q + "」的段落。";
   }
 
   function init(args) {
@@ -159,10 +231,8 @@
     if (args.resume_ch !== null && args.resume_ch !== undefined && DATA.chapters.length) {
       const k = DATA.chapters.findIndex(c => c.ch === Number(args.resume_ch));
       if (k >= 0) {
-        const start = DATA.chapters[k].start;
-        const end = k + 1 < DATA.chapters.length ? DATA.chapters[k + 1].start : DATA.segments.length;
-        const seg = Math.max(0, Math.min(Number(args.resume_seg) || 0, end - start - 1));
-        idx = start + seg;
+        const r = chapterRange(k);
+        idx = r.start + Math.max(0, Math.min(Number(args.resume_seg) || 0, r.end - r.start - 1));
       }
     }
 
@@ -175,6 +245,7 @@
     });
     rsel.onchange = () => { rate = parseFloat(rsel.value); report(); };
     $("voice").onchange = () => report();
+
     $("toggle").onclick = () => {
       if (state === "playing") { synth.pause(); state = "paused"; render(); report(); }
       else if (state === "paused") { synth.resume(); state = "playing"; render(); }
@@ -183,11 +254,18 @@
     $("stop").onclick = stopKeepPosition;
     $("prev").onclick = () => jumpChapter(-1);
     $("next").onclick = () => jumpChapter(1);
+    $("segPrev").onclick = () => jumpTo(idx - 1);
+    $("segNext").onclick = () => jumpTo(idx + 1);
+    $("segGo").onclick = gotoInChapter;
+    $("segNum").addEventListener("keydown", e => { if (e.key === "Enter") gotoInChapter(); });
+    $("findGo").onclick = findText;
+    $("find").addEventListener("keydown", e => { if (e.key === "Enter") findText(); });
+
     if (synth.onvoiceschanged !== undefined) synth.onvoiceschanged = fillVoices;
     fillVoices();
 
-    // 初始化不上报：起点来自已保存的位置，只有真正播放、切章、改参数时才回传
-    lastCh = DATA.segments.length ? chapterOf(Math.min(idx, DATA.segments.length - 1)).ch : null;
+    // 初始化不上报：起点来自已保存的位置，只有真正播放、跳转、改参数时才回传
+    lastCh = DATA.segments.length ? chapterOf(clampIdx(idx)).ch : null;
     lastReportedIdx = idx;
     render();
   }
@@ -199,12 +277,13 @@
     started = true;
     init(d.args || {});
   });
-  // 关闭或刷新页面前尽力保存当前位置
   window.addEventListener("pagehide", function () {
     if (DATA && (state === "playing" || state === "paused")) report();
   });
+  if (window.ResizeObserver) new ResizeObserver(fitHeight).observe(document.body);
+  window.addEventListener("load", fitHeight);
   send("streamlit:componentReady", { apiVersion: 1 });
-  setHeight();
+  fitHeight();
 })();
 </script>
 </body>
