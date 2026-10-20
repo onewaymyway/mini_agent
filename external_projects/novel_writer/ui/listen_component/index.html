@@ -155,7 +155,8 @@
     const k = chapterIndexOf(i), c = chs[k], r = chapterRange(k);
     $("now").textContent = "第" + c.ch + "章 " + c.title;
     $("prog").textContent = "第 " + (k + 1) + "/" + chs.length + " 章 · 全书段落 " + (i + 1) + "/" + segs.length
-      + " · 本章第 " + (i - r.start + 1) + "/" + (r.end - r.start) + " 段";
+      + " · 本章第 " + (i - r.start + 1) + "/" + (r.end - r.start) + " 段"
+      + " · 全书 " + ((i + 1) / segs.length * 100).toFixed(1) + "%";
     $("text").textContent = segs[i];
     $("segNum").max = r.end - r.start;
     if (document.activeElement !== $("segNum")) $("segNum").value = i - r.start + 1;
