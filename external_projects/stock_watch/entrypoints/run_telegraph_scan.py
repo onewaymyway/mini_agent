@@ -41,7 +41,7 @@ from stock_watch.data_sources import (
 from stock_watch.news_signals import (
     classify_telegraph_news,
     filter_dedup_news,
-    analyze_telegraph_news_llm,
+    analyze_telegraph_news_batched,
     load_analysis_state,
     save_analysis_state,
     get_all_analyses_summary,
@@ -184,30 +184,37 @@ def main() -> int:
         try:
             # 构建股票池代码列表
             pool_codes = list(algo_pool.keys())
-            logger.info(f"正在调用 LLM 分析 {len(new_news)} 条新闻...")
-            # 分析新闻机会
-            llm_analyses = analyze_telegraph_news_llm(
+            batch_size = cfg.telegraph_llm_batch_size
+            logger.info(f"正在调用 LLM 分析 {len(new_news)} 条新闻（每批 {batch_size} 条）...")
+            # 分批分析：失败的批次不计入 done_news，留在待处理队列下次重试
+            llm_analyses, done_news = analyze_telegraph_news_batched(
                 new_news,
                 stock_name_map=stock_name_map,
                 pool_codes=pool_codes,
+                batch_size=batch_size,
             )
-            # 保存分析状态（cursor = 上次位置 + 本次新增数量）
-            from stock_watch.news_signals import load_analysis_state as _load_state
-            _prev_state = _load_state(TELEGRAPH_ANALYSIS_STATE_PATH)
-            _prev_index = _prev_state.get('last_analysis_index', 0)
-            _new_index = _prev_index + len(new_news)
-            save_analysis_state(
-                TELEGRAPH_ANALYSIS_STATE_PATH,
-                _new_index,
-                llm_analyses,
-            )
-            logger.info("LLM分析完成，识别%d条投资机会", len(llm_analyses))
-            logger.info(f"LLM分析完成，识别 {len(llm_analyses)} 条投资机会")
+            if len(done_news) < len(new_news):
+                logger.warning(
+                    "有 %d 条新闻因 LLM 批次失败未分析，保留在待处理队列",
+                    len(new_news) - len(done_news),
+                )
+            if done_news:
+                # 保存分析状态（cursor = 上次位置 + 本次成功分析数量）
+                from stock_watch.news_signals import load_analysis_state as _load_state
+                _prev_state = _load_state(TELEGRAPH_ANALYSIS_STATE_PATH)
+                _prev_index = _prev_state.get('last_analysis_index', 0)
+                _new_index = _prev_index + len(done_news)
+                save_analysis_state(
+                    TELEGRAPH_ANALYSIS_STATE_PATH,
+                    _new_index,
+                    llm_analyses,
+                )
+                logger.info(f"LLM分析完成，识别 {len(llm_analyses)} 条投资机会")
 
-            # 将已分析的新闻从pending移到processed
-            from stock_watch.news_signals import move_to_processed
-            moved = move_to_processed(new_news)
-            logger.info(f"已将 {moved} 条新闻移入已处理归档")
+                # 只把分析成功的新闻从pending移到processed
+                from stock_watch.news_signals import move_to_processed
+                moved = move_to_processed(done_news)
+                logger.info(f"已将 {moved} 条新闻移入已处理归档")
         except Exception as e:
             logger.warning("LLM分析失败，跳过: %s", e)
             logger.error(f"LLM分析失败: {e}")

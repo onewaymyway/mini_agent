@@ -47,6 +47,7 @@ telegraph:
   max_pages: 15              # 最大滚动加载页数（避免无限滚动）
   scroll_delay: 1.5         # 每次滚动后等待秒数
   positive_threshold: 2     # 正面提及至少 N 次才入池
+  llm_batch_size: 25        # 每次 LLM 调用分析的新闻条数；末批不足则按剩余条数
 
 # 阶段3自算信号（见 next_doc/stock_watch_pool_state_tracking_and_kanban_
 # plan.md 阶段3）：不依赖外部网站结论，自己分析历史行情/公告/新闻。

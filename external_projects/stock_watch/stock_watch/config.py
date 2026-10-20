@@ -106,6 +106,15 @@ class WatchlistConfig:
         return int(self.telegraph.get("top_n", 50))
 
     @property
+    def telegraph_llm_batch_size(self) -> int:
+        """每次 LLM 调用分析的新闻条数，默认 25；非法值（<1/非数字）回落到默认。"""
+        try:
+            n = int(self.telegraph.get("llm_batch_size", 25))
+        except (TypeError, ValueError):
+            return 25
+        return n if n >= 1 else 25
+
+    @property
     def telegraph_positive_threshold(self) -> int:
         return int(self.telegraph.get("positive_threshold", 2))
 

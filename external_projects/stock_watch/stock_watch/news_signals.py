@@ -540,117 +540,161 @@ def _get_llm_helper():
         raise RuntimeError(f"LLM 初始化失败: {e}")
 
 
-def analyze_telegraph_news_llm(
-    news_items: List[Dict[str, Any]],
-    stock_name_map: Optional[Dict[str, str]] = None,
-    pool_codes: Optional[List[str]] = None,
-) -> List[Dict[str, Any]]:
-    """使用LLM分析新浪7x24新闻，识别投资机会。
+# 默认每次 LLM 调用分析的新闻条数（可在 watchlist.yaml 的 telegraph.llm_batch_size 覆盖）
+DEFAULT_LLM_BATCH_SIZE = 25
 
-    参数:
-        news_items: 新闻列表 [{time, content, url}]
-        stock_name_map: 可选，code -> name 映射
-        pool_codes: 可选，当前股票池中的所有代码
 
-    返回:
-        分析结果列表，每项包含 opportunity 信息
+def _parse_llm_json(response: str) -> Optional[List[Dict[str, Any]]]:
+    """从 LLM 回复中解析 JSON 数组。
+
+    返回 None 表示无法解析（视为该批失败）；返回 [] 表示 LLM 明确判断无机会。
     """
-    if not news_items:
-        return []
+    import re as _re
 
-    # 构建股票池参考
-    pool_ref = ""
-    if pool_codes:
-        pool_items = []
-        for code in pool_codes[:100]:  # 限制数量避免prompt过长
-            name = stock_name_map.get(code, code) if stock_name_map else code
-            pool_items.append(f"{code}({name})")
-        pool_ref = f"\n\n当前股票池参考（部分）:\n{', '.join(pool_items[:30])}...\n"
+    code_block_match = _re.search(r'```(?:json)?\s*(\[.*?\])\s*```', response, _re.DOTALL)
+    if code_block_match:
+        json_str = code_block_match.group(1)
+    else:
+        json_match = _re.search(r'\[.*\]', response, _re.DOTALL)
+        json_str = json_match.group() if json_match else None
+    if not json_str:
+        return None
 
-    # 构建新闻文本（保留完整内容）
-    news_text_parts = []
-    for i, item in enumerate(news_items[:30]):  # 限制数量
-        time_str = item.get("time", "")
-        content = item.get("content", "")
-        news_text_parts.append(f"[{time_str}] {content}")
+    results = None
+    try:
+        # 使用 json_repair 自动修复常见JSON格式问题
+        import json_repair
+        results = json_repair.loads(json_str)
+    except Exception as e:
+        logger.warning("json_repair 解析失败，尝试标准 json.loads: %s", e)
+        try:
+            results = json.loads(json_str)
+        except json.JSONDecodeError:
+            fixed = json_str.strip()
+            if fixed.startswith('['):
+                fixed = fixed[:fixed.rfind(']') + 1]
+                try:
+                    results = json.loads(fixed)
+                except Exception:
+                    results = None
+    if not isinstance(results, list):
+        return None
+    return [r for r in results if isinstance(r, dict)]
 
-    news_text = "\n".join(news_text_parts)
 
+def _analyze_one_batch(
+    batch: List[Dict[str, Any]],
+    llm: Any,
+    pool_ref: str,
+) -> List[Dict[str, Any]]:
+    """对一批新闻发起一次 LLM 调用。失败（调用异常/无法解析）时抛出异常。"""
+    news_text = "\n".join(
+        f"[{item.get('time', '')}] {item.get('content', '')}" for item in batch
+    )
     prompt = f"""{ANALYSIS_SYSTEM_PROMPT}
 
-当前新闻列表（共{len(news_items)}条，展示前{min(30, len(news_items))}条）：
+当前新闻列表（共{len(batch)}条）：
 {news_text}
 {pool_ref}
 
 请直接输出JSON数组，不要包含其他说明文字。"""
 
+    response = llm.ask(prompt, timeout=60, max_retries=2)
+    results = _parse_llm_json(response)
+    if results is None:
+        raise ValueError("LLM 返回内容无法解析为 JSON 数组")
+
+    # 将完整新闻内容补充到分析结果中 - 按 news_time 匹配
+    time_map = {item.get("time", ""): item for item in batch}
+    for result in results:
+        news_time = result.get("news_time", "")
+        if news_time in time_map:
+            item = time_map[news_time]
+            result["news_content"] = item.get("content", "")
+            result["news_time"] = item.get("time", news_time)
+        else:
+            # 回退：尝试模糊匹配 time
+            for t, item in time_map.items():
+                if t and news_time and (t in news_time or news_time in t):
+                    result["news_content"] = item.get("content", "")
+                    result["news_time"] = item.get("time", news_time)
+                    break
+    return results
+
+
+def analyze_telegraph_news_batched(
+    news_items: List[Dict[str, Any]],
+    stock_name_map: Optional[Dict[str, str]] = None,
+    pool_codes: Optional[List[str]] = None,
+    batch_size: int = DEFAULT_LLM_BATCH_SIZE,
+) -> tuple:
+    """分批使用 LLM 分析新浪7x24新闻：每批 batch_size 条一次调用，
+    最后一批为剩余条数（不足一批则按实际数量）。
+
+    每批独立容错：某批失败只记录日志，不影响其它批。
+
+    返回:
+        (results, done_items)
+        results:    所有成功批次的分析结果
+        done_items: 成功分析的那些新闻（调用方只应把它们标记为已处理，
+                    失败批次的新闻留在待处理队列，下次重试）
+    """
+    if not news_items:
+        return [], []
+
+    try:
+        batch_size = int(batch_size)
+    except (TypeError, ValueError):
+        batch_size = DEFAULT_LLM_BATCH_SIZE
+    if batch_size < 1:
+        batch_size = DEFAULT_LLM_BATCH_SIZE
+
+    # 构建股票池参考（每批都会带上，故保持较短）
+    pool_ref = ""
+    if pool_codes:
+        pool_items = []
+        for code in pool_codes[:30]:
+            name = stock_name_map.get(code, code) if stock_name_map else code
+            pool_items.append(f"{code}({name})")
+        pool_ref = f"\n\n当前股票池参考（部分）:\n{', '.join(pool_items)}...\n"
+
     try:
         llm = _get_llm_helper()
-        response = llm.ask(prompt, timeout=60, max_retries=2)
-
-        # 解析JSON响应 - 使用 json_repair 增强鲁棒性
-        results = []
-        import re as _re
-        
-        # 先尝试提取markdown代码块中的JSON
-        code_block_match = _re.search(r'```(?:json)?\s*(\[.*?\])\s*```', response, re.DOTALL)
-        if code_block_match:
-            json_str = code_block_match.group(1)
-        else:
-            # 回退到直接查找JSON数组
-            json_match = _re.search(r'\[.*\]', response, re.DOTALL)
-            if json_match:
-                json_str = json_match.group()
-            else:
-                json_str = None
-        
-        if json_str:
-            try:
-                # 使用 json_repair 自动修复常见JSON格式问题
-                import json_repair
-                results = json_repair.loads(json_str)
-            except Exception as e:
-                logger.warning("json_repair 解析失败，尝试标准 json.loads: %s", e)
-                try:
-                    results = json.loads(json_str)
-                except json.JSONDecodeError:
-                    logger.warning("标准 JSON 解析也失败，尝试简单修复...")
-                    # 简单修复：尝试找到有效的JSON片段
-                    fixed = json_str.strip()
-                    if fixed.startswith('['):
-                        fixed = fixed[:fixed.rfind(']') + 1]
-                        try:
-                            results = json.loads(fixed)
-                        except:
-                            pass
-
-        logger.info("LLM分析完成，返回%d条机会", len(results))
-
-        # 将完整新闻内容补充到分析结果中 - 按 news_time 匹配（更可靠）
-        # 构建 news_time -> news_item 映射
-        time_map = {}
-        for item in news_items:
-            time_map[item.get("time", "")] = item
-        
-        for result in results:
-            news_time = result.get("news_time", "")
-            if news_time in time_map:
-                item = time_map[news_time]
-                result["news_content"] = item.get("content", "")
-                # 保留原始 news_time（LLM可能返回略有不同的格式）
-                result["news_time"] = item.get("time", news_time)
-            else:
-                # 回退：尝试模糊匹配 time
-                for t, item in time_map.items():
-                    if t in news_time or news_time in t:
-                        result["news_content"] = item.get("content", "")
-                        result["news_time"] = item.get("time", news_time)
-                        break
-
-        return results
     except Exception as e:
         logger.error("LLM分析失败: %s", e)
-        return []
+        return [], []
+
+    all_results: List[Dict[str, Any]] = []
+    done_items: List[Dict[str, Any]] = []
+    total_batches = (len(news_items) + batch_size - 1) // batch_size
+    for idx in range(total_batches):
+        batch = news_items[idx * batch_size:(idx + 1) * batch_size]
+        try:
+            results = _analyze_one_batch(batch, llm, pool_ref)
+        except Exception as e:
+            logger.error("LLM分析第 %d/%d 批（%d 条）失败: %s", idx + 1, total_batches, len(batch), e)
+            continue
+        logger.info("LLM分析第 %d/%d 批完成（%d 条新闻），返回%d条机会",
+                    idx + 1, total_batches, len(batch), len(results))
+        all_results.extend(results)
+        done_items.extend(batch)
+    return all_results, done_items
+
+
+def analyze_telegraph_news_llm(
+    news_items: List[Dict[str, Any]],
+    stock_name_map: Optional[Dict[str, str]] = None,
+    pool_codes: Optional[List[str]] = None,
+    batch_size: int = DEFAULT_LLM_BATCH_SIZE,
+) -> List[Dict[str, Any]]:
+    """使用LLM分析新浪7x24新闻（兼容旧接口，只返回分析结果）。
+
+    需要知道哪些新闻分析成功时，请用 analyze_telegraph_news_batched。
+    """
+    results, _ = analyze_telegraph_news_batched(
+        news_items, stock_name_map, pool_codes, batch_size
+    )
+    return results
 
 
 def load_analysis_state(state_path: Path) -> Dict[str, Any]:
