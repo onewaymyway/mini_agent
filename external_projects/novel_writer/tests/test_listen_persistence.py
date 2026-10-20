@@ -64,3 +64,14 @@ def test_stale_saved_chapter_falls_back_to_first(isolated):
     reading_state.update(ws.root, last_read_chapter=99)  # 章节已不存在
     at = _app(ws)
     assert at.selectbox(key="rd_pick").value == 1
+
+
+def test_user_pick_saves_chapter_start_and_restarts_player(isolated):
+    ws = _book(isolated)
+    at = _app(ws)
+    at.selectbox(key="listen_start").set_value(3).run()
+    assert not at.exception, at.exception
+    st_saved = reading_state.load(ws.root)
+    assert st_saved["last_listen_chapter"] == 3
+    assert st_saved["listen_segment"] == 0
+    assert at.session_state["listen_nonce"] == 1   # 播放器以新 key 重新挂载

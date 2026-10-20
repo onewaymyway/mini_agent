@@ -1,9 +1,10 @@
 """🎧 听书：浏览器 speechSynthesis 自动连播（M7）。
 
-数据组装在 novel_writer/listen.py（纯逻辑）；播放器是 ui/listen_component/index.html 的
-Streamlit 自定义组件。组件把「当前章节、语速、音色」回传给 Python，写入
-_studio/reading_state.json，因此刷新浏览器或重启 Streamlit 后会恢复。
-播放器完全在浏览器端运行，不生成音频文件，不调用 LLM。
+播放器是 ui/listen_component/index.html 的 Streamlit 自定义组件，始终加载全书的可听章节。
+选择框「从第几章开始」只是起点：
+- 用户主动改选择框 → 从所选章节开头重新开始（组件重新挂载）。
+- 自动连播切章 → 选择框同步到实际所在章节（不重新挂载，不打断朗读）。
+位置（章节 + 章内段落）、语速、音色都写入 _studio/reading_state.json，刷新或重启后恢复。
 """
 
 from __future__ import annotations
@@ -20,6 +21,18 @@ from ui.components import show_error
 _COMPONENT_DIR = Path(__file__).resolve().parent / "listen_component"
 _player = components.declare_component("novel_listen_player", path=str(_COMPONENT_DIR))
 
+_SEL = "listen_start"          # 选择框的 session key（表示当前所在/起始章节）
+_NONCE = "listen_nonce"        # 用户改选择框时递增，让播放器重新挂载到新起点
+_LAST_REPORT = "listen_last_report"
+
+
+def _on_pick(ws: str) -> None:
+    """用户主动选择起始章节：保存为新位置（章首），并让播放器重新挂载。"""
+    chosen = st.session_state[_SEL]
+    reading_state.update(ws, last_listen_chapter=chosen, listen_segment=0)
+    st.session_state[_NONCE] = st.session_state.get(_NONCE, 0) + 1
+    st.session_state[_LAST_REPORT] = None
+
 
 def render_listen(ws: str, rows: list) -> None:
     """渲染听书区块。rows 为 tool_api.chapters 返回的章节行。"""
@@ -32,19 +45,23 @@ def render_listen(ws: str, rows: list) -> None:
         titles = {r["chapter"]: r["title"] for r in readable}
         state = reading_state.load(ws)
 
-        # 新会话（刷新/重启后）从持久化状态恢复起始章节；同一会话内以用户选择为准。
-        if "listen_start" not in st.session_state:
+        # 新会话（刷新/重启）：选择框恢复到上次收听的章节；同一会话内以当前状态为准。
+        if _SEL not in st.session_state:
             saved = reading_state.chapter_or_none(state.get("last_listen_chapter"), numbers)
-            st.session_state["listen_start"] = saved if saved is not None else numbers[0]
-        start = st.selectbox(
-            "从第几章开始连播",
+            st.session_state[_SEL] = saved if saved is not None else numbers[0]
+        st.selectbox(
+            "当前章节（改选则从该章开头重新连播）",
             numbers,
             format_func=lambda n: f"第{n}章 {titles[n]}",
-            key="listen_start",
+            key=_SEL,
+            on_change=_on_pick,
+            args=(ws,),
         )
+        current = st.session_state[_SEL]
 
+        # 播放器始终加载全书可听章节，计数与进度都按全书计算。
         chapters = []
-        for n in [x for x in numbers if x >= start]:
+        for n in numbers:
             detail = tool_api.chapter(ws, n)
             if not detail["ok"]:
                 show_error(detail)
@@ -52,23 +69,22 @@ def render_listen(ws: str, rows: list) -> None:
             chapters.append({"chapter": n, "title": titles[n], "text": detail["data"]["text"] or ""})
         payload = build_payload(chapters)
         if not payload["segments"]:
-            st.info("所选章节没有可朗读的正文。")
+            st.info("没有可朗读的正文。")
             return
-        st.caption(f"共 {len(payload['chapters'])} 章 · {len(payload['segments'])} 段。播放会一直连到末章。")
+        st.caption(f"可听 {len(payload['chapters'])} 章 · 共 {len(payload['segments'])} 段。播放会一直连到末章。")
 
-        # key 只随用户选择的起始章节变化：播放中自动切章不会重建 iframe，也不会打断朗读。
-        # 续播：若保存的收听章节就是当前起始章节，则从保存的段落继续；否则从该章开头。
-        resume_seg = reading_state.resume_segment(state, start)
+        resume_seg = reading_state.resume_segment(state, current)
         report = _player(
             payload=payload,
             rate=state.get("listen_rate", 1.0),
             voice=state.get("listen_voice", ""),
-            resume_ch=start if resume_seg is not None else None,
+            resume_ch=current if resume_seg is not None else None,
             resume_seg=resume_seg or 0,
-            key=f"novel_listen_{start}",
+            key=f"novel_listen_{st.session_state.get(_NONCE, 0)}",
             default=None,
         )
-        if isinstance(report, dict):
+        if isinstance(report, dict) and report != st.session_state.get(_LAST_REPORT):
+            st.session_state[_LAST_REPORT] = report
             ch, seg = report.get("ch"), report.get("seg")
             if isinstance(ch, int) and ch in numbers and isinstance(seg, int) and seg >= 0:
                 reading_state.update(
@@ -78,3 +94,7 @@ def render_listen(ws: str, rows: list) -> None:
                     listen_rate=float(report.get("rate", 1.0)),
                     listen_voice=str(report.get("voice", "")),
                 )
+                if ch != current:
+                    # 播放器已切到新章节：同步选择框（需要重跑一次页面才能改动已渲染的控件）
+                    st.session_state[_SEL] = ch
+                    st.rerun()
