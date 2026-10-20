@@ -93,12 +93,13 @@ def test_merge_handler_writes_only_when_content_changes(tmp_path):
     atomic_write_json(ws.path("plot_delta", nn=3), {"planted": [{"id": "F1", "name": "玉佩"}]})
     r1 = C.h_plot_merge(ws, step, {})
     assert "已合并" in r1["summary"] and "未写盘" not in r1["summary"]
-    tracker_path = ws.path("plot_tracker")
-    mtime = tracker_path.stat().st_mtime_ns
+    index_path = ws.path("plot_tracker")                    # 索引随账本变化；无变化时不改动任何文件
+    mtime = index_path.stat().st_mtime_ns
     r2 = C.h_plot_merge(ws, step, {})                       # 同一增量再跑一次：无变化
     assert "未写盘" in r2["summary"]
-    assert tracker_path.stat().st_mtime_ns == mtime
-    assert json.loads(tracker_path.read_text(encoding="utf-8"))["foreshadowing"][0]["id"] == "F1"
+    assert index_path.stat().st_mtime_ns == mtime
+    from novel_writer import plot_store as PS
+    assert PS.read_store(ws.path("plot_items_dir"))["foreshadowing"][0]["id"] == "F1"
 
 
 def test_merge_handler_reports_missing_delta_as_step_error(tmp_path):

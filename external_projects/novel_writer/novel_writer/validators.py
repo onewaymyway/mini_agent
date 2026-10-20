@@ -17,6 +17,7 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
+from novel_writer import plot_delta as PD
 from novel_writer.fsutil import atomic_write_json
 from novel_writer.textio import read_text_utf8
 from novel_writer.workspace import Workspace
@@ -234,8 +235,28 @@ def _check_blueprint(ws: Workspace, step: Any) -> List[str]:
     return blueprint_problems(ws.path("blueprint"))
 
 
+def _check_plot_register(ws: Workspace, step: Any) -> List[str]:
+    return plot_tracker_problems(ws.path("plot_register"))
+
+
 def _check_plot_tracker(ws: Workspace, step: Any) -> List[str]:
-    return plot_tracker_problems(ws.path("plot_tracker"))
+    """伏笔账本（小文件存储）：可读、非空、每条有 id、章号合法。"""
+    from novel_writer import plot_store as PS
+    try:
+        data = PS.read_store(ws.path("plot_items_dir"))
+    except PS.LedgerError as exc:
+        return exc.problems
+    items = data.get(PD_LIST_KEY, [])
+    if not items:
+        return ["伏笔账本为空：至少需要登记一条伏笔"]
+    problems = []
+    for it in items:
+        if not str(it.get("id") or "").strip():
+            problems.append("有伏笔缺少 id")
+        for ck in TRACKER_CHAPTER_KEYS:
+            if it.get(ck) is not None and as_chapter_no(it[ck]) is None:
+                problems.append(f"伏笔 {it.get('id')} 的 {ck} 必须是章号整数")
+    return problems
 
 
 def _check_plot_delta(ws: Workspace, step: Any) -> List[str]:
@@ -248,7 +269,7 @@ def _check_plot_delta(ws: Workspace, step: Any) -> List[str]:
     if err is not None:
         return [f"伏笔增量不是合法 JSON（{err}）。请只输出一个 JSON 对象。"]
     try:
-        base = PD.undo_chapter(PD.load_tracker_strict(ws.path("plot_tracker")), step.chapter)
+        base = PD.undo_chapter(_load_ledger(ws), step.chapter)
     except PD.PlotDeltaError as exc:
         return exc.problems
     problems = PD.delta_problems(data, base, step.chapter)
@@ -264,6 +285,7 @@ OUTPUT_CHECKS: Dict[str, Callable[[Workspace, Any], List[str]]] = {
     "blueprint": _check_blueprint,
     "plot_tracker": _check_plot_tracker,
     "plot_delta": _check_plot_delta,
+    "plot_register": _check_plot_register,
 }
 
 
@@ -276,3 +298,14 @@ def content_problems(ws: Workspace, step: Any) -> List[str]:
     if checker is None:
         raise KeyError(f"未知的产出校验：{name}")
     return checker(ws, step)
+
+
+PD_LIST_KEY = PD.DEFAULT_LIST_KEY
+
+
+def _load_ledger(ws: Workspace) -> Dict[str, Any]:
+    """读取伏笔账本：已迁移为小文件则读目录，否则读旧版 JSON（兼容未迁移的项目）。损坏则抛 PlotDeltaError。"""
+    from novel_writer import plot_store as PS
+    if PS.is_store(ws.path("plot_items_dir")):
+        return PS.read_store(ws.path("plot_items_dir"))
+    return PD.load_tracker_strict(ws.path("plot_legacy"))

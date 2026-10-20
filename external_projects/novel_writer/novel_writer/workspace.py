@@ -74,7 +74,10 @@ PATHS: Dict[str, str] = {
     "location_detail": "大纲规划/世界观设定/地点详情/{name}.md",
     "world_usage_report": "大纲规划/世界观设定/world_usage_report_act{n}.md",
     # 线索设定
-    "plot_tracker": "大纲规划/线索设定/plot_tracker.json",
+    "plot_tracker": "大纲规划/线索设定/伏笔/_index.md",          # 伏笔索引（自动生成，sync_plot 读取它）
+    "plot_items_dir": "大纲规划/线索设定/伏笔",                  # 每条伏笔一个 F*.md（M9 第二阶段）
+    "plot_register": "大纲规划/线索设定/plot_register.json",     # register_plot 的一次性注册结果（JSON）
+    "plot_legacy": "大纲规划/线索设定/plot_tracker.json",        # 旧版 JSON 账本（仅用于迁移）
     "foreshadowing_list": "大纲规划/线索设定/伏笔注册表.md",
     "thread_status": "大纲规划/线索设定/故事线状态.md",
     "tension_curve": "大纲规划/线索设定/tension_curve.md",

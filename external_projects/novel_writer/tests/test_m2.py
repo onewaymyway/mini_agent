@@ -138,7 +138,7 @@ def test_card_save_and_codex_view(isolated_data):
 def test_threads_view_reads_tracker(isolated_data):
     root, ws = new_novel(isolated_data)
     assert tool_api.threads(root)["data"]["plot_tracker"] is None
-    atomic_write_json(ws.path("plot_tracker"), {"foreshadowing": [{"id": "F1", "status": "埋下"}]})
+    atomic_write_json(ws.path("plot_legacy"), {"foreshadowing": [{"id": "F1", "status": "埋下"}]})   # 未迁移的旧版账本
     ws.path("foreshadowing_list").write_text("# 伏笔\n- F1 埋下\n", encoding="utf-8")
     d = tool_api.threads(root)["data"]
     assert d["plot_tracker"]["foreshadowing"][0]["id"] == "F1" and "F1" in d["foreshadowing_md"]

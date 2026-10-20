@@ -77,7 +77,7 @@ def test_word_quota_carries_previous_shortfall(tmp_path):
 
 def test_plot_tasks_split_plant_and_resolve(tmp_path):
     ws = new_book(tmp_path)
-    atomic_write_json(ws.path("plot_tracker"), {"foreshadowing": [
+    atomic_write_json(ws.path("plot_legacy"), {"foreshadowing": [
         {"id": "F1", "name": "旧钟", "plant_chapter": 2, "resolve_chapter": 3},
         {"id": "F2", "name": "信件", "plant_chapter": 1, "resolve_chapter": 2}]})
     C.h_plot_tasks(ws, _step(ws, "ch02.plot_tasks"), ws.settings())

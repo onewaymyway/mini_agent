@@ -690,3 +690,18 @@ def next_step(workspace: str) -> Dict[str, Any]:
                     "action": action, "message": message})
 
     return _guard(run)
+
+
+def migrate_plot_ledger(workspace: str, dry_run: bool = False) -> Dict[str, Any]:
+    """把旧版 JSON 伏笔账本迁移为小文件存储（M9 第二阶段）。dry_run=True 只报告，不落盘。
+    迁移前回读比对；比对不一致则中止，旧文件保持不变；成功后旧文件改名为 .bak。"""
+    def run() -> Dict[str, Any]:
+        from novel_writer import plot_delta as PD
+        from novel_writer import plot_store as PS
+        ws = _workspace_or_raise(workspace)
+        try:
+            return _ok(PS.migrate_legacy(ws.path("plot_legacy"), ws.path("plot_items_dir"), dry_run=dry_run,
+                                         register_path=None if dry_run else ws.path("plot_register")))
+        except PD.PlotDeltaError as exc:
+            return _err("migration_failed", "；".join(exc.problems))
+    return _guard(run)

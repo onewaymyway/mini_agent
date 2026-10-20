@@ -175,7 +175,7 @@ def _tracker_items(tracker: Any) -> List[Dict[str, Any]]:
 
 def h_plot_tasks(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:
     n = step.chapter
-    items = _tracker_items(read_json(ws.path("plot_tracker"), default=None))
+    items = _tracker_items(_ledger_or_raise(ws))
     plant, resolve = [], []
     for it in items:
         brief = {"id": it.get("id"), "name": it.get("name") or it.get("title") or "",
@@ -492,23 +492,53 @@ def h_garble_guard(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], inv
                          regen=_chapter_step(n, "write_chapter"), label="正文", pin_chapter=True)
 
 
+def _ledger_or_raise(ws: Workspace) -> Dict[str, Any]:
+    """读取伏笔账本；损坏或未迁移时给出可操作的错误（不静默当作空账本）。"""
+    from novel_writer import plot_delta as PD
+    try:
+        return V._load_ledger(ws)
+    except PD.PlotDeltaError as exc:
+        raise ChapterOpError("伏笔账本读取失败：" + "；".join(exc.problems))
+
+
+def h_plot_import(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:
+    """把一次性注册结果（plot_register.json）转为小文件账本。
+    安全规则：账本已存在则跳过，绝不覆盖（覆盖会丢失已有的推进/兑现记录）。
+    要重新注册，请先手动删除伏笔目录再重跑。"""
+    from novel_writer import plot_store as PS
+    from novel_writer import plot_delta as PD
+    if PS.is_store(ws.path("plot_items_dir")):
+        return {"summary": "伏笔账本已存在，跳过导入（不覆盖已有的推进记录）"}
+    if ws.path("plot_legacy").is_file():
+        raise ChapterOpError("项目仍使用旧版伏笔账本（JSON）。请先运行伏笔迁移，再继续流水线")
+    data = read_json(ws.path("plot_register"), default=None)
+    if not isinstance(data, dict):
+        raise ChapterOpError("伏笔注册结果缺失或不是 JSON 对象")
+    data.setdefault(PD.DEFAULT_LIST_KEY, [])
+    try:
+        PS.write_store(ws.path("plot_items_dir"), data)
+    except PD.PlotDeltaError as exc:
+        raise ChapterOpError("伏笔导入失败：" + "；".join(exc.problems))
+    n = len(data.get(PD.list_key(data), []))
+    return {"summary": f"已导入 {n} 条伏笔到小文件账本"}
+
 def h_plot_merge(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:
     """把本章伏笔增量合并进账本（M9）。确定性合并，内容无实质变化则不写盘。"""
+    from novel_writer import plot_store as PS
     from novel_writer import plot_delta as PD
     n = step.chapter
+    if not PS.is_store(ws.path("plot_items_dir")) and ws.path("plot_legacy").is_file():
+        raise ChapterOpError("项目仍使用旧版伏笔账本（JSON）。请先运行伏笔迁移，再继续流水线")
+    tracker = _ledger_or_raise(ws)
+    delta = read_json(ws.path("plot_delta", nn=n), default=None)
+    if delta is None:
+        raise ChapterOpError(f"第 {n} 章伏笔增量缺失或损坏")
     try:
-        tracker = PD.load_tracker_strict(ws.path("plot_tracker"))
-        delta = read_json(ws.path("plot_delta", nn=n), default=None)
-        if delta is None:
-            raise ChapterOpError(f"第 {n} 章伏笔增量缺失或损坏")
         merged = PD.merge_result(tracker, delta, n)
+        changed = PS.write_store(ws.path("plot_items_dir"), merged)
     except PD.PlotDeltaError as exc:
         raise ChapterOpError("伏笔合并失败：" + "；".join(exc.problems))
-    changed = PD.canonical(merged) != PD.canonical(tracker)
-    if changed:
-        atomic_write_json(ws.path("plot_tracker"), merged)
     return {"summary": f"第 {n} 章伏笔已合并" + ("" if changed else "（无实质变化，未写盘）")}
-
 
 def h_garble_guard_alt(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:
     """候选稿 B 的乱码守卫：B 乱码时只重新生成 B，不动正文 A。"""
@@ -723,7 +753,7 @@ def h_snapshot(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker
         "through_chapter": n,
         "total_words": words,
         "characters": read_json(ws.path("characters"), default=None),
-        "plot_tracker": read_json(ws.path("plot_tracker"), default=None),
+        "plot_tracker": _ledger_or_raise(ws),
         "created_at": _now(),
     }
     atomic_write_json(ws.path("memory_snapshot", n=n), snap)
@@ -807,6 +837,7 @@ CHAPTER_HANDLERS = {
     "garble_guard": h_garble_guard,
     "garble_guard_alt": h_garble_guard_alt,
     "plot_merge": h_plot_merge,
+    "plot_import": h_plot_import,
     "machine_check": h_machine_check,
     "revise_loop": h_revise_loop,
     "best_pick_prep": h_best_pick_prep,

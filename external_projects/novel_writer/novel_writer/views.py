@@ -187,7 +187,17 @@ def save_character_card(ws: Workspace, name: str, text: str) -> Dict[str, Any]:
 
 
 def threads_view(ws: Workspace) -> Dict[str, Any]:
-    tracker = read_json(ws.path("plot_tracker"), default=None)
+    from novel_writer import plot_delta as PD
+    from novel_writer import plot_store as PS
+    try:
+        if PS.is_store(ws.path("plot_items_dir")):
+            tracker = PS.read_store(ws.path("plot_items_dir"))
+        elif ws.path("plot_legacy").is_file():
+            tracker = PD.load_tracker_strict(ws.path("plot_legacy"))
+        else:
+            tracker = None   # 尚未生成伏笔账本
+    except PD.PlotDeltaError:
+        tracker = None
     return {
         "plot_tracker": tracker,
         "foreshadowing_md": _read_text(ws.path("foreshadowing_list")),

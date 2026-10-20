@@ -80,7 +80,7 @@ def test_draft_quality_merges_plot_sync_and_drops_reader_sim(tmp_path):
     ws = new_book(tmp_path, total=6, quality="draft")
     plan = by_id(ws)
     assert "ch01.sync_plot" not in plan
-    assert any("plot_tracker" in o for o in plan["ch01.sync"].outputs)
+    assert S.rel("plot_tracker") in plan["ch01.sync"].outputs
     assert not any(i.endswith(".reader_sim") for i in plan)
     assert "ch01.alt_write" not in plan
 

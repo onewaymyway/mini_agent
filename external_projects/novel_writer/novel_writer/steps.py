@@ -166,9 +166,19 @@ def register_plot_step() -> StepDef:
         id="register_plot", title="注册伏笔与张力基准", stage="p1", category=CAT_BUILD,
         executor=EXECUTOR_SKILL, skill="plot-tracker",
         instructions="从蓝图注册全部伏笔与依赖链，建立张力基准。",
-        inputs=(rel("blueprint"),), outputs=(rel("plot_tracker"), rel("foreshadowing_list")),
+        inputs=(rel("blueprint"),), outputs=(rel("plot_register"), rel("foreshadowing_list")),
         deps=("build_characters", "build_world"),
-        extra={"output_check": "plot_tracker"},
+        extra={"output_check": "plot_register"},
+    )
+
+
+def plot_import_step() -> StepDef:
+    """把一次性注册结果转为小文件账本（伏笔/F*.md + 索引）。"""
+    return StepDef(
+        id="plot_import", title="导入伏笔账本（小文件）", stage="p1", category=CAT_BUILD,
+        executor=EXECUTOR_PYTHON, handler="plot_import",
+        inputs=(rel("plot_register"),), outputs=(rel("plot_tracker"),),
+        deps=("register_plot",),
     )
 
 
@@ -187,7 +197,7 @@ def simulate_blueprint_step() -> StepDef:
         executor=EXECUTOR_SKILL, skill="plot-simulator",
         instructions="快进推演蓝图，验证伏笔可兑现、找出断裂点。推演结果写入推演记录目录。",
         inputs=(rel("blueprint"), rel("plot_tracker")), outputs=(rel("simulations_dir") + "/*",),
-        deps=("register_plot", "init_word_count"),
+        deps=("plot_import", "init_word_count"),
     )
 
 
@@ -200,7 +210,7 @@ def design_opening_step() -> StepDef:
         executor=EXECUTOR_SKILL, skill="hook-designer",
         instructions="设计前三章的开篇系统与章末钩子，作为后续写作的额外指导。",
         inputs=(rel("blueprint"),), outputs=(rel("opening_design"),),
-        deps=("register_plot",),
+        deps=("plot_import",),
     )
 
 

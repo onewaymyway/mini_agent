@@ -76,6 +76,7 @@ def build_plan(ws: Workspace) -> List[S.StepDef]:
         S.build_characters_step(roles),
         S.build_world_step(),
         S.register_plot_step(),
+        S.plot_import_step(),
         S.init_word_count_step(),
     ]
     simulate = S.simulate_blueprint_step()

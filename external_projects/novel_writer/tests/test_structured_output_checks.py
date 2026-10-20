@@ -77,14 +77,14 @@ def test_blueprint_invalid_json_is_reported(tmp_path):
 
 def test_plot_tracker_valid_passes(tmp_path):
     ws = _ws(tmp_path)
-    p = ws.path("plot_tracker")
+    p = ws.path("plot_legacy")
     _write(p, {"foreshadowing": [{"id": "F1", "plant_chapter": 1, "resolve_chapter": 3}]})
     assert V.plot_tracker_problems(p) == []
 
 
 def test_plot_tracker_string_chapters_are_normalized(tmp_path):
     ws = _ws(tmp_path)
-    p = ws.path("plot_tracker")
+    p = ws.path("plot_legacy")
     _write(p, {"threads": [{"id": "F1", "plant_chapter": "第1章", "payoff_chapter": "3"}]})
     assert V.plot_tracker_problems(p) == []
     item = json.loads(p.read_text(encoding="utf-8"))["threads"][0]
@@ -100,7 +100,7 @@ def test_plot_tracker_string_chapters_are_normalized(tmp_path):
 ])
 def test_plot_tracker_problems_are_reported(tmp_path, data, keyword):
     ws = _ws(tmp_path)
-    p = ws.path("plot_tracker"); _write(p, data)
+    p = ws.path("plot_legacy"); _write(p, data)
     problems = V.plot_tracker_problems(p)
     assert problems and any(keyword in x for x in problems)
 
@@ -111,7 +111,7 @@ def test_structured_steps_declare_their_checks(tmp_path):
     ws = _ws(tmp_path)
     plan = {s.id: s for s in P.build_plan(ws)}
     assert plan["plan_blueprint"].extra.get("output_check") == "blueprint"
-    assert plan["register_plot"].extra.get("output_check") == "plot_tracker"
+    assert plan["register_plot"].extra.get("output_check") == "plot_register"
     assert plan["ch01.sync_plot"].extra.get("output_check") == "plot_delta"   # sync_plot 只产出增量
     assert plan["ch01.plot_merge"].handler == "plot_merge"
     assert S.rel("plot_tracker") in plan["ch01.plot_merge"].outputs
