@@ -264,6 +264,31 @@ def _plot_stage_validator(source_text: str) -> Callable[[Path], Tuple[Optional[D
     return validate
 
 
+
+_LIST_KEYS = ("foreshadowing", "threads", "items")
+_OUT_OF_SCOPE_SECTIONS = ("meta", "plot_threads", "tension_curve", "chapter_hooks", "health_report")
+
+
+def _legacy_schema_info(legacy_path: Path) -> Tuple[Optional[str], List[str]]:
+    """识别「以 id 为键的伏笔登记表」这类旧结构（如 foreshadowing_registry）。
+
+    返回 (问题说明或 None, 不在迁移范围内的顶层章节名)。确定性迁移不猜测字段映射，
+    所以这类结构只能交给 LLM 转换并复核。读取失败时返回 (None, [])，由正常的损坏路径处理。
+    """
+    try:
+        raw = json.loads(Path(legacy_path).read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return None, []
+    if not isinstance(raw, dict) or any(isinstance(raw.get(k), list) for k in _LIST_KEYS):
+        return None, []
+    if not isinstance(raw.get("foreshadowing_registry"), dict):
+        return None, []
+    extras = [k for k in raw if k != "foreshadowing_registry" and k in _OUT_OF_SCOPE_SECTIONS]
+    problem = ("旧账本使用 foreshadowing_registry（以 id 为键的字典）结构，字段与当前存储不同"
+               "（如 planted_chapter、status 取值），确定性迁移不会猜测字段映射。"
+               "请以 use_llm=True 由 LLM 按目标结构转换并复核。")
+    return problem, extras
+
 def migrate_legacy(legacy_path: Path, base: Path, *, dry_run: bool = False,
                    register_path: Optional[Path] = None,
                    convert: Optional[Callable[[Path], Any]] = None,
@@ -283,8 +308,11 @@ def migrate_legacy(legacy_path: Path, base: Path, *, dry_run: bool = False,
 
     warnings: List[str] = []
     source = "json"
+    schema_problem, extra_sections = _legacy_schema_info(legacy_path)
     try:
         data = PD.load_tracker_strict(legacy_path)
+        if schema_problem:
+            raise PD.PlotDeltaError([schema_problem])
     except PD.PlotDeltaError as exc:
         if convert is None:
             return {"status": "needs_llm", "legacy_problem": exc.problems,
@@ -297,6 +325,8 @@ def migrate_legacy(legacy_path: Path, base: Path, *, dry_run: bool = False,
         data = res.data
         source = "llm"
         warnings = list(res.warnings)
+        if extra_sections:
+            warnings.append("以下旧章节不在伏笔迁移范围内，未写入新存储（完整内容仍保留在 .bak 备份中）：" + "、".join(extra_sections))
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_base = Path(tmp) / "伏笔"
