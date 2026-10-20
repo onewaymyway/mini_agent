@@ -87,6 +87,7 @@ novel_writer/
 
 ## 变更记录
 
+- 2026-10-20：听书与阅读状态持久化。播放器改为 Streamlit 自定义组件（`ui/listen_component/index.html`），切章或改语速/音色时回传状态；阅读页的预览章节与听书的起始章节、语速、音色写入 `_studio/reading_state.json`，刷新浏览器或重启 Streamlit 后自动恢复，不用重复选。章节已被删除时回退到第一章。新增 `novel_writer/reading_state.py`、`tests/test_reading_state.py`（6 例）、`tests/test_listen_persistence.py`（3 例，AppTest 模拟刷新与重启）。限制：记忆的是章节级位置，不记段落位置，再次播放从该章开头开始；需在 Edge 与 Chrome 中手动验证回传是否正常。
 - 2026-10-20：M7 听书（纯前端朗读，自动连播）。阅读页新增「🎧 听书」折叠区：从所选章节起，浏览器 speechSynthesis 逐段朗读到末章，自动切章，章节标题作为每章第一段朗读；支持暂停/继续/停止、上一章/下一章、语速与音色（仅列出中文语音）。数据组装在 `novel_writer/listen.py`（纯逻辑，每段 ≤180 字以规避 Chrome 长文本中断），界面在 `ui/listen.py`。不生成音频、不调用 LLM、不改动流水线。新增 `tests/test_listen.py`（5 个用例）。已知限制：语音列表取决于浏览器与系统；切换语速/音色在下一段生效；需在 Edge 与 Chrome 中手动验证；切到后台标签页可能被浏览器暂停。
 - 2026-10-17：M0 完成（见上表）。
 - 2026-10-17：M1 引擎内核完成（待确认）。新增 steps/gates/state/pipeline/validators/runner/worker/service_cli、

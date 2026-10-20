@@ -6,7 +6,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from novel_writer import tool_api
+from novel_writer import reading_state, tool_api
 from ui.components import show_error, show_df
 from ui.listen import render_listen
 
@@ -40,9 +40,16 @@ def render_reading(ws: str) -> None:
     if last and (ws_path := Path(ws) / last["file"]).is_file():
         st.download_button(f"下载 {last['file'].rsplit('.', 1)[-1]} 文件", data=ws_path.read_bytes(),
                            file_name=ws_path.name, key="rd_download")
-    chosen = st.selectbox("预览章节", [r["chapter"] for r in rows],
+    numbers = [r["chapter"] for r in rows]
+    if "rd_pick" not in st.session_state:
+        # 新会话（刷新/重启后）恢复上次阅读的章节；同一会话内以用户选择为准。
+        saved = reading_state.chapter_or_none(reading_state.load(ws).get("last_read_chapter"), numbers)
+        st.session_state["rd_pick"] = saved if saved is not None else numbers[0]
+    chosen = st.selectbox("预览章节", numbers,
                           format_func=lambda n: f"第{n}章 {next(r['title'] for r in rows if r['chapter'] == n)}",
                           key="rd_pick")
+    if reading_state.load(ws).get("last_read_chapter") != chosen:
+        reading_state.update(ws, last_read_chapter=chosen)
     detail = tool_api.chapter(ws, chosen)
     if detail["ok"]:
         st.markdown(detail["data"]["text"] or "（尚无正文）")
