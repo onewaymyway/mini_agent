@@ -339,7 +339,16 @@ def filter_dedup_news(
 
     # 合并到待处理队列（新新闻在前，旧的可能还未被分析）
     if new_news:
-        all_pending = pending["news"] + new_news
+        # 按 hash 去重：此前已在待处理队列、仍未归档的新闻会再次被当作"新"新闻，
+        # 不去重会导致队列里同一条新闻不断重复堆积。
+        _seen: Set[str] = set()
+        all_pending = []
+        for n in new_news + pending["news"]:
+            hh = n.get("hash", "")
+            if hh and hh in _seen:
+                continue
+            _seen.add(hh)
+            all_pending.append(n)
         # 按时间倒序排序
         all_pending.sort(key=lambda x: x.get("time", ""), reverse=True)
         save_pending(all_pending)
@@ -396,6 +405,26 @@ def _clear_pending_by_hashes(hash_set: Set[str]) -> None:
     pending = load_pending()
     remaining = [n for n in pending["news"] if n.get("hash", "") not in hash_set]
     save_pending(remaining)
+
+
+def get_analysis_backlog(max_items: int = 0) -> List[Dict[str, Any]]:
+    """取待分析新闻：待处理队列中 hash 不在已处理归档里的条目，最新优先。
+
+    包含本次新抓到的新闻，也包含之前因 LLM 批次失败、或已滚出抓取窗口而
+    一直没被分析的积压新闻。max_items > 0 时只取最新的 max_items 条，
+    其余留在队列里，后续扫描继续消化。
+    """
+    processed_hashes = load_processed()["hashes"]
+    seen: Set[str] = set()
+    items: List[Dict[str, Any]] = []
+    for n in load_pending()["news"]:
+        h = n.get("hash") or _news_hash(n.get("content", ""), n.get("time", ""))
+        if h in processed_hashes or h in seen:
+            continue
+        seen.add(h)
+        items.append({"time": n.get("time", ""), "content": n.get("content", ""), "hash": h})
+    items.sort(key=lambda x: x.get("time", ""), reverse=True)
+    return items[:max_items] if max_items and max_items > 0 else items
 
 
 def get_pending_list() -> List[Dict[str, Any]]:

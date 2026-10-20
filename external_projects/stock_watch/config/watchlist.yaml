@@ -42,11 +42,12 @@ outcomes:
 
 # 新浪 7x24 直播流配置
 telegraph:
-  max_news: 300             # 最大抓取新闻条数上限（滚动加载后）
-  top_n: 50                 # 每次抓取最近 N 条新闻
+  max_news: 300             # 每次抓取的新闻条数上限（滚动加载后；缺失时回落到 top_n）
+  top_n: 50                 # max_news 缺失时的抓取条数
   max_pages: 15              # 最大滚动加载页数（避免无限滚动）
   scroll_delay: 1.5         # 每次滚动后等待秒数
   positive_threshold: 2     # 正面提及至少 N 次才入池
+  llm_max_news_per_run: 100 # 单次扫描最多送 LLM 分析多少条（含待处理积压，最新优先）；0=不限制
   llm_batch_size: 25        # 每次 LLM 调用分析的新闻条数；末批不足则按剩余条数
 
 # 阶段3自算信号（见 next_doc/stock_watch_pool_state_tracking_and_kanban_

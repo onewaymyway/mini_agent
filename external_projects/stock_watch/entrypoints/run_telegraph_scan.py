@@ -42,6 +42,7 @@ from stock_watch.news_signals import (
     classify_telegraph_news,
     filter_dedup_news,
     analyze_telegraph_news_batched,
+    get_analysis_backlog,
     load_analysis_state,
     save_analysis_state,
     get_all_analyses_summary,
@@ -155,7 +156,7 @@ def main() -> int:
         logger.info("正在抓取新浪 7x24 新闻...")
         with tracked_source(SOURCE_HEALTH_PATH, source="sina_telegraph", entrypoint="telegraph_scan") as h:
             news_items = fetch_sina_telegraph(
-                top_n=cfg.telegraph_top_n,
+                top_n=cfg.telegraph_max_news,
                 max_pages=getattr(cfg, 'telegraph_max_pages', 5),
                 scroll_delay=getattr(cfg, 'telegraph_scroll_delay', 1.5),
             )
@@ -180,23 +181,26 @@ def main() -> int:
 
     # LLM分析新新闻
     llm_analyses = []
-    if new_news and cfg.sources.get("sina_telegraph", False):
+    # 分析输入 = 待处理队列里所有未归档的新闻（本次新增 + 此前失败/滚出抓取窗口的积压），
+    # 最新优先，单次最多 llm_max_news_per_run 条，剩余留待后续扫描。
+    to_analyze = get_analysis_backlog(cfg.telegraph_llm_max_news_per_run)
+    if to_analyze and cfg.sources.get("sina_telegraph", False):
         try:
             # 构建股票池代码列表
             pool_codes = list(algo_pool.keys())
             batch_size = cfg.telegraph_llm_batch_size
-            logger.info(f"正在调用 LLM 分析 {len(new_news)} 条新闻（每批 {batch_size} 条）...")
+            logger.info(f"正在调用 LLM 分析 {len(to_analyze)} 条新闻（本次新增 {len(new_news)} 条，每批 {batch_size} 条）...")
             # 分批分析：失败的批次不计入 done_news，留在待处理队列下次重试
             llm_analyses, done_news = analyze_telegraph_news_batched(
-                new_news,
+                to_analyze,
                 stock_name_map=stock_name_map,
                 pool_codes=pool_codes,
                 batch_size=batch_size,
             )
-            if len(done_news) < len(new_news):
+            if len(done_news) < len(to_analyze):
                 logger.warning(
-                    "有 %d 条新闻因 LLM 批次失败未分析，保留在待处理队列",
-                    len(new_news) - len(done_news),
+                    "有 %d 条新闻因 LLM 批次失败未分析，保留在待处理队列，下次扫描继续",
+                    len(to_analyze) - len(done_news),
                 )
             if done_news:
                 # 保存分析状态（cursor = 上次位置 + 本次成功分析数量）

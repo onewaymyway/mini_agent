@@ -1787,6 +1787,40 @@ def fetch_sector_rotation_analysis() -> Dict[str, Any]:
 _SINA_TELEGRAPH_URL = "https://finance.sina.com.cn/7x24/"
 
 
+def _add_dates_to_telegraph(results: List[Dict[str, Any]], now: Optional[Any] = None) -> None:
+    """给新浪 7x24 新闻补全日期（原地修改 results[*]["time"]）。
+
+    页面只提供 HH:MM:SS，列表按时间倒序（最新在前）。做法：
+    - 第一条：若时刻晚于扫描时刻，说明是扫描日前一天的新闻（凌晨扫描场景），否则为扫描日；
+    - 之后沿列表向下，时刻相对上一条突然变大（超过 12 小时）说明跨过了 0 点，日期减一天。
+      这样滚动加载到 24 小时以前的新闻也能得到正确日期（旧逻辑只对 24 小时内成立）。
+    - 阈值 12 小时用来容忍页面里个别条目的小幅乱序。
+    """
+    from datetime import datetime as _datetime, timedelta as _timedelta
+
+    scan_now = now or _datetime.now()
+    cur_date = scan_now.date()
+    prev = None
+    for r in results:
+        t = r.get("time", "")
+        if not (t and ":" in t and len(t) == 8):
+            continue
+        try:
+            cur = _datetime.strptime(t, "%H:%M:%S").time()
+        except ValueError:
+            r["time"] = f"{cur_date.isoformat()} {t}"
+            continue
+        if prev is None:
+            if cur > scan_now.time():
+                cur_date = cur_date - _timedelta(days=1)
+        else:
+            gap = (cur.hour * 3600 + cur.minute * 60 + cur.second) - (prev.hour * 3600 + prev.minute * 60 + prev.second)
+            if gap > 12 * 3600:
+                cur_date = cur_date - _timedelta(days=1)
+        prev = cur
+        r["time"] = f"{cur_date.isoformat()} {t}"
+
+
 def fetch_sina_telegraph(top_n: int = 50, max_pages: int = 5, scroll_delay: float = 1.5) -> List[Dict[str, Any]]:
     """抓取新浪财经 7x24 直播流最新新闻（支持滚动加载更多）。
 
@@ -1851,29 +1885,8 @@ def fetch_sina_telegraph(top_n: int = 50, max_pages: int = 5, scroll_delay: floa
                 results = []
         else:
             results = []
-        # 补全日期：页面只提供 HH:MM:SS，需加上当天日期才能正确跨天排序
-        # 关键修正：使用扫描时刻的日期，而非 _date.today()，避免凌晨扫描时把
-        # 前一天 23:xx 的新闻错误标记为当天。
-        # 策略：以当前时间为基准，若新闻时间 >= 扫描时刻（如扫描 00:10，新闻 23:30），
-        # 说明该新闻属于"今天"（即扫描日的前一天），需减一天；否则用扫描日日期。
-        from datetime import datetime as _datetime, date as _date, timedelta as _timedelta
-        scan_now = _datetime.now()
-        scan_date = scan_now.date()
-        scan_time_parts = scan_now.time()
-        for r in results:
-            t = r.get("time", "")
-            if t and ":" in t and len(t) == 8:  # HH:MM:SS 格式
-                try:
-                    news_time_parts = _datetime.strptime(t, "%H:%M:%S").time()
-                    # 若新闻时刻 >= 扫描时刻，说明是"昨天"的新闻（凌晨场景）
-                    if news_time_parts >= scan_time_parts:
-                        effective_date = scan_date - _timedelta(days=1)
-                    else:
-                        effective_date = scan_date
-                    r["time"] = f"{effective_date.isoformat()} {t}"
-                except ValueError:
-                    # 解析失败时回退到扫描日日期，避免静默丢失
-                    r["time"] = f"{scan_date.isoformat()} {t}"
+        if isinstance(results, list):
+            _add_dates_to_telegraph(results)
         return results[:top_n] if isinstance(results, list) else []
     except Exception as exc:
         logger.warning("抓取新浪 7x24 直播流失败: %s", exc)

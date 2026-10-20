@@ -105,3 +105,59 @@ def test_archive_trim_keeps_newest(monkeypatch, tmp_path):
 
     ns.save_pending(old + new)
     assert ns.load_pending()["news"][0]["time"] == "2026-10-20 07:00:00"
+
+
+def test_backlog_includes_pending_outside_fetch_window(monkeypatch, tmp_path):
+    """滚出抓取窗口的待处理积压也要被分析；已归档的、重复的不要。"""
+    import stock_watch.config as cfg
+
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    old = [{"time": "2026-10-18 09:00:00", "content": "旧积压", "hash": "old1"}]
+    ns.save_pending(old)
+    # 本次抓取只抓到新的两条，旧积压不在其中
+    fetched = [
+        {"time": "2026-10-20 07:00:00", "content": "A"},
+        {"time": "2026-10-20 07:01:00", "content": "B"},
+    ]
+    ns.filter_dedup_news(fetched)
+    ns.filter_dedup_news(fetched)  # 重复抓取不应让队列里出现重复项
+    backlog = ns.get_analysis_backlog()
+    assert [n["content"] for n in backlog] == ["B", "A", "旧积压"]
+    # 限制条数时最新优先
+    assert [n["content"] for n in ns.get_analysis_backlog(2)] == ["B", "A"]
+    # 归档后不再出现
+    ns.move_to_processed(backlog[:2])
+    assert [n["content"] for n in ns.get_analysis_backlog()] == ["旧积压"]
+
+
+def test_add_dates_crosses_midnight_and_multi_day(monkeypatch):
+    from datetime import datetime
+    import types
+
+    # data_sources 顶层会导入需要 CDP/浏览器依赖的 browser_manager，纯逻辑测试里用桩替代
+    if "stock_watch.browser_manager" not in sys.modules:
+        stub = types.ModuleType("stock_watch.browser_manager")
+        stub.__getattr__ = lambda name: (lambda *a, **k: None)
+        monkeypatch.setitem(sys.modules, "stock_watch.browser_manager", stub)
+    from stock_watch.data_sources import _add_dates_to_telegraph
+
+    now = datetime(2026, 10, 20, 8, 0, 0)
+    rows = [{"time": t} for t in ["07:30:00", "00:10:00", "23:50:00", "12:00:00", "00:30:00", "22:00:00"]]
+    _add_dates_to_telegraph(rows, now)
+    assert [r["time"] for r in rows] == [
+        "2026-10-20 07:30:00", "2026-10-20 00:10:00",
+        "2026-10-19 23:50:00", "2026-10-19 12:00:00",
+        "2026-10-19 00:30:00", "2026-10-18 22:00:00",
+    ]
+    # 凌晨扫描：最新一条晚于扫描时刻 => 属于前一天
+    now2 = datetime(2026, 10, 20, 0, 10, 0)
+    rows2 = [{"time": "23:59:00"}, {"time": "23:00:00"}]
+    _add_dates_to_telegraph(rows2, now2)
+    assert [r["time"] for r in rows2] == ["2026-10-19 23:59:00", "2026-10-19 23:00:00"]
+
+
+def test_config_new_props():
+    assert WatchlistConfig(telegraph={"max_news": 300, "top_n": 50}).telegraph_max_news == 300
+    assert WatchlistConfig(telegraph={"top_n": 50}).telegraph_max_news == 50
+    assert WatchlistConfig(telegraph={}).telegraph_llm_max_news_per_run == 100
+    assert WatchlistConfig(telegraph={"llm_max_news_per_run": 0}).telegraph_llm_max_news_per_run == 0

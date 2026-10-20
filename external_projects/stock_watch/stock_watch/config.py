@@ -106,6 +106,24 @@ class WatchlistConfig:
         return int(self.telegraph.get("top_n", 50))
 
     @property
+    def telegraph_max_news(self) -> int:
+        """每次抓取的新闻条数上限：优先用 telegraph.max_news，缺失时回落到 top_n。"""
+        try:
+            n = int(self.telegraph.get("max_news", 0))
+        except (TypeError, ValueError):
+            n = 0
+        return n if n >= 1 else self.telegraph_top_n
+
+    @property
+    def telegraph_llm_max_news_per_run(self) -> int:
+        """单次扫描最多送 LLM 分析多少条（含积压），默认 100；0 表示不限制。"""
+        try:
+            n = int(self.telegraph.get("llm_max_news_per_run", 100))
+        except (TypeError, ValueError):
+            return 100
+        return n if n >= 0 else 100
+
+    @property
     def telegraph_llm_batch_size(self) -> int:
         """每次 LLM 调用分析的新闻条数，默认 25；非法值（<1/非数字）回落到默认。"""
         try:
