@@ -199,12 +199,15 @@ def h_revision(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker
     if level == "L3":
         sync = S.StepDef(id=f"{step.id}.sync", title="人物状态同步", stage="ondemand", category=S.CAT_REVISE,
                          executor=S.EXECUTOR_SKILL, skill="character-manager", chapter=n,
-                         instructions=f"根据第 {n} 章修订后的概述同步人物状态。",
-                         inputs=(S.rel("chapter_summary", nn=n),), outputs=(S.rel("characters"),))
+                         instructions=S._character_sync_instructions(n),
+                         inputs=(S.rel("chapter_summary", nn=n),),
+                         outputs=(S.rel("characters_dir") + "/*.md",),
+                         extra={"output_check": "character_files"})
         sync_plot = replace(sync, id=f"{step.id}.sync_plot", skill="plot-tracker",
                             instructions=f"根据第 {n} 章修订后的概述更新伏笔状态。",
                             outputs=(S.rel("plot_tracker"),))
         run_skill_step(ws, sync, invoker=invoker, settings=settings, run_no=1)
+        C.h_characters_refresh(ws, sync, settings)   # 人物文件改完后刷新索引（确定性）
         run_skill_step(ws, sync_plot, invoker=invoker, settings=settings, run_no=1)
 
     stale = st.mark_stale(ws, build_plan(ws))

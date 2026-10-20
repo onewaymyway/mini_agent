@@ -59,6 +59,16 @@
 - **线索页只读**：伏笔的手动登记与兑现标记放在 M4。
 - **daemon 入口**：`run_novel` 需要 `--workspace` 参数，**未**登记到 `project.yaml`（daemon 不会传参）。批量入口 `advance_all_auto` 已在 M5 登记，**没有** cron 行（默认关闭）。
 
+## 人物档案小文件化（第四阶段）
+
+- 布局：`大纲规划/人物设定/角色/{id}.md` 每个角色一个文件（文件头 `key: JSON` 逐行保存结构字段，正文由系统生成）；`角色索引.md` 由系统生成，写作时只读它与本章出场角色的文件。
+- 章后人物更新（精品档与草稿档的 `sync`）：LLM **直接编辑本章出场角色的文件**，不再整体重写人物档案；随后的 `characters_refresh` 步骤确定性校验、重生成正文与索引，内容无变化不写盘。
+- 写作上下文只带本章出场角色的摘要（`brief_for`），不再整本放入。
+- 旧版 `characters.json` 迁移：`tool_api.migrate_characters`。合法则确定性迁移并回读比对；损坏则 `use_llm=True` 时由 `ledger-convert` 直接转换，结果需 `confirm=True` 才提交；旧文件改名为 `.bak`。
+- 未迁移的项目：人物相关步骤会明确报错，提示先迁移，不会静默当作空档案。
+- 尚未小文件化：`behavior_index.json`、蓝图、世界圣经（仍为整体 JSON，后续阶段处理）。
+- 人物档案的 mtime 只跟随索引（`contamination` 的全书共享状态检查以索引为准）。
+
 ## 目录结构
 
 ```

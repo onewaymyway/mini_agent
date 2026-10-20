@@ -280,7 +280,14 @@ def _check_plot_delta(ws: Workspace, step: Any) -> List[str]:
     return []
 
 
+def _check_character_files(ws: Workspace, step: Any) -> List[str]:
+    """人物更新的产出校验（第四阶段）：本次写过的角色文件必须全部合法。"""
+    from novel_writer import character_store as CS
+    return CS.problems_for_dir(ws.path("characters_dir"))
+
+
 OUTPUT_CHECKS: Dict[str, Callable[[Workspace, Any], List[str]]] = {
+    "character_files": _check_character_files,
     "best_pick_report": _check_best_pick,
     "blueprint": _check_blueprint,
     "plot_tracker": _check_plot_tracker,
@@ -291,13 +298,17 @@ OUTPUT_CHECKS: Dict[str, Callable[[Workspace, Any], List[str]]] = {
 
 def content_problems(ws: Workspace, step: Any) -> List[str]:
     """步骤声明的产出内容校验（step.extra["output_check"]）。未声明则不校验。"""
-    name = (getattr(step, "extra", None) or {}).get("output_check")
-    if not name:
+    raw = (getattr(step, "extra", None) or {}).get("output_check")
+    if not raw:
         return []
-    checker = OUTPUT_CHECKS.get(name)
-    if checker is None:
-        raise KeyError(f"未知的产出校验：{name}")
-    return checker(ws, step)
+    names = [raw] if isinstance(raw, str) else list(raw)
+    problems: List[str] = []
+    for name in names:
+        checker = OUTPUT_CHECKS.get(name)
+        if checker is None:
+            raise KeyError(f"未知的产出校验：{name}")
+        problems.extend(checker(ws, step))
+    return problems
 
 
 PD_LIST_KEY = PD.DEFAULT_LIST_KEY

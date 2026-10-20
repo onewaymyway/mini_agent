@@ -64,7 +64,9 @@ PATHS: Dict[str, str] = {
     "pacing_design": "大纲规划/节奏规划.md",
     "opening_design": "大纲规划/前三章开篇设计.md",
     # 人物设定
-    "characters": "大纲规划/人物设定/characters.json",
+    "characters": "大纲规划/人物设定/角色索引.md",                 # 人物索引（自动生成；第四阶段）
+    "characters_dir": "大纲规划/人物设定/角色",                    # 每个角色一个 {id}.md（第四阶段）
+    "characters_legacy": "大纲规划/人物设定/characters.json",      # 旧版 JSON（仅用于迁移）
     "behavior_index": "大纲规划/人物设定/behavior_index.json",
     "character_card": "大纲规划/人物设定/人设卡/{name}.md",
     "character_snapshot": "大纲规划/人物设定/snapshots/ch_{n}.json",

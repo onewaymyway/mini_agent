@@ -31,7 +31,8 @@ def test_snapshot_is_summary_not_full_copy(tmp_path):
         {"id": "F1", "name": "玉佩", "status": "planted", "plant_chapter": 1},
         {"id": "F2", "name": "信", "status": "resolved", "plant_chapter": 1, "resolve_chapter": 2},
     ]})
-    atomic_write_json(ws.path("characters"), {"char_001": {"id": "char_001", "name": "甲"}})
+    from novel_writer import character_store as CS
+    CS.write_store(ws.path("characters_dir"), ws.path("characters"), {"char_001": {"id": "char_001", "name": "甲"}})
     step = S.StepDef(id="snapshot:2", title="快照", stage="p3", category=S.CAT_INFRA,
                      executor=S.EXECUTOR_PYTHON, handler="snapshot", chapter=0, extra={"through_chapter": 2})
     C.h_snapshot(ws, step, {})
@@ -47,7 +48,7 @@ def test_draft_sync_outputs_delta_and_merge_follows(tmp_path):
     ws = Workspace(r["data"]["workspace"])
     plan = {s.id: s for s in __import__("novel_writer.pipeline", fromlist=["build_plan"]).build_plan(ws)}
     sync = plan["ch01.sync"]
-    assert S.rel("plot_delta", nn=1) in sync.outputs and sync.extra.get("output_check") == "plot_delta"
-    assert plan["ch01.plot_merge"].deps == ("ch01.sync",)
+    assert S.rel("plot_delta", nn=1) in sync.outputs and "plot_delta" in sync.extra.get("output_check")
+    assert plan["ch01.plot_merge"].deps == ("ch01.characters_refresh",)
     # 下游依赖合并步骤，而不是直接依赖同步步骤
     assert any("ch01.plot_merge" in (s.deps or ()) for s in plan.values())

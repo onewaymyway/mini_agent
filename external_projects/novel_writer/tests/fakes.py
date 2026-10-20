@@ -52,6 +52,12 @@ def _placeholder_for(target: Path, ws) -> str:
         return _json.dumps(make_blueprint(4), ensure_ascii=False)
     if target.name.endswith("_伏笔增量.json"):
         return _json.dumps({"planted": [], "advanced": [], "resolved": []}, ensure_ascii=False)
+    if target.parent.name == "角色" and target.suffix == ".md":
+        # 第四阶段：角色文件须是合法的角色记录（内容校验会检查它）
+        from novel_writer import character_store as CS
+        rec = {"id": target.stem, "name": "测试角色", "role": "supporting", "introduced_chapter": 1,
+               "state_log": [], "current_state": {"as_of_chapter": 0, "location": "", "emotional": ""}}
+        return CS._encode(rec) + CS._body(rec)
     if target.name in ("plot_tracker.json", "plot_register.json"):
         return _json.dumps({"foreshadowing": [{"id": "F1", "name": "测试伏笔", "plant_chapter": 1}]}, ensure_ascii=False)
     return "stub"

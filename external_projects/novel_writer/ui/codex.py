@@ -33,7 +33,10 @@ def render_codex(ws: str) -> None:
     for card in view["other_cards"]:
         with st.expander(f"其它人设卡：{card['name']}"):
             st.markdown(card["text"] or "")
-    with st.expander("人物档案 characters.json", expanded=False):
-        st.json(view["characters"] or {"提示": "尚未生成"})
+    with st.expander("人物档案（角色文件 + 索引）", expanded=False):
+        if view.get("characters_error"):
+            st.error("人物档案读取失败，请按提示修正对应文件：\n- " + "\n- ".join(view["characters_error"]))
+        else:
+            st.json(view["characters"] or {"提示": "尚未生成"})
     with st.expander("世界圣经 world_bible.json", expanded=False):
         st.json(view["world_bible"] or {"提示": "尚未生成"})

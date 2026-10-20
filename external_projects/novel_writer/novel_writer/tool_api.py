@@ -692,6 +692,33 @@ def next_step(workspace: str) -> Dict[str, Any]:
     return _guard(run)
 
 
+def migrate_characters(workspace: str, dry_run: bool = False, confirm: bool = False,
+                       use_llm: bool = False) -> Dict[str, Any]:
+    """把旧版 characters.json 迁移为角色小文件（第四阶段）。
+
+    - 旧文件合法：确定性迁移（回读比对一致才提交）。
+    - 旧文件损坏：use_llm=True 时由 LLM（ledger-convert）直接读取原文写出角色文件，经严格校验；
+      结果需要复核，confirm=True 才提交。use_llm=False 时返回 needs_llm。
+    - dry_run=True：只报告。旧文件不删除，提交后改名为 .bak。
+    """
+    def run() -> Dict[str, Any]:
+        from novel_writer import character_store as CS
+        ws = _workspace_or_raise(workspace)
+        convert = None
+        if use_llm:
+            from novel_writer.runner import FrameworkInvoker
+            invoker = FrameworkInvoker()
+            workdir = ws.root / "_studio" / "convert" / "characters"
+            convert = lambda legacy: CS.llm_convert_legacy(legacy, workdir, invoker)  # noqa: E731
+        try:
+            return _ok(CS.migrate_legacy(ws.path("characters_legacy"), ws.path("characters_dir"),
+                                         ws.path("characters"), dry_run=dry_run, convert=convert,
+                                         confirm=confirm))
+        except CS.CharacterStoreError as exc:
+            return _err("migration_failed", "；".join(exc.problems))
+    return _guard(run)
+
+
 def migrate_plot_ledger(workspace: str, dry_run: bool = False, confirm: bool = False,
                         use_llm: bool = False) -> Dict[str, Any]:
     """把旧版 JSON 伏笔账本迁移为小文件存储（M9 第二阶段）。

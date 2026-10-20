@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import datetime as dt
 import json
 import os
@@ -74,7 +76,7 @@ def test_chapter_outputs_use_glob_when_title_unknown():
 def test_no_blueprint_plan_has_only_infra_and_planning(tmp_path):
     r = tool_api.create_novel("空书", novels_dir=str(tmp_path / "n"), index_file=str(tmp_path / "i.json"))
     plan = P.build_plan(Workspace(r["data"]["workspace"]))
-    assert all(not s.id.startswith("ch") for s in plan)
+    assert all(not re.match(r"ch\d\d\.", s.id) for s in plan)   # 章节步骤 id 形如 ch01.xxx（characters_refresh 不是章节步骤）
 
 
 # ── 闸门 ───────────────────────────────────────────────────────────────────

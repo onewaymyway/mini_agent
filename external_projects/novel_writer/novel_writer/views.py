@@ -167,9 +167,19 @@ def codex_view(ws: Workspace) -> Dict[str, Any]:
         "main_characters": roles,
         "cards": cards,
         "other_cards": extra,
-        "characters": read_json(ws.path("characters"), default=None),
+        **_characters_fields(ws),
         "world_bible": read_json(ws.path("world_bible"), default=None),
     }
+
+
+def _characters_fields(ws: Workspace) -> Dict[str, Any]:
+    """人物档案（第四阶段小文件）。读取失败时不抛错，而是把问题放进 characters_error 让界面展示。"""
+    from novel_writer import character_store as CS
+    try:
+        return {"characters": CS.load_or_none(ws.path("characters_dir"), ws.path("characters"),
+                                              ws.path("characters_legacy")), "characters_error": None}
+    except CS.CharacterStoreError as exc:
+        return {"characters": None, "characters_error": exc.problems}
 
 
 def save_character_card(ws: Workspace, name: str, text: str) -> Dict[str, Any]:

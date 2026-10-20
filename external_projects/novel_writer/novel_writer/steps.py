@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from novel_writer.character_store import LAYOUT_RULES
 from novel_writer.workspace import PATHS
 
 # 执行器类型
@@ -141,13 +142,51 @@ def design_character_step(name: str) -> StepDef:
 
 
 def build_characters_step(card_names: Sequence[str]) -> StepDef:
+    """建档（第四阶段）：每张人设卡写成一个角色文件；索引由 characters_refresh 生成。"""
+    outputs: Tuple[str, ...] = (rel("behavior_index"),)
+    extra: Dict[str, Any] = {}
+    if card_names:
+        outputs = (rel("characters_dir") + "/*.md", rel("behavior_index"))
+        extra = {"output_check": "character_files"}
     return StepDef(
         id="build_characters", title="建立人物档案", stage="p1", category=CAT_BUILD,
         executor=EXECUTOR_SKILL, skill="character-manager",
-        instructions="把人设卡转换为结构化人物档案与行为边界索引。",
+        instructions=("把人设卡转换为角色文件：为每张人设卡在角色目录下建立一个角色文件（一卡一文件，"
+                      "id 取 char_ 加三位编号），把身份、心理、行为边界、能力、弧线写入对应字段；"
+                      "state_log 为空数组，current_state.as_of_chapter 为 0。"
+                      f"同时写出行为边界索引：{rel('behavior_index')}。\n" + LAYOUT_RULES),
         inputs=tuple(rel("character_card", name=n) for n in card_names),
-        outputs=(rel("characters"), rel("behavior_index")),
+        outputs=outputs,
         deps=tuple(f"design_character:{n}" for n in card_names),
+        extra=extra,
+    )
+
+
+def characters_refresh_step() -> StepDef:
+    """建档后的确定性刷新：校验角色文件、生成正文与索引（内容无变化不写盘）。"""
+    return StepDef(
+        id="characters_refresh", title="刷新人物档案（小文件）", stage="p1", category=CAT_BUILD,
+        executor=EXECUTOR_PYTHON, handler="characters_refresh",
+        inputs=(rel("characters_dir") + "/*.md",), outputs=(rel("characters"),),
+        deps=("build_characters",),
+    )
+
+
+def _character_sync_instructions(n: int) -> str:
+    """章后人物更新（第四阶段）：LLM 直接编辑本章出场角色的文件，不再整体重写人物档案。"""
+    return (f"【本章人物更新】请直接编辑本章出场角色的文件（目录：{rel('characters_dir')}，每个角色一个 {{id}}.md）。"
+            f"出场角色以蓝图第 {n} 章的 characters_present 为准（蓝图：{rel('blueprint')}）。"
+            f"对每个出场角色：更新 state_log 中第 {n} 章的条目（没有则新增，已有则替换）；"
+            f"更新 current_state（as_of_chapter={n}）；按概述更新 relationships 中的 current_actual 与 last_updated_chapter。"
+            "概述中出现的新角色：新建角色文件（id 取 char_ 加未占用的三位编号）。未出场角色的文件不要改动。\n"
+            + LAYOUT_RULES)
+
+
+def _characters_refresh_step(n: int, dep: str, common: Dict[str, Any]) -> StepDef:
+    return StepDef(
+        id=chapter_id(n, "characters_refresh"), title=f"第{n}章：人物档案刷新", stage=_stage_of(n),
+        category=CAT_CHAPTER_REVIEW, executor=EXECUTOR_PYTHON, handler="characters_refresh",
+        inputs=(rel("characters_dir") + "/*.md",), outputs=(rel("characters"),), deps=(dep,), **common,
     )
 
 
@@ -167,7 +206,7 @@ def register_plot_step() -> StepDef:
         executor=EXECUTOR_SKILL, skill="plot-tracker",
         instructions="从蓝图注册全部伏笔与依赖链，建立张力基准。",
         inputs=(rel("blueprint"),), outputs=(rel("plot_register"), rel("foreshadowing_list")),
-        deps=("build_characters", "build_world"),
+        deps=("characters_refresh", "build_world"),
         extra={"output_check": "plot_register"},
     )
 
@@ -288,9 +327,10 @@ def chapter_steps(n: int, title: str, *, total: Optional[int], prev_last: str,
                 outputs=(rel("chapter_summary", nn=n),), deps=(p("revise_loop"),), **common),
         StepDef(id=p("sync"), title=f"第{n}章：状态同步", stage=_stage_of(n), category=CAT_CHAPTER_REVIEW,
                 executor=EXECUTOR_SKILL, skill="character-manager",
-                instructions=f"根据第 {n} 章的概述同步人物当前状态。",
+                instructions=_character_sync_instructions(n),
                 inputs=(rel("chapter_summary", nn=n), rel("characters")),
-                outputs=(rel("characters"),), deps=(p("archive"),), **common),
+                outputs=(rel("characters_dir") + "/*.md",), deps=(p("archive"),),
+                extra={"output_check": "character_files"}, **common),
     ]
     # 乱码守卫（写作后、机器校验前）：命中乱码则自动重新生成，三次仍失败挂起给作者
     guard = StepDef(id=p("garble_guard"), title=f"第{n}章：乱码守卫", stage=_stage_of(n), category=CAT_CHAPTER_REVIEW,
@@ -300,16 +340,20 @@ def chapter_steps(n: int, title: str, *, total: Optional[int], prev_last: str,
     steps[idx] = replace(steps[idx], deps=(guard.id,))
     steps.insert(idx, guard)
 
+    # 第四阶段：人物更新由 LLM 直接改角色文件，随后由确定性步骤刷新索引（characters_refresh）。
+    sync_idx = next(i for i, s_ in enumerate(steps) if s_.id == p("sync"))
+    refresh = _characters_refresh_step(n, p("sync"), common)
+    steps.append(refresh)
     if quality == DRAFT:
-        # 草稿档（方案 6.4）：伏笔同步并入人物同步，减少一次 LLM 调用。
-        # 与精品档一致：只输出本章伏笔增量，由 plot_merge 合并，不再整体重写账本（M9 第三阶段）。
-        steps[-1] = replace(steps[-1],
-                            instructions=(steps[-1].instructions
-                                          + f"同时根据概述列出第 {n} 章的伏笔增量（planted / advanced / resolved，只写本章动作，"
-                                            f"不复述整本账本），输出到：{rel('plot_delta', nn=n)}"),
-                            outputs=(rel("characters"), rel("plot_delta", nn=n)),
-                            extra={"output_check": "plot_delta"})
-        steps.append(_plot_merge_step(n, p("sync"), common))
+        # 草稿档（方案 6.4）：人物同步与伏笔增量同一次 LLM 调用完成；伏笔增量由 plot_merge 合并。
+        steps[sync_idx] = replace(
+            steps[sync_idx],
+            instructions=(steps[sync_idx].instructions
+                          + f"\n同时根据概述列出第 {n} 章的伏笔增量（planted / advanced / resolved，只写本章动作，"
+                            f"不复述整本账本），输出到：{rel('plot_delta', nn=n)}"),
+            outputs=(rel("characters_dir") + "/*.md", rel("plot_delta", nn=n)),
+            extra={"output_check": ["character_files", "plot_delta"]})
+        steps.append(_plot_merge_step(n, refresh.id, common))
     else:
         steps.append(StepDef(
             id=p("sync_plot"), title=f"第{n}章：伏笔状态同步", stage=_stage_of(n), category=CAT_CHAPTER_REVIEW,
@@ -322,7 +366,7 @@ def chapter_steps(n: int, title: str, *, total: Optional[int], prev_last: str,
                           "\"advanced\": [{\"id\", \"note\"}], \"resolved\": [{\"id\", \"note\"}]}；"
                           "没有就给空数组。"),
             inputs=(rel("chapter_summary", nn=n), rel("plot_tracker")),
-            outputs=(rel("plot_delta", nn=n),), deps=(p("sync"),),
+            outputs=(rel("plot_delta", nn=n),), deps=(refresh.id,),
             extra={"output_check": "plot_delta"}, **common,
         ))
         steps.append(_plot_merge_step(n, p("sync_plot"), common))
@@ -348,7 +392,7 @@ def chapter_steps(n: int, title: str, *, total: Optional[int], prev_last: str,
             executor=EXECUTOR_SKILL, skill="reader-simulator",
             instructions=f"以读者视角评估第 {n} 章（注意力/理解/情感/可信/节奏）。",
             inputs=(chapter_text,), outputs=(rel("reader_report", nn=n),),
-            deps=(p("sync") if quality == DRAFT else p("plot_merge"),), **common,
+            deps=(p("plot_merge"),), **common,
         ))
     return steps
 

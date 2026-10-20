@@ -74,6 +74,7 @@ def build_plan(ws: Workspace) -> List[S.StepDef]:
     plan += [S.design_character_step(name) for name in roles]
     plan += [
         S.build_characters_step(roles),
+        S.characters_refresh_step(),
         S.build_world_step(),
         S.register_plot_step(),
         S.plot_import_step(),

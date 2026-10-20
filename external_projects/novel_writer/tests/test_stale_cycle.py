@@ -13,8 +13,10 @@ from novel_writer.runner import DEFAULT_PY_HANDLERS
 from test_m3 import isolated, new_book  # noqa: F401  (fixture)
 
 
-def _change_characters(ws):  # 与真实代码一致：状态同步只写人物档案（声明的产出）
-    ws.path("characters").write_text(str(uuid.uuid4()), encoding="utf-8")
+def _change_characters(ws):  # 与真实代码一致：状态同步直接改出场角色的文件（第四阶段）
+    from novel_writer import character_store as CS
+    CS.write_store(ws.path("characters_dir"), ws.path("characters"),
+                   {"char_001": {"id": "char_001", "name": str(uuid.uuid4())}})
 
 
 def _change_plot(ws):  # 伏笔同步只写伏笔账本

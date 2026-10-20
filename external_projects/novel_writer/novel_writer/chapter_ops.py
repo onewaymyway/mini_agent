@@ -234,7 +234,7 @@ def build_context(ws: Workspace, n: int) -> str:
     entry = chapter_entry(ws, n)
     present = [_clean_name(x) for x in _names(entry.get("characters_present"))]
     tasks = read_json(ws.path("chapter_tasks", n=n), default=None) or {}
-    characters = read_json(ws.path("characters"), default=None)
+    characters = _characters_or_raise(ws)
     world = read_json(ws.path("world_bible"), default=None)
     intake = _read(ws.path("intake_note"))
     blueprint_part = {k: entry.get(k) for k in ("title", "function", "chapter_type", "pov", "tension_level",
@@ -249,7 +249,7 @@ def build_context(ws: Workspace, n: int) -> str:
                                     ensure_ascii=False, indent=2), CONTEXT_SECTION_CAP["tasks"]),
         ("出场角色人设", _cards_for(ws, present), CONTEXT_SECTION_CAP["cards"] * 4),
         ("最近章节概述", _previous_summaries(ws, n), CONTEXT_SECTION_CAP["summary"] * 3),
-        ("角色状态（档案摘要）", json.dumps(characters, ensure_ascii=False, indent=1) if characters else None,
+        ("角色状态（出场角色摘要）", _character_brief(characters, present) if characters else None,
          CONTEXT_SECTION_CAP["characters"]),
         ("世界设定（摘要）", json.dumps(world, ensure_ascii=False, indent=1) if world else None,
          CONTEXT_SECTION_CAP["world"]),
@@ -523,6 +523,41 @@ def h_plot_import(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invo
     n = len(data.get(PD.list_key(data), []))
     return {"summary": f"已导入 {n} 条伏笔到小文件账本"}
 
+# ── 人物档案（第四阶段：每个角色一个文件，由 LLM 直接更新）────────────────────────
+
+def _characters_or_raise(ws: Workspace) -> Optional[Dict[str, Any]]:
+    from novel_writer import character_store as CS
+    try:
+        return CS.load_or_none(ws.path("characters_dir"), ws.path("characters"), ws.path("characters_legacy"))
+    except CS.CharacterStoreError as exc:
+        raise ChapterOpError("人物档案读取失败：" + "；".join(exc.problems))
+
+
+def _characters_soft(ws: Workspace) -> Optional[Dict[str, Any]]:
+    from novel_writer import character_store as CS
+    try:
+        return CS.load_or_none(ws.path("characters_dir"), ws.path("characters"), ws.path("characters_legacy"))
+    except CS.CharacterStoreError:
+        return None
+
+
+def _character_brief(chars: Dict[str, Any], present: List[str]) -> str:
+    from novel_writer import character_store as CS
+    return CS.brief_for(chars, present)
+
+
+def h_characters_refresh(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:
+    """人物档案刷新（确定性）：校验全部角色文件，重生成正文与索引；内容无变化不写盘。"""
+    from novel_writer import character_store as CS
+    if not CS.is_store(ws.path("characters")) and ws.path("characters_legacy").is_file():
+        raise ChapterOpError("项目仍使用旧版人物档案（characters.json）。请先运行人物档案迁移，再继续流水线")
+    try:
+        chars, changed = CS.refresh(ws.path("characters_dir"), ws.path("characters"))
+    except CS.CharacterStoreError as exc:
+        raise ChapterOpError("人物档案校验失败：" + "；".join(exc.problems))
+    return {"summary": f"人物档案已刷新（{len(chars)} 个角色）" + ("" if changed else "，无实质变化，未写盘")}
+
+
 def h_plot_merge(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:
     """把本章伏笔增量合并进账本（M9）。确定性合并，内容无实质变化则不写盘。"""
     from novel_writer import plot_store as PS
@@ -759,7 +794,7 @@ def h_snapshot(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker
     for it in items:
         st = str(it.get("status") or "planted")
         by_status[st] = by_status.get(st, 0) + 1
-    chars = read_json(ws.path("characters"), default=None)
+    chars = _characters_soft(ws)
     snap = {
         "through_chapter": n,
         "total_words": words,
@@ -848,6 +883,7 @@ CHAPTER_HANDLERS = {
     "garble_guard": h_garble_guard,
     "garble_guard_alt": h_garble_guard_alt,
     "plot_merge": h_plot_merge,
+    "characters_refresh": h_characters_refresh,
     "plot_import": h_plot_import,
     "machine_check": h_machine_check,
     "revise_loop": h_revise_loop,
