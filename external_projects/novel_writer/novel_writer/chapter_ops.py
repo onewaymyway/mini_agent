@@ -513,7 +513,8 @@ def h_plot_import(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invo
         raise ChapterOpError("项目仍使用旧版伏笔账本（JSON）。请先运行伏笔迁移，再继续流水线")
     data = read_json(ws.path("plot_register"), default=None)
     if not isinstance(data, dict):
-        raise ChapterOpError("伏笔注册结果缺失或不是 JSON 对象")
+        raise ChapterOpError("伏笔注册结果缺失或已损坏（不是合法的 JSON 对象）。"
+                             "可重跑 register_plot，或在伏笔迁移中以修复模式处理")
     data.setdefault(PD.DEFAULT_LIST_KEY, [])
     try:
         PS.write_store(ws.path("plot_items_dir"), data)

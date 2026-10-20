@@ -87,6 +87,15 @@ novel_writer/
 
 ## 变更记录
 
+- 2026-10-20：损坏旧账本的抢救与修复（通用规则，适用于伏笔账本及后续所有 JSON→Markdown 迁移）。
+  - 分层抢救（`novel_writer/json_repair.py`）：严格解析 → 确定性清洗（代码围栏、尾逗号）→ 按数组条目拆分逐条解析。只有无法解析的条目才进入修复，其余条目保持原样；每条都标记来源（strict / lenient / llm）。
+  - 修复：待修复条目交给技能 `json-repair`（`skills/json-repair/`），每条单独调用一次；修复结果必须通过结构校验才被接受；修复器异常不中断迁移。
+  - 隔离：修复后仍不合格、或 id 重复的条目，原文保存到 `伏笔/_quarantine/`，不进入账本。
+  - 提交门槛：只有确定性清洗（或无问题）时自动提交。出现 LLM 修复、隔离、撤销记录丢失或结构截断时，只生成「伏笔迁移报告.md」，需 confirm=True 才提交。旧文件始终不删除，提交后改名 .bak。
+  - 接口：`tool_api.migrate_plot_ledger(ws, dry_run, confirm, use_llm)`。
+  - 后续阶段约定：任何新的 JSON→Markdown 迁移都必须经过同一套抢救与复核门槛；读取时损坏应报告具体文件，不静默默认。
+  - 新增 `tests/test_json_repair.py`（18 例）；`tests/test_plot_store.py` 中损坏旧文件的用例改为「需复核、原文件不动」。
+  - 注意：LLM 修复的内容未经人工核对前不应视为可靠，报告中会逐条列出。
 - 2026-10-20：伏笔账本小文件化（M9 第二阶段）。①存储：`novel_writer/plot_store.py`，账本拆为目录 `大纲规划/线索设定/伏笔/`：每条伏笔一个 `F*.md`（文件头 `key: JSON值` 逐行保存结构化字段，正文由系统生成），每章增量记录放在 `_applied/`，`_index.md` 为自动生成的紧凑索引（sync_plot 只读索引，输入不再随全书增长）。写入只改动变化的文件；损坏时点名具体文件。②流水线：register_plot 输出 `plot_register.json`（一次性注册结果），新增 `plot_import` 步骤转为小文件账本；plot_import 发现账本已存在则跳过，绝不覆盖已有推进记录；合并 `plot_merge` 直接写小文件存储。③迁移：`tool_api.migrate_plot_ledger(ws, dry_run)`（旧 JSON → 小文件）：先写临时目录并回读比对，一致才落盘；旧文件改名 `.bak`；同时生成 `plot_register.json` 副本，避免 register_plot 被误判为缺失而重跑。未迁移的项目会被明确提示先迁移，不会被静默改写。④读取统一经 `_ledger_or_raise`（损坏则报错，不静默为空）。新增 `tests/test_plot_store.py`（13 例），`tests/test_plot_delta.py` 增补。
   - 已知限制：a) 草稿档 `sync` 步骤仍整体重写账本（尚未纳入）；b) 伏笔正文由系统生成，手改正文会被覆盖，结构化字段请改文件头；c) 人物档案 characters.json、蓝图、快照等其他 JSON 尚未拆分，按同样模式在后续阶段处理；d) 迁移后输出路径改变，已完成步骤的部分下游可能需要一次性重跑。
 - 2026-10-20：伏笔增量（M9 第一阶段）。精品档 `sync_plot` 不再整体重写伏笔账本，改为只输出本章增量 `伏笔增量/第N章_伏笔增量.json`（planted/advanced/resolved）；新增 Python 步骤 `plot_merge` 确定性合并到账本，内容无实质变化时不写盘，因此下游步骤不会因无变化而过期。增量应用前会撤销该章上一次的效果，重跑同一章幂等。损坏的账本抛出明确错误，不再静默当作空账本。下游依赖改为 `plot_merge`。新增 `novel_writer/plot_delta.py` 与 `tests/test_plot_delta.py`（23 例）。已知未解决：①`sync_plot` 的输入仍包含整本账本，提示词仍随全书增长（第二阶段改为按需读取）；②草稿档的 `sync` 步骤仍整体重写账本（第二阶段统一处理）；③账本仍为 JSON（第二阶段迁移为 Markdown）。

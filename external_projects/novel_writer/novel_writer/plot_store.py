@@ -20,8 +20,9 @@ import re
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
+from novel_writer import json_repair as JR
 from novel_writer import plot_delta as PD
 from novel_writer.fsutil import atomic_write_json, atomic_write_text
 
@@ -206,41 +207,124 @@ def _normalized(data: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-# ── 迁移 ─────────────────────────────────────────────────────────────
+# ── 迁移（含损坏旧账本的抢救与修复）────────────────────────────────
+
+REPAIR_HINT = "伏笔条目：必须是对象，含 id（字母数字下划线连字符）、name、status（planted/advanced/resolved）、"\
+              "plant_chapter、resolve_chapter，progress 为对象数组。"
+
+
+def _record_problem(obj: Any) -> Optional[str]:
+    if not isinstance(obj, dict):
+        return "不是对象"
+    iid = str(obj.get("id") or "")
+    if not ITEM_ID.match(iid):
+        return f"id 不合法：{obj.get('id')!r}"
+    return None
+
+
+def _review_report(summary: Dict[str, Any], quarantined: List[str]) -> str:
+    lines = ["# 伏笔账本迁移报告", "",
+             f"- 合法条目：{summary['items']}（严格解析 {summary['origins'].get('strict', 0)}，"
+             f"确定性清洗 {summary['origins'].get('lenient', 0)}，LLM 修复 {summary['origins'].get('llm', 0)}）",
+             f"- 隔离条目：{len(quarantined)}（原文保存在 伏笔/_quarantine/，未进入账本）",
+             f"- 已记录的章节增量：{summary['applied_chapters']}" + ("（撤销记录已丢失，重跑相关章节将无法撤销旧效果）"
+                                                              if summary.get("applied_lost") else ""),
+             ""]
+    if summary.get("notes"):
+        lines += ["## 说明"] + [f"- {n}" for n in summary["notes"]] + [""]
+    if summary.get("llm_ids"):
+        lines += ["## 由 LLM 修复的条目（请逐条核对）"] + [f"- {i}" for i in summary["llm_ids"]] + [""]
+    if quarantined:
+        lines += ["## 隔离的原文（摘要）"] + [f"- 第 {i + 1} 条：{q[:80]!r}" for i, q in enumerate(quarantined)] + [""]
+    lines += ["确认无误后，以 confirm=True 重新执行迁移即可提交。"]
+    return "\n".join(lines) + "\n"
+
 
 def migrate_legacy(legacy_path: Path, base: Path, *, dry_run: bool = False,
-                   register_path: Optional[Path] = None) -> Dict[str, Any]:
-    """把旧版 JSON 账本迁移为小文件存储。流程：读取旧文件（损坏则报错）→ 写入临时目录 → 回读比对 → 通过后才落盘。
-    旧文件不会被删除，落盘成功后改名为 .bak。"""
+                   register_path: Optional[Path] = None, repair: Optional[Callable[[str, str], Optional[str]]] = None,
+                   confirm: bool = False) -> Dict[str, Any]:
+    """把旧版 JSON 账本迁移为小文件存储。
+
+    流程：抢救（严格 → 清洗 → 按条目拆分）→ 待修复条目交给 repair（LLM）→ 不合格的隔离 →
+    写入临时目录并回读比对 → 落盘。
+
+    自动提交的条件：没有 LLM 修复、没有隔离、没有丢失的撤销记录、没有结构问题。
+    否则只生成复核报告（伏笔迁移报告.md），需要 confirm=True 才会提交。
+    旧文件不删除，提交后改名为 .bak；隔离的原文保存在 伏笔/_quarantine/。
+    """
     legacy_path, base = Path(legacy_path), Path(base)
     if not legacy_path.is_file():
         return {"status": "nothing", "message": "没有旧版伏笔账本，无需迁移"}
     if is_store(base):
         return {"status": "already", "message": "伏笔账本已是小文件格式，无需迁移"}
-    data = PD.load_tracker_strict(legacy_path)
+    text = legacy_path.read_bytes().decode("utf-8", errors="replace")
+    sv = JR.salvage_ledger(text, ITEM_KEY, PD.APPLIED_KEY)
+    fixed, quarantined_raw = JR.repair_pending(sv.pending, repair, REPAIR_HINT, _record_problem)
+
+    items: List[Dict[str, Any]] = []
+    origins: Dict[str, int] = {}
+    llm_ids: List[str] = []
+    seen: set = set()
+    for obj, origin in list(sv.records) + list(fixed):
+        problem = _record_problem(obj)
+        if problem is None and str(obj["id"]) in seen:
+            problem = f"id 重复：{obj['id']}"
+        if problem is not None:
+            quarantined_raw.append(json.dumps(obj, ensure_ascii=False) if isinstance(obj, dict) else str(obj))
+            continue
+        seen.add(str(obj["id"]))
+        items.append(obj)
+        origins[origin] = origins.get(origin, 0) + 1
+        if origin == "llm":
+            llm_ids.append(str(obj["id"]))
+    notes = list(sv.notes)
+    if quarantined_raw:
+        notes.append(f"{len(quarantined_raw)} 条无法修复或不合格，已隔离")
+    applied = sv.applied or {}
+    data: Dict[str, Any] = {ITEM_KEY: items}
+    if applied:
+        data[PD.APPLIED_KEY] = applied
+
     with tempfile.TemporaryDirectory() as tmp:
         tmp_base = Path(tmp) / "伏笔"
         write_store(tmp_base, data)
         back = read_store(tmp_base)
         if PD.canonical(_normalized(back)) != PD.canonical(_normalized(data)):
             raise LedgerError(["迁移回读比对不一致，已中止（旧文件未改动）"])
-    summary = {
-        "status": "dry_run" if dry_run else "migrated",
-        "items": len(data.get(PD.list_key(data), [])),
-        "applied_chapters": len(data.get(PD.APPLIED_KEY) or {}),
-        "legacy": str(legacy_path),
+
+    needs_review = bool(llm_ids or quarantined_raw or sv.applied_lost or notes)
+    summary: Dict[str, Any] = {
+        "status": "dry_run" if dry_run else ("needs_review" if needs_review and not confirm else "migrated"),
+        "items": len(items), "origins": origins, "quarantined": len(quarantined_raw),
+        "applied_chapters": len(applied), "applied_lost": sv.applied_lost,
+        "notes": notes, "llm_ids": llm_ids, "needs_review": needs_review, "legacy": str(legacy_path),
     }
     if dry_run:
-        summary["message"] = f"将迁移 {summary['items']} 条伏笔（已记录章节 {summary['applied_chapters']} 个），回读比对通过"
+        summary["message"] = f"将迁移 {len(items)} 条伏笔；隔离 {len(quarantined_raw)} 条；" \
+                             + ("需要复核后再确认提交" if needs_review else "可直接提交")
         return summary
+    if needs_review and not confirm:
+        report = base.parent / "伏笔迁移报告.md"
+        atomic_write_text(report, _review_report(summary, quarantined_raw))
+        summary["report"] = str(report)
+        summary["message"] = "存在需要复核的内容（LLM 修复 / 隔离 / 结构问题），未提交。请查看报告后以 confirm=True 确认。"
+        return summary
+
     write_store(base, data)
+    qdir = base / "_quarantine"
+    if quarantined_raw:
+        qdir.mkdir(parents=True, exist_ok=True)
+        for i, raw in enumerate(quarantined_raw, start=1):
+            atomic_write_text(qdir / f"第{i:02d}条_原文.md", "# 迁移时隔离的原文（未进入账本）\n\n" + raw + "\n")
     if register_path is not None:
-        # 注册产物副本：让 register_plot 的产出存在、不被误判为缺失；内容即迁移前的旧账本，仅作记录
         atomic_write_json(Path(register_path), data)
     backup = legacy_path.with_name(legacy_path.name + ".bak")
     if backup.exists():
         backup.unlink()
     shutil.move(str(legacy_path), str(backup))
+    if needs_review:
+        atomic_write_text(base.parent / "伏笔迁移报告.md", _review_report(summary, quarantined_raw))
     summary["backup"] = str(backup)
-    summary["message"] = f"已迁移 {summary['items']} 条伏笔；旧文件已备份为 {backup.name}"
+    summary["message"] = f"已迁移 {len(items)} 条伏笔" + (f"，隔离 {len(quarantined_raw)} 条" if quarantined_raw else "") \
+                         + f"；旧文件已备份为 {backup.name}"
     return summary

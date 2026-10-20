@@ -27,6 +27,7 @@ SKILL_CATALOG: Dict[str, Dict[str, Any]] = {
     "character-manager": {"layer": "知识库", "executor": LLM, "pages": ["设定库"], "summary": "人物档案、章后状态更新、wont_do 边界"},
     "world-builder": {"layer": "知识库", "executor": LLM, "pages": ["设定库"], "summary": "世界圣经、设定使用率、按需扩展"},
     "plot-tracker": {"layer": "知识库", "executor": HYBRID, "pages": ["线索"], "summary": "伏笔注册/依赖、章前任务清单、张力曲线"},
+    "json-repair": {"layer": "质检", "executor": LLM, "pages": ["线索"], "summary": "修复损坏的 JSON 条目（只改语法，不改内容），用于旧数据迁移"},
     "memory-manager": {"layer": "枢纽", "executor": PYTHON, "pages": ["写作台"], "summary": "三级记忆、token 预算、上下文包组装（确定性部分）"},
     "hook-designer": {"layer": "设计", "executor": LLM, "pages": ["写作台"], "summary": "前三章开篇系统、章末钩子、章首衔接"},
     "scene-architect": {"layer": "设计", "executor": LLM, "pages": ["写作台"], "summary": "单场景结构设计（关键场景才跑）"},

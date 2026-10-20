@@ -50,6 +50,6 @@ def test_streamlit_pages_smoke(tmp_path, monkeypatch):
     assert any("书架" in h.value for h in at.header)
     at.sidebar.radio[0].set_value("🧩 Skill 库").run()
     assert not at.exception, at.exception
-    assert any("24" in c.value for c in at.caption)
+    assert any("25" in c.value for c in at.caption)
     at.sidebar.radio[0].set_value("➕ 新建小说").run()
     assert not at.exception, at.exception

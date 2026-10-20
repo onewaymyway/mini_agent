@@ -692,16 +692,29 @@ def next_step(workspace: str) -> Dict[str, Any]:
     return _guard(run)
 
 
-def migrate_plot_ledger(workspace: str, dry_run: bool = False) -> Dict[str, Any]:
-    """把旧版 JSON 伏笔账本迁移为小文件存储（M9 第二阶段）。dry_run=True 只报告，不落盘。
-    迁移前回读比对；比对不一致则中止，旧文件保持不变；成功后旧文件改名为 .bak。"""
+def migrate_plot_ledger(workspace: str, dry_run: bool = False, confirm: bool = False,
+                        use_llm: bool = False) -> Dict[str, Any]:
+    """把旧版 JSON 伏笔账本迁移为小文件存储（M9 第二阶段）。
+
+    - dry_run=True：只报告，不落盘。
+    - 旧文件合法或只需确定性清洗：自动提交。
+    - 存在 LLM 修复、隔离条目或结构问题：只生成「伏笔迁移报告.md」，需 confirm=True 才提交。
+    - use_llm=True：对无法确定性修复的条目调用 json-repair 技能（需要配置好 LLM）。
+    旧文件不删除，提交后改名为 .bak。
+    """
     def run() -> Dict[str, Any]:
         from novel_writer import plot_delta as PD
         from novel_writer import plot_store as PS
         ws = _workspace_or_raise(workspace)
+        repair = None
+        if use_llm:
+            from novel_writer import json_repair as JR
+            from novel_writer.runner import FrameworkInvoker
+            repair = JR.make_skill_repair(FrameworkInvoker(), ws.root / "_studio" / "repair")
         try:
             return _ok(PS.migrate_legacy(ws.path("plot_legacy"), ws.path("plot_items_dir"), dry_run=dry_run,
-                                         register_path=None if dry_run else ws.path("plot_register")))
+                                         register_path=None if dry_run else ws.path("plot_register"),
+                                         repair=repair, confirm=confirm))
         except PD.PlotDeltaError as exc:
             return _err("migration_failed", "；".join(exc.problems))
     return _guard(run)
