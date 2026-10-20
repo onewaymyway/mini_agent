@@ -84,7 +84,7 @@
   const $ = id => document.getElementById(id);
 
   let started = false, DATA = null, idx = 0, state = "idle", token = 0;
-  let keepRef = null, lastCh = null, lastReportedIdx = -1, rate = 1, pendingVoice = "";
+  let lastCh = null, lastReportedIdx = -1, rate = 1, pendingVoice = "";
 
   // ---- Streamlit 组件协议 ----
   function send(type, data) {
@@ -186,14 +186,18 @@
     if (prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
   }
 
-  // ---- 播放与错误恢复 ----
-  // 出错时在同一段上指数退避重试；连续失败后进入 error 状态，由用户点「重试」继续。
+  // ---- 播放队列与错误恢复 ----
+  // 方案 A：播放当前段的同时，把后面 AHEAD 段提前交给浏览器的语音队列，段落之间基本无停顿。
+  // 每次重新开始（跳转、停止、重试、改语速/音色）代次 gen 加一；旧队列残留的事件因代次不符被忽略。
+  const AHEAD = 2;         // 当前段之后预排队的段数
   const MAX_RETRY = 5;
-  let utt = null;          // 当前正在朗读的 utterance
-  let speakAt = 0;         // 调用 speak 的时间
-  let startedAt = 0;       // onstart 的时间（0 表示尚未开始出声）
+  let gen = 0;             // 队列代次
+  let qNext = 0;           // 下一个待加入队列的段落下标
+  let speakAt = 0;         // 开始排队的时间
+  let startedAt = 0;       // 当前段 onstart 的时间（0 表示尚未开始出声）
   let retries = 0;         // 当前段已重试次数
   let retryPending = false;
+  let keep = [];           // 保留最近的 utterance 引用，防止 Chrome 垃圾回收导致事件不触发
 
   const REASON_TEXT = {
     "network": "网络异常",
@@ -216,72 +220,89 @@
     fitHeight();
   }
 
-  function speakCurrent(my) {
-    if (my !== token) return;
-    retryPending = false;
+  // 把第 i 段加入队列（属于代次 g）
+  function speakOne(g, i) {
     const segs = DATA.segments;
-    const u = new SpeechSynthesisUtterance(segs[idx]);
+    const u = new SpeechSynthesisUtterance(segs[i]);
     u.lang = "zh-CN";
     u.rate = rate;
     const name = $("voice").value;
     const v = zhVoices().find(x => x.name === name);
     if (v) { u.voice = v; u.lang = v.lang; }
-    utt = u;
-    keepRef = u;   // 保留引用，防止 Chrome 垃圾回收导致 onend 不触发
-    speakAt = Date.now();
-    startedAt = 0;
+    keep.push(u);
+    if (keep.length > 8) keep.shift();
 
     u.onstart = () => {
-      if (my !== token || utt !== u) return;
-      startedAt = Date.now();
-      retries = 0;
+      if (g !== gen) return;
+      idx = i; startedAt = Date.now(); retries = 0;
       setStatus("");
+      state = "playing";
+      render();
+      maybeReport();
+      enqueueUpTo(g, i + AHEAD);   // 播放到哪里，就保证后面 AHEAD 段已经在队列里
     };
     u.onend = () => {
-      if (my !== token || utt !== u) return;
-      utt = null; startedAt = 0; retries = 0;
-      idx++;
-      if (idx >= segs.length) {
-        idx = segs.length - 1; state = "idle"; keepRef = null;   // 读完全书：位置停在末段，不回到开头
-        setStatus(""); render(); report(); return;
+      if (g !== gen) return;
+      if (i >= segs.length - 1) {
+        // 读完全书：位置停在末段，不回到开头
+        idx = segs.length - 1; state = "idle"; setStatus("");
+        render(); report();
       }
-      speakCurrent(my);
-      maybeReport();
     };
     u.onerror = e => {
-      if (my !== token || utt !== u) return;
-      utt = null;
+      if (g !== gen) return;
       const reason = e.error || "unknown";
       if (reason === "interrupted" || reason === "canceled") return;   // 我们主动取消，不算错误
-      handleFailure(my, reason);
+      handleFailure(g, reason, i);
     };
-
-    state = "playing";
-    render();
-    maybeReport();
     synth.speak(u);
   }
 
-  function handleFailure(my, reason) {
-    if (my !== token) return;
+  function enqueueUpTo(g, last) {
+    const n = DATA.segments.length;
+    while (qNext <= last && qNext < n) {
+      speakOne(g, qNext);
+      qNext++;
+    }
+  }
+
+  // 从第 i 段开始（新的代次）。retry 为 true 时保留重试计数。
+  function startQueue(i, retry) {
+    gen++;
+    const g = gen;
+    synth.cancel();
+    synth.resume();
+    retryPending = false;
+    if (!retry) retries = 0;
+    idx = clampIdx(i);
+    qNext = idx;
+    startedAt = 0;
+    speakAt = Date.now();
+    state = "playing";
+    render();
+    maybeReport();
+    enqueueUpTo(g, idx + AHEAD);
+  }
+
+  function handleFailure(g, reason, i) {
+    if (g !== gen) return;
     // 不允许朗读是用户权限问题，重试没有意义
-    if (reason === "not-allowed") { fail(reason); return; }
-    if (retries >= MAX_RETRY) { fail(reason); return; }
+    if (reason === "not-allowed" || retries >= MAX_RETRY) { fail(reason); return; }
     retries++;
     retryPending = true;
     const delay = Math.min(1000 * Math.pow(2, retries - 1), 8000);
+    gen++;                 // 作废当前队列的所有残留事件
     synth.cancel();
     setStatus("⚠ 朗读出错：" + reasonText(reason) + "。" + Math.round(delay / 1000) +
               " 秒后第 " + retries + "/" + MAX_RETRY + " 次重试…");
-    setTimeout(() => {
-      if (my !== token) return;
-      speakCurrent(my);
-    }, delay);
+    const target = i;
+    setTimeout(() => { startQueue(target, true); }, delay);
   }
 
   function fail(reason) {
     retryPending = false;
-    utt = null; keepRef = null;
+    gen++;
+    synth.cancel();
     state = "error";
     if (reason === "not-allowed") {
       setStatus("⚠ 浏览器不允许朗读，请先点击页面任意处，再点「↻ 重试」。");
@@ -294,37 +315,30 @@
   }
 
   function speakFrom(i) {
-    token++;
     retries = 0;
-    retryPending = false;
-    synth.cancel();
-    synth.resume();
-    idx = clampIdx(i);
-    speakCurrent(token);
+    startQueue(i, false);
   }
   // 停止：保留当前位置，下次播放从这里接着读
   function stopKeepPosition() {
-    token++;
-    retries = 0;
+    gen++;
     retryPending = false;
     synth.cancel();
-    utt = null;
-    state = "idle"; keepRef = null;
+    state = "idle";
     setStatus("");
     render(); report();
   }
 
   // 看门狗：处理「不结束也不报错」的卡住、被系统暂停、以及从未开始出声的情况
   setInterval(() => {
-    if (state !== "playing" || retryPending || !utt || !DATA || !DATA.segments.length) return;
+    if (state !== "playing" || retryPending || !DATA || !DATA.segments.length) return;
     const now = Date.now();
     if (synth.paused) { synth.resume(); return; }          // 标签页或系统导致的暂停，尝试恢复
     const seg = DATA.segments[idx] || "";
     const expected = seg.length * 400 / rate + 8000;     // 按字数估算的最长朗读时间（毫秒）
-    if (startedAt && now - startedAt > expected) { utt = null; handleFailure(token, "stall"); return; }
-    if (!startedAt && now - speakAt > 10000) { utt = null; handleFailure(token, "stall"); return; }
+    if (startedAt && now - startedAt > expected) { handleFailure(gen, "stall", idx); return; }
+    if (!startedAt && now - speakAt > 10000) { handleFailure(gen, "stall", idx); return; }
     if (startedAt && !synth.speaking && !synth.pending && now - startedAt > 1500) {
-      utt = null; handleFailure(token, "silent");
+      handleFailure(gen, "silent", idx);
     }
   }, 1500);
 
@@ -387,8 +401,14 @@
       if (r === rate) o.selected = true;
       rsel.appendChild(o);
     });
-    rsel.onchange = () => { rate = parseFloat(rsel.value); report(); };
-    $("voice").onchange = () => report();
+    rsel.onchange = () => {
+      rate = parseFloat(rsel.value); report();
+      if (state === "playing") startQueue(idx, true);   // 队列中的段落按新语速重排
+    };
+    $("voice").onchange = () => {
+      report();
+      if (state === "playing") startQueue(idx, true);   // 队列中的段落按新音色重排
+    };
 
     $("toggle").onclick = () => {
       if (state === "playing") { synth.pause(); state = "paused"; setStatus(""); render(); report(); }
