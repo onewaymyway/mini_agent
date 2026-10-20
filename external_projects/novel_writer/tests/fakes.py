@@ -48,7 +48,7 @@ def set_settings(ws: Workspace, **updates):
 def _placeholder_for(target: Path, ws) -> str:
     """桩执行器写出的占位产出。结构化产出（蓝图、伏笔账本）须是合法内容，否则内容校验会拦下它。"""
     import json as _json
-    if target.name == "小说蓝图.json":
+    if target.name in ("小说蓝图.json", "_draft.json"):
         return _json.dumps(make_blueprint(4), ensure_ascii=False)
     if target.name.endswith("_伏笔增量.json"):
         return _json.dumps({"planted": [], "advanced": [], "resolved": []}, ensure_ascii=False)
@@ -180,4 +180,17 @@ def statuses(ws):
     """计划中每个步骤的状态（没有记录的步骤为 pending）。"""
     return {s.id: st.get_step_state(ws, s.id)["status"] for s in P.build_plan(ws)}
 
+
+def put_blueprint(ws, bp):
+    """第五阶段：蓝图写成拆分文件，并写一份草稿副本（与"规划已完成"的项目状态一致）。"""
+    import json as _json
+    from novel_writer import blueprint_store as BS
+    BS.save_for_ws(ws, bp)
+    ws.path("blueprint_draft").write_text(_json.dumps(bp, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def read_blueprint(ws):
+    """读取整本蓝图（不存在时返回 {}）。"""
+    from novel_writer import blueprint_store as BS
+    return BS.load_for_ws(ws, strict=False) or {}
 

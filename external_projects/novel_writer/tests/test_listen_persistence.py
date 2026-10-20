@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from fakes import put_blueprint
 from novel_writer import config, reading_state, tool_api
 from novel_writer.fsutil import atomic_write_json
 from novel_writer.workspace import Workspace
@@ -22,7 +23,7 @@ def _book(tmp_path):
     r = tool_api.create_novel("雨夜钟声", novels_dir=str(tmp_path / "novels"), index_file=str(tmp_path / "shelf.json"),
                               gear="G3", total_chapters_planned=3)
     ws = Workspace(r["data"]["workspace"])
-    atomic_write_json(ws.path("blueprint"), make_blueprint(3))
+    put_blueprint(ws, make_blueprint(3))
     for n in (1, 2, 3):
         tool_api.save_chapter(str(ws.root), n, f"# 第{n}章 标题{n}\n\n这是第{n}章的正文。他走了。\n")
     return ws

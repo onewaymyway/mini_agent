@@ -36,7 +36,7 @@ def _write(path, data):
 
 def test_blueprint_with_int_ids_passes_untouched(tmp_path):
     ws = _ws(tmp_path)
-    p = ws.path("blueprint"); _write(p, {"chapters": [{"id": 1, "word_budget": 2000}, {"id": 2}]})
+    p = ws.path("blueprint_draft"); _write(p, {"chapters": [{"id": 1, "word_budget": 2000}, {"id": 2}]})
     before = p.read_text(encoding="utf-8")
     assert V.blueprint_problems(p) == []
     assert p.read_text(encoding="utf-8") == before
@@ -44,7 +44,7 @@ def test_blueprint_with_int_ids_passes_untouched(tmp_path):
 
 def test_blueprint_string_chapter_ids_are_normalized(tmp_path):
     ws = _ws(tmp_path)
-    p = ws.path("blueprint")
+    p = ws.path("blueprint_draft")
     _write(p, {"chapters": [{"id": "第1章", "word_budget": "2000"}, {"id": "2"}]})
     assert V.blueprint_problems(p) == []
     data = json.loads(p.read_text(encoding="utf-8"))
@@ -62,14 +62,14 @@ def test_blueprint_string_chapter_ids_are_normalized(tmp_path):
 ])
 def test_blueprint_problems_are_reported(tmp_path, data, keyword):
     ws = _ws(tmp_path)
-    p = ws.path("blueprint"); _write(p, data)
+    p = ws.path("blueprint_draft"); _write(p, data)
     problems = V.blueprint_problems(p)
     assert problems and any(keyword in x for x in problems)
 
 
 def test_blueprint_invalid_json_is_reported(tmp_path):
     ws = _ws(tmp_path)
-    p = ws.path("blueprint"); _write(p, "不是 JSON")
+    p = ws.path("blueprint_draft"); _write(p, "不是 JSON")
     assert V.blueprint_problems(p)
 
 
@@ -119,10 +119,10 @@ def test_structured_steps_declare_their_checks(tmp_path):
 
 def test_content_problems_dispatch_through_registry(tmp_path):
     ws = _ws(tmp_path)
-    _write(ws.path("blueprint"), {"chapters": [{"id": "序章"}]})
+    _write(ws.path("blueprint_draft"), {"chapters": [{"id": "序章"}]})
     step = {s.id: s for s in P.build_plan(ws)}["plan_blueprint"]
     assert V.content_problems(ws, step)
-    _write(ws.path("blueprint"), {"chapters": [{"id": 1}]})
+    _write(ws.path("blueprint_draft"), {"chapters": [{"id": 1}]})
     assert V.content_problems(ws, step) == []
 
 

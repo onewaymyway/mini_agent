@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from fakes import FakeInvoker, drive_to_completion, make_blueprint, statuses
+from fakes import FakeInvoker, drive_to_completion, make_blueprint, statuses, put_blueprint
 from novel_writer import chapter_ops as C
 from novel_writer import config, tool_api
 from novel_writer import state as st
@@ -31,7 +31,7 @@ def new_book(tmp_path, total=3, gear="G3"):
     r = tool_api.create_novel("雨夜钟声", novels_dir=str(tmp_path / "novels"), index_file=str(tmp_path / "shelf.json"),
                               gear=gear, total_chapters_planned=total)
     ws = Workspace(r["data"]["workspace"])
-    atomic_write_json(ws.path("blueprint"), make_blueprint(total))
+    put_blueprint(ws, make_blueprint(total))
     return ws
 
 

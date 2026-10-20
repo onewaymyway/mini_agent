@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from fakes import FakeInvoker, drive_to_completion, make_blueprint, statuses
+from fakes import FakeInvoker, drive_to_completion, make_blueprint, statuses, put_blueprint, read_blueprint
 from novel_writer import config, intake as I, tool_api
 from novel_writer import pipeline as P
 from novel_writer import state as st
@@ -73,12 +73,12 @@ def test_planning_view_without_blueprint(isolated_data):
 
 def test_planning_view_and_chapter_edit_marks_stale(isolated_data):
     root, ws = new_novel(isolated_data)
-    atomic_write_json(ws.path("blueprint"), make_blueprint(4))
+    put_blueprint(ws, make_blueprint(4))
     v = tool_api.planning(root)["data"]
     assert v["exists"] and len(v["chapters"]) == 4 and "李凌云" in v["main_characters"]
 
     # 先把 design_theme 标为已通过（它依赖蓝图）
-    dt = P.build_plan(ws)[2]
+    dt = next(s for s in P.build_plan(ws) if s.id == "design_theme")
     st.update_step(ws, "design_theme", status=st.ST_PASSED, input_hash=st.input_hash(ws, dt),
                    input_digests=st.input_digests(ws, dt))
     rows = [dict(c) for c in v["chapters"]]
@@ -88,7 +88,7 @@ def test_planning_view_and_chapter_edit_marks_stale(isolated_data):
     assert res["ok"], res
     assert res["data"]["changed_chapters"] == [1, 2]
     assert "design_theme" in res["data"]["stale"]
-    saved = json.loads(ws.path("blueprint").read_text(encoding="utf-8"))
+    saved = read_blueprint(ws)
     assert saved["chapters"][0]["title"] == "新的开篇"
     assert "新角色" in saved["chapters"][1]["characters_present"]
     assert "第 1, 2 章" in ws.path("blueprint_changelog").read_text(encoding="utf-8")
@@ -96,7 +96,7 @@ def test_planning_view_and_chapter_edit_marks_stale(isolated_data):
 
 def test_chapter_edit_rejects_add_remove_and_bad_numbers(isolated_data):
     root, ws = new_novel(isolated_data)
-    atomic_write_json(ws.path("blueprint"), make_blueprint(3))
+    put_blueprint(ws, make_blueprint(3))
     rows = [dict(c) for c in tool_api.planning(root)["data"]["chapters"]]
     assert not tool_api.save_chapters(root, rows[:2])["ok"]          # 删除
     assert not tool_api.save_chapters(root, rows + [{**rows[0], "id": 9}])["ok"]  # 增加
@@ -110,7 +110,7 @@ def test_chapter_edit_rejects_add_remove_and_bad_numbers(isolated_data):
 
 def test_planning_main_character_change_is_reported(isolated_data):
     root, ws = new_novel(isolated_data)
-    atomic_write_json(ws.path("blueprint"), make_blueprint(4))
+    put_blueprint(ws, make_blueprint(4))
     rows = [dict(c) for c in tool_api.planning(root)["data"]["chapters"]]
     rows[0]["characters_present"] = "李凌云"  # 王道长 只剩 2 章 → 不再是主要角色
     rows[1]["characters_present"] = "李凌云"
@@ -123,7 +123,7 @@ def test_planning_main_character_change_is_reported(isolated_data):
 
 def test_card_save_and_codex_view(isolated_data):
     root, ws = new_novel(isolated_data)
-    atomic_write_json(ws.path("blueprint"), make_blueprint(4))
+    put_blueprint(ws, make_blueprint(4))
     v = tool_api.codex(root)["data"]
     assert [c["name"] for c in v["cards"]] == ["李凌云", "王道长"]
     assert all(c["text"] is None for c in v["cards"])
@@ -160,7 +160,7 @@ def test_wizard_to_build_chain_with_stub_planner(isolated_data):
     root, ws = new_novel(isolated_data)
     assert tool_api.save_intake(root, INTAKE)["ok"]
     # 桩规划器：planner 的产出由 make_blueprint 代替（真实 LLM 下由 plan_blueprint 写出）
-    atomic_write_json(ws.path("blueprint"), make_blueprint(4))
+    put_blueprint(ws, make_blueprint(4))
     inv = FakeInvoker(ws.root)
     drive_to_completion(ws, inv)
     s = statuses(ws)
@@ -206,10 +206,10 @@ def test_wizard_form_creates_novel_and_saves_intake(isolated_data):
 
 def test_cockpit_approve_flow_via_ui(isolated_data):
     root, ws = new_novel(isolated_data)
-    atomic_write_json(ws.path("blueprint"), make_blueprint(4))
+    put_blueprint(ws, make_blueprint(4))
     # 让 plan_blueprint 停在待批准
     st.update_step(ws, "init_workspace", status=st.ST_PASSED)
-    st.update_step(ws, "plan_blueprint", status=st.ST_WAITING_REVIEW, input_hash=st.input_hash(ws, P.build_plan(ws)[1]))
+    st.update_step(ws, "plan_blueprint", status=st.ST_WAITING_REVIEW, input_hash=st.input_hash(ws, next(s for s in P.build_plan(ws) if s.id == "plan_blueprint")))
     at = _app().run()
     at.session_state["ws"] = root
     at.sidebar.radio[0].set_value("🧭 驾驶舱").run()
@@ -223,7 +223,7 @@ def test_cockpit_approve_flow_via_ui(isolated_data):
 
 def test_cockpit_and_planning_render_with_blueprint(isolated_data):
     root, ws = new_novel(isolated_data)
-    atomic_write_json(ws.path("blueprint"), make_blueprint(4))
+    put_blueprint(ws, make_blueprint(4))
     at = _app().run()
     at.session_state["ws"] = root
     at.sidebar.radio[0].set_value("🧭 驾驶舱").run()

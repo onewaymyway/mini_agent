@@ -18,7 +18,10 @@ def render_planning(ws: str) -> None:
         return
     view = res["data"]
     if not view["exists"]:
-        st.info("还没有蓝图。请到「🧭 总控台」，运行 plan_blueprint 步骤（它是强制检查点，完成后需要你批准）。")
+        if view.get("blueprint_error"):
+            st.error("蓝图读取失败，请按提示修正对应文件：\n- " + "\n- ".join(view["blueprint_error"]))
+        else:
+            st.info("还没有蓝图。请到「🧭 总控台」，运行 plan_blueprint 步骤（它是强制检查点，完成后需要你批准）。")
         _docs(view["docs"])
         return
 

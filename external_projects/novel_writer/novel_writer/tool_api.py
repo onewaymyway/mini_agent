@@ -719,6 +719,29 @@ def migrate_characters(workspace: str, dry_run: bool = False, confirm: bool = Fa
     return _guard(run)
 
 
+def migrate_blueprint(workspace: str, dry_run: bool = False, confirm: bool = False,
+                       use_llm: bool = False) -> Dict[str, Any]:
+    """把旧版 小说蓝图.json 拆成每章一个文件（第五阶段）。规则同 migrate_characters：
+    合法则确定性拆分并回读比对；损坏则 use_llm=True 时由 LLM 直接转换，需 confirm=True 才提交。
+    同时写出草稿副本 _draft.json，使 plan_blueprint 不会被误判为缺失。"""
+    def run() -> Dict[str, Any]:
+        from novel_writer import blueprint_store as BS
+        ws = _workspace_or_raise(workspace)
+        convert = None
+        if use_llm:
+            from novel_writer.runner import FrameworkInvoker
+            invoker = FrameworkInvoker()
+            workdir = ws.root / "_studio" / "convert" / "blueprint"
+            convert = lambda legacy: BS.llm_convert_legacy(legacy, workdir, invoker)  # noqa: E731
+        try:
+            return _ok(BS.migrate_legacy(ws.path("blueprint_legacy"), ws.path("blueprint_dir"),
+                                         ws.path("blueprint"), dry_run=dry_run, convert=convert,
+                                         confirm=confirm, draft_path=ws.path("blueprint_draft")))
+        except BS.BlueprintStoreError as exc:
+            return _err("migration_failed", "；".join(exc.problems))
+    return _guard(run)
+
+
 def migrate_plot_ledger(workspace: str, dry_run: bool = False, confirm: bool = False,
                         use_llm: bool = False) -> Dict[str, Any]:
     """把旧版 JSON 伏笔账本迁移为小文件存储（M9 第二阶段）。

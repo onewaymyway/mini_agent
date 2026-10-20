@@ -43,7 +43,12 @@ def _names_to_list(value: Any) -> List[str]:
 
 
 def planning_view(ws: Workspace) -> Dict[str, Any]:
-    bp = read_json(ws.path("blueprint"), default=None)
+    from novel_writer import blueprint_store as BS
+    try:
+        bp = BS.load_for_ws(ws, strict=True)
+        bp_error = None
+    except BS.BlueprintStoreError as exc:
+        bp, bp_error = None, exc.problems
     docs = {
         "theme": _read_text(ws.path("theme_design")),
         "pacing": _read_text(ws.path("pacing_design")),
@@ -51,7 +56,7 @@ def planning_view(ws: Workspace) -> Dict[str, Any]:
         "readable": _read_text(ws.path("blueprint_readable")),
     }
     if not isinstance(bp, dict):
-        return {"exists": False, "docs": docs, "main_characters": []}
+        return {"exists": False, "docs": docs, "main_characters": [], "blueprint_error": bp_error}
     chapters = []
     for ch in bp.get("chapters") or []:
         if not isinstance(ch, dict) or not isinstance(ch.get("id"), int):
@@ -80,7 +85,8 @@ def planning_view(ws: Workspace) -> Dict[str, Any]:
 
 def save_blueprint_chapters(ws: Workspace, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     """保存章节表的编辑。只允许修改已有章节（不增删行），改动记入蓝图变更日志。"""
-    bp = read_json(ws.path("blueprint"), default=None)
+    from novel_writer import blueprint_store as BS
+    bp = BS.load_for_ws(ws, strict=False)
     if not isinstance(bp, dict):
         raise ViewError("还没有蓝图，无法保存章节表")
     if not isinstance(rows, list) or not rows:
@@ -113,8 +119,10 @@ def save_blueprint_chapters(ws: Workspace, rows: List[Dict[str, Any]]) -> Dict[s
     if not changed:
         return {"changed_chapters": [], "stale": [], "main_characters_changed": False}
 
-    atomic_write_json(ws.path("blueprint"), bp)
-    st.record_writer_paths(ws, [ws.path("blueprint").relative_to(ws.root).as_posix()], "author", kind="author")  # 作者手改：真正的上游变化
+    BS.save_for_ws(ws, bp)
+    atomic_write_json(ws.path("blueprint_draft"), bp)   # 草稿与作者编辑保持一致，之后的拆分不会覆盖它
+    st.record_writer_paths(ws, [ws.path("blueprint").relative_to(ws.root).as_posix(),
+                                ws.path("blueprint_draft").relative_to(ws.root).as_posix()], "author", kind="author")  # 作者手改：真正的上游变化
     _append_changelog(ws, f"章节表修改：第 {', '.join(str(i) for i in changed)} 章")
     stale = st.mark_stale(ws, P.build_plan(ws))
     after_main = P.main_characters(bp)
@@ -151,7 +159,8 @@ def _append_changelog(ws: Workspace, line: str) -> None:
 
 
 def codex_view(ws: Workspace) -> Dict[str, Any]:
-    bp = read_json(ws.path("blueprint"), default=None)
+    from novel_writer import blueprint_store as BS
+    bp = BS.load_for_ws(ws, strict=False)
     roles = P.main_characters(bp)
     cards = []
     for name in roles:

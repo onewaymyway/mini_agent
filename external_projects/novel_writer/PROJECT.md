@@ -69,6 +69,15 @@
 - 尚未小文件化：`behavior_index.json`、蓝图、世界圣经（仍为整体 JSON，后续阶段处理）。
 - 人物档案的 mtime 只跟随索引（`contamination` 的全书共享状态检查以索引为准）。
 
+## 蓝图拆分（第五阶段）
+
+- 布局：`大纲规划/蓝图/_meta.md`（除 chapters 外的顶层字段）、`第NNN章.md`（每章一个文件，文件头存全部章节字段）、`_index.md`（自动生成的索引，末行带全书内容指纹，任何字段变化都会让下游过期）。
+- `plan_blueprint` 仍整本生成，但产出写到草稿 `_draft.json`（由产出校验 `blueprint` 即 `blueprint_problems` 检查）；随后确定性步骤 `blueprint_split` 拆分。规划通过后，下游步骤依赖 `blueprint_split`。
+- 读取统一走 `blueprint_store.load_for_ws`，返回与旧版 `小说蓝图.json` 完全相同结构的字典。作者在规划页的章节表编辑会同时写入拆分文件和草稿，因此之后的拆分不会覆盖它；只有重新运行 `plan_blueprint` 才会整本替换。
+- 迁移：`tool_api.migrate_blueprint`。合法则确定性拆分并回读比对；损坏则 `use_llm=True` 时由 `ledger-convert` 直接转换，需 `confirm=True` 才提交。迁移同时写出 `_draft.json` 副本，使 `plan_blueprint` 不会被误判为缺失而整本重跑。旧文件改名为 `.bak`。
+- 未迁移的项目：读取会明确报错，提示先迁移。
+- 共用的 `key: JSON` 编解码已抽到 `kvfile.py`，伏笔、人物、蓝图共用。
+
 ## 目录结构
 
 ```

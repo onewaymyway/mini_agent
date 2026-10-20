@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from fakes import (
+    put_blueprint,
     STUB_HANDLERS, FakeInvoker, approve_waiting, drive_to_completion,
     make_blueprint, set_settings, statuses,
 )
@@ -36,7 +37,7 @@ def ws(tmp_path) -> Workspace:
     r = tool_api.create_novel("测试书", novels_dir=str(tmp_path / "novels"), index_file=str(tmp_path / "shelf.json"))
     assert r["ok"], r
     workspace = Workspace(r["data"]["workspace"])
-    atomic_write_json(workspace.path("blueprint"), make_blueprint(4))
+    put_blueprint(workspace, make_blueprint(4))
     return workspace
 
 
@@ -134,9 +135,16 @@ def test_stale_marked_when_upstream_changes_and_legacy_steps_not_marked(ws):
     assert st.mark_stale(ws, plan) == []
     assert st.get_step_state(ws, "design_theme")["input_hash"]
     assert st.get_step_state(ws, "design_theme")["input_digests"] is not None
-    ws.path("blueprint").write_text(json.dumps(make_blueprint(4), ensure_ascii=False, indent=2) + " ", encoding="utf-8")
-    assert st.mark_stale(ws, plan) == ["design_theme"]
-    assert st.get_step_state(ws, "design_theme")["status"] == st.ST_STALE
+    bs = next(s for s in plan if s.id == "blueprint_split")
+    st.update_step(ws, "blueprint_split", status=st.ST_PASSED, input_hash=st.input_hash(ws, bs),
+                   input_digests=st.input_digests(ws, bs))
+    changed = make_blueprint(4)
+    changed["chapters"][0]["title"] = "改了标题"        # 真实的内容变化
+    ws.path("blueprint_draft").write_text(json.dumps(changed, ensure_ascii=False, indent=2), encoding="utf-8")
+    # 草稿变化先让拆分步骤过期；拆分后索引（内容指纹）变化，下游才随之过期
+    assert st.mark_stale(ws, plan) == ["blueprint_split"]
+    # 拆分尚未执行，索引未变，下游暂时保持已通过（过期要等拆分真正改变索引）
+    assert st.get_step_state(ws, "design_theme")["status"] == st.ST_PASSED
 
 
 def test_legacy_record_with_changed_hash_is_not_marked_stale_on_upgrade(ws):
@@ -208,7 +216,7 @@ def test_budget_chapters_pauses_not_fails(ws):
     # M5 起：前三章逐章审批（方案 6.2），每章写完都会停在 review，预算计数是“每次运行”的，
     # 所以预算要在第 4 章起（非前三章、G3 自动写作）的连续运行中验证。
     # M6 起：无幕结构时结局设计插在最后一章前（设计审批会先停下），因此用 7 章蓝图，让预算落在普通章节上
-    atomic_write_json(ws.path("blueprint"), make_blueprint(7))
+    put_blueprint(ws, make_blueprint(7))
     set_settings(ws, gear="G3", budget={"max_chapters_per_run": 1})
     inv = FakeInvoker(ws.root)
     for _ in range(100):
@@ -319,7 +327,9 @@ def test_pause_and_stop_take_effect_between_steps(ws):
 def test_stale_upstream_reruns_downstream(ws):
     set_settings(ws, gear="G3")
     drive_to_completion(ws, FakeInvoker(ws.root))
-    ws.path("blueprint").write_text(json.dumps(make_blueprint(4), ensure_ascii=False, indent=2) + "\n\n", encoding="utf-8")
+    changed = make_blueprint(4)
+    changed["chapters"][0]["title"] = "改了标题"
+    ws.path("blueprint_draft").write_text(json.dumps(changed, ensure_ascii=False, indent=2), encoding="utf-8")
     inv = FakeInvoker(ws.root)
     r = run_worker(ws, mode="until_gate", invoker=inv, handlers=STUB_HANDLERS, heartbeat_interval=0.01)
     assert "design_theme" in r["stale"]

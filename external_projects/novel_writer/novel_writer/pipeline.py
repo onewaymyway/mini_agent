@@ -61,13 +61,15 @@ def total_chapters(ws: Workspace, blueprint: Optional[Dict[str, Any]]) -> int:
 
 
 def build_plan(ws: Workspace) -> List[S.StepDef]:
-    blueprint = read_json(ws.path("blueprint"), default=None)
+    from novel_writer import blueprint_store as BS
+    blueprint = BS.load_for_ws(ws, strict=False)
     roles = main_characters(blueprint)
     total = total_chapters(ws, blueprint)
 
     plan: List[S.StepDef] = [
         S.init_workspace_step(),
         S.plan_blueprint_step(),
+        S.blueprint_split_step(),
         S.design_theme_step(),
         S.design_pacing_step(),
     ]

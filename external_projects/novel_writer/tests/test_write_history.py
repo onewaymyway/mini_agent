@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fakes import FakeInvoker, drive_to_completion
+from fakes import FakeInvoker, drive_to_completion, put_blueprint, read_blueprint
 from novel_writer import pipeline as P
 from novel_writer import state as st
 from novel_writer import tool_api
@@ -11,13 +11,13 @@ from novel_writer.runner import DEFAULT_PY_HANDLERS
 import pytest
 from test_m3 import isolated, new_book  # noqa: F401  (fixture)
 
-BP = "大纲规划/小说蓝图.json"
+BP = "大纲规划/蓝图/_index.md"
 
 
 def _archive_touches_blueprint(ws):
-    bp = read_json(ws.path("blueprint"), default={}) or {}
+    bp = read_blueprint(ws)
     bp.setdefault("progress", {})["ch2"] = "archived"
-    atomic_write_json(ws.path("blueprint"), bp)
+    put_blueprint(ws, bp)
 
 
 def test_agent_writes_are_recorded_with_before_and_after(isolated):
@@ -53,9 +53,9 @@ def test_author_edit_is_recorded_and_stale_note_names_the_cause(isolated):
     ws = new_book(isolated, total=2)
     drive_to_completion(ws, FakeInvoker(ws.root), handlers=DEFAULT_PY_HANDLERS, limit=200)
     plan = P.build_plan(ws)
-    bp = read_json(ws.path("blueprint"), default={}) or {}
+    bp = read_blueprint(ws)
     bp["meta"] = dict(bp.get("meta") or {}, author_note="手改")
-    atomic_write_json(ws.path("blueprint"), bp)
+    put_blueprint(ws, bp)
     st.record_writer_paths(ws, [BP], "author", kind="author")
     assert "build_world" in st.mark_stale(ws, plan)
     note = st.get_step_state(ws, "build_world")["note"]

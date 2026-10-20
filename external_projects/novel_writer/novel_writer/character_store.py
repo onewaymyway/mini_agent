@@ -24,10 +24,10 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from novel_writer import kvfile as KV
 from novel_writer.fsutil import atomic_write_text
 
 ITEM_ID = re.compile(r"^[A-Za-z0-9_\-]{1,40}$")
-KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 INDEX_NAME = "角色索引.md"          # 位于角色目录之外，避免被 `角色/*.md` 的产出 glob 计入
 FIELD_ORDER = ("id", "name", "role", "introduced_chapter", "identity", "psychology", "behavior_guide",
                "abilities", "arc", "state_log", "current_state", "relationships")
@@ -67,36 +67,17 @@ class CharacterStoreError(Exception):
 # ── 单文件编解码 ─────────────────────────────────────────────────────
 
 def _encode(rec: Dict[str, Any]) -> str:
-    keys = [k for k in FIELD_ORDER if k in rec] + [k for k in rec if k not in FIELD_ORDER]
-    lines = ["---"]
-    for k in keys:
-        if not KEY_RE.match(str(k)):
-            raise CharacterStoreError([f"字段名不合法：{k!r}"])
-        lines.append(f"{k}: {json.dumps(rec[k], ensure_ascii=False, separators=(',', ':'))}")
-    lines.append("---")
-    return "\n".join(lines) + "\n"
+    try:
+        return KV.encode(rec, FIELD_ORDER)
+    except KV.KVFormatError as exc:
+        raise CharacterStoreError(exc.problems)
 
 
 def _decode(text: str, where: str) -> Dict[str, Any]:
-    lines = text.splitlines()
-    if not lines or lines[0].strip() != "---":
-        raise CharacterStoreError([f"{where}：缺少文件头（应以 --- 开始）"])
-    fields: Dict[str, Any] = {}
-    for n, line in enumerate(lines[1:], start=2):
-        if line.strip() == "---":
-            return fields
-        if not line.strip():
-            continue
-        key, sep, raw = line.partition(": ")
-        if not sep:
-            raise CharacterStoreError([f"{where} 第 {n} 行格式错误（应为 key: JSON值，且值必须写在同一行）"])
-        if key in fields:
-            raise CharacterStoreError([f"{where} 第 {n} 行：字段 {key} 重复"])
-        try:
-            fields[key] = json.loads(raw)
-        except ValueError as exc:
-            raise CharacterStoreError([f"{where} 第 {n} 行的 {key} 不是合法 JSON（{exc}）"])
-    raise CharacterStoreError([f"{where}：文件头未闭合（缺少结束的 ---）"])
+    try:
+        return KV.decode(text, where)
+    except KV.KVFormatError as exc:
+        raise CharacterStoreError(exc.problems)
 
 
 def _body(rec: Dict[str, Any]) -> str:

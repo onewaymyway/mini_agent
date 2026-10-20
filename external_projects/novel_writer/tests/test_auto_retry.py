@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from fakes import STUB_HANDLERS, FakeInvoker, approve_waiting, make_blueprint, set_settings
+from fakes import STUB_HANDLERS, FakeInvoker, approve_waiting, make_blueprint, set_settings, put_blueprint
 from novel_writer import config, inbox, tool_api
 from novel_writer import state as st
 from novel_writer.fsutil import atomic_write_json
@@ -28,7 +28,7 @@ def new_book(tmp_path, gear="G3"):
     r = tool_api.create_novel("重跑", novels_dir=str(tmp_path / "novels"), index_file=str(tmp_path / "shelf.json"),
                               gear=gear, total_chapters_planned=3)
     ws = Workspace(r["data"]["workspace"])
-    atomic_write_json(ws.path("blueprint"), make_blueprint(3))
+    put_blueprint(ws, make_blueprint(3))
     return ws
 
 

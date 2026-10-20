@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from fakes import FakeInvoker, drive_to_completion, make_blueprint, statuses
+from fakes import FakeInvoker, drive_to_completion, make_blueprint, statuses, put_blueprint
 from novel_writer import config, tool_api
 from novel_writer import pipeline as P
 from novel_writer import state as st
@@ -34,7 +34,7 @@ def book(tmp_path, total=4, acts=None):
     bp = make_blueprint(total)
     if acts is not None:
         bp["structure"]["acts"] = acts
-    atomic_write_json(ws.path("blueprint"), bp)
+    put_blueprint(ws, bp)
     return ws
 
 

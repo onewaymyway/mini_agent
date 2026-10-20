@@ -103,7 +103,7 @@ def chapter_file(ws: Workspace, n: int) -> Optional[Path]:
 
 
 def chapter_entry(ws: Workspace, n: int) -> Dict[str, Any]:
-    bp = read_json(ws.path("blueprint"), default=None) or {}
+    bp = _blueprint_strict(ws) or {}
     for ch in bp.get("chapters") or []:
         if isinstance(ch, dict) and ch.get("id") == n:
             return ch
@@ -558,6 +558,30 @@ def h_characters_refresh(ws: Workspace, step: S.StepDef, settings: Dict[str, Any
     return {"summary": f"人物档案已刷新（{len(chars)} 个角色）" + ("" if changed else "，无实质变化，未写盘")}
 
 
+# ── 蓝图（第五阶段：每章一个文件；plan_blueprint 产出草稿，blueprint_split 拆分）──────
+
+def _blueprint_strict(ws: Workspace) -> Optional[Dict[str, Any]]:
+    from novel_writer import blueprint_store as BS
+    try:
+        return BS.load_for_ws(ws, strict=True)
+    except BS.BlueprintStoreError as exc:
+        raise ChapterOpError("蓝图读取失败：" + "；".join(exc.problems))
+
+
+def h_blueprint_split(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:
+    """蓝图拆分（确定性）：把 plan_blueprint 的草稿拆成 _meta.md + 每章文件 + 索引；内容无变化不写盘。"""
+    from novel_writer import blueprint_store as BS
+    draft = read_json(ws.path("blueprint_draft"), default=None)
+    if not isinstance(draft, dict):
+        raise ChapterOpError("蓝图草稿缺失或不是 JSON 对象，请重新运行 plan_blueprint")
+    try:
+        changed = BS.save_for_ws(ws, draft)
+    except BS.BlueprintStoreError as exc:
+        raise ChapterOpError("蓝图拆分失败：" + "；".join(exc.problems))
+    n = len(draft.get("chapters") or [])
+    return {"summary": f"蓝图已拆分为 {n} 章文件" + ("" if changed else "，无实质变化，未写盘")}
+
+
 def h_plot_merge(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:
     """把本章伏笔增量合并进账本（M9）。确定性合并，内容无实质变化则不写盘。"""
     from novel_writer import plot_store as PS
@@ -884,6 +908,7 @@ CHAPTER_HANDLERS = {
     "garble_guard_alt": h_garble_guard_alt,
     "plot_merge": h_plot_merge,
     "characters_refresh": h_characters_refresh,
+    "blueprint_split": h_blueprint_split,
     "plot_import": h_plot_import,
     "machine_check": h_machine_check,
     "revise_loop": h_revise_loop,

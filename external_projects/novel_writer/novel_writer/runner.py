@@ -303,7 +303,8 @@ def _h_init_workspace(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], 
 
 
 def _h_init_word_count(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:
-    blueprint = read_json(ws.path("blueprint"), default=None)
+    from novel_writer import blueprint_store as BS
+    blueprint = BS.load_for_ws(ws, strict=False)
     if not isinstance(blueprint, dict):
         raise StepFailed("缺少蓝图，无法计算字数配额")
     meta = blueprint.get("meta") or {}

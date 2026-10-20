@@ -58,7 +58,10 @@ STUDIO_SUBDIRS: List[str] = [
 # 提到文件名但没给出完整路径的条目。
 PATHS: Dict[str, str] = {
     # 核心蓝图
-    "blueprint": "大纲规划/小说蓝图.json",
+    "blueprint": "大纲规划/蓝图/_index.md",                  # 章节索引（自动生成；第五阶段）
+    "blueprint_dir": "大纲规划/蓝图",                         # 每章一个文件（第五阶段）
+    "blueprint_draft": "大纲规划/蓝图/_draft.json",           # plan_blueprint 的整本草稿
+    "blueprint_legacy": "大纲规划/小说蓝图.json",             # 旧版单文件（仅用于迁移）
     "blueprint_readable": "大纲规划/章节大纲.md",
     "theme_design": "大纲规划/主题设计.md",
     "pacing_design": "大纲规划/节奏规划.md",
@@ -389,7 +392,8 @@ class Workspace:
         if not self.is_initialized():
             raise WorkspaceError(f"不是已初始化的 novel_writer 工作目录：{self.root}")
         cfg = self.workspace_config()
-        blueprint = read_json(self.path("blueprint"), default=None)
+        from novel_writer import blueprint_store as BS
+        blueprint = BS.load_for_ws(self, strict=False)
         total = None
         target_length = None
         if isinstance(blueprint, dict):

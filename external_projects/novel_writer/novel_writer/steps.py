@@ -103,11 +103,21 @@ def plan_blueprint_step() -> StepDef:
     return StepDef(
         id="plan_blueprint", title="生成全书蓝图", stage="p1", category=CAT_CHECKPOINT,
         executor=EXECUTOR_SKILL, skill="novel-planner",
-        instructions="根据作者在向导里给出的意图，产出全书蓝图（结构、章节表、主角弧、伏笔索引）及可读大纲。",
+        instructions=("根据作者在向导里给出的意图，产出全书蓝图（结构、章节表、主角弧、伏笔索引）及可读大纲。"
+                      f"蓝图 JSON 必须写到：{rel('blueprint_draft')}（整本一个 JSON 对象，系统会自动拆成每章一个文件）。"),
         inputs=(rel("workspace_config"),),
-        outputs=(rel("blueprint"), rel("blueprint_readable")),
+        outputs=(rel("blueprint_draft"), rel("blueprint_readable")),
         deps=("init_workspace",),
         extra={"output_check": "blueprint"},   # 章号、字数预算格式不对会让下游静默失效，须在此拦住
+    )
+
+
+def blueprint_split_step() -> StepDef:
+    """第五阶段：把蓝图草稿拆成 _meta.md + 每章一个文件 + 索引（确定性，内容无变化不写盘）。"""
+    return StepDef(
+        id="blueprint_split", title="拆分蓝图为章节文件", stage="p1", category=CAT_BUILD,
+        executor=EXECUTOR_PYTHON, handler="blueprint_split",
+        inputs=(rel("blueprint_draft"),), outputs=(rel("blueprint"),), deps=("plan_blueprint",),
     )
 
 
@@ -117,7 +127,7 @@ def design_theme_step() -> StepDef:
         executor=EXECUTOR_SKILL, skill="theme-architect",
         instructions="基于蓝图设计主题与防说教方案，写入主题设计文档。",
         inputs=(rel("blueprint"),), outputs=(rel("theme_design"),),
-        deps=("plan_blueprint",),
+        deps=("blueprint_split",),
     )
 
 
@@ -127,7 +137,7 @@ def design_pacing_step() -> StepDef:
         executor=EXECUTOR_SKILL, skill="pacing-architect",
         instructions="基于蓝图设计跨章节奏、三章单元与幕次张力曲线。",
         inputs=(rel("blueprint"),), outputs=(rel("pacing_design"),),
-        deps=("plan_blueprint",),
+        deps=("blueprint_split",),
     )
 
 
@@ -137,7 +147,7 @@ def design_character_step(name: str) -> StepDef:
         executor=EXECUTOR_SKILL, skill="character-designer",
         instructions=f"为主要角色「{name}」设计人设卡（人设卡文件名即角色名）。",
         inputs=(rel("blueprint"),), outputs=(rel("character_card", name=name),),
-        deps=("plan_blueprint",), extra={"character": name},
+        deps=("blueprint_split",), extra={"character": name},
     )
 
 
@@ -197,7 +207,7 @@ def build_world_step() -> StepDef:
         executor=EXECUTOR_SKILL, skill="world-builder",
         instructions="基于蓝图建立世界圣经（世界规则、地点、势力）。",
         inputs=(rel("blueprint"),), outputs=(rel("world_bible"),),
-        deps=("plan_blueprint",),
+        deps=("blueprint_split",),
     )
 
 
@@ -227,7 +237,7 @@ def init_word_count_step() -> StepDef:
         id="init_word_count", title="初始化字数配额", stage="p1", category=CAT_INFRA,
         executor=EXECUTOR_PYTHON, handler="init_word_count",
         inputs=(rel("blueprint"),), outputs=(rel("word_count"),),
-        deps=("plan_blueprint",),
+        deps=("blueprint_split",),
     )
 
 

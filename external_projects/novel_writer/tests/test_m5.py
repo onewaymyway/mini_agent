@@ -41,7 +41,7 @@ def new_book(tmp_path, *, gear="G0", total=4, title="测试书"):
                               gear=gear, total_chapters_planned=total)
     assert r["ok"], r
     ws = Workspace(r["data"]["workspace"])
-    atomic_write_json(ws.path("blueprint"), make_blueprint(total))
+    atomic_write_json(ws.path("blueprint_draft"), make_blueprint(total))
     return ws
 
 
@@ -212,7 +212,7 @@ def test_worker_chapter_limit_only_tightens_budget(tmp_path):
 
 def test_budget_pause_is_visible_in_inbox(tmp_path):
     ws = new_book(tmp_path, gear="G3", total=6)
-    atomic_write_json(ws.path("blueprint"), make_blueprint(6))
+    atomic_write_json(ws.path("blueprint_draft"), make_blueprint(6))
     set_settings(ws, budget={"max_chapters_per_run": 1})
     inv = FakeInvoker(ws.root)
     for _ in range(100):
@@ -275,7 +275,7 @@ def test_manual_bypass_requires_outputs(tmp_path):
 
 def test_manual_bypass_marks_passed_and_pipeline_moves_on(tmp_path):
     ws = new_book(tmp_path, gear="G0")
-    ws.path("blueprint").write_text("{}", encoding="utf-8")
+    ws.path("blueprint_draft").write_text("{}", encoding="utf-8")
     ws.path("blueprint_readable").write_text("# 大纲\n", encoding="utf-8")
     res = tool_api.mark_manual(str(ws.root), "plan_blueprint", note="我自己写的大纲")
     assert res["ok"], res
@@ -289,7 +289,7 @@ def test_manual_bypass_marks_passed_and_pipeline_moves_on(tmp_path):
 def test_manual_bypass_refuses_running_step(tmp_path):
     ws = new_book(tmp_path, gear="G0")
     st.update_step(ws, "plan_blueprint", status=st.ST_RUNNING)
-    ws.path("blueprint").write_text("{}", encoding="utf-8")
+    ws.path("blueprint_draft").write_text("{}", encoding="utf-8")
     ws.path("blueprint_readable").write_text("x", encoding="utf-8")
     res = tool_api.mark_manual(str(ws.root), "plan_blueprint")
     assert not res["ok"] and "正在执行" in res["error"]["message"]

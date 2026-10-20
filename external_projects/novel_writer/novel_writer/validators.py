@@ -232,7 +232,7 @@ def plot_tracker_problems(path: Path) -> List[str]:
 
 
 def _check_blueprint(ws: Workspace, step: Any) -> List[str]:
-    return blueprint_problems(ws.path("blueprint"))
+    return blueprint_problems(ws.path("blueprint_draft"))   # 草稿是 plan_blueprint 的产出；拆分前校验
 
 
 def _check_plot_register(ws: Workspace, step: Any) -> List[str]:

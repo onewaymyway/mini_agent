@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from fakes import FakeInvoker, drive_to_completion, statuses
+from fakes import FakeInvoker, drive_to_completion, statuses, put_blueprint, read_blueprint
 from novel_writer import pipeline as P
 from novel_writer import state as st
 from novel_writer.fsutil import atomic_write_json, read_json
@@ -13,9 +13,9 @@ from test_m3 import isolated, new_book  # noqa: F401  (fixture)
 
 
 def _archive_touches_blueprint(ws):
-    bp = read_json(ws.path("blueprint"), default={}) or {}
+    bp = read_blueprint(ws)
     bp.setdefault("progress", {})["last_archived"] = "ch02"  # 归档 agent 顺手更新进度
-    atomic_write_json(ws.path("blueprint"), bp)
+    put_blueprint(ws, bp)
 
 
 def test_undeclared_write_by_later_agent_does_not_restale_early_planning(isolated):
@@ -29,7 +29,7 @@ def test_undeclared_write_by_later_agent_does_not_restale_early_planning(isolate
     assert st.get_step_state(ws, "ch01.context_pack")["attempts"] == 1
     assert st.mark_stale(ws, P.build_plan(ws)) == []
     # 写入者记录确实是归档步骤
-    assert st.load_state(ws)["file_writers"]["大纲规划/小说蓝图.json"] == "ch02.archive"
+    assert st.load_state(ws)["file_writers"]["大纲规划/蓝图/_index.md"] == "ch02.archive"
 
 
 def test_stale_marks_that_no_longer_hold_are_restored(isolated):
@@ -47,9 +47,9 @@ def test_rebaseline_clears_confirmed_false_stale(isolated):
     plan = P.build_plan(ws)
     st.update_step(ws, "build_world", status=st.ST_PASSED)
     st.mark_stale(ws, plan)
-    bp = read_json(ws.path("blueprint"), default={}) or {}
+    bp = read_blueprint(ws)
     bp["progress"] = {"touched": True}
-    atomic_write_json(ws.path("blueprint"), bp)
+    put_blueprint(ws, bp)
     # 没有写入者记录时，这次变化会被当作上游变化
     assert "build_world" in st.mark_stale(ws, plan)
     assert st.rebaseline_stale(ws, plan, ["build_world"]) == ["build_world"]

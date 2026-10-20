@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from fakes import FakeInvoker, make_blueprint
+from fakes import FakeInvoker, make_blueprint, put_blueprint
 from novel_writer import chapter_ops as C
 from novel_writer import config, tool_api
 from novel_writer.contamination import scan_contamination
@@ -58,7 +58,7 @@ def book(tmp_path, monkeypatch):
     r = tool_api.create_novel("乱码测试", novels_dir=str(tmp_path / "novels"),
                               index_file=str(tmp_path / "shelf.json"), gear="G3", total_chapters_planned=3)
     ws = Workspace(r["data"]["workspace"])
-    atomic_write_json(ws.path("blueprint"), make_blueprint(3))
+    put_blueprint(ws, make_blueprint(3))
     return ws
 
 

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from fakes import STUB_HANDLERS, FakeInvoker, make_blueprint, set_settings
+from fakes import STUB_HANDLERS, FakeInvoker, make_blueprint, set_settings, put_blueprint
 from novel_writer import config, runner as R, state as st, tool_api
 from novel_writer.fsutil import atomic_write_json
 from novel_writer.worker import run_worker
@@ -30,7 +30,7 @@ def new_book(tmp_path, gear="G0"):
     r = tool_api.create_novel("实时测试", novels_dir=str(tmp_path / "novels"), index_file=str(tmp_path / "shelf.json"),
                               gear=gear, total_chapters_planned=3)
     ws = Workspace(r["data"]["workspace"])
-    atomic_write_json(ws.path("blueprint"), make_blueprint(3))
+    put_blueprint(ws, make_blueprint(3))
     return ws
 
 

@@ -10,7 +10,7 @@ import zipfile
 
 import pytest
 
-from fakes import STUB_HANDLERS, FakeInvoker, approve_waiting, make_blueprint, statuses
+from fakes import STUB_HANDLERS, FakeInvoker, approve_waiting, make_blueprint, statuses, put_blueprint
 from novel_writer import config, gates as G, tool_api
 from novel_writer import pipeline as P
 from novel_writer import exporter
@@ -36,7 +36,7 @@ def new_book(tmp_path, *, total=4, gear="G3", quality="standard", blueprint=None
                               gear=gear, quality=quality, total_chapters_planned=total)
     assert r["ok"], r
     ws = Workspace(r["data"]["workspace"])
-    atomic_write_json(ws.path("blueprint"), blueprint or make_blueprint(total))
+    put_blueprint(ws, blueprint or make_blueprint(total))
     return ws
 
 

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from fakes import STUB_HANDLERS, FakeInvoker, make_blueprint
+from fakes import STUB_HANDLERS, FakeInvoker, make_blueprint, put_blueprint
 from novel_writer import config, tool_api
 from novel_writer import pipeline as P
 from novel_writer.fsutil import atomic_write_json
@@ -29,7 +29,7 @@ def new_book(tmp_path, gear="G0"):
     r = tool_api.create_novel("下一步", novels_dir=str(tmp_path / "novels"), index_file=str(tmp_path / "shelf.json"),
                               gear=gear, total_chapters_planned=3)
     ws = Workspace(r["data"]["workspace"])
-    atomic_write_json(ws.path("blueprint"), make_blueprint(3))
+    put_blueprint(ws, make_blueprint(3))
     return ws
 
 
@@ -91,10 +91,10 @@ def test_manual_frontier_runs_when_displayed(tmp_path):
     run_next(ws, inv)  # plan_blueprint -> waiting_review
     assert tool_api.approve_step(str(ws.root), "plan_blueprint")["ok"]
     nxt = next_of(ws)
-    assert nxt["step"] == "design_theme" and nxt["action"] == "run"
+    assert nxt["step"] == "blueprint_split" and nxt["action"] == "run"   # 规划通过后，先拆分蓝图
     assert "手动" in nxt["message"]
     res = run_next(ws, inv)
-    assert res["executed"] and res["executed"][0]["step"] == "design_theme", res
+    assert res["executed"] and res["executed"][0]["step"] == "blueprint_split", res
 
 
 def test_cockpit_defaults_single_step_to_next_and_follows_progress(tmp_path):

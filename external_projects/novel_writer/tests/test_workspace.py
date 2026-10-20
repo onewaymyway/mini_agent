@@ -62,7 +62,7 @@ def test_settings_defaults_conservative(tmp_path):
 
 def test_path_lookup_and_unknown_key(tmp_path):
     ws = Workspace(tmp_path / "w")
-    assert ws.path("blueprint") == ws.root / "大纲规划/小说蓝图.json"
+    assert ws.path("blueprint") == ws.root / "大纲规划/蓝图/_index.md"
     assert ws.path("review_report", nn=3) == ws.root / "一致性检查/第03章_检查报告.md"
     assert ws.path("memory_summary", n=8) == ws.root / "项目状态/memory/ch_8.json"
     with pytest.raises(KeyError):
@@ -88,9 +88,9 @@ def test_list_chapters_and_recover(tmp_path):
     (ws.root / "正文/第01章 开端.md").write_text("# 第01章\n一二三四五", encoding="utf-8")
     (ws.root / "正文/第02章 继续.md").write_text("六七八", encoding="utf-8")
     (ws.root / "正文/随手记.md").write_text("x", encoding="utf-8")
-    ws.path("blueprint").write_text(
-        json.dumps({"structure": {"total_chapters": 10}, "meta": {"target_length": 30000}}), encoding="utf-8"
-    )
+    from fakes import put_blueprint
+    put_blueprint(ws, {"structure": {"total_chapters": 10}, "meta": {"target_length": 30000},
+                       "chapters": [{"id": i, "title": f"第{i}章"} for i in range(1, 11)]})
     rec = ws.recover()
     assert rec["chapters_written"] == 2 and rec["last_chapter"] == 2
     assert rec["total_words"] == 8 and rec["total_chapters_planned"] == 10

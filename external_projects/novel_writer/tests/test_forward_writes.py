@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fakes import FakeInvoker, drive_to_completion
+from fakes import FakeInvoker, drive_to_completion, put_blueprint, read_blueprint
 from novel_writer import pipeline as P
 from novel_writer import state as st
 from novel_writer.fsutil import atomic_write_json, read_json
@@ -12,9 +12,9 @@ from test_m3 import isolated, new_book  # noqa: F401  (fixture)
 
 def _chapter_writes_planning(ws):
     """第 2 章归档/同步时更新蓝图、人物与伏笔（为后续章节准备）。"""
-    bp = read_json(ws.path("blueprint"), default={}) or {}
+    bp = read_blueprint(ws)
     bp.setdefault("progress", {})["after_ch2"] = True
-    atomic_write_json(ws.path("blueprint"), bp)
+    put_blueprint(ws, bp)
     atomic_write_json(ws.path("characters"), {"after_ch2": True})
     atomic_write_json(ws.path("plot_tracker"), {"foreshadowing": [{"id": "F1"}], "after_ch2": True})
 
@@ -38,9 +38,9 @@ def test_chapter_writes_to_planning_files_do_not_touch_finished_work(isolated):
 def test_author_edit_to_blueprint_is_a_real_upstream_change(isolated):
     ws, _ = _finished_book(isolated)
     plan = P.build_plan(ws)
-    bp = read_json(ws.path("blueprint"), default={}) or {}
+    bp = read_blueprint(ws)
     bp["meta"] = dict(bp.get("meta") or {}, author_note="作者手改")
-    atomic_write_json(ws.path("blueprint"), bp)
+    put_blueprint(ws, bp)
     st.record_writer_paths(ws, [ws.path("blueprint").relative_to(ws.root).as_posix()], "author")
     stale = st.mark_stale(ws, plan)
     assert "build_world" in stale and "ch01.context_pack" in stale
