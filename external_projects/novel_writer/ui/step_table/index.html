@@ -1,0 +1,113 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root {
+    --bg: #FFFFFF; --bg2: #F0F2F6; --text: #31333F; --primary: #FF4B4B;
+    --border: rgba(49, 51, 63, 0.2); --muted: rgba(49, 51, 63, 0.6);
+    --font: "Source Sans Pro", "Source Sans 3", system-ui, -apple-system, "Microsoft YaHei", sans-serif;
+  }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; }
+  #wrap { max-height: 520px; overflow: auto; border: 1px solid var(--border); border-radius: 0.5rem; }
+  table { border-collapse: separate; border-spacing: 0; width: 100%; }
+  th, td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid var(--border); white-space: nowrap; vertical-align: top; }
+  th { position: sticky; top: 0; background: var(--bg2); font-weight: 600; z-index: 1; }
+  td.wrap { white-space: normal; min-width: 14rem; max-width: 28rem; }
+  tr.cur td { background: rgba(255, 75, 75, 0.12); }
+  tr.cur td:first-child { box-shadow: inset 3px 0 0 var(--primary); }
+  tr.running td { font-weight: 600; }
+  #empty { padding: 0.75rem; color: var(--muted); }
+</style>
+</head>
+<body>
+<div id="wrap"><div id="empty">流水线为空</div></div>
+<script>
+(function () {
+  "use strict";
+  const wrap = document.getElementById("wrap");
+  let lastJson = null, lastCurrent = undefined;
+
+  function send(type, data) {
+    window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, data || {}), "*");
+  }
+  function fitHeight() {
+    send("streamlit:setFrameHeight", { height: Math.min(Math.ceil(document.body.scrollHeight), 540) + 2 });
+  }
+  // 与 Streamlit 主题保持一致（与听书播放器相同的做法）
+  function isDarkColor(hex) {
+    const m = /^#?([0-9a-f]{6})$/i.exec(hex || "");
+    if (!m) return false;
+    const n = parseInt(m[1], 16);
+    return (0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) < 128;
+  }
+  function applyTheme(t) {
+    if (!t) return;
+    const bg = t.backgroundColor || "#FFFFFF", dark = isDarkColor(bg), root = document.documentElement.style;
+    root.setProperty("--bg", bg);
+    root.setProperty("--bg2", t.secondaryBackgroundColor || (dark ? "#262730" : "#F0F2F6"));
+    root.setProperty("--text", t.textColor || (dark ? "#FAFAFA" : "#31333F"));
+    root.setProperty("--primary", t.primaryColor || "#FF4B4B");
+    root.setProperty("--border", dark ? "rgba(250, 250, 250, 0.2)" : "rgba(49, 51, 63, 0.2)");
+    root.setProperty("--muted", dark ? "rgba(250, 250, 250, 0.6)" : "rgba(49, 51, 63, 0.6)");
+    if (t.font) root.setProperty("--font", '"' + t.font + '", system-ui, sans-serif');
+    fitHeight();
+  }
+
+  function cell(text, cls) {
+    const td = document.createElement("td");
+    if (cls) td.className = cls;
+    td.textContent = text == null ? "" : String(text);
+    return td;
+  }
+
+  // 只在数据变化时重绘；重绘后滚动到当前步骤（运行中，否则为下一步）。
+  // 数据未变时不动滚动位置，避免打断你手动浏览。
+  function render(data) {
+    const json = JSON.stringify(data);
+    if (json === lastJson) { fitHeight(); return; }
+    lastJson = json;
+    const rows = data.rows || [], cols = data.columns || [];
+    wrap.innerHTML = "";
+    if (!rows.length) {
+      const e = document.createElement("div"); e.id = "empty"; e.textContent = "流水线为空";
+      wrap.appendChild(e); fitHeight(); return;
+    }
+    const table = document.createElement("table");
+    const thead = document.createElement("thead"), hr = document.createElement("tr");
+    cols.forEach(c => { const th = document.createElement("th"); th.textContent = c; hr.appendChild(th); });
+    thead.appendChild(hr); table.appendChild(thead);
+    const tbody = document.createElement("tbody");
+    let curRow = null;
+    rows.forEach(r => {
+      const tr = document.createElement("tr");
+      const isCur = data.current && r["__id"] === data.current;
+      if (isCur) tr.classList.add("cur");
+      if (r["__status"] === "running") tr.classList.add("running");
+      cols.forEach(c => tr.appendChild(cell(r[c], c === "说明" ? "wrap" : "")));
+      if (isCur) curRow = tr;
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    fitHeight();
+    // 滚动只作用于表格容器本身，不滚动外层页面
+    if (curRow && data.current !== lastCurrent) {
+      wrap.scrollTop = Math.max(0, curRow.offsetTop - wrap.clientHeight / 2 + curRow.offsetHeight / 2);
+    }
+    lastCurrent = data.current;
+  }
+
+  window.addEventListener("message", function (ev) {
+    const d = ev.data;
+    if (!d || d.type !== "streamlit:render") return;
+    const args = d.args || {};
+    applyTheme(d.theme || args.theme);
+    render(args.data || { columns: [], rows: [], current: null });
+  });
+  send("streamlit:componentReady", { apiVersion: 1 });
+  fitHeight();
+})();
+</script>
+</body>
+</html>

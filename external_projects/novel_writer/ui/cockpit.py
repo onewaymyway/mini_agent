@@ -5,6 +5,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+from ui.step_table import render_step_table
 from novel_writer import tool_api
 from novel_writer.settings import GEARS, QUALITIES
 from ui import codex as codex_page
@@ -86,8 +87,12 @@ def render_control(ws: str) -> None:
 
     st.subheader("流水线")
     rows = []
+    statuses = {s["id"]: s["status"] for s in data["steps"]}
+    running = next((s["id"] for s in data["steps"] if s["status"] == "running"), None)
+    current_id = running or nxt.get("step")   # 表格自动滚动到：运行中的步骤；没有则为下一步
     for s in data["steps"]:
         rows.append({
+            "__id": s["id"],
             "下一步": "▶" if s["id"] == nxt.get("step") else "",
             "步骤": s["id"],
             "标题": s["title"],
@@ -97,7 +102,7 @@ def render_control(ws: str) -> None:
             "尝试": s.get("attempts") or 0,
             "说明": s.get("error") or s.get("summary") or s.get("note") or "",
         })
-    show_df(pd.DataFrame(rows), width="stretch", hide_index=True, height=min(520, 40 + 35 * len(rows)))
+    render_step_table(rows, current_id, statuses)
     _render_step_actions(ws, data["steps"], nxt)
 
 

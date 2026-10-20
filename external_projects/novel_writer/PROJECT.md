@@ -87,6 +87,7 @@ novel_writer/
 
 ## 变更记录
 
+- 2026-10-20：驾驶舱流水线表格自动滚动到当前步骤。st.dataframe 不支持程序化滚动，改用自定义组件 `ui/step_table/`（样式与主题同听书播放器）。滚动目标：运行中的步骤，没有则为下一步；只在数据变化后重绘，且只滚动表格容器本身，不影响外层页面。新增 tests/test_step_table.py（2 例）。
 - 2026-10-20：修复听书进度被重置到第一章与选择框报错。原因：①保存的章节暂时不在可听列表（正文被清空/改写）时，回退到第一章，随后的回传把进度覆盖；②读完全书时位置回到开头并回传；③播放器切章后直接修改已渲染的选择框，Streamlit 报 StreamlitAPIException 并中断运行。修复：回退改为不晚于保存章节的最近一章（`reading_state.resolve_chapter`）；读完全书停在末段；切章改为记下待同步章节，下一次运行在选择框渲染前应用。新增 3 个测试。
 - 2026-10-20：结构化产出内容校验扩展（M8）。①蓝图（plan_blueprint）：chapters 须为非空数组，每条章号须能规范为唯一整数（接受 "1"、"第1章"），word_budget 须为非负整数；②伏笔账本（register_plot、ch*.sync_plot）：须含非空的 foreshadowing/threads/items 数组，每条须有 id，章号字段须可规范为整数。不合格在产出步骤内拦下，带具体问题让 agent 重写，不再静默失效（如 chapter_entry 找不到条目导致字数配额为 0）。合格时写回规范化结果。注：chapter_tasks、quota_file 由 Python 处理器生成，不经 agent，故不需要内容校验，未纳入。测试桩（tests/fakes.py）为蓝图、伏笔账本写入合法占位内容；两处直接写伏笔账本的测试改用合法结构（保留原测试意图）。新增 tests/test_structured_output_checks.py（19 例）。尚未覆盖：characters.json、world_bible.json（下游读取较宽松，待需要时再加）。
 - 2026-10-20：择优报告内容校验（M8）。问题根因：技能步骤只检查产出文件是否存在，不检查内容；择优报告 winner 非法（如 "C"、缺失）时，步骤仍被判为通过，直到「择优应用」才报错。修复：①`validators.py` 新增产出内容校验注册表（`OUTPUT_CHECKS`），步骤通过 `extra={"output_check": ...}` 声明；②择优报告校验 JSON 结构与 winner（接受 a/b、候选稿、正文等写法并规范为 A/B，合格后写回规范化结果；不猜测无法识别的值）；③运行器在产出存在但内容不合格时，记入步骤日志并把具体问题作为提示让 agent 重写，同一次执行最多 3 次（原为 2 次）；④「择优应用」步骤使用同一套规范化，失败信息带上具体原因。新增 `tests/test_best_pick_report_check.py`（12 例）；`tests/test_best_pick_llm.py` 中对应用步骤失败位置的断言改为择优步骤本身。尚未覆盖：chapter_tasks、quota_file、plot_tracker 等其他下游结构化产出，待逐项声明内容校验。
