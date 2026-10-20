@@ -85,15 +85,9 @@ def best_pick_report_problems(path: Path) -> List[str]:
     """检查择优报告：必须是 JSON 对象，且 winner 能规范为 A/B。合格时写回规范化结果。"""
     if not path.is_file():
         return [f"择优报告不存在：{path.name}"]
-    raw = read_text_utf8(path).strip()
-    fenced = False
-    m = _FENCE.match(raw)
-    if m:
-        raw, fenced = m.group(1).strip(), True
-    try:
-        data = json.loads(raw)
-    except ValueError as exc:
-        return [f"择优报告不是合法 JSON（{exc}）。请只输出一个 JSON 对象，不要夹杂说明文字。"]
+    data, err, fenced = _read_json_loose(path)
+    if err is not None:
+        return [f"择优报告不是合法 JSON（{err}）。请只输出一个 JSON 对象，不要夹杂说明文字。"]
     if not isinstance(data, dict):
         return [f"择优报告顶层必须是 JSON 对象，当前是 {type(data).__name__}"]
     winner = normalize_pick_winner(data.get("winner"))
@@ -112,8 +106,142 @@ def _check_best_pick(ws: Workspace, step: Any) -> List[str]:
     return best_pick_report_problems(ws.path("best_pick_report", nn=step.chapter))
 
 
+def _read_json_loose(path: Path) -> tuple:
+    """读取 JSON，兼容 ```json 代码围栏。返回 (data, error, fenced)。"""
+    raw = read_text_utf8(path).strip()
+    fenced = False
+    m = _FENCE.match(raw)
+    if m:
+        raw, fenced = m.group(1).strip(), True
+    try:
+        return json.loads(raw), None, fenced
+    except ValueError as exc:
+        return None, str(exc), fenced
+
+
+_CHAPTER_NO = re.compile(r"^\s*(?:第\s*)?(\d+)\s*(?:章)?\s*$")
+
+
+def as_chapter_no(value: Any) -> Optional[int]:
+    """章号规范化：整数、"12"、"第12章" 均视为 12；其它返回 None。"""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        m = _CHAPTER_NO.match(value)
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def as_int(value: Any) -> Optional[int]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
+def blueprint_problems(path: Path) -> List[str]:
+    """蓝图：必须有非空 chapters 列表；每章的 id 须能规范为唯一章号；word_budget 若给出须为非负整数。
+    章号格式不对时，下游 chapter_entry 会找不到条目，字数配额静默变为 0，因此这里必须拦住。"""
+    data, err, fenced = _read_json_loose(path)
+    if err is not None:
+        return [f"蓝图不是合法 JSON（{err}）。请只输出一个 JSON 对象。"]
+    if not isinstance(data, dict):
+        return [f"蓝图顶层必须是 JSON 对象，当前是 {type(data).__name__}"]
+    chapters = data.get("chapters")
+    if not isinstance(chapters, list) or not chapters:
+        return ["蓝图缺少非空的 chapters 列表（章节表）"]
+    problems: List[str] = []
+    seen: Dict[int, int] = {}
+    changed = fenced
+    for i, ch in enumerate(chapters, start=1):
+        if not isinstance(ch, dict):
+            problems.append(f"第 {i} 条章节条目必须是对象")
+            continue
+        no = as_chapter_no(ch.get("id"))
+        if no is None:
+            problems.append(f"第 {i} 条章节的 id 必须是章号整数（如 1），当前为 {ch.get('id')!r}")
+            continue
+        if no in seen:
+            problems.append(f"章号 {no} 重复出现（第 {seen[no]} 条与第 {i} 条）")
+            continue
+        seen[no] = i
+        if ch.get("id") != no:
+            ch["id"] = no
+            changed = True
+        if "word_budget" in ch and ch["word_budget"] is not None:
+            wb = as_int(ch["word_budget"])
+            if wb is None or wb < 0:
+                problems.append(f"第 {no} 章的 word_budget 必须是非负整数，当前为 {ch['word_budget']!r}")
+            elif ch["word_budget"] != wb:
+                ch["word_budget"] = wb
+                changed = True
+    if problems:
+        return problems
+    if changed:
+        atomic_write_json(path, data)
+    return []
+
+
+TRACKER_LIST_KEYS = ("foreshadowing", "threads", "items")
+TRACKER_CHAPTER_KEYS = ("plant_chapter", "resolve_chapter", "payoff_chapter")
+
+
+def plot_tracker_problems(path: Path) -> List[str]:
+    """伏笔账本：必须含非空的伏笔列表（foreshadowing/threads/items 之一）；每条须有 id；章号字段须可规范为整数。
+    格式不对时下游 h_plot_tasks 会读成空列表，伏笔就静默地不被埋设或兑现。"""
+    data, err, fenced = _read_json_loose(path)
+    if err is not None:
+        return [f"伏笔账本不是合法 JSON（{err}）。请只输出一个 JSON 对象。"]
+    if not isinstance(data, dict):
+        return [f"伏笔账本顶层必须是 JSON 对象，当前是 {type(data).__name__}"]
+    key = next((k for k in TRACKER_LIST_KEYS if isinstance(data.get(k), list)), None)
+    if key is None:
+        return [f"伏笔账本缺少伏笔列表（应为 {' / '.join(TRACKER_LIST_KEYS)} 之一，且为数组）"]
+    items = data[key]
+    if not items:
+        return [f"伏笔列表 {key} 为空：至少需要登记一条伏笔"]
+    problems: List[str] = []
+    changed = fenced
+    for i, it in enumerate(items, start=1):
+        if not isinstance(it, dict):
+            problems.append(f"第 {i} 条伏笔必须是对象")
+            continue
+        if not str(it.get("id") or "").strip():
+            problems.append(f"第 {i} 条伏笔缺少 id")
+        for ck in TRACKER_CHAPTER_KEYS:
+            if it.get(ck) is None:
+                continue
+            no = as_chapter_no(it[ck])
+            if no is None:
+                problems.append(f"伏笔 {it.get('id') or i} 的 {ck} 必须是章号整数，当前为 {it[ck]!r}")
+            elif it[ck] != no:
+                it[ck] = no
+                changed = True
+    if problems:
+        return problems
+    if changed:
+        atomic_write_json(path, data)
+    return []
+
+
+def _check_blueprint(ws: Workspace, step: Any) -> List[str]:
+    return blueprint_problems(ws.path("blueprint"))
+
+
+def _check_plot_tracker(ws: Workspace, step: Any) -> List[str]:
+    return plot_tracker_problems(ws.path("plot_tracker"))
+
+
 OUTPUT_CHECKS: Dict[str, Callable[[Workspace, Any], List[str]]] = {
     "best_pick_report": _check_best_pick,
+    "blueprint": _check_blueprint,
+    "plot_tracker": _check_plot_tracker,
 }
 
 

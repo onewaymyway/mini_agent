@@ -45,6 +45,16 @@ def set_settings(ws: Workspace, **updates):
     return ws.save_settings(current)
 
 
+def _placeholder_for(target: Path, ws) -> str:
+    """桩执行器写出的占位产出。结构化产出（蓝图、伏笔账本）须是合法内容，否则内容校验会拦下它。"""
+    import json as _json
+    if target.name == "小说蓝图.json":
+        return _json.dumps(make_blueprint(4), ensure_ascii=False)
+    if target.name == "plot_tracker.json":
+        return _json.dumps({"foreshadowing": [{"id": "F1", "name": "测试伏笔", "plant_chapter": 1}]}, ensure_ascii=False)
+    return "stub"
+
+
 class FakeInvoker:
     """桩执行器：按步骤写出占位产出，并写回执。
 
@@ -94,7 +104,7 @@ class FakeInvoker:
                     target = self.root / (pattern.replace("*", "x") if "*" in pattern else pattern)
                     if not target.exists():
                         target.parent.mkdir(parents=True, exist_ok=True)
-                        target.write_text("stub", encoding="utf-8")
+                        target.write_text(_placeholder_for(target, ws), encoding="utf-8")
         for key, writer in self.writers.items():
             if key in step_id:
                 writer(ws)

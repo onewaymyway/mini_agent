@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import uuid
 
 from fakes import FakeInvoker, drive_to_completion, statuses
@@ -16,7 +18,7 @@ def _change_characters(ws):  # 与真实代码一致：状态同步只写人物�
 
 
 def _change_plot(ws):  # 伏笔同步只写伏笔账本
-    ws.path("plot_tracker").write_text(str(uuid.uuid4()), encoding="utf-8")
+    ws.path("plot_tracker").write_text(json.dumps({"foreshadowing": [{"id": "F1", "name": str(uuid.uuid4())}]}), encoding="utf-8")
 
 
 def test_sync_rewriting_state_does_not_loop_chapter(isolated):

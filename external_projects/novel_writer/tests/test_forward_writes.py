@@ -16,7 +16,7 @@ def _chapter_writes_planning(ws):
     bp.setdefault("progress", {})["after_ch2"] = True
     atomic_write_json(ws.path("blueprint"), bp)
     atomic_write_json(ws.path("characters"), {"after_ch2": True})
-    atomic_write_json(ws.path("plot_tracker"), {"after_ch2": True})
+    atomic_write_json(ws.path("plot_tracker"), {"foreshadowing": [{"id": "F1"}], "after_ch2": True})
 
 
 def _finished_book(isolated, writers=None):

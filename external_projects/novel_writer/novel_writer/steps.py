@@ -106,6 +106,7 @@ def plan_blueprint_step() -> StepDef:
         inputs=(rel("workspace_config"),),
         outputs=(rel("blueprint"), rel("blueprint_readable")),
         deps=("init_workspace",),
+        extra={"output_check": "blueprint"},   # 章号、字数预算格式不对会让下游静默失效，须在此拦住
     )
 
 
@@ -167,6 +168,7 @@ def register_plot_step() -> StepDef:
         instructions="从蓝图注册全部伏笔与依赖链，建立张力基准。",
         inputs=(rel("blueprint"),), outputs=(rel("plot_tracker"), rel("foreshadowing_list")),
         deps=("build_characters", "build_world"),
+        extra={"output_check": "plot_tracker"},
     )
 
 
@@ -299,7 +301,7 @@ def chapter_steps(n: int, title: str, *, total: Optional[int], prev_last: str,
             executor=EXECUTOR_SKILL, skill="plot-tracker",
             instructions=f"根据第 {n} 章的概述更新伏笔状态（埋设/推进/兑现）与故事线进度。",
             inputs=(rel("chapter_summary", nn=n), rel("plot_tracker")),
-            outputs=(rel("plot_tracker"),), deps=(p("sync"),), **common,
+            outputs=(rel("plot_tracker"),), deps=(p("sync"),), extra={"output_check": "plot_tracker"}, **common,
         ))
 
     if quality == PREMIUM:
