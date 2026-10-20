@@ -15,6 +15,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from novel_writer import validators as V
 from novel_writer.textio import read_text_utf8
 from novel_writer import steps as S
 from novel_writer.fsutil import atomic_write_json, atomic_write_text, read_json
@@ -750,9 +751,11 @@ def h_best_pick_apply(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], 
     a_path = chapter_file(ws, n)
     b_path = ws.path("candidate_alt", nn=n)
     report = read_json(ws.path("best_pick_report", nn=n), default=None)
-    if not isinstance(report, dict) or report.get("winner") not in ("A", "B"):
-        raise ChapterOpError("择优报告缺失或 winner 不是 A/B，无法应用择优结果")
-    winner = report["winner"]
+    winner = V.normalize_pick_winner(report.get("winner")) if isinstance(report, dict) else None
+    if winner is None:
+        # 正常情况下前一步的内容校验已保证合格；走到这里说明报告被改动或校验被绕过
+        detail = "报告缺失" if report is None else f"winner={report.get('winner')!r}" if isinstance(report, dict) else "报告不是 JSON 对象"
+        raise ChapterOpError(f"择优报告不合格（{detail}），无法应用择优结果")
     # 乱码稿不参与择优：LLM 选了乱码的一方，改用另一方（两方都乱码则挂起给作者）
     a_bad = bool(garble_reasons_of(a_path))
     b_bad = bool(garble_reasons_of(b_path))

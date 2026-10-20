@@ -362,6 +362,7 @@ def best_pick_step(n: int, *, deps: Tuple[str, ...]) -> StepDef:
         inputs=(glob_of("chapter_text", nn=n), rel("candidate_alt", nn=n), rel("best_pick_check", nn=n),
                 rel("context_pack", n=n), rel("chapter_tasks", n=n)),
         outputs=(rel("best_pick_report", nn=n),), deps=deps,
+        extra={"output_check": "best_pick_report"},   # 产出内容须合格（winner 为 A/B），否则让 agent 重写
     )
 
 

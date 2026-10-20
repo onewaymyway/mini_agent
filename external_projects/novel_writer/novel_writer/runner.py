@@ -31,7 +31,7 @@ from novel_writer.workspace import Workspace
 
 WORKFLOW_NAME = "skill_step"
 RECEIPT_FILE = "receipt.json"
-MAX_RECEIPT_ATTEMPTS = 2           # 同一次执行内，回执/产出不合格时最多再让 agent 补一次
+MAX_RECEIPT_ATTEMPTS = 3           # 同一次执行内，回执/产出/内容不合格时最多让 agent 补 2 次
 DEFAULT_MAX_TURNS = 50
 DEFAULT_TIMEOUT_SEC = 900
 
@@ -212,6 +212,10 @@ def _run_skill_step_inner(
         if not problems and receipt.get("status") == "done":
             _normalize_outputs(ws, step, since=started)
             problems = [f"缺少产出 {m}" for m in V.missing_outputs(ws, step.outputs)]
+        if not problems:
+            problems = V.content_problems(ws, step)   # 产出存在但内容不合格（如择优报告 winner 非法）
+            if problems:
+                st.log_line(ws, f"⚠ {step.id} 产出内容不合格（第 {attempt + 1} 次），要求 agent 修正：" + "；".join(problems))
         if not problems:
             return receipt
         hint = "；".join(problems)

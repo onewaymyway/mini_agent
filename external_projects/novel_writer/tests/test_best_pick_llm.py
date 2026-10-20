@@ -70,8 +70,10 @@ def test_missing_or_invalid_report_fails_instead_of_guessing(isolated):
     inv = FakeInvoker(ws.root, writers={"ch01.best_pick": lambda w: atomic_write_json(
         w.path("best_pick_report", nn=1), {"winner": "C"})})
     _run(ws, inv)
-    e = st.get_step_state(ws, "ch01.best_pick_apply")
+    # 错误应在择优步骤本身被发现（并已让 agent 重写），而不是拖到应用步骤才失败
+    e = st.get_step_state(ws, "ch01.best_pick")
     assert e["status"] in (st.ST_FAILED, st.ST_BLOCKED) and "winner" in (e.get("error") or "")
+    assert st.get_step_state(ws, "ch01.best_pick_apply")["status"] != st.ST_PASSED
 
 
 def test_legacy_completed_pick_is_adopted_not_redone(isolated):

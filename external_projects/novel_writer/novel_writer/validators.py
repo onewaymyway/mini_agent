@@ -12,8 +12,13 @@ M1 只校验结构；内容质量（字数、伏笔、人物名白名单等）�
 
 from __future__ import annotations
 
-from typing import Any, List, Sequence
+import json
+import re
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
+from novel_writer.fsutil import atomic_write_json
+from novel_writer.textio import read_text_utf8
 from novel_writer.workspace import Workspace
 
 RECEIPT_STATUSES = ("done", "needs_user")
@@ -53,3 +58,71 @@ def missing_outputs(ws: Workspace, outputs: Sequence[str]) -> List[str]:
             if not (ws.root / spec).is_file():
                 missing.append(spec)
     return missing
+
+
+# ── 产出内容校验（M8）──────────────────────────────────────────────
+# 框架只检查产出文件「存在」；对于下游要读取的结构化产出（如择优报告），还要检查内容。
+# 内容不合格时，与回执问题一样作为提示交给 agent 重写（见 runner.MAX_RECEIPT_ATTEMPTS）。
+# 校验可以顺便做规范化（如 "a"→"A"），规范化结果写回文件，避免下游因写法不同而失败。
+
+PICK_WINNER_ALIASES: Dict[str, str] = {
+    "A": "A", "A稿": "A", "正文": "A", "正文稿": "A", "原稿": "A",
+    "B": "B", "B稿": "B", "候选": "B", "候选稿": "B", "候选稿B": "B",
+}
+
+
+def normalize_pick_winner(value: Any) -> Optional[str]:
+    """把择优结论规范成 "A" / "B"；无法识别返回 None（调用方不得猜测）。"""
+    if not isinstance(value, str):
+        return None
+    return PICK_WINNER_ALIASES.get(value.strip().replace(" ", "").upper())
+
+
+_FENCE = re.compile(r"^\s*```(?:json)?\s*\n(.*?)\n\s*```\s*$", re.S)
+
+
+def best_pick_report_problems(path: Path) -> List[str]:
+    """检查择优报告：必须是 JSON 对象，且 winner 能规范为 A/B。合格时写回规范化结果。"""
+    if not path.is_file():
+        return [f"择优报告不存在：{path.name}"]
+    raw = read_text_utf8(path).strip()
+    fenced = False
+    m = _FENCE.match(raw)
+    if m:
+        raw, fenced = m.group(1).strip(), True
+    try:
+        data = json.loads(raw)
+    except ValueError as exc:
+        return [f"择优报告不是合法 JSON（{exc}）。请只输出一个 JSON 对象，不要夹杂说明文字。"]
+    if not isinstance(data, dict):
+        return [f"择优报告顶层必须是 JSON 对象，当前是 {type(data).__name__}"]
+    winner = normalize_pick_winner(data.get("winner"))
+    if winner is None:
+        return [f"择优报告的 winner 必须是 \"A\"（正文）或 \"B\"（候选稿），当前为 {data.get('winner')!r}"]
+    reason = data.get("reason")
+    if reason is not None and not isinstance(reason, str):
+        return ["择优报告的 reason 必须是字符串"]
+    if data.get("winner") != winner or fenced:
+        data["winner"] = winner
+        atomic_write_json(path, data)
+    return []
+
+
+def _check_best_pick(ws: Workspace, step: Any) -> List[str]:
+    return best_pick_report_problems(ws.path("best_pick_report", nn=step.chapter))
+
+
+OUTPUT_CHECKS: Dict[str, Callable[[Workspace, Any], List[str]]] = {
+    "best_pick_report": _check_best_pick,
+}
+
+
+def content_problems(ws: Workspace, step: Any) -> List[str]:
+    """步骤声明的产出内容校验（step.extra["output_check"]）。未声明则不校验。"""
+    name = (getattr(step, "extra", None) or {}).get("output_check")
+    if not name:
+        return []
+    checker = OUTPUT_CHECKS.get(name)
+    if checker is None:
+        raise KeyError(f"未知的产出校验：{name}")
+    return checker(ws, step)
