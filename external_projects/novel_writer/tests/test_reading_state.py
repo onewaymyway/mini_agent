@@ -71,3 +71,13 @@ def test_position_is_per_book(tmp_path):
     assert (a["last_listen_chapter"], a["listen_segment"]) == (3, 12)
     assert (b["last_listen_chapter"], b["listen_segment"]) == (1, 2)
     assert rs.load(tmp_path / "c")["listen_segment"] is None   # 第三本书没有记录
+
+
+def test_resolve_chapter_falls_back_to_nearest_earlier_not_first():
+    avail = [1, 2, 4, 5]
+    assert rs.resolve_chapter(4, avail) == 4          # 存在：原样
+    assert rs.resolve_chapter(3, avail) == 2          # 暂时不可听：回退到不晚于它的最近章
+    assert rs.resolve_chapter(9, avail) == 5          # 超出末尾：最后一个可听章
+    assert rs.resolve_chapter(0, avail) == 1          # 早于所有章：第一章
+    assert rs.resolve_chapter(None, avail) == 1
+    assert rs.resolve_chapter(3, []) is None

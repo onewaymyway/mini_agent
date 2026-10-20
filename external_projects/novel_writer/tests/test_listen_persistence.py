@@ -75,3 +75,23 @@ def test_user_pick_saves_chapter_start_and_restarts_player(isolated):
     assert st_saved["last_listen_chapter"] == 3
     assert st_saved["listen_segment"] == 0
     assert at.session_state["listen_nonce"] == 1   # 播放器以新 key 重新挂载
+
+
+def test_saved_chapter_that_is_temporarily_unreadable_does_not_reset_to_first(isolated):
+    ws = _book(isolated)
+    reading_state.update(ws.root, last_listen_chapter=3, listen_segment=5)
+    from novel_writer import chapter_ops as C
+    C.chapter_file(ws, 3).unlink()   # 第 3 章正文文件暂时不存在，字数为 0，不再可听
+    at = _app(ws)
+    assert at.selectbox(key="listen_start").value == 2   # 回退到不晚于 3 的最近章，而不是第 1 章
+    assert not at.exception, at.exception
+
+
+def test_pending_sync_is_applied_before_selectbox_without_exception(isolated):
+    ws = _book(isolated)
+    at = _app(ws)
+    at.session_state["listen_pending_sync"] = 3   # 模拟播放器切到第 3 章后的下一次运行
+    at.run()
+    assert not at.exception, at.exception
+    assert at.selectbox(key="listen_start").value == 3
+    assert "listen_pending_sync" not in at.session_state

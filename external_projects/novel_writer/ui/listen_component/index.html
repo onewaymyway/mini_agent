@@ -242,7 +242,7 @@
       utt = null; startedAt = 0; retries = 0;
       idx++;
       if (idx >= segs.length) {
-        idx = 0; state = "idle"; keepRef = null;   // 读完全书：位置回到开头
+        idx = segs.length - 1; state = "idle"; keepRef = null;   // 读完全书：位置停在末段，不回到开头
         setStatus(""); render(); report(); return;
       }
       speakCurrent(my);

@@ -69,3 +69,19 @@ def chapter_or_none(value: Optional[Any], available: list) -> Optional[int]:
     except (TypeError, ValueError):
         return None
     return n if n in available else None
+
+
+def resolve_chapter(value: Optional[Any], available: list) -> Optional[int]:
+    """把保存的章节解析为当前可听列表中的章节。
+    章节存在则原样返回；不存在（如正文暂时被清空）则回退到不晚于它的最近一章；都没有才回退到第一章。
+    避免因某一章暂时不可听就把进度整体重置到第一章。"""
+    if not available:
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return available[0]
+    if n in available:
+        return n
+    earlier = [a for a in available if a < n]
+    return max(earlier) if earlier else available[0]

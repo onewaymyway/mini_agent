@@ -24,6 +24,7 @@ _player = components.declare_component("novel_listen_player", path=str(_COMPONEN
 _SEL = "listen_start"          # 选择框的 session key（表示当前所在/起始章节）
 _NONCE = "listen_nonce"        # 用户改选择框时递增，让播放器重新挂载到新起点
 _LAST_REPORT = "listen_last_report"
+_PENDING = "listen_pending_sync"   # 待应用到选择框的章节（播放器切章后记下）
 
 
 def _on_pick(ws: str) -> None:
@@ -45,10 +46,14 @@ def render_listen(ws: str, rows: list) -> None:
         titles = {r["chapter"]: r["title"] for r in readable}
         state = reading_state.load(ws)
 
-        # 新会话（刷新/重启）：选择框恢复到上次收听的章节；同一会话内以当前状态为准。
-        if _SEL not in st.session_state:
-            saved = reading_state.chapter_or_none(state.get("last_listen_chapter"), numbers)
-            st.session_state[_SEL] = saved if saved is not None else numbers[0]
+        # 选择框控件渲染之前，才能修改它的 session_state。
+        # 播放器切章后只记下待同步的章节（见文末），这里在下一次运行的开头应用。
+        pending = st.session_state.pop(_PENDING, None)
+        if pending in numbers:
+            st.session_state[_SEL] = pending
+        elif st.session_state.get(_SEL) not in numbers:
+            # 新会话（刷新/重启），或当前章节已不可听：回退到上次收听位置（或不晚于它的最近章节）
+            st.session_state[_SEL] = reading_state.resolve_chapter(state.get("last_listen_chapter"), numbers)
         st.selectbox(
             "当前章节（改选则从该章开头重新连播）",
             numbers,
@@ -95,6 +100,7 @@ def render_listen(ws: str, rows: list) -> None:
                     listen_voice=str(report.get("voice", "")),
                 )
                 if ch != current:
-                    # 播放器已切到新章节：同步选择框（需要重跑一次页面才能改动已渲染的控件）
-                    st.session_state[_SEL] = ch
+                    # 播放器已切到新章节：记下待同步的章节并重跑页面，由下一次运行在选择框渲染前应用。
+                    # （不能在选择框渲染之后直接修改它，否则 Streamlit 会报错）
+                    st.session_state[_PENDING] = ch
                     st.rerun()
