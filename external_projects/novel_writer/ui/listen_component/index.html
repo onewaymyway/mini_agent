@@ -34,6 +34,9 @@
           max-height: 9rem; overflow-y: auto; margin-bottom: 10px; }
   .row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin-bottom: 0.5rem; }
   .label { color: var(--muted); font-size: 0.9rem; }
+  #status { display: none; font-size: 0.9rem; padding: 6px 10px; margin: 4px 0 8px; border-radius: 0.5rem;
+            border: 1px solid #e8a7a2; background: rgba(255, 75, 75, 0.08); color: #b3261e; }
+  #status.info { border-color: var(--border); background: var(--bg2); color: var(--muted); }
   #found { color: var(--muted); font-size: 0.85rem; min-height: 1rem; margin-top: 2px; }
   .hint { color: var(--muted); font-size: 0.8rem; margin-top: 6px; }
 </style>
@@ -64,6 +67,7 @@
   <button id="findGo">查找并跳转</button>
 </div>
 <div id="found"></div>
+<div id="status"></div>
 
 <div class="row">
   <label>语速 <select id="rate"></select></label>
@@ -160,7 +164,7 @@
     $("text").textContent = segs[i];
     $("segNum").max = r.end - r.start;
     if (document.activeElement !== $("segNum")) $("segNum").value = i - r.start + 1;
-    $("toggle").textContent = state === "playing" ? "⏸ 暂停" : (state === "paused" ? "▶ 继续" : "▶ 播放");
+    $("toggle").textContent = state === "playing" ? "⏸ 暂停" : (state === "paused" ? "▶ 继续" : (state === "error" ? "↻ 重试" : "▶ 播放"));
     fitHeight();
   }
   function zhVoices() {
@@ -182,9 +186,39 @@
     if (prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
   }
 
-  // ---- 播放 ----
+  // ---- 播放与错误恢复 ----
+  // 出错时在同一段上指数退避重试；连续失败后进入 error 状态，由用户点「重试」继续。
+  const MAX_RETRY = 5;
+  let utt = null;          // 当前正在朗读的 utterance
+  let speakAt = 0;         // 调用 speak 的时间
+  let startedAt = 0;       // onstart 的时间（0 表示尚未开始出声）
+  let retries = 0;         // 当前段已重试次数
+  let retryPending = false;
+
+  const REASON_TEXT = {
+    "network": "网络异常",
+    "synthesis-failed": "语音合成失败",
+    "synthesis-unavailable": "语音服务不可用",
+    "language-unavailable": "没有可用的中文语音",
+    "voice-unavailable": "所选音色不可用",
+    "audio-busy": "音频设备忙",
+    "audio-hardware": "音频设备异常",
+    "stall": "朗读卡住了",
+    "silent": "朗读意外停止"
+  };
+  function reasonText(r) { return REASON_TEXT[r] || ("未知错误（" + r + "）"); }
+
+  function setStatus(msg, kind) {
+    const el = $("status");
+    el.textContent = msg || "";
+    el.className = kind === "info" ? "info" : "";
+    el.style.display = msg ? "block" : "none";
+    fitHeight();
+  }
+
   function speakCurrent(my) {
     if (my !== token) return;
+    retryPending = false;
     const segs = DATA.segments;
     const u = new SpeechSynthesisUtterance(segs[idx]);
     u.lang = "zh-CN";
@@ -192,29 +226,77 @@
     const name = $("voice").value;
     const v = zhVoices().find(x => x.name === name);
     if (v) { u.voice = v; u.lang = v.lang; }
+    utt = u;
+    keepRef = u;   // 保留引用，防止 Chrome 垃圾回收导致 onend 不触发
+    speakAt = Date.now();
+    startedAt = 0;
+
+    u.onstart = () => {
+      if (my !== token || utt !== u) return;
+      startedAt = Date.now();
+      retries = 0;
+      setStatus("");
+    };
     u.onend = () => {
-      if (my !== token) return;
+      if (my !== token || utt !== u) return;
+      utt = null; startedAt = 0; retries = 0;
       idx++;
       if (idx >= segs.length) {
         idx = 0; state = "idle"; keepRef = null;   // 读完全书：位置回到开头
-        render(); report(); return;
+        setStatus(""); render(); report(); return;
       }
       speakCurrent(my);
       maybeReport();
     };
     u.onerror = e => {
-      if (my !== token) return;
-      if (e.error === "interrupted" || e.error === "canceled") return;
-      state = "idle"; keepRef = null; render(); report();
+      if (my !== token || utt !== u) return;
+      utt = null;
+      const reason = e.error || "unknown";
+      if (reason === "interrupted" || reason === "canceled") return;   // 我们主动取消，不算错误
+      handleFailure(my, reason);
     };
-    keepRef = u;   // 保留引用，防止 Chrome 垃圾回收导致 onend 不触发
+
     state = "playing";
     render();
     maybeReport();
     synth.speak(u);
   }
+
+  function handleFailure(my, reason) {
+    if (my !== token) return;
+    // 不允许朗读是用户权限问题，重试没有意义
+    if (reason === "not-allowed") { fail(reason); return; }
+    if (retries >= MAX_RETRY) { fail(reason); return; }
+    retries++;
+    retryPending = true;
+    const delay = Math.min(1000 * Math.pow(2, retries - 1), 8000);
+    synth.cancel();
+    setStatus("⚠ 朗读出错：" + reasonText(reason) + "。" + Math.round(delay / 1000) +
+              " 秒后第 " + retries + "/" + MAX_RETRY + " 次重试…");
+    setTimeout(() => {
+      if (my !== token) return;
+      speakCurrent(my);
+    }, delay);
+  }
+
+  function fail(reason) {
+    retryPending = false;
+    utt = null; keepRef = null;
+    state = "error";
+    if (reason === "not-allowed") {
+      setStatus("⚠ 浏览器不允许朗读，请先点击页面任意处，再点「↻ 重试」。");
+    } else {
+      setStatus("⚠ 朗读失败（" + reasonText(reason) + "），已自动重试 " + MAX_RETRY +
+                " 次仍无法继续。请检查网络后点「↻ 重试」，或用上一段/下一段跳过本段。");
+    }
+    render();
+    report();
+  }
+
   function speakFrom(i) {
     token++;
+    retries = 0;
+    retryPending = false;
     synth.cancel();
     synth.resume();
     idx = clampIdx(i);
@@ -223,10 +305,28 @@
   // 停止：保留当前位置，下次播放从这里接着读
   function stopKeepPosition() {
     token++;
+    retries = 0;
+    retryPending = false;
     synth.cancel();
+    utt = null;
     state = "idle"; keepRef = null;
+    setStatus("");
     render(); report();
   }
+
+  // 看门狗：处理「不结束也不报错」的卡住、被系统暂停、以及从未开始出声的情况
+  setInterval(() => {
+    if (state !== "playing" || retryPending || !utt || !DATA || !DATA.segments.length) return;
+    const now = Date.now();
+    if (synth.paused) { synth.resume(); return; }          // 标签页或系统导致的暂停，尝试恢复
+    const seg = DATA.segments[idx] || "";
+    const expected = seg.length * 400 / rate + 8000;     // 按字数估算的最长朗读时间（毫秒）
+    if (startedAt && now - startedAt > expected) { utt = null; handleFailure(token, "stall"); return; }
+    if (!startedAt && now - speakAt > 10000) { utt = null; handleFailure(token, "stall"); return; }
+    if (startedAt && !synth.speaking && !synth.pending && now - startedAt > 1500) {
+      utt = null; handleFailure(token, "silent");
+    }
+  }, 1500);
 
   // ---- 跳转 ----
   // 空闲时只移动位置；播放或暂停中则直接从新位置开始朗读
@@ -291,9 +391,9 @@
     $("voice").onchange = () => report();
 
     $("toggle").onclick = () => {
-      if (state === "playing") { synth.pause(); state = "paused"; render(); report(); }
+      if (state === "playing") { synth.pause(); state = "paused"; setStatus(""); render(); report(); }
       else if (state === "paused") { synth.resume(); state = "playing"; render(); }
-      else speakFrom(idx);
+      else { setStatus(""); speakFrom(idx); }   // idle 或 error：从当前段开始（error 时即手动重试）
     };
     $("stop").onclick = stopKeepPosition;
     $("prev").onclick = () => jumpChapter(-1);
