@@ -242,8 +242,20 @@ def _news_hash(content: str, time_str: str) -> str:
 
 PENDING_FILE = "telegraph_pending.json"      # 待处理新闻队列
 PROCESSED_FILE = "telegraph_processed.json"   # 已处理新闻归档
-PENDING_MAX_SIZE = 1000      # 待处理队列最大保留条数
-PROCESSED_MAX_SIZE = 5000    # 已处理新闻最大保留条数
+# 以下三个常量只是默认值；实际上限从 watchlist.yaml 的 telegraph.* 读取（见 _telegraph_limit）
+PENDING_MAX_SIZE = 1000      # 待处理队列最大保留条数（telegraph.pending_max_size）
+PROCESSED_MAX_SIZE = 5000    # 已处理新闻最大保留条数（telegraph.processed_max_size）
+ANALYSIS_MAX_RECORDS = 2000  # 分析结果最大保留条数（telegraph.analysis_max_records）
+
+
+def _telegraph_limit(prop: str, default: int) -> int:
+    """从配置读取保留条数上限；配置读取失败时用默认值，保证落盘逻辑不因配置出错而中断。"""
+    try:
+        from stock_watch.config import load_config
+        value = getattr(load_config(), prop)
+        return int(value) if int(value) >= 1 else default
+    except Exception:
+        return default
 
 
 def load_pending() -> dict:
@@ -271,7 +283,7 @@ def save_pending(news_list: list) -> None:
         "updated_at": datetime.now(timezone.utc).isoformat(),
         # 队列按时间倒序（最新在前），超限时必须保留最新的前 N 条；
         # 先显式排序再截取，避免依赖调用方的顺序。
-        "news": sorted(news_list, key=lambda x: x.get("time", ""), reverse=True)[:PENDING_MAX_SIZE],
+        "news": sorted(news_list, key=lambda x: x.get("time", ""), reverse=True)[:_telegraph_limit("telegraph_pending_max_size", PENDING_MAX_SIZE)],
     }
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -302,7 +314,7 @@ def save_processed(news_list: list, hashes: set, total_processed: int) -> None:
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "total_processed": total_processed,
         # 同上：按时间倒序后保留最新的前 N 条完整记录（旧写法 [-N:] 会丢掉最新的）
-        "news": sorted(news_list, key=lambda x: x.get("time", ""), reverse=True)[:PROCESSED_MAX_SIZE],
+        "news": sorted(news_list, key=lambda x: x.get("time", ""), reverse=True)[:_telegraph_limit("telegraph_processed_max_size", PROCESSED_MAX_SIZE)],
         "hashes": list(hashes),
     }
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -755,8 +767,9 @@ def save_analysis_state(
     state["last_analysis_index"] = last_index
     state["analyses"] = state.get("analyses", []) + new_analyses
     state["last_run_at"] = datetime.now(timezone.utc).isoformat()
-    # 保留最近2000条分析记录
-    state["analyses"] = state["analyses"][-2000:]
+    # 只保留最近 N 条分析记录（N 来自 telegraph.analysis_max_records，默认 2000）；
+    # analyses 按追加顺序存放，最新在末尾，所以保留末尾 N 条
+    state["analyses"] = state["analyses"][-_telegraph_limit("telegraph_analysis_max_records", ANALYSIS_MAX_RECORDS):]
     state_path.write_text(
         json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
     )

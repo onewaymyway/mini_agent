@@ -123,6 +123,29 @@ class WatchlistConfig:
             return 100
         return n if n >= 0 else 100
 
+    def _telegraph_limit(self, key: str, default: int) -> int:
+        """读取 telegraph 下的正整数上限；缺失或非法（非数字/<1）时回落到默认值。"""
+        try:
+            n = int(self.telegraph.get(key, default))
+        except (TypeError, ValueError):
+            return default
+        return n if n >= 1 else default
+
+    @property
+    def telegraph_analysis_max_records(self) -> int:
+        """分析结果（telegraph_analysis_state.json）最多保留条数，默认 2000。"""
+        return self._telegraph_limit("analysis_max_records", 2000)
+
+    @property
+    def telegraph_pending_max_size(self) -> int:
+        """待处理新闻队列最多保留条数，默认 1000。"""
+        return self._telegraph_limit("pending_max_size", 1000)
+
+    @property
+    def telegraph_processed_max_size(self) -> int:
+        """已处理新闻归档最多保留条数，默认 5000。"""
+        return self._telegraph_limit("processed_max_size", 5000)
+
     @property
     def telegraph_llm_batch_size(self) -> int:
         """每次 LLM 调用分析的新闻条数，默认 25；非法值（<1/非数字）回落到默认。"""

@@ -95,8 +95,7 @@ def test_archive_trim_keeps_newest(monkeypatch, tmp_path):
     import stock_watch.config as cfg
 
     monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(ns, "PROCESSED_MAX_SIZE", 5)
-    monkeypatch.setattr(ns, "PENDING_MAX_SIZE", 5)
+    monkeypatch.setattr(ns, "_telegraph_limit", lambda prop, default: 5)
     old = [{"time": f"2026-10-18 10:00:0{i}", "content": f"o{i}", "hash": f"o{i}"} for i in range(5)]
     ns.save_processed(old, {n["hash"] for n in old}, 5)
     new = [{"time": "2026-10-20 07:00:00", "content": "n", "hash": "n"}]
@@ -161,3 +160,23 @@ def test_config_new_props():
     assert WatchlistConfig(telegraph={"top_n": 50}).telegraph_max_news == 50
     assert WatchlistConfig(telegraph={}).telegraph_llm_max_news_per_run == 100
     assert WatchlistConfig(telegraph={"llm_max_news_per_run": 0}).telegraph_llm_max_news_per_run == 0
+
+
+def test_retention_limits_from_config(monkeypatch, tmp_path):
+    """三个保留上限都从配置读取；非法值回落默认；分析结果保留最新的 N 条。"""
+    import stock_watch.config as cfg
+
+    assert WatchlistConfig(telegraph={}).telegraph_analysis_max_records == 2000
+    assert WatchlistConfig(telegraph={}).telegraph_pending_max_size == 1000
+    assert WatchlistConfig(telegraph={}).telegraph_processed_max_size == 5000
+    c = WatchlistConfig(telegraph={"analysis_max_records": 3, "pending_max_size": "x", "processed_max_size": 0})
+    assert c.telegraph_analysis_max_records == 3
+    assert c.telegraph_pending_max_size == 1000
+    assert c.telegraph_processed_max_size == 5000
+
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "load_config", lambda *a, **k: c)
+    state_path = tmp_path / "state.json"
+    ns.save_analysis_state(state_path, 0, [{"news_time": f"t{i}"} for i in range(5)])
+    kept = [a["news_time"] for a in ns.load_analysis_state(state_path)["analyses"]]
+    assert kept == ["t2", "t3", "t4"]
