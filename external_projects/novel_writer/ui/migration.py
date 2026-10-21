@@ -36,7 +36,8 @@ def _show(result: dict) -> None:
     st.json(data)
 
 
-def render_migration(ws: str) -> None:
+def render_migration(ws: str, scope: str) -> None:
+    """scope：调用方的唯一标识（如 codex / threads），同一次运行里多处渲染时用来区分控件 key。"""
     res = tool_api.migration_status(ws)
     if not res["ok"]:
         show_error(res)
@@ -47,14 +48,14 @@ def render_migration(ws: str) -> None:
     with st.expander(f"⚠️ 数据迁移：{len(pending)} 项旧版数据待迁移", expanded=True):
         st.caption("旧版单文件 JSON 已改为每个条目一个文件的小文件存储。建议先在副本上验证；"
                    "迁移不会删除旧文件，只改名为 .bak。")
-        use_llm = st.checkbox("旧文件损坏时允许 LLM 直接转换（结果需人工复核）", key="mig_use_llm")
+        use_llm = st.checkbox("旧文件损坏时允许 LLM 直接转换（结果需人工复核）", key=f"{scope}_mig_use_llm")
         for item in pending:
             name = item["name"]
             st.markdown(f"**{_LABELS[name]}**　旧文件：`{item['legacy']}`")
             c1, c2, c3 = st.columns(3)
-            if c1.button("干跑检查", key=f"mig_dry_{name}"):
+            if c1.button("干跑检查", key=f"{scope}_mig_dry_{name}"):
                 _show(_RUN[name](ws, dry_run=True, use_llm=use_llm))
-            if c2.button("迁移（合法文件）", key=f"mig_run_{name}"):
+            if c2.button("迁移（合法文件）", key=f"{scope}_mig_run_{name}"):
                 _show(_RUN[name](ws, use_llm=False))
-            if use_llm and c3.button("确认提交 LLM 转换结果", key=f"mig_confirm_{name}"):
+            if use_llm and c3.button("确认提交 LLM 转换结果", key=f"{scope}_mig_confirm_{name}"):
                 _show(_RUN[name](ws, confirm=True, use_llm=True))

@@ -10,7 +10,7 @@ from ui.migration import render_migration
 
 
 def render_codex(ws: str) -> None:
-    render_migration(ws)
+    render_migration(ws, "codex")
     res = tool_api.codex(ws)
     if not res["ok"]:
         show_error(res)

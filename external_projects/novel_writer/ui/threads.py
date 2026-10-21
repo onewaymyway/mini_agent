@@ -10,7 +10,7 @@ from ui.migration import render_migration
 
 
 def render_threads(ws: str) -> None:
-    render_migration(ws)
+    render_migration(ws, "threads")
     res = tool_api.threads(ws)
     if not res["ok"]:
         show_error(res)
