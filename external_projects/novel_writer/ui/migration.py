@@ -19,7 +19,7 @@ _RUN = {
 _HINTS = {
     "dry_run": ("info", "干跑通过，未写入任何文件。"),
     "migrated": ("success", "迁移完成，旧文件已改名为 .bak。"),
-    "needs_llm": ("warning", "旧文件损坏，无法确定性迁移。勾选「允许 LLM 转换」后再检查。"),
+    "needs_llm": ("warning", "旧文件损坏，无法确定性迁移。请先勾选上方「允许 LLM 转换」，再点击「检查」或「迁移」。"),
     "review_required": ("warning", "LLM 已生成转换结果，尚未提交。请核对结果后点击「确认提交」。"),
     "already_migrated": ("info", "已是小文件格式，无需迁移。"),
     "no_legacy": ("info", "没有旧版文件，无需迁移。"),
@@ -55,7 +55,8 @@ def render_migration(ws: str, scope: str) -> None:
             c1, c2, c3 = st.columns(3)
             if c1.button("干跑检查", key=f"{scope}_mig_dry_{name}"):
                 _show(_RUN[name](ws, dry_run=True, use_llm=use_llm))
-            if c2.button("迁移（合法文件）", key=f"{scope}_mig_run_{name}"):
-                _show(_RUN[name](ws, use_llm=False))
+            if c2.button("迁移", key=f"{scope}_mig_run_{name}",
+                         help="合法文件直接确定性迁移；勾选 LLM 转换后，损坏的文件由 LLM 转换并等待复核。"):
+                _show(_RUN[name](ws, use_llm=use_llm))
             if use_llm and c3.button("确认提交 LLM 转换结果", key=f"{scope}_mig_confirm_{name}"):
                 _show(_RUN[name](ws, confirm=True, use_llm=True))
