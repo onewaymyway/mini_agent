@@ -405,7 +405,11 @@ def migrate_legacy(legacy_path: Path, base: Path, *, dry_run: bool = False,
 
 
 def llm_convert_legacy(legacy_path: Path, workdir: Path, invoker: Callable[..., Any],
-                       max_attempts: int = 3) -> Any:
+                       max_attempts: int = 3, reuse_only: bool = False) -> Any:
+    from novel_writer import llm_convert as _LCX
+    if reuse_only:
+        cand = _LCX.load_candidate(workdir, legacy_path, _plot_stage_validator(Path(legacy_path).read_bytes().decode('utf-8', errors='replace')))
+        return cand or _LCX.ConvertResult(ok=False, attempts=0, errors=['没有与当前旧文件匹配的待确认转换结果（旧文件已变化，或尚未运行干跑检查）。请先点击「检查」生成转换结果，核对后再确认提交。'])
     """供 migrate_legacy 使用的 LLM 转换：让技能 ledger-convert 直接读取损坏原文，校验后返回结果。"""
     from novel_writer import llm_convert as LC
     text = Path(legacy_path).read_bytes().decode("utf-8", errors="replace")
@@ -418,4 +422,6 @@ def llm_convert_legacy(legacy_path: Path, workdir: Path, invoker: Callable[..., 
         hint_ids = set(LC.id_count_hint(text))
         if hint_ids and len(res.data.get(ITEM_KEY, [])) < len(hint_ids):
             res.warnings.append(f"疑似遗漏：原文中出现 {len(hint_ids)} 个不同的 id，转换得到 {len(res.data.get(ITEM_KEY, []))} 条")
+    if res.ok:
+        _LCX.save_candidate(workdir, legacy_path, res)
     return res

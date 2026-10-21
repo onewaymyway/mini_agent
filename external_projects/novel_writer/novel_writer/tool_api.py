@@ -709,7 +709,7 @@ def migrate_characters(workspace: str, dry_run: bool = False, confirm: bool = Fa
             from novel_writer.runner import FrameworkInvoker
             invoker = FrameworkInvoker()
             workdir = ws.root / "_studio" / "convert" / "characters"
-            convert = lambda legacy: CS.llm_convert_legacy(legacy, workdir, invoker)  # noqa: E731
+            convert = lambda legacy: CS.llm_convert_legacy(legacy, workdir, invoker, reuse_only=confirm)  # noqa: E731
         try:
             return _ok(CS.migrate_legacy(ws.path("characters_legacy"), ws.path("characters_dir"),
                                          ws.path("characters"), dry_run=dry_run, convert=convert,
@@ -754,7 +754,7 @@ def migrate_blueprint(workspace: str, dry_run: bool = False, confirm: bool = Fal
             from novel_writer.runner import FrameworkInvoker
             invoker = FrameworkInvoker()
             workdir = ws.root / "_studio" / "convert" / "blueprint"
-            convert = lambda legacy: BS.llm_convert_legacy(legacy, workdir, invoker)  # noqa: E731
+            convert = lambda legacy: BS.llm_convert_legacy(legacy, workdir, invoker, reuse_only=confirm)  # noqa: E731
         try:
             return _ok(BS.migrate_legacy(ws.path("blueprint_legacy"), ws.path("blueprint_dir"),
                                          ws.path("blueprint"), dry_run=dry_run, convert=convert,
@@ -783,7 +783,7 @@ def migrate_plot_ledger(workspace: str, dry_run: bool = False, confirm: bool = F
             from novel_writer.runner import FrameworkInvoker
             invoker = FrameworkInvoker()
             workdir = ws.root / "_studio" / "convert" / "plot_ledger"
-            convert = lambda legacy: PS.llm_convert_legacy(legacy, workdir, invoker)  # noqa: E731
+            convert = lambda legacy: PS.llm_convert_legacy(legacy, workdir, invoker, reuse_only=confirm)  # noqa: E731
         try:
             return _ok(PS.migrate_legacy(ws.path("plot_legacy"), ws.path("plot_items_dir"), dry_run=dry_run,
                                          register_path=None if dry_run else ws.path("plot_register"),

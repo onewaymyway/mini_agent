@@ -236,7 +236,11 @@ def staging_validator(out: Path) -> Tuple[Optional[Dict[str, Any]], List[str]]:
         return None, exc.problems
 
 
-def llm_convert_legacy(legacy_path: Path, workdir: Path, invoker: Callable[..., Any], max_attempts: int = 3) -> Any:
+def llm_convert_legacy(legacy_path: Path, workdir: Path, invoker: Callable[..., Any], max_attempts: int = 3, reuse_only: bool = False) -> Any:
+    from novel_writer import llm_convert as _LCX
+    if reuse_only:
+        cand = _LCX.load_candidate(workdir, legacy_path, staging_validator)
+        return cand or _LCX.ConvertResult(ok=False, attempts=0, errors=['没有与当前旧文件匹配的待确认转换结果（旧文件已变化，或尚未运行干跑检查）。请先点击「检查」生成转换结果，核对后再确认提交。'])
     """损坏的旧版蓝图：让 LLM（ledger-convert）直接读取原文写出拆分文件，经严格校验后返回。"""
     from novel_writer import llm_convert as LC
     text = Path(legacy_path).read_bytes().decode("utf-8", errors="replace")
@@ -250,6 +254,8 @@ def llm_convert_legacy(legacy_path: Path, workdir: Path, invoker: Callable[..., 
         hint = len(set(LC.id_count_hint(text, r'"id"\s*:\s*(\d+)')))
         if hint and len(res.data.get("chapters", [])) < hint:
             res.warnings.append(f"疑似遗漏：原文中出现 {hint} 个章号，转换得到 {len(res.data.get('chapters', []))} 章")
+    if res.ok:
+        _LCX.save_candidate(workdir, legacy_path, res)
     return res
 
 

@@ -58,5 +58,6 @@ def render_migration(ws: str, scope: str) -> None:
             if c2.button("迁移", key=f"{scope}_mig_run_{name}",
                          help="合法文件直接确定性迁移；勾选 LLM 转换后，损坏的文件由 LLM 转换并等待复核。"):
                 _show(_RUN[name](ws, use_llm=use_llm))
-            if use_llm and c3.button("确认提交 LLM 转换结果", key=f"{scope}_mig_confirm_{name}"):
+            if use_llm and c3.button("确认提交 LLM 转换结果", key=f"{scope}_mig_confirm_{name}",
+                                       help="复用上一次「检查」生成的转换结果，不再调用 LLM；若旧文件已变化或尚未检查，会拒绝提交。"):
                 _show(_RUN[name](ws, confirm=True, use_llm=True))

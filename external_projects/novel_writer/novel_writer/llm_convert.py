@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import shutil
 from dataclasses import dataclass, field
+import hashlib
+import json
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -25,6 +27,7 @@ class ConvertResult:
     errors: List[str] = field(default_factory=list)      # 最后一次失败的错误（ok=False 时）
     warnings: List[str] = field(default_factory=list)    # 合格但需要关注的提示（如疑似遗漏）
     staging: Optional[Path] = None
+    reused: bool = False                                  # 是否复用了干跑时保存的候选结果（未调用 LLM）
 
 
 def convert_with_llm(*, source: Path, workdir: Path, invoker: Callable[..., Any], skill: str,
@@ -73,3 +76,42 @@ def id_count_hint(source_text: str, id_pattern: str = r'"id"\s*:\s*"([^"]+)"') -
     """从损坏原文中粗略统计 id 出现次数，用于发现 LLM 可能的遗漏（只作提示，不作判定）。"""
     import re
     return re.findall(id_pattern, source_text)
+
+
+# ── 候选结果：干跑（LLM 转换）成功后保存，确认提交时复用，避免再次调用 LLM ─────────
+
+CANDIDATE_FILE = "candidate.json"
+
+
+def _sha(path: Path) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def save_candidate(workdir: Path, source: Path, res: "ConvertResult") -> None:
+    """保存本次转换通过校验的候选结果（旧文件指纹 + 暂存目录 + 提示）。"""
+    if not (res.ok and res.staging):
+        return
+    Path(workdir).mkdir(parents=True, exist_ok=True)
+    payload = {"source_sha": _sha(source), "staging": str(res.staging), "warnings": list(res.warnings)}
+    (Path(workdir) / CANDIDATE_FILE).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_candidate(workdir: Path, source: Path, validate: Validator) -> Optional["ConvertResult"]:
+    """读取候选结果。旧文件已变化、候选缺失或暂存目录未通过校验时返回 None。"""
+    cand_path = Path(workdir) / CANDIDATE_FILE
+    if not cand_path.is_file() or not Path(source).is_file():
+        return None
+    try:
+        meta = json.loads(cand_path.read_text(encoding="utf-8"))
+    except ValueError:
+        return None
+    if meta.get("source_sha") != _sha(source):
+        return None
+    out = Path(meta.get("staging", ""))
+    if not out.is_dir():
+        return None
+    data, errors = validate(out)
+    if errors or data is None:
+        return None
+    return ConvertResult(ok=True, data=data, attempts=0, staging=out,
+                         warnings=list(meta.get("warnings") or []), reused=True)
