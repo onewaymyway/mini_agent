@@ -187,7 +187,7 @@ def _character_sync_instructions(n: int) -> str:
     """章后人物更新（第四阶段）：LLM 直接编辑本章出场角色的文件，不再整体重写人物档案。"""
     return (f"【本章人物更新】请直接编辑本章出场角色的文件（目录：{rel('characters_dir')}，每个角色一个 {{id}}.md）。"
             f"出场角色以蓝图第 {n} 章的 characters_present 为准（蓝图：{rel('blueprint')}）。"
-            f"对每个出场角色：更新 state_log 中第 {n} 章的条目（没有则新增，已有则替换）；"
+            f"对每个出场的主角与重要配角（普通配角仅在本章有明确变化时更新，路人不更新）：更新 state_log 中第 {n} 章的条目（没有则新增，已有则替换，保持精简）；"
             f"更新 current_state（as_of_chapter={n}）；按概述更新 relationships 中的 current_actual 与 last_updated_chapter。"
             "概述中出现的新角色：新建角色文件（id 取 char_ 加未占用的三位编号）。未出场角色的文件不要改动。\n"
             + LAYOUT_RULES)

@@ -55,7 +55,8 @@ relationships: {"char_002":{"type":"师徒","planned_evolution":"陌生→微妙
 1. 文件头每行一个字段，格式为 `key: JSON值`。JSON 值必须写在同一行，使用合法 JSON（字符串用双引号，不要尾逗号）。
 2. id 必须与文件名一致；name 必须存在，且全书唯一。
 3. state_log 中同一章只能有一条：更新某章时替换该章的条目，不要追加重复条目。
-4. 未涉及的字段保持原样，不要删除。"""
+4. 未涉及的字段保持原样，不要删除。
+5. JSON 字符串里需要引号时用中文「」『』，不要使用英文双引号。"""
 
 
 class CharacterStoreError(Exception):
