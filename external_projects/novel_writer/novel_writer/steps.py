@@ -496,6 +496,39 @@ def patrol_step(n: int) -> StepDef:
     )
 
 
+def patrol_extract_step(n: int) -> StepDef:
+    """巡检整改项提取（LLM，只读已有的巡检报告，不重读全书）：把报告变成结构化整改项。"""
+    return StepDef(
+        id=f"patrol_extract:{n}", title=f"第{n}章后：巡检整改项提取", stage=_stage_of(n), category=CAT_ACT,
+        executor=EXECUTOR_SKILL, skill="revision-editor", chapter=0,
+        instructions=(
+            f"只读取第 {n} 章后的巡检报告 `{rel('patrol_report', nn=n)}`（不要重读正文），把其中的问题整理成可执行的整改项。\n"
+            f"【输出路径（必须精确使用）】{rel('patrol_findings', nn=n)}\n"
+            "【格式】一个 JSON 对象：{\"findings\": [ ... ]}，每条整改项字段：\n"
+            "  dimension（维度，如 伏笔/人物/节奏/对话/成长/世界设定）、severity（\"严重\" 或 \"一般\"）、"
+            "title（一句话标题）、directive（一句可直接照做的指令，≤300 字，必须具体，禁止空话）、"
+            "scope（四选一）：\n"
+            "    forward   约束后续章节（如：收束伏笔、让配角回归）。可选 foreshadowing:[伏笔id]、characters:[人物名]、"
+            "until_chapter:章号\n"
+            "    style     要避免的套路或短语。必须给 avoid_phrases:[短语]，每个不超过 20 字，是正文里能搜到的原文词句\n"
+            "    blueprint 需要调整蓝图（如情感峰值分布、节奏）\n"
+            "    retro     已写章节需要回改。必须给 chapters:[章号] 与 level（L1 润色/L2 场景重构/L3 情节调整/L4 架构重写）\n"
+            "每条报告问题至少对应一条整改项；同一问题既要回改又要约束后续时，拆成两条。没有问题则 findings 为空数组。"),
+        inputs=(rel("patrol_report", nn=n),), outputs=(rel("patrol_findings", nn=n),),
+        extra={"through_chapter": n, "output_check": "patrol_findings"},
+    )
+
+
+def patrol_apply_step(n: int, dep: str) -> StepDef:
+    """巡检整改项分流（确定性 Python）：并入账本；G3/G4 自动采纳后续约束与避免套路。"""
+    return StepDef(
+        id=f"patrol_apply:{n}", title=f"第{n}章后：巡检整改项分流", stage=_stage_of(n), category=CAT_INFRA,
+        executor=EXECUTOR_PYTHON, handler="patrol_apply", chapter=0,
+        inputs=(rel("patrol_findings", nn=n),), outputs=(rel("patrol_ledger"),), deps=(dep,),
+        extra={"through_chapter": n},
+    )
+
+
 # ── 幕末（方案 4.2 幕末表）────────────────────────────────────────────────────
 
 

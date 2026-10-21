@@ -58,6 +58,9 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "banned_words": [],
     # 半自动挡的批大小
     "semi_auto_batch_chapters": 3,
+    # 巡检整改项反馈（保守 opt-in，默认全关）：extract 提取并分流；inject_forward 把已采纳的后续约束注入上下文包；
+    # inject_style 把已采纳的「避免套路」注入风格提示与机器校验提示；to_inbox 把蓝图待办/回改建议放进收件箱。
+    "patrol_feedback": {"extract": False, "inject_forward": False, "inject_style": False, "to_inbox": False},
 }
 
 
@@ -88,6 +91,12 @@ def validate_settings(data: Dict[str, Any]) -> Dict[str, Any]:
             raise SettingsError(f"预算 {name!r} 必须是正整数或 null（不限），当前 {value!r}")
     if not isinstance(merged["banned_words"], list):
         raise SettingsError("banned_words 必须是列表")
+    pf = merged["patrol_feedback"]
+    if not isinstance(pf, dict) or any(k not in DEFAULT_SETTINGS["patrol_feedback"] for k in pf):
+        raise SettingsError("patrol_feedback 必须是对象，且只能包含 extract / inject_forward / inject_style / to_inbox")
+    for k, v in pf.items():
+        if not isinstance(v, bool):
+            raise SettingsError(f"patrol_feedback.{k} 必须是 true/false")
     batch = merged["semi_auto_batch_chapters"]
     if not isinstance(batch, int) or isinstance(batch, bool) or batch < 1:
         raise SettingsError("semi_auto_batch_chapters 必须是正整数")

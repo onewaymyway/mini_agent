@@ -27,6 +27,7 @@ KIND_FAILED = "failed"            # 失败
 KIND_BLOCKED = "blocked"          # 未实现
 KIND_STALE = "stale"              # 需重跑（合并）
 KIND_BUDGET = "budget_pause"      # 预算暂停（可续跑）
+KIND_PATROL = "patrol_finding"    # 巡检整改项待你决定（需 patrol_feedback.to_inbox）
 
 SEVERITY_BLOCK = "block"
 SEVERITY_WARN = "warn"
@@ -100,6 +101,14 @@ def collect(ws: Workspace) -> Dict[str, Any]:
         reason = worker.get("reason")
         items.append(_item(KIND_BUDGET, SEVERITY_INFO, None,
                            f"{_BUDGET_TEXT[reason]}，已暂停（可直接续跑）", "run"))
+
+    if (settings.get("patrol_feedback") or {}).get("to_inbox"):
+        from novel_writer import patrol_findings as PF
+        for f in PF.pending_items(ws):
+            label = PF.SCOPE_LABEL.get(f.get("scope"), "")
+            where = f"（第 {'、'.join(str(c) for c in f['chapters'][:6])} 章，建议 {f.get('level')}）" if f.get("scope") == PF.SCOPE_RETRO else ""
+            items.append(_item(KIND_PATROL, SEVERITY_WARN if f.get("severity") == "严重" else SEVERITY_INFO, None,
+                               f"巡检整改项 {f['id']}［{label}］{f['title']}{where}", "patrol"))
 
     items.sort(key=lambda it: (_SEVERITY_ORDER.get(it["severity"], 9), it["kind"]))
     counts: Dict[str, int] = {}

@@ -27,6 +27,7 @@ INBOX_LABEL = {
     "blocked": "未实现",
     "stale": "需重跑",
     "budget_pause": "预算暂停",
+    "patrol_finding": "巡检整改项",
 }
 INBOX_ICON = {"block": "🔴", "warn": "🟡", "info": "🔵"}
 ASSIST_LABEL = {"polish": "润色", "expand": "扩写", "continue": "续写"}

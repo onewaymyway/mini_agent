@@ -203,6 +203,15 @@ def h_style_hint(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invok
     frequent = profile.get("high_frequency_words") or []
     if frequent:
         lines.append("- 高频词（避免过度使用）：" + "、".join(str(w) for w in frequent[:20]))
+    from novel_writer import patrol_findings as PF
+    if PF.feedback_settings(settings)["inject_style"]:
+        style_items = PF.active_for_chapter(ws, n, PF.SCOPE_STYLE)
+        phrases = PF.avoid_phrases_for_chapter(ws, n)
+        if style_items:
+            lines.append("- 近期套路（巡检指出，请避免重复；不是禁用词，换一种写法即可）：")
+            for f in style_items[:PF.MAX_INJECT_ITEMS]:
+                lines.append(f"  - {f['directive']}（常见写法：{'、'.join(f.get('avoid_phrases') or [])}）")
+            lines.append(f"  - 搜索词：{'、'.join(phrases)}")
     path = ws.path("style_hint", n=n)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -255,6 +264,11 @@ def build_context(ws: Workspace, n: int) -> str:
          CONTEXT_SECTION_CAP["world"]),
         ("作者意图", intake, CONTEXT_SECTION_CAP["intake"]),
     ]
+    from novel_writer import patrol_findings as PF
+    if PF.feedback_settings(ws.settings())["inject_forward"]:
+        directives = PF.render_directives(PF.active_for_chapter(ws, n, PF.SCOPE_FORWARD))
+        if directives:
+            sections.insert(3, ("巡检整改指令（作者已采纳，本章请落实）", directives, PF.MAX_INJECT_CHARS + 200))
     out = [f"# 第{n}章 上下文包", "", f"> 确定性组装；各段有字符上限。风格提示见 {ws.path('style_hint', n=n).relative_to(ws.root).as_posix()}", ""]
     for title, body, cap in sections:
         out.append(f"## {title}")
@@ -297,6 +311,12 @@ def machine_findings(ws: Workspace, n: int, settings: Dict[str, Any], path: Opti
     for word in sorted(banned):
         if word in text:
             hard.append(f"出现禁用词「{word}」")
+    from novel_writer import patrol_findings as PF
+    if PF.feedback_settings(settings)["inject_style"]:
+        for phrase in PF.avoid_phrases_for_chapter(ws, n):
+            hits = text.count(phrase)
+            if hits:
+                warn.append(f"出现巡检指出的套路写法「{phrase}」×{hits}（仅提示，不阻断）")
     previous = set()
     for k in range(max(1, n - 3), n):
         other = chapter_file(ws, k)
@@ -913,7 +933,26 @@ def h_best_pick_apply(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], 
     return {"summary": f"择优结果：采用{winner}稿" + (f"（{reason}）" if reason else "")}
 
 
+def h_patrol_apply(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:
+    """巡检整改项分流（确定性）：校验提取结果并入账本；G3/G4 自动采纳后续约束与避免套路。"""
+    from novel_writer import patrol_findings as PF
+    from novel_writer import validators as V
+    n = int((step.extra or {}).get("through_chapter") or 0)
+    path = ws.path("patrol_findings", nn=n)
+    if not path.is_file():
+        raise ChapterOpError(f"第 {n} 章后的巡检整改项文件不存在：{path.name}。请先运行 patrol_extract:{n}")
+    data, err, _fenced = V._read_json_loose(path)
+    if err is not None:
+        raise ChapterOpError(f"巡检整改项不是合法 JSON（{err}）：{path.name}")
+    probs = PF.problems(data)
+    if probs:
+        raise ChapterOpError("巡检整改项不合格：" + "；".join(probs[:5]))
+    res = PF.apply_extract(ws, n, data, str(settings.get("gear")))
+    return {"summary": f"整改项 {res['total']} 条，自动采纳 {res['adopted']} 条（其余待你决定）"}
+
+
 CHAPTER_HANDLERS = {
+    "patrol_apply": h_patrol_apply,
     "snapshot": h_snapshot,
     "word_quota": h_word_quota,
     "plot_tasks": h_plot_tasks,

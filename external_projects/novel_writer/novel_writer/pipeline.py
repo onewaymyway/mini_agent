@@ -86,7 +86,10 @@ def build_plan(ws: Workspace) -> List[S.StepDef]:
     plan.append(_optional(simulate))
     plan.append(S.design_opening_step())
 
-    quality = ws.settings().get("quality", "standard")
+    _settings = ws.settings()
+    quality = _settings.get("quality", "standard")
+    from novel_writer import patrol_findings as _PF
+    feedback = _PF.feedback_settings(_settings)
     last = plan[-1].id
     act_ends = _act_ends(blueprint, total)
     ending_at = _ending_chapter(blueprint, total)
@@ -115,6 +118,10 @@ def build_plan(ws: Workspace) -> List[S.StepDef]:
         if quality == S.PREMIUM and n % S.PATROL_INTERVAL == 0:
             plan.append(_with_deps(S.patrol_step(n), (last,)))
             last = plan[-1].id
+            if feedback.get("extract"):
+                plan.append(_with_deps(S.patrol_extract_step(n), (last,)))
+                plan.append(S.patrol_apply_step(n, plan[-1].id))
+                last = plan[-1].id
     if total:
         # 全书终审（M6，方案 4.2 收尾）：所有章节与幕末之后
         plan.append(_with_deps(S.final_review_step(), (last,)))

@@ -134,6 +134,8 @@ PATHS: Dict[str, str] = {
     "best_pick_report": "一致性检查/第{nn}章_择优.json",     # LLM 的择优结论
     "plot_delta": "大纲规划/线索设定/伏笔增量/第{nn}章_伏笔增量.json",   # sync_plot 输出的本章增量（M9）
     "patrol_report": "修订记录/第{nn}章_巡检报告.md",            # 精品档：每 10 章巡检
+    "patrol_findings": "修订记录/第{nn}章_巡检整改项.json",    # patrol_extract 输出：本次巡检的整改项（LLM 写）
+    "patrol_ledger": "修订记录/巡检整改项.json",              # patrol_apply 汇总的整改项账本（含状态）
     "ending_design": "大纲规划/结局设计.md",
     "final_report": "一致性检查/全书终审报告.md",
     # 本项目系统文件

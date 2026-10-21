@@ -791,3 +791,28 @@ def migrate_plot_ledger(workspace: str, dry_run: bool = False, confirm: bool = F
         except PD.PlotDeltaError as exc:
             return _err("migration_failed", "；".join(exc.problems))
     return _guard(run)
+
+
+# ── 巡检整改项（patrol_feedback）──────────────────────────────────────────────
+
+
+def patrol_findings(workspace: str) -> Dict[str, Any]:
+    """整改项账本（只读）。"""
+    def run() -> Dict[str, Any]:
+        from novel_writer import patrol_findings as PF
+        ws = _workspace_or_raise(workspace)
+        return _ok({"findings": PF.read_ledger(ws)["findings"], "feedback": PF.feedback_settings(ws.settings()),
+                    "gear": ws.settings().get("gear")})
+    return _guard(run)
+
+
+def patrol_set_status(workspace: str, finding_id: str, status: str) -> Dict[str, Any]:
+    """作者对一条整改项做决定：adopted / dismissed / done / proposed（撤销）。"""
+    def run() -> Dict[str, Any]:
+        from novel_writer import patrol_findings as PF
+        ws = _workspace_or_raise(workspace)
+        try:
+            return _ok(PF.set_status(ws, finding_id, status))
+        except (KeyError, ValueError) as exc:
+            return _err("validation_error", str(exc))
+    return _guard(run)

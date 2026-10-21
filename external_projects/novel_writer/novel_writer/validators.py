@@ -286,7 +286,26 @@ def _check_character_files(ws: Workspace, step: Any) -> List[str]:
     return CS.problems_for_dir(ws.path("characters_dir"))
 
 
+def _check_patrol_findings(ws: Workspace, step: Any) -> List[str]:
+    """巡检整改项：JSON 结构合法、字段齐全。带代码围栏时写回规范化结果。"""
+    from novel_writer import patrol_findings as PF
+    n = int((getattr(step, "extra", None) or {}).get("through_chapter") or 0)
+    path = ws.path("patrol_findings", nn=n)
+    if not path.is_file():
+        return [f"整改项文件不存在：{path.name}"]
+    data, err, fenced = _read_json_loose(path)
+    if err is not None:
+        return [f"整改项不是合法 JSON（{err}）。请只输出一个 JSON 对象。"]
+    probs = PF.problems(data)
+    if probs:
+        return probs
+    if fenced:
+        atomic_write_json(path, data)
+    return []
+
+
 OUTPUT_CHECKS: Dict[str, Callable[[Workspace, Any], List[str]]] = {
+    "patrol_findings": _check_patrol_findings,
     "character_files": _check_character_files,
     "best_pick_report": _check_best_pick,
     "blueprint": _check_blueprint,
