@@ -434,6 +434,7 @@ def adopt_legacy_steps(ws: Workspace) -> List[str]:
 # 旧版本的伏笔同步直接改写整本账本，没有「伏笔增量」文件，也没有 plot_merge 步骤。
 # 升级后 plot_merge 是新步骤、没有记录，会被当作「待运行」从第 1 章开始排队，而旧章节根本没有增量可合并。
 _LEGACY_PLOT_MERGE_NOTE = "迁移：旧版本的伏笔同步已把本章伏笔直接写入账本，无增量文件，无需再合并"
+_LEGACY_REFRESH_NOTE = "迁移：旧版本的人物同步已直接写好人物档案，无需逐章刷新（全书级刷新仍会执行）"
 # 新流程里「同步」步骤通过的前提是增量文件存在（产出校验），所以「同步已通过 + 增量文件不存在」只可能是旧数据。
 _MISSING_DELTA_MARK = "伏笔增量"
 
@@ -475,6 +476,14 @@ def _adopt_legacy_plot_merge(ws: Workspace, steps: Dict[str, Any]) -> List[str]:
         steps[merge_id] = {"status": ST_PASSED, "attempts": 0, "note": _LEGACY_PLOT_MERGE_NOTE,
                            "updated_at": now_iso()}
         adopted.append(merge_id)
+        # 逐章「人物档案刷新」同样是后来新增的确定性步骤：旧版本没有记录，且旧版本的人物同步已直接写好档案。
+        # 判断依据与上面相同（伏笔同步已通过 + 无增量文件 ⇒ 旧数据）；新流程里伏笔同步通过必然在刷新之后。
+        refresh_id = f"ch{m.group(1)}.characters_refresh"
+        cur_r = steps.get(refresh_id)
+        if cur_r is None or cur_r.get("status") == ST_PENDING:
+            steps[refresh_id] = {"status": ST_PASSED, "attempts": 0, "note": _LEGACY_REFRESH_NOTE,
+                                 "updated_at": now_iso()}
+            adopted.append(refresh_id)
     return adopted
 
 

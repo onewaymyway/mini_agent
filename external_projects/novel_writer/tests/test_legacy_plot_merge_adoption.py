@@ -19,7 +19,7 @@ def test_standard_legacy_chapters_get_plot_merge_adopted(isolated):
     for n in (1, 2):
         st.update_step(ws, f"ch{n:02d}.sync_plot", status=st.ST_PASSED)
     adopted = st.adopt_legacy_steps(ws)
-    assert set(adopted) == {"ch01.plot_merge", "ch02.plot_merge"}
+    assert set(adopted) == {"ch01.plot_merge", "ch02.plot_merge", "ch01.characters_refresh", "ch02.characters_refresh"}
     assert st.get_step_state(ws, "ch01.plot_merge")["status"] == st.ST_PASSED
     assert "旧版本" in st.get_step_state(ws, "ch01.plot_merge")["note"]
     assert st.get_step_state(ws, "ch03.plot_merge")["status"] != st.ST_PASSED  # 没写过的章不认领
@@ -29,7 +29,7 @@ def test_standard_legacy_chapters_get_plot_merge_adopted(isolated):
 def test_draft_legacy_uses_sync_as_anchor(isolated):
     ws = _book(isolated, quality="draft")
     st.update_step(ws, "ch01.sync", status=st.ST_PASSED)
-    assert "ch01.plot_merge" in st.adopt_legacy_steps(ws)
+    assert {"ch01.plot_merge", "ch01.characters_refresh"} <= set(st.adopt_legacy_steps(ws))
 
 
 def test_standard_new_flow_midway_is_not_adopted_when_only_sync_passed(isolated):
@@ -55,7 +55,7 @@ def test_previous_failure_from_missing_delta_is_recovered(isolated):
     ws = _book(isolated)
     st.update_step(ws, "ch01.sync_plot", status=st.ST_PASSED)
     st.update_step(ws, "ch01.plot_merge", status=st.ST_FAILED, error="ChapterOpError: 第 1 章伏笔增量缺失或损坏")
-    assert st.adopt_legacy_steps(ws) == ["ch01.plot_merge"]
+    assert "ch01.plot_merge" in st.adopt_legacy_steps(ws)
     assert st.get_step_state(ws, "ch01.plot_merge")["status"] == st.ST_PASSED
 
 
@@ -63,7 +63,7 @@ def test_unrelated_failure_is_not_swallowed(isolated):
     ws = _book(isolated)
     st.update_step(ws, "ch01.sync_plot", status=st.ST_PASSED)
     st.update_step(ws, "ch01.plot_merge", status=st.ST_FAILED, error="伏笔合并失败：账本损坏")
-    assert st.adopt_legacy_steps(ws) == []
+    assert "ch01.plot_merge" not in st.adopt_legacy_steps(ws)
     assert st.get_step_state(ws, "ch01.plot_merge")["status"] == st.ST_FAILED
 
 
@@ -71,7 +71,7 @@ def test_passed_or_stale_plot_merge_is_untouched(isolated):
     ws = _book(isolated)
     st.update_step(ws, "ch01.sync_plot", status=st.ST_PASSED)
     st.update_step(ws, "ch01.plot_merge", status=st.ST_STALE, note="上游产物已变化，需要重跑")
-    assert st.adopt_legacy_steps(ws) == []
+    assert "ch01.plot_merge" not in st.adopt_legacy_steps(ws)
     assert st.get_step_state(ws, "ch01.plot_merge")["status"] == st.ST_STALE
 
 
@@ -82,3 +82,20 @@ def test_pipeline_status_does_not_queue_chapter_one_merge(isolated):
     res = tool_api.pipeline_status(str(ws.root))
     rows = {r["id"]: r for r in res["data"]["steps"]}
     assert all(rows[f"ch{n:02d}.plot_merge"]["status"] == st.ST_PASSED for n in (1, 2, 3))
+
+
+def test_legacy_characters_refresh_adopted_but_real_failure_kept(isolated):
+    ws = _book(isolated)
+    st.update_step(ws, "ch01.sync_plot", status=st.ST_PASSED)
+    st.update_step(ws, "ch02.sync_plot", status=st.ST_PASSED)
+    st.update_step(ws, "ch02.characters_refresh", status=st.ST_FAILED, error="人物档案校验失败")
+    st.adopt_legacy_steps(ws)
+    assert st.get_step_state(ws, "ch01.characters_refresh")["status"] == st.ST_PASSED
+    assert st.get_step_state(ws, "ch02.characters_refresh")["status"] == st.ST_FAILED
+
+
+def test_characters_refresh_not_adopted_in_new_flow(isolated):
+    ws = _book(isolated)
+    st.update_step(ws, "ch01.sync", status=st.ST_PASSED)  # 标准档新流程：刷新紧随其后，不能认领
+    st.adopt_legacy_steps(ws)
+    assert st.get_step_state(ws, "ch01.characters_refresh")["status"] != st.ST_PASSED
