@@ -199,6 +199,13 @@ def _run_skill_step_inner(
     run_dir = ws.step_dir(step.id, run_no)
     run_dir.mkdir(parents=True, exist_ok=True)
     max_turns = int((settings.get("max_turns_overrides") or {}).get(step.id, DEFAULT_MAX_TURNS))
+    checks = (step.extra or {}).get("output_check")
+    if checks and "character_files" in ([checks] if isinstance(checks, str) else list(checks)):
+        from novel_writer import character_store as CS
+        try:   # 改前备份：agent 写坏文件时可还原，不留半坏的角色文件
+            CS.backup_dir(ws.path("characters_dir"), ws.studio / "backup" / "characters")
+        except OSError as exc:
+            st.log_line(ws, f"⚠ {step.id}：角色目录备份失败（{exc}），本次不做还原保护")
     hint = ""
     started = time.time()
     for attempt in range(MAX_RECEIPT_ATTEMPTS):

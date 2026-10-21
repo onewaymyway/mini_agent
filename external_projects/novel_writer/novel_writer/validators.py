@@ -300,7 +300,20 @@ def _check_plot_delta(ws: Workspace, step: Any) -> List[str]:
 def _check_character_files(ws: Workspace, step: Any) -> List[str]:
     """人物更新的产出校验（第四阶段）：本次写过的角色文件必须全部合法。"""
     from novel_writer import character_store as CS
-    return CS.problems_for_dir(ws.path("characters_dir"))
+    from novel_writer import state as _st
+    base = ws.path("characters_dir")
+    fixed = CS.repair_dir(base)          # 先确定性修复：不为格式问题让 agent 把整步重做
+    if fixed:
+        _st.log_line(ws, f"🔧 {step.id}：已确定性修复 {len(fixed)} 个角色文件的格式：{'、'.join(fixed[:8])}")
+    probs = CS.problems_for_dir(base)
+    if probs:
+        backup = ws.studio / "backup" / "characters"
+        restored = CS.restore_invalid(base, backup) if backup.is_dir() else []
+        if restored:
+            _st.log_line(ws, f"↩ {step.id}：{len(restored)} 个角色文件仍不合格，已还原为本步骤开始前的版本：{'、'.join(restored[:8])}")
+            probs = probs + [f"以上文件已还原为本步骤开始前的版本（避免留下损坏文件）：{'、'.join(restored)}。"
+                             "请按格式要求重新更新这些角色（文件头必须以 --- 开始并以 --- 结束，每行 key: JSON值）"]
+    return probs
 
 
 def _check_patrol_findings(ws: Workspace, step: Any) -> List[str]:

@@ -571,6 +571,10 @@ def h_characters_refresh(ws: Workspace, step: S.StepDef, settings: Dict[str, Any
     from novel_writer import character_store as CS
     if not CS.is_store(ws.path("characters")) and ws.path("characters_legacy").is_file():
         raise ChapterOpError("项目仍使用旧版人物档案（characters.json）。请先运行人物档案迁移，再继续流水线")
+    fixed = CS.repair_dir(ws.path("characters_dir"))
+    if fixed:
+        from novel_writer import state as _st
+        _st.log_line(ws, f"🔧 {step.id}：已确定性修复 {len(fixed)} 个角色文件的格式：{'、'.join(fixed[:8])}")
     try:
         chars, changed = CS.refresh(ws.path("characters_dir"), ws.path("characters"))
     except CS.CharacterStoreError as exc:

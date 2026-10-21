@@ -198,6 +198,128 @@ def problems_for_dir(base: Path) -> List[str]:
     return problems
 
 
+# ── 确定性修复 / 备份还原（同步步骤写坏文件时用，不再为格式问题让 LLM 整步重做）─────────
+
+_FENCE = re.compile(r"^```[A-Za-z]*\s*\n(.*?)\n```\s*$", re.S)
+_KEY_LINE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*):\s?(.*)$")
+
+
+def _lenient_fields(text: str) -> Optional[Dict[str, Any]]:
+    """尽力把「不规范但含义明确」的角色文件解析成字段字典；解析不出来返回 None（不猜）。
+
+    能处理：UTF-8 BOM / 文件头前有空行；缺少起止 `---`；整份是一个 JSON 对象（可带代码围栏，
+    可外套一层 {id: {...}}）；字段值被换行缩进成多行；文件头未闭合。
+    """
+    t = text.lstrip("\ufeff").strip()
+    m = _FENCE.match(t)
+    if m:
+        t = m.group(1).strip()
+    if t.startswith("{"):
+        try:
+            obj = json.loads(t)
+        except ValueError:
+            return None
+        if isinstance(obj, dict) and len(obj) == 1:
+            (inner,) = obj.values()
+            if isinstance(inner, dict) and ("name" in inner or "id" in inner):
+                obj = inner
+        return obj if isinstance(obj, dict) else None
+    lines = t.splitlines()
+    if lines and lines[0].strip() == "---":
+        lines = lines[1:]
+    buf: List[Tuple[str, List[str]]] = []
+    for line in lines:
+        if line.strip() == "---":
+            break
+        km = _KEY_LINE.match(line)
+        if km and (km.group(1) in FIELD_ORDER or not buf):
+            buf.append((km.group(1), [km.group(2)]))
+        elif buf and (line.strip() == "" and len(buf[-1][1]) == 1):
+            break   # 字段之后的空行：文件头结束，后面是正文
+        elif buf:
+            buf[-1][1].append(line)
+        else:
+            return None
+    if not buf:
+        return None
+    fields: Dict[str, Any] = {}
+    for key, parts in buf:
+        if key in fields:
+            return None
+        try:
+            fields[key] = json.loads("\n".join(parts).strip())
+        except ValueError:
+            return None
+    return fields
+
+
+def repair_dir(base: Path) -> List[str]:
+    """逐个检查角色文件，把不规范但含义明确的重写成规范格式。返回被修复的文件名。
+
+    只在「原文件解析失败、宽松解析成功、且规范化后通过全部校验」时才覆盖；否则不动。
+    """
+    fixed: List[str] = []
+    for f in _files(base):
+        try:
+            text = f.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        try:
+            fields = _decode(text, f.name)
+            if not record_problems(fields, f.name, expected_id=f.stem):
+                continue                      # 已经合格
+        except CharacterStoreError:
+            pass
+        rec = _lenient_fields(text)
+        if rec is None or record_problems(rec, f.name, expected_id=f.stem):
+            continue
+        atomic_write_text(f, _encode(rec) + _body(rec))
+        fixed.append(f.name)
+    return fixed
+
+
+def invalid_files(base: Path) -> List[Path]:
+    """当前不合格的角色文件（解码失败或字段校验失败）。"""
+    bad: List[Path] = []
+    for f in _files(base):
+        try:
+            fields = _decode(f.read_text(encoding="utf-8"), f.name)
+        except (CharacterStoreError, OSError, UnicodeDecodeError):
+            bad.append(f)
+            continue
+        if record_problems(fields, f.name, expected_id=f.stem):
+            bad.append(f)
+    return bad
+
+
+def backup_dir(base: Path, dest: Path) -> None:
+    """把角色目录整份拷到 dest（先清空旧备份）。只备份 *.md。"""
+    base, dest = Path(base), Path(dest)
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.mkdir(parents=True, exist_ok=True)
+    for f in _files(base):
+        shutil.copy2(f, dest / f.name)
+
+
+def restore_invalid(base: Path, backup: Path) -> List[str]:
+    """把仍不合格的文件还原成备份里的（合格的）版本，避免留下半坏的文件。返回还原的文件名。"""
+    restored: List[str] = []
+    for f in invalid_files(base):
+        src = Path(backup) / f.name
+        if not src.is_file():
+            continue
+        try:
+            fields = _decode(src.read_text(encoding="utf-8"), src.name)
+        except (CharacterStoreError, OSError, UnicodeDecodeError):
+            continue
+        if record_problems(fields, src.name, expected_id=f.stem):
+            continue
+        shutil.copy2(src, f)
+        restored.append(f.name)
+    return restored
+
+
 # ── 目录级写入 ───────────────────────────────────────────────────────
 
 def _cell(v: Any) -> str:
