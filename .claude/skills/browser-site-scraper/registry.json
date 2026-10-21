@@ -14,10 +14,13 @@
         }
       },
       "success_count": 1,
-      "fail_count": 1,
-      "consecutive_failures": 0,
+      "fail_count": 2,
+      "consecutive_failures": 1,
       "last_success": "2026-08-22 22:01:57",
-      "last_failure": "2026-08-22 21:25:11"
+      "last_failure": "2026-10-17 09:33:06",
+      "available_tiers": [
+        "script"
+      ]
     },
     "zhihu": {
       "status": "probation",
@@ -56,10 +59,10 @@
           }
         }
       },
-      "success_count": 4,
+      "success_count": 6,
       "fail_count": 2,
       "consecutive_failures": 0,
-      "last_success": "2026-10-16 09:12:44",
+      "last_success": "2026-10-20 10:35:03",
       "last_failure": "2026-10-16 04:20:20",
       "available_tiers": [
         "script"
@@ -128,6 +131,26 @@
       "last_success": null,
       "last_failure": null,
       "execution_tier": "skill_only"
+    },
+    "blog": {
+      "status": "probation",
+      "status_changed_at": "2026-10-20 10:27:06",
+      "intent_schema": {
+        "type": "object",
+        "required": [
+          "results"
+        ],
+        "properties": {
+          "results": {
+            "type": "array"
+          }
+        }
+      },
+      "success_count": 0,
+      "fail_count": 0,
+      "consecutive_failures": 0,
+      "last_success": null,
+      "last_failure": null
     }
   }
 }

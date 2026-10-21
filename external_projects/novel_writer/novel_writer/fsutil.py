@@ -59,7 +59,7 @@ def read_json(path: Path, default: Any = None) -> Any:
         if delay:
             time.sleep(delay)
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            return json.loads(path.read_text(encoding="utf-8-sig"))
         except PermissionError as exc:
             last = exc
             continue

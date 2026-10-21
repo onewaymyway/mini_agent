@@ -1,0 +1,24 @@
+{
+  "source": "explored",
+  "version": 1,
+  "intent_schema": {
+    "type": "object",
+    "required": [
+      "results"
+    ],
+    "properties": {
+      "results": {
+        "type": "array"
+      }
+    }
+  },
+  "distilled_at": "2026-10-20 10:27:06",
+  "distill_source_kind": "script_source",
+  "distill_used_trace_data_fallback": false,
+  "distilled_from_request": {
+    "text": "RAG + 向量数据库实战：ChromaDB / Milvus / FAISS 选型与性能横评",
+    "target": {
+      "url": "https://blog.csdn.net/weixin_52208686/article/details/162762473"
+    }
+  }
+}

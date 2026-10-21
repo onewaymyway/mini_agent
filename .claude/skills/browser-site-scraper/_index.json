@@ -64,6 +64,16 @@
           "从freeSub仓库README中提取所有订阅URL链接，包"
         ]
       }
+    },
+    {
+      "member_id": "blog",
+      "description": "探索自动生成: RAG + 向量数据库实战：ChromaDB / Milvus / FAISS 选型与性能横评",
+      "match": {
+        "domain_pattern": "*.blog.csdn.net*",
+        "keyword": [
+          "RAG + 向量数据库实战：ChromaDB / Milvu"
+        ]
+      }
     }
   ]
 }

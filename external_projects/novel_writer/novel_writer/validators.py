@@ -109,7 +109,7 @@ def _check_best_pick(ws: Workspace, step: Any) -> List[str]:
 
 def _read_json_loose(path: Path) -> tuple:
     """读取 JSON，兼容 ```json 代码围栏。返回 (data, error, fenced)。"""
-    raw = read_text_utf8(path).strip()
+    raw = read_text_utf8(path).lstrip("\ufeff").strip()
     fenced = False
     m = _FENCE.match(raw)
     if m:

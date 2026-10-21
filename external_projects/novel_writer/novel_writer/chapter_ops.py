@@ -582,6 +582,23 @@ def h_blueprint_split(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], 
     return {"summary": f"蓝图已拆分为 {n} 章文件" + ("" if changed else "，无实质变化，未写盘")}
 
 
+def _read_plot_delta_or_raise(ws: Workspace, n: int) -> Dict[str, Any]:
+    """读取本章伏笔增量。用与产出校验相同的读取方式，并区分「不存在 / 无法读取 / 格式不对」，给出具体原因。"""
+    from novel_writer import validators as V
+    path = ws.path("plot_delta", nn=n)
+    if not path.is_file():
+        raise ChapterOpError(f"第 {n} 章伏笔增量文件不存在：{path.name}。请重新运行本章的伏笔同步步骤（sync_plot / sync）")
+    try:
+        data, err, _fenced = V._read_json_loose(path)
+    except OSError as exc:
+        raise ChapterOpError(f"第 {n} 章伏笔增量无法读取（{exc}）。文件可能被其它程序占用，请关闭后重试")
+    if err is not None:
+        raise ChapterOpError(f"第 {n} 章伏笔增量不是合法 JSON（{err}）：{path.name}")
+    if not isinstance(data, dict):
+        raise ChapterOpError(f"第 {n} 章伏笔增量顶层必须是 JSON 对象：{path.name}")
+    return data
+
+
 def h_plot_merge(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:
     """把本章伏笔增量合并进账本（M9）。确定性合并，内容无实质变化则不写盘。"""
     from novel_writer import plot_store as PS
@@ -590,9 +607,7 @@ def h_plot_merge(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invok
     if not PS.is_store(ws.path("plot_items_dir")) and ws.path("plot_legacy").is_file():
         raise ChapterOpError("项目仍使用旧版伏笔账本（JSON）。请先运行伏笔迁移，再继续流水线")
     tracker = _ledger_or_raise(ws)
-    delta = read_json(ws.path("plot_delta", nn=n), default=None)
-    if delta is None:
-        raise ChapterOpError(f"第 {n} 章伏笔增量缺失或损坏")
+    delta = _read_plot_delta_or_raise(ws, n)
     try:
         merged = PD.merge_result(tracker, delta, n)
         changed = PS.write_store(ws.path("plot_items_dir"), merged)
