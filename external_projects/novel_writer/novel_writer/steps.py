@@ -499,7 +499,7 @@ def patrol_step(n: int) -> StepDef:
 def patrol_extract_step(n: int) -> StepDef:
     """巡检整改项提取（LLM，只读已有的巡检报告，不重读全书）：把报告变成结构化整改项。"""
     return StepDef(
-        id=f"patrol_extract:{n}", title=f"第{n}章后：巡检整改项提取", stage=_stage_of(n), category=CAT_ACT,
+        id=f"patrol_extract:{n}", title=f"第{n}章后：巡检整改项提取", stage=_stage_of(n), category=CAT_INFRA,
         executor=EXECUTOR_SKILL, skill="revision-editor", chapter=0,
         instructions=(
             f"只读取第 {n} 章后的巡检报告 `{rel('patrol_report', nn=n)}`（不要重读正文），把其中的问题整理成可执行的整改项。\n"
@@ -520,7 +520,7 @@ def patrol_extract_step(n: int) -> StepDef:
 
 
 def patrol_apply_step(n: int, dep: str) -> StepDef:
-    """巡检整改项分流（确定性 Python）：并入账本；G3/G4 自动采纳后续约束与避免套路。"""
+    """巡检整改项分流（确定性 Python）：并入账本；默认自动采纳后续约束与避免套路。"""
     return StepDef(
         id=f"patrol_apply:{n}", title=f"第{n}章后：巡检整改项分流", stage=_stage_of(n), category=CAT_INFRA,
         executor=EXECUTOR_PYTHON, handler="patrol_apply", chapter=0,

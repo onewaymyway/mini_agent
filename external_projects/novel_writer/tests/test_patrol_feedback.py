@@ -1,4 +1,4 @@
-"""巡检整改项：提取 → 分流 → 采纳 → 注入（上下文包 / 风格提示 / 机器校验 / 收件箱），默认全关。"""
+"""巡检整改项：提取 → 分流 → 采纳 → 注入（上下文包 / 风格提示 / 机器校验 / 收件箱）。默认全开、全自动，可单项关闭。"""
 
 from __future__ import annotations
 
@@ -34,7 +34,8 @@ def _data(*fs):
 
 
 def _apply(ws, n, data, gear="G0"):
-    return PF.apply_extract(ws, n, data, gear)
+    # 旧测试用 gear 表达「是否自动采纳」：G3 = 自动采纳，其它 = 不自动
+    return PF.apply_extract(ws, n, data, gear == "G3")
 
 
 # ── 校验 ───────────────────────────────────────────────────────────────────
@@ -53,14 +54,14 @@ def test_valid_findings_pass_and_bad_ones_are_pointed_out():
 # ── 分流与采纳 ─────────────────────────────────────────────────────────────
 
 
-def test_default_gear_leaves_everything_proposed(isolated):
+def test_auto_adopt_off_leaves_everything_proposed(isolated):
     ws = new_book(isolated)
     res = _apply(ws, 10, _data(_f("forward"), _f("style")), gear="G0")
     assert res == {"total": 2, "adopted": 0}
     assert all(f["status"] == PF.S_PROPOSED for f in PF.read_ledger(ws)["findings"])
 
 
-def test_g3_auto_adopts_forward_and_style_but_never_blueprint_or_retro(isolated):
+def test_auto_adopts_forward_and_style_but_never_blueprint_or_retro(isolated):
     ws = new_book(isolated)
     _apply(ws, 10, _data(_f("forward"), _f("style"), _f("blueprint"), _f("retro")), gear="G3")
     by = {f["scope"]: f for f in PF.read_ledger(ws)["findings"]}
@@ -104,12 +105,13 @@ def _enable(ws, **flags):
     assert tool_api.update_settings(str(ws.root), {"patrol_feedback": flags})["ok"]
 
 
-def test_forward_directive_only_reaches_later_chapters_and_only_when_enabled(isolated):
+def test_forward_directive_only_reaches_later_chapters_and_can_be_switched_off(isolated):
     ws = new_book(isolated, total=4)
     _apply(ws, 2, _data(_f("forward")), gear="G3")
-    assert "巡检整改指令" not in C.build_context(ws, 3)         # 默认关
+    assert "优先兑现 F03" in C.build_context(ws, 3)               # 默认开，无需任何操作
+    _enable(ws, inject_forward=False)
+    assert "巡检整改指令" not in C.build_context(ws, 3)
     _enable(ws, inject_forward=True)
-    assert "优先兑现 F03" in C.build_context(ws, 3)
     assert "巡检整改指令" not in C.build_context(ws, 2)         # 巡检章本身及之前不受影响
     assert "巡检整改指令" not in C.build_context(ws, 1)
 
@@ -117,7 +119,6 @@ def test_forward_directive_only_reaches_later_chapters_and_only_when_enabled(iso
 def test_proposed_or_dismissed_items_are_not_injected(isolated):
     ws = new_book(isolated, total=4)
     _apply(ws, 2, _data(_f("forward")), gear="G0")
-    _enable(ws, inject_forward=True)
     assert "巡检整改指令" not in C.build_context(ws, 3)
     PF.set_status(ws, "P2-1", PF.S_ADOPTED)
     assert "巡检整改指令" in C.build_context(ws, 3)
@@ -128,7 +129,6 @@ def test_proposed_or_dismissed_items_are_not_injected(isolated):
 def test_until_chapter_expires_directive(isolated):
     ws = new_book(isolated, total=6)
     _apply(ws, 2, _data(_f("forward", until_chapter=4)), gear="G3")
-    _enable(ws, inject_forward=True)
     assert "巡检整改指令" in C.build_context(ws, 4)
     assert "巡检整改指令" not in C.build_context(ws, 5)
 
@@ -147,10 +147,11 @@ def test_style_hint_and_machine_warn_follow_the_switch(isolated):
     step = S.StepDef(id="ch02.style_hint", title="t", stage="p2", category=S.CAT_CHAPTER_PREP,
                      executor=S.EXECUTOR_PYTHON, handler="style_hint", chapter=2)
     C.h_style_hint(ws, step, ws.settings())
-    assert "铜钱发烫" not in ws.path("style_hint", n=2).read_text(encoding="utf-8")   # 默认关
-    _enable(ws, inject_style=True)
+    assert "铜钱发烫" in ws.path("style_hint", n=2).read_text(encoding="utf-8")   # 默认开
+    _enable(ws, inject_style=False)
     C.h_style_hint(ws, step, ws.settings())
-    assert "铜钱发烫" in ws.path("style_hint", n=2).read_text(encoding="utf-8")
+    assert "铜钱发烫" not in ws.path("style_hint", n=2).read_text(encoding="utf-8")
+    _enable(ws, inject_style=True)
     body = ws.path("chapter_text", nn=2, title="测试")
     body.parent.mkdir(parents=True, exist_ok=True)
     body.write_text("他胸口的铜钱发烫，铜钱发烫。" * 50, encoding="utf-8")
@@ -166,8 +167,9 @@ def _premium_ids(ws):
     return [s.id for s in P.build_plan(ws)]
 
 
-def test_plan_unchanged_by_default_and_has_extract_apply_when_enabled(isolated):
+def test_plan_has_extract_apply_by_default_and_not_when_switched_off(isolated):
     ws = new_book(isolated, total=10)
+    _enable(ws, extract=False)
     ids = _premium_ids(ws)
     assert "patrol:10" in ids and not any(i.startswith("patrol_extract") for i in ids)
     _enable(ws, extract=True)
@@ -177,6 +179,7 @@ def test_plan_unchanged_by_default_and_has_extract_apply_when_enabled(isolated):
     assert ids[i:i + 3] == ["patrol:10", "patrol_extract:10", "patrol_apply:10"]
     ext = next(s for s in plan if s.id == "patrol_extract:10")
     assert ext.executor == S.EXECUTOR_SKILL and ext.extra["output_check"] == "patrol_findings"
+    assert ext.category == S.CAT_INFRA   # 所有挡位自动运行，不需要人工点
     assert "不要重读正文" in ext.instructions
 
 
@@ -190,7 +193,7 @@ def test_apply_handler_reads_sidecar_and_reports(isolated):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("```json\n" + json.dumps(_data(_f("forward"), _f("retro")), ensure_ascii=False) + "\n```",
                     encoding="utf-8")
-    res = C.h_patrol_apply(ws, step, {**ws.settings(), "gear": "G3"})
+    res = C.h_patrol_apply(ws, step, ws.settings())
     assert "整改项 2 条，自动采纳 1 条" in res["summary"]
     atomic_write_json(path, {"findings": [{"title": "x"}]})
     with pytest.raises(C.ChapterOpError) as e2:
@@ -212,9 +215,10 @@ def test_output_check_rejects_bad_sidecar(isolated):
 # ── 收件箱 / 设置 ───────────────────────────────────────────────────────────
 
 
-def test_inbox_shows_pending_items_only_when_enabled(isolated):
+def test_inbox_shows_pending_items_unless_switched_off(isolated):
     ws = new_book(isolated)
     _apply(ws, 10, _data(_f("retro"), _f("blueprint")))
+    _enable(ws, to_inbox=False)
     assert not any(i["kind"] == inbox.KIND_PATROL for i in inbox.collect(ws)["items"])
     _enable(ws, to_inbox=True)
     items = [i for i in inbox.collect(ws)["items"] if i["kind"] == inbox.KIND_PATROL]
@@ -223,9 +227,38 @@ def test_inbox_shows_pending_items_only_when_enabled(isolated):
     assert len([i for i in inbox.collect(ws)["items"] if i["kind"] == inbox.KIND_PATROL]) == 1
 
 
-def test_settings_default_off_and_validated(isolated):
+def test_settings_default_on_and_validated(isolated):
     ws = new_book(isolated)
-    assert PF.feedback_settings(ws.settings()) == {"extract": False, "inject_forward": False,
-                                                    "inject_style": False, "to_inbox": False}
+    assert PF.feedback_settings(ws.settings()) == {"extract": True, "auto_adopt": True, "inject_forward": True,
+                                                    "inject_style": True, "to_inbox": True}
+    assert PF.feedback_settings({}) == PF.DEFAULT_FEEDBACK   # 旧项目的设置文件里没有这一项：同样默认全开
     assert not tool_api.update_settings(str(ws.root), {"patrol_feedback": {"extract": "yes"}})["ok"]
     assert not tool_api.update_settings(str(ws.root), {"patrol_feedback": {"nope": True}})["ok"]
+
+
+def test_apply_handler_respects_auto_adopt_switch(isolated):
+    ws = new_book(isolated)
+    _enable(ws, auto_adopt=False)
+    atomic_write_json(ws.path("patrol_findings", nn=10), _data(_f("forward")))
+    res = C.h_patrol_apply(ws, S.patrol_apply_step(10, "patrol_extract:10"), ws.settings())
+    assert "自动采纳 0 条" in res["summary"]
+
+
+def test_end_to_end_patrol_runs_extract_and_apply_with_no_user_action(isolated):
+    """全自动：精品档第 10 章后巡检 → 提取 → 分流，整改项自动采纳，之后章节的上下文包带上指令。"""
+    from fakes import FakeInvoker
+    from test_m3 import run_until
+    from novel_writer import state as st
+    ws = new_book(isolated, total=11)
+    assert tool_api.update_settings(str(ws.root), {"quality": "premium", "gear": "G4"})["ok"]
+    def pick(k):
+        return lambda w: atomic_write_json(w.path("best_pick_report", nn=k), {
+            "chapter": k, "winner": "A", "reason": "A 更稳", "A": {"strengths": [], "problems": []},
+            "B": {"strengths": [], "problems": []}, "decisive_factor": "设定"})
+    inv = FakeInvoker(ws.root, writers={f"ch{k:02d}.best_pick": pick(k) for k in range(1, 12)})
+    last = run_until(ws, inv, reasons=("waiting_review", "budget_chapters", "budget_calls", "budget_time"), limit=60)
+    assert st.get_step_state(ws, "patrol_extract:10")["status"] == st.ST_PASSED
+    assert st.get_step_state(ws, "patrol_apply:10")["status"] == st.ST_PASSED
+    f = PF.read_ledger(ws)["findings"]
+    assert len(f) == 1 and f[0]["status"] == PF.S_ADOPTED and f[0]["decided_by"] == "auto"
+    assert "优先兑现旧伏笔" in C.build_context(ws, 11)

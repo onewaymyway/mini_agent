@@ -50,6 +50,9 @@ def _placeholder_for(target: Path, ws) -> str:
     import json as _json
     if target.name in ("小说蓝图.json", "_draft.json"):
         return _json.dumps(make_blueprint(4), ensure_ascii=False)
+    if target.name.endswith("_巡检整改项.json"):
+        return _json.dumps({"findings": [{"dimension": "伏笔", "severity": "严重", "title": "伏笔过载",
+                                          "directive": "优先兑现旧伏笔，少开新坑", "scope": "forward"}]}, ensure_ascii=False)
     if target.name.endswith("_伏笔增量.json"):
         return _json.dumps({"planted": [], "advanced": [], "resolved": []}, ensure_ascii=False)
     if target.parent.name == "角色" and target.suffix == ".md":

@@ -12,7 +12,8 @@
   retro     已写章节需回改 → 收件箱待办，作者确认后才创建修订请求，绝不自动改正文
 
 状态：proposed（待作者决定）→ adopted（已采纳）| dismissed（已忽略）→ done（已处理）。
-挡位 G3/G4 自动采纳 forward 与 style；blueprint、retro 永远由作者决定。
+forward 与 style 默认自动采纳（`auto_adopt`），不需要作者任何操作；blueprint、retro 涉及改蓝图/改已写正文，
+只进收件箱供作者决定（不阻塞流水线），系统不会自动改动。
 """
 
 from __future__ import annotations
@@ -41,7 +42,6 @@ S_DONE = "done"
 STATUSES = (S_PROPOSED, S_ADOPTED, S_DISMISSED, S_DONE)
 STATUS_LABEL = {S_PROPOSED: "待决定", S_ADOPTED: "已采纳", S_DISMISSED: "已忽略", S_DONE: "已处理"}
 
-AUTO_ADOPT_GEARS = ("G3", "G4")
 AUTO_ADOPT_SCOPES = (SCOPE_FORWARD, SCOPE_STYLE)
 
 MAX_DIRECTIVE = 300
@@ -49,8 +49,8 @@ MAX_PHRASE = 20
 MAX_INJECT_ITEMS = 5          # 单章最多注入的整改指令条数
 MAX_INJECT_CHARS = 700        # 注入文本的总字符上限
 
-# 默认全关（保守 opt-in）
-DEFAULT_FEEDBACK = {"extract": False, "inject_forward": False, "inject_style": False, "to_inbox": False}
+# 默认全开：整条链路自动运行，不需要作者操作；任何一项都可在界面或设置里单独关闭
+DEFAULT_FEEDBACK = {"extract": True, "auto_adopt": True, "inject_forward": True, "inject_style": True, "to_inbox": True}
 
 
 def _now() -> str:
@@ -62,7 +62,7 @@ def feedback_settings(settings: Dict[str, Any]) -> Dict[str, bool]:
     out = dict(DEFAULT_FEEDBACK)
     if isinstance(raw, dict):
         for k in out:
-            out[k] = bool(raw.get(k, False))
+            out[k] = bool(raw.get(k, DEFAULT_FEEDBACK[k]))
     return out
 
 
@@ -195,9 +195,9 @@ def merge(ledger: Dict[str, Any], data: Dict[str, Any], patrol_n: int, *, auto_a
     return {"findings": others + kept}
 
 
-def apply_extract(ws: Workspace, patrol_n: int, data: Dict[str, Any], gear: str) -> Dict[str, int]:
+def apply_extract(ws: Workspace, patrol_n: int, data: Dict[str, Any], auto_adopt: bool = True) -> Dict[str, int]:
     ledger = read_ledger(ws)
-    merged = merge(ledger, data, patrol_n, auto_adopt=gear in AUTO_ADOPT_GEARS)
+    merged = merge(ledger, data, patrol_n, auto_adopt=bool(auto_adopt))
     _write_ledger(ws, merged)
     mine = [f for f in merged["findings"] if f.get("patrol_chapter") == patrol_n]
     return {"total": len(mine), "adopted": sum(1 for f in mine if f["status"] == S_ADOPTED)}

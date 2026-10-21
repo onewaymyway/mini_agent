@@ -934,7 +934,7 @@ def h_best_pick_apply(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], 
 
 
 def h_patrol_apply(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:
-    """巡检整改项分流（确定性）：校验提取结果并入账本；G3/G4 自动采纳后续约束与避免套路。"""
+    """巡检整改项分流（确定性）：校验提取结果并入账本；默认自动采纳后续约束与避免套路。"""
     from novel_writer import patrol_findings as PF
     from novel_writer import validators as V
     n = int((step.extra or {}).get("through_chapter") or 0)
@@ -947,8 +947,8 @@ def h_patrol_apply(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], inv
     probs = PF.problems(data)
     if probs:
         raise ChapterOpError("巡检整改项不合格：" + "；".join(probs[:5]))
-    res = PF.apply_extract(ws, n, data, str(settings.get("gear")))
-    return {"summary": f"整改项 {res['total']} 条，自动采纳 {res['adopted']} 条（其余待你决定）"}
+    res = PF.apply_extract(ws, n, data, PF.feedback_settings(settings)["auto_adopt"])
+    return {"summary": f"整改项 {res['total']} 条，自动采纳 {res['adopted']} 条（其余为蓝图待办/回改建议，进收件箱，不阻塞流水线）"}
 
 
 CHAPTER_HANDLERS = {

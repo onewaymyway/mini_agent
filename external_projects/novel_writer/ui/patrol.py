@@ -10,6 +10,7 @@ from ui.components import show_error
 
 _SWITCHES = [
     ("extract", "提取整改项", "巡检后自动把报告整理成整改项（多一次便宜的 LLM 调用 + 一个确定性分流步骤）"),
+    ("auto_adopt", "自动采纳", "「约束后续章节」与「避免套路」自动采纳，不需要你点；关闭后需在下方手动采纳"),
     ("inject_forward", "注入后续约束", "已采纳的「约束后续章节」整改项写入之后每一章的上下文包"),
     ("inject_style", "注入避免套路", "已采纳的「避免套路」写入风格提示，并在机器校验里给出提示（不阻断）"),
     ("to_inbox", "收件箱提醒", "待你决定的整改项、蓝图待办、回改建议显示在收件箱"),
@@ -25,10 +26,10 @@ def render_patrol(ws: str) -> None:
     data = res["data"]
     findings, fb = data["findings"], data["feedback"]
     pending = [f for f in findings if f["status"] == PF.S_PROPOSED]
-    with st.expander(f"🩺 巡检整改项（{len(findings)} 条，待决定 {len(pending)}）", expanded=bool(pending)):
+    with st.expander(f"🩺 巡检整改项（{len(findings)} 条，其中需你过目 {sum(1 for f in pending if f['scope'] in (PF.SCOPE_BLUEPRINT, PF.SCOPE_RETRO))}）", expanded=False):
         _render_switches(ws, fb, data["gear"])
         if not findings:
-            st.info("暂无整改项。开启「提取整改项」后，在精品档的每 10 章巡检之后会自动生成。")
+            st.info("暂无整改项。精品档每 10 章巡检之后会自动生成（全自动，无需操作）。")
             return
         groups = [("待决定", PF.S_PROPOSED), ("已采纳", PF.S_ADOPTED), ("已处理", PF.S_DONE), ("已忽略", PF.S_DISMISSED)]
         for label, status in groups:
@@ -41,8 +42,8 @@ def render_patrol(ws: str) -> None:
 
 
 def _render_switches(ws: str, fb: dict, gear: str) -> None:
-    st.caption("以下开关默认全部关闭。G3/G4 挡位会自动采纳「约束后续章节」与「避免套路」；"
-               "蓝图待办与已写章节的回改建议永远由你决定，系统不会自动改正文。当前挡位：" + str(gear))
+    st.caption("整条链路默认全自动：巡检后自动提取、自动采纳并注入后续写作，不需要你操作；以下开关可单项关闭。"
+               "只有「蓝图待办」与「已写章节回改建议」不会自动执行（会改蓝图/正文），仅在收件箱提示，不阻塞流水线。")
     cols = st.columns(len(_SWITCHES))
     new = {}
     for col, (key, label, help_) in zip(cols, _SWITCHES):

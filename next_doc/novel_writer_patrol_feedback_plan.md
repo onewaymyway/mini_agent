@@ -1,6 +1,7 @@
 # novel_writer 巡检整改项：让巡检报告真正被用上
 
 状态：**阶段一已完成（2026-10-21）**——结构化整改项 + 分流 + 界面展示；阶段二（闭环 + 确定性指标）待做。
+**2026-10-21 修订：按作者要求改为默认全开、全自动，不需要用户任何操作**（见下文「保守默认」一节的修订说明）。
 
 ## 1. 问题
 
@@ -28,23 +29,24 @@
 | retro 回改已写章节 | 某章需要 L2 重构 | 收件箱待办；界面按钮「创建修订请求」，作者确认后才执行，**绝不自动改正文** |
 
 状态：`proposed 待决定 → adopted 已采纳 | dismissed 已忽略 → done 已处理`。
-**挡位 G3/G4 自动采纳 forward 与 style**；blueprint、retro 永远由作者决定。作者亲自做过的决定，重新提取时不会被覆盖或丢弃。
+**默认自动采纳 forward 与 style（所有挡位）**；blueprint、retro 涉及改蓝图/改已写正文，系统不会自动执行，只进收件箱提示（不阻塞流水线），由作者决定。作者亲自做过的决定，重新提取时不会被覆盖或丢弃。
 
-### 保守默认（全部默认关闭）
+### 默认全开、全自动（修订）
 
-设置 `patrol_feedback`：`extract`（提取与分流）/ `inject_forward`（注入后续约束）/ `inject_style`（注入避免套路）/ `to_inbox`（收件箱提醒）。
-全关时计划、上下文包、风格提示、机器校验与升级前逐字节一致。
+设置 `patrol_feedback`，五项**默认全部开启**：`extract`（提取与分流）/ `auto_adopt`（自动采纳后续约束与避免套路）/ `inject_forward`（注入后续约束）/ `inject_style`（注入避免套路）/ `to_inbox`（收件箱提醒）。
+每项都可单独关闭；旧项目设置文件里没有这一项时同样按默认全开处理。`patrol_extract` 归入 infra 类别，所有挡位自动运行，不需要人工点击。
+原先的「默认全关、G3/G4 才自动采纳」已废弃。唯一保留人工决定的是蓝图待办与已写章节回改（会改蓝图/正文）。
 
 ### 界面
 
-审校页顶部「🩺 巡检整改项」：四个开关、按状态分组的整改项列表、采纳/忽略/标记已处理/撤销、retro 项的「创建修订请求」。
+审校页顶部「🩺 巡检整改项」：五个开关、按状态分组的整改项列表、采纳/忽略/标记已处理/撤销、retro 项的「创建修订请求」。
 
 ## 3. 实施记录（阶段一）
 
-- 新增 `novel_writer/patrol_findings.py`（校验、账本、合并、注入渲染）、`ui/patrol.py`、`tests/test_patrol_feedback.py`（16 例）。
+- 新增 `novel_writer/patrol_findings.py`（校验、账本、合并、注入渲染）、`ui/patrol.py`、`tests/test_patrol_feedback.py`（18 例，含一例不点任何按钮的端到端：精品档第 10 章后自动提取→分流→自动采纳→第 11 章上下文包带指令）。
 - 修改：`workspace.py`（2 个路径键）、`settings.py`（`patrol_feedback` 及校验）、`steps.py`（2 个步骤定义）、`pipeline.py`（开启时在 patrol 后插入）、`validators.py`（`patrol_findings` 产出校验）、`chapter_ops.py`（`patrol_apply` 处理器；上下文包/风格提示/机器校验的接入）、`inbox.py`、`tool_api.py`（`patrol_findings` / `patrol_set_status`）、`ui/review.py`、`ui/components.py`。
-- 全量 484 通过，仅剩原有的 `test_output_names` 失败；界面用 Streamlit AppTest 做过冒烟（渲染、采纳按钮）。
-- **未验证**：真实 LLM 下 `patrol_extract` 能否稳定产出合格 JSON（有产出校验与自动重试兜底）；已有的第 30 章报告需开启 `extract` 后运行 `patrol_extract:30` 才会生成整改项。
+- 全量 486 通过，仅剩原有的 `test_output_names` 失败；界面用 Streamlit AppTest 做过冒烟（渲染、采纳按钮）。
+- **未验证**：真实 LLM 下 `patrol_extract` 能否稳定产出合格 JSON（有产出校验与自动重试兜底）；已有的第 30 章报告：升级后计划里会多出 `patrol_extract:30` / `patrol_apply:30` 两个待运行步骤，自动挡会自己跑，不需要操作。
 
 ## 4. 阶段二（待做）
 
