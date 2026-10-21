@@ -119,3 +119,26 @@ def test_earlier_chapters_adopted_when_later_chapter_has_progress(isolated):
         assert st.get_step_state(ws, f"ch{n:02d}.characters_refresh")["status"] == st.ST_PASSED
         assert st.get_step_state(ws, f"ch{n:02d}.plot_merge")["status"] == st.ST_PASSED
     assert st.get_step_state(ws, "ch04.characters_refresh")["status"] != st.ST_PASSED  # 当前章不认领
+
+
+def test_older_patrols_are_not_extracted_only_the_latest(isolated):
+    """升级前已完成的较早巡检（第 10、20 章）不提取整改项；最新的第 30 章照常提取。"""
+    ws = _book(isolated, quality="premium", total=3)
+    for n in (10, 20, 30):
+        st.update_step(ws, f"patrol:{n}", status=st.ST_PASSED)
+    adopted = set(st.adopt_legacy_steps(ws))
+    assert {"patrol_extract:10", "patrol_apply:10", "patrol_extract:20", "patrol_apply:20"} <= adopted
+    assert not any(a.endswith(":30") for a in adopted)
+    assert st.get_step_state(ws, "patrol_extract:30")["status"] != st.ST_PASSED
+    assert st.adopt_legacy_steps(ws) == []
+
+
+def test_new_flow_extract_in_progress_is_not_adopted(isolated):
+    """新流程：只有一次巡检、提取尚未运行，不能被认领。真实运行过的提取记录也不被覆盖。"""
+    ws = _book(isolated, quality="premium", total=3)
+    st.update_step(ws, "patrol:10", status=st.ST_PASSED)
+    assert st.adopt_legacy_steps(ws) == []
+    st.update_step(ws, "patrol:20", status=st.ST_PASSED)
+    st.update_step(ws, "patrol_extract:10", status=st.ST_FAILED, error="真实失败")
+    st.adopt_legacy_steps(ws)
+    assert st.get_step_state(ws, "patrol_extract:10")["status"] == st.ST_FAILED

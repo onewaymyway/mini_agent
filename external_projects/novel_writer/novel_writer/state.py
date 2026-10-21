@@ -424,6 +424,7 @@ def adopt_legacy_steps(ws: Workspace) -> List[str]:
                                          "note": f"迁移：{why}", "updated_at": now_iso()}
                         adopted.append(new_id)
         adopted.extend(_adopt_legacy_plot_merge(ws, steps))
+        adopted.extend(_adopt_superseded_patrol_extracts(steps))
         if adopted:
             atomic_write_json(ws.path("studio_state"), state)
     if adopted:
@@ -500,6 +501,29 @@ def _adopt_legacy_plot_merge(ws: Workspace, steps: Dict[str, Any]) -> List[str]:
         steps[merge_id] = {"status": ST_PASSED, "attempts": 0, "note": _LEGACY_PLOT_MERGE_NOTE,
                            "updated_at": now_iso()}
         adopted.append(merge_id)
+    return adopted
+
+
+_SUPERSEDED_PATROL_NOTE = "迁移：这是较早的巡检，已被后面的巡检覆盖，不再提取整改项（只对最新一次巡检提取）"
+
+
+def _adopt_superseded_patrol_extracts(steps: Dict[str, Any]) -> List[str]:
+    """较早的巡检（升级前就已完成、且后面还有更新的巡检）不提取整改项：认领为已通过。调用方持锁并落盘。
+
+    新流程里同一次巡检的提取总是先于下一次巡检完成，所以「后面已有更晚的巡检通过、而本次的提取/分流没有记录」
+    只可能是升级前的旧数据。最新的一次巡检不认领，照常提取。
+    """
+    passed = sorted(int(m.group(1)) for sid, e in steps.items()
+                    if (m := re.fullmatch(r"patrol:(\d+)", sid)) and e.get("status") == ST_PASSED)
+    adopted: List[str] = []
+    for n in passed[:-1]:
+        for kind in ("patrol_extract", "patrol_apply"):
+            sid = f"{kind}:{n}"
+            cur = steps.get(sid)
+            if cur is None or cur.get("status") == ST_PENDING:
+                steps[sid] = {"status": ST_PASSED, "attempts": 0, "note": _SUPERSEDED_PATROL_NOTE,
+                              "updated_at": now_iso()}
+                adopted.append(sid)
     return adopted
 
 
