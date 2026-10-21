@@ -55,5 +55,7 @@ def decode(text: str, where: str) -> Dict[str, Any]:
         try:
             fields[key] = json.loads(raw)
         except ValueError as exc:
-            raise KVFormatError([f"{where} 第 {n} 行的 {key} 不是合法 JSON（{exc}）"])
+            shown = raw if len(raw) <= 60 else raw[:60] + "…"
+            raise KVFormatError([f"{where} 第 {n} 行的 {key} 不是合法 JSON：值为 {shown}。"
+                                 "字符串内若需要引号，请使用中文「」『』，不要使用英文双引号；字符串用双引号包裹，且整个值写在同一行"])
     raise KVFormatError([f"{where}：文件头未闭合（缺少结束的 ---）"])

@@ -54,3 +54,25 @@ def test_ordinary_list_ledger_still_migrates_deterministically(tmp_path):
     res = PS.migrate_legacy(legacy, base)
     assert res["status"] == "migrated"
     assert PS.is_store(base)
+
+
+def test_plot_validator_reports_every_bad_file_at_once(tmp_path):
+    """LLM 重试时要能一次看到全部问题，而不是每次只修一个文件。"""
+    base = tmp_path / "伏笔"
+    base.mkdir()
+    for n in ("F001", "F002", "F003"):
+        (base / f"{n}.md").write_text(f'---\nid: "{n}"\nname: "他说"走吧""\n---\n', encoding="utf-8")
+    from novel_writer import plot_store as PS
+    data, errors = PS._plot_stage_validator("")(tmp_path)
+    assert data is None
+    assert sum(1 for e in errors if "不是合法 JSON" in e) == 3
+    assert any("F003.md" in e for e in errors)
+
+
+def test_decode_error_shows_the_offending_value_and_quoting_rule():
+    from novel_writer import kvfile as KV
+    import pytest
+    with pytest.raises(KV.KVFormatError) as e:
+        KV.decode('---\nname: "他说"走吧"\n---\n', "F073.md")
+    msg = e.value.problems[0]
+    assert "F073.md 第 2 行" in msg and '"他说"走吧"' in msg and "双引号" in msg

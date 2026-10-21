@@ -214,6 +214,8 @@ ALLOWED_STATUS = ("planted", "advanced", "resolved")
 LAYOUT_INSTRUCTIONS = """【目标布局】在写出目录下创建一个名为「伏笔」的目录，内容如下：
 1. 每条伏笔一个文件 `伏笔/F<编号>.md`（编号只含字母、数字、下划线、连字符，例如 F001、F12）。
    文件格式：第一行和最后一个分隔行都是 `---`，中间每行是 `字段名: JSON值`（值必须是单行合法 JSON），然后是一个 `---` 闭合行。
+   引号规则（最常见的错误来源）：字符串值必须用英文双引号包裹；字符串内容里如需引号，一律使用中文「」『』，不要使用英文双引号（不要做转义）。
+   例如：name: "他说「走吧」"，而不是 name: "他说"走吧""。
    必需字段：`id`（与文件名一致，字符串）、`name`（字符串）、`status`（只能是 planted / advanced / resolved）、
    `plant_chapter`（整数章号，未知则 null）、`resolve_chapter`（整数章号或 null）、`progress`（数组，元素为 {"chapter": 整数, "note": 字符串}，可为空数组）。
    可以额外保留原文中的其它字段（如 `note`、`description`），值同样用单行 JSON。
@@ -234,11 +236,39 @@ LAYOUT_INSTRUCTIONS = """【目标布局】在写出目录下创建一个名为�
 """
 
 
+def _collect_file_problems(base: Path) -> List[str]:
+    """逐个检查全部伏笔文件与章节增量文件，收集所有格式问题（一次反馈给 LLM，避免每次重试只修一个）。"""
+    problems: List[str] = []
+    seen: Dict[str, str] = {}
+    for f in _item_files(base):
+        try:
+            fields = _decode_fields(f.read_text(encoding="utf-8"), f.name)
+        except LedgerError as exc:
+            problems.extend(exc.problems)
+            continue
+        iid = str(fields.get("id") or "")
+        if iid != f.stem:
+            problems.append(f"{f.name}：文件头 id={iid!r} 与文件名不一致")
+        elif iid in seen:
+            problems.append(f"伏笔 id 重复：{iid}（{seen[iid]} 与 {f.name}）")
+        else:
+            seen[iid] = f.name
+    for f in _applied_files(base):
+        try:
+            _decode_fields(f.read_text(encoding="utf-8"), f"{APPLIED_DIR}/{f.name}")
+        except LedgerError as exc:
+            problems.extend(exc.problems)
+    return problems
+
+
 def _plot_stage_validator(source_text: str) -> Callable[[Path], Tuple[Optional[Dict[str, Any]], List[str]]]:
     def validate(out: Path) -> Tuple[Optional[Dict[str, Any]], List[str]]:
         base = Path(out) / "伏笔"
         if not base.is_dir():
             return None, [f"没有写出「伏笔」目录（应在 {out} 下创建 伏笔/）"]
+        file_problems = _collect_file_problems(base)
+        if file_problems:
+            return None, file_problems
         try:
             data = read_store(base)
         except LedgerError as exc:
