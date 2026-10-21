@@ -233,7 +233,7 @@ description: 长篇小说宏观规划技能。当用户想要开始创作一部�
 4. 分解章节列表    逐章填写全部字段（含 pov/chapter_type/tension_level/foreshadowing）
 5. 建立伏笔索引    汇总 foreshadowing_index，每条含完整 reveal 信息
 6. 蓝图自检        执行第四步所有核查项，修正后进入下一步
-7. 保存蓝图        novel_blueprint.json（v1）
+7. 保存蓝图        按系统给定的蓝图路径保存（v1）
 8. 分发各模块      按下方协议触发初始化（含新增的三个模块）
 9. 展示摘要        向用户呈现，等待确认或修改
 ```

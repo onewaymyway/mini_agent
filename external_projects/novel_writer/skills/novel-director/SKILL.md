@@ -160,7 +160,7 @@ description: 长篇小说生成总控技能。管理和协调所有小说创作�
   方式A：从用户提供的参考文本提取
   方式B：等前3章完成后用户确认质量，手动触发
 
-阶段一完成标志：novel_blueprint.json 存在 · 角色索引.md 建立 ·
+阶段一完成标志：蓝图/_index.md 与各章文件存在 · 角色索引.md 建立 ·
                 world_bible.json 建立 · 伏笔/（F*.md 与 _index.md） 建立 ·
                 word_count.json 建立
 ```
@@ -306,7 +306,7 @@ description: 长篇小说生成总控技能。管理和协调所有小说创作�
 
 ```
 novel-planner ──────────────────────────────────┐
-    │ blueprint.json                             │
+    │ 蓝图（蓝图/_index.md + 每章一个文件）      │
     ├──→ character-designer ──→ character-manager│
     ├──→ world-builder                           │
     ├──→ plot-tracker                            │
@@ -476,7 +476,7 @@ reader-simulator 关注"已写内容的读者体验"（细粒度，段落级）�
 
 ```
 阶段一完成：
-  ✓ novel_blueprint.json 存在且自检通过
+  ✓ 蓝图（蓝图/_index.md 与各章文件）存在且自检通过
   ✓ 角色索引.md 建立（主要角色完整档案）
   ✓ world_bible.json 建立（力量体系 + 主要地点 + 基础历史）
   ✓ 伏笔/（F*.md 与 _index.md） 建立（所有初始伏笔已注册）

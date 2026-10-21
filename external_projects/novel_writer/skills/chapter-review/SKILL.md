@@ -250,7 +250,7 @@ project/
 │   ├── characters_current.json   角色当前状态快照
 │   ├── foreshadowing_status.json 伏笔状态总览
 │   └── progress.json             整体进度记录
-└── novel_blueprint.json          大纲蓝图（novel-planner 管理）
+└── 蓝图/_index.md + 每章一个文件  大纲蓝图（novel-planner 管理）
 ```
 
 ### 章节总结格式（保存到 {WORKSPACE}/章节总结/第{nn}章_总结.md）
