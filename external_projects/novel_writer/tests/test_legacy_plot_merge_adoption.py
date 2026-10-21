@@ -46,7 +46,7 @@ def test_new_flow_with_delta_file_is_never_adopted(isolated):
     p = ws.path("plot_delta", nn=1)
     p.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_json(p, {"planted": [], "advanced": [], "resolved": []})
-    assert st.adopt_legacy_steps(ws) == []
+    assert "ch01.plot_merge" not in st.adopt_legacy_steps(ws)
     assert st.get_step_state(ws, "ch01.plot_merge")["status"] != st.ST_PASSED
 
 
@@ -99,3 +99,23 @@ def test_characters_refresh_not_adopted_in_new_flow(isolated):
     st.update_step(ws, "ch01.sync", status=st.ST_PASSED)  # 标准档新流程：刷新紧随其后，不能认领
     st.adopt_legacy_steps(ws)
     assert st.get_step_state(ws, "ch01.characters_refresh")["status"] != st.ST_PASSED
+
+
+def test_refresh_adopted_even_when_plot_merge_already_passed(isolated):
+    """回归：plot_merge 已有记录时，不能因此漏掉同章的 characters_refresh。"""
+    ws = _book(isolated)
+    st.update_step(ws, "ch01.sync_plot", status=st.ST_PASSED)
+    st.update_step(ws, "ch01.plot_merge", status=st.ST_PASSED)
+    st.adopt_legacy_steps(ws)
+    assert st.get_step_state(ws, "ch01.characters_refresh")["status"] == st.ST_PASSED
+
+
+def test_earlier_chapters_adopted_when_later_chapter_has_progress(isolated):
+    """旧数据里没有 sync_plot 记录的章节：只要后面的章节已有真实进度，本章就算旧版本已完成。"""
+    ws = _book(isolated, total=5)
+    st.update_step(ws, "ch04.write_chapter", status=st.ST_PASSED)
+    st.adopt_legacy_steps(ws)
+    for n in (1, 2, 3):
+        assert st.get_step_state(ws, f"ch{n:02d}.characters_refresh")["status"] == st.ST_PASSED
+        assert st.get_step_state(ws, f"ch{n:02d}.plot_merge")["status"] == st.ST_PASSED
+    assert st.get_step_state(ws, "ch04.characters_refresh")["status"] != st.ST_PASSED  # 当前章不认领

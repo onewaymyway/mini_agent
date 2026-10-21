@@ -440,13 +440,17 @@ _MISSING_DELTA_MARK = "伏笔增量"
 
 
 def _adopt_legacy_plot_merge(ws: Workspace, steps: Dict[str, Any]) -> List[str]:
-    """把旧版本已完成章节的 plot_merge 认领为已通过。调用方已持有锁并负责落盘。
+    """把旧版本已完成章节里「后来新增的确定性步骤」（plot_merge、逐章 characters_refresh）认领为已通过。
 
-    只认领同时满足下列条件的章节：
-      1. 本章的伏笔同步步骤已通过（标准/精品档为 sync_plot，草稿档为 sync）；
-      2. 本章的伏笔增量文件不存在（新流程不可能出现这种组合）；
-      3. plot_merge 没有记录，或只有一条「因增量缺失而失败/未开始/中断」的记录。
-    已通过、运行中、等待作者、需重跑的 plot_merge 一律不动；增量文件存在的章节（新流程数据）也不动。
+    调用方已持有锁并负责落盘。先判定哪些章节属于「旧版本已完成」：
+      · 本章伏笔同步已通过（标准/精品档 sync_plot，草稿档 sync）；或
+      · 之后的章节里已有真实通过的步骤（新流程里下一章必须等本章全部步骤通过才开始，
+        所以只要后面的章节已动过，本章一定已经完成）。
+    再逐个步骤处理：
+      · plot_merge：本章增量文件不存在（新流程不可能出现）才认领；无记录或只有「增量缺失」类失败记录时覆盖；
+        已通过、运行中、等待作者、需重跑的不动；账本损坏等其它失败不吞。
+      · characters_refresh：无记录或仅为待运行时认领；已有真实失败/通过记录的不动。
+    两个步骤互相独立，不因其中一个已有记录而跳过另一个。
     """
     from novel_writer.steps import DRAFT
     try:
@@ -454,20 +458,40 @@ def _adopt_legacy_plot_merge(ws: Workspace, steps: Dict[str, Any]) -> List[str]:
     except Exception:  # noqa: BLE001 - 设置读不到时按标准档处理，宁可少认领
         quality = "standard"
     anchor = "sync" if quality == DRAFT else "sync_plot"
-    adopted: List[str] = []
-    for sid, entry in list(steps.items()):
-        m = re.fullmatch(rf"ch(\d+)\.{anchor}", sid)
-        if not m or entry.get("status") != ST_PASSED:
+
+    def _is_real_pass(entry: Dict[str, Any]) -> bool:
+        return entry.get("status") == ST_PASSED and not str(entry.get("note") or "").startswith("迁移：")
+
+    done_chapters = set()
+    max_passed = 0
+    for sid, entry in steps.items():
+        m = re.fullmatch(r"ch(\d+)\.(\w+)", sid)
+        if not m or not _is_real_pass(entry):
             continue
-        n = int(m.group(1))
-        merge_id = f"ch{m.group(1)}.plot_merge"
+        max_passed = max(max_passed, int(m.group(1)))
+        if m.group(2) == anchor:
+            done_chapters.add(int(m.group(1)))
+    done_chapters.update(range(1, max_passed))
+
+    adopted: List[str] = []
+    for n in sorted(done_chapters):
+        tag = f"ch{n:02d}"
+        # characters_refresh
+        refresh_id = f"{tag}.characters_refresh"
+        cur_r = steps.get(refresh_id)
+        if cur_r is None or cur_r.get("status") == ST_PENDING:
+            steps[refresh_id] = {"status": ST_PASSED, "attempts": 0, "note": _LEGACY_REFRESH_NOTE,
+                                 "updated_at": now_iso()}
+            adopted.append(refresh_id)
+        # plot_merge
+        merge_id = f"{tag}.plot_merge"
         cur = steps.get(merge_id)
         if cur is not None:
             status = cur.get("status")
             if status in (ST_PASSED, ST_RUNNING, ST_WAITING_REVIEW, ST_WAITING_USER, ST_STALE):
                 continue
             if status == ST_FAILED and _MISSING_DELTA_MARK not in str(cur.get("error") or ""):
-                continue  # 真实的其它失败（如账本损坏）不能被吞掉
+                continue
         try:
             if ws.path("plot_delta", nn=n).exists():
                 continue
@@ -476,14 +500,6 @@ def _adopt_legacy_plot_merge(ws: Workspace, steps: Dict[str, Any]) -> List[str]:
         steps[merge_id] = {"status": ST_PASSED, "attempts": 0, "note": _LEGACY_PLOT_MERGE_NOTE,
                            "updated_at": now_iso()}
         adopted.append(merge_id)
-        # 逐章「人物档案刷新」同样是后来新增的确定性步骤：旧版本没有记录，且旧版本的人物同步已直接写好档案。
-        # 判断依据与上面相同（伏笔同步已通过 + 无增量文件 ⇒ 旧数据）；新流程里伏笔同步通过必然在刷新之后。
-        refresh_id = f"ch{m.group(1)}.characters_refresh"
-        cur_r = steps.get(refresh_id)
-        if cur_r is None or cur_r.get("status") == ST_PENDING:
-            steps[refresh_id] = {"status": ST_PASSED, "attempts": 0, "note": _LEGACY_REFRESH_NOTE,
-                                 "updated_at": now_iso()}
-            adopted.append(refresh_id)
     return adopted
 
 
