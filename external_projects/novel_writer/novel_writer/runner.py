@@ -76,8 +76,11 @@ _PREAMBLE = """【运行环境】你在后台无人值守地执行本步骤，**
 """
 
 _RECEIPT_EXAMPLE = (
-    '{"status": "done 或 needs_user", "summary": "一句话", '
-    '"outputs": ["相对路径"], "needs_user": [{"id": "q1", "question": "...", "options": []}]}'
+    '{"status": "done", "summary": "一句话", "outputs": ["相对路径"]}\n'
+    '`status` 只能是英文单词 "done"（已完成）或 "needs_user"（有事项要作者决定）这两个值之一，'
+    '不要写 complete / completed / success 等其它写法。\n'
+    '有待作者决定的事项时：{"status": "needs_user", "summary": "一句话", '
+    '"needs_user": [{"id": "q1", "question": "...", "options": []}]}'
 )
 
 
@@ -208,6 +211,9 @@ def _run_skill_step_inner(
         if not result.ok:
             raise StepFailed(f"workflow 执行未成功：{result.error or '未知原因'}")
         receipt = read_json(run_dir / RECEIPT_FILE, default=None)
+        receipt, was = V.normalize_receipt(receipt)
+        if was is not None:
+            st.log_line(ws, f"🔧 {step.id}：回执 status 写成了 {was!r}，已按「完成」规范为 done")
         problems = V.receipt_problems(receipt) if receipt is not None else [f"缺少回执 {RECEIPT_FILE}"]
         if not problems and receipt.get("status") == "done":
             _normalize_outputs(ws, step, since=started)

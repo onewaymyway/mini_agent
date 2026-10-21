@@ -25,6 +25,23 @@ from novel_writer.workspace import Workspace
 RECEIPT_STATUSES = ("done", "needs_user")
 
 
+# agent 常把「完成」写成别的英文词（complete / success 等）。这类写法含义明确，确定性地规范为 done，
+# 不要为了一个词让 agent 把整步（可能几十分钟）重做一遍。含义不明确的（如 blocked）不猜，仍按不合格处理。
+_DONE_SYNONYMS = frozenset({"complete", "completed", "success", "succeeded", "successful", "ok", "finished",
+                            "finish", "pass", "passed", "ready", "done."})
+
+
+def normalize_receipt(data: Any) -> tuple:
+    """回执规范化。返回 (回执, 原 status 或 None)；仅当 status 是「完成」的同义写法时改写为 done。"""
+    if not isinstance(data, dict):
+        return data, None
+    raw = data.get("status")
+    if isinstance(raw, str) and raw not in RECEIPT_STATUSES and raw.strip().lower() in _DONE_SYNONYMS:
+        if not data.get("needs_user"):   # 同时列了待答复事项的，含义不明确，不改
+            return {**data, "status": "done"}, raw
+    return data, None
+
+
 def receipt_problems(data: Any) -> List[str]:
     if not isinstance(data, dict):
         return [f"回执顶层不是 JSON 对象，而是 {type(data).__name__}"]
