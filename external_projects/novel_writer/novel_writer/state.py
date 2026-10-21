@@ -423,10 +423,58 @@ def adopt_legacy_steps(ws: Workspace) -> List[str]:
                         steps[new_id] = {"status": ST_PASSED, "attempts": 0,
                                          "note": f"迁移：{why}", "updated_at": now_iso()}
                         adopted.append(new_id)
+        adopted.extend(_adopt_legacy_plot_merge(ws, steps))
         if adopted:
             atomic_write_json(ws.path("studio_state"), state)
     if adopted:
         log_line(ws, f"🔁 迁移：{len(adopted)} 个新步骤沿用旧版本的结果：{', '.join(adopted[:6])}")
+    return adopted
+
+
+# 旧版本的伏笔同步直接改写整本账本，没有「伏笔增量」文件，也没有 plot_merge 步骤。
+# 升级后 plot_merge 是新步骤、没有记录，会被当作「待运行」从第 1 章开始排队，而旧章节根本没有增量可合并。
+_LEGACY_PLOT_MERGE_NOTE = "迁移：旧版本的伏笔同步已把本章伏笔直接写入账本，无增量文件，无需再合并"
+# 新流程里「同步」步骤通过的前提是增量文件存在（产出校验），所以「同步已通过 + 增量文件不存在」只可能是旧数据。
+_MISSING_DELTA_MARK = "伏笔增量"
+
+
+def _adopt_legacy_plot_merge(ws: Workspace, steps: Dict[str, Any]) -> List[str]:
+    """把旧版本已完成章节的 plot_merge 认领为已通过。调用方已持有锁并负责落盘。
+
+    只认领同时满足下列条件的章节：
+      1. 本章的伏笔同步步骤已通过（标准/精品档为 sync_plot，草稿档为 sync）；
+      2. 本章的伏笔增量文件不存在（新流程不可能出现这种组合）；
+      3. plot_merge 没有记录，或只有一条「因增量缺失而失败/未开始/中断」的记录。
+    已通过、运行中、等待作者、需重跑的 plot_merge 一律不动；增量文件存在的章节（新流程数据）也不动。
+    """
+    from novel_writer.steps import DRAFT
+    try:
+        quality = ws.settings().get("quality", "standard")
+    except Exception:  # noqa: BLE001 - 设置读不到时按标准档处理，宁可少认领
+        quality = "standard"
+    anchor = "sync" if quality == DRAFT else "sync_plot"
+    adopted: List[str] = []
+    for sid, entry in list(steps.items()):
+        m = re.fullmatch(rf"ch(\d+)\.{anchor}", sid)
+        if not m or entry.get("status") != ST_PASSED:
+            continue
+        n = int(m.group(1))
+        merge_id = f"ch{m.group(1)}.plot_merge"
+        cur = steps.get(merge_id)
+        if cur is not None:
+            status = cur.get("status")
+            if status in (ST_PASSED, ST_RUNNING, ST_WAITING_REVIEW, ST_WAITING_USER, ST_STALE):
+                continue
+            if status == ST_FAILED and _MISSING_DELTA_MARK not in str(cur.get("error") or ""):
+                continue  # 真实的其它失败（如账本损坏）不能被吞掉
+        try:
+            if ws.path("plot_delta", nn=n).exists():
+                continue
+        except OSError:
+            continue
+        steps[merge_id] = {"status": ST_PASSED, "attempts": 0, "note": _LEGACY_PLOT_MERGE_NOTE,
+                           "updated_at": now_iso()}
+        adopted.append(merge_id)
     return adopted
 
 
