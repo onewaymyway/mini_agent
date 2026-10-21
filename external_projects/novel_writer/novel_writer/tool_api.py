@@ -719,6 +719,28 @@ def migrate_characters(workspace: str, dry_run: bool = False, confirm: bool = Fa
     return _guard(run)
 
 
+def migration_status(workspace: str) -> Dict[str, Any]:
+    """三项旧数据（蓝图 / 人物 / 伏笔）的迁移状态。只读，不写任何文件。"""
+    def run() -> Dict[str, Any]:
+        from novel_writer import blueprint_store as BS
+        from novel_writer import character_store as CS
+        from novel_writer import plot_store as PS
+        ws = _workspace_or_raise(workspace)
+        checks = [
+            ("blueprint", ws.path("blueprint_legacy"), BS.is_store(ws.path("blueprint"))),
+            ("characters", ws.path("characters_legacy"), CS.is_store(ws.path("characters"))),
+            ("plot", ws.path("plot_legacy"), PS.is_store(ws.path("plot_items_dir"))),
+        ]
+        items = []
+        for name, legacy, migrated in checks:
+            has_legacy = legacy.is_file()
+            items.append({"name": name, "legacy": legacy.relative_to(ws.root).as_posix(),
+                          "legacy_exists": has_legacy, "migrated": migrated,
+                          "pending": has_legacy and not migrated})
+        return _ok({"items": items})
+    return _guard(run)
+
+
 def migrate_blueprint(workspace: str, dry_run: bool = False, confirm: bool = False,
                        use_llm: bool = False) -> Dict[str, Any]:
     """把旧版 小说蓝图.json 拆成每章一个文件（第五阶段）。规则同 migrate_characters：

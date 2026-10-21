@@ -6,9 +6,11 @@ import streamlit as st
 
 from novel_writer import tool_api
 from ui.components import show_error, show_df
+from ui.migration import render_migration
 
 
 def render_threads(ws: str) -> None:
+    render_migration(ws)
     res = tool_api.threads(ws)
     if not res["ok"]:
         show_error(res)
@@ -34,5 +36,5 @@ def render_threads(ws: str) -> None:
     if data["tension_md"]:
         with st.expander("张力曲线", expanded=False):
             st.markdown(data["tension_md"])
-    with st.expander("plot_tracker.json", expanded=False):
+    with st.expander("伏笔账本（小文件合并视图）", expanded=False):
         st.json(tracker or {})

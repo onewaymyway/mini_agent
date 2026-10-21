@@ -5,6 +5,10 @@ description: 小说人物管理技能。负责创建和维护所有角色的完�
 
 # 人物管理技能（Character Manager）
 
+## 存储约定（第四阶段）
+
+每个角色一个文件 `大纲规划/人物设定/角色/{id}.md`：文件头用 `key: JSON值` 逐行保存下文的字段（每个值写在同一行），正文由系统生成。`角色索引.md` 由系统生成，不要手写。章后同步只修改本章出场角色的文件，新角色新建文件；不要整体重写全部角色。行为边界直接写在 `behavior_guide` 字段中，不再单独生成 behavior_index。
+
 ## 职责
 
 建立和维护所有角色的"活档案"。与 character-designer 分工：designer 负责创作阶段，本技能负责写作中的状态追踪管理。
@@ -14,7 +18,7 @@ description: 小说人物管理技能。负责创建和维护所有角色的完�
 ## 从 character-designer 建档：字段映射
 
 ```
-人设卡字段                → characters.json 字段
+人设卡字段                → 角色文件字段
 一句话本质                → identity.one_line_essence
 核心欲望（表层/深层）     → psychology.core_desire / core_need
 核心恐惧                  → psychology.core_fear
@@ -32,7 +36,7 @@ description: 小说人物管理技能。负责创建和维护所有角色的完�
 
 ---
 
-## 角色档案结构（characters.json）
+## 角色档案结构（角色文件）
 
 ```json
 {
@@ -166,7 +170,6 @@ wont_do 记录：不会无原则求饶
 
 所有文件保存到工作目录（{WORKSPACE}）：
 
-- 主档案：`{WORKSPACE}/大纲规划/人物设定/characters.json`
+- 主档案：`{WORKSPACE}/大纲规划/人物设定/角色/（每角色一个 {id}.md）`
 - 状态快照：`{WORKSPACE}/大纲规划/人物设定/snapshots/ch_{n}.json`（每章结束时存储）
-- 行为边界索引：`{WORKSPACE}/大纲规划/人物设定/behavior_index.json`
 - 人设卡（可读）：`{WORKSPACE}/大纲规划/人物设定/人设卡/{角色名}.md`

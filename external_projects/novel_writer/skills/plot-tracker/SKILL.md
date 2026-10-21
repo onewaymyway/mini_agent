@@ -5,6 +5,10 @@ description: 小说情节线索追踪技能。专门负责管理伏笔、悬念�
 
 # 情节追踪技能（Plot Tracker）
 
+## 存储约定（第二、三阶段）
+
+每条伏笔一个文件 `大纲规划/线索设定/伏笔/F*.md`，`_index.md` 由系统生成。章后同步不再整本重写账本：只输出本章增量 `plot_delta`（planted 埋设 / advanced 推进 / resolved 兑现），每个动作引用已有伏笔 id 或新建 id，由 `plot_merge` 合并。
+
 ## 职责
 
 做小说的"情节账本"——每条埋下的伏笔都必须有去处，每个承诺给读者的悬念都必须兑现。防止遗忘线索、情节断头、节奏失控。
@@ -13,7 +17,7 @@ description: 小说情节线索追踪技能。专门负责管理伏笔、悬念�
 
 ---
 
-## 核心数据结构（plot_tracker.json）
+## 核心数据结构（伏笔/（F*.md 与 _index.md））
 
 ```json
 {
@@ -216,7 +220,7 @@ depends_on: [前置伏笔ID列表，无则为空]
 
 所有文件保存到工作目录（{WORKSPACE}）：
 
-- 主追踪文件：`{WORKSPACE}/大纲规划/线索设定/plot_tracker.json`
+- 主追踪文件：`{WORKSPACE}/大纲规划/线索设定/伏笔/_index.md`
 - 伏笔注册表（可读）：`{WORKSPACE}/大纲规划/线索设定/伏笔注册表.md`
 - 故事线状态（可读）：`{WORKSPACE}/大纲规划/线索设定/故事线状态.md`
 - 张力曲线：`{WORKSPACE}/大纲规划/线索设定/tension_curve.md`

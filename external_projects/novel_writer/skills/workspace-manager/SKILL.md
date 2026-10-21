@@ -43,11 +43,10 @@ description: 工作目录管理技能。负责初始化小说项目的工作目�
 {WORKSPACE}/
 │
 ├── 大纲规划/
-│   ├── 小说蓝图.json              novel-planner 输出的主蓝图
+│   ├── 蓝图（_index.md、_meta.md、第NNN章.md）              novel-planner 输出的主蓝图
 │   ├── 章节大纲.md                人类可读的章节大纲概览
 │   ├── 人物设定/
-│   │   ├── characters.json        character-manager 主档案
-│   │   ├── behavior_index.json    行为边界索引（供一致性检查使用）
+│   │   ├── 角色索引.md        character-manager 主档案
 │   │   └── 人设卡/
 │   │       ├── 主角_[姓名].md     character-designer 输出的人设卡
 │   │       └── 配角_[姓名].md
@@ -57,7 +56,7 @@ description: 工作目录管理技能。负责初始化小说项目的工作目�
 │   │   └── 地点详情/
 │   │       └── [地点名].md        各地点的详细描述
 │   ├── 线索设定/
-│   │   ├── plot_tracker.json      plot-tracker 主档案
+│   │   ├── 伏笔/（F*.md 与 _index.md）      plot-tracker 主档案
 │   │   ├── 伏笔注册表.md          人类可读的伏笔列表
 │   │   └── 故事线状态.md          各故事线当前进展
 │   └── 其他设定/
@@ -106,12 +105,11 @@ description: 工作目录管理技能。负责初始化小说项目的工作目�
 # 大纲规划目录
 PATHS = {
     # 核心蓝图
-    "blueprint":           "{WORKSPACE}/大纲规划/小说蓝图.json",
+    "blueprint":           "{WORKSPACE}/大纲规划/蓝图/_index.md",
     "blueprint_readable":  "{WORKSPACE}/大纲规划/章节大纲.md",
 
     # 人物设定
-    "characters":          "{WORKSPACE}/大纲规划/人物设定/characters.json",
-    "behavior_index":      "{WORKSPACE}/大纲规划/人物设定/behavior_index.json",
+    "characters":          "{WORKSPACE}/大纲规划/人物设定/角色/（每角色一个 {id}.md）",
     "character_card":      "{WORKSPACE}/大纲规划/人物设定/人设卡/{name}.md",
     "character_snapshot":  "{WORKSPACE}/大纲规划/人物设定/snapshots/ch_{n}.json",
 
@@ -121,7 +119,7 @@ PATHS = {
     "location_detail":     "{WORKSPACE}/大纲规划/世界观设定/地点详情/{name}.md",
 
     # 线索设定
-    "plot_tracker":        "{WORKSPACE}/大纲规划/线索设定/plot_tracker.json",
+    "plot_tracker":        "{WORKSPACE}/大纲规划/线索设定/伏笔/_index.md",
     "foreshadowing_list":  "{WORKSPACE}/大纲规划/线索设定/伏笔注册表.md",
     "thread_status":       "{WORKSPACE}/大纲规划/线索设定/故事线状态.md",
 
@@ -230,7 +228,7 @@ PATHS = {
 步骤二：扫描已有文件，确定当前进度
   - 计算正文/目录下已有几章
   - 读取 项目状态/progress.json 获取整体进度
-  - 读取 大纲规划/小说蓝图.json 获取总章节数
+  - 读取 大纲规划/蓝图/_index.md 获取总章节数
 步骤三：输出当前项目状态摘要
 步骤四：确认各关键文件存在（如缺失则报警）
 ```
@@ -246,10 +244,10 @@ PATHS = {
 当前所在：第一幕（已完成8/10章）
 
 文件检查：
-  ✅ 大纲规划/小说蓝图.json        存在
-  ✅ 大纲规划/人物设定/characters.json  存在
+  ✅ 大纲规划/蓝图/_index.md        存在
+  ✅ 大纲规划/人物设定/角色/（每角色一个 {id}.md）  存在
   ✅ 大纲规划/世界观设定/world_bible.json  存在
-  ✅ 大纲规划/线索设定/plot_tracker.json  存在
+  ✅ 大纲规划/线索设定/伏笔/_index.md  存在
   ✅ 章节总结/ 目录（8个文件）     存在
   ⚠️ 大纲规划/其他设定/style_profile.json  不存在
      （风格指纹尚未建立，建议在第3章后建立）

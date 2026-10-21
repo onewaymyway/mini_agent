@@ -6,9 +6,11 @@ import streamlit as st
 
 from novel_writer import tool_api
 from ui.components import show_error
+from ui.migration import render_migration
 
 
 def render_codex(ws: str) -> None:
+    render_migration(ws)
     res = tool_api.codex(ws)
     if not res["ok"]:
         show_error(res)

@@ -91,12 +91,12 @@ description: 长篇小说生成总控技能。管理和协调所有小说创作�
 
 | 内容类型 | 保存路径 |
 |---------|---------|
-| 小说蓝图 | `{WORKSPACE}/大纲规划/小说蓝图.json` |
+| 小说蓝图 | `{WORKSPACE}/大纲规划/蓝图/_index.md` |
 | 章节大纲（可读）| `{WORKSPACE}/大纲规划/章节大纲.md` |
-| 人物设定 | `{WORKSPACE}/大纲规划/人物设定/characters.json` |
+| 人物设定 | `{WORKSPACE}/大纲规划/人物设定/角色/（每角色一个 {id}.md）` |
 | 人设卡 | `{WORKSPACE}/大纲规划/人物设定/人设卡/{角色}.md` |
 | 世界观设定 | `{WORKSPACE}/大纲规划/世界观设定/world_bible.json` |
-| 线索设定 | `{WORKSPACE}/大纲规划/线索设定/plot_tracker.json` |
+| 线索设定 | `{WORKSPACE}/大纲规划/线索设定/伏笔/_index.md` |
 | 伏笔注册表（可读）| `{WORKSPACE}/大纲规划/线索设定/伏笔注册表.md` |
 | 风格指纹 | `{WORKSPACE}/大纲规划/其他设定/style_profile.json` |
 | 字数档案 | `{WORKSPACE}/大纲规划/其他设定/word_count.json` |
@@ -116,7 +116,7 @@ description: 长篇小说生成总控技能。管理和协调所有小说创作�
 步骤 1.1  novel-planner
   任务：收集创作意图，输出蓝图文件
   输出文件：
-    {WORKSPACE}/大纲规划/小说蓝图.json       （主蓝图，JSON格式）
+    {WORKSPACE}/大纲规划/蓝图/_index.md       （主蓝图，JSON格式）
     {WORKSPACE}/大纲规划/章节大纲.md          （章节大纲，人类可读）
   完成标志：用户确认蓝图摘要
 
@@ -128,27 +128,26 @@ description: 长篇小说生成总控技能。管理和协调所有小说创作�
 步骤 1.3  character-manager
   任务：将 character-designer 的人设卡转为 JSON 档案
   输出文件：
-    {WORKSPACE}/大纲规划/人物设定/characters.json
-    {WORKSPACE}/大纲规划/人物设定/behavior_index.json
+    {WORKSPACE}/大纲规划/人物设定/角色/（每角色一个 {id}.md）
 
 步骤 1.4  world-builder
   任务：初始化世界圣经
-  输入：{WORKSPACE}/大纲规划/小说蓝图.json
+  输入：{WORKSPACE}/大纲规划/蓝图/_index.md
   输出文件：
     {WORKSPACE}/大纲规划/世界观设定/world_bible.json
     {WORKSPACE}/大纲规划/世界观设定/world_changelog.md
 
 步骤 1.5  plot-tracker
   任务：注册所有初始伏笔，建立张力曲线基准
-  输入：{WORKSPACE}/大纲规划/小说蓝图.json
+  输入：{WORKSPACE}/大纲规划/蓝图/_index.md
   输出文件：
-    {WORKSPACE}/大纲规划/线索设定/plot_tracker.json
+    {WORKSPACE}/大纲规划/线索设定/伏笔/_index.md
     {WORKSPACE}/大纲规划/线索设定/伏笔注册表.md（人类可读）
     {WORKSPACE}/大纲规划/线索设定/故事线状态.md（人类可读）
 
 步骤 1.6  word-count-controller
   任务：接收全书字数配额
-  输入：{WORKSPACE}/大纲规划/小说蓝图.json
+  输入：{WORKSPACE}/大纲规划/蓝图/_index.md
   输出文件：{WORKSPACE}/大纲规划/其他设定/word_count.json
 
 步骤 1.7  plot-simulator（建议，可选）
@@ -161,8 +160,8 @@ description: 长篇小说生成总控技能。管理和协调所有小说创作�
   方式A：从用户提供的参考文本提取
   方式B：等前3章完成后用户确认质量，手动触发
 
-阶段一完成标志：novel_blueprint.json 存在 · characters.json 建立 ·
-                world_bible.json 建立 · plot_tracker.json 建立 ·
+阶段一完成标志：novel_blueprint.json 存在 · 角色索引.md 建立 ·
+                world_bible.json 建立 · 伏笔/（F*.md 与 _index.md） 建立 ·
                 word_count.json 建立
 ```
 
@@ -478,9 +477,9 @@ reader-simulator 关注"已写内容的读者体验"（细粒度，段落级）�
 ```
 阶段一完成：
   ✓ novel_blueprint.json 存在且自检通过
-  ✓ characters.json 建立（主要角色完整档案）
+  ✓ 角色索引.md 建立（主要角色完整档案）
   ✓ world_bible.json 建立（力量体系 + 主要地点 + 基础历史）
-  ✓ plot_tracker.json 建立（所有初始伏笔已注册）
+  ✓ 伏笔/（F*.md 与 _index.md） 建立（所有初始伏笔已注册）
   ✓ word_count.json 建立（全书配额已分配）
 
 阶段二完成：
