@@ -308,7 +308,7 @@ def _check_character_files(ws: Workspace, step: Any) -> List[str]:
     probs = CS.problems_for_dir(base)
     if probs:
         backup = ws.studio / "backup" / "characters"
-        restored = CS.restore_invalid(base, backup) if backup.is_dir() else []
+        restored = CS.restore_invalid(base, backup) if (backup.is_dir() and _RESTORE_ENABLED) else []
         if restored:
             _st.log_line(ws, f"↩ {step.id}：{len(restored)} 个角色文件仍不合格，已还原为本步骤开始前的版本：{'、'.join(restored[:8])}")
             probs = probs + [f"以上文件已还原为本步骤开始前的版本（避免留下损坏文件）：{'、'.join(restored)}。"
@@ -343,6 +343,15 @@ OUTPUT_CHECKS: Dict[str, Callable[[Workspace, Any], List[str]]] = {
     "plot_delta": _check_plot_delta,
     "plot_register": _check_plot_register,
 }
+
+
+_RESTORE_ENABLED = True
+
+
+def set_restore_enabled(flag: bool) -> None:
+    """自检（agent 会话内）不还原备份；正式校验（步骤结束后）才还原。"""
+    global _RESTORE_ENABLED
+    _RESTORE_ENABLED = bool(flag)
 
 
 def content_problems(ws: Workspace, step: Any) -> List[str]:

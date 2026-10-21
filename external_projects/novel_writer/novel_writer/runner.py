@@ -69,7 +69,7 @@ _PREAMBLE = """【运行环境】你在后台无人值守地执行本步骤，**
 【作者指导】{author_notes}
 
 【作者对待确认事项的答复】{answers}
-{hint}
+{hint}{selfcheck}
 【回执】全部工作完成后，把回执 JSON 写入结果文件 receipt.json（路径由系统指定），格式为：
 {receipt_example}
 最终回复只需简短说明完成情况；回执文件才是结果。
@@ -114,12 +114,26 @@ def _input_listing(ws: Workspace, step: S.StepDef, limit: int = 40) -> str:
     return "\n".join(lines) or "（无）"
 
 
+def _selfcheck_block(ws: Workspace, step: S.StepDef) -> str:
+    """声明了产出内容校验的步骤：让 agent 写完后在本会话内运行自检命令，问题当场改掉，再写回执。"""
+    if not (step.extra or {}).get("output_check"):
+        return ""
+    script = config.PROJECT_ROOT / "entrypoints" / "check_step.py"
+    cmd = f'"{sys.executable}" "{script}" --workspace "{ws.root}" --step "{step.id}"'
+    return (
+        "\n【自检（写回执之前必须做）】文件写完后，先运行下面的命令检查产出格式：\n"
+        f"{cmd}\n"
+        "输出 OK 才算通过；若列出了问题，就在**当前会话里直接修改相应文件**，再运行同一命令，直到输出 OK，然后再写回执。"
+        "只有在确实无法执行命令时才可以跳过这一步。\n")
+
+
 def build_prompt(ws: Workspace, step: S.StepDef, *, hint: str = "") -> str:
     note = _read_text(_note_file(ws, "author_notes", step.id))
     answers_raw = read_json(_answers_file(ws, step.id), default=None)
     answers = json.dumps(answers_raw, ensure_ascii=False, indent=2) if answers_raw else "（无）"
     hint_block = f"\n【上次执行的问题，必须修正】{hint}\n" if hint else ""
     return _PREAMBLE.format(
+        selfcheck=_selfcheck_block(ws, step),
         paths=ws.paths_table_markdown(),
         title=step.title,
         instructions=step.instructions or "（按 skill 说明执行）",
