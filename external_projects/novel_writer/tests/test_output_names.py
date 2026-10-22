@@ -71,9 +71,8 @@ def test_panel_follows_when_next_step_status_changes(isolated):
     """回归：手动选过别的步骤后，下一步从「待运行」变为「失败」，选择框必须自动跟随到它。"""
     ws = new_book(isolated, total=2)
     assert tool_api.update_settings(str(ws.root), {"quality": "premium"})["ok"]
-    for sid in ["init_workspace", "plan_blueprint", "design_theme", "design_pacing", "build_characters",
-                "build_world", "register_plot", "init_word_count", "design_opening", "ch01.word_quota",
-                "ch01.plot_tasks", "ch01.context_pack", "ch01.style_hint", "ch01.write_chapter"]:
+    plan_ids = [s.id for s in P.build_plan(ws)]
+    for sid in plan_ids[:plan_ids.index("ch01.alt_write")]:   # alt_write 之前的步骤全部通过，它才是「下一步」
         st.update_step(ws, sid, status=st.ST_PASSED)
     root_app = Path(__file__).resolve().parent.parent / "app.py"
     at = AppTest.from_file(str(root_app), default_timeout=60).run()
