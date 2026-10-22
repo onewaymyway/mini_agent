@@ -107,4 +107,8 @@ def test_output_check_repairs_then_restores_and_reports(isolated):
     assert "已确定性修复 1 个角色文件" in log and "已还原为本步骤开始前的版本" in log
     assert any("char_002.md" in p and "已还原" in p for p in probs)
     assert CS.problems_for_dir(base) == []        # 目录里不再留损坏文件
+    # 模拟本章同步后的正确内容：主要角色记录第 2 章状态（章后同步的新校验要求）
+    rec2 = _rec(current_state={"as_of_chapter": 2, "location": "山门", "emotional": "平静"},
+                state_log=[{"chapter": 1, "status": "出场"}, {"chapter": 2, "status": "再现"}])
+    (base / "char_001.md").write_text(_good_text(rec2), encoding="utf-8")
     assert V._check_character_files(ws, step) == []   # 再检查已合格

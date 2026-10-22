@@ -313,7 +313,54 @@ def _check_character_files(ws: Workspace, step: Any) -> List[str]:
             _st.log_line(ws, f"↩ {step.id}：{len(restored)} 个角色文件仍不合格，已还原为本步骤开始前的版本：{'、'.join(restored[:8])}")
             probs = probs + [f"以上文件已还原为本步骤开始前的版本（避免留下损坏文件）：{'、'.join(restored)}。"
                              "请按格式要求重新更新这些角色（文件头必须以 --- 开始并以 --- 结束，每行 key: JSON值）"]
+    if not probs:
+        probs = _sync_presence_problems(ws, step)
     return probs
+
+
+_MAIN_ROLE_HINTS = ("protagonist", "main", "major", "antagonist", "主角", "主要", "重要", "反派")
+
+
+def _sync_presence_problems(ws: Workspace, step: Any) -> List[str]:
+    """章后人物更新：本章出场的主要角色必须已记录本章状态（state_log 或 current_state.as_of_chapter）。
+
+    只校验主要角色；普通配角/路人仍按 steps 中的说明「仅在有明确变化时更新」。
+    同步步骤只检查「文件合格」时，旧文件即可通过 glob 产出校验，这里补上「本章确实更新了」的约束。
+    """
+    n = int(getattr(step, "chapter", 0) or 0)
+    if n <= 0:
+        return []
+    from novel_writer import blueprint_store as BS
+    from novel_writer import character_store as CS
+    bp = BS.load_for_ws(ws, strict=False)
+    if not bp:
+        return []
+    try:
+        _, chapters = BS.split_parts(bp)
+    except BS.BlueprintStoreError:
+        return []
+    chapter = next((c for c in chapters if c.get("id") == n), None)
+    names = [str(x).strip() for x in (chapter or {}).get("characters_present") or [] if str(x).strip()]
+    if not names:
+        return []
+    chars, _ = CS.load_records(ws.path("characters_dir"))
+    by_name = {str(r.get("name") or "").strip(): r for r in chars.values()}
+    missing: List[str] = []
+    for nm in names:
+        rec = by_name.get(nm)
+        if rec is None:
+            continue   # 未建档的角色由角色档案步骤负责，这里不重复判定
+        role = str(rec.get("role") or "").lower()
+        if not any(h in role for h in _MAIN_ROLE_HINTS):
+            continue
+        cs = rec.get("current_state") if isinstance(rec.get("current_state"), dict) else {}
+        logged = {e.get("chapter") for e in rec.get("state_log") or [] if isinstance(e, dict)}
+        if cs.get("as_of_chapter") != n and n not in logged:
+            missing.append(nm)
+    if missing:
+        return [f"第 {n} 章出场的主要角色尚未记录本章状态（state_log 或 current_state.as_of_chapter 应为第 {n} 章）："
+                f"{'、'.join(missing)}。请按本章概述更新这些角色的文件。"]
+    return []
 
 
 def _check_patrol_findings(ws: Workspace, step: Any) -> List[str]:

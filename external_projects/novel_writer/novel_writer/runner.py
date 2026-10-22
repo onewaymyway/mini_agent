@@ -54,6 +54,10 @@ Invoker = Callable[..., InvokeResult]
 _PREAMBLE = """【运行环境】你在后台无人值守地执行本步骤，**不能等待或向作者提问**。
 遇到需要作者决定的事项，不要停下来提问，改为在回执的 needs_user 中列出（每项含 id、question，可选 options）。
 
+【范围约束】本次会话只负责【本步任务】。不要检查、执行或修改其它步骤（尤其是后续章节的步骤）；
+不要对其它步骤 id 运行 check_step.py；不要创建或修改不属于本步产出的章节文件。
+本步完成、写好回执即结束，不要继续做后面的工作。
+
 【统一路径】下表是本项目唯一认可的文件路径。skill 原文中即使写着其它路径（如 project/summaries/、novel_blueprint.json、裸 simulations/），
 一律以下表为准：
 {paths}
@@ -165,9 +169,12 @@ def run_skill_step(
         for p in (list(st.expand_inputs(ws, step_def.inputs)) + list(st.expand_inputs(ws, step_def.outputs)))
     })
     before = {rel: st._file_digest(ws.root / rel) for rel in tracked}
+    from novel_writer import step_guard as SG
+    SG.bind_current_step(ws, step.id, run_no)
     try:
         return _run_skill_step_inner(ws, step, invoker=invoker, settings=settings, run_no=run_no)
     finally:
+        SG.unbind_current_step(ws)
         changed = [rel for rel in tracked if st._file_digest(ws.root / rel) != before[rel]]
         if changed:
             st.record_writer_paths(ws, changed, step.id, before={rel: before[rel] for rel in changed}, kind="agent")
@@ -222,6 +229,12 @@ def _run_skill_step_inner(
             st.log_line(ws, f"⚠ {step.id}：角色目录备份失败（{exc}），本次不做还原保护")
     hint = ""
     started = time.time()
+    from novel_writer import pipeline as P
+    from novel_writer import step_guard as SG
+    plan = P.build_plan(ws)
+    # 越界基线：步骤开始前的后续章节文件。每次尝试后与基线比较（累计），
+    # 所以 agent 按提示删除/还原越界文件后，问题即消失。
+    guard_before = SG.snapshot(ws, SG.forbidden_rels(ws, plan, step))
     for attempt in range(MAX_RECEIPT_ATTEMPTS):
         prompt = build_prompt(ws, step, hint=hint)
         (run_dir / f"prompt_{attempt + 1}.md").write_text(prompt, encoding="utf-8")
@@ -231,6 +244,9 @@ def _run_skill_step_inner(
         )
         if not result.ok:
             raise StepFailed(f"workflow 执行未成功：{result.error or '未知原因'}")
+        out_of_scope = SG.boundary_violations(ws, plan, step, guard_before)
+        if out_of_scope:
+            st.log_line(ws, f"⚠ {step.id}：越界修改了后续步骤的文件：{'、'.join(out_of_scope[:8])}")
         receipt = read_json(run_dir / RECEIPT_FILE, default=None)
         receipt, was = V.normalize_receipt(receipt)
         if was is not None:
@@ -243,6 +259,11 @@ def _run_skill_step_inner(
             problems = V.content_problems(ws, step)   # 产出存在但内容不合格（如择优报告 winner 非法）
             if problems:
                 st.log_line(ws, f"⚠ {step.id} 产出内容不合格（第 {attempt + 1} 次），要求 agent 修正：" + "；".join(problems))
+        if out_of_scope:
+            problems = [
+                f"越界修改了不属于本步骤的文件：{'、'.join(out_of_scope[:10])}。"
+                "这些文件属于后续步骤，请把它们恢复为修改前的内容，只完成本步骤。"
+            ] + problems
         if not problems:
             return receipt
         hint = "；".join(problems)

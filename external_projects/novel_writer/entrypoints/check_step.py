@@ -3,6 +3,7 @@
 
 用法：python entrypoints/check_step.py --workspace <工作目录> --step <步骤 id>
 输出 OK（退出码 0）表示产出通过全部内容校验；否则逐条列出问题（退出码 1），agent 据此就地修改后再运行。
+只允许检查当前正在执行的步骤（或已完成步骤的复查）；越过当前步骤的检查直接拒绝（退出码 3）。
 
 与步骤结束后的正式校验使用同一套校验函数（validators.content_problems），并先做同样的确定性修复
 （如角色文件缺文件头 → 能确定的直接改正）。区别：自检**不会**把文件还原成备份——agent 还在工作，
@@ -41,6 +42,14 @@ def main(argv=None) -> int:
     if step is None:
         print(f"找不到步骤 {args.step}", file=sys.stderr)
         return 2
+    from novel_writer import state as ST
+    from novel_writer import step_guard as SG
+    plan = P.build_plan(ws)
+    statuses = {s.id: ST.get_step_state(ws, s.id).get("status") for s in plan}
+    guard = SG.step_guard_problem(ws, plan, statuses, step.id)
+    if guard:
+        print(guard)
+        return 3
     V.set_restore_enabled(False)
     problems = V.content_problems(ws, step) + [f"缺少产出 {m}" for m in V.missing_outputs(ws, step.outputs)]
     if not problems:
