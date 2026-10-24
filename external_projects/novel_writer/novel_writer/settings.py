@@ -58,6 +58,9 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "banned_words": [],
     # 半自动挡的批大小
     "semi_auto_batch_chapters": 3,
+    # 步骤边界守卫：越界改动了后续章节文件时，由框架自动还原（agent 手里没有改前内容，无法自己还原）。
+    # 设为 false 则只报告并要求 agent 处理（旧行为）。
+    "step_guard_auto_restore": True,
     # 巡检整改项反馈（默认全开，全自动，不需要作者操作；可单项关闭）：extract 提取并分流；
     # auto_adopt 自动采纳「约束后续章节」与「避免套路」；inject_forward 把已采纳的后续约束注入上下文包；
     # inject_style 注入风格提示与机器校验提示（不阻断）；to_inbox 把蓝图待办/回改建议放进收件箱（不阻塞流水线）。
@@ -99,6 +102,8 @@ def validate_settings(data: Dict[str, Any]) -> Dict[str, Any]:
     for k, v in pf.items():
         if not isinstance(v, bool):
             raise SettingsError(f"patrol_feedback.{k} 必须是 true/false")
+    if not isinstance(merged["step_guard_auto_restore"], bool):
+        raise SettingsError("step_guard_auto_restore 必须是 true/false")
     batch = merged["semi_auto_batch_chapters"]
     if not isinstance(batch, int) or isinstance(batch, bool) or batch < 1:
         raise SettingsError("semi_auto_batch_chapters 必须是正整数")

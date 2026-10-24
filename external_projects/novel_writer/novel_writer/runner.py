@@ -73,7 +73,7 @@ _PREAMBLE = """【运行环境】你在后台无人值守地执行本步骤，**
 【作者指导】{author_notes}
 
 【作者对待确认事项的答复】{answers}
-{hint}{selfcheck}
+{protected}{hint}{selfcheck}
 【回执】全部工作完成后，把回执 JSON 写入结果文件 receipt.json（路径由系统指定），格式为：
 {receipt_example}
 最终回复只需简短说明完成情况；回执文件才是结果。
@@ -131,7 +131,7 @@ def _selfcheck_block(ws: Workspace, step: S.StepDef) -> str:
         "只有在确实无法执行命令时才可以跳过这一步。\n")
 
 
-def build_prompt(ws: Workspace, step: S.StepDef, *, hint: str = "") -> str:
+def build_prompt(ws: Workspace, step: S.StepDef, *, hint: str = "", protected: str = "") -> str:
     note = _read_text(_note_file(ws, "author_notes", step.id))
     answers_raw = read_json(_answers_file(ws, step.id), default=None)
     answers = json.dumps(answers_raw, ensure_ascii=False, indent=2) if answers_raw else "（无）"
@@ -146,6 +146,11 @@ def build_prompt(ws: Workspace, step: S.StepDef, *, hint: str = "") -> str:
         author_notes=note or "（无）",
         answers=answers,
         hint=hint_block,
+        protected=(
+            "\n【受保护文件（本步骤禁止读取以外的任何操作）】以下文件属于后续步骤，只可阅读，不得修改、覆盖、删除或新建同名文件；"
+            "即使发现它们与本步改动不一致，也只在回执 summary 里说明，留给对应步骤处理。"
+            "框架会在本步结束后把对它们的任何改动自动还原，改了也无效：\n" + protected + "\n"
+        ) if protected else "",
         receipt_example=_RECEIPT_EXAMPLE,
     )
 
@@ -234,9 +239,12 @@ def _run_skill_step_inner(
     plan = P.build_plan(ws)
     # 越界基线：步骤开始前的后续章节文件。每次尝试后与基线比较（累计），
     # 所以 agent 按提示删除/还原越界文件后，问题即消失。
-    guard_before = SG.snapshot(ws, SG.forbidden_rels(ws, plan, step))
+    protected_rels = SG.forbidden_rels(ws, plan, step)
+    guard_before = SG.snapshot(ws, protected_rels)
+    guard_saved = SG.backup(ws, protected_rels)
+    auto_restore = bool(settings.get("step_guard_auto_restore", True))
     for attempt in range(MAX_RECEIPT_ATTEMPTS):
-        prompt = build_prompt(ws, step, hint=hint)
+        prompt = build_prompt(ws, step, hint=hint, protected=SG.protected_listing(protected_rels))
         (run_dir / f"prompt_{attempt + 1}.md").write_text(prompt, encoding="utf-8")
         result = invoker(
             skill=step.skill, prompt=prompt, export_dir=run_dir, step_id=step.id,
@@ -245,8 +253,19 @@ def _run_skill_step_inner(
         if not result.ok:
             raise StepFailed(f"workflow 执行未成功：{result.error or '未知原因'}")
         out_of_scope = SG.boundary_violations(ws, plan, step, guard_before)
+        restored_note = ""
         if out_of_scope:
             st.log_line(ws, f"⚠ {step.id}：越界修改了后续步骤的文件：{'、'.join(out_of_scope[:8])}")
+            if auto_restore:
+                failed = SG.restore(ws, out_of_scope, guard_saved)
+                still = [r for r in out_of_scope if r in set(SG.boundary_violations(ws, plan, step, guard_before))]
+                if not failed and not still:
+                    st.log_line(ws, f"🔧 {step.id}：已自动还原越界改动的 {len(out_of_scope)} 个文件")
+                    restored_note = (f"上次执行越界改动了后续步骤的文件（{'、'.join(out_of_scope[:6])}），"
+                                     "框架已自动还原；本步骤不要再动它们。")
+                    out_of_scope = []
+                else:
+                    out_of_scope = sorted(set(failed) | set(still)) or out_of_scope
         receipt = read_json(run_dir / RECEIPT_FILE, default=None)
         receipt, was = V.normalize_receipt(receipt)
         if was is not None:
@@ -262,11 +281,11 @@ def _run_skill_step_inner(
         if out_of_scope:
             problems = [
                 f"越界修改了不属于本步骤的文件：{'、'.join(out_of_scope[:10])}。"
-                "这些文件属于后续步骤，请把它们恢复为修改前的内容，只完成本步骤。"
+                "这些文件属于后续步骤，框架自动还原失败或已关闭自动还原，请把它们恢复为修改前的内容，只完成本步骤。"
             ] + problems
         if not problems:
             return receipt
-        hint = "；".join(problems)
+        hint = "；".join(([restored_note] if restored_note else []) + problems)
     raise StepFailed(f"回执或产出校验失败：{hint}")
 
 

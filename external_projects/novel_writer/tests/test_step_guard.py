@@ -186,9 +186,65 @@ def test_runner_blocks_out_of_scope_write_and_retries(tmp_path):
 
     step = S.StepDef(id=sync1.id, title="t", stage=sync1.stage, category=sync1.category,
                      executor=S.EXECUTOR_SKILL, skill="character-manager", chapter=1)
-    receipt = R.run_skill_step(ws, step, invoker=invoker, settings=ws.settings(), run_no=1)
+    settings = dict(ws.settings(), step_guard_auto_restore=False)     # 旧行为：只报告，交给 agent 还原
+    receipt = R.run_skill_step(ws, step, invoker=invoker, settings=settings, run_no=1)
     assert receipt["status"] == "done"
     assert len(prompts) == 2
     assert "越界修改了不属于本步骤的文件" in prompts[1]
     assert seen_bind == [sync1.id, sync1.id]          # 执行期间绑定为当前步骤
     assert SG.bound_step_id(ws) is None               # 结束后解绑
+
+
+# ── 3. 越界自动还原 ──────────────────────────────────────────────────────
+
+def test_restore_reverts_modified_and_removes_new(tmp_path):
+    ws = _ws(tmp_path)
+    plan = _plan(ws)
+    sync1 = next(s for s in plan if s.chapter == 1 and s.id.endswith(".sync"))
+    write2 = next(s for s in plan if s.chapter == 2 and s.id.endswith(".write_chapter"))
+    existing = ws.root / _concrete(write2.outputs[0])
+    existing.parent.mkdir(parents=True, exist_ok=True)
+    existing.write_text("原正文", encoding="utf-8")
+    protected = SG.forbidden_rels(ws, plan, sync1)
+    before = SG.snapshot(ws, protected)
+    saved = SG.backup(ws, protected)
+    existing.write_text("被改坏", encoding="utf-8")
+    write3 = next(s for s in plan if s.chapter == 3 and s.id.endswith(".write_chapter"))
+    created = ws.root / _concrete(write3.outputs[0])
+    created.write_text("新建的越界文件", encoding="utf-8")
+    bad = SG.boundary_violations(ws, plan, sync1, before)
+    assert len(bad) == 2
+    assert SG.restore(ws, bad, saved) == []
+    assert existing.read_text(encoding="utf-8") == "原正文"
+    assert not created.exists()
+    assert SG.boundary_violations(ws, plan, sync1, before) == []
+
+
+def test_runner_auto_restores_out_of_scope_write_without_retry(tmp_path):
+    import json as _json
+    from novel_writer import runner as R
+    from novel_writer.runner import InvokeResult
+
+    ws = _ws(tmp_path)
+    plan = _plan(ws)
+    sync1 = next(s for s in plan if s.chapter == 1 and s.id.endswith(".sync"))
+    write2 = next(s for s in plan if s.chapter == 2 and s.id.endswith(".write_chapter"))
+    later_file = ws.root / _concrete(write2.outputs[0])
+    later_file.parent.mkdir(parents=True, exist_ok=True)
+    later_file.write_text("第2章原文", encoding="utf-8")
+    prompts = []
+
+    def invoker(*, skill, prompt, export_dir, step_id, max_turns=None, timeout=None):
+        prompts.append(prompt)
+        later_file.write_text("agent 擅自改写", encoding="utf-8")   # 越界且不还原
+        (export_dir / R.RECEIPT_FILE).write_text(_json.dumps({"status": "done", "summary": "ok", "outputs": []}),
+                                                 encoding="utf-8")
+        return InvokeResult(True)
+
+    step = S.StepDef(id=sync1.id, title="t", stage=sync1.stage, category=sync1.category,
+                     executor=S.EXECUTOR_SKILL, skill="character-manager", chapter=1)
+    receipt = R.run_skill_step(ws, step, invoker=invoker, settings=ws.settings(), run_no=1)
+    assert receipt["status"] == "done"
+    assert len(prompts) == 1                                         # 不需要重试
+    assert later_file.read_text(encoding="utf-8") == "第2章原文"      # 已被框架还原
+    assert later_file.relative_to(ws.root).as_posix() in prompts[0]  # prompt 里列出了受保护文件

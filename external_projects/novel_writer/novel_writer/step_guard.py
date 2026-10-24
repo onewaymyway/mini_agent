@@ -4,8 +4,10 @@
 1. 绑定：执行 skill 步骤期间，`_studio/current_step.json` 记录当前步骤 id。
    自检入口只允许检查这个步骤（或已完成的步骤做复查）。
 2. 轮次：未完成的步骤必须是流水线的 frontier（第一个未完成步骤），否则拒绝自检。
-3. 越界检测：步骤执行前后对比「后续章节步骤的产出文件」的内容指纹，
-   若被本步骤改动或新建，则作为问题交给 agent 还原（不自动覆盖，避免误伤）。
+3. 越界检测 + 自动还原：步骤执行前备份「后续章节步骤的产出文件」的原始内容，
+   执行后若被本步骤改动或新建，由框架直接还原（改回原内容 / 删除新建文件）。
+   不能只靠提示让 agent 自己还原：agent 手里没有改前的内容，只会反复失败。
+   可用设置 `step_guard_auto_restore=false` 关闭，退回「只报告、交给 agent 处理」。
    与其它步骤（包括本章更早的步骤、全局步骤）共享的产出不计入越界，
    例如 `characters/*.md` 这类跨章共享的 glob。
 """
@@ -115,3 +117,48 @@ def step_guard_problem(ws: Any, plan: Sequence[Any], statuses: Dict[str, str], s
         return None
     return (f"当前正在执行的是「{bound}」，不能检查或处理「{step_id}」。"
             "请只完成当前步骤，不要去做其它步骤。")
+
+
+def backup(ws: Any, rels: Iterable[str]) -> Dict[str, Optional[bytes]]:
+    """备份受保护文件的原始内容（不存在记为 None）。受保护文件只有后续章节正文等，体积很小。"""
+    out: Dict[str, Optional[bytes]] = {}
+    for rel in rels:
+        path = ws.root / rel
+        try:
+            out[rel] = path.read_bytes() if path.is_file() else None
+        except OSError:
+            out[rel] = None
+    return out
+
+
+def restore(ws: Any, violations: Iterable[str], saved: Dict[str, Optional[bytes]]) -> List[str]:
+    """把越界改动还原：有备份则写回原内容，原本不存在则删除。返回仍未能还原的相对路径。
+
+    只处理 `saved` 里有记录的文件；`violations` 里没有备份的（步骤中途新出现的后续章节文件，
+    其备份为 None 即「原本不存在」）也按「删除」处理，因为基线里它们就是 MISSING。
+    """
+    failed: List[str] = []
+    for rel in violations:
+        path = ws.root / rel
+        original = saved.get(rel)
+        try:
+            if original is None:
+                if path.is_file():
+                    path.unlink()
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                tmp = path.with_name(path.name + ".sgtmp")
+                tmp.write_bytes(original)
+                tmp.replace(path)
+        except OSError:
+            failed.append(rel)
+    return failed
+
+
+def protected_listing(rels: Iterable[str], limit: int = 12) -> str:
+    """写进 prompt 的受保护文件清单（一行一个），超出部分只给数量。"""
+    items = sorted(rels)
+    lines = [f"- `{r}`" for r in items[:limit]]
+    if len(items) > limit:
+        lines.append(f"- …另有 {len(items) - limit} 个后续章节文件")
+    return "\n".join(lines)
