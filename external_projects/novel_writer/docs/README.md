@@ -8,7 +8,7 @@ pip install -r requirements.txt
 python entrypoints/health.py                       # 输出 ok 即 23 个 skill 完整、数据目录可写
 python entrypoints/create_novel.py --title 青云传   # 创建工作目录 data/novels/青云传_<时间戳>/
 python entrypoints/list_novels.py
-streamlit run app.py                               # 书架 / 新建小说 / Skill 库
+streamlit run app.py --server.port 8504                              # 书架 / 新建小说 / Skill 库
 ```
 
 `create_novel` 可选参数：`--workspace <任意绝对路径>`（会登记到 `data/shelf.json`）、`--gear G0..G3`、
