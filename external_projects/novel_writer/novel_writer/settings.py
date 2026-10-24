@@ -20,6 +20,7 @@ GEARS: Dict[str, str] = {
     "G2": "半自动挡",
     "G3": "全自动挡",
     "G4": "托管挡",
+    "G5": "不停机挡",
 }
 # 质量档位：id -> 展示名
 QUALITIES: Dict[str, str] = {

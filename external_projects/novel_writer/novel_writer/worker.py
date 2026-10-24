@@ -32,6 +32,18 @@ RETRY_BACKOFF_SEC = (5, 15, 30)
 
 
 
+def _interruptible_sleep(ws: Workspace, seconds: float) -> bool:
+    """等待 seconds 秒；等待期间收到暂停/停止指令则提前返回 False，正常等完返回 True。"""
+    end = time.monotonic() + seconds
+    while True:
+        if st.read_control(ws).get("command") in ("pause", "stop"):
+            return False
+        remaining = end - time.monotonic()
+        if remaining <= 0:
+            return True
+        time.sleep(min(1.0, remaining))
+
+
 def retry_policy(settings: Dict[str, Any], step: S.StepDef) -> Tuple[int, Tuple[float, ...]]:
     """某步骤失败后的自动重跑策略：(最大次数, 各次重跑前的等待秒数)。
 
@@ -250,11 +262,18 @@ def _loop(
             return "completed"
 
         status = statuses.get(target.id, st.ST_PENDING)
-        autopilot = settings.get("gear") == "G4" and mode == "until_gate"
+        autopilot = settings.get("gear") in G.AUTOPILOT_GEARS and mode == "until_gate"
+        relentless = autopilot and settings.get("gear") == AP.RELENTLESS_GEAR
         if autopilot and status in (st.ST_WAITING_REVIEW, st.ST_WAITING_USER):
-            if AP.handle_waiting(ws, target, status):
+            if AP.handle_waiting(ws, target, status, relentless=relentless):
                 continue
             return status
+        if relentless and status == st.ST_FAILED:
+            # 不停机挡：自动重跑用尽后仍失败 → 重置并继续；等待期间可被暂停/停止打断
+            delay = AP.reset_failed(ws, target)
+            if _interruptible_sleep(ws, delay):
+                continue
+            return "stopped" if st.read_control(ws).get("command") == "stop" else "paused"
         if autopilot and status == st.ST_STALE and not requested == target.id:
             # 托管挡不自动重跑「因上游变化而需重跑」的步骤：这类重跑可能覆盖已确认的内容，必须由作者确认。
             st.log_line(ws, f"⏸ 托管：{target.id} 因上游产物变化需要重跑，已暂停，等待你确认后再继续")
@@ -299,7 +318,7 @@ def _loop(
                 time.sleep(delay)
             status_after = R.run_step(ws, target, invoker=invoker, settings=settings, handlers=handlers)
             budget.record(target)
-        if retries:
+        if retries or st.get_step_state(ws, target.id).get("retry_hint"):
             st.update_step(ws, target.id, retry_hint=None)
         after = st.get_step_state(ws, target.id)
         executed.append({
@@ -313,6 +332,8 @@ def _loop(
 
         if autopilot and status_after in (st.ST_WAITING_REVIEW, st.ST_WAITING_USER):
             continue  # 托管：下一轮循环里自动处理
+        if relentless and status_after == st.ST_FAILED:
+            continue  # 不停机：下一轮循环顶部重置该步骤并继续
         if status_after in (st.ST_FAILED, st.ST_BLOCKED, st.ST_WAITING_REVIEW, st.ST_WAITING_USER):
             return status_after
         if mode == "single":

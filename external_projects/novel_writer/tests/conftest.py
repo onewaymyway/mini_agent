@@ -13,4 +13,7 @@ def _no_retry_backoff(monkeypatch):
     import novel_writer.worker as worker_mod
 
     monkeypatch.setattr(worker_mod, "RETRY_BACKOFF_SEC", (0,))
+    import novel_writer.autopilot as ap_mod
+
+    monkeypatch.setattr(ap_mod, "RESET_BACKOFF_SEC", (0,))
 

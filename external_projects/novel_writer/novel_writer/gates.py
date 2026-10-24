@@ -30,17 +30,20 @@ GATE_REVIEW = "review"
 GATE_AUTO = "auto"
 GATE_SKIP = "skip"
 
+# 托管类挡位：审批/检查点自动通过。G5 在 G4 基础上增加「步骤失败后自动重置并继续」。
+AUTOPILOT_GEARS = ("G4", "G5")
+
 # 挡位预设表：类别 -> {挡位: 闸门}（逐格对应方案 6.2 表格）
 GEAR_GATES: Dict[str, Dict[str, str]] = {
-    S.CAT_INFRA:          {"G0": GATE_AUTO,   "G1": GATE_AUTO,   "G2": GATE_AUTO,   "G3": GATE_AUTO, "G4": GATE_AUTO},
-    S.CAT_DESIGN:         {"G0": GATE_MANUAL, "G1": GATE_REVIEW, "G2": GATE_REVIEW, "G3": GATE_REVIEW, "G4": GATE_AUTO},
-    S.CAT_BUILD:          {"G0": GATE_MANUAL, "G1": GATE_REVIEW, "G2": GATE_AUTO,   "G3": GATE_AUTO, "G4": GATE_AUTO},
-    S.CAT_CHECKPOINT:     {"G0": GATE_REVIEW, "G1": GATE_REVIEW, "G2": GATE_REVIEW, "G3": GATE_REVIEW, "G4": GATE_AUTO},
-    S.CAT_CHAPTER_PREP:   {"G0": GATE_MANUAL, "G1": GATE_AUTO,   "G2": GATE_AUTO,   "G3": GATE_AUTO, "G4": GATE_AUTO},
-    S.CAT_CHAPTER_WRITE:  {"G0": GATE_MANUAL, "G1": GATE_REVIEW, "G2": GATE_AUTO,   "G3": GATE_AUTO, "G4": GATE_AUTO},
-    S.CAT_CHAPTER_REVIEW: {"G0": GATE_MANUAL, "G1": GATE_AUTO,   "G2": GATE_AUTO,   "G3": GATE_AUTO, "G4": GATE_AUTO},
-    S.CAT_ACT:            {"G0": GATE_MANUAL, "G1": GATE_REVIEW, "G2": GATE_REVIEW, "G3": GATE_AUTO, "G4": GATE_AUTO},
-    S.CAT_REVISE:         {"G0": GATE_MANUAL, "G1": GATE_MANUAL, "G2": GATE_MANUAL, "G3": GATE_MANUAL, "G4": GATE_MANUAL},
+    S.CAT_INFRA:          {"G0": GATE_AUTO,   "G1": GATE_AUTO,   "G2": GATE_AUTO,   "G3": GATE_AUTO, "G4": GATE_AUTO, "G5": GATE_AUTO},
+    S.CAT_DESIGN:         {"G0": GATE_MANUAL, "G1": GATE_REVIEW, "G2": GATE_REVIEW, "G3": GATE_REVIEW, "G4": GATE_AUTO, "G5": GATE_AUTO},
+    S.CAT_BUILD:          {"G0": GATE_MANUAL, "G1": GATE_REVIEW, "G2": GATE_AUTO,   "G3": GATE_AUTO, "G4": GATE_AUTO, "G5": GATE_AUTO},
+    S.CAT_CHECKPOINT:     {"G0": GATE_REVIEW, "G1": GATE_REVIEW, "G2": GATE_REVIEW, "G3": GATE_REVIEW, "G4": GATE_AUTO, "G5": GATE_AUTO},
+    S.CAT_CHAPTER_PREP:   {"G0": GATE_MANUAL, "G1": GATE_AUTO,   "G2": GATE_AUTO,   "G3": GATE_AUTO, "G4": GATE_AUTO, "G5": GATE_AUTO},
+    S.CAT_CHAPTER_WRITE:  {"G0": GATE_MANUAL, "G1": GATE_REVIEW, "G2": GATE_AUTO,   "G3": GATE_AUTO, "G4": GATE_AUTO, "G5": GATE_AUTO},
+    S.CAT_CHAPTER_REVIEW: {"G0": GATE_MANUAL, "G1": GATE_AUTO,   "G2": GATE_AUTO,   "G3": GATE_AUTO, "G4": GATE_AUTO, "G5": GATE_AUTO},
+    S.CAT_ACT:            {"G0": GATE_MANUAL, "G1": GATE_REVIEW, "G2": GATE_REVIEW, "G3": GATE_AUTO, "G4": GATE_AUTO, "G5": GATE_AUTO},
+    S.CAT_REVISE:         {"G0": GATE_MANUAL, "G1": GATE_MANUAL, "G2": GATE_MANUAL, "G3": GATE_MANUAL, "G4": GATE_MANUAL, "G5": GATE_MANUAL},
 }
 
 # 蓝图确认步骤的 id（可被 waive_blueprint_confirm 豁免）
@@ -62,7 +65,7 @@ def resolve_gate(step: S.StepDef, settings: Dict[str, Any]) -> GateDecision:
     gear = stage_gears.get(step.stage) or settings.get("gear", "G0")
     stage_hit = step.stage in stage_gears
 
-    if gear == "G4" and not stage_hit:
+    if gear in AUTOPILOT_GEARS and not stage_hit:
         # 托管挡：审批与检查点也自动通过（由 autopilot 自动批准/回答）。手动与跳过覆盖仍生效。
         if override == GATE_MANUAL or step.category == S.CAT_REVISE:
             return GateDecision(GATE_MANUAL, "override" if override == GATE_MANUAL else "stage_gear")
@@ -117,6 +120,7 @@ RUN_SCOPE: Dict[str, Dict[str, str]] = {
     "G2": {"scope": "batch", "label": "每批 N 章：达到批大小即暂停，可续跑"},
     "G3": {"scope": "budget", "label": "到预算上限或全书完成：遇到审批即停"},
     "G4": {"scope": "until_stop", "label": "托管：自动批准与自动回答，一直运行到暂停/停止/失败/全书完成"},
+    "G5": {"scope": "until_stop", "label": "不停机：托管 + 步骤失败后自动重置并继续，直到全书完成或你暂停/停止"},
 }
 
 
