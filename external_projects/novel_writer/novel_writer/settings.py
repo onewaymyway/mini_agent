@@ -61,6 +61,9 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     # 步骤边界守卫：越界改动了后续章节文件时，由框架自动还原（agent 手里没有改前内容，无法自己还原）。
     # 设为 false 则只报告并要求 agent 处理（旧行为）。
     "step_guard_auto_restore": True,
+    # 步骤失败后的自动重跑策略。max_retries / backoff_sec 为 null 时用 worker 内置默认（3 次，5/15/30 秒）；
+    # overrides：步骤 id 或类别 -> 最大重跑次数（0 = 该步骤失败后不自动重跑），步骤 id 优先于类别。
+    "step_retry": {"max_retries": None, "backoff_sec": None, "overrides": {}},
     # 巡检整改项反馈（默认全开，全自动，不需要作者操作；可单项关闭）：extract 提取并分流；
     # auto_adopt 自动采纳「约束后续章节」与「避免套路」；inject_forward 把已采纳的后续约束注入上下文包；
     # inject_style 注入风格提示与机器校验提示（不阻断）；to_inbox 把蓝图待办/回改建议放进收件箱（不阻塞流水线）。
@@ -102,6 +105,21 @@ def validate_settings(data: Dict[str, Any]) -> Dict[str, Any]:
     for k, v in pf.items():
         if not isinstance(v, bool):
             raise SettingsError(f"patrol_feedback.{k} 必须是 true/false")
+    sr = merged["step_retry"]
+    if not isinstance(sr, dict) or any(k not in DEFAULT_SETTINGS["step_retry"] for k in sr):
+        raise SettingsError("step_retry 必须是对象，且只能包含 max_retries / backoff_sec / overrides")
+
+    def _nonneg_int(v: Any) -> bool:
+        return isinstance(v, int) and not isinstance(v, bool) and v >= 0
+
+    if sr["max_retries"] is not None and not _nonneg_int(sr["max_retries"]):
+        raise SettingsError("step_retry.max_retries 必须是非负整数或 null")
+    bo = sr["backoff_sec"]
+    if bo is not None and (not isinstance(bo, list) or not bo or any(
+            isinstance(x, bool) or not isinstance(x, (int, float)) or x < 0 for x in bo)):
+        raise SettingsError("step_retry.backoff_sec 必须是非空的非负数字列表或 null")
+    if not isinstance(sr["overrides"], dict) or any(not _nonneg_int(v) for v in sr["overrides"].values()):
+        raise SettingsError("step_retry.overrides 必须是 {步骤id或类别: 非负整数}")
     if not isinstance(merged["step_guard_auto_restore"], bool):
         raise SettingsError("step_guard_auto_restore 必须是 true/false")
     batch = merged["semi_auto_batch_chapters"]

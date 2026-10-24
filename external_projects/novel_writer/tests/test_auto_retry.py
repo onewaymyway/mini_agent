@@ -102,3 +102,32 @@ def test_retry_backoff_grows_and_is_logged(tmp_path, monkeypatch):
                handlers=STUB_HANDLERS, heartbeat_interval=0.01)
     assert slept == [5, 15, 30]
     assert "5 秒后自动重跑（第 1/3 次）" in ws.path("studio_log").read_text(encoding="utf-8")
+
+
+def test_settings_max_retries_and_override_zero(tmp_path):
+    ws = new_book(tmp_path)
+    set_settings(ws, step_retry={"max_retries": 1})
+    inv = FakeInvoker(ws.root, fail=["plan_blueprint"])
+    run_worker(ws, mode="until_gate", invoker=inv, handlers=STUB_HANDLERS, heartbeat_interval=0.01)
+    assert inv.count["plan_blueprint"] == 2  # 1 次原始 + 1 次重跑
+
+    ws2 = new_book(tmp_path / "b")
+    set_settings(ws2, step_retry={"overrides": {"plan_blueprint": 0}})
+    inv2 = FakeInvoker(ws2.root, fail=["plan_blueprint"])
+    run_worker(ws2, mode="until_gate", invoker=inv2, handlers=STUB_HANDLERS, heartbeat_interval=0.01)
+    assert inv2.count["plan_blueprint"] == 1  # 该步骤关闭自动重跑
+
+
+def test_retry_prompt_carries_previous_error(tmp_path):
+    ws = new_book(tmp_path)
+    inv = FlakyInvoker(ws.root, flaky_step="plan_blueprint", failures=1)
+    run_worker(ws, mode="until_gate", invoker=inv, handlers=STUB_HANDLERS, heartbeat_interval=0.01)
+    assert st.get_step_state(ws, "plan_blueprint").get("retry_hint") is None  # 结束后清除
+
+
+def test_invalid_step_retry_rejected():
+    from novel_writer import settings as SE
+
+    for bad in ({"max_retries": -1}, {"backoff_sec": []}, {"overrides": {"x": "a"}}, {"foo": 1}):
+        with pytest.raises(SE.SettingsError):
+            SE.validate_settings({"step_retry": bad})

@@ -232,7 +232,9 @@ def _run_skill_step_inner(
             CS.backup_dir(ws.path("characters_dir"), ws.studio / "backup" / "characters")
         except OSError as exc:
             st.log_line(ws, f"⚠ {step.id}：角色目录备份失败（{exc}），本次不做还原保护")
-    hint = ""
+    # 自动重跑时 worker 会把上次失败原因存进步骤状态，作为本次第一轮的提示
+    prev_error = str(st.get_step_state(ws, step.id).get("retry_hint") or "")
+    hint = f"这是失败后的自动重跑，上次失败原因：{prev_error}。请避免同样的问题。" if prev_error else ""
     started = time.time()
     from novel_writer import pipeline as P
     from novel_writer import step_guard as SG

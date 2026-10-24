@@ -13,7 +13,7 @@ from __future__ import annotations
 import threading
 import time
 import traceback
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from novel_writer import autopilot as AP
 from novel_writer import gates as G
@@ -29,6 +29,27 @@ from novel_writer.workspace import Workspace
 MAX_AUTO_RETRIES = 3
 # 每次重跑前的等待秒数（给临时性故障，如接口限流，一点恢复时间）。测试中可改为 0。
 RETRY_BACKOFF_SEC = (5, 15, 30)
+
+
+
+def retry_policy(settings: Dict[str, Any], step: S.StepDef) -> Tuple[int, Tuple[float, ...]]:
+    """某步骤失败后的自动重跑策略：(最大次数, 各次重跑前的等待秒数)。
+
+    优先级：settings.step_retry.overrides[步骤id] > overrides[类别] > step_retry.max_retries > 内置 MAX_AUTO_RETRIES。
+    """
+    cfg = (settings or {}).get("step_retry") or {}
+    overrides = cfg.get("overrides") or {}
+    if step.id in overrides:
+        limit = overrides[step.id]
+    elif step.category in overrides:
+        limit = overrides[step.category]
+    elif cfg.get("max_retries") is not None:
+        limit = cfg["max_retries"]
+    else:
+        limit = MAX_AUTO_RETRIES
+    backoff = tuple(cfg.get("backoff_sec") or RETRY_BACKOFF_SEC or ())
+    return int(limit), backoff
+
 
 MODES = ("until_gate", "single")
 HEARTBEAT_INTERVAL_SEC = 15.0
@@ -259,7 +280,8 @@ def _loop(
         status_after = R.run_step(ws, target, invoker=invoker, settings=settings, handlers=handlers)
         budget.record(target)
         retries = 0
-        while status_after == st.ST_FAILED and retries < MAX_AUTO_RETRIES:
+        max_retries, backoff = retry_policy(settings, target)
+        while status_after == st.ST_FAILED and retries < max_retries:
             if st.read_control(ws).get("command") in ("pause", "stop"):
                 st.log_line(ws, f"⏹ {target.id} 失败，但收到暂停/停止指令，不再自动重跑")
                 break
@@ -268,13 +290,17 @@ def _loop(
                 st.log_line(ws, f"⏹ {target.id} 失败，本次预算已用尽，不再自动重跑")
                 break
             retries += 1
-            delay = RETRY_BACKOFF_SEC[min(retries - 1, len(RETRY_BACKOFF_SEC) - 1)] if RETRY_BACKOFF_SEC else 0
-            st.log_line(ws, f"↻ {target.id} 失败，{delay} 秒后自动重跑（第 {retries}/{MAX_AUTO_RETRIES} 次）")
-            st.update_step(ws, target.id, auto_retries=retries)
+            delay = backoff[min(retries - 1, len(backoff) - 1)] if backoff else 0
+            st.log_line(ws, f"↻ {target.id} 失败，{delay} 秒后自动重跑（第 {retries}/{max_retries} 次）")
+            # 把上次失败原因带进重跑的 prompt，避免 agent 在毫无信息的情况下重蹈覆辙
+            st.update_step(ws, target.id, auto_retries=retries,
+                           retry_hint=str(st.get_step_state(ws, target.id).get("error") or "")[:800] or None)
             if delay:
                 time.sleep(delay)
             status_after = R.run_step(ws, target, invoker=invoker, settings=settings, handlers=handlers)
             budget.record(target)
+        if retries:
+            st.update_step(ws, target.id, retry_hint=None)
         after = st.get_step_state(ws, target.id)
         executed.append({
             "step": target.id, "title": target.title, "status": status_after,
