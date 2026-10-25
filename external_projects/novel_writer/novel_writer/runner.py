@@ -24,6 +24,7 @@ from novel_writer.textio import read_text_utf8
 from novel_writer import config
 from novel_writer import gates as G
 from novel_writer import state as st
+from novel_writer import step_timeout as STO
 from novel_writer import steps as S
 from novel_writer import validators as V
 from novel_writer.fsutil import atomic_write_json, read_json
@@ -40,10 +41,15 @@ class StepFailed(RuntimeError):
     pass
 
 
+class StepTimeout(StepFailed):
+    """步骤总耗时超过 settings.step_timeout 设定的时限，执行中的 agent 已被强制终止。"""
+
+
 @dataclass
 class InvokeResult:
     ok: bool
     error: str = ""
+    timed_out: bool = False   # 因步骤总时限到期被强制终止
 
 
 Invoker = Callable[..., InvokeResult]
@@ -246,12 +252,20 @@ def _run_skill_step_inner(
     guard_saved = SG.backup(ws, protected_rels)
     auto_restore = bool(settings.get("step_guard_auto_restore", True))
     for attempt in range(MAX_RECEIPT_ATTEMPTS):
+        remaining = STO.remaining_sec()
+        if remaining is not None and remaining <= 0:   # 补写回执/产出的多轮尝试也算在步骤总时限内
+            raise StepTimeout(_timeout_message(settings, step))
         prompt = build_prompt(ws, step, hint=hint, protected=SG.protected_listing(protected_rels))
         (run_dir / f"prompt_{attempt + 1}.md").write_text(prompt, encoding="utf-8")
         result = invoker(
             skill=step.skill, prompt=prompt, export_dir=run_dir, step_id=step.id,
-            max_turns=max_turns, timeout=DEFAULT_TIMEOUT_SEC,
+            max_turns=max_turns,
+            # 配置了步骤时限时，单次调用的框架超时 = 剩余时间（真正的强制终止由 FrameworkInvoker 在父进程完成）；
+            # 不限时则沿用原来的单次 900 秒。
+            timeout=DEFAULT_TIMEOUT_SEC if remaining is None else max(1, int(remaining)),
         )
+        if getattr(result, "timed_out", False):
+            raise StepTimeout(_timeout_message(settings, step))
         if not result.ok:
             raise StepFailed(f"workflow 执行未成功：{result.error or '未知原因'}")
         out_of_scope = SG.boundary_violations(ws, plan, step, guard_before)
@@ -291,6 +305,12 @@ def _run_skill_step_inner(
     raise StepFailed(f"回执或产出校验失败：{hint}")
 
 
+def _timeout_message(settings: Dict[str, Any], step: S.StepDef) -> str:
+    limit = STO.limit_minutes(settings, step)
+    shown = STO.describe(limit) if limit else "设定时限"
+    return (f"步骤执行超过 {shown}，已强制终止（产出文件可能只写了一半，重跑时请先检查再继续）")
+
+
 class FrameworkInvoker:
     """真实执行器：通过 mini_agent 的 `WorkflowRunner` 运行 `workflows/skill_step.yaml`。
 
@@ -298,10 +318,76 @@ class FrameworkInvoker:
     prompt 经 inputs 传入（不放进 yaml，避免 prompt 里的花括号被占位符解析器误处理）。
     """
 
+    _CHILD_MODULE = "novel_writer.invoke_child"   # 子进程入口；测试可替换为桩模块
+
     def __init__(self, cfg: Any = None) -> None:
         self._cfg = cfg
 
     def __call__(
+        self, *, skill: str, prompt: str, export_dir: Path, step_id: str,
+        max_turns: Optional[int] = None, timeout: Optional[int] = None,
+    ) -> InvokeResult:
+        """有步骤时限（step_timeout）时放进子进程执行，超时整树强杀；没有时限则在本进程执行（旧行为）。"""
+        remaining = STO.remaining_sec()
+        if remaining is None or self._cfg is not None:   # 自带 cfg 无法传给子进程，退回本进程执行
+            return self._invoke_inprocess(skill=skill, prompt=prompt, export_dir=export_dir, step_id=step_id,
+                                          max_turns=max_turns, timeout=timeout)
+        return self._invoke_subprocess(skill=skill, prompt=prompt, export_dir=export_dir, step_id=step_id,
+                                       max_turns=max_turns, remaining=remaining)
+
+    def _invoke_subprocess(
+        self, *, skill: str, prompt: str, export_dir: Path, step_id: str,
+        max_turns: Optional[int], remaining: float,
+    ) -> InvokeResult:
+        import json as _json
+        import os as _os
+        import subprocess as _sp
+        import time as _time
+
+        from novel_writer import procs
+
+        if remaining <= 0:
+            return InvokeResult(False, "步骤时限已到", timed_out=True)
+        export_dir.mkdir(parents=True, exist_ok=True)
+        payload_file = export_dir / "_invoke_payload.json"
+        result_file = export_dir / "_invoke_result.json"
+        result_file.unlink(missing_ok=True)
+        payload_file.write_text(_json.dumps({
+            "skill": skill, "prompt": prompt, "export_dir": str(export_dir), "step_id": step_id,
+            "max_turns": max_turns,
+            # 框架自身的超时放宽一点，让「父进程强杀」成为唯一的超时出口，避免框架超时后留下仍在后台跑的线程
+            "timeout": int(remaining) + 30, "parent_pid": _os.getpid(),
+        }, ensure_ascii=False), encoding="utf-8")
+        kwargs: Dict[str, Any] = {}
+        if sys.platform == "win32":
+            kwargs["creationflags"] = getattr(_sp, "CREATE_NO_WINDOW", 0)
+        proc = _sp.Popen(
+            [sys.executable, "-m", self._CHILD_MODULE, str(payload_file), str(result_file)],
+            cwd=str(config.PROJECT_ROOT), close_fds=True, **kwargs,
+        )
+        deadline = _time.monotonic() + remaining
+        while proc.poll() is None:
+            if _time.monotonic() >= deadline:
+                created = procs.process_create_time(proc.pid)
+                try:
+                    info = procs.terminate_tree(proc.pid, created) if created is not None else {}
+                except Exception:  # noqa: BLE001 - 终止失败也要退出等待，退回 Popen 自带的强杀
+                    info = {}
+                    proc.kill()
+                try:
+                    proc.wait(timeout=10)
+                except _sp.TimeoutExpired:
+                    pass
+                st_msg = f"（连带终止了 {info['children']} 个子进程）" if info.get("children") else ""
+                return InvokeResult(False, f"已超过步骤时限，强制终止执行进程{st_msg}", timed_out=True)
+            _time.sleep(0.5)
+        try:
+            data = _json.loads(result_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return InvokeResult(False, f"执行进程异常退出（退出码 {proc.returncode}），没有返回结果")
+        return InvokeResult(bool(data.get("ok")), str(data.get("error") or ""))
+
+    def _invoke_inprocess(
         self, *, skill: str, prompt: str, export_dir: Path, step_id: str,
         max_turns: Optional[int] = None, timeout: Optional[int] = None,
     ) -> InvokeResult:
@@ -427,7 +513,7 @@ def run_step(
     attempts = int(st.get_step_state(ws, step.id).get("attempts", 0)) + 1
     started = time.monotonic()
     st.update_step(ws, step.id, status=st.ST_RUNNING, attempts=attempts, started_at=st.now_iso(),
-                   error=None, finished_at=None, needs_user=None)
+                   error=None, finished_at=None, needs_user=None, timed_out=None)
     started_iso = st.now_iso()
     st.heartbeat(ws, step=step.id, step_title=step.title, step_started_at=started_iso, attempt=attempts)
     st.log_line(ws, f"▶ {step.id}　{step.title}（第 {attempts} 次）")
@@ -435,11 +521,18 @@ def run_step(
         st.log_line(ws, f"  调用 skill：{step.skill}")
 
     fields: Dict[str, Any] = {}
+    limit_min = STO.limit_minutes(settings, step)
+    if limit_min:
+        st.log_line(ws, f"  步骤时限：{STO.describe(limit_min)}（超时将强制终止并重跑）")
     try:
-        if step.executor == S.EXECUTOR_PYTHON:
-            status, fields = _run_python(ws, step, handlers, settings, invoker)
-        else:
-            status, fields = _run_skill(ws, step, invoker, settings, attempts)
+        with STO.deadline_scope(limit_min * 60 if limit_min else None):
+            if step.executor == S.EXECUTOR_PYTHON:
+                status, fields = _run_python(ws, step, handlers, settings, invoker)
+            else:
+                status, fields = _run_skill(ws, step, invoker, settings, attempts)
+    except StepTimeout as exc:
+        status, fields = st.ST_FAILED, {"error": str(exc), "timed_out": True}
+        st.log_line(ws, f"⏱ {step.id}：{exc}")
     except StepFailed as exc:
         status, fields = st.ST_FAILED, {"error": str(exc)}
     except Exception as exc:  # noqa: BLE001 - 单步异常不能拖垮 worker，记入状态

@@ -1,7 +1,7 @@
 """novel_writer/worker.py — 后台 worker 循环（方案 6.5）。
 
 循环每一轮：读控制指令 → 重新展开流水线 → 标脏 → 确定前沿 → 查闸门/预算 → 执行 → 落盘。
-  * 停止点只在两步之间（协作式）；单步受 workflow 的 timeout / max_turns 约束。
+  * 停止点只在两步之间（协作式）；单步受 settings.step_timeout（默认 40 分钟，超时强制终止并按 step_retry 自动重跑）与 max_turns 约束。
   * 任何一步需要人（waiting_review / waiting_user / manual 闸门 / 失败 / 阻塞 / 预算耗尽）都会让 worker 退出，
     并在 `worker.json` 的 reason 里写明原因；预算耗尽是**暂停**，不是失败，可续跑。
   * 启动时若发现遗留的 running 步骤（上一个 worker 被杀），一律置为 interrupted 再继续。
@@ -310,7 +310,9 @@ def _loop(
                 break
             retries += 1
             delay = backoff[min(retries - 1, len(backoff) - 1)] if backoff else 0
-            st.log_line(ws, f"↻ {target.id} 失败，{delay} 秒后自动重跑（第 {retries}/{max_retries} 次）")
+            timed_out = bool(st.get_step_state(ws, target.id).get("timed_out"))
+            why = "超时被终止" if timed_out else "失败"
+            st.log_line(ws, f"↻ {target.id} {why}，{delay} 秒后自动重跑（第 {retries}/{max_retries} 次）")
             # 把上次失败原因带进重跑的 prompt，避免 agent 在毫无信息的情况下重蹈覆辙
             st.update_step(ws, target.id, auto_retries=retries,
                            retry_hint=str(st.get_step_state(ws, target.id).get("error") or "")[:800] or None)
@@ -326,6 +328,7 @@ def _loop(
             "summary": after.get("summary") or after.get("error") or "",
             "duration_sec": after.get("duration_sec"),
             "auto_retries": retries,
+            "timed_out": bool(after.get("timed_out")),
         })
         _log_encoding_repairs(ws, executed[-1])
         _checkpoint(ws, mode=mode, started_at=started_at, executed=executed)

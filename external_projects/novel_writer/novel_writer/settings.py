@@ -65,6 +65,10 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     # 步骤失败后的自动重跑策略。max_retries / backoff_sec 为 null 时用 worker 内置默认（3 次，5/15/30 秒）；
     # overrides：步骤 id 或类别 -> 最大重跑次数（0 = 该步骤失败后不自动重跑），步骤 id 优先于类别。
     "step_retry": {"max_retries": None, "backoff_sec": None, "overrides": {}},
+    # 单步执行时限：一个步骤（含其内部嵌套的子 skill 调用）总耗时超过 minutes 分钟，就强制终止该步骤，
+    # 再按 step_retry 的规则自动重跑。minutes 为 null/0 = 全局不限时；
+    # overrides：步骤 id 或类别 -> 分钟（0 = 该步骤不限时），步骤 id 优先于类别。
+    "step_timeout": {"minutes": 40, "overrides": {}},
     # 巡检整改项反馈（默认全开，全自动，不需要作者操作；可单项关闭）：extract 提取并分流；
     # auto_adopt 自动采纳「约束后续章节」与「避免套路」；inject_forward 把已采纳的后续约束注入上下文包；
     # inject_style 注入风格提示与机器校验提示（不阻断）；to_inbox 把蓝图待办/回改建议放进收件箱（不阻塞流水线）。
@@ -121,6 +125,17 @@ def validate_settings(data: Dict[str, Any]) -> Dict[str, Any]:
         raise SettingsError("step_retry.backoff_sec 必须是非空的非负数字列表或 null")
     if not isinstance(sr["overrides"], dict) or any(not _nonneg_int(v) for v in sr["overrides"].values()):
         raise SettingsError("step_retry.overrides 必须是 {步骤id或类别: 非负整数}")
+    stt = merged["step_timeout"]
+    if not isinstance(stt, dict) or any(k not in DEFAULT_SETTINGS["step_timeout"] for k in stt):
+        raise SettingsError("step_timeout 必须是对象，且只能包含 minutes / overrides")
+
+    def _minutes(v: Any) -> bool:
+        return isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0
+
+    if stt["minutes"] is not None and not _minutes(stt["minutes"]):
+        raise SettingsError("step_timeout.minutes 必须是非负数（分钟）或 null（不限时）")
+    if not isinstance(stt["overrides"], dict) or any(not _minutes(v) for v in stt["overrides"].values()):
+        raise SettingsError("step_timeout.overrides 必须是 {步骤id或类别: 非负分钟数}")
     if not isinstance(merged["step_guard_auto_restore"], bool):
         raise SettingsError("step_guard_auto_restore 必须是 true/false")
     batch = merged["semi_auto_batch_chapters"]

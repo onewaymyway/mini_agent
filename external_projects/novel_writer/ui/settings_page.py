@@ -51,6 +51,10 @@ def render_settings(ws: str) -> None:
     max_ch = c1.number_input("每次运行最多章数", min_value=1, max_value=100, value=int(b.get("max_chapters_per_run") or 3))
     max_calls = c2.number_input("每次运行最多 LLM 调用", min_value=1, max_value=2000, value=int(b.get("max_llm_calls_per_run") or 60))
     max_min = c3.number_input("每次运行最多分钟", min_value=1, max_value=1440, value=int(b.get("max_wall_minutes_per_run") or 120))
+    stt = m.get("step_timeout") or {}
+    step_min = st.number_input(
+        "每个步骤最多运行分钟（0 = 不限；超时强制终止并自动重跑，单步例外请在 settings.json 的 step_timeout.overrides 配置）",
+        min_value=0, max_value=1440, value=int(stt.get("minutes") or 0))
     banned = st.text_area("禁用词（用逗号或换行分隔）", value="、".join(m["banned_words"]))
 
     if st.button("保存设置", type="primary", key="mx_save"):
@@ -66,6 +70,7 @@ def render_settings(ws: str) -> None:
             {"checkpoints": {"waive_blueprint_confirm": waive},
              "budget": {"max_chapters_per_run": int(max_ch), "max_llm_calls_per_run": int(max_calls),
                         "max_wall_minutes_per_run": int(max_min)},
+             "step_timeout": {"minutes": int(step_min)},
              "banned_words": words},
         )
         if result["ok"]:

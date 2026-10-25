@@ -1,0 +1,52 @@
+"""novel_writer/invoke_child.py — 子进程里执行一次 skill 调用（供 FrameworkInvoker 使用）。
+
+之所以放到独立进程：Python 线程无法被安全强杀，卡在一次很慢的 LLM/工具调用里的 agent
+无法在进程内中止。放进子进程后，超时由父进程整树终止（procs.terminate_tree），真正做到「直接终止」。
+
+用法（由 FrameworkInvoker 拉起，不是给人用的）：
+    python -m novel_writer.invoke_child <payload.json> <result.json>
+标准输出/错误直接继承父进程（worker 的 run.log），所以运行中的中间输出照常可见。
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import threading
+import time
+from pathlib import Path
+
+PARENT_POLL_SEC = 5.0
+
+
+def _watch_parent(parent_pid: int) -> None:
+    """父进程（worker）消失后自行退出，避免残留的孤儿子进程继续烧 token。"""
+    try:
+        import psutil
+    except ImportError:  # pragma: no cover
+        return
+    while True:
+        time.sleep(PARENT_POLL_SEC)
+        if not psutil.pid_exists(parent_pid):
+            os._exit(3)
+
+
+def main(argv: list) -> int:
+    payload_file, result_file = Path(argv[1]), Path(argv[2])
+    payload = json.loads(payload_file.read_text(encoding="utf-8"))
+    parent_pid = int(payload.get("parent_pid") or 0)
+    if parent_pid:
+        threading.Thread(target=_watch_parent, args=(parent_pid,), daemon=True).start()
+    from novel_writer.runner import FrameworkInvoker
+
+    result = FrameworkInvoker()._invoke_inprocess(
+        skill=payload["skill"], prompt=payload["prompt"], export_dir=Path(payload["export_dir"]),
+        step_id=payload["step_id"], max_turns=payload.get("max_turns"), timeout=payload.get("timeout"),
+    )
+    result_file.write_text(json.dumps({"ok": result.ok, "error": result.error}, ensure_ascii=False), encoding="utf-8")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

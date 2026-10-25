@@ -426,7 +426,7 @@ def _garble_guard(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invo
       * 「接受」：记录风险后继续推进。
     """
     from novel_writer.garble import is_garbled
-    from novel_writer.runner import NeedsUser, StepFailed, _answers_file, run_skill_step
+    from novel_writer.runner import NeedsUser, StepFailed, StepTimeout, _answers_file, run_skill_step
 
     n = step.chapter
     if invoker is None:
@@ -475,6 +475,8 @@ def _garble_guard(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invo
             started = time.time()
             try:
                 run_skill_step(ws, regen, invoker=invoker, settings=settings, run_no=k + 1)
+            except StepTimeout:
+                raise   # 步骤总时限已到：不再继续重生成，交给 worker 终止并重跑本步骤
             except StepFailed as exc:
                 _log(ws, n, f"乱码守卫：{label}重新生成第 {k} 次失败：{exc}")
                 if pin_chapter:

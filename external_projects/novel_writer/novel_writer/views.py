@@ -384,6 +384,7 @@ def matrix_view(ws: Workspace) -> Dict[str, Any]:
         "rows": rows,
         "checkpoints": settings.get("checkpoints") or {},
         "budget": settings.get("budget") or {},
+        "step_timeout": settings.get("step_timeout") or {},
         "banned_words": settings.get("banned_words") or [],
         "gear_table": _gates.gear_table_rows(),
     }
@@ -397,7 +398,7 @@ def save_matrix(ws: Workspace, step_overrides: Dict[str, str], stage_gears: Dict
     stages = {k: v for k, v in (stage_gears or {}).items() if v}
     merged = {**cur, "step_overrides": overrides, "stage_gear_overrides": stages}
     for key, value in (extra or {}).items():
-        if key in ("checkpoints", "budget") and isinstance(value, dict):
+        if key in ("checkpoints", "budget", "step_timeout") and isinstance(value, dict):
             merged[key] = {**(cur.get(key) or {}), **value}
         elif key == "banned_words":
             merged[key] = list(value)
