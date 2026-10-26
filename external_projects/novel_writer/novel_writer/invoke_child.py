@@ -50,7 +50,24 @@ def main(argv: list) -> int:
         step_id=payload["step_id"], max_turns=payload.get("max_turns"), timeout=payload.get("timeout"),
     )
     result_file.write_text(json.dumps({"ok": result.ok, "error": result.error}, ensure_ascii=False), encoding="utf-8")
+    _drain_terminal()
     return 0
+
+
+def _drain_terminal() -> None:
+    """框架的终端渲染在后台守护线程里按队列输出；进程一退出队列里还没写的内容就丢了（尤其是最后一段），
+    所以退出前等队列写完。"""
+    try:
+        from mini_agent.ui.terminal import term
+
+        term._q.join()
+    except Exception:  # noqa: BLE001 - 只是尽力而为
+        pass
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except (OSError, ValueError):
+            pass
 
 
 if __name__ == "__main__":

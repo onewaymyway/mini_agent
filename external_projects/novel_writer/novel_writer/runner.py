@@ -364,9 +364,17 @@ class FrameworkInvoker:
         # -u 无缓冲 + UTF-8：输出直接写进继承来的 run.log，实时可见（否则文件重定向下按块缓冲，
         # 被强杀时缓冲内容还会丢失；Windows 中文控制台默认的 GBK 编码也会让 emoji 等字符打印失败）
         env = dict(_os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1", PYTHONUNBUFFERED="1")
+        # 显式把本进程的标准输出/错误句柄交给子进程：Windows 下 worker 是 DETACHED 进程，
+        # 子进程用 CREATE_NO_WINDOW + close_fds 且不显式传句柄时，会拿到自己新建的隐藏控制台，
+        # 输出就到不了 run.log 了（POSIX 下继承没问题）。拿不到真实文件描述符时（如测试捕获）退回默认继承。
+        try:
+            out_fd = sys.stdout.fileno()
+            std = {"stdout": out_fd, "stderr": _sp.STDOUT}
+        except (AttributeError, OSError, ValueError):
+            std = {}
         proc = _sp.Popen(
             [sys.executable, "-u", "-m", self._CHILD_MODULE, str(payload_file), str(result_file)],
-            cwd=str(config.PROJECT_ROOT), close_fds=True, env=env, **kwargs,
+            cwd=str(config.PROJECT_ROOT), close_fds=True, env=env, **std, **kwargs,
         )
         deadline = _time.monotonic() + remaining
         while proc.poll() is None:
