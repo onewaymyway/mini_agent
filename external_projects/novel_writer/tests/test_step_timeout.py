@@ -191,3 +191,26 @@ def test_save_matrix_round_trip_keeps_overrides(tmp_path):
     saved = ws.settings()["step_timeout"]
     assert saved == {"minutes": 25, "overrides": {"plan_blueprint": 90}}
     assert tool_api.matrix(str(ws.root))["data"]["step_timeout"]["minutes"] == 25
+
+
+def test_child_output_reaches_inherited_stdout_even_when_killed(tmp_path, monkeypatch):
+    """回归：子进程的输出必须实时写进继承的 stdout（run.log），被强杀时也不丢、编码为 UTF-8。"""
+    import os
+    import subprocess
+    import sys
+
+    log = tmp_path / "run.log"
+    code = (
+        "import sys; sys.path.insert(0, r'%s'); sys.path.insert(0, r'%s');"
+        "from pathlib import Path;"
+        "from novel_writer.runner import FrameworkInvoker;"
+        "from novel_writer import step_timeout as STO;"
+        "FrameworkInvoker._CHILD_MODULE='slow_child';"
+        "ctx = STO.deadline_scope(2.0); ctx.__enter__();"
+        "FrameworkInvoker()(skill='x', prompt='p', export_dir=Path(r'%s'), step_id='s')"
+    ) % (os.path.dirname(__file__), os.path.dirname(os.path.dirname(__file__)), tmp_path / "run")
+    env = dict(os.environ, PYTHONPATH=os.path.dirname(__file__))
+    with log.open("wb") as fh:
+        subprocess.run([sys.executable, "-c", code], stdout=fh, stderr=subprocess.STDOUT, env=env,
+                       cwd=os.path.dirname(os.path.dirname(__file__)), timeout=60)
+    assert "🔧 子 agent 工具调用输出" in log.read_text(encoding="utf-8")

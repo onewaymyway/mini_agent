@@ -33,6 +33,11 @@ def _watch_parent(parent_pid: int) -> None:
 
 
 def main(argv: list) -> int:
+    for stream in (sys.stdout, sys.stderr):   # 与 entrypoints/_common 一致：UTF-8、不因编码失败
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+        except (AttributeError, ValueError):
+            pass
     payload_file, result_file = Path(argv[1]), Path(argv[2])
     payload = json.loads(payload_file.read_text(encoding="utf-8"))
     parent_pid = int(payload.get("parent_pid") or 0)

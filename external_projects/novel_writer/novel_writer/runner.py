@@ -361,9 +361,12 @@ class FrameworkInvoker:
         kwargs: Dict[str, Any] = {}
         if sys.platform == "win32":
             kwargs["creationflags"] = getattr(_sp, "CREATE_NO_WINDOW", 0)
+        # -u 无缓冲 + UTF-8：输出直接写进继承来的 run.log，实时可见（否则文件重定向下按块缓冲，
+        # 被强杀时缓冲内容还会丢失；Windows 中文控制台默认的 GBK 编码也会让 emoji 等字符打印失败）
+        env = dict(_os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1", PYTHONUNBUFFERED="1")
         proc = _sp.Popen(
-            [sys.executable, "-m", self._CHILD_MODULE, str(payload_file), str(result_file)],
-            cwd=str(config.PROJECT_ROOT), close_fds=True, **kwargs,
+            [sys.executable, "-u", "-m", self._CHILD_MODULE, str(payload_file), str(result_file)],
+            cwd=str(config.PROJECT_ROOT), close_fds=True, env=env, **kwargs,
         )
         deadline = _time.monotonic() + remaining
         while proc.poll() is None:
