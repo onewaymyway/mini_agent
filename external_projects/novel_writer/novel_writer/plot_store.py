@@ -49,7 +49,8 @@ def _encode_fields(fields: Dict[str, Any]) -> str:
 
 
 def _decode_fields(text: str, where: str) -> Dict[str, Any]:
-    lines = text.splitlines()
+    # Windows 编辑器/PowerShell 常写入 UTF-8 BOM，会让首行变成 \ufeff---
+    lines = text.lstrip("\ufeff").splitlines()
     if not lines or lines[0].strip() != "---":
         raise LedgerError([f"{where}：缺少文件头（应以 --- 开始）"])
     fields: Dict[str, Any] = {}

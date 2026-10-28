@@ -38,7 +38,8 @@ def encode(rec: Dict[str, Any], order: Sequence[str] = ()) -> str:
 
 def decode(text: str, where: str) -> Dict[str, Any]:
     """文件头文本 -> 字段字典。遇到第一个格式错误即报出文件名与行号。"""
-    lines = text.splitlines()
+    # Windows 编辑器/PowerShell 常写入 UTF-8 BOM，会让首行变成 \ufeff---
+    lines = text.lstrip("\ufeff").splitlines()
     if not lines or lines[0].strip() != "---":
         raise KVFormatError([f"{where}：缺少文件头（应以 --- 开始）"])
     fields: Dict[str, Any] = {}
