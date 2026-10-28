@@ -62,6 +62,10 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     # 步骤边界守卫：越界改动了后续章节文件时，由框架自动还原（agent 手里没有改前内容，无法自己还原）。
     # 设为 false 则只报告并要求 agent 处理（旧行为）。
     "step_guard_auto_restore": True,
+    # 伏笔账本自愈（默认开启）：读取账本发现格式损坏（如 agent 手写了不合规文件）时，自动隔离/重建/转换并继续，
+    # 原文件一律备份不删除；register_plot 步骤结束时也会自动隔离 agent 手写进「伏笔/」的不合规文件。
+    # 设为 false 则只报错并给出修复指引（不改动任何文件）。
+    "ledger_auto_repair": True,
     # 步骤失败后的自动重跑策略。max_retries / backoff_sec 为 null 时用 worker 内置默认（3 次，5/15/30 秒）；
     # overrides：步骤 id 或类别 -> 最大重跑次数（0 = 该步骤失败后不自动重跑），步骤 id 优先于类别。
     "step_retry": {"max_retries": None, "backoff_sec": None, "overrides": {}},
@@ -102,6 +106,8 @@ def validate_settings(data: Dict[str, Any]) -> Dict[str, Any]:
     for name, value in merged["budget"].items():
         if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 1):
             raise SettingsError(f"预算 {name!r} 必须是正整数或 null（不限），当前 {value!r}")
+    if not isinstance(merged["ledger_auto_repair"], bool):
+        raise SettingsError("ledger_auto_repair 必须是 true/false")
     if not isinstance(merged["banned_words"], list):
         raise SettingsError("banned_words 必须是列表")
     pf = merged["patrol_feedback"]

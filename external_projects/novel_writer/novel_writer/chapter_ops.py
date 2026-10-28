@@ -41,6 +41,11 @@ class ChapterOpError(RuntimeError):
     pass
 
 
+class ChapterOpFatal(ChapterOpError):
+    """确定性、重试也不会好转的错误（如数据文件损坏且自愈失败）：worker 不再自动重跑，直接停下报原因。"""
+    no_retry = True
+
+
 # ── 通用工具 ───────────────────────────────────────────────────────────────
 
 
@@ -520,7 +525,9 @@ def _ledger_or_raise(ws: Workspace) -> Dict[str, Any]:
     try:
         return V._load_ledger(ws)
     except PD.PlotDeltaError as exc:
-        raise ChapterOpError("伏笔账本读取失败：" + "；".join(exc.problems))
+        raise ChapterOpFatal("伏笔账本读取失败（自动重跑不会好转，已停止重试）：" + "；".join(exc.problems)
+                             + "。可对「伏笔」目录运行 plot_store.heal_store / repair_free_markdown 修复，"
+                               "或备份后删除该目录并重跑 plot_import")
 
 
 def h_plot_import(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:
@@ -529,8 +536,19 @@ def h_plot_import(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invo
     要重新注册，请先手动删除伏笔目录再重跑。"""
     from novel_writer import plot_store as PS
     from novel_writer import plot_delta as PD
-    if PS.is_store(ws.path("plot_items_dir")):
-        return {"summary": "伏笔账本已存在，跳过导入（不覆盖已有的推进记录）"}
+    base = ws.path("plot_items_dir")
+    if PS.is_store(base):
+        problems = PS.store_problems(base)
+        if not problems:
+            return {"summary": "伏笔账本已存在，跳过导入（不覆盖已有的推进记录）"}
+        # 账本「存在」但内容损坏（如 register_plot 的 agent 手写了不合规文件）：不能静默跳过
+        if not settings.get("ledger_auto_repair", True):
+            raise ChapterOpFatal("伏笔账本已存在但格式损坏：" + "；".join(problems[:5])
+                                 + "。请备份并删除「伏笔」目录后重跑，或开启 ledger_auto_repair")
+        actions, left = PS.heal_store(base, ws.path("plot_register"))
+        if left:
+            raise ChapterOpFatal("伏笔账本损坏且自动修复未能完成：" + "；".join(left[:5]))
+        return {"summary": "伏笔账本已存在但损坏，已自动修复：" + "；".join(actions[:3])}
     if ws.path("plot_legacy").is_file():
         raise ChapterOpError("项目仍使用旧版伏笔账本（JSON）。请先运行伏笔迁移，再继续流水线")
     data = read_json(ws.path("plot_register"), default=None)

@@ -141,7 +141,7 @@ description: 长篇小说生成总控技能。管理和协调所有小说创作�
   任务：注册所有初始伏笔，建立张力曲线基准
   输入：{WORKSPACE}/大纲规划/蓝图/_index.md
   输出文件：
-    {WORKSPACE}/大纲规划/线索设定/伏笔/_index.md
+    {WORKSPACE}/大纲规划/线索设定/plot_register.json（伏笔账本「伏笔/」目录由系统据此自动生成，禁止手写）
     {WORKSPACE}/大纲规划/线索设定/伏笔注册表.md（人类可读）
     {WORKSPACE}/大纲规划/线索设定/故事线状态.md（人类可读）
 

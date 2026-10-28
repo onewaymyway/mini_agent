@@ -524,7 +524,7 @@ def run_step(
     attempts = int(st.get_step_state(ws, step.id).get("attempts", 0)) + 1
     started = time.monotonic()
     st.update_step(ws, step.id, status=st.ST_RUNNING, attempts=attempts, started_at=st.now_iso(),
-                   error=None, finished_at=None, needs_user=None, timed_out=None)
+                   error=None, finished_at=None, needs_user=None, timed_out=None, no_retry=None)
     started_iso = st.now_iso()
     st.heartbeat(ws, step=step.id, step_title=step.title, step_started_at=started_iso, attempt=attempts)
     st.log_line(ws, f"▶ {step.id}　{step.title}（第 {attempts} 次）")
@@ -548,6 +548,8 @@ def run_step(
         status, fields = st.ST_FAILED, {"error": str(exc)}
     except Exception as exc:  # noqa: BLE001 - 单步异常不能拖垮 worker，记入状态
         status, fields = st.ST_FAILED, {"error": f"{type(exc).__name__}: {exc}"}
+        if getattr(exc, "no_retry", False):
+            fields["no_retry"] = True     # 确定性错误：worker 不再自动重跑
 
     duration = round(time.monotonic() - started, 2)
     final = {"status": status, "finished_at": st.now_iso(), "duration_sec": duration, **fields}

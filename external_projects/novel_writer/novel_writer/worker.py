@@ -300,7 +300,8 @@ def _loop(
         budget.record(target)
         retries = 0
         max_retries, backoff = retry_policy(settings, target)
-        while status_after == st.ST_FAILED and retries < max_retries:
+        while (status_after == st.ST_FAILED and retries < max_retries
+               and not st.get_step_state(ws, target.id).get("no_retry")):
             if st.read_control(ws).get("command") in ("pause", "stop"):
                 st.log_line(ws, f"⏹ {target.id} 失败，但收到暂停/停止指令，不再自动重跑")
                 break

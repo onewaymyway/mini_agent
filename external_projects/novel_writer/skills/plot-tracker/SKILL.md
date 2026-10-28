@@ -7,7 +7,40 @@ description: 小说情节线索追踪技能。专门负责管理伏笔、悬念�
 
 ## 存储约定（第二、三阶段）
 
-每条伏笔一个文件 `大纲规划/线索设定/伏笔/F*.md`，`_index.md` 由系统生成。章后同步不再整本重写账本：只输出本章增量 `plot_delta`（planted 埋设 / advanced 推进 / resolved 兑现），每个动作引用已有伏笔 id 或新建 id，由 `plot_merge` 合并。
+伏笔账本（`大纲规划/线索设定/伏笔/` 下的 `F*.md` / `fs_*.md` 与 `_index.md`）**完全由系统（Python）生成和维护，你不要创建、修改或删除该目录下的任何文件**——包括 `mkdir 伏笔`。格式有严格的文件头校验，手写的文件一律会被判为损坏。
+
+- **注册伏笔（register_plot 步骤）**：只写 `大纲规划/线索设定/plot_register.json`（格式见下文「plot_register.json 格式」）以及可读文档；账本由后续的 `plot_import` 步骤自动生成。
+- **章后同步**：只输出本章增量 `plot_delta`（planted 埋设 / advanced 推进 / resolved 兑现），每个动作引用已有伏笔 id 或新建 id，由 `plot_merge` 合并。
+
+## plot_register.json 格式（注册伏笔时的唯一机器可读产出）
+
+顶层是一个 JSON 对象，伏笔列表必须放在 **`foreshadowing` 数组**里（不是以 id 为键的对象，也不要用 `foreshadowing_registry`）。每条伏笔：
+
+```json
+{
+  "foreshadowing": [
+    {
+      "id": "fs_001",
+      "name": "义眼异常代码",
+      "type": "主线伏笔",
+      "status": "planted",
+      "plant_chapter": 1,
+      "resolve_chapter": 38,
+      "progress": [],
+      "content": "埋设了什么",
+      "planted_method": "外貌描写中一笔带过",
+      "reveal_content": "兑现时揭示什么",
+      "depends_on": [],
+      "enables": ["fs_002"],
+      "urgency": "non-urgent"
+    }
+  ]
+}
+```
+
+- `id`（只含字母、数字、下划线、连字符）、`name`、`status`（planted / advanced / resolved）、`plant_chapter`（整数）、`resolve_chapter`（整数或 null，计划兑现章）、`progress`（数组，可为空）为必需字段，其余字段可选。
+- 章号必须是整数（不要写"第1章"）。
+- 写完后运行 `check_step.py --step register_plot` 自检，直到输出 OK。
 
 ## 职责
 
@@ -17,7 +50,9 @@ description: 小说情节线索追踪技能。专门负责管理伏笔、悬念�
 
 ---
 
-## 核心数据结构（伏笔/（F*.md 与 _index.md））
+## 设计参考：完整数据结构（概念模型，非文件格式）
+
+> 下面的 JSON 只是说明字段含义的概念模型（含故事线、张力曲线等）。**伏笔列表的实际文件格式以上面的 `plot_register.json` 为准**，不要把 `foreshadowing_registry` 这种以 id 为键的写法写进任何文件。
 
 ```json
 {
@@ -220,11 +255,13 @@ depends_on: [前置伏笔ID列表，无则为空]
 
 所有文件保存到工作目录（{WORKSPACE}）：
 
-- 主追踪文件：`{WORKSPACE}/大纲规划/线索设定/伏笔/_index.md`
+- 伏笔注册结果（机器可读，唯一来源）：`{WORKSPACE}/大纲规划/线索设定/plot_register.json`
 - 伏笔注册表（可读）：`{WORKSPACE}/大纲规划/线索设定/伏笔注册表.md`
 - 故事线状态（可读）：`{WORKSPACE}/大纲规划/线索设定/故事线状态.md`
 - 张力曲线：`{WORKSPACE}/大纲规划/线索设定/tension_curve.md`
 - 决策日志：`{WORKSPACE}/大纲规划/线索设定/decision_log.json`（plot-simulator 使用）
+
+**禁止写入** `{WORKSPACE}/大纲规划/线索设定/伏笔/` 目录（含 `_index.md`）：该目录是系统生成的账本，手写文件会被自动隔离并判定本步骤产出不合格。
 
 ---
 

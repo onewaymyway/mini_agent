@@ -252,8 +252,37 @@ def _check_blueprint(ws: Workspace, step: Any) -> List[str]:
     return blueprint_problems(ws.path("blueprint_draft"))   # 草稿是 plan_blueprint 的产出；拆分前校验
 
 
+PLOT_REGISTER_SPEC = (
+    "plot_register.json 的正确格式：顶层对象，伏笔列表放在 foreshadowing 数组里，每条含 "
+    "id / name / status(planted|advanced|resolved) / plant_chapter(整数) / resolve_chapter(整数或null) / progress(数组)，"
+    "例如 {\"foreshadowing\":[{\"id\":\"fs_001\",\"name\":\"义眼异常代码\",\"status\":\"planted\","
+    "\"plant_chapter\":1,\"resolve_chapter\":38,\"progress\":[]}]}。不要用 foreshadowing_registry 这类以 id 为键的对象。"
+)
+
+
+def _quarantine_hand_written_ledger(ws: Workspace, step: Any) -> List[str]:
+    """register_plot 不允许手写「伏笔/」账本（由 plot_import 生成）。agent 写进去的不合规文件：
+    开启自愈时确定性隔离到 _studio/backup（不删除），否则作为问题报出。"""
+    from novel_writer import plot_store as PS
+    from novel_writer import state as _st
+    base = ws.path("plot_items_dir")
+    if not base.is_dir() or not PS.store_problems(base):
+        return []
+    if ws.settings().get("ledger_auto_repair", True):
+        moved = PS.quarantine_invalid(base, ws.studio / "backup" / "伏笔_手写")
+        if moved:
+            _st.log_line(ws, f"🔧 {step.id}：「伏笔/」账本由系统生成，已隔离 agent 手写的 {len(moved)} 个不合规文件"
+                             f"（{'、'.join(moved[:8])}）到 _studio/backup/伏笔_手写")
+        return []
+    return [f"「伏笔/」目录下有手写的不合规文件：{'；'.join(PS.store_problems(base)[:5])}。"
+            "该目录由系统在 plot_import 步骤生成，请删除这些文件，只写 plot_register.json。"]
+
+
 def _check_plot_register(ws: Workspace, step: Any) -> List[str]:
-    return plot_tracker_problems(ws.path("plot_register"))
+    problems = plot_tracker_problems(ws.path("plot_register"))
+    if problems:
+        problems = problems + [PLOT_REGISTER_SPEC]
+    return problems + _quarantine_hand_written_ledger(ws, step)
 
 
 def _check_plot_tracker(ws: Workspace, step: Any) -> List[str]:
@@ -422,6 +451,17 @@ PD_LIST_KEY = PD.DEFAULT_LIST_KEY
 def _load_ledger(ws: Workspace) -> Dict[str, Any]:
     """读取伏笔账本：已迁移为小文件则读目录，否则读旧版 JSON（兼容未迁移的项目）。损坏则抛 PlotDeltaError。"""
     from novel_writer import plot_store as PS
-    if PS.is_store(ws.path("plot_items_dir")):
-        return PS.read_store(ws.path("plot_items_dir"))
+    base = ws.path("plot_items_dir")
+    if PS.is_store(base):
+        try:
+            return PS.read_store(base)
+        except PD.PlotDeltaError:
+            if not ws.settings().get("ledger_auto_repair", True):
+                raise
+            actions, _left = PS.heal_store(base, ws.path("plot_register"))
+            if not actions:
+                raise
+            from novel_writer import state as _st
+            _st.log_line(ws, "🔧 伏笔账本损坏，已自动修复：" + "；".join(actions[:5]))
+            return PS.read_store(base)   # 仍失败则如实抛出
     return PD.load_tracker_strict(ws.path("plot_legacy"))

@@ -131,3 +131,21 @@ def test_invalid_step_retry_rejected():
     for bad in ({"max_retries": -1}, {"backoff_sec": []}, {"overrides": {"x": "a"}}, {"foo": 1}):
         with pytest.raises(SE.SettingsError):
             SE.validate_settings({"step_retry": bad})
+
+
+def test_fatal_error_is_not_retried(tmp_path):
+    """确定性错误（ChapterOpFatal，no_retry）：失败一次就停，不浪费自动重跑次数。"""
+    from novel_writer import chapter_ops as C
+    ws = new_book(tmp_path)
+    calls = {"n": 0}
+
+    def fatal(ws_, step, settings, invoker=None):
+        calls["n"] += 1
+        raise C.ChapterOpFatal("账本损坏")
+
+    handlers = dict(STUB_HANDLERS)
+    handlers["init_workspace"] = fatal
+    r = run_worker(ws, mode="until_gate", invoker=FakeInvoker(ws.root), handlers=handlers, heartbeat_interval=0.01)
+    assert r["reason"] == "failed"
+    assert calls["n"] == 1
+    assert "自动重跑" not in ws.path("studio_log").read_text(encoding="utf-8")

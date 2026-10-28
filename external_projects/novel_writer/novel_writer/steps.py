@@ -215,7 +215,10 @@ def register_plot_step() -> StepDef:
     return StepDef(
         id="register_plot", title="注册伏笔与张力基准", stage="p1", category=CAT_BUILD,
         executor=EXECUTOR_SKILL, skill="plot-tracker",
-        instructions="从蓝图注册全部伏笔与依赖链，建立张力基准。",
+        instructions=("从蓝图注册全部伏笔与依赖链，建立张力基准。\n"
+                      "机器可读产出只有 plot_register.json（伏笔列表放在 foreshadowing 数组，每条含 id/name/status/"
+                      "plant_chapter/resolve_chapter/progress，章号为整数）；另写 伏笔注册表.md、故事线状态.md、tension_curve.md。"
+                      "严禁创建或写入「伏笔/」目录下的任何文件（含 _index.md）：账本由系统在 plot_import 步骤自动生成。"),
         inputs=(rel("blueprint"),), outputs=(rel("plot_register"), rel("foreshadowing_list")),
         deps=("characters_refresh", "build_world"),
         extra={"output_check": "plot_register"},

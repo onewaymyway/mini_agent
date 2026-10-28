@@ -28,6 +28,7 @@ from novel_writer.fsutil import atomic_write_json, atomic_write_text
 ITEM_ID = re.compile(r"^[A-Za-z0-9_\-]{1,40}$")
 APPLIED_DIR = "_applied"
 INDEX_NAME = "_index.md"
+INDEX_HEADER = "# 伏笔索引（自动生成，请勿手动编辑）"   # 系统生成索引的首行；用来识别被 agent 手写覆盖的 _index.md
 ITEM_KEY = PD.DEFAULT_LIST_KEY
 
 
@@ -121,7 +122,7 @@ def _index_text(data: Dict[str, Any]) -> str:
     for it in items:
         counts[str(it.get("status") or "planted")] = counts.get(str(it.get("status") or "planted"), 0) + 1
     lines = [
-        "# 伏笔索引（自动生成，请勿手动编辑）",
+        INDEX_HEADER,
         "",
         f"共 {total} 条 · 已埋设 {counts.get('planted', 0)} · 推进中 {counts.get('advanced', 0)} · 已兑现 {counts.get('resolved', 0)}",
         "",
@@ -245,13 +246,12 @@ def salvage_free_markdown(text: str, stem: str) -> Dict[str, Any]:
         "name": name,
         "status": status,
         "plant_chapter": _md_chapter(kv.get("埋设章节", "")),
-        "resolve_chapter": None,
+        "resolve_chapter": _md_chapter(kv.get("计划兑现章节", "")),   # 与注册结果一致：计划兑现章
         "progress": [],
     }
     extra = {
         "type": kv.get("类型"),
         "urgency": kv.get("紧迫程度"),
-        "planned_resolve_chapter": _md_chapter(kv.get("计划兑现章节", "")),
         "depends_on": _md_json_list(kv.get("depends_on", "")),
         "enables": _md_json_list(kv.get("enables", "")),
         "content": sec.get("埋设内容"),
@@ -281,6 +281,137 @@ def repair_free_markdown(base: Path, *, dry_run: bool = True) -> List[str]:
     if not dry_run and report:
         write_store(base, read_store(base))  # 重新生成 _index.md
     return report
+
+
+# ── 账本自愈（agent 手写/损坏文件的隔离与重建）────────────────────────────────
+
+def index_is_system(base: Path) -> bool:
+    """_index.md 不存在视为合法；存在则首行必须是系统生成的标题（agent 手写的索引标题不同）。"""
+    p = Path(base) / INDEX_NAME
+    if not p.is_file():
+        return True
+    try:
+        first = p.read_text(encoding="utf-8-sig").lstrip("\ufeff").splitlines()[:1]
+    except OSError:
+        return False
+    return bool(first) and first[0].strip() == INDEX_HEADER
+
+
+def store_problems(base: Path) -> List[str]:
+    """账本目录的全部格式问题（空列表 = 健康）。目录不存在返回空列表。"""
+    base = Path(base)
+    if not base.is_dir():
+        return []
+    problems = _collect_file_problems(base)
+    if not index_is_system(base):
+        problems.append(f"{INDEX_NAME}：不是系统生成的索引（疑似被手写覆盖）")
+    return problems
+
+
+def _invalid_item_files(base: Path) -> List[Path]:
+    bad: List[Path] = []
+    for f in _item_files(base):
+        try:
+            _decode_fields(f.read_text(encoding="utf-8"), f.name)
+        except (LedgerError, UnicodeDecodeError):
+            bad.append(f)
+    return bad
+
+
+def quarantine_invalid(base: Path, backup_dir: Path) -> List[str]:
+    """把无法解析的伏笔文件与手写的 _index.md 移到 backup_dir（不删除）。已合法的文件原样保留。
+    若移走后伏笔目录已空则删除空目录，让 plot_import 重新生成。返回被移走的文件名。"""
+    base = Path(base)
+    if not base.is_dir():
+        return []
+    moved: List[str] = []
+    victims = _invalid_item_files(base)
+    if not index_is_system(base):
+        victims.append(base / INDEX_NAME)
+    if victims:
+        Path(backup_dir).mkdir(parents=True, exist_ok=True)
+    for f in victims:
+        dest = Path(backup_dir) / f.name
+        n = 1
+        while dest.exists():
+            dest = Path(backup_dir) / f"{f.stem}.{n}{f.suffix}"
+            n += 1
+        shutil.move(str(f), str(dest))
+        moved.append(f.name)
+    if not any(base.iterdir()):
+        base.rmdir()
+    return moved
+
+
+def _has_progress(base: Path) -> bool:
+    """账本里是否已有真实进展（有章节增量记录，或任何合法条目已推进/兑现）。有进展时绝不整体重建。"""
+    if _applied_files(base):
+        return True
+    for f in _item_files(base):
+        try:
+            fields = _decode_fields(f.read_text(encoding="utf-8"), f.name)
+        except (LedgerError, UnicodeDecodeError):
+            continue
+        if fields.get("progress") or str(fields.get("status") or "planted") != "planted":
+            return True
+    return False
+
+
+def _rebuild_from_register(base: Path, register_path: Path) -> str:
+    """用 plot_register.json 整体重建账本：先在临时目录建好并回读校验，再替换；旧目录改名保留。返回备份目录名。"""
+    raw = json.loads(Path(register_path).read_text(encoding="utf-8-sig"))
+    if not isinstance(raw, dict):
+        raise LedgerError(["plot_register.json 顶层不是 JSON 对象"])
+    raw.setdefault(ITEM_KEY, [])
+    if not raw.get(PD.list_key(raw)):
+        raise LedgerError(["plot_register.json 中没有伏笔"])
+    tmp = Path(tempfile.mkdtemp(prefix=".plot_rebuild_", dir=str(base.parent)))
+    try:
+        write_store(tmp, raw)
+        read_store(tmp)
+        if store_problems(tmp):
+            raise LedgerError(store_problems(tmp))
+        from datetime import datetime
+        backup = base.with_name(f"{base.name}.bak_{datetime.now():%Y%m%d_%H%M%S}")
+        shutil.move(str(base), str(backup))
+        shutil.move(str(tmp), str(base))
+        return backup.name
+    finally:
+        if tmp.exists():
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+def heal_store(base: Path, register_path: Optional[Path] = None) -> Tuple[List[str], List[str]]:
+    """自动修复损坏的伏笔账本。返回 (已执行的动作, 仍未解决的问题)。
+    顺序：① 没有任何真实进展且有可用的 plot_register.json → 整体重建（旧目录改名备份）；
+          ② 否则把手写的自由格式 Markdown 逐个转成规范格式（原文件备份为 .md.bak）并重新生成索引；
+          ③ 仍有问题则原样报出，不再改动。任何一步失败都不会留下半成品。"""
+    base = Path(base)
+    if not base.is_dir():
+        return [], []
+    problems = store_problems(base)
+    if not problems:
+        return [], []
+    actions: List[str] = []
+    if register_path and Path(register_path).is_file() and not _has_progress(base):
+        try:
+            backup = _rebuild_from_register(base, Path(register_path))
+            actions.append(f"已用 plot_register.json 重建伏笔账本（旧目录保留为 {backup}）")
+            return actions, store_problems(base)
+        except (LedgerError, ValueError, OSError) as exc:
+            actions.append(f"按注册结果重建失败，改为逐文件修复（{exc}）")
+    try:
+        done = repair_free_markdown(base, dry_run=False)
+        actions.extend(done)
+    except (LedgerError, OSError) as exc:
+        actions.append(f"逐文件修复失败：{exc}")
+    if not index_is_system(base) or not (base / INDEX_NAME).is_file():
+        try:
+            write_store(base, read_store(base))
+            actions.append("已重新生成 _index.md")
+        except (LedgerError, OSError):
+            pass
+    return actions, store_problems(base)
 
 
 # ── 迁移 ────────────────────────────────────────────────────────────
