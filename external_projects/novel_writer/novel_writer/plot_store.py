@@ -52,7 +52,7 @@ def _decode_fields(text: str, where: str) -> Dict[str, Any]:
     # Windows 编辑器/PowerShell 常写入 UTF-8 BOM，会让首行变成 \ufeff---
     lines = text.lstrip("\ufeff").splitlines()
     if not lines or lines[0].strip() != "---":
-        raise LedgerError([f"{where}：缺少文件头（应以 --- 开始）"])
+        raise LedgerError([f"{where}：缺少文件头（应以 --- 开始；若是 LLM 手写的 Markdown，可运行 plot_store.repair_free_markdown(伏笔目录, dry_run=False) 转换）"])
     fields: Dict[str, Any] = {}
     for n, line in enumerate(lines[1:], start=2):
         if line.strip() == "---":
@@ -205,6 +205,82 @@ def _normalized(data: Dict[str, Any]) -> Dict[str, Any]:
     key = PD.list_key(out)
     out[key] = sorted(out.get(key, []), key=lambda it: str(it.get("id")))
     return out
+
+
+# ── 手写文件修复（显式调用，默认不会自动改文件）─────────────────────────
+
+def _md_chapter(v: str) -> Optional[int]:
+    m = re.search(r"第\s*(\d+)\s*章", v)
+    return int(m.group(1)) if m else None
+
+
+def _md_json_list(v: str) -> Any:
+    m = re.search(r"`(\[.*?\])`", v)
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except ValueError:
+            pass
+    return []
+
+
+def salvage_free_markdown(text: str, stem: str) -> Dict[str, Any]:
+    """把 LLM 手写的自由格式伏笔 Markdown（`- **键**：值` 列表）解析为规范字段。
+    只做确定性提取；无法识别的内容保留在 note 字段，不编造。"""
+    title = re.search(r"^#\s*\S+\s*[·:：\-]?\s*(.*)$", text, re.M)
+    name = (title.group(1).strip() if title else "") or stem
+    kv: Dict[str, str] = {}
+    for m in re.finditer(r"^\s*-\s*\*\*(.+?)\*\*\s*[：:]\s*(.*)$", text, re.M):
+        kv[m.group(1).strip()] = m.group(2).strip()
+    sec: Dict[str, str] = {}
+    for m in re.finditer(r"^\*\*(埋设内容|埋设方式|计划兑现内容)\*\*\s*[：:]\s*(.*)$", text, re.M):
+        sec[m.group(1)] = m.group(2).strip()
+    status = "planted"
+    raw_status = kv.get("状态", "")
+    for k in PD.KINDS:
+        if raw_status.lower().startswith(k):
+            status = k
+    fields: Dict[str, Any] = {
+        "id": stem,
+        "name": name,
+        "status": status,
+        "plant_chapter": _md_chapter(kv.get("埋设章节", "")),
+        "resolve_chapter": None,
+        "progress": [],
+    }
+    extra = {
+        "type": kv.get("类型"),
+        "urgency": kv.get("紧迫程度"),
+        "planned_resolve_chapter": _md_chapter(kv.get("计划兑现章节", "")),
+        "depends_on": _md_json_list(kv.get("depends_on", "")),
+        "enables": _md_json_list(kv.get("enables", "")),
+        "content": sec.get("埋设内容"),
+        "planted_method": sec.get("埋设方式"),
+        "reveal_content": sec.get("计划兑现内容"),
+    }
+    fields.update({k: v for k, v in extra.items() if v not in (None, "")})
+    return fields
+
+
+def repair_free_markdown(base: Path, *, dry_run: bool = True) -> List[str]:
+    """扫描伏笔目录，把缺少 `---` 文件头的手写文件转成规范格式（原文件备份为 .md.bak）。
+    默认 dry_run=True 只报告；传 dry_run=False 才会写盘。返回处理说明列表。"""
+    base = Path(base)
+    report: List[str] = []
+    for f in _item_files(base):
+        text = f.read_text(encoding="utf-8-sig")
+        if text.lstrip("\ufeff").lstrip().startswith("---"):
+            continue
+        fields = salvage_free_markdown(text, f.stem)
+        out = _encode_fields(fields) + _item_body(fields)
+        _decode_fields(out, f.name)  # 回读自检
+        report.append(f"{f.name}：{'将转换' if dry_run else '已转换'}（status={fields['status']}，plant_chapter={fields['plant_chapter']}）")
+        if not dry_run:
+            shutil.copy2(f, f.with_name(f.name + ".bak"))
+            atomic_write_text(f, out)
+    if not dry_run and report:
+        write_store(base, read_store(base))  # 重新生成 _index.md
+    return report
 
 
 # ── 迁移 ────────────────────────────────────────────────────────────
