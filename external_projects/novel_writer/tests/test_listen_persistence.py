@@ -157,3 +157,62 @@ def test_player_always_gets_a_resume_chapter(isolated):
     at = _app(ws)                                          # 从未保存过位置：第一个可听章节开头
     args, sel = _listen_args(at)
     assert (args["resume_ch"], args["resume_seg"], sel) == (1, 0, 1)
+
+
+# ── 选择框的选项随新章节/标题变化而被重置 ─────────────────────────────────────────────────
+
+
+def _book5(tmp_path):
+    """计划 5 章，先写 3 章；之后再写第 4 章，模拟流水线持续生成。"""
+    r = tool_api.create_novel("雨夜钟声", novels_dir=str(tmp_path / "novels"), index_file=str(tmp_path / "shelf.json"),
+                              gear="G3", total_chapters_planned=5)
+    ws = Workspace(r["data"]["workspace"])
+    put_blueprint(ws, make_blueprint(5))
+    for n in (1, 2, 3):
+        tool_api.save_chapter(str(ws.root), n, f"# 第{n}章 标题{n}\n\n这是第{n}章的正文。他走了。\n")
+    return ws
+
+
+def test_selectbox_options_do_not_change_when_chapters_are_added(isolated):
+    """Streamlit 1.5x 里选项是控件身份的一部分：选项一变，选择框会被当成新控件而回到第一章。
+    选项必须取自冻结的载荷，直到用户载入更新。"""
+    ws = _book5(isolated)
+    reading_state.update(ws.root, last_listen_chapter=3, listen_segment=1)
+    at = _app(ws)
+    opts_before = list(at.selectbox(key="listen_start").options)
+    tool_api.save_chapter(str(ws.root), 4, "# 第4章 标题4\n\n新生成的第四章正文。他来了。\n")
+    at.run()
+    assert list(at.selectbox(key="listen_start").options) == opts_before          # 选项没变 → 控件身份没变
+    assert at.selectbox(key="listen_start").value == 3
+    assert any("章节内容有更新" in i.value for i in at.info)
+    at.button(key="listen_reload").click().run()
+    assert len(at.selectbox(key="listen_start").options) == len(opts_before) + 1   # 载入后才出现新章节
+    args, sel = _listen_args(at)
+    assert (args["resume_ch"], args["resume_seg"], sel) == (3, 1, 3)               # 仍在原位置
+
+
+def test_reset_selectbox_is_restored_and_saved_position_untouched(isolated):
+    """即使选择框被重置回第一项（控件身份变化的后果），也恢复为之前设定的章节，不改写已保存的进度。"""
+    ws = _book5(isolated)
+    reading_state.update(ws.root, last_listen_chapter=3, listen_segment=1)
+    at = _app(ws)
+    assert at.selectbox(key="listen_start").value == 3
+    at.session_state["listen_start"] = 1          # 模拟被 Streamlit 重置为第一项
+    at.run()
+    assert at.selectbox(key="listen_start").value == 3
+    args, _ = _listen_args(at)
+    assert (args["resume_ch"], args["resume_seg"]) == (3, 1)
+    saved = reading_state.load(ws.root)
+    assert (saved["last_listen_chapter"], saved["listen_segment"]) == (3, 1)
+
+
+def test_user_pick_is_not_mistaken_for_a_reset(isolated):
+    ws = _book5(isolated)
+    reading_state.update(ws.root, last_listen_chapter=3, listen_segment=1)
+    at = _app(ws)
+    at.selectbox(key="listen_start").set_value(2).run()
+    assert at.selectbox(key="listen_start").value == 2                           # 用户主动改选，不会被"恢复"回 3
+    saved = reading_state.load(ws.root)
+    assert (saved["last_listen_chapter"], saved["listen_segment"]) == (2, 0)
+    args, _ = _listen_args(at)
+    assert (args["resume_ch"], args["resume_seg"]) == (2, 0)
