@@ -85,6 +85,9 @@
 
   let started = false, DATA = null, idx = 0, state = "idle", token = 0;
   let lastCh = null, lastReportedIdx = -1, rate = 1, pendingVoice = "";
+  // 队列下标 → 全书段落下标的偏移。章节载荷在线更新时，已交给浏览器队列的段落保持不动，只改这个映射。
+  let off = 0;
+  let lastPayloadKey = "";
 
   // ---- Streamlit 组件协议 ----
   function send(type, data) {
@@ -220,10 +223,9 @@
     fitHeight();
   }
 
-  // 把第 i 段加入队列（属于代次 g）
+  // 把队列下标 i 对应的段落加入队列（属于代次 g）。队列下标 + off = 全书段落下标。
   function speakOne(g, i) {
-    const segs = DATA.segments;
-    const u = new SpeechSynthesisUtterance(segs[i]);
+    const u = new SpeechSynthesisUtterance(DATA.segments[i + off]);
     u.lang = "zh-CN";
     u.rate = rate;
     const name = $("voice").value;
@@ -234,7 +236,7 @@
 
     u.onstart = () => {
       if (g !== gen) return;
-      idx = i; startedAt = Date.now(); retries = 0;
+      idx = i + off; startedAt = Date.now(); retries = 0;
       setStatus("");
       state = "playing";
       render();
@@ -243,9 +245,9 @@
     };
     u.onend = () => {
       if (g !== gen) return;
-      if (i >= segs.length - 1) {
+      if (i + off >= DATA.segments.length - 1) {
         // 读完全书：位置停在末段，不回到开头
-        idx = segs.length - 1; state = "idle"; setStatus("");
+        idx = DATA.segments.length - 1; state = "idle"; setStatus("");
         render(); report();
       }
     };
@@ -253,13 +255,13 @@
       if (g !== gen) return;
       const reason = e.error || "unknown";
       if (reason === "interrupted" || reason === "canceled") return;   // 我们主动取消，不算错误
-      handleFailure(g, reason, i);
+      handleFailure(g, reason, i + off);
     };
     synth.speak(u);
   }
 
   function enqueueUpTo(g, last) {
-    const n = DATA.segments.length;
+    const n = DATA.segments.length - off;
     while (qNext <= last && qNext < n) {
       speakOne(g, qNext);
       qNext++;
@@ -274,6 +276,7 @@
     synth.resume();
     retryPending = false;
     if (!retry) retries = 0;
+    off = 0;
     idx = clampIdx(i);
     qNext = idx;
     startedAt = 0;
@@ -407,8 +410,54 @@
     return r.start + Math.min(off, r.end - r.start - 1);
   }
 
+  // ---- 章节载荷在线更新：不重建播放器、不打断朗读、不重置位置 ----
+  // 位置按 (章节号, 章内段落, 段首锚点) 在新载荷里重新定位，与段落下标的漂移无关。
+  // 已交给浏览器队列的段落若文字未变，只改下标映射，朗读不中断；文字变了才从当前段重新排队。
+  function applyPayload(next) {
+    if (!next || !next.segments || !next.segments.length) return;   // 空载荷（章节正在重写）：保留现有内容
+    const prev = DATA, oldIdx = clampIdx(idx);
+    const k = chapterIndexOf(oldIdx), ch = prev.chapters[k].ch;
+    const seg = oldIdx - prev.chapters[k].start;
+    const anchor = (prev.segments[oldIdx] || "").slice(0, 24);
+    const inNext = next.chapters.some(c => c.ch === ch);
+    // 正在播放/暂停的章节暂时不在载荷里：先不切换，等它回来再更新，绝不把位置拉回前一章
+    if (!inNext && state !== "idle") return;
+    const newIdx = resolveStartIdx(next, { resume_ch: ch, resume_seg: seg, resume_anchor: anchor });
+
+    if (state === "playing" || state === "paused") {
+      const lastQueued = qNext - 1 + off;   // 已交给浏览器队列的最后一段（全书下标）
+      let same = true;
+      for (let j = oldIdx; j <= lastQueued && same; j++) {
+        same = prev.segments[j] === next.segments[newIdx + (j - oldIdx)];
+      }
+      DATA = next;
+      if (same) {
+        off = newIdx - (oldIdx - off);   // 队列里的段落仍然对应：只换下标映射
+        idx = newIdx;
+      } else if (state === "playing") {
+        startQueue(newIdx, true);        // 后续文字已改写：从当前段的新位置重新排队
+        return;
+      } else {
+        // 暂停中且后续文字已改写：清空队列，停在新位置；用户点「继续」即从这里读
+        gen++; synth.cancel(); state = "idle"; setStatus("");
+        off = 0; idx = newIdx; qNext = idx;
+      }
+    } else {
+      DATA = next; idx = newIdx;
+    }
+    render();
+    if (state !== "idle") report();
+  }
+  function onPayload(p) {
+    const key = JSON.stringify(p || {});
+    if (key === lastPayloadKey) return;
+    lastPayloadKey = key;
+    applyPayload(p);
+  }
+
   function init(args) {
     DATA = args.payload || { segments: [], chapters: [] };
+    lastPayloadKey = JSON.stringify(DATA);
     rate = RATES.indexOf(Number(args.rate)) >= 0 ? Number(args.rate) : 1;
     pendingVoice = args.voice || "";
 
@@ -460,9 +509,13 @@
     if (!d || d.type !== "streamlit:render") return;
     const theme = d.theme || (d.args && d.args.theme);
     if (theme) applyTheme(theme);
-    if (started) return;   // 之后的重渲染只同步主题，不重建播放器
-    started = true;
-    init(d.args || {});
+    if (!started) {
+      started = true;
+      init(d.args || {});
+      return;
+    }
+    // 之后的重渲染：只把最新章节载荷接入当前播放；起始位置等参数不再用于定位
+    if (d.args && d.args.payload) onPayload(d.args.payload);
   });
   window.addEventListener("pagehide", function () {
     if (DATA && (state === "playing" || state === "paused")) report();

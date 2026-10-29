@@ -6,14 +6,12 @@
 - 自动连播切章 → 选择框同步到实际所在章节（不重新挂载，不打断朗读）。
 位置（章节 + 章内段落 + 段首锚点文字）、语速、音色都写入 _studio/reading_state.json，刷新或重启后恢复。
 
-稳定性（避免进度被重置 / 播放被打断）：
+章节有新增或改写时自动更新，不打断朗读、不弹提示、不重置进度：
+- 播放器组件的 key 固定（只有用户主动改选择框时才换 key 重新挂载），章节载荷每次运行都是最新的；
+  播放器在前端原地接收新载荷，并按（章节号 + 章内段落 + 段首锚点）把当前位置映射到新内容。
 - 起始位置只依据已保存的位置计算（reading_state.resolve_listen_position），与选择框当前值无关；
   保存的章节暂时读不到（正在重写）时，回退到最近的前一章开头，且不会改写已保存的位置。
-- 传给播放器的章节载荷在同一会话内冻结：流水线生成新章节或改写正文时不再改变组件参数
-  （旧版 Streamlit 里参数变化会让播放器重建），改为提示「有更新」，由用户点击后再载入。
-- 选择框的选项与标题也取自这份冻结载荷，而不是实时章节列表：Streamlit 1.5x 起选项/format_func 是控件身份的一部分，
-  新增章节或章节标题变化会让选择框被当作新控件而回到第一项。另有保护：选择框的值若与我们最后一次设定的值不一致
-  （被重置），就恢复为设定值，绝不据此改写已保存的进度。
+- 选择框的值若与我们最后一次设定的值不一致（被 Streamlit 重置），就恢复为设定值，绝不据此改写已保存的进度。
 """
 
 from __future__ import annotations
@@ -31,10 +29,10 @@ _COMPONENT_DIR = Path(__file__).resolve().parent / "listen_component"
 _player = components.declare_component("novel_listen_player", path=str(_COMPONENT_DIR))
 
 _SEL = "listen_start"          # 选择框的 session key（表示当前所在/起始章节）
-_NONCE = "listen_nonce"        # 用户改选择框/载入更新时递增，让播放器重新挂载
+_NONCE = "listen_nonce"        # 用户主动改选择框时递增，让播放器重新挂载（从所选章节开头开始）
 _LAST_REPORT = "listen_last_report"
 _PENDING = "listen_pending_sync"   # 待应用到选择框的章节（播放器切章后记下）
-_PAYLOAD = "listen_payload_cache"  # 冻结的播放载荷：{"ws","nonce","sig","payload"}
+_PAYLOAD = "listen_payload_cache"  # 播放载荷缓存：{"ws","sig","payload"}，章节有变化时才重建
 _FALLBACK = "listen_sel_is_fallback"   # 选择框当前值是回退值（保存的章节暂时不可听）
 _EXPECT = "listen_sel_expected"        # 我们最后一次有意设定/同步的选择框值（用来识别选择框被重置）
 
@@ -45,12 +43,6 @@ def _on_pick(ws: str) -> None:
     reading_state.update(ws, last_listen_chapter=chosen, listen_segment=0, listen_anchor="")
     st.session_state[_EXPECT] = chosen
     st.session_state[_FALLBACK] = False
-    st.session_state[_NONCE] = st.session_state.get(_NONCE, 0) + 1
-    st.session_state[_LAST_REPORT] = None
-
-
-def _on_reload() -> None:
-    """用户点「载入更新」：重建播放器与载荷；起点仍取已保存的位置，所以从原位置继续。"""
     st.session_state[_NONCE] = st.session_state.get(_NONCE, 0) + 1
     st.session_state[_LAST_REPORT] = None
 
@@ -68,11 +60,11 @@ def render_listen(ws: str, rows: list) -> None:
             return
         state = reading_state.load(ws)
 
-        # 播放器载荷：同一会话内冻结（见模块说明）。选择框的选项、标题、起点解析都以它为准。
+        # 播放载荷：章节（编号/标题/字数）有变化时重建，随每次运行传给播放器（播放器原地接收，不重建）。
         sig = _signature(readable)
         nonce = st.session_state.get(_NONCE, 0)
         cache = st.session_state.get(_PAYLOAD)
-        if not (isinstance(cache, dict) and cache.get("ws") == ws and cache.get("nonce") == nonce):
+        if not (isinstance(cache, dict) and cache.get("ws") == ws and cache.get("sig") == sig):
             chapters = []
             for r in readable:
                 detail = tool_api.chapter(ws, r["chapter"])
@@ -80,7 +72,7 @@ def render_listen(ws: str, rows: list) -> None:
                     show_error(detail)
                     return
                 chapters.append({"chapter": r["chapter"], "title": r["title"], "text": detail["data"]["text"] or ""})
-            cache = {"ws": ws, "nonce": nonce, "sig": sig, "payload": build_payload(chapters)}
+            cache = {"ws": ws, "sig": sig, "payload": build_payload(chapters)}
             st.session_state[_PAYLOAD] = cache
         payload = cache["payload"]
         if not payload["segments"]:
@@ -120,12 +112,9 @@ def render_listen(ws: str, rows: list) -> None:
         current = st.session_state[_SEL]
 
         st.caption(f"可听 {len(payload['chapters'])} 章 · 共 {len(payload['segments'])} 段。播放会一直连到末章。")
-        if cache["sig"] != sig:
-            st.info("章节内容有更新（新增或改写了正文）。为不打断当前朗读，播放器仍是旧内容；需要时点击载入，会从当前位置继续。")
-            st.button("🔄 载入更新（从当前位置继续）", key="listen_reload", on_click=_on_reload)
         if is_fallback:
             st.warning(f"上次收听的第 {state.get('last_listen_chapter')} 章暂时无法读取（可能正在重写）。"
-                       f"已在第 {start_ch} 章开头待命，保存的位置没有被改动；该章恢复后点「载入更新」即可回到原位置。")
+                       f"已在第 {start_ch} 章开头待命，保存的位置没有被改动；该章恢复后会自动回到原位置。")
 
         report = _player(
             payload=payload,

@@ -128,28 +128,25 @@ def test_saved_chapter_temporarily_unreadable_never_restarts_from_book_start(iso
     assert any("暂时无法读取" in w.value for w in refreshed.warning)
     f.write_text(text, encoding="utf-8")                  # 正文恢复
     refreshed.run()
-    assert any("章节内容有更新" in i.value for i in refreshed.info)          # 不自动替换播放器，只提示
-    refreshed.button(key="listen_reload").click().run()
     args, sel = _listen_args(refreshed)
-    assert args["resume_ch"] == 3 and args["resume_seg"] == 1 and sel == 3   # 载入后回到原位置
+    assert args["resume_ch"] == 3 and args["resume_seg"] == 1 and sel == 3   # 恢复后自动回到原位置，无需任何操作
+    assert not any("章节内容有更新" in i.value for i in refreshed.info)
 
 
-def test_new_chapter_does_not_change_player_args_until_reload(isolated):
-    """新章节生成：载荷冻结（不打断朗读、旧版 Streamlit 不会重建组件），提示后由用户载入，且从原位置继续。"""
+def test_new_chapter_is_pushed_live_without_prompt_or_position_change(isolated):
+    """章节改写：载荷自动更新（播放器原地接收，key 不变所以不重建），不弹提示，位置不变。"""
     ws = _book(isolated)
     reading_state.update(ws.root, last_listen_chapter=2, listen_segment=1)
     at = _app(ws)
-    before = _listen_args(at)[0]
+    before, key_before = _listen_args(at)[0], at.get("component_instance")[0].proto.id
     tool_api.save_chapter(str(ws.root), 3, "# 第3章 标题3\n\n这是被流水线改写后更长的第3章正文。他走了。他又回来了。\n")
     at.run()
-    during = _listen_args(at)[0]
-    assert during["payload"] == before["payload"]                  # 载荷没变
-    assert any("章节内容有更新" in i.value for i in at.info)
-    at.button(key="listen_reload").click().run()
     after, sel = _listen_args(at)
     assert after["payload"] != before["payload"] and "被流水线改写" in "".join(after["payload"]["segments"])
-    assert (after["resume_ch"], after["resume_seg"], sel) == (2, 1, 2)   # 从原位置继续，不回到第一章
-    assert not any("章节内容有更新" in i.value for i in at.info)
+    assert (after["resume_ch"], after["resume_seg"], sel) == (2, 1, 2)   # 位置不变，不回到第一章
+    assert not any("章节内容有更新" in i.value for i in at.info)         # 没有提示
+    assert not any(b.key == "listen_reload" for b in at.button)           # 没有「载入更新」按钮
+    assert at.get("component_instance")[0].proto.id == key_before        # 组件 key 未变 → 不重建、不打断朗读
 
 
 def test_player_always_gets_a_resume_chapter(isolated):
@@ -173,20 +170,17 @@ def _book5(tmp_path):
     return ws
 
 
-def test_selectbox_options_do_not_change_when_chapters_are_added(isolated):
-    """Streamlit 1.5x 里选项是控件身份的一部分：选项一变，选择框会被当成新控件而回到第一章。
-    选项必须取自冻结的载荷，直到用户载入更新。"""
+def test_new_chapter_appears_in_picker_and_selection_stays(isolated):
+    """新章节生成：选择框立即出现新章节，且当前选中的章节不被重置回第一项。"""
     ws = _book5(isolated)
     reading_state.update(ws.root, last_listen_chapter=3, listen_segment=1)
     at = _app(ws)
     opts_before = list(at.selectbox(key="listen_start").options)
     tool_api.save_chapter(str(ws.root), 4, "# 第4章 标题4\n\n新生成的第四章正文。他来了。\n")
     at.run()
-    assert list(at.selectbox(key="listen_start").options) == opts_before          # 选项没变 → 控件身份没变
-    assert at.selectbox(key="listen_start").value == 3
-    assert any("章节内容有更新" in i.value for i in at.info)
-    at.button(key="listen_reload").click().run()
-    assert len(at.selectbox(key="listen_start").options) == len(opts_before) + 1   # 载入后才出现新章节
+    assert len(at.selectbox(key="listen_start").options) == len(opts_before) + 1
+    assert at.selectbox(key="listen_start").value == 3                             # 没有被重置回第一项
+    assert not any("章节内容有更新" in i.value for i in at.info)
     args, sel = _listen_args(at)
     assert (args["resume_ch"], args["resume_seg"], sel) == (3, 1, 3)               # 仍在原位置
 

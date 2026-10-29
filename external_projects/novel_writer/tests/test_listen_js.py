@@ -41,3 +41,11 @@ def test_page_script_is_syntactically_valid(tmp_path):
     script.write_text(js, encoding="utf-8")
     r = subprocess.run(["node", "--check", str(script)], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="需要 node")
+def test_live_payload_update_keeps_position(tmp_path):
+    """章节载荷在线更新：新增章节不重排队；前面插入段落只换下标映射；即将朗读的文字改动才从当前段重排队。"""
+    script = Path(__file__).resolve().parent / "js" / "listen_live_update.js"
+    r = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0 and "OK" in r.stdout, r.stdout + r.stderr
