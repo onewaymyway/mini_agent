@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from novel_writer import chapter_ops as C
 from novel_writer import exporter as E
+from novel_writer import writer_notes as WN
 from novel_writer.fsutil import atomic_write_text, read_json
 from novel_writer.textio import read_text_utf8
 from novel_writer.workspace import Workspace, count_words, sanitize_name
@@ -34,50 +35,27 @@ FINAL_DIR_NAME = "最终稿"
 
 # ── 清洗 ──────────────────────────────────────────────────────────────────
 
-NOTE_KEYS = (
-    "写作备注", "实际字数", "chapter_type", "完成情节任务", "完成的情节任务",
-    "本章场景覆盖", "本章埋设的伏笔", "埋设伏笔", "埋设的伏笔", "本章兑现的伏笔", "兑现伏笔",
-    "本章出场角色变化", "出场角色变化", "本章出场角色", "角色状态变化", "角色状态",
-    "章末钩子", "实际钩子文本",
-)
-_NOTE_START = re.compile("^(" + "|".join(re.escape(k) for k in NOTE_KEYS) + ")")
+_SEPARATORS = {"---", "***", "___"}
 _STRAY_NAME = re.compile(r"^第\d+章[_\s].*\.md$")
 _HEADING = re.compile(r"^#{1,6}\s*(第[^章\n]{0,12}章.*)$")
 _TITLE_PREFIX = re.compile(r"^第[^章]{0,12}章\s*")
 _FILE_TITLE = re.compile(r"^第\d+章[_\s]*(.*)\.md$")
-_SEPARATORS = {"---", "***", "___"}
 
 
 def _norm(line: str) -> str:
-    """去掉 markdown 与括号装饰后的纯文本，用于识别备注关键字。"""
-    s = re.sub(r"[*【】]", "", line.strip())
-    s = re.sub(r"^[#>\s]+", "", s)
-    return s.strip()
+    return WN.norm(line)
 
 
 def _is_note_start(line: str) -> bool:
-    return bool(_NOTE_START.match(_norm(line)))
+    return WN.is_note_start(line)
 
 
 def _is_prose(line: str) -> bool:
-    """正文样式的长段落：非空、非分隔线、非备注关键字、非缩进/列表项，且较长。"""
-    s = line.strip()
-    if not s or s in _SEPARATORS or _is_note_start(line):
-        return False
-    if line[:1].isspace() or s.startswith(("-", "•", "✓", "✗", "×", "✔")):
-        return False
-    return len(_norm(line)) > 60
+    return WN.is_prose(line)
 
 
 def _tail_cut(lines: List[str]) -> int:
-    """返回结尾备注块的起始行下标（没有则为 len(lines)）。"""
-    for i, line in enumerate(lines):
-        if not _is_note_start(line):
-            continue
-        if any(_is_prose(rest) for rest in lines[i:]):
-            continue
-        return i
-    return len(lines)
+    return WN.tail_cut(lines)
 
 
 def _strip_blank_and_separators(lines: List[str]) -> List[str]:

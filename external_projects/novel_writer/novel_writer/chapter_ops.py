@@ -340,6 +340,10 @@ def machine_findings(ws: Workspace, n: int, settings: Dict[str, Any], path: Opti
         if len(para) > LONG_PARAGRAPH:
             warn.append(f"超长段落（{len(para)} 字），考虑拆分")
             break
+    # 写作备注格式（过渡阶段：只作提示，不阻断，用于观察违规率）
+    from novel_writer import writer_notes as WN
+    for issue in WN.audit_notes(text):
+        warn.append(f"写作备注格式不统一：{issue}")
     return {"chapter": n, "words": words, "quota": quota, "hard": hard, "warn": warn, "checked_at": _now()}
 
 
