@@ -127,7 +127,7 @@
     lastReportedIdx = i;
     lastCh = c.ch;
     send("streamlit:setComponentValue", {
-      value: { ch: c.ch, seg: i - c.start, rate: rate, voice: $("voice").value || "" },
+      value: { ch: c.ch, seg: i - c.start, anchor: (DATA.segments[i] || "").slice(0, 24), rate: rate, voice: $("voice").value || "" },
       dataType: "json"
     });
   }
@@ -379,20 +379,40 @@
     found.textContent = "没有找到包含「" + q + "」的段落。";
   }
 
+  // 起始位置（纯函数，便于测试）：resume_ch 对应的章节 + 章内段落下标（越界则夹到该章末段）。
+  // 保存的章节不在载荷里时，回退到不晚于它的最近一章的开头——绝不回到全书第一段。
+  // 章节被改写、段落下标漂移时，用段首锚点文字在本章内重新定位。
+  function resolveStartIdx(data, args) {
+    if (args.resume_ch === null || args.resume_ch === undefined || !data.chapters.length) return 0;
+    const rangeOf = k => ({ start: data.chapters[k].start,
+      end: k + 1 < data.chapters.length ? data.chapters[k + 1].start : data.segments.length });
+    const want = Number(args.resume_ch);
+    let k = data.chapters.findIndex(c => c.ch === want), missing = false;
+    if (k < 0) {
+      missing = true; k = 0;
+      data.chapters.forEach((c, j) => { if (c.ch <= want) k = j; });
+    }
+    const r = rangeOf(k);
+    let off = missing ? 0 : Math.max(0, Number(args.resume_seg) || 0);
+    const anchor = args.resume_anchor;
+    if (!missing && anchor) {
+      const at = j => (data.segments[j] || "").startsWith(anchor);
+      const guess = r.start + Math.min(off, r.end - r.start - 1);
+      if (!at(guess)) {
+        let best = -1;
+        for (let j = r.start; j < r.end; j++) if (at(j) && (best < 0 || Math.abs(j - guess) < Math.abs(best - guess))) best = j;
+        if (best >= 0) off = best - r.start;
+      }
+    }
+    return r.start + Math.min(off, r.end - r.start - 1);
+  }
+
   function init(args) {
     DATA = args.payload || { segments: [], chapters: [] };
     rate = RATES.indexOf(Number(args.rate)) >= 0 ? Number(args.rate) : 1;
     pendingVoice = args.voice || "";
 
-    // 恢复位置：resume_ch 对应的章节 + 章内段落下标（越界则夹到该章末段）
-    idx = 0;
-    if (args.resume_ch !== null && args.resume_ch !== undefined && DATA.chapters.length) {
-      const k = DATA.chapters.findIndex(c => c.ch === Number(args.resume_ch));
-      if (k >= 0) {
-        const r = chapterRange(k);
-        idx = r.start + Math.max(0, Math.min(Number(args.resume_seg) || 0, r.end - r.start - 1));
-      }
-    }
+    idx = resolveStartIdx(DATA, args);
 
     const rsel = $("rate");
     RATES.forEach(r => {

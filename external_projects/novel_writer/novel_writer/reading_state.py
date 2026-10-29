@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from novel_writer.fsutil import atomic_write_json, read_json
 
@@ -18,6 +18,7 @@ DEFAULTS: Dict[str, Any] = {
     "last_read_chapter": None,
     "last_listen_chapter": None,
     "listen_segment": None,   # 上次收听位置：该章内的段落下标（0 为标题）
+    "listen_anchor": None,    # 该段落开头的一小段文字：章节被改写、段落下标漂移后，用它重新定位
     "listen_rate": 1.0,
     "listen_voice": "",
 }
@@ -60,6 +61,26 @@ def resume_segment(state: Dict[str, Any], start: int) -> Optional[int]:
     if state.get("last_listen_chapter") == start and isinstance(seg, int) and not isinstance(seg, bool) and seg >= 0:
         return seg
     return None
+
+
+def resolve_listen_position(state: Dict[str, Any], available: list) -> Tuple[Optional[int], int, bool]:
+    """听书的起始位置：(章节, 章内段落下标, 是否为回退)。**只依据已保存的位置**，与界面上选择框当前的值无关。
+
+    - 保存的章节可听 → 原位续播；
+    - 保存过位置但该章暂时不可听（正文正在被重写、文件瞬间缺失）→ 回退到不晚于它的最近一章的开头，
+      回退标记为 True，调用方不得把这个回退位置写回保存的状态；
+    - 从未保存过 → 第一个可听章节开头。
+    永远不会因为「暂时读不到」而返回 None，更不会让播放器从全书第一段开始。"""
+    if not available:
+        return None, 0, False
+    saved = chapter_or_none(state.get("last_listen_chapter"), available)
+    seg = state.get("listen_segment")
+    seg = seg if isinstance(seg, int) and not isinstance(seg, bool) and seg >= 0 else 0
+    if saved is not None:
+        return saved, seg, False
+    if state.get("last_listen_chapter") is None:
+        return available[0], 0, False
+    return resolve_chapter(state.get("last_listen_chapter"), available), 0, True
 
 
 def chapter_or_none(value: Optional[Any], available: list) -> Optional[int]:

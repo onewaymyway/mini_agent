@@ -96,3 +96,64 @@ def test_pending_sync_is_applied_before_selectbox_without_exception(isolated):
     assert not at.exception, at.exception
     assert at.selectbox(key="listen_start").value == 3
     assert "listen_pending_sync" not in at.session_state
+
+
+# ── 进度不被重置（保存的章节暂时不可听 / 新章节生成 / 载荷更新）─────────────────────────
+
+
+def _listen_args(at):
+    import json
+    for e in at.get("component_instance"):
+        if "listen" in e.proto.component_name:
+            a = json.loads(e.proto.json_args)
+            return a, at.selectbox(key="listen_start").value
+    raise AssertionError("没有找到听书组件")
+
+
+def test_saved_chapter_temporarily_unreadable_never_restarts_from_book_start(isolated):
+    """复现：保存的章节暂时读不到时，旧代码把 resume_ch 传成 None，播放器从全书第一段开始。"""
+    from novel_writer import chapter_ops as C
+    ws = _book(isolated)
+    reading_state.update(ws.root, last_listen_chapter=3, listen_segment=1, listen_anchor="这是第3章")
+    at = _app(ws)
+    assert _listen_args(at)[0]["resume_ch"] == 3
+    f = C.chapter_file(ws, 3)
+    text = f.read_text(encoding="utf-8")
+    f.unlink()                                            # 第 3 章正文被重写的瞬间
+    refreshed = _app(ws)                                  # 此时刷新页面（新会话，载荷不含第 3 章）
+    args, sel = _listen_args(refreshed)
+    assert args["resume_ch"] == 2 and args["resume_seg"] == 0      # 最近的前一章开头，而不是 None / 全书开头
+    assert sel == 2
+    assert reading_state.load(ws.root)["last_listen_chapter"] == 3  # 保存的位置没有被回退值覆盖
+    assert any("暂时无法读取" in w.value for w in refreshed.warning)
+    f.write_text(text, encoding="utf-8")                  # 正文恢复
+    refreshed.run()
+    assert any("章节内容有更新" in i.value for i in refreshed.info)          # 不自动替换播放器，只提示
+    refreshed.button(key="listen_reload").click().run()
+    args, sel = _listen_args(refreshed)
+    assert args["resume_ch"] == 3 and args["resume_seg"] == 1 and sel == 3   # 载入后回到原位置
+
+
+def test_new_chapter_does_not_change_player_args_until_reload(isolated):
+    """新章节生成：载荷冻结（不打断朗读、旧版 Streamlit 不会重建组件），提示后由用户载入，且从原位置继续。"""
+    ws = _book(isolated)
+    reading_state.update(ws.root, last_listen_chapter=2, listen_segment=1)
+    at = _app(ws)
+    before = _listen_args(at)[0]
+    tool_api.save_chapter(str(ws.root), 3, "# 第3章 标题3\n\n这是被流水线改写后更长的第3章正文。他走了。他又回来了。\n")
+    at.run()
+    during = _listen_args(at)[0]
+    assert during["payload"] == before["payload"]                  # 载荷没变
+    assert any("章节内容有更新" in i.value for i in at.info)
+    at.button(key="listen_reload").click().run()
+    after, sel = _listen_args(at)
+    assert after["payload"] != before["payload"] and "被流水线改写" in "".join(after["payload"]["segments"])
+    assert (after["resume_ch"], after["resume_seg"], sel) == (2, 1, 2)   # 从原位置继续，不回到第一章
+    assert not any("章节内容有更新" in i.value for i in at.info)
+
+
+def test_player_always_gets_a_resume_chapter(isolated):
+    ws = _book(isolated)
+    at = _app(ws)                                          # 从未保存过位置：第一个可听章节开头
+    args, sel = _listen_args(at)
+    assert (args["resume_ch"], args["resume_seg"], sel) == (1, 0, 1)

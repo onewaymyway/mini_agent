@@ -81,3 +81,15 @@ def test_resolve_chapter_falls_back_to_nearest_earlier_not_first():
     assert rs.resolve_chapter(0, avail) == 1          # 早于所有章：第一章
     assert rs.resolve_chapter(None, avail) == 1
     assert rs.resolve_chapter(3, []) is None
+
+
+def test_resolve_listen_position():
+    from novel_writer import reading_state as RS
+    st = dict(RS.DEFAULTS, last_listen_chapter=30, listen_segment=7)
+    assert RS.resolve_listen_position(st, [28, 29, 30, 31]) == (30, 7, False)       # 原位续播
+    assert RS.resolve_listen_position(st, [28, 29, 31]) == (29, 0, True)            # 保存章暂时不可听：最近的前一章开头，标记回退
+    assert RS.resolve_listen_position(st, [31, 32]) == (31, 0, True)                # 没有更早的章：第一个可听章
+    assert RS.resolve_listen_position(dict(RS.DEFAULTS), [5, 6]) == (5, 0, False)   # 从未保存：不算回退
+    assert RS.resolve_listen_position(st, []) == (None, 0, False)
+    bad = dict(RS.DEFAULTS, last_listen_chapter=30, listen_segment=True)
+    assert RS.resolve_listen_position(bad, [30]) == (30, 0, False)                  # 非法段落下标归零
