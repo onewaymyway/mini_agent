@@ -464,6 +464,12 @@ def export(workspace: str, fmt: str = "md") -> Dict[str, Any]:
     return _guard(lambda: _ok(_views.export_book(_workspace_or_raise(workspace), fmt)))
 
 
+def export_final(workspace: str) -> Dict[str, Any]:
+    """导出最终稿：设定 + 章节总结（md）+ 清洗后的正文 + 全书 txt，输出到 导出/最终稿/<书名>_<时间戳>/。"""
+    from novel_writer import final_export as F
+    return _guard(lambda: _ok(F.export_final(_workspace_or_raise(workspace))))
+
+
 # ───────────────────────── M4：矩阵 / 度量 / 灵感 / 修订 / 步骤详情 ─────────────────────────
 
 def matrix(workspace: str) -> Dict[str, Any]:

@@ -36,6 +36,18 @@ def render_reading(ws: str) -> None:
             st.success(f"已导出 {r['data']['chapters']} 章 · {r['data']['words']} 字 → {r['data']['file']}")
         else:
             show_error(r)
+    if st.button("导出最终稿（设定 + 章节总结 + 清洗后正文 + txt）", key="rd_final_export"):
+        r = tool_api.export_final(ws)
+        if r["ok"]:
+            d = r["data"]
+            st.session_state["rd_final_result"] = d
+            st.success(f"最终稿已导出：{d['chapters']} 章 · {d['words']} 字 · 设定 {d['settings']} 个 → {d['dir']}")
+            for w in d["warnings"]:
+                st.warning(w)
+            for e in d["errors"]:
+                st.error(e)
+        else:
+            show_error(r)
     last = st.session_state.get("rd_last_export")
     if last and (ws_path := Path(ws) / last["file"]).is_file():
         st.download_button(f"下载 {last['file'].rsplit('.', 1)[-1]} 文件", data=ws_path.read_bytes(),
