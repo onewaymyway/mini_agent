@@ -66,6 +66,9 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     # 原文件一律备份不删除；register_plot 步骤结束时也会自动隔离 agent 手写进「伏笔/」的不合规文件。
     # 设为 false 则只报错并给出修复指引（不改动任何文件）。
     "ledger_auto_repair": True,
+    # 逐幕滚动规划（默认开启）：蓝图缺少某幕的章节条目时，在进入该幕前自动插入 plan_act:N（LLM 逐章规划，
+    # 读取上一幕的幕末报告）与 blueprint_extend:N（确定性并入）。设为 false 则不插入，缺条目时第 N 章会报明确错误。
+    "plan_act_auto": True,
     # 步骤失败后的自动重跑策略。max_retries / backoff_sec 为 null 时用 worker 内置默认（3 次，5/15/30 秒）；
     # overrides：步骤 id 或类别 -> 最大重跑次数（0 = 该步骤失败后不自动重跑），步骤 id 优先于类别。
     "step_retry": {"max_retries": None, "backoff_sec": None, "overrides": {}},
@@ -106,8 +109,9 @@ def validate_settings(data: Dict[str, Any]) -> Dict[str, Any]:
     for name, value in merged["budget"].items():
         if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 1):
             raise SettingsError(f"预算 {name!r} 必须是正整数或 null（不限），当前 {value!r}")
-    if not isinstance(merged["ledger_auto_repair"], bool):
-        raise SettingsError("ledger_auto_repair 必须是 true/false")
+    for _k in ("ledger_auto_repair", "plan_act_auto"):
+        if not isinstance(merged[_k], bool):
+            raise SettingsError(f"{_k} 必须是 true/false")
     if not isinstance(merged["banned_words"], list):
         raise SettingsError("banned_words 必须是列表")
     pf = merged["patrol_feedback"]

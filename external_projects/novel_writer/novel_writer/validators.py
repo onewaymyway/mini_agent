@@ -201,8 +201,29 @@ def blueprint_problems(path: Path) -> List[str]:
                 changed = True
     if problems:
         return problems
+    problems = _first_act_coverage_problems(data, set(seen))
+    if problems:
+        return problems
     if changed:
         atomic_write_json(path, data)
+    return []
+
+
+def _first_act_coverage_problems(bp: Dict[str, Any], have: set) -> List[str]:
+    """蓝图一次性输出常被截断：至少第一幕范围内的章节条目必须完整（后幕由 plan_act 逐幕补全）。
+    没有幕结构时不检查。"""
+    ranges = []
+    for a in ((bp.get("structure") or {}).get("acts")) or []:
+        rng = a.get("chapter_range") if isinstance(a, dict) else None
+        if isinstance(rng, list) and len(rng) == 2 and all(isinstance(x, int) and not isinstance(x, bool) for x in rng):
+            ranges.append((rng[0], rng[1]))
+    if not ranges:
+        return []
+    start, end = min(ranges)
+    absent = [n for n in range(start, end + 1) if n not in have]
+    if absent:
+        return [f"第一幕（第 {start}–{end} 章）的章节条目不完整，缺少：{absent[:20]}{'…' if len(absent) > 20 else ''}。"
+                "蓝图至少要写全第一幕每一章（后续幕只需幕级骨架，系统会在进入该幕前逐幕补全章节）。"]
     return []
 
 
@@ -392,6 +413,29 @@ def _sync_presence_problems(ws: Workspace, step: Any) -> List[str]:
     return []
 
 
+def _check_act_blueprint(ws: Workspace, step: Any) -> List[str]:
+    from novel_writer import act_planning as AP
+    return AP.draft_problems(ws, step)
+
+
+def _check_act_findings(ws: Workspace, step: Any) -> List[str]:
+    """幕末整改项：与巡检整改项同一套结构校验。"""
+    from novel_writer import patrol_findings as PF
+    act = (getattr(step, "extra", None) or {}).get("act")
+    path = ws.path("act_findings", act=act)
+    if not path.is_file():
+        return [f"整改项文件不存在：{path.name}"]
+    data, err, fenced = _read_json_loose(path)
+    if err is not None:
+        return [f"整改项不是合法 JSON（{err}）。请只输出一个 JSON 对象。"]
+    probs = PF.problems(data)
+    if probs:
+        return probs
+    if fenced:
+        atomic_write_json(path, data)
+    return []
+
+
 def _check_patrol_findings(ws: Workspace, step: Any) -> List[str]:
     """巡检整改项：JSON 结构合法、字段齐全。带代码围栏时写回规范化结果。"""
     from novel_writer import patrol_findings as PF
@@ -412,6 +456,8 @@ def _check_patrol_findings(ws: Workspace, step: Any) -> List[str]:
 
 OUTPUT_CHECKS: Dict[str, Callable[[Workspace, Any], List[str]]] = {
     "patrol_findings": _check_patrol_findings,
+    "act_blueprint": _check_act_blueprint,
+    "act_findings": _check_act_findings,
     "character_files": _check_character_files,
     "best_pick_report": _check_best_pick,
     "blueprint": _check_blueprint,

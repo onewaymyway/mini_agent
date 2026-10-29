@@ -149,7 +149,12 @@ def h_word_quota(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invok
     n = step.chapter
     base = _base_quota(ws, n)
     if base <= 0:
-        raise ChapterOpError("没有字数配额（蓝图缺少 word_budget，且 word_count.json 未登记）")
+        if not chapter_entry(ws, n):
+            raise ChapterOpFatal(
+                f"第 {n} 章没有蓝图条目，无法确定字数配额（蓝图只细化了部分章节）。自动重跑不会好转："
+                "请确认设置里 plan_act_auto 为开启后重新展开计划（进入该幕前会自动运行 plan_act 补全章节），"
+                "或手动补全蓝图中该章的条目与 word_budget")
+        raise ChapterOpError(f"第 {n} 章蓝图条目缺少 word_budget，且 word_count.json 未登记")
     carry = 0
     if n > 1:
         prev = chapter_file(ws, n - 1)
@@ -975,7 +980,30 @@ def h_patrol_apply(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], inv
     return {"summary": f"整改项 {res['total']} 条，自动采纳 {res['adopted']} 条（其余为蓝图待办/回改建议，进收件箱，不阻塞流水线）"}
 
 
+def h_act_apply(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:
+    """幕末整改项分流（确定性）：校验提取结果并入整改项账本（与巡检共用，来源标为 act:N）。"""
+    from novel_writer import patrol_findings as PF
+    from novel_writer import validators as V
+    act = int((step.extra or {}).get("act") or 0)
+    end = int((step.extra or {}).get("through_chapter") or 0)
+    path = ws.path("act_findings", act=act)
+    if not path.is_file():
+        raise ChapterOpError(f"第 {act} 幕整改项文件不存在：{path.name}。请先运行 act_extract:{act}")
+    data, err, _fenced = V._read_json_loose(path)
+    if err is not None:
+        raise ChapterOpError(f"第 {act} 幕整改项不是合法 JSON（{err}）：{path.name}")
+    probs = PF.problems(data)
+    if probs:
+        raise ChapterOpError("幕末整改项不合格：" + "；".join(probs[:5]))
+    res = PF.apply_extract(ws, end, data, PF.feedback_settings(settings)["auto_adopt"], source=f"act:{act}")
+    return {"summary": f"第 {act} 幕整改项 {res['total']} 条，自动采纳 {res['adopted']} 条（其余进收件箱，不阻塞流水线）"}
+
+
+from novel_writer import act_planning as AP  # noqa: E402
+
 CHAPTER_HANDLERS = {
+    "blueprint_extend": AP.h_blueprint_extend,
+    "act_apply": h_act_apply,
     "patrol_apply": h_patrol_apply,
     "snapshot": h_snapshot,
     "word_quota": h_word_quota,

@@ -35,6 +35,7 @@ SCOPE_LABEL = {SCOPE_FORWARD: "约束后续章节", SCOPE_STYLE: "避免套路",
 SEVERITIES = ("严重", "一般")
 LEVELS = ("L1", "L2", "L3", "L4")
 
+SOURCE_PATROL = "patrol"      # 来源：巡检；幕末提取为 "act:N"
 S_PROPOSED = "proposed"
 S_ADOPTED = "adopted"
 S_DISMISSED = "dismissed"
@@ -138,10 +139,15 @@ def _write_ledger(ws: Workspace, ledger: Dict[str, Any]) -> None:
     atomic_write_json(ws.path("patrol_ledger"), ledger)
 
 
-def _normalise(f: Dict[str, Any], patrol_n: int, k: int) -> Dict[str, Any]:
+def _id_prefix(patrol_n: int, source: str) -> str:
+    return f"P{patrol_n}" if source == SOURCE_PATROL else "A" + source.split(":", 1)[1]
+
+
+def _normalise(f: Dict[str, Any], patrol_n: int, k: int, source: str = "patrol") -> Dict[str, Any]:
     scope = f["scope"]
     rec = {
-        "id": f"P{patrol_n}-{k}",
+        "id": f"{_id_prefix(patrol_n, source)}-{k}",
+        "source": source,
         "patrol_chapter": patrol_n,
         "dimension": f["dimension"].strip(),
         "severity": f["severity"],
@@ -161,19 +167,23 @@ def _normalise(f: Dict[str, Any], patrol_n: int, k: int) -> Dict[str, Any]:
     return rec
 
 
-def merge(ledger: Dict[str, Any], data: Dict[str, Any], patrol_n: int, *, auto_adopt: bool) -> Dict[str, Any]:
+def merge(ledger: Dict[str, Any], data: Dict[str, Any], patrol_n: int, *, auto_adopt: bool,
+          source: str = "patrol") -> Dict[str, Any]:
     """把一次提取结果并入账本（幂等）。
 
     同一次巡检重复提取时：标题相同的条目沿用已有状态（作者的决定不被覆盖），标题没了的旧条目被丢弃，
     只有「待决定」与「自动采纳」的才会被丢弃；作者亲自采纳/忽略/处理过的条目一律保留。
     """
-    old = [f for f in ledger["findings"] if f.get("patrol_chapter") == patrol_n]
-    others = [f for f in ledger["findings"] if f.get("patrol_chapter") != patrol_n]
+    def mine(f: Dict[str, Any]) -> bool:      # 巡检与幕末提取共用账本，按来源分开幂等
+        return f.get("patrol_chapter") == patrol_n and f.get("source", SOURCE_PATROL) == source
+
+    old = [f for f in ledger["findings"] if mine(f)]
+    others = [f for f in ledger["findings"] if not mine(f)]
     by_title = {f["title"]: f for f in old}
     kept: List[Dict[str, Any]] = []
     seen_titles = set()
     for k, raw in enumerate(data["findings"], 1):
-        rec = _normalise(raw, patrol_n, k)
+        rec = _normalise(raw, patrol_n, k, source)
         prev = by_title.get(rec["title"])
         if prev is not None:
             rec["status"] = prev.get("status", S_PROPOSED)
@@ -195,11 +205,12 @@ def merge(ledger: Dict[str, Any], data: Dict[str, Any], patrol_n: int, *, auto_a
     return {"findings": others + kept}
 
 
-def apply_extract(ws: Workspace, patrol_n: int, data: Dict[str, Any], auto_adopt: bool = True) -> Dict[str, int]:
+def apply_extract(ws: Workspace, patrol_n: int, data: Dict[str, Any], auto_adopt: bool = True,
+                  source: str = "patrol") -> Dict[str, int]:
     ledger = read_ledger(ws)
-    merged = merge(ledger, data, patrol_n, auto_adopt=bool(auto_adopt))
+    merged = merge(ledger, data, patrol_n, auto_adopt=bool(auto_adopt), source=source)
     _write_ledger(ws, merged)
-    mine = [f for f in merged["findings"] if f.get("patrol_chapter") == patrol_n]
+    mine = [f for f in merged["findings"] if f.get("patrol_chapter") == patrol_n and f.get("source", SOURCE_PATROL) == source]
     return {"total": len(mine), "adopted": sum(1 for f in mine if f["status"] == S_ADOPTED)}
 
 

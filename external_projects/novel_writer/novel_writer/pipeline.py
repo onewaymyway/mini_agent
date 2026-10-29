@@ -18,6 +18,7 @@ from novel_writer import gates as G
 from novel_writer import steps as S
 from novel_writer.fsutil import read_json
 from novel_writer.state import FINISHED_STATUSES, ST_PENDING
+from novel_writer.state import load_state as st_load_state
 from novel_writer.workspace import Workspace
 
 MAIN_CHARACTER_MIN_CHAPTERS = 3
@@ -93,7 +94,24 @@ def build_plan(ws: Workspace) -> List[S.StepDef]:
     last = plan[-1].id
     act_ends = _act_ends(blueprint, total)
     ending_at = _ending_chapter(blueprint, total)
+    from novel_writer import act_planning as AP
+    # 逐幕滚动规划：蓝图缺少某幕章节条目时，在该幕第一章之前插入 plan_act / blueprint_extend
+    act_list = AP.acts_of(blueprint, total)
+    # 缺章节条目的幕，以及「已经跑过 plan_act」的幕（蓝图补全后步骤仍须留在计划里：
+    # 否则它们写入的蓝图索引会因找不到写入者而被当作上游变化，把前面已通过的步骤全部标脏）
+    _recorded = set((st_load_state(ws).get("steps") or {}))
+    to_plan = ({s: (a, s, e) for a, s, e in act_list
+                if (a, s, e) in AP.missing_acts(blueprint, total) or f"plan_act:{a}" in _recorded}
+               if _settings.get("plan_act_auto", True) else {})
+    protagonist = AP.canonical_protagonist(ws, blueprint) if to_plan or act_ends else None
     for n in range(1, total + 1):
+        if n in to_plan:
+            a, s0, e0 = to_plan[n]
+            pa = _with_deps(S.plan_act_step(a, s0, e0, reports=AP.previous_act_report_paths(a, act_list),
+                                            protagonist=protagonist, budget=AP.act_budget(blueprint, a)), (last,))
+            ext = S.blueprint_extend_step(a, s0, e0, pa.id)
+            plan += [pa, ext]
+            last = ext.id
         if n == ending_at:
             # 结局设计（M6）：进入末幕前执行（方案 4.2）
             ending = _with_deps(S.ending_design_step(), (last,))
@@ -113,6 +131,14 @@ def build_plan(ws: Workspace) -> List[S.StepDef]:
             acts = S.act_steps(act_ends[n])
             plan += acts
             last = acts[-1].id
+            if feedback.get("extract"):
+                # 幕末报告 -> 整改项：让审稿/节奏/主题/风格/世界巡检的结论真正影响后续章节
+                reports = [S.rel("act_health_report", act=act_ends[n]), S.rel("act_pacing_report", act=act_ends[n]),
+                           S.rel("act_theme_report", act=act_ends[n]), S.rel("act_style_report", act=act_ends[n]),
+                           S.rel("world_usage_report", n=act_ends[n])]
+                ext_f = _with_deps(S.act_extract_step(act_ends[n], n, reports=reports, protagonist=protagonist), (last,))
+                plan += [ext_f, S.act_apply_step(act_ends[n], n, ext_f.id)]
+                last = plan[-1].id
         if n % SNAPSHOT_INTERVAL == 0:
             plan.append(S.snapshot_step(n))
         if quality == S.PREMIUM and n % S.PATROL_INTERVAL == 0:

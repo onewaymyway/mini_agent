@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from novel_writer import pipeline as P
@@ -50,7 +51,17 @@ def _placeholder_for(target: Path, ws) -> str:
     import json as _json
     if target.name in ("小说蓝图.json", "_draft.json"):
         return _json.dumps(make_blueprint(4), ensure_ascii=False)
-    if target.name.endswith("_巡检整改项.json"):
+    m = re.fullmatch(r"_act_(\d+)_draft\.json", target.name)
+    if m:      # plan_act 桩：按蓝图里该幕的章节范围造出每章条目
+        from novel_writer import act_planning as AP, pipeline as P
+        from novel_writer import blueprint_store as BS
+        bp = BS.load_for_ws(ws, strict=False) or {}
+        for a, s0, e0 in AP.acts_of(bp, P.total_chapters(ws, bp)):
+            if a == int(m.group(1)):
+                return _json.dumps({"chapters": [{"id": n, "title": f"第{n}章 桩", "word_budget": 4000,
+                                                  "characters_present": ["李凌云"]} for n in range(s0, e0 + 1)]},
+                                   ensure_ascii=False)
+    if target.name.endswith("整改项.json"):
         return _json.dumps({"findings": [{"dimension": "伏笔", "severity": "严重", "title": "伏笔过载",
                                           "directive": "优先兑现旧伏笔，少开新坑", "scope": "forward"}]}, ensure_ascii=False)
     if target.name.endswith("_伏笔增量.json"):

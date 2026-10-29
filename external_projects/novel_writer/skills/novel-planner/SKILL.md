@@ -5,9 +5,16 @@ description: 长篇小说宏观规划技能。当用户想要开始创作一部�
 
 # 长篇小说宏观规划技能（Novel Planner）
 
-## 产出约定（第五阶段）
+## 产出约定（第五阶段 + 逐幕滚动规划）
 
-整本蓝图仍由本技能一次性产出，但写到草稿 `大纲规划/蓝图/_draft.json`（整本一个 JSON 对象）。系统的 `blueprint_split` 步骤会自动拆分为 `_meta.md`（顶层字段）与每章一个 `第NNN章.md`，并生成 `_index.md`。不要直接写入 `_index.md` 或章节文件。
+**全书蓝图（plan_blueprint 步骤）**：写到草稿 `大纲规划/蓝图/_draft.json`（整本一个 JSON 对象）。`structure` 必须写全各幕（act、name、chapter_range、word_budget、情感弧、张力范围）与 `total_chapters`、`foreshadowing_index`、`protagonist_arc`；`chapters` 章节表**必须写全第一幕的每一章**，后续各幕不必逐章展开——整本一次写完会因输出过长被截断，系统也不再要求。系统的 `blueprint_split` 步骤会自动拆分为 `_meta.md` 与每章一个 `第NNN章.md`，并生成 `_index.md`。不要直接写入 `_index.md` 或章节文件。
+
+**逐幕规划（plan_act:N 步骤）**：进入第 N 幕之前，系统会让你只为该幕补全章节条目，写到 `大纲规划/蓝图/_act_N_draft.json`，格式 `{"chapters": [ ... ]}`：
+- 只写本幕范围内的章节，覆盖每一章，章号用整数；字段与全书蓝图的章节条目一致；
+- 各章 `word_budget` 之和应在该幕预算的 ±25% 内；伏笔的 `planned_reveal_chapter` 不得超过全书总章数；
+- **必须先读上一幕的幕末报告**（审稿、节奏、主题、风格、世界巡检）和已采纳的整改指令，把结论落实到本幕规划；
+- 主角名以规划（人物档案/蓝图）为准，任何报告里出现的其它写法都视为错误，不要沿用。
+系统随后用 `blueprint_extend:N` 确定性地并入蓝图与字数配额，已有章节不会被覆盖。
 
 ## 职责
 
@@ -199,7 +206,7 @@ description: 长篇小说宏观规划技能。当用户想要开始创作一部�
 
 ```
 字数核查
-  □ 所有章节 word_budget 之和 == meta.target_length？（允许 ±2%）
+  □ 已展开章节的 word_budget 之和与对应幕预算相符？（允许 ±2%；后续幕待 plan_act 逐幕补全，此处不检查）
   □ 各幕 word_budget 之和 == total_target？
 
 伏笔核查

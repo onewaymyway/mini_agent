@@ -104,7 +104,10 @@ def plan_blueprint_step() -> StepDef:
         id="plan_blueprint", title="生成全书蓝图", stage="p1", category=CAT_CHECKPOINT,
         executor=EXECUTOR_SKILL, skill="novel-planner",
         instructions=("根据作者在向导里给出的意图，产出全书蓝图（结构、章节表、主角弧、伏笔索引）及可读大纲。"
-                      f"蓝图 JSON 必须写到：{rel('blueprint_draft')}（整本一个 JSON 对象，系统会自动拆成每章一个文件）。"),
+                      f"蓝图 JSON 必须写到：{rel('blueprint_draft')}（整本一个 JSON 对象，系统会自动拆成每章一个文件）。\n"
+                      "【分幕细化】structure 里写全各幕（act、name、chapter_range、word_budget 等）与 total_chapters；"
+                      "chapters 章节表必须写全**第一幕**的每一章；后续各幕不必逐章展开（输出过长会被截断），"
+                      "系统会在进入每一幕之前，依据上一幕的幕末报告逐幕补全该幕章节。"),
         inputs=(rel("workspace_config"),),
         outputs=(rel("blueprint_draft"), rel("blueprint_readable")),
         deps=("init_workspace",),
@@ -568,6 +571,80 @@ def act_steps(act: int) -> List[StepDef]:
                 instructions="在下一幕开始前做中层推演，验证伏笔与走向。",
                 outputs=(rel("simulations_dir") + "/*",)),
     ]
+
+
+# ── 逐幕滚动规划与幕末整改（act_planning.py）─────────────────────────────────────
+
+
+def plan_act_step(act: int, start: int, end: int, *, reports: List[str], protagonist: Optional[str],
+                  budget: Optional[int]) -> StepDef:
+    """进入第 act 幕前，为本幕补全章节蓝图条目（LLM）。输入含上一幕的全部幕末报告。"""
+    lines = [
+        f"为第 {act} 幕（第 {start}–{end} 章）写出逐章蓝图条目，**只写本幕**，不要改动其它幕或已有章节。",
+        f"【输出路径（必须精确使用）】{rel('act_blueprint_draft', act=act)}",
+        "【格式】一个 JSON 对象：{\"chapters\": [ ... ]}，覆盖本幕每一章（章号整数，不要写“第N章”）。每章字段与全书蓝图一致："
+        "id、title、act、chapter_type、word_budget（正整数）、pov、tension_level、function、key_scenes、characters_present、"
+        "plot_points、foreshadowing（含 id/planned_reveal_chapter/reveal_content）、ends_with、hook_type。",
+    ]
+    if budget:
+        lines.append(f"本幕字数预算约 {budget} 字，各章 word_budget 之和应在其 ±25% 内。")
+    lines.append("参考：蓝图的幕级骨架（structure.acts）、伏笔索引与主角弧；已写章节的概述；伏笔账本中待埋设/待兑现的条目；"
+                 "上一幕规划里写下的“下一幕三章单元”。")
+    if reports:
+        lines.append("【必须先读上一幕的幕末报告，并把其中的结论落实到本幕规划里（修复问题、承接节奏与三章单元规划、回应主题与伏笔提醒）】\n"
+                     + "\n".join(f"  - {p}" for p in reports))
+    lines.append("【已采纳的整改指令】见 修订记录/巡检整改项.json 中 status=adopted 的条目，本幕规划须遵守。")
+    if protagonist:
+        lines.append(f"【主角名以规划为准】主角规范名是「{protagonist}」。幕末报告若称主角名字不一致，一律以此为准，"
+                     f"本幕所有 pov、characters_present 与情节描述都使用「{protagonist}」，不要沿用任何其它写法。")
+    return StepDef(
+        id=f"plan_act:{act}", title=f"第{act}幕：逐章规划（第 {start}–{end} 章）", stage="act", category=CAT_DESIGN,
+        executor=EXECUTOR_SKILL, skill="novel-planner", instructions="\n".join(lines),
+        inputs=(rel("blueprint"),) + tuple(reports), outputs=(rel("act_blueprint_draft", act=act),),
+        extra={"act": act, "start": start, "end": end, "output_check": "act_blueprint"},
+    )
+
+
+def blueprint_extend_step(act: int, start: int, end: int, dep: str) -> StepDef:
+    """把 plan_act 的草稿并入蓝图与字数配额（确定性）。"""
+    return StepDef(
+        id=f"blueprint_extend:{act}", title=f"第{act}幕：并入蓝图与字数配额", stage="act", category=CAT_INFRA,
+        executor=EXECUTOR_PYTHON, handler="blueprint_extend",
+        inputs=(rel("act_blueprint_draft", act=act),), outputs=(rel("blueprint"), rel("word_count")), deps=(dep,),   # 同时改字数配额：声明为产出，写入者才会被记为本步骤（已写章节不因此被标脏）
+        extra={"act": act, "start": start, "end": end},
+    )
+
+
+def act_extract_step(act: int, end_chapter: int, *, reports: List[str], protagonist: Optional[str]) -> StepDef:
+    """幕末报告整改项提取（LLM，只读已有报告，不重读正文）：让幕末报告能影响后续章节。"""
+    name_rule = (f"\n【主角名以规划为准】主角规范名是「{protagonist}」。报告里关于主角名字不一致的问题，作者已决定一律以此为准，"
+                 f"不要再当作“需作者决策”：为它写一条 forward 整改项（后续章节统一使用「{protagonist}」），"
+                 "再写一条 retro 整改项（level 用 L1，chapters 列出出现其它写法的已写章节，没有明确章号时列本幕全部章节）。"
+                 if protagonist else "")
+    return StepDef(
+        id=f"act_extract:{act}", title=f"第{act}幕：幕末整改项提取", stage="act", category=CAT_INFRA,
+        executor=EXECUTOR_SKILL, skill="revision-editor", chapter=0,
+        instructions=(
+            f"只读取第 {act} 幕的幕末报告（不要重读正文），把其中的问题整理成可执行的整改项：\n"
+            + "\n".join(f"  - {p}" for p in reports) + "\n"
+            f"【输出路径（必须精确使用）】{rel('act_findings', act=act)}\n"
+            "【格式】一个 JSON 对象：{\"findings\": [ ... ]}，字段与巡检整改项完全一致：dimension、severity（\"严重\" 或 \"一般\"）、"
+            "title、directive（一句可直接照做的指令）、scope（forward 约束后续章节 / style 要避免的套路，必须给 avoid_phrases / "
+            "blueprint 需调整蓝图 / retro 已写章节回改，必须给 chapters 与 level）。\n"
+            "每条报告里的硬错误与建议至少对应一条整改项；没有问题则 findings 为空数组。" + name_rule),
+        inputs=tuple(reports), outputs=(rel("act_findings", act=act),),
+        extra={"act": act, "through_chapter": end_chapter, "output_check": "act_findings"},
+    )
+
+
+def act_apply_step(act: int, end_chapter: int, dep: str) -> StepDef:
+    """幕末整改项分流（确定性 Python）：并入整改项账本；forward/style 自动采纳，blueprint/retro 进收件箱。"""
+    return StepDef(
+        id=f"act_apply:{act}", title=f"第{act}幕：幕末整改项分流", stage="act", category=CAT_INFRA,
+        executor=EXECUTOR_PYTHON, handler="act_apply", chapter=0,
+        inputs=(rel("act_findings", act=act),), outputs=(rel("patrol_ledger"),), deps=(dep,),
+        extra={"act": act, "through_chapter": end_chapter},
+    )
 
 
 def snapshot_step(n: int) -> StepDef:
