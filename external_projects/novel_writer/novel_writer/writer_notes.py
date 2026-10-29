@@ -36,6 +36,9 @@ NOTE_KEYS = (
 )
 _NOTE_START = re.compile("^(" + "|".join(re.escape(k) for k in NOTE_KEYS) + ")")
 _SEPARATORS = {"---", "***", "___"}
+# 「短标签：内容」形式（标签不超过 8 字，且冒号后不是开引号）视为备注字段，即使内容很长也不算正文段落
+_FIELD_LINE = re.compile(r"^[^\s「『“\"：:]{1,8}[：:]")
+_DIALOGUE = re.compile(r"[：:][「『“\"]")   # 冒号后直接跟开引号 = 对白
 
 # 统一格式：标题 + 固定字段（顺序固定，每项都必须出现）
 CANON_HEADING = "## 写作备注"
@@ -63,6 +66,8 @@ def is_prose(line: str) -> bool:
     if not s or s in _SEPARATORS or is_note_start(line):
         return False
     if line[:1].isspace() or s.startswith(("-", "•", "✓", "✗", "×", "✔")):
+        return False
+    if _FIELD_LINE.match(norm(line)) and not _DIALOGUE.search(s):
         return False
     return len(norm(line)) > 60
 

@@ -130,3 +130,31 @@ def test_export_creates_new_timestamped_directory_each_time(tmp_path):
     time.sleep(1.1)
     b = tool_api.export_final(str(ws.root))["data"]["dir"]
     assert a != b
+
+
+# ── 回归：候选稿标题 + 长字段值的备注 ───────────────────────────────────────
+
+def test_candidate_marker_heading_is_not_used_as_title():
+    raw = "# 第58章 候选稿B\n\n" + PROSE + "\n\n天快亮了。\n\n---\n写作备注（候选稿B提交给chapter-review）\n实际字数：约2850字\n"
+    text, warn = clean_chapter(raw, number=58, fallback_title="复仇计划")
+    assert text.startswith("# 第58章 复仇计划\n")
+    assert "候选稿B" not in text.splitlines()[0]
+    assert any("候选" in w for w in warn)
+
+
+def test_long_labelled_note_fields_do_not_block_the_cut():
+    """备注里的长字段（如「风格差异说明：…」）不能被当成正文，否则整个备注块会残留。"""
+    raw = (PROSE + "\n\n---\n写作备注\n实际字数：2850\n"
+           "完成的情节任务：林小川整合现有情报制定反击策略，获得苏晚晴提供的苏家档案，安排明日会面\n"
+           "风格差异说明：① 开场从父亲遗留物品切入而非直接引用赵天衡短信，减少信息堆砌感；② 苏晚晴主动上门\n")
+    text, _ = clean_chapter(raw, number=58, fallback_title="复仇计划")
+    assert "风格差异说明" not in text and "写作备注" not in text and "完成的情节任务" not in text
+    assert PROSE in text
+
+
+def test_dialogue_line_with_colon_is_still_prose():
+    """带冒号的对白（标签很短，但含引号）是正文，即使它紧跟在备注关键字之后也不能被切掉。"""
+    dialogue = "他说：「" + "这件事没有那么简单，我们必须先弄清楚父亲留下的每一条线索，否则谁也救不了你" + "」"
+    raw = PROSE + "\n\n---\n实际字数的问题他并没有想过。\n" + dialogue + "\n\n" + PROSE + "\n"
+    text, _ = clean_chapter(raw, number=3, fallback_title="对白")
+    assert dialogue in text and text.count(PROSE) == 2

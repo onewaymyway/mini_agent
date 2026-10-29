@@ -82,12 +82,16 @@ def clean_chapter(raw: str, *, number: int, fallback_title: str = "") -> Tuple[s
         head, body = [], lines
 
     title_full: Optional[str] = None
+    candidate_marked = False
     for source in (head, body):
         for i, l in enumerate(source):
             m = _HEADING.match(l.strip())
             if m:
-                title_full = m.group(1).strip()
                 source.pop(i)   # 标题统一由下面重新写出
+                if "候选" in m.group(1):
+                    candidate_marked = True      # 「第58章 候选稿B」是候选稿标记，不是章名
+                    continue
+                title_full = m.group(1).strip()
                 break
         if title_full:
             break
@@ -95,6 +99,8 @@ def clean_chapter(raw: str, *, number: int, fallback_title: str = "") -> Tuple[s
     body = body[:_tail_cut(body)]
     body = _strip_blank_and_separators(body)
     warnings: List[str] = []
+    if candidate_marked:
+        warnings.append(f"第{number}章标题带有「候选」标记，请确认导出的是正式正文而非候选稿")
     if not any(l.strip() for l in body):
         raise ValueError(f"第{number}章清洗后正文为空")
     for i, l in enumerate(body):
