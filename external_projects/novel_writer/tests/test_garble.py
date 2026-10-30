@@ -307,7 +307,10 @@ def test_existing_duplicates_clean_one_replaces_garbled_without_regen(book):
 
 
 def test_chapter_file_prefers_newest_when_duplicates(book):
-    a = write_chapter_file(book, 1, NORMAL)
+    # 两个文件都不是蓝图标题对应的规范名，应按修改时间取最新的那个
+    a = book.root / "正文" / "第01章 旧标题.md"
+    a.parent.mkdir(parents=True, exist_ok=True)
+    a.write_text(NORMAL, encoding="utf-8")
     b = book.root / "正文" / "第01章 另一个标题.md"
     b.write_text(NORMAL, encoding="utf-8")
     os.utime(a, (1_000_000_000, 1_000_000_000))

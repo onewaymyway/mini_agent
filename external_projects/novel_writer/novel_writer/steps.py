@@ -300,7 +300,9 @@ def chapter_steps(n: int, title: str, *, total: Optional[int], prev_last: str,
     标题未知（蓝图缺失）时，章节文件用 glob 匹配产出。
     """
     p = lambda name: chapter_id(n, name)  # noqa: E731
-    chapter_text = rel("chapter_text", nn=n, title=title) if title else glob_of("chapter_text", nn=n)
+    from novel_writer.chapter_names import normalize_chapter_title
+    clean_title = normalize_chapter_title(title) if title else ""
+    chapter_text = rel("chapter_text", nn=n, title=clean_title) if clean_title else glob_of("chapter_text", nn=n)
     prev_summary = glob_of("chapter_summary", nn=n - 1) if n > 1 else None
     base_inputs = (rel("blueprint"), rel("characters"), rel("plot_tracker"))
     common = dict(chapter=n)

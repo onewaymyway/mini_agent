@@ -464,6 +464,18 @@ def export(workspace: str, fmt: str = "md") -> Dict[str, Any]:
     return _guard(lambda: _ok(_views.export_book(_workspace_or_raise(workspace), fmt)))
 
 
+def plan_chapter_renames(workspace: str) -> Dict[str, Any]:
+    """只读：列出正文目录中章节文件名的改名计划（keep / rename / conflict）。"""
+    from novel_writer import chapter_rename as R
+    return _guard(lambda: _ok(R.plan_chapter_renames(_workspace_or_raise(workspace))))
+
+
+def apply_chapter_renames(workspace: str, plan: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """执行改名计划中的 rename 动作；不覆盖已存在的文件。"""
+    from novel_writer import chapter_rename as R
+    return _guard(lambda: _ok(R.apply_chapter_renames(_workspace_or_raise(workspace), plan)))
+
+
 def export_final(workspace: str) -> Dict[str, Any]:
     """导出最终稿：设定 + 章节总结（md）+ 清洗后的正文 + 全书 txt，输出到 导出/最终稿/<书名>_<时间戳>/。"""
     from novel_writer import final_export as F

@@ -197,8 +197,9 @@ def chapter_number_width(total_chapters: Optional[int]) -> int:
 
 
 def chapter_filename(n: int, title: str, total_chapters: Optional[int] = None) -> str:
+    from novel_writer.chapter_names import normalize_chapter_title   # 章名里不再重复章节号
     width = chapter_number_width(total_chapters)
-    safe = sanitize_name(title, what="章节标题")
+    safe = sanitize_name(normalize_chapter_title(title) or title, what="章节标题")
     return f"第{n:0{width}d}章 {safe}.md"
 
 
