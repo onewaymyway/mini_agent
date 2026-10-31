@@ -9,15 +9,27 @@ run.log 只由 state.log_line 写入。每次 agent 调用的完整输出落在�
 
 from __future__ import annotations
 
+import re
 import threading
 from pathlib import Path
 from typing import IO, Any, Callable, Optional
 
 AGENT_LOG_NAME = "agent.log"
 
-# 实时镜像到 run.log 的上限：超出后只在 run.log 留一行提示，完整输出始终在 agent.log。
-MIRROR_MAX_LINES = 4000
-MIRROR_MAX_CHARS = 240
+# 实时镜像到 run.log 的上限（按镜像的行数计）：超出后只在 run.log 留一行提示，完整输出始终在 agent.log。
+MIRROR_MAX_LINES = 300
+MIRROR_MAX_CHARS = 160
+
+# 镜像只保留「可读的进度」：框架 verbose 模式下的工具调用标题（图标 + 小写工具名 + 两空格 + 摘要），
+# 以及 print_warning / print_error 的告警行（⚠ / ✗ + 两空格 + 正文）。
+# 助手的正文、流式推理、工具参数 JSON、工具返回内容都是多行的长文本，一律不进 run.log（它们在 agent.log 中）。
+_TOOL_HEADER = re.compile(r"^\S{1,3}\s+[a-z][a-z0-9_]*(\s{2}.*)?$")
+_ALERT = re.compile(r"^[⚠✗]\s{2}\S.*$")
+
+
+def is_progress_line(text: str) -> bool:
+    return bool(_TOOL_HEADER.match(text) or _ALERT.match(text))
+
 
 # 行接收器按线程保存：FrameworkInvoker 在创建泵时读取它，泵线程之后直接调用，不经过 invoker 的参数。
 _sink_local = threading.local()
@@ -38,10 +50,12 @@ def run_log_sink(ws: Any) -> Callable[[str], None]:
     count = {"n": 0}
 
     def sink(text: str) -> None:
+        if not is_progress_line(text):
+            return
         count["n"] += 1
         if count["n"] > MIRROR_MAX_LINES:
             if count["n"] == MIRROR_MAX_LINES + 1:
-                st.log_line(ws, f"  │ …（输出过长，后续内容见本次调用的 agent.log）")
+                st.log_line(ws, f"  │ …（进度行过多，后续见本次调用的 agent.log）")
             return
         if len(text) > MIRROR_MAX_CHARS:
             text = text[:MIRROR_MAX_CHARS] + "…"
