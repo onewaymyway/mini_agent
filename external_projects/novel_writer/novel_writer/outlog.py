@@ -1,151 +1,20 @@
-"""novel_writer/outlog.py — 子进程输出的单写者管道泵。
+"""novel_writer/outlog.py — 子进程输出的单写者管道泵，以及原始输出到 run.log 的镜像。
 
 问题（见 run.log 覆盖事件）：父进程与子进程共享同一个日志文件句柄时，二者各自维护文件位置，
 子进程的输出会覆盖父进程追加的日志行。
 
 做法：子进程 stdout 接管道；本模块的线程是这份管道的唯一读取者，也是对应 agent.log 的唯一写入者。
-run.log 只由 state.log_line 写入。每次 agent 调用的完整输出落在它自己的 agent.log 中。
+run.log 只由 state.log_line 写入，且只在父进程的泵线程里调用（单写者）。
+每一行子进程输出都原样写入 run.log（不做解析、不过滤、不截断），完整内容同时保存在 agent.log 中。
 """
 
 from __future__ import annotations
 
-import json
-import re
 import threading
 from pathlib import Path
-from typing import IO, Any, Callable, Dict, List, Optional
+from typing import IO, Any, Callable, Optional
 
 AGENT_LOG_NAME = "agent.log"
-
-# 实时镜像到 run.log 不做截断：路径、命令、工具返回内容都按原样显示。None 表示不限行数；
-# 若需要防止 run.log 过大，可设为整数（超出后只留一行提示，完整内容始终在 agent.log）。
-MIRROR_MAX_LINES = None
-
-# 结构化事件协议：子进程里框架调用工具时，invoke_child 把完整的工具调用 / 结果以一行 JSON 输出，
-# 行首带这个标记。父进程只认标记行（它们来自框架的真实调用，不依赖框架的终端排版）。
-EVENT_PREFIX = "@@NW_EVT@@ "
-
-# 告警行（print_warning / print_error）：⚠ / ✗ + 两空格 + 正文。
-_ALERT = re.compile(r"^[⚠✗]\s{2}\S.*$")
-
-# 每个工具最主要的入参（按优先级），其余标量参数以 k=v 附在后面。
-_PRIMARY_KEYS = {
-    "bash": ("command",),
-    "read_file": ("path", "file_path"), "write_file": ("path", "file_path"),
-    "create_file": ("path", "file_path"), "delete_file": ("path", "file_path"),
-    "patch_file": ("path", "file_path"), "list_dir": ("path",),
-    "glob": ("pattern", "query"), "grep": ("pattern", "query"), "web_search": ("query",),
-    "create_plan": ("goal",), "start_task": ("task_id",), "complete_task": ("task_id",),
-    "fail_task": ("task_id",), "add_task": ("title",),
-}
-
-
-def is_progress_line(text: str) -> bool:
-    return text.startswith(EVENT_PREFIX) or bool(_ALERT.match(text))
-
-
-def _block(label: str, text: str, indent: str = "      ") -> str:
-    """多行内容原样逐行输出：标签行 + 每行加前缀，不截断、不合并。"""
-    lines = text.split("\n")
-    return f"   ↳ {label}：\n" + "\n".join(f"{indent}│ {ln}" for ln in lines)
-
-
-def _format_call(name: str, inp: Dict[str, Any], icon: str) -> str:
-    """工具调用：单行的参数内联到标题行；多行的参数（正文、多行命令）原样逐行输出。"""
-    inline: List[str] = []
-    blocks: List[str] = []
-    primary = _PRIMARY_KEYS.get(name, ())
-    head_value = None
-    for key in primary:
-        if inp.get(key) not in (None, ""):
-            head_value = (key, inp[key])
-            break
-    if head_value is not None:
-        key, val = head_value
-        if isinstance(val, str) and "\n" in val:
-            blocks.append(_block(key, val))
-        else:
-            inline.append(str(val))
-    for key, val in inp.items():
-        if head_value is not None and key == head_value[0]:
-            continue
-        if isinstance(val, str) and "\n" in val:
-            blocks.append(_block(key, val))
-        elif isinstance(val, (str, int, float, bool)) and val != "":
-            inline.append(f"{key}={val}")
-        elif isinstance(val, (list, dict)) and val:
-            blocks.append(_block(key, json.dumps(val, ensure_ascii=False, indent=2)))
-    head = f"{icon} {name}"
-    if inline:
-        head += "  " + "，".join(inline)
-    return "\n".join([head] + blocks)
-
-
-def format_event(ev: Dict[str, Any]) -> str:
-    """把一条结构化事件格式化成 run.log 中的若干行（不含时间戳和前缀）。全部原样输出，不截断。"""
-    if ev.get("kind") == "call":
-        inp = ev.get("input") if isinstance(ev.get("input"), dict) else {}
-        return _format_call(str(ev.get("name", "")), inp, str(ev.get("icon", "🔧")))
-    if ev.get("kind") == "result":
-        text = str(ev.get("text", ""))
-        if not text.strip():
-            return "   ↳ 无返回内容"
-        return _block(f"返回 {len(text)} 字符", text.rstrip("\n"))
-    return ""
-
-
-def emit_event(kind: str, **payload: Any) -> None:
-    """子进程里调用：把一条事件写到标准输出（由父进程的泵收进 agent.log 和 run.log）。"""
-    import json as _json
-    import sys as _sys
-
-    line = EVENT_PREFIX + _json.dumps({"kind": kind, **payload}, ensure_ascii=False, default=str)
-    _sys.stdout.write("\n" + line + "\n")
-    _sys.stdout.flush()
-
-
-class _ProgressMirror:
-    """逐行接收 agent 输出，只把结构化工具事件与告警行写进 run.log（经 state.log_line 单写者写入）。"""
-
-    def __init__(self, ws: Any) -> None:
-        from novel_writer import state as st
-
-        self._st = st
-        self._ws = ws
-        self._count = 0
-
-    def __call__(self, text: str) -> None:
-        if text.startswith(EVENT_PREFIX):
-            try:
-                import json as _json
-
-                shown = format_event(_json.loads(text[len(EVENT_PREFIX):]))
-            except ValueError:
-                shown = ""
-        elif _ALERT.match(text):
-            shown = text
-        else:
-            return
-        if shown:
-            self._emit(shown)
-
-    def _emit(self, text: str) -> None:
-        self._count += 1
-        if MIRROR_MAX_LINES is not None and self._count > MIRROR_MAX_LINES:
-            if self._count == MIRROR_MAX_LINES + 1:
-                self._st.log_line(self._ws, "  │ …（进度行过多，后续见本次调用的 agent.log）")
-            return
-        for ln in text.split("\n"):
-            self._st.log_line(self._ws, f"  │ {ln}")
-
-    def finish(self) -> None:
-        """调用结束（保留接口，当前无需补输出）。"""
-
-
-def run_log_sink(ws: Any) -> Callable[[str], None]:
-    """返回一个把 agent 进度镜像进 run.log 的接收器（只在父进程的泵线程里调用，经 state.log_line 单写者写入）。"""
-    return _ProgressMirror(ws)
-
 
 # 行接收器按线程保存：FrameworkInvoker 在创建泵时读取它，泵线程之后直接调用，不经过 invoker 的参数。
 _sink_local = threading.local()
@@ -157,6 +26,27 @@ def set_line_sink(sink: Optional[Callable[[str], None]]) -> None:
 
 def current_line_sink() -> Optional[Callable[[str], None]]:
     return getattr(_sink_local, "sink", None)
+
+
+class RawRunLogSink:
+    """把子进程的每一行原样写进 run.log（经 state.log_line，带时间戳）。"""
+
+    def __init__(self, ws: Any) -> None:
+        from novel_writer import state as st
+
+        self._st = st
+        self._ws = ws
+
+    def __call__(self, text: str) -> None:
+        self._st.log_line(self._ws, text)
+
+    def finish(self) -> None:
+        """调用结束（保留接口；原始输出是逐行写入的，无需补输出）。"""
+
+
+def run_log_sink(ws: Any) -> Callable[[str], None]:
+    """返回把子进程原始输出镜像进 run.log 的接收器。"""
+    return RawRunLogSink(ws)
 
 
 class LinePump:

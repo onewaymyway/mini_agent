@@ -5,7 +5,7 @@
 
 用法（由 FrameworkInvoker 拉起，不是给人用的）：
     python -m novel_writer.invoke_child <payload.json> <result.json>
-标准输出/错误直接继承父进程（worker 的 run.log），所以运行中的中间输出照常可见。
+标准输出/错误经管道由父进程原样写入 run.log（见 outlog.py），所以运行中的中间输出照常可见。
 """
 
 from __future__ import annotations
@@ -32,42 +32,22 @@ def _watch_parent(parent_pid: int) -> None:
             os._exit(3)
 
 
-def _install_tool_event_hooks() -> None:
-    """在框架执行工具的进程里，把每次工具调用 / 结果以结构化事件输出（见 outlog.EVENT_PREFIX）。
+def _install_full_result_hook() -> None:
+    """让框架的工具返回内容完整打印：框架的 print_tool_result 默认 truncate=2000，这里强制不截断。
 
-    框架的 tool_executor 通过 renderer 模块调用 print_tool_call / print_tool_result，这里替换这两个函数：
-    先发事件，再调用原函数（原函数的排版照常写进 agent.log）。失败时静默退回原行为。
+    其他输出（工具标题、入参 JSON、助手正文）保持框架原样，由父进程原样写入 run.log。
     """
     try:
         from mini_agent.ui import renderer as R
     except Exception:  # noqa: BLE001 - 框架不可用时由调用方报告
         return
-    from novel_writer import outlog
-
-    orig_call = R.print_tool_call
     orig_result = R.print_tool_result
 
-    def print_tool_call(tool_name, tool_input, verbose=False):
-        try:
-            inp = tool_input if isinstance(tool_input, dict) else {}
-            outlog.emit_event("call", name=tool_name, icon=R._tool_icon(tool_name), input=inp)
-        except Exception:  # noqa: BLE001
-            pass
-        return orig_call(tool_name, tool_input, verbose=verbose)
-
     def print_tool_result(tool_name, result, truncate=2000):
-        try:
-            text = result if isinstance(result, str) else str(result or "")
-            first = next((ln for ln in text.splitlines() if ln.strip()), "")
-            outlog.emit_event("result", name=tool_name, len=len(text), first=first)
-        except Exception:  # noqa: BLE001
-            pass
-        return orig_result(tool_name, result, truncate=truncate)
+        return orig_result(tool_name, result, truncate=None)
 
-    R.print_tool_call = print_tool_call
     R.print_tool_result = print_tool_result
     try:
-        R.R.print_tool_call = print_tool_call
         R.R.print_tool_result = print_tool_result
     except AttributeError:
         pass
@@ -86,7 +66,7 @@ def main(argv: list) -> int:
         threading.Thread(target=_watch_parent, args=(parent_pid,), daemon=True).start()
     from novel_writer.runner import FrameworkInvoker
 
-    _install_tool_event_hooks()
+    _install_full_result_hook()
 
     result = FrameworkInvoker()._invoke_inprocess(
         skill=payload["skill"], prompt=payload["prompt"], export_dir=Path(payload["export_dir"]),
