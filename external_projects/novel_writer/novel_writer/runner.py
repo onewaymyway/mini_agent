@@ -23,6 +23,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from novel_writer.textio import read_text_utf8
 from novel_writer import config
 from novel_writer import gates as G
+from novel_writer import repair as RP
 from novel_writer import state as st
 from novel_writer import step_timeout as STO
 from novel_writer import steps as S
@@ -524,7 +525,7 @@ def run_step(
     attempts = int(st.get_step_state(ws, step.id).get("attempts", 0)) + 1
     started = time.monotonic()
     st.update_step(ws, step.id, status=st.ST_RUNNING, attempts=attempts, started_at=st.now_iso(),
-                   error=None, finished_at=None, needs_user=None, timed_out=None, no_retry=None)
+                   error=None, finished_at=None, needs_user=None, timed_out=None, no_retry=None, repair=None)
     started_iso = st.now_iso()
     st.heartbeat(ws, step=step.id, step_title=step.title, step_started_at=started_iso, attempt=attempts)
     st.log_line(ws, f"▶ {step.id}　{step.title}（第 {attempts} 次）")
@@ -546,6 +547,11 @@ def run_step(
         st.log_line(ws, f"⏱ {step.id}：{exc}")
     except StepFailed as exc:
         status, fields = st.ST_FAILED, {"error": str(exc)}
+    except RP.RepairableDataError as exc:   # 数据文件坏了：记下修复请求，worker 会交给 LLM 修复
+        status = st.ST_FAILED
+        fields = {"error": f"{type(exc).__name__}: {exc}",
+                  "repair": {"validator": exc.validator, "files": exc.files,
+                             "problems": exc.problems, "scope": exc.scope}}
     except Exception as exc:  # noqa: BLE001 - 单步异常不能拖垮 worker，记入状态
         status, fields = st.ST_FAILED, {"error": f"{type(exc).__name__}: {exc}"}
         if getattr(exc, "no_retry", False):
@@ -557,6 +563,7 @@ def run_step(
     mark = {"passed": "✔", "waiting_review": "⏸", "waiting_user": "❓"}.get(status, "✖")
     st.log_line(ws, f"{mark} {step.id} → {status}　{shown}　（{duration}s）".rstrip())
     if status in (st.ST_PASSED, st.ST_WAITING_REVIEW):
+        final.update(repair_attempts=0)   # 修复计数只在连续失败期间累计
         final["input_hash"] = st.input_hash(ws, step)
         final["input_digests"] = st.input_digests(ws, step)
         st.record_writers(ws, step)

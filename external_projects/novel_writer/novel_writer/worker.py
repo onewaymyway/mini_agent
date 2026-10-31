@@ -18,6 +18,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from novel_writer import autopilot as AP
 from novel_writer import gates as G
 from novel_writer import pipeline as P
+from novel_writer import repair as RP
 from novel_writer import runner as R
 from novel_writer import state as st
 from novel_writer import steps as S
@@ -231,6 +232,21 @@ def _refresh_inbox(ws: Workspace) -> None:
         st.append_usage(ws, {"inbox_error": f"{type(exc).__name__}: {exc}"})
 
 
+def _repair_and_rerun(ws: Workspace, target: S.StepDef, *, invoker, settings: Dict[str, Any],
+                      handlers, budget) -> Optional[str]:
+    """步骤带有数据修复请求时：交给 LLM 修复一次，然后重跑该步骤，返回重跑后的状态。
+
+    没有修复请求、修复未开启、没有 invoker、或修复次数已用尽时返回 None（由调用方走普通的自动重跑）。
+    """
+    req = RP.request_of(ws, target.id)
+    if not (req and invoker is not None and RP.enabled(settings)) or RP.exhausted(ws, target.id, settings):
+        return None
+    RP.repair_attempt(ws, target, invoker=invoker, settings=settings, request=req)
+    status = R.run_step(ws, target, invoker=invoker, settings=settings, handlers=handlers)
+    budget.record(target)
+    return status
+
+
 def _loop(
     ws: Workspace, *, mode: str, invoker: Optional[R.Invoker], handlers: Optional[Dict[str, R.PyHandler]],
     budget: Budget, executed: List[Dict[str, Any]], stale_all: List[str], max_steps: Optional[int],
@@ -269,6 +285,10 @@ def _loop(
                 continue
             return status
         if relentless and status == st.ST_FAILED:
+            if RP.request_of(ws, target.id) and RP.exhausted(ws, target.id, settings):
+                # 数据文件坏了、LLM 修复也已用尽：重置只会重复同样的失败，停下来等人处理
+                st.log_line(ws, f"⏸ {target.id}：数据修复已用尽仍未通过，已停下，不再自动重置。请检查相关数据文件")
+                return status
             # 不停机挡：自动重跑用尽后仍失败 → 重置并继续；等待期间可被暂停/停止打断
             delay = AP.reset_failed(ws, target)
             if _interruptible_sleep(ws, delay):
@@ -309,6 +329,11 @@ def _loop(
             if blocked_by:
                 st.log_line(ws, f"⏹ {target.id} 失败，本次预算已用尽，不再自动重跑")
                 break
+            repaired = _repair_and_rerun(ws, target, invoker=invoker, settings=settings,
+                                         handlers=handlers, budget=budget)
+            if repaired is not None:   # 数据校验失败：已交给 LLM 修复并重跑（不占用自动重跑次数）
+                status_after = repaired
+                continue
             retries += 1
             delay = backoff[min(retries - 1, len(backoff) - 1)] if backoff else 0
             timed_out = bool(st.get_step_state(ws, target.id).get("timed_out"))

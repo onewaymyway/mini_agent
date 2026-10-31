@@ -15,6 +15,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from novel_writer import repair as RP
 from novel_writer import validators as V
 from novel_writer.textio import read_text_utf8
 from novel_writer import steps as S
@@ -39,6 +40,17 @@ _RED = "🔴"
 
 class ChapterOpError(RuntimeError):
     pass
+
+
+class DataFileError(ChapterOpError, RP.RepairableDataError):
+    """数据文件无法读取：既是章节操作错误，也可交给 LLM 修复（见 repair.py）。"""
+
+    def __init__(self, message: str, *, validator: str, files: list, problems: list,
+                 scope: Optional[str] = None) -> None:
+        # ChapterOpError 继承自 RuntimeError，MRO 里 RuntimeError 会先于 RepairableDataError 生效，
+        # 所以这里显式指定构造逻辑，避免关键字参数被基类拒绝
+        RP.RepairableDataError.__init__(self, message, validator=validator, files=files,
+                                        problems=problems, scope=scope)
 
 
 class ChapterOpFatal(ChapterOpError):
@@ -579,7 +591,16 @@ def _characters_or_raise(ws: Workspace) -> Optional[Dict[str, Any]]:
     try:
         return CS.load_or_none(ws.path("characters_dir"), ws.path("characters"), ws.path("characters_legacy"))
     except CS.CharacterStoreError as exc:
-        raise ChapterOpError("人物档案读取失败：" + "；".join(exc.problems))
+        base = ws.path("characters_dir")
+        named = sorted({m for prob in exc.problems for m in re.findall(r"([\w\-]+\.md)", prob)})
+        if named:
+            names = named
+        else:   # 报错里没点名文件：范围内的全部角色文件都允许修改
+            names = sorted(f.name for f in base.glob("*.md")) if base.is_dir() else []
+        files = [str((base / n).relative_to(ws.root)) for n in names]
+        raise DataFileError("人物档案读取失败：" + "；".join(exc.problems), validator="characters",
+                            files=files, problems=exc.problems,
+                            scope=str(base.relative_to(ws.root))) from exc
 
 
 def _characters_soft(ws: Workspace) -> Optional[Dict[str, Any]]:

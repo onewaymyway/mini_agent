@@ -20,6 +20,7 @@ HYBRID = "hybrid"   # 代码做确定性部分，LLM 做创造/判断部分
 
 SKILL_CATALOG: Dict[str, Dict[str, Any]] = {
     "workspace-manager": {"layer": "基础设施", "executor": PYTHON, "pages": ["书架", "新建向导", "总控台"], "summary": "目录初始化、统一路径、项目恢复/体检"},
+    "data-repair": {"layer": "基础设施", "executor": LLM, "pages": ["总控台"], "summary": "数据文件格式修复：校验失败时由 LLM 按逐条问题修正（仅由自动修复机制调用）"},
     "novel-director": {"layer": "总控", "executor": PYTHON, "pages": ["总控台"], "summary": "阶段编排、进度视图、下一步建议（状态机）"},
     "novel-planner": {"layer": "决策", "executor": LLM, "pages": ["规划"], "summary": "全书蓝图：结构模型、幕/章骨架、伏笔索引、自检"},
     "plot-simulator": {"layer": "决策", "executor": LLM, "pages": ["规划"], "summary": "剧情沙盘推演、分支树、压力测试、决策日志"},
