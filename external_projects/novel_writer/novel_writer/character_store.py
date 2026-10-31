@@ -216,7 +216,7 @@ def _lenient_fields(text: str) -> Optional[Dict[str, Any]]:
         t = m.group(1).strip()
     if t.startswith("{"):
         try:
-            obj = json.loads(t)
+            obj = KV.loads_value(t)
         except ValueError:
             return None
         if isinstance(obj, dict) and len(obj) == 1:
@@ -247,7 +247,7 @@ def _lenient_fields(text: str) -> Optional[Dict[str, Any]]:
         if key in fields:
             return None
         try:
-            fields[key] = json.loads("\n".join(parts).strip())
+            fields[key] = KV.loads_value("\n".join(parts).strip())
         except ValueError:
             return None
     return fields

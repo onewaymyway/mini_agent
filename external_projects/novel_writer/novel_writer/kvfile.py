@@ -36,6 +36,54 @@ def encode(rec: Dict[str, Any], order: Sequence[str] = ()) -> str:
     return "\n".join(lines) + "\n"
 
 
+def strip_trailing_commas(raw: str) -> str:
+    """删除字符串之外、紧跟 } ] 或行尾的逗号。只做这一件事，不改变任何值的含义。
+
+    LLM 生成的 JSON 常见问题：对象或数组末尾多一个逗号（如 `[...],`）。
+    字符串内部的逗号（包括 `,}` 这样的文字）保持不变。
+    """
+    out: List[str] = []
+    in_str = False
+    esc = False
+    n = len(raw)
+    for i, ch in enumerate(raw):
+        if in_str:
+            out.append(ch)
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+            out.append(ch)
+            continue
+        if ch == ",":
+            j = i + 1
+            while j < n and raw[j].isspace():
+                j += 1
+            if j >= n or raw[j] in "}]":
+                continue            # 多余的尾逗号：丢弃
+        out.append(ch)
+    return "".join(out)
+
+
+def loads_value(raw: str) -> Any:
+    """解析字段值（JSON）。先按严格 JSON；失败时只容忍尾逗号。两者都失败则抛出原始错误。"""
+    try:
+        return json.loads(raw)
+    except ValueError as first:
+        cleaned = strip_trailing_commas(raw)
+        if cleaned == raw:
+            raise first
+        try:
+            return json.loads(cleaned)
+        except ValueError:
+            raise first
+
+
 def decode(text: str, where: str) -> Dict[str, Any]:
     """文件头文本 -> 字段字典。遇到第一个格式错误即报出文件名与行号。"""
     # Windows 编辑器/PowerShell 常写入 UTF-8 BOM，会让首行变成 \ufeff---
@@ -54,7 +102,7 @@ def decode(text: str, where: str) -> Dict[str, Any]:
         if key in fields:
             raise KVFormatError([f"{where} 第 {n} 行：字段 {key} 重复"])
         try:
-            fields[key] = json.loads(raw)
+            fields[key] = loads_value(raw)
         except ValueError as exc:
             shown = raw if len(raw) <= 60 else raw[:60] + "…"
             raise KVFormatError([f"{where} 第 {n} 行的 {key} 不是合法 JSON：值为 {shown}。"
