@@ -54,24 +54,31 @@ def test_call_event_shows_full_path(isolated):
     assert _mirrored(ws) == [f"📄 read_file  {deep}"]
 
 
-def test_write_file_shows_path_and_content_length_not_body(isolated):
+def test_write_file_shows_path_and_full_body_verbatim(isolated):
     ws = new_book(isolated)
     sink = outlog.run_log_sink(ws)
-    body = "林远读完最后一行字。" * 200
+    body = "林远读完最后一行字。\n" * 200
     sink(_event("call", name="write_file", icon="✏️", input={"path": "正文/第45章.md", "content": body}))
-    [line] = _mirrored(ws)
-    assert line.startswith("✏️ write_file  正文/第45章.md")
-    assert f"content=<{len(body)} 字符>" in line
-    assert "林远读完" not in line
+    lines = _mirrored(ws)
+    assert lines[0] == "✏️ write_file  正文/第45章.md"
+    assert lines[1] == "   ↳ content："
+    # 正文末尾的换行按原样保留为最后一个空行
+    assert lines[2:] == ["      │ 林远读完最后一行字。"] * 200 + ["      │ "]
 
 
-def test_multiline_bash_command_is_shown_on_one_line(isolated):
+def test_multiline_bash_command_is_shown_verbatim(isolated):
     ws = new_book(isolated)
     sink = outlog.run_log_sink(ws)
     cmd = 'powershell -Command "$content = @\'\nline one\nline two\n\'@"'
     sink(_event("call", name="bash", icon="⚡", input={"command": cmd}))
-    [line] = _mirrored(ws)
-    assert line == "⚡ bash  powershell -Command \"$content = @' ⏎ line one ⏎ line two ⏎ '@\""
+    assert _mirrored(ws) == [
+        "⚡ bash",
+        "   ↳ command：",
+        "      │ powershell -Command \"$content = @'",
+        "      │ line one",
+        "      │ line two",
+        "      │ '@\"",
+    ]
 
 
 def test_unknown_tool_shows_scalar_arguments(isolated):
@@ -81,12 +88,26 @@ def test_unknown_tool_shows_scalar_arguments(isolated):
     assert _mirrored(ws) == ["🔧 tree_summary  depth=3，root=大纲规划"]
 
 
-def test_result_event_shows_size_and_first_line(isolated):
+def test_result_event_shows_full_raw_content(isolated):
+    """工具返回内容原样逐行输出，不截断（含框架的行号前缀）。"""
     ws = new_book(isolated)
     sink = outlog.run_log_sink(ws)
-    sink(_event("result", name="read_file", len=1234, first="\n  # 第一章 林远\n后续"))
-    sink(_event("result", name="write_file", len=0, first=""))
-    assert _mirrored(ws) == ["   ↳ 返回 1234 字符 · # 第一章 林远", "   ↳ 无返回内容"]
+    text = "1\t# 第一章 林远\n2\t后续\n"
+    sink(_event("result", name="read_file", len=len(text), text=text))
+    sink(_event("result", name="write_file", len=0, text=""))
+    lines = _mirrored(ws)
+    assert lines[0] == f"   ↳ 返回 {len(text)} 字符："
+    assert lines[1] == "      │ 1\t# 第一章 林远"
+    assert lines[2] == "      │ 2\t后续"
+    assert lines[3] == "   ↳ 无返回内容"
+
+
+def test_long_arguments_are_not_truncated(isolated):
+    ws = new_book(isolated)
+    sink = outlog.run_log_sink(ws)
+    deep = "大纲规划/" + "子目录/" * 150 + "终.md"
+    sink(_event("call", name="read_file", icon="📄", input={"path": deep}))
+    assert _mirrored(ws) == [f"📄 read_file  {deep}"]
 
 
 def test_alerts_pass_through_and_prose_is_dropped(isolated):
@@ -97,7 +118,9 @@ def test_alerts_pass_through_and_prose_is_dropped(isolated):
     assert _mirrored(ws) == ["⚠  模型超时，重试", "✗  写入失败"]
 
 
-def test_mirror_respects_line_cap(isolated, monkeypatch):
+def test_mirror_line_cap_is_optional(isolated, monkeypatch):
+    """默认不限行数；设置上限后超出只留一行提示。"""
+    assert outlog.MIRROR_MAX_LINES is None
     ws = new_book(isolated)
     monkeypatch.setattr(outlog, "MIRROR_MAX_LINES", 3)
     sink = outlog.run_log_sink(ws)

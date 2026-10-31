@@ -9,6 +9,7 @@ run.log 只由 state.log_line 写入。每次 agent 调用的完整输出落在�
 
 from __future__ import annotations
 
+import json
 import re
 import threading
 from pathlib import Path
@@ -16,9 +17,9 @@ from typing import IO, Any, Callable, Dict, List, Optional
 
 AGENT_LOG_NAME = "agent.log"
 
-# 实时镜像到 run.log 的上限（按镜像的行数计）：超出后只在 run.log 留一行提示，完整输出始终在 agent.log。
-MIRROR_MAX_LINES = 300
-MIRROR_MAX_CHARS = 400
+# 实时镜像到 run.log 不做截断：路径、命令、工具返回内容都按原样显示。None 表示不限行数；
+# 若需要防止 run.log 过大，可设为整数（超出后只留一行提示，完整内容始终在 agent.log）。
+MIRROR_MAX_LINES = None
 
 # 结构化事件协议：子进程里框架调用工具时，invoke_child 把完整的工具调用 / 结果以一行 JSON 输出，
 # 行首带这个标记。父进程只认标记行（它们来自框架的真实调用，不依赖框架的终端排版）。
@@ -37,52 +38,59 @@ _PRIMARY_KEYS = {
     "create_plan": ("goal",), "start_task": ("task_id",), "complete_task": ("task_id",),
     "fail_task": ("task_id",), "add_task": ("title",),
 }
-# 内容类入参（正文、补丁文本）只显示长度，不把正文塞进日志。
-_BODY_KEYS = {"content", "new_str", "old_str", "text", "body", "diff", "patch"}
 
 
 def is_progress_line(text: str) -> bool:
     return text.startswith(EVENT_PREFIX) or bool(_ALERT.match(text))
 
 
-def _one_line(value: Any, limit: int = MIRROR_MAX_CHARS) -> str:
-    text = " ⏎ ".join(part.strip() for part in str(value).splitlines() if part.strip())
-    return text if len(text) <= limit else text[:limit] + "…"
+def _block(label: str, text: str, indent: str = "      ") -> str:
+    """多行内容原样逐行输出：标签行 + 每行加前缀，不截断、不合并。"""
+    lines = text.split("\n")
+    return f"   ↳ {label}：\n" + "\n".join(f"{indent}│ {ln}" for ln in lines)
 
 
-def _args_text(name: str, inp: Dict[str, Any]) -> str:
-    parts: List[str] = []
+def _format_call(name: str, inp: Dict[str, Any], icon: str) -> str:
+    """工具调用：单行的参数内联到标题行；多行的参数（正文、多行命令）原样逐行输出。"""
+    inline: List[str] = []
+    blocks: List[str] = []
     primary = _PRIMARY_KEYS.get(name, ())
+    head_value = None
     for key in primary:
-        if inp.get(key):
-            parts.append(_one_line(inp[key]))
+        if inp.get(key) not in (None, ""):
+            head_value = (key, inp[key])
             break
+    if head_value is not None:
+        key, val = head_value
+        if isinstance(val, str) and "\n" in val:
+            blocks.append(_block(key, val))
+        else:
+            inline.append(str(val))
     for key, val in inp.items():
-        if key in primary:
+        if head_value is not None and key == head_value[0]:
             continue
-        if key in _BODY_KEYS and isinstance(val, str):
-            parts.append(f"{key}=<{len(val)} 字符>")
+        if isinstance(val, str) and "\n" in val:
+            blocks.append(_block(key, val))
         elif isinstance(val, (str, int, float, bool)) and val != "":
-            parts.append(f"{key}={_one_line(val, 80)}")
+            inline.append(f"{key}={val}")
         elif isinstance(val, (list, dict)) and val:
-            parts.append(f"{key}=<{len(val)} 项>")
-    return "，".join(parts) if parts else ""
+            blocks.append(_block(key, json.dumps(val, ensure_ascii=False, indent=2)))
+    head = f"{icon} {name}"
+    if inline:
+        head += "  " + "，".join(inline)
+    return "\n".join([head] + blocks)
 
 
 def format_event(ev: Dict[str, Any]) -> str:
-    """把一条结构化事件格式化成 run.log 中的一行（不含时间戳和前缀）。"""
+    """把一条结构化事件格式化成 run.log 中的若干行（不含时间戳和前缀）。全部原样输出，不截断。"""
     if ev.get("kind") == "call":
-        name = str(ev.get("name", ""))
         inp = ev.get("input") if isinstance(ev.get("input"), dict) else {}
-        args = _args_text(name, inp)
-        head = f"{ev.get('icon', '🔧')} {name}"
-        return f"{head}  {args}" if args else head
+        return _format_call(str(ev.get("name", "")), inp, str(ev.get("icon", "🔧")))
     if ev.get("kind") == "result":
-        first = next((ln.strip() for ln in str(ev.get("first", "")).splitlines() if ln.strip()), "")
-        size = int(ev.get("len", 0) or 0)
-        if size == 0:
+        text = str(ev.get("text", ""))
+        if not text.strip():
             return "   ↳ 无返回内容"
-        return f"   ↳ 返回 {size} 字符" + (f" · {_one_line(first, 200)}" if first else "")
+        return _block(f"返回 {len(text)} 字符", text.rstrip("\n"))
     return ""
 
 
@@ -123,11 +131,12 @@ class _ProgressMirror:
 
     def _emit(self, text: str) -> None:
         self._count += 1
-        if self._count > MIRROR_MAX_LINES:
+        if MIRROR_MAX_LINES is not None and self._count > MIRROR_MAX_LINES:
             if self._count == MIRROR_MAX_LINES + 1:
                 self._st.log_line(self._ws, "  │ …（进度行过多，后续见本次调用的 agent.log）")
             return
-        self._st.log_line(self._ws, f"  │ {text}")
+        for ln in text.split("\n"):
+            self._st.log_line(self._ws, f"  │ {ln}")
 
     def finish(self) -> None:
         """调用结束（保留接口，当前无需补输出）。"""
