@@ -270,7 +270,8 @@ def _run_skill_step_inner(
         prompt = build_prompt(ws, step, hint=hint, protected=SG.protected_listing(protected_rels))
         (run_dir / f"prompt_{attempt + 1}.md").write_text(prompt, encoding="utf-8")
         # agent 的中间输出实时镜像进 run.log（界面由此可见）；完整输出仍在本次调用的 agent.log。
-        outlog.set_line_sink(outlog.run_log_sink(ws))
+        sink = outlog.run_log_sink(ws)
+        outlog.set_line_sink(sink)
         try:
             result = invoker(
                 skill=step.skill, prompt=prompt, export_dir=run_dir, step_id=step.id,
@@ -280,6 +281,7 @@ def _run_skill_step_inner(
                 timeout=DEFAULT_TIMEOUT_SEC if remaining is None else max(1, int(remaining)),
             )
         finally:
+            sink.finish()
             outlog.set_line_sink(None)
         _log_agent_output(ws, step.id, result)
         if getattr(result, "timed_out", False):

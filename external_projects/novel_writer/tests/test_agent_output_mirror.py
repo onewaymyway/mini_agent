@@ -13,7 +13,8 @@ from test_m3 import isolated, new_book  # noqa: F401  (fixture)
 
 
 def _run_log(ws):
-    return ws.path("studio_log").read_text(encoding="utf-8").splitlines()
+    path = ws.path("studio_log")
+    return path.read_text(encoding="utf-8").splitlines() if path.exists() else []
 
 
 def test_linepump_calls_on_line_for_every_line_in_order(tmp_path):
@@ -88,3 +89,64 @@ def test_sink_is_installed_while_skill_step_invokes_agent(isolated):
         approve_waiting(ws)
     assert seen.get("sink") is not None
     assert outlog.current_line_sink() is None  # 调用结束即清除
+
+
+def _mirrored(ws):
+    return [l.split("] ", 1)[1] for l in _run_log(ws) if "│" in l]
+
+
+def test_empty_header_is_completed_from_following_input_json(isolated):
+    """框架渲染标题时入参可能为空；紧随的 verbose 入参 JSON 用来补全摘要。"""
+    ws = new_book(isolated)
+    sink = outlog.run_log_sink(ws)
+    for line in ["📄 read_file  ", "{", '  "path": "大纲规划/蓝图/_index.md"', "}"]:
+        sink(line)
+    sink.finish()
+    assert _mirrored(ws) == ["  │ 📄 read_file  大纲规划/蓝图/_index.md"]
+
+
+def test_bash_summary_comes_from_command_and_is_truncated(isolated):
+    ws = new_book(isolated)
+    sink = outlog.run_log_sink(ws)
+    sink("⚡ bash  ")
+    for line in ["{", '  "command": "' + "x" * 500 + '"', "}"]:
+        sink(line)
+    sink.finish()
+    [line] = _mirrored(ws)
+    assert line.startswith("  │ ⚡ bash  xxx") and line.endswith("…")
+
+
+def test_header_with_summary_ignores_its_input_json(isolated):
+    ws = new_book(isolated)
+    sink = outlog.run_log_sink(ws)
+    for line in ["🔎 grep  第45章", "{", '  "pattern": "第45章"', "}"]:
+        sink(line)
+    sink.finish()
+    assert _mirrored(ws) == ["  │ 🔎 grep  第45章"]
+
+
+def test_header_without_input_json_is_kept_as_is(isolated):
+    ws = new_book(isolated)
+    sink = outlog.run_log_sink(ws)
+    sink("✏️ write_file  ")
+    sink("林远读完最后一行字。")  # 不是入参 JSON：先把标题原样输出，再忽略正文
+    sink.finish()
+    assert _mirrored(ws) == ["  │ ✏️ write_file"]
+
+
+def test_pending_header_is_flushed_when_call_ends(isolated):
+    ws = new_book(isolated)
+    sink = outlog.run_log_sink(ws)
+    sink("📄 read_file  ")
+    sink("{")
+    sink.finish()  # 入参 JSON 未闭合就结束：仍输出标题
+    assert _mirrored(ws) == ["  │ 📄 read_file"]
+
+
+def test_stack_trace_lines_are_not_mirrored_as_tool_calls(isolated):
+    ws = new_book(isolated)
+    sink = outlog.run_log_sink(ws)
+    for line in ["in execute_all", "in call", "  File \"x.py\", line 3, in call"]:
+        sink(line)
+    sink.finish()
+    assert _mirrored(ws) == []
