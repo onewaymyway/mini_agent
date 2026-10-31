@@ -88,9 +88,10 @@ GEAR_TABLE = [
 ]
 
 
-def _probe(category: str, step_id: str = "probe", chapter: int = 0, stage: str = "p1") -> S.StepDef:
+def _probe(category: str, step_id: str = "probe", chapter: int = 0, stage: str = "p1",
+           extra: dict | None = None) -> S.StepDef:
     return S.StepDef(id=step_id, title="probe", stage=stage, category=category,
-                     executor=S.EXECUTOR_PYTHON, handler="x", chapter=chapter)
+                     executor=S.EXECUTOR_PYTHON, handler="x", chapter=chapter, extra=dict(extra or {}))
 
 
 @pytest.mark.parametrize("gear,category,expected", GEAR_TABLE)
@@ -119,10 +120,25 @@ def test_opening_rule_keeps_g0_manual():
     assert d.gate == "manual"
 
 
-def test_act_review_stays_reviewed_in_g3_but_other_act_steps_auto():
+def test_act_boundary_is_automatic_at_g2_and_g3_but_still_reviewed_at_g1():
+    """幕边界自动化：幕末审稿与逐幕规划在 G2/G3 下自动通过（由确定性校验把关），G1 仍逐步审批。"""
+    g3 = settings_mod.validate_settings({"gear": "G3"})
+    d = G.resolve_gate(_probe(S.CAT_ACT, "act_review:1", 0, "act", extra={"act": 1}), g3)
+    assert d.gate == "auto"  # 挡位表 G3 本就 auto，不再被最低审批规则强制为 review
+    assert G.resolve_gate(_probe(S.CAT_ACT, "act_style:1", 0, "act", extra={"act": 1}), g3).gate == "auto"
+    d = G.resolve_gate(_probe(S.CAT_DESIGN, "plan_act:2", 0, "act", extra={"act": 2}), g3)
+    assert (d.gate, d.source) == ("auto", "act_auto")
+    g2 = settings_mod.validate_settings({"gear": "G2"})
+    assert G.resolve_gate(_probe(S.CAT_ACT, "act_review:1", 0, "act", extra={"act": 1}), g2).gate == "auto"
+    g1 = settings_mod.validate_settings({"gear": "G1"})
+    assert G.resolve_gate(_probe(S.CAT_ACT, "act_review:1", 0, "act", extra={"act": 1}), g1).gate == "review"
+    assert G.resolve_gate(_probe(S.CAT_DESIGN, "plan_act:2", 0, "act", extra={"act": 2}), g1).gate == "review"
+
+
+def test_final_review_still_waits_for_author_in_g3():
     settings = settings_mod.validate_settings({"gear": "G3"})
-    assert G.resolve_gate(_probe(S.CAT_ACT, "act_review:1", 0, "act"), settings).gate == "review"
-    assert G.resolve_gate(_probe(S.CAT_ACT, "act_style:1", 0, "act"), settings).gate == "auto"
+    d = G.resolve_gate(_probe(S.CAT_ACT, "final_review", 0, "act"), settings)
+    assert d.gate == "review"
 
 
 def test_explicit_override_wins_over_minimum_review_rules():
@@ -130,7 +146,7 @@ def test_explicit_override_wins_over_minimum_review_rules():
     settings = settings_mod.validate_settings({
         "gear": "G3", "step_overrides": {"act_review:1": "auto", "ch01.write_chapter": "auto"},
     })
-    assert G.resolve_gate(_probe(S.CAT_ACT, "act_review:1", 0, "act"), settings).gate == "auto"
+    assert G.resolve_gate(_probe(S.CAT_ACT, "act_review:1", 0, "act", extra={"act": 1}), settings).gate == "auto"
     d = G.resolve_gate(_probe(S.CAT_CHAPTER_WRITE, "ch01.write_chapter", 1, "p2"), settings)
     assert (d.gate, d.source) == ("auto", "override")
 

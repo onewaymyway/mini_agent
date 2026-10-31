@@ -294,8 +294,25 @@ def _writer_chapter(writer: Optional[str]) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
+def sealed_upto(plan: List[StepDef], step_states: Dict[str, Any]) -> int:
+    """已封存的最后章号。
+
+    一幕的幕末步骤（以 act_ideas 为收尾，它是幕末链中最后一个必需步骤）已通过，即该幕所有章节封存：
+    封存的章节不再因为「之后的规划 / 幕末步骤」的改动而重跑（见 _upstream_cause 规则 4）。
+    作者手动修改不受封存影响，仍然正常传播。
+    """
+    out = 0
+    for step in plan:
+        if not step.id.startswith("act_ideas:"):
+            continue
+        entry = step_states.get(step.id) or {}
+        if entry.get("status") == ST_PASSED:
+            out = max(out, int(step.extra.get("through_chapter") or 0))
+    return out
+
+
 def _upstream_cause(ws: Workspace, digests: Dict[str, str], i: int, reader_chapter: int,
-                    index: Dict[str, int], writers: Dict[str, str]) -> Optional[str]:
+                    index: Dict[str, int], writers: Dict[str, str], sealed: int = 0) -> Optional[str]:
     """某步骤的输入是否发生了需要它重跑的变化。
 
     规则（显式、与计划顺序解耦）：
@@ -303,12 +320,17 @@ def _upstream_cause(ws: Workspace, digests: Dict[str, str], i: int, reader_chapt
          绝不回溯标记已完成的步骤（写完第 N 章后更新蓝图/伏笔/人物，不影响前面的章节和设计）。
       2. 同一章内部，按计划顺序传播（例如修改循环改了正文，本章的归档要重做）。
       3. 设计/规划步骤的产物变化，以及作者手动修改，是真正的上游变化，按依赖传播（托管挡会停下来确认）。
+      4. 封存章节（幕末已完成，见 sealed_upto）不接受「规划 / 幕末 / 设计」步骤的变化作为上游：
+         后续幕的规划只为未来章节服务，不能让已经定稿的章节回头重跑。作者手动修改仍然传播。
     """
     for rel_path, recorded_sha in digests.items():
         writer = writers.get(rel_path)
         wc = _writer_chapter(writer)
         if wc is not None and wc != reader_chapter:
             continue  # 规则 1
+        if (sealed and 1 <= reader_chapter <= sealed and wc is None
+                and writer is not None and writer != "author"):
+            continue  # 规则 4
         owner = _writer_index(writer, index)
         if owner is not None and owner >= i:
             continue  # 规则 2：本步骤自己或之后写入的，是下游结果
@@ -330,6 +352,7 @@ def mark_stale(ws: Workspace, plan: List[StepDef]) -> List[str]:
     with _LOCK:
         state = load_state(ws)
         writers = state.get("file_writers") or {}
+        sealed = sealed_upto(plan, state["steps"])
         changed = False
         for i, step in enumerate(plan):
             entry = state["steps"].get(step.id)
@@ -338,7 +361,7 @@ def mark_stale(ws: Workspace, plan: List[StepDef]) -> List[str]:
             status = entry.get("status")
             digests = entry.get("input_digests")
             if status == ST_STALE and digests is not None and str(entry.get("note") or "").startswith(_UPSTREAM_NOTE):
-                if _upstream_cause(ws, digests, i, _chapter_of(step), index, writers) is None:
+                if _upstream_cause(ws, digests, i, _chapter_of(step), index, writers, sealed) is None:
                     entry.update(status=ST_PASSED, note=None, updated_at=now_iso())
                     restored.append(step.id)
                     changed = True
@@ -352,7 +375,7 @@ def mark_stale(ws: Workspace, plan: List[StepDef]) -> List[str]:
                 entry["input_digests"] = input_digests(ws, step)
                 changed = True
                 continue
-            cause = _upstream_cause(ws, digests, i, _chapter_of(step), index, writers)
+            cause = _upstream_cause(ws, digests, i, _chapter_of(step), index, writers, sealed)
             if cause is not None:
                 entry.update(status=ST_STALE, note=f"{_UPSTREAM_NOTE}（{cause}）", updated_at=now_iso())
                 stale_ids.append(step.id)

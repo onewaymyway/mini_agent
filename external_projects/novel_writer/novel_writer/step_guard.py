@@ -72,15 +72,41 @@ def _existing(ws: Any, patterns: Iterable[str]) -> Set[str]:
     return out
 
 
+# 共享存储：所有章节（过去与未来）都读取的全局状态。封存的章节也不会锁死它们，
+# 否则幕末的人物更新、伏笔同步等正常工作会被误挡。封存只保护章节私有产物。
+_SHARED_OUTPUT_KEYS = ("characters_dir",)
+
+
+def _sealed_forbidden(ws: Any, plan: Sequence[Any], step: Any) -> Set[str]:
+    """全局步骤（幕末 / 规划 / 设计）对已封存章节私有产物的只读约束。"""
+    sealed = st.sealed_upto(plan, st.load_state(ws)["steps"])
+    if sealed <= 0:
+        return set()
+    from novel_writer.steps import rel as _rel
+
+    shared = tuple(_rel(k) for k in _SHARED_OUTPUT_KEYS)
+    protected = [
+        _pattern(x)
+        for s in plan
+        if 1 <= s.chapter <= sealed
+        for x in s.outputs
+        if not _pattern(x).startswith(shared)
+    ]
+    own = [_pattern(x) for x in getattr(step, "outputs", ())]
+    candidates = _existing(ws, protected)
+    return {rel for rel in candidates if not _matches(rel, own)}
+
+
 def forbidden_rels(ws: Any, plan: Sequence[Any], step: Any) -> Set[str]:
     """本步骤不应改动的文件（当前在盘上存在的部分）。
 
-    规则：属于「更后章节」步骤产出的路径，且不匹配任何不晚于本章步骤的产出路径。
+    规则：
+      * 章节步骤：属于「更后章节」步骤产出的路径，且不匹配任何不晚于本章步骤的产出路径。
+      * 全局步骤（幕末 / 规划 / 设计，chapter=0）：已封存章节的私有产物（见 _sealed_forbidden）。
     按模式匹配而不是按已有文件枚举，所以本步骤新建的后续章节文件也能被识别。
-    全局步骤（chapter=0）不参与越界检测。
     """
     if not getattr(step, "chapter", 0):
-        return set()
+        return _sealed_forbidden(ws, plan, step)
     later = [_pattern(x) for s in plan if s.chapter > step.chapter for x in s.outputs]
     shared = [_pattern(x) for s in plan if s.chapter <= step.chapter for x in s.outputs]
     if not later:

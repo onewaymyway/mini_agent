@@ -540,9 +540,14 @@ def patrol_apply_step(n: int, dep: str) -> StepDef:
 # ── 幕末（方案 4.2 幕末表）────────────────────────────────────────────────────
 
 
-def act_steps(act: int) -> List[StepDef]:
-    """第 act 幕结束后的幕末步骤。全部是 skill 步骤，闸门随挡位（幕末类别）。"""
-    a = {"act": act}
+def act_steps(act: int, end_chapter: int = 0) -> List[StepDef]:
+    """第 act 幕结束后的幕末步骤。全部是 skill 步骤，闸门随挡位（幕末类别）。
+
+    end_chapter：本幕最后一章的章号。幕末步骤全部通过（见 state.sealed_upto，以 act_ideas 为准）后，
+    第 1..end_chapter 章进入封存：之后的幕末 / 规划步骤不能再改动这些章节的私有产物，
+    也不能让这些章节因后续改动而重跑。
+    """
+    a = {"act": act, "through_chapter": end_chapter}
     return [
         StepDef(id=f"act_review:{act}", title=f"第{act}幕：深度审稿", stage="act", category=CAT_ACT,
                 executor=EXECUTOR_SKILL, skill="consistency-checker", extra=a,

@@ -98,6 +98,10 @@ def resolve_gate(step: S.StepDef, settings: Dict[str, Any]) -> GateDecision:
         return GateDecision(GATE_REVIEW, "opening")
     if gate == GATE_AUTO and _act_review(step):
         return GateDecision(GATE_REVIEW, "act_review")
+    if gate == GATE_REVIEW and gear in ACT_AUTO_GEARS and _act_boundary(step):
+        # 幕边界自动化：幕末 / 逐幕规划的结果由确定性校验把关（输出校验、自动修复、封存规则），
+        # 不再为每一幕停下来等人审。G1 仍逐步审批。
+        return GateDecision(GATE_AUTO, "act_auto")
     return GateDecision(gate, source)
 
 
@@ -108,8 +112,20 @@ def _opening_write(step: S.StepDef) -> bool:
 
 
 def _act_review(step: S.StepDef) -> bool:
-    """幕末深度审稿（方案 6.2：G3 下仍保留 review，可在覆盖里显式改为 auto）。"""
-    return step.id.startswith("act_review:") or step.id == "final_review"
+    """全书终审（方案 6.2：G3 下仍保留 review，可在覆盖里显式改为 auto）。
+
+    幕末深度审稿已不在此列：它的结论由 act_extract / act_apply 自动转成约束，不需要逐幕人工确认。
+    """
+    return step.id == "final_review"
+
+
+# 幕边界自动化的挡位：G2 与 G3 下，幕末与逐幕规划步骤自动通过。
+ACT_AUTO_GEARS = ("G2", "G3")
+
+
+def _act_boundary(step: S.StepDef) -> bool:
+    """属于幕边界的步骤：幕末链（审稿/节奏/主题/世界/灵感/整改）与逐幕规划（plan_act）。"""
+    return "act" in step.extra and step.category in (S.CAT_ACT, S.CAT_DESIGN, S.CAT_INFRA)
 
 
 # 各挡位的运行范围（方案 6.2 最后一行「连续运行范围」）。仅用于界面说明与批量入口的文档化，

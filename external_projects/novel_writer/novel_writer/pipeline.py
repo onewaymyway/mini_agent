@@ -128,7 +128,7 @@ def build_plan(ws: Workspace) -> List[S.StepDef]:
             plan.append(style)
             last = style.id
         if n in act_ends:
-            acts = S.act_steps(act_ends[n])
+            acts = S.act_steps(act_ends[n], end_chapter=n)
             plan += acts
             last = acts[-1].id
             if feedback.get("extract"):
