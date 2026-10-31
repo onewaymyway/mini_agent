@@ -1,12 +1,13 @@
-"""agent 的中间输出实时镜像进 run.log（单写者仍是 state.log_line），完整输出仍落在 agent.log。"""
+"""agent 的工具调用过程实时镜像进 run.log：结构化事件 → 完整的一行；完整原始输出仍在 agent.log。"""
 
 from __future__ import annotations
 
 import io
 
+import pytest
+
 from fakes import FakeInvoker, approve_waiting
 from novel_writer import outlog
-from novel_writer import state as st
 from novel_writer.runner import DEFAULT_PY_HANDLERS
 from novel_writer.worker import run_worker
 from test_m3 import isolated, new_book  # noqa: F401  (fixture)
@@ -14,7 +15,16 @@ from test_m3 import isolated, new_book  # noqa: F401  (fixture)
 
 def _run_log(ws):
     path = ws.path("studio_log")
-    return path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    return [l.split("] ", 1)[1] for l in path.read_text(encoding="utf-8").splitlines()] if path.exists() else []
+
+
+def _mirrored(ws):
+    return [l.split("  │ ", 1)[1] for l in _run_log(ws) if "  │ " in l]
+
+
+def _event(kind, **payload):
+    import json
+    return outlog.EVENT_PREFIX + json.dumps({"kind": kind, **payload}, ensure_ascii=False)
 
 
 def test_linepump_calls_on_line_for_every_line_in_order(tmp_path):
@@ -36,39 +46,100 @@ def test_failing_sink_does_not_break_full_log(tmp_path):
     assert (tmp_path / "agent.log").read_bytes() == b"a\nb\n"
 
 
-def test_run_log_sink_mirrors_only_progress_lines(isolated):
-    """正文、推理、JSON 等长文本不进 run.log；工具标题与告警行保留。"""
+def test_call_event_shows_full_path(isolated):
     ws = new_book(isolated)
     sink = outlog.run_log_sink(ws)
-    for line in ["林远读完最后一行字。", '  "key": 1,', "", "📄 read_file  大纲规划/蓝图/_index.md",
-                 "⚠  模型超时，重试", "✗  写入失败"]:
+    deep = "大纲规划/蓝图/第一幕/第045章/章节细纲与伏笔安排_完整版.md"
+    sink(_event("call", name="read_file", icon="📄", input={"path": deep}))
+    assert _mirrored(ws) == [f"📄 read_file  {deep}"]
+
+
+def test_write_file_shows_path_and_content_length_not_body(isolated):
+    ws = new_book(isolated)
+    sink = outlog.run_log_sink(ws)
+    body = "林远读完最后一行字。" * 200
+    sink(_event("call", name="write_file", icon="✏️", input={"path": "正文/第45章.md", "content": body}))
+    [line] = _mirrored(ws)
+    assert line.startswith("✏️ write_file  正文/第45章.md")
+    assert f"content=<{len(body)} 字符>" in line
+    assert "林远读完" not in line
+
+
+def test_multiline_bash_command_is_shown_on_one_line(isolated):
+    ws = new_book(isolated)
+    sink = outlog.run_log_sink(ws)
+    cmd = 'powershell -Command "$content = @\'\nline one\nline two\n\'@"'
+    sink(_event("call", name="bash", icon="⚡", input={"command": cmd}))
+    [line] = _mirrored(ws)
+    assert line == "⚡ bash  powershell -Command \"$content = @' ⏎ line one ⏎ line two ⏎ '@\""
+
+
+def test_unknown_tool_shows_scalar_arguments(isolated):
+    ws = new_book(isolated)
+    sink = outlog.run_log_sink(ws)
+    sink(_event("call", name="tree_summary", icon="🔧", input={"depth": 3, "root": "大纲规划"}))
+    assert _mirrored(ws) == ["🔧 tree_summary  depth=3，root=大纲规划"]
+
+
+def test_result_event_shows_size_and_first_line(isolated):
+    ws = new_book(isolated)
+    sink = outlog.run_log_sink(ws)
+    sink(_event("result", name="read_file", len=1234, first="\n  # 第一章 林远\n后续"))
+    sink(_event("result", name="write_file", len=0, first=""))
+    assert _mirrored(ws) == ["   ↳ 返回 1234 字符 · # 第一章 林远", "   ↳ 无返回内容"]
+
+
+def test_alerts_pass_through_and_prose_is_dropped(isolated):
+    ws = new_book(isolated)
+    sink = outlog.run_log_sink(ws)
+    for line in ["林远读完最后一行字。", '  "key": 1,', "in execute_all", "⚠  模型超时，重试", "✗  写入失败"]:
         sink(line)
-    mirrored = [l.split("] ", 1)[1] for l in _run_log(ws) if "│" in l]
-    assert mirrored == [
-        "  │ 📄 read_file  大纲规划/蓝图/_index.md",
-        "  │ ⚠  模型超时，重试",
-        "  │ ✗  写入失败",
-    ]
+    assert _mirrored(ws) == ["⚠  模型超时，重试", "✗  写入失败"]
 
 
-def test_run_log_sink_caps_progress_lines(isolated, monkeypatch):
+def test_mirror_respects_line_cap(isolated, monkeypatch):
     ws = new_book(isolated)
     monkeypatch.setattr(outlog, "MIRROR_MAX_LINES", 3)
     sink = outlog.run_log_sink(ws)
     for i in range(5):
-        sink(f"🔎 grep  pattern{i}")
-    sink("林远读完最后一行字。")  # 正文即使在超限之后也不计入、不提示
-    lines = _run_log(ws)
-    assert any(l.endswith("pattern2") for l in lines)
-    assert not any(l.endswith("pattern3") for l in lines)
-    assert sum("进度行过多" in l for l in lines) == 1
+        sink(_event("call", name="grep", icon="🔎", input={"pattern": f"p{i}"}))
+    lines = _mirrored(ws)
+    assert lines[-2:] == ["🔎 grep  p2", "…（进度行过多，后续见本次调用的 agent.log）"]
 
 
-def test_run_log_sink_truncates_long_progress_lines(isolated):
-    ws = new_book(isolated)
-    outlog.run_log_sink(ws)("📄 read_file  " + "y" * 1000)
-    mirrored = [l for l in _run_log(ws) if "│" in l][0]
-    assert mirrored.endswith("…") and len(mirrored) < 200
+def test_full_log_keeps_raw_event_lines(isolated, tmp_path):
+    """agent.log 保留原始事件行（完整入参），run.log 只拿到格式化后的一行。"""
+    raw = _event("call", name="read_file", icon="📄", input={"path": "a.md"})
+    pump = outlog.LinePump(io.BytesIO((raw + "\n").encode("utf-8")), tmp_path / "agent.log",
+                           on_line=outlog.run_log_sink(new_book(isolated)))
+    assert pump.join(5)
+    assert (tmp_path / "agent.log").read_text(encoding="utf-8") == raw + "\n"
+
+
+def test_child_hooks_emit_structured_events(capsys):
+    """子进程里安装的钩子：框架的 print_tool_call / print_tool_result 会先输出结构化事件。"""
+    import sys
+    from novel_writer import config
+    from novel_writer.runner import _ensure_framework_on_path
+    _ensure_framework_on_path()
+    main_root = config._detect_in_place_main_project_root()
+    if main_root is not None and str(main_root / "src") not in sys.path:
+        sys.path.insert(0, str(main_root / "src"))
+    try:
+        from mini_agent.ui import renderer as R
+    except ImportError:
+        pytest.skip("mini_agent 框架不可用")
+    from novel_writer import invoke_child
+
+    invoke_child._install_tool_event_hooks()
+    R.print_tool_call("read_file", {"path": "大纲规划/蓝图/_index.md"})
+    R.print_tool_result("read_file", "# 标题\n正文")
+    out = capsys.readouterr().out
+    events = [l for l in out.splitlines() if l.startswith(outlog.EVENT_PREFIX)]
+    assert len(events) == 2
+    assert outlog.format_event(__import__("json").loads(events[0][len(outlog.EVENT_PREFIX):])) == \
+        "📄 read_file  大纲规划/蓝图/_index.md"
+    assert "返回 7 字符" in outlog.format_event(__import__("json").loads(events[1][len(outlog.EVENT_PREFIX):]))
 
 
 def test_sink_is_installed_while_skill_step_invokes_agent(isolated):
@@ -88,65 +159,4 @@ def test_sink_is_installed_while_skill_step_invokes_agent(isolated):
             break
         approve_waiting(ws)
     assert seen.get("sink") is not None
-    assert outlog.current_line_sink() is None  # 调用结束即清除
-
-
-def _mirrored(ws):
-    return [l.split("] ", 1)[1] for l in _run_log(ws) if "│" in l]
-
-
-def test_empty_header_is_completed_from_following_input_json(isolated):
-    """框架渲染标题时入参可能为空；紧随的 verbose 入参 JSON 用来补全摘要。"""
-    ws = new_book(isolated)
-    sink = outlog.run_log_sink(ws)
-    for line in ["📄 read_file  ", "{", '  "path": "大纲规划/蓝图/_index.md"', "}"]:
-        sink(line)
-    sink.finish()
-    assert _mirrored(ws) == ["  │ 📄 read_file  大纲规划/蓝图/_index.md"]
-
-
-def test_bash_summary_comes_from_command_and_is_truncated(isolated):
-    ws = new_book(isolated)
-    sink = outlog.run_log_sink(ws)
-    sink("⚡ bash  ")
-    for line in ["{", '  "command": "' + "x" * 500 + '"', "}"]:
-        sink(line)
-    sink.finish()
-    [line] = _mirrored(ws)
-    assert line.startswith("  │ ⚡ bash  xxx") and line.endswith("…")
-
-
-def test_header_with_summary_ignores_its_input_json(isolated):
-    ws = new_book(isolated)
-    sink = outlog.run_log_sink(ws)
-    for line in ["🔎 grep  第45章", "{", '  "pattern": "第45章"', "}"]:
-        sink(line)
-    sink.finish()
-    assert _mirrored(ws) == ["  │ 🔎 grep  第45章"]
-
-
-def test_header_without_input_json_is_kept_as_is(isolated):
-    ws = new_book(isolated)
-    sink = outlog.run_log_sink(ws)
-    sink("✏️ write_file  ")
-    sink("林远读完最后一行字。")  # 不是入参 JSON：先把标题原样输出，再忽略正文
-    sink.finish()
-    assert _mirrored(ws) == ["  │ ✏️ write_file"]
-
-
-def test_pending_header_is_flushed_when_call_ends(isolated):
-    ws = new_book(isolated)
-    sink = outlog.run_log_sink(ws)
-    sink("📄 read_file  ")
-    sink("{")
-    sink.finish()  # 入参 JSON 未闭合就结束：仍输出标题
-    assert _mirrored(ws) == ["  │ 📄 read_file"]
-
-
-def test_stack_trace_lines_are_not_mirrored_as_tool_calls(isolated):
-    ws = new_book(isolated)
-    sink = outlog.run_log_sink(ws)
-    for line in ["in execute_all", "in call", "  File \"x.py\", line 3, in call"]:
-        sink(line)
-    sink.finish()
-    assert _mirrored(ws) == []
+    assert outlog.current_line_sink() is None
