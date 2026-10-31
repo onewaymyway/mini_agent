@@ -22,6 +22,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from novel_writer.textio import read_text_utf8
 from novel_writer import config
+from novel_writer import outlog
 from novel_writer import gates as G
 from novel_writer import repair as RP
 from novel_writer import state as st
@@ -268,13 +269,18 @@ def _run_skill_step_inner(
             raise StepTimeout(_timeout_message(settings, step))
         prompt = build_prompt(ws, step, hint=hint, protected=SG.protected_listing(protected_rels))
         (run_dir / f"prompt_{attempt + 1}.md").write_text(prompt, encoding="utf-8")
-        result = invoker(
-            skill=step.skill, prompt=prompt, export_dir=run_dir, step_id=step.id,
-            max_turns=max_turns,
-            # 配置了步骤时限时，单次调用的框架超时 = 剩余时间（真正的强制终止由 FrameworkInvoker 在父进程完成）；
-            # 不限时则沿用原来的单次 900 秒。
-            timeout=DEFAULT_TIMEOUT_SEC if remaining is None else max(1, int(remaining)),
-        )
+        # agent 的中间输出实时镜像进 run.log（界面由此可见）；完整输出仍在本次调用的 agent.log。
+        outlog.set_line_sink(outlog.run_log_sink(ws))
+        try:
+            result = invoker(
+                skill=step.skill, prompt=prompt, export_dir=run_dir, step_id=step.id,
+                max_turns=max_turns,
+                # 配置了步骤时限时，单次调用的框架超时 = 剩余时间（真正的强制终止由 FrameworkInvoker 在父进程完成）；
+                # 不限时则沿用原来的单次 900 秒。
+                timeout=DEFAULT_TIMEOUT_SEC if remaining is None else max(1, int(remaining)),
+            )
+        finally:
+            outlog.set_line_sink(None)
         _log_agent_output(ws, step.id, result)
         if getattr(result, "timed_out", False):
             raise StepTimeout(_timeout_message(settings, step))
@@ -382,7 +388,8 @@ class FrameworkInvoker:
             cwd=str(config.PROJECT_ROOT), close_fds=True, env=env,
             stdout=_sp.PIPE, stderr=_sp.STDOUT, bufsize=0, **kwargs,
         )
-        pump = outlog.LinePump(proc.stdout, export_dir / outlog.AGENT_LOG_NAME)
+        pump = outlog.LinePump(proc.stdout, export_dir / outlog.AGENT_LOG_NAME,
+                               on_line=outlog.current_line_sink())
 
         def _out() -> Dict[str, Any]:
             pump.join(10)
