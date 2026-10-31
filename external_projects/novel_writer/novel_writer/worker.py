@@ -295,9 +295,12 @@ def _loop(
                 continue
             return "stopped" if st.read_control(ws).get("command") == "stop" else "paused"
         if autopilot and status == st.ST_STALE and not requested == target.id:
-            # 托管挡不自动重跑「因上游变化而需重跑」的步骤：这类重跑可能覆盖已确认的内容，必须由作者确认。
-            st.log_line(ws, f"⏸ 托管：{target.id} 因上游产物变化需要重跑，已暂停，等待你确认后再继续")
-            return "stale_confirm"
+            # 因上游变化而需重跑：派生/报告类步骤自动重跑（只覆盖自身产物）；正文与全书设定类仍需作者确认。
+            if AP.stale_decision(target, settings) == "refresh":
+                st.log_line(ws, f"🤖 托管：{target.id} 因上游产物变化，自动重跑（派生/报告类，只覆盖自身产物）")
+            else:
+                st.log_line(ws, f"⏸ 托管：{target.id} 因上游产物变化需要重跑（会改写正文或全书设定），已暂停，等待你确认后再继续")
+                return "stale_confirm"
         if status in (st.ST_WAITING_REVIEW, st.ST_WAITING_USER, st.ST_FAILED, st.ST_BLOCKED, st.ST_RUNNING):
             return status
 

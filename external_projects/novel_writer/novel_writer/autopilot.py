@@ -45,6 +45,24 @@ def default_answers(questions: List[Dict[str, Any]]) -> Dict[str, str]:
     return {str(q.get("id") or "q"): _default_answer(q) for q in questions}
 
 
+# 托管挡下，因上游变化而 stale 的步骤，哪些可以自动重跑（而不是停下来等作者确认）。
+# 原则：重跑只覆盖步骤自己的派生文件或报告，不改写正文，也不改写全书设定。
+#   * 章节准备类（CAT_CHAPTER_PREP）：word_quota / plot_tasks / context_pack / style_hint，都是派生数据；
+#   * 幕内分析报告：act_review / act_style / act_pacing / act_theme / act_worldcheck / act_ideas，只产生报告。
+# 不在此列的（章节写作与修订、归档同步、幕抽取与应用、蓝图与规划、角色与世界构建、最终审稿）仍然停下来确认。
+AUTO_REFRESH_PREFIXES = ("act_review:", "act_style:", "act_pacing:", "act_theme:", "act_worldcheck:", "act_ideas:")
+AUTO_REFRESH_SETTING = "autopilot_auto_refresh"
+
+
+def stale_decision(step: S.StepDef, settings: Dict[str, Any]) -> str:
+    """托管挡遇到 stale 步骤时的决定：'refresh'（自动重跑并记入日志）或 'confirm'（停下来等作者）。"""
+    if not (settings or {}).get(AUTO_REFRESH_SETTING, True):
+        return "confirm"
+    if step.category == S.CAT_CHAPTER_PREP or step.id.startswith(AUTO_REFRESH_PREFIXES):
+        return "refresh"
+    return "confirm"
+
+
 def reset_failed(ws, step: S.StepDef) -> float:
     """G5：把失败的步骤重置为 pending 以便继续运行。返回重置前应等待的秒数（由 worker 可中断地等待）。"""
     entry = st.get_step_state(ws, step.id)

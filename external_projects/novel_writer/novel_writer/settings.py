@@ -62,6 +62,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     # 步骤边界守卫：越界改动了后续章节文件时，由框架自动还原（agent 手里没有改前内容，无法自己还原）。
     # 设为 false 则只报告并要求 agent 处理（旧行为）。
     "step_guard_auto_restore": True,
+    "autopilot_auto_refresh": True,   # 托管挡：派生/报告类 stale 步骤自动重跑，而不是停下来等确认
     # 伏笔账本自愈（默认开启）：读取账本发现格式损坏（如 agent 手写了不合规文件）时，自动隔离/重建/转换并继续，
     # 原文件一律备份不删除；register_plot 步骤结束时也会自动隔离 agent 手写进「伏笔/」的不合规文件。
     # 设为 false 则只报错并给出修复指引（不改动任何文件）。
@@ -148,6 +149,8 @@ def validate_settings(data: Dict[str, Any]) -> Dict[str, Any]:
         raise SettingsError("step_timeout.overrides 必须是 {步骤id或类别: 非负分钟数}")
     if not isinstance(merged["step_guard_auto_restore"], bool):
         raise SettingsError("step_guard_auto_restore 必须是 true/false")
+    if not isinstance(merged["autopilot_auto_refresh"], bool):
+        raise SettingsError("autopilot_auto_refresh 必须是 true/false")
     batch = merged["semi_auto_batch_chapters"]
     if not isinstance(batch, int) or isinstance(batch, bool) or batch < 1:
         raise SettingsError("semi_auto_batch_chapters 必须是正整数")
