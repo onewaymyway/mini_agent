@@ -178,10 +178,13 @@ def _spawn_worker(ws: Workspace, mode: str) -> int:
         kwargs["creationflags"] = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
     else:
         kwargs["start_new_session"] = True
-    with log_path.open("a", encoding="utf-8") as log:
+    # worker 进程自己的 stdout（print、未捕获的异常）写到独立文件，不与 run.log 共享句柄（见 outlog.py）。
+    # run.log 只由 state.log_line 写入。
+    out_path = ws.studio / "worker.stdout.log"
+    with out_path.open("ab") as out:
         proc = _subprocess.Popen(
             [_sys.executable, "-u", str(entry), "--workspace", str(ws.root), "--mode", mode],
-            cwd=str(config.PROJECT_ROOT), stdout=log, stderr=_subprocess.STDOUT, close_fds=True, **kwargs,
+            cwd=str(config.PROJECT_ROOT), stdout=out, stderr=_subprocess.STDOUT, close_fds=True, **kwargs,
         )
     return proc.pid
 

@@ -194,7 +194,7 @@ def test_save_matrix_round_trip_keeps_overrides(tmp_path):
 
 
 def test_child_output_reaches_inherited_stdout_even_when_killed(tmp_path, monkeypatch):
-    """回归：子进程的输出必须实时写进继承的 stdout（run.log），被强杀时也不丢、编码为 UTF-8。"""
+    """回归：子进程的输出被强杀时也不丢、编码为 UTF-8。输出经管道写入本次调用的 agent.log（见 outlog.py）。"""
     import os
     import subprocess
     import sys
@@ -213,4 +213,5 @@ def test_child_output_reaches_inherited_stdout_even_when_killed(tmp_path, monkey
     with log.open("wb") as fh:
         subprocess.run([sys.executable, "-c", code], stdout=fh, stderr=subprocess.STDOUT, env=env,
                        cwd=os.path.dirname(os.path.dirname(__file__)), timeout=60)
-    assert "🔧 子 agent 工具调用输出" in log.read_text(encoding="utf-8")
+    agent_log = tmp_path / "run" / "agent.log"
+    assert "🔧 子 agent 工具调用输出" in agent_log.read_text(encoding="utf-8")

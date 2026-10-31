@@ -51,6 +51,8 @@ class InvokeResult:
     ok: bool
     error: str = ""
     timed_out: bool = False   # 因步骤总时限到期被强制终止
+    output_path: str = ""     # agent 完整输出所在文件（子进程模式）
+    output_lines: int = 0     # 已写入 output_path 的行数
 
 
 Invoker = Callable[..., InvokeResult]
@@ -226,6 +228,14 @@ def _normalize_outputs(ws: Workspace, step: S.StepDef, *, since: float) -> List[
     return renamed
 
 
+def _log_agent_output(ws: Workspace, step_id: str, result: Any) -> None:
+    """把 agent 完整输出的位置记入 run.log（run.log 由 state.log_line 唯一写入）。"""
+    path = getattr(result, "output_path", "") or ""
+    if path:
+        st.log_line(ws, f"  agent 输出：{getattr(result, 'output_lines', 0)} 行，已保存到 {Path(path).name}"
+                        f"（{step_id}）")
+
+
 def _run_skill_step_inner(
     ws: Workspace, step: S.StepDef, *, invoker: Invoker, settings: Dict[str, Any], run_no: int,
 ) -> Dict[str, Any]:
@@ -265,6 +275,7 @@ def _run_skill_step_inner(
             # 不限时则沿用原来的单次 900 秒。
             timeout=DEFAULT_TIMEOUT_SEC if remaining is None else max(1, int(remaining)),
         )
+        _log_agent_output(ws, step.id, result)
         if getattr(result, "timed_out", False):
             raise StepTimeout(_timeout_message(settings, step))
         if not result.ok:
@@ -345,6 +356,7 @@ class FrameworkInvoker:
         import subprocess as _sp
         import time as _time
 
+        from novel_writer import outlog
         from novel_writer import procs
 
         if remaining <= 0:
@@ -362,21 +374,20 @@ class FrameworkInvoker:
         kwargs: Dict[str, Any] = {}
         if sys.platform == "win32":
             kwargs["creationflags"] = getattr(_sp, "CREATE_NO_WINDOW", 0)
-        # -u 无缓冲 + UTF-8：输出直接写进继承来的 run.log，实时可见（否则文件重定向下按块缓冲，
-        # 被强杀时缓冲内容还会丢失；Windows 中文控制台默认的 GBK 编码也会让 emoji 等字符打印失败）
         env = dict(_os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1", PYTHONUNBUFFERED="1")
-        # 显式把本进程的标准输出/错误句柄交给子进程：Windows 下 worker 是 DETACHED 进程，
-        # 子进程用 CREATE_NO_WINDOW + close_fds 且不显式传句柄时，会拿到自己新建的隐藏控制台，
-        # 输出就到不了 run.log 了（POSIX 下继承没问题）。拿不到真实文件描述符时（如测试捕获）退回默认继承。
-        try:
-            out_fd = sys.stdout.fileno()
-            std = {"stdout": out_fd, "stderr": _sp.STDOUT}
-        except (AttributeError, OSError, ValueError):
-            std = {}
+        # 子进程的输出走管道，由 outlog.LinePump 作为唯一写入者写进本次调用的 agent.log。
+        # 不再把 run.log 的句柄交给子进程：父子两个写入者各自维护文件位置，会互相覆盖日志（见 outlog.py）。
         proc = _sp.Popen(
             [sys.executable, "-u", "-m", self._CHILD_MODULE, str(payload_file), str(result_file)],
-            cwd=str(config.PROJECT_ROOT), close_fds=True, env=env, **std, **kwargs,
+            cwd=str(config.PROJECT_ROOT), close_fds=True, env=env,
+            stdout=_sp.PIPE, stderr=_sp.STDOUT, bufsize=0, **kwargs,
         )
+        pump = outlog.LinePump(proc.stdout, export_dir / outlog.AGENT_LOG_NAME)
+
+        def _out() -> Dict[str, Any]:
+            pump.join(10)
+            return {"output_path": str(pump.path), "output_lines": pump.line_count}
+
         deadline = _time.monotonic() + remaining
         while proc.poll() is None:
             if _time.monotonic() >= deadline:
@@ -391,13 +402,13 @@ class FrameworkInvoker:
                 except _sp.TimeoutExpired:
                     pass
                 st_msg = f"（连带终止了 {info['children']} 个子进程）" if info.get("children") else ""
-                return InvokeResult(False, f"已超过步骤时限，强制终止执行进程{st_msg}", timed_out=True)
+                return InvokeResult(False, f"已超过步骤时限，强制终止执行进程{st_msg}", timed_out=True, **_out())
             _time.sleep(0.5)
         try:
             data = _json.loads(result_file.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            return InvokeResult(False, f"执行进程异常退出（退出码 {proc.returncode}），没有返回结果")
-        return InvokeResult(bool(data.get("ok")), str(data.get("error") or ""))
+            return InvokeResult(False, f"执行进程异常退出（退出码 {proc.returncode}），没有返回结果", **_out())
+        return InvokeResult(bool(data.get("ok")), str(data.get("error") or ""), **_out())
 
     def _invoke_inprocess(
         self, *, skill: str, prompt: str, export_dir: Path, step_id: str,

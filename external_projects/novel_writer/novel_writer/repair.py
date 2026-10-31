@@ -157,6 +157,7 @@ def repair_attempt(ws: Workspace, step, *, invoker, settings: Dict[str, Any],
         export_dir=export_dir, step_id=f"{step.id}.repair",
         max_turns=REPAIR_MAX_TURNS, timeout=REPAIR_TIMEOUT_SEC,
     )
+    R._log_agent_output(ws, f"{step.id}.repair", result)
     if not getattr(result, "ok", False):
         st.log_line(ws, f"⚠ {step.id}：修复调用未成功：{getattr(result, 'error', '') or '未知原因'}")
 

@@ -593,15 +593,27 @@ def release_worker(ws: Workspace, reason: str) -> None:
 # ── 运行日志（实时输出；追加写入，不会被下一次运行覆盖，界面始终能看到上一次的结果）──
 
 
+_LOG_SIZE: Dict[str, int] = {}   # run.log 上次写完后的大小（用于发现外部改写）
+
+
 def log_line(ws: Workspace, text: str) -> None:
-    """向 `_studio/run.log` 追加一行（带时间戳）。worker 与子 agent 的输出都写到这里。"""
+    """向 `_studio/run.log` 追加一行（带时间戳）。run.log 只由本函数写入（单写者），子进程输出见 outlog.py。
+
+    自检：若文件大小比上次写完时还小，说明有别的进程截断或覆盖了它；此时先留下一条告警，再写本行。
+    """
     path = ws.path("studio_log")
     path.parent.mkdir(parents=True, exist_ok=True)
     stamp = _dt.datetime.now().strftime("%H:%M:%S")
     with _LOCK:
+        key = str(path)
+        prev = _LOG_SIZE.get(key)
+        cur = path.stat().st_size if path.exists() else 0
         with path.open("a", encoding="utf-8") as f:
+            if prev is not None and cur < prev:
+                f.write(f"[{stamp}] ⚠ run.log 被外部缩小（{prev} → {cur} 字节），可能有日志被覆盖\n")
             f.write(f"[{stamp}] {text}\n")
             f.flush()
+        _LOG_SIZE[key] = path.stat().st_size
 
 
 def read_log_tail(ws: Workspace, lines: int = 120, max_bytes: int = 200_000) -> List[str]:
