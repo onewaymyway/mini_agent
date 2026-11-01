@@ -1043,3 +1043,14 @@ Phase 2 是风险最高的一期（涉及外部视频 API、一致性核查、�
 - 找不到时，错误信息列出每一种尝试过的方式，并给出安装命令（`pip install imageio-ffmpeg`）或设置变量的说明。
 - 结果缓存；失败不缓存，安装后下一次调用即生效。
 - 测试：`tests/test_ffmpeg_lookup.py`。
+
+## 镜头时长上限修正为 12 秒（视频接口硬限制）
+
+- 现场：视频接口返回 `seconds must be in [4, 12]`（400，不可重试），镜头 14 秒被提交。
+- 原因：之前把镜头上限定为 15 秒，没有核对视频接口的范围。novel-video-studio 的 `common.py` 中 `MIN_SEC = 4`、`MAX_SEC = 12` 才是这一接口的范围。
+- 修正：
+  - `chapter_io.py`：`VIDEO_MIN_SEC = 4`、`VIDEO_MAX_SEC = 12`（单一来源）；`SHOT_MIN_SEC`、`SHOT_MAX_SEC` 引用它们。
+  - 镜头规划提示词、校验文案、离线镜头生成、界面提示统一为 4–12 秒。
+  - 配音上限 `MAX_SPEECH_SEC = SHOT_MAX_SEC - 0.4`（即 11.6 秒）随之变化。
+  - `providers/video.py`：时长超出 [4, 12] 时在发请求前拦截，返回不可重试错误，不再浪费一次 400 调用。
+- 测试：`tests/test_video_seconds.py`。

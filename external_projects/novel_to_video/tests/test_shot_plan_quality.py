@@ -70,7 +70,7 @@ def _plan(p, raw_shots):
 
 
 def _long_raw(p):
-    """模型按规则自行拆好的三个镜头：每个 4–15 秒、画面各不相同。代码不再替它拆分。"""
+    """模型按规则自行拆好的三个镜头：每个 4–12 秒、画面各不相同。代码不再替它拆分。"""
     lin = [_cid(p, "林远")]
     return [
         {"scene_no": 1, "location_id": "x", "character_ids": lin,
@@ -100,12 +100,12 @@ def test_yaml_has_no_anchors_and_shots_do_not_share_lists(proj):
 
 
 def test_overlong_shot_is_rejected_not_silently_split(proj):
-    """超过 15 秒的镜头不能被代码悄悄拆开（那样会共用同一画面描述），必须反馈给模型自行拆分。"""
+    """超过 12 秒的镜头不能被代码悄悄拆开（那样会共用同一画面描述），必须反馈给模型自行拆分。"""
     from novel_to_video.steps.chapter_shots import collect_shot_issues
     long_one = _long_raw(proj)[0]
     long_one["blocks"] = [{"type": "narration", "text": LONG_NARR}]
     issues = collect_shot_issues([long_one], SCRIPT, _chars(proj))
-    assert any("超过 15 秒上限" in i["message"] and "拆成 2 个或以上" in i["message"] for i in issues)
+    assert any("超过 12 秒上限" in i["message"] and "拆成 2 个或以上" in i["message"] for i in issues)
 
 
 def test_overlong_shot_never_becomes_several_shots_with_one_hint(proj):
@@ -148,7 +148,7 @@ def test_shots_prompt_demands_short_distinct_shots(proj):
     llm = RecLLM(json.dumps({"shots": _long_raw(proj)}, ensure_ascii=False))
     run_shots(proj, 1, llm)
     p = llm.calls[0]
-    assert "4–15 秒" in p and "整章预计约" in p and "硬要求" in p
+    assert "4–12 秒" in p and "整章预计约" in p and "硬要求" in p
     assert "相邻镜头的 visual_hint 必须不同" in p and "character_ids 列出该镜头画面中出现的所有角色" in p
     assert "绝不能把整场戏写成一个镜头" in p
 

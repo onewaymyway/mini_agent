@@ -109,7 +109,7 @@ def _rule_script(info: dict) -> str:
 
 
 def _rule_shots(info: dict) -> list:
-    """离线镜头：按口播字数分组，保证每镜头约 4–15 秒（约 17–63 字）。
+    """离线镜头：按口播字数分组，保证每镜头约 4–12 秒（约 17–63 字）。
     超长旁白按标点切成小段，短尾巴并入上一镜头；画面描述按镜头序号区分。"""
     import re as _re
     script = info.get("script") or ""

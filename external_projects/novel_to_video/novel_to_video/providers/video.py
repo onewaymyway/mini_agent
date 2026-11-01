@@ -144,6 +144,10 @@ class AgnesVideoProvider(VideoProvider):
 
     def generate(self, prompt: str, save_path: Path, *, seconds: int, reference_images: List[Path],
                  aspect_ratio: str = "9:16") -> VideoResult:
+        bad = _seconds_error(seconds)
+        if bad:
+            # 在发请求之前拦住：接口会以 400 拒绝，浪费一次调用
+            return VideoResult(False, error=bad, non_retryable=True)
         payload = {
             "model": self.model, "prompt": prompt, "mode": "reference",
             "seconds": str(seconds), "size": "720P", "aspect_ratio": aspect_ratio,
@@ -162,6 +166,14 @@ class AgnesVideoProvider(VideoProvider):
         save_path.parent.mkdir(parents=True, exist_ok=True)
         save_path.write_bytes(raw.content)
         return VideoResult(True, path=str(save_path))
+
+
+def _seconds_error(seconds: int) -> str:
+    from ..chapter_io import VIDEO_MAX_SEC, VIDEO_MIN_SEC
+    if not (VIDEO_MIN_SEC <= int(seconds) <= VIDEO_MAX_SEC):
+        return (f"视频时长 {seconds} 秒超出接口范围 [{VIDEO_MIN_SEC}, {VIDEO_MAX_SEC}]。"
+                "请在镜头规划或配音后修正该镜头的时长，不会再提交请求。")
+    return ""
 
 
 class StubVideoProvider(VideoProvider):

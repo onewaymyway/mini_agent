@@ -236,7 +236,7 @@ def collect_shot_issues(raw_shots: List[Dict[str, Any]], script: str,
 
 
 def _shot_level_issues(raw_shots: List[Dict[str, Any]]) -> List[Dict[str, str]]:
-    """镜头级硬要求：每个镜头 4–15 秒；相邻镜头画面描述不能相同。
+    """镜头级硬要求：每个镜头 4–12 秒；相邻镜头画面描述不能相同。
     代码不替模型拆分或合并镜头，只把问题与修正方法反馈给模型。
     唯一例外：整章只有一个镜头时（例如极短的测试章节），无法凭空补足 4 秒，下限不作为失败条件。"""
     issues: List[Dict[str, str]] = []
@@ -288,7 +288,7 @@ def run_shots(project_dir: Path, no: int, text_llm: TextLLM, *, force: bool = Fa
     ents = load_entities(project_dir)
     characters = ents["characters"]["characters"]
     locations = ents["locations"]["locations"]
-    per_shot = int(SHOT_MAX_SEC * CHARS_PER_SEC)                 # 单镜头口播字数上限（约 15 秒）
+    per_shot = int(SHOT_MAX_SEC * CHARS_PER_SEC)                 # 单镜头口播字数上限（约 12 秒）
     min_per_shot = int(SHOT_MIN_SEC * CHARS_PER_SEC)             # 单镜头口播字数下限（约 4 秒）
     expected = max(1, math.ceil(spoken_chars(script) / int(SHOT_PLAN_SEC * CHARS_PER_SEC)))
     retries = auto_fix_retries(project_dir, "shots_max_retries")

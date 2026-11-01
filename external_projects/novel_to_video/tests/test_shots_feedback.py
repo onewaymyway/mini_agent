@@ -51,7 +51,7 @@ def test_valid_plan_has_no_issues():
     assert collect_shot_issues([ok], SCRIPT, CHARS) == []
 
 
-# ---- 镜头级硬要求：4–15 秒，相邻画面不同 ----
+# ---- 镜头级硬要求：4–12 秒，相邻画面不同 ----
 from novel_to_video.steps.chapter_shots import _shot_seconds  # noqa: E402
 
 LONG = "铁城的清晨很安静，穹顶遮住了天空，街道上空无一人，只有监视塔的摄像头不停地转动着，扫过每一扇窗。"  # ≈ 17 秒以上
@@ -67,7 +67,7 @@ def _narr(text, scene=1, zh="中景：林远", en="medium shot: a man"):
 def test_overlong_shot_is_flagged_with_split_instruction():
     issues = collect_shot_issues([_narr(LONG + LONG)], SCRIPT, CHARS)
     msg = "\n".join(i["message"] for i in issues)
-    assert "超过 15 秒上限" in msg and "拆成 2 个或以上" in msg
+    assert "超过 12 秒上限" in msg and "拆成 2 个或以上" in msg
 
 
 def test_short_shot_flagged_when_chapter_has_several_shots():

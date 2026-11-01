@@ -145,7 +145,7 @@ def _plan_warnings(pdir: str, no: int, v: dict) -> None:
         split_shots = sum(w["parts"] for w in warns)
         st.warning(f"旧版镜头规划提示：本章有 {len(warns)} 段口播被旧版代码机械拆成了 {split_shots} 个镜头，"
                    f"这些镜头共用同一条画面描述，生成的视频会很相似（当前共 {total} 个镜头）。"
-                   "建议重新规划本章镜头，新规划会要求每镜头 4–15 秒、相邻镜头画面各不相同。")
+                   "建议重新规划本章镜头，新规划会要求每镜头 4–12 秒、相邻镜头画面各不相同。")
         with st.expander("查看哪些镜头被拆分"):
             st.dataframe([{"原始镜头": w["raw_index"], "场次": w["scene_no"], "口播约（秒）": w["seconds"],
                            "拆成镜头数": w["parts"]} for w in warns], width='stretch', hide_index=True)
