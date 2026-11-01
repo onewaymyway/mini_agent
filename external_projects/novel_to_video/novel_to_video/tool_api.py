@@ -207,11 +207,23 @@ def _providers_for(project_dir: Path) -> Dict[str, Any]:
 
 def run_chapter(project_dir: str, no: int, *, force_script: bool = False) -> Dict[str, Any]:
     """运行单章 C-1…C-9（可重入）。返回 status 与 message，见 chapter_pipeline。"""
+    import traceback
+    from . import joblog as _jl
     pdir = Path(project_dir)
     try:
-        prov = _providers_for(pdir)
+        with _jl.heartbeat(pdir, "chapter", f"第 {no} 章 初始化引擎（文本/图像/视频/配音）"):
+            prov = _providers_for(pdir)
     except ProviderError as exc:
-        return _fail(str(exc))
+        msg = f"初始化引擎失败：{exc}"
+        _jl.log(pdir, "chapter", f"第 {no} 章 {msg}", level="error")
+        cio.set_chapter_status(pdir, no, "failed", msg)
+        return _fail(msg)
+    except Exception as exc:  # noqa: BLE001 - 未预期的错误也必须进入章节日志
+        msg = f"初始化引擎时出现未预期的错误：{type(exc).__name__}：{exc}"
+        _jl.log(pdir, "chapter", f"第 {no} 章 {msg}\n" + "\n".join(traceback.format_exc().strip().splitlines()[-12:]),
+                level="error")
+        cio.set_chapter_status(pdir, no, "failed", msg)
+        return _fail(msg)
     try:
         res = cp.run_chapter(pdir, no, text_llm=prov["text"], image=prov["image"],
                              video=prov["video"], tts=prov["tts"], force_script=force_script)
@@ -360,8 +372,13 @@ def _run_queue_locked(project_dir: str, numbers: Optional[List[int]] = None, *,
 
     from . import runlock as _rl
 
+    hb_warned = {"done": False}
+
     def run_one(no: int) -> Dict[str, Any]:
-        _rl.heartbeat(pdir)
+        if not _rl.heartbeat(pdir) and not hb_warned["done"]:
+            hb_warned["done"] = True
+            from . import joblog as _jl
+            _jl.log(pdir, "queue", "运行锁心跳写入失败（文件可能被其他程序占用），已忽略，运行继续", level="warn")
         r = run_chapter(project_dir, no)
         return r["data"] if r["ok"] else {"status": "failed", "message": r["error"]["message"]}
 

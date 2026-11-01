@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from collections import deque
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -147,3 +149,32 @@ def timed(project_dir: Path, scope: str, label: str):
         log(project_dir, scope, f"{label} 失败（{_time.monotonic() - t0:.1f} 秒）：{exc}", level="error")
         raise
     log(project_dir, scope, f"{label} 完成（{_time.monotonic() - t0:.1f} 秒）", level="ok")
+
+
+HEARTBEAT_SEC = 30.0   # 长时间阶段每隔多少秒写一条“仍在进行”
+
+
+@contextmanager
+def heartbeat(project_dir: Path, scope: str, label: str, every: Optional[float] = None):
+    """包住一段可能很慢（网络请求、模型推理）的调用：每隔 every 秒写一条“仍在进行”，
+    结束时写“完成（x 秒）”或“异常结束”。这样卡住时日志里能看到卡在哪一步、已经等了多久。"""
+    interval = HEARTBEAT_SEC if every is None else every
+    stop = threading.Event()
+    start = time.monotonic()
+    log(project_dir, scope, f"{label}：开始")
+
+    def _beat():
+        while not stop.wait(interval):
+            log(project_dir, scope, f"{label}：仍在进行（已 {time.monotonic() - start:.0f} 秒）", level="info")
+
+    t = threading.Thread(target=_beat, daemon=True)
+    t.start()
+    try:
+        yield
+    except BaseException:
+        stop.set()
+        log(project_dir, scope, f"{label}：异常结束（{time.monotonic() - start:.1f} 秒）", level="error")
+        raise
+    else:
+        stop.set()
+        log(project_dir, scope, f"{label}：完成（{time.monotonic() - start:.1f} 秒）", level="info")

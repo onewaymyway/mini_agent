@@ -61,6 +61,24 @@ CHAPTER_STATUSES = ("pending", "planned", "in_review", "done", "stale")
 
 # ---------------------------------------------------------------- 原子写入
 
+REPLACE_RETRIES = 8
+
+
+def replace_with_retry(src, dst) -> None:
+    """os.replace 在 Windows 上会因为目标文件被其他进程短暂占用（界面读取、杀毒扫描、索引）而报
+    PermissionError [WinError 5]。这里带退避重试；全部失败才抛出。"""
+    import time as _time
+    last: Exception | None = None
+    for attempt in range(REPLACE_RETRIES):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError as exc:
+            last = exc
+            _time.sleep(0.05 * (attempt + 1))
+    raise last  # type: ignore[misc]
+
+
 def _write_atomic(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
@@ -69,7 +87,7 @@ def _write_atomic(path: Path, text: str) -> None:
             f.write(text)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, path)
+        replace_with_retry(tmp, path)
     except BaseException:
         try:
             os.unlink(tmp)

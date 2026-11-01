@@ -88,15 +88,22 @@ def acquire(project_dir: Path) -> None:
         f.write(body)
 
 
-def heartbeat(project_dir: Path) -> None:
+def heartbeat(project_dir: Path) -> bool:
+    """刷新心跳。返回 False 表示这次没写成功（例如 Windows 上 .runlock 被短暂占用）。
+    心跳失败不能中断正在运行的章节：调用方只需记录一条警告。"""
+    from .project_store import replace_with_retry
     path = project_dir / LOCK_FILE
-    data = _read(path) or {}
-    if data.get("pid") != os.getpid():
-        return
-    data["heartbeat"] = time.time()
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, path)
+    try:
+        data = _read(path) or {}
+        if data.get("pid") != os.getpid():
+            return True
+        data["heartbeat"] = time.time()
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        replace_with_retry(tmp, path)
+        return True
+    except OSError:
+        return False
 
 
 def release(project_dir: Path) -> None:

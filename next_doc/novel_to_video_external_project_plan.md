@@ -1013,3 +1013,13 @@ Phase 2 是风险最高的一期（涉及外部视频 API、一致性核查、�
 - 注意：强制直连是进程内的临时替换，只适合单线程的配音流程。
 - 实现：`providers/tts.py`（`_no_system_proxy`、`EdgeTTS(proxy=...)`）、`providers/factory.py`、`tool_api.py`（`set_tts_proxy`）、`ui/gear_page.py`、`project_store.py`（默认配置）。
 - 测试：`tests/test_edge_tts_proxy.py`。
+
+## 队列“开始第 1 章”后无任何信息（Windows 文件占用）
+
+- 现场（runtime.json）：`PermissionError: [WinError 5] 拒绝访问`，发生在 `.runlock.tmp` 替换为 `.runlock` 时。这是运行锁心跳的写入失败，发生在“第 1 章开始运行”之前；后台线程只把错误写进 runtime.json，任务日志没有记录，界面上看起来就是卡住。
+- 修复：
+  - `project_store.replace_with_retry`：`os.replace` 遇到 PermissionError 退避重试（8 次）；所有原子写入（`_write_atomic`，即状态、索引、project.json 等）都使用它。
+  - `runlock.heartbeat` 使用同样的重试，返回 bool，写入失败不抛异常；队列在第一次失败时记录一条警告，运行继续。
+  - `runtime` 后台线程的任何异常，同时写入队列日志（级别 error，含堆栈末尾 12 行）。
+- 另：长阶段（C-1 至 C-9）与引擎初始化（`joblog.heartbeat`）每 30 秒写一条“仍在进行（已 N 秒）”；引擎初始化失败进入章节日志并把章节状态置为 failed。
+- 测试：`tests/test_windows_lock_robustness.py`、`tests/test_progress_visibility.py`。

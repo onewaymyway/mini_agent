@@ -101,8 +101,12 @@ def start_background(project_dir: Path, numbers: List[int], gear: str,
                              message=f"停止：{halted}" if halted else "队列已完成")
             else:
                 final.update(message=res.get("error", {}).get("message", "运行失败"), error=True)
-        except Exception as exc:  # 后台线程不能静默失败
+        except Exception as exc:  # 后台线程不能静默失败：原因同时写入章节/队列日志
+            import traceback as _tb
+            from . import joblog as _jl
             final.update(message=f"运行异常：{type(exc).__name__}: {exc}", error=True)
+            _jl.log(project_dir, "queue", f"队列异常中止：{type(exc).__name__}：{exc}\n"
+                    + "\n".join(_tb.format_exc().strip().splitlines()[-12:]), level="error")
         finally:
             try:
                 update(project_dir, **final, finished_at=_now())

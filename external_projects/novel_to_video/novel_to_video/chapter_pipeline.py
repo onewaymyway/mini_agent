@@ -57,37 +57,43 @@ def run_chapter(project_dir: Path, no: int, *, text_llm: TextLLM, image: ImagePr
         return _result(status, message, **extra)
 
     try:
-        sc = run_script(project_dir, no, text_llm, force=force_script)
+        with joblog.heartbeat(project_dir, "chapter", f"第 {no} 章 C-1/C-2 剧本"):
+            sc = run_script(project_dir, no, text_llm, force=force_script)
         joblog.log(project_dir, "chapter", f"第 {no} 章 C-1/C-2 剧本：{sc['status']}",
                    level="ok" if sc["status"] == "pass" else "warn")
         if sc["status"] != "pass":
             msgs = [i["message"] for i in sc.get("issues", []) if i["level"] == "error"]
             return stop("failed", "剧本校验未通过：" + "；".join(msgs[:3]), issues=sc.get("issues", []))
 
-        _sh = run_shots(project_dir, no, text_llm)
+        with joblog.heartbeat(project_dir, "chapter", f"第 {no} 章 C-3/C-4 镜头规划"):
+            _sh = run_shots(project_dir, no, text_llm)
         joblog.log(project_dir, "chapter", f"第 {no} 章 C-3/C-4 镜头规划：{_sh.get('shots')} 个镜头"
                    + ("（沿用已有规划）" if _sh.get("skipped") else ""))
 
-        assets = run_assets(project_dir, no, text_llm, image)
+        with joblog.heartbeat(project_dir, "chapter", f"第 {no} 章 C-5 补建角色"):
+            assets = run_assets(project_dir, no, text_llm, image)
         if assets["waiting"]:
             joblog.log(project_dir, "chapter", f"第 {no} 章 C-5 等待补建角色确认：{len(assets['waiting'])} 项", level="warn")
         if assets["waiting"]:
             return stop("waiting_assets", "等待补建角色确认：" + "；".join(assets["waiting"]),
                         waiting=assets["waiting"])
 
-        audio = run_audio(project_dir, no, tts)
+        with joblog.heartbeat(project_dir, "chapter", f"第 {no} 章 C-6 配音"):
+            audio = run_audio(project_dir, no, tts)
         joblog.log(project_dir, "chapter", f"第 {no} 章 C-6 配音完成" + (f"，{len(audio['errors'])} 个镜头口播过长" if audio["errors"] else ""),
                    level="warn" if audio["errors"] else "ok")
         if audio["errors"]:
             return stop("failed", f"镜头口播过长，需拆分：{', '.join(audio['errors'])}", errors=audio["errors"])
 
-        pr = run_prompts(project_dir, no, art_style)
+        with joblog.heartbeat(project_dir, "chapter", f"第 {no} 章 C-7 提示词"):
+            pr = run_prompts(project_dir, no, art_style)
         joblog.log(project_dir, "chapter", f"第 {no} 章 C-7 提示词一致性：{'未通过 ' + str(len(pr['failed'])) + ' 个' if pr['failed'] else '通过'}",
                    level="warn" if pr["failed"] else "ok")
         if pr["failed"]:
             return stop("failed", f"提示词一致性检查未通过：{', '.join(pr['failed'])}")
 
-        clips = run_clips(project_dir, no, video)
+        with joblog.heartbeat(project_dir, "chapter", f"第 {no} 章 C-8 小场景视频"):
+            clips = run_clips(project_dir, no, video)
         joblog.log(project_dir, "chapter", f"第 {no} 章 C-8 小场景视频：生成 {len(clips.get('generated', []))} 个，失败 {len(clips.get('failed', []))} 个",
                    level="warn" if clips.get("failed") else "info")
         if clips.get("blocked"):
@@ -104,7 +110,8 @@ def run_chapter(project_dir: Path, no: int, *, text_llm: TextLLM, image: ImagePr
             pending = [sid for sid, st in states.items() if st != "approved"]
             return stop("waiting_review", f"{len(pending)} 个小场景等待审核", pending=pending, states=states)
 
-        comp = run_compose(project_dir, no)
+        with joblog.heartbeat(project_dir, "chapter", f"第 {no} 章 C-9 章节合成"):
+            comp = run_compose(project_dir, no)
         if comp.get("waiting"):
             return stop("waiting_review", "等待审核：" + "、".join(comp["waiting"]))
         return stop("done", f"章节视频已生成（{comp['duration']} 秒）", output=comp["output"],
