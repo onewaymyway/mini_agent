@@ -51,6 +51,8 @@ def run_audio(project_dir: Path, no: int, tts: TTSProvider) -> Dict[str, Any]:
     gender_of = {c["id"]: c.get("gender") for c in ents["characters"]["characters"]}
     adir = chapter_dir(project_dir, no) / "audio"
     synthesized = 0
+    engine_usage: Dict[str, int] = {}   # 实际产出每段配音的引擎计数（与 novel-video-studio 的 engine_usage 对应）
+    fallback_warned = False
     for sh in shots["shots"]:
         block_keys: List[str] = []
         parts: List[Path] = []
@@ -63,8 +65,17 @@ def run_audio(project_dir: Path, no: int, tts: TTSProvider) -> Dict[str, Any]:
             path = adir / f"{sh['id']}_b{b['idx']:02d}.wav"
             if not path.is_file() or b.get("audio_key") != key:
                 b["duration"] = tts.synth(b["text"], path, voice)
+                engine = getattr(tts, "last_engine", None) or tts.name
+                engine_usage[engine] = engine_usage.get(engine, 0) + 1
+                b["engine"] = engine
+                errs = getattr(tts, "last_errors", None) or {}
+                if errs and not fallback_warned:
+                    fallback_warned = True
+                    joblog.log(project_dir, "chapter",
+                               f"第 {no} 章 C-6 配音降级：" + "；".join(f"{k}：{v}" for k, v in errs.items())
+                               + f"；本段改用 {engine}", level="warn")
                 joblog.log(project_dir, "chapter", f"第 {no} 章 C-6 配音 {sh['id']}/{b['idx']:02d}：{voice}，"
-                           f"{len(b['text'])} 字 → {float(b['duration']):.1f} 秒")
+                           f"{len(b['text'])} 字 → {float(b['duration']):.1f} 秒（{engine}）")
                 b["audio_key"] = key
                 synthesized += 1
             block_keys.append(key)
@@ -84,4 +95,6 @@ def run_audio(project_dir: Path, no: int, tts: TTSProvider) -> Dict[str, Any]:
     errors = [sh["id"] for sh in shots["shots"] if sh.get("error")]
     mark_stage(project_dir, no, "audio", "failed" if errors else "done",
                f"镜头过长：{', '.join(errors)}" if errors else None)
-    return {"synthesized_blocks": synthesized, "errors": errors}
+    summary = "、".join(f"{k} {v} 段" for k, v in engine_usage.items()) or "无新合成"
+    joblog.log(project_dir, "chapter", f"第 {no} 章 C-6 配音引擎使用：{summary}")
+    return {"synthesized_blocks": synthesized, "errors": errors, "engine_usage": engine_usage}

@@ -196,11 +196,12 @@ def edit_asset(project_dir: str, kind: str, eid: str, fields: Dict[str, Any]) ->
 
 def _providers_for(project_dir: Path) -> Dict[str, Any]:
     p = _project_providers(project_dir)
+    tts_cfg = ps.read_json(project_dir / "project.json").get("tts") or {}
     return {
         "text": make_text_llm(p.get("text")),
         "image": make_image_provider(p.get("image")),
         "video": make_video_provider(p.get("video")),
-        "tts": make_tts_provider(p.get("tts")),
+        "tts": make_tts_provider(p.get("tts"), tts_cfg),
     }
 
 

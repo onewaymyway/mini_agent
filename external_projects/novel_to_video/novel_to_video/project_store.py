@@ -37,7 +37,9 @@ DEFAULT_OPTIONS: Dict[str, Any] = {
     "shots_max_retries": DEFAULT_AUTO_FIX_RETRIES,   # 镜头规划校验失败后，同上
     "orientation": "portrait",
     "aspect_ratio": "9:16",
-    "tts": {"engine": "cosyvoice", "fallback": "edge-tts", "voice": None},
+    # 配音引擎链：先 engine，失败后降级到 fallback（null = 不降级）。与 novel-video-studio 默认一致。
+    "tts": {"engine": "cosyvoice", "fallback": "edge-tts", "voice": None,
+            "cosyvoice_model_dir": None, "cosyvoice_timeout_sec": 60, "edge_tts_timeout_sec": 45},
     "gear": "G0",
     "budget": {"max_video_calls": None, "max_image_calls": None, "max_minutes": None},
 }

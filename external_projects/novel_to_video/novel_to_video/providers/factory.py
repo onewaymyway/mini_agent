@@ -11,7 +11,8 @@ from typing import Optional
 
 from .image import ImageProvider, StubImageProvider
 from .video import StubVideoProvider, VideoProvider
-from .tts import EdgeTTS, SilenceTTS, TTSProvider
+from .tts import (ChainTTS, CosyVoiceTTS, UnavailableTTS, DEFAULT_COSYVOICE_MODEL_DIR, DEFAULT_COSYVOICE_TIMEOUT_SEC,
+                  DEFAULT_EDGE_TTS_TIMEOUT_SEC, EdgeTTS, SilenceTTS, TTSProvider)
 from .text import MiniAgentTextLLM, RuleTextLLM, TextLLM
 from . import skill_bridge
 from .skill_providers import SkillImageProvider, SkillVideoProvider
@@ -78,13 +79,34 @@ def make_video_provider(name: Optional[str] = None) -> VideoProvider:
     raise ProviderError(f"未知视频 provider：{name}")
 
 
-def make_tts_provider(name: Optional[str] = None) -> TTSProvider:
-    name = "stub" if _forced_stub() else (name or "edge-tts")
-    if name == "stub":
+def make_tts_provider(name: Optional[str] = None, tts_cfg: Optional[dict] = None) -> TTSProvider:
+    """配音引擎链。引擎顺序与降级规则取自项目的 tts 配置（与 novel-video-studio 一致）：
+      tts.engine   首选引擎，默认 cosyvoice
+      tts.fallback 降级引擎，默认 edge-tts；写 null 表示不降级
+    providers.tts 写 stub（或环境变量强制 stub）时使用静音引擎，只用于流程验证。"""
+    if _forced_stub() or (name or "").strip().lower() == "stub":
         return SilenceTTS()
-    if name == "edge-tts":
-        try:
-            return EdgeTTS()
-        except RuntimeError as exc:
-            raise ProviderError(str(exc)) from exc
-    raise ProviderError(f"未知 TTS provider：{name}")
+    cfg = dict(tts_cfg or {})
+    engine = (cfg.get("engine") or "cosyvoice").strip()
+    fallback = cfg.get("fallback", "edge-tts")
+    fallback = (fallback or "").strip() or None
+    allowed = {"cosyvoice", "edge-tts"}
+    if engine not in allowed:
+        raise ProviderError(f"未知 TTS 首选引擎：{engine}（可选 cosyvoice、edge-tts）")
+    if fallback is not None and fallback != "edge-tts":
+        raise ProviderError(f"TTS 降级引擎 {fallback!r} 暂不支持（当前只实现了 edge-tts 兜底）")
+    order = [engine] if fallback in (None, engine) else [engine, fallback]
+    engines = []
+    for eng in order:
+        if eng == "cosyvoice":
+            engines.append(CosyVoiceTTS(cfg.get("cosyvoice_model_dir") or DEFAULT_COSYVOICE_MODEL_DIR,
+                                        timeout=cfg.get("cosyvoice_timeout_sec") or DEFAULT_COSYVOICE_TIMEOUT_SEC))
+        else:
+            try:
+                engines.append(EdgeTTS(timeout=cfg.get("edge_tts_timeout_sec") or DEFAULT_EDGE_TTS_TIMEOUT_SEC))
+            except RuntimeError as exc:
+                if len(order) == 1:
+                    raise ProviderError(str(exc)) from exc
+                # 降级引擎未安装：保留在链上，合成时把原因报出来，而不是悄悄少一个引擎
+                engines.append(UnavailableTTS("edge-tts", str(exc)))
+    return ChainTTS(engines)

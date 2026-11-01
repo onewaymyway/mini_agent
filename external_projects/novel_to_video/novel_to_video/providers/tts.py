@@ -1,7 +1,10 @@
 """providers/tts.py — 配音 provider。
 
-  * SilenceTTS（stub）：按字数估算时长写静音 wav，离线可用，时长估算用于流程验证；
-  * EdgeTTS：edge-tts 在线语音（需 pip install edge-tts 且网络可达）。CosyVoice 本地模型尚未接入。
+  * SilenceTTS（stub）：按字数估算时长写静音 wav，离线可用，只用于流程验证，不进入正式降级链；
+  * CosyVoiceTTS：本地 CosyVoice（需 cosyvoice 环境与模型权重）；
+  * EdgeTTS：edge-tts 在线语音（需 pip install -U edge-tts 且网络可达）；
+  * ChainTTS：按顺序尝试引擎（默认 cosyvoice → edge-tts，与 novel-video-studio 的 tts_engine.synthesize 一致）。
+    任一引擎失败就降级到下一个；记录实际使用的引擎（last_engine）与各引擎的失败原因（last_errors）。
 返回实际时长（秒）。
 """
 
@@ -44,6 +47,7 @@ class TTSProvider(ABC):
 
 class SilenceTTS(TTSProvider):
     name = "stub"
+    last_engine = "stub"
 
     def synth(self, text: str, out_wav: Path, voice: str) -> float:
         return mf.write_silence_wav(out_wav, estimate_seconds(text))
@@ -72,10 +76,104 @@ def edge_tts_error_hint(exc: Exception) -> str:
     return f"edge-tts 配音失败（当前版本 {ver}）：{raw}"
 
 
+# 与 novel-video-studio/scripts/tts_engine.py 保持一致的默认值
+DEFAULT_COSYVOICE_MODEL_DIR = "pretrained_models/CosyVoice-300M"   # 可用环境变量 COSYVOICE_MODEL_DIR 覆盖
+DEFAULT_COSYVOICE_TIMEOUT_SEC = 60.0
+DEFAULT_EDGE_TTS_TIMEOUT_SEC = 45.0
+DEFAULT_EDGE_TTS_VOICE = "zh-CN-XiaoxiaoNeural"
+
+# CosyVoice 没有 edge-tts 的音色名，按性别映射到它的说话人
+COSY_SPEAKER_BY_EDGE_VOICE = {
+    "zh-CN-YunjianNeural": "中文男",
+    "zh-CN-YunxiNeural": "中文男",
+    "zh-CN-XiaoxiaoNeural": "中文女",
+    "zh-CN-XiaoyiNeural": "中文女",
+}
+_COSY_MODELS: dict = {}   # 模型目录 -> 已加载的 CosyVoice 实例（同一进程只加载一次）
+
+
+def _cosy_model(model_dir: str):
+    if model_dir not in _COSY_MODELS:
+        from cosyvoice.cli.cosyvoice import CosyVoice  # type: ignore
+        _COSY_MODELS[model_dir] = CosyVoice(model_dir)
+    return _COSY_MODELS[model_dir]
+
+
+class CosyVoiceTTS(TTSProvider):
+    """本地 CosyVoice。任何失败（未安装、模型缺失、推理异常、超时）都抛 RuntimeError，由 ChainTTS 决定降级。"""
+    name = "cosyvoice"
+
+    def __init__(self, model_dir: str = DEFAULT_COSYVOICE_MODEL_DIR, timeout: float = DEFAULT_COSYVOICE_TIMEOUT_SEC):
+        import os
+        self.model_dir = os.environ.get("COSYVOICE_MODEL_DIR") or model_dir
+        self.timeout = float(timeout)
+
+    def synth(self, text: str, out_wav: Path, voice: str) -> float:
+        import concurrent.futures
+        speaker = COSY_SPEAKER_BY_EDGE_VOICE.get(voice, "中文女")
+
+        def _do_inference() -> None:
+            import torch  # type: ignore
+            import torchaudio  # type: ignore
+            model = _cosy_model(self.model_dir)
+            results = list(model.inference_sft(text, speaker))
+            if not results:
+                raise RuntimeError("CosyVoice inference_sft 未返回任何音频片段")
+            speech = torch.cat([r["tts_speech"] for r in results], dim=1)
+            sample_rate = getattr(model, "sample_rate", 22050)
+            out_wav.parent.mkdir(parents=True, exist_ok=True)
+            torchaudio.save(str(out_wav), speech, sample_rate)
+
+        # 推理是同步阻塞调用，用线程做超时控制（跨平台）；超时后不再等待，判定为失败
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            fut = ex.submit(_do_inference)
+            try:
+                fut.result(timeout=self.timeout)
+            except concurrent.futures.TimeoutError as exc:
+                raise RuntimeError(f"本地推理超时（>{self.timeout}s），可在项目配置中调整 cosyvoice_timeout_sec") from exc
+        return mf.probe_duration(out_wav)
+
+
+class UnavailableTTS(TTSProvider):
+    """链上某个引擎无法构造（例如 edge-tts 未安装）：合成时直接报出原因，供降级链记录。"""
+
+    def __init__(self, name: str, reason: str):
+        self.name = name
+        self.reason = reason
+
+    def synth(self, text: str, out_wav: Path, voice: str) -> float:
+        raise RuntimeError(self.reason)
+
+
+class ChainTTS(TTSProvider):
+    """按顺序尝试引擎：前一个失败就用下一个。全部失败时，错误信息里列出每一个引擎的原因。"""
+
+    def __init__(self, engines: list):
+        if not engines:
+            raise ValueError("ChainTTS 至少需要一个引擎")
+        self.engines = engines
+        self.name = "+".join(e.name for e in engines)   # 链变化时缓存键随之变化
+        self.last_engine = None
+        self.last_errors: dict = {}
+
+    def synth(self, text: str, out_wav: Path, voice: str) -> float:
+        self.last_errors = {}
+        for eng in self.engines:
+            try:
+                dur = eng.synth(text, out_wav, voice)
+                self.last_engine = eng.name
+                return dur
+            except Exception as exc:  # noqa: BLE001 - 任何失败都归为“不可用”，走下一个引擎
+                self.last_errors[eng.name] = f"{type(exc).__name__}: {exc}"
+        self.last_engine = None
+        parts = [f"{n} 失败（{err}）" for n, err in self.last_errors.items()]
+        raise RuntimeError("；".join(parts))
+
+
 class EdgeTTS(TTSProvider):
     name = "edge-tts"
 
-    def __init__(self, timeout: int = 120):
+    def __init__(self, timeout: float = DEFAULT_EDGE_TTS_TIMEOUT_SEC):
         try:
             import edge_tts  # noqa: F401
         except ImportError as exc:

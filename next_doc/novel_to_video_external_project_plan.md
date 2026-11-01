@@ -991,3 +991,13 @@ Phase 2 是风险最高的一期（涉及外部视频 API、一致性核查、�
 - 错误抛出为 `RuntimeError`，被流水线按预期错误处理，阶段名会一并显示（如“C-6 配音：…”）。
 - 测试：`tests/test_edge_tts_errors.py`。
 - 与 `.claude/skills/novel-video-studio/scripts/tts_engine.py` 对比：两者调用的都是 `edge_tts.Communicate(...).save()`，差异主要在运行环境中的 edge-tts 版本。若该 skill 在同一台机器上可以正常配音，请在两个环境里分别执行 `pip show edge-tts` 对比版本。
+
+## 配音引擎链（与 novel-video-studio 一致）
+
+- 顺序与降级规则与 `.claude/skills/novel-video-studio/scripts/tts_engine.py` 的 `synthesize()` 一致：先 `cosyvoice`，任何失败（未安装、模型缺失、推理异常、超时）降级到 `edge-tts`。
+- 配置来自项目 `project.json` 的 `tts` 块：`engine`（默认 cosyvoice）、`fallback`（默认 edge-tts，null 为不降级）、`cosyvoice_model_dir`、`cosyvoice_timeout_sec`（60）、`edge_tts_timeout_sec`（45）。`providers.tts` 写 `stub` 时使用静音引擎，只用于流程验证，不进入降级链。
+- 只支持 edge-tts 作为降级引擎，其他值在配置时报错（与 skill 的限制一致）。
+- 实现：`providers/tts.py`（`CosyVoiceTTS`、`EdgeTTS`、`ChainTTS`、`UnavailableTTS`）、`providers/factory.py`（`make_tts_provider(name, tts_cfg)`）、`tool_api.py`（`_providers_for`）、`steps/chapter_audio.py`（记录每段引擎、降级原因、章节引擎使用汇总）。
+- 日志：每段配音记录实际引擎；第一次降级时写一条警告，包含各引擎失败原因；章节结束时打印“配音引擎使用：…”。
+- 注意：CosyVoice 的说话人按性别映射（中文男 / 中文女），不使用 edge-tts 的音色名。
+- 测试：`tests/test_tts_chain.py`。
