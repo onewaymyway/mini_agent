@@ -135,9 +135,23 @@ def test_every_text_call_is_traced_with_full_input_and_output(proj):
     assert r["step"] == "C-1" and r["ok"] is True and r["provider"] == "rec"
     assert r["prompt"] == llm.calls[0]["prompt"] and r["system"] == prompts.SYSTEM_SCRIPT
     assert r["response"].startswith('{"script"')          # 原始输出，未经解包
-    # 实时日志里能直接看到返回的开头
+    # 实时日志打印完整的输入与输出，不截断
     msgs = [x["message"] for x in joblog.tail(proj, scopes=["chapter"])]
-    assert any("收到" in m and '返回开头：{"script"' in m for m in msgs), msgs
+    assert any("发送给模型的完整内容" in m and llm.calls[0]["prompt"] in m
+               and prompts.SYSTEM_SCRIPT in m for m in msgs), msgs
+    assert any("模型返回的完整内容" in m and r["response"] in m for m in msgs), msgs
+
+
+def test_live_log_prints_long_io_without_truncation(proj):
+    big = "### 场次 1｜a·b（内景）\n" + "旁白：" + "长" * 5000 + "\n"
+    llm_trace.ask_traced(proj, RecLLM(big), "问" * 4000, system="s", scope="chapter", label="长调用",
+                         step="C-1", chapter=1)
+    rows = joblog.tail(proj, scopes=["chapter"])
+    sent = next(r for r in rows if "发送给模型的完整内容" in r["message"])
+    got = next(r for r in rows if "模型返回的完整内容" in r["message"])
+    assert "问" * 4000 in sent["message"] and big in got["message"]
+    shown = joblog.format_row(got)
+    assert "长" * 5000 in shown and "    │ ### 场次 1｜" in shown   # 续行加前缀，整段都在
 
 
 def test_trace_records_exceptions_and_reraises(proj):

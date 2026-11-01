@@ -6,7 +6,7 @@
   * scope   来源页面（chapter / assets），与 joblog 的 scope 一致；
   * chapter 章节号（全书级调用为 null）；
   * step    步骤标识（C-1 / C-3 / C-5 / G-2）。
-同时向实时日志写一行摘要（字数与返回内容的开头），长时间运行时也能立刻发现“返回的不是预期格式”。
+同时向实时日志打印完整的输入（调用前）与输出（调用后），不截断，运行中就能发现“返回的不是预期格式”。
 
 不记录任何 key；单个字段超过 MAX_FIELD_CHARS 时截断并标注。
 """
@@ -57,6 +57,10 @@ def ask_traced(project_dir: Path, text_llm: Any, prompt: str, *, system: str = "
     base = {"ts": datetime.now().isoformat(timespec="seconds"), "scope": scope, "chapter": chapter,
             "step": step, "label": label, "provider": getattr(text_llm, "name", "?"),
             "system": _clip(system), "prompt": _clip(prompt)}
+    # 实时日志打印完整内容（不截断）：调用前先打印输入，等待模型期间就能核对发出去的是什么
+    joblog.log(project_dir, scope,
+               f"{label}：发送给模型的完整内容（提示词 {len(prompt)} 字，系统提示 {len(system)} 字）\n"
+               f"【系统提示】\n{system or '（无）'}\n【提示词】\n{prompt}")
     try:
         response = text_llm.ask(prompt, system=system)
     except Exception as exc:
@@ -68,7 +72,7 @@ def ask_traced(project_dir: Path, text_llm: Any, prompt: str, *, system: str = "
     _append(project_dir, {**base, "response": _clip(response), "seconds": round(time.monotonic() - t0, 2),
                           "ok": True, "error": None})
     joblog.log(project_dir, scope,
-               f"{label}：已发送 {len(prompt)} 字，收到 {len(response)} 字；返回开头：{preview(response)}")
+               f"{label}：模型返回的完整内容（{len(response)} 字，{time.monotonic() - t0:.1f} 秒）\n{response}")
     return response
 
 

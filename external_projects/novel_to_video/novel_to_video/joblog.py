@@ -55,7 +55,8 @@ def tail(project_dir: Path, limit: int = 200, scopes: Optional[Iterable[str]] = 
 def format_row(row: Dict[str, Any]) -> str:
     mark = {"info": "  ", "ok": "✔ ", "warn": "⚠ ", "error": "✘ "}.get(row.get("level"), "  ")
     ts = str(row.get("ts", ""))[11:19]
-    return f"{ts} {mark}{row.get('message', '')}"
+    first, *rest = str(row.get("message", "")).split("\n")
+    return "\n".join([f"{ts} {mark}{first}"] + [f"    │ {ln}" for ln in rest])
 
 
 # ---------------------------------------------------------------- 线程绑定与输出转发
