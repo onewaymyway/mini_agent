@@ -103,7 +103,8 @@ def make_tts_provider(name: Optional[str] = None, tts_cfg: Optional[dict] = None
                                         timeout=cfg.get("cosyvoice_timeout_sec") or DEFAULT_COSYVOICE_TIMEOUT_SEC))
         else:
             try:
-                engines.append(EdgeTTS(timeout=cfg.get("edge_tts_timeout_sec") or DEFAULT_EDGE_TTS_TIMEOUT_SEC))
+                engines.append(EdgeTTS(timeout=cfg.get("edge_tts_timeout_sec") or DEFAULT_EDGE_TTS_TIMEOUT_SEC,
+                                       proxy=cfg.get("edge_tts_proxy") or None))
             except RuntimeError as exc:
                 if len(order) == 1:
                     raise ProviderError(str(exc)) from exc

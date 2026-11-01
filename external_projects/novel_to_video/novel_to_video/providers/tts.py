@@ -170,26 +170,60 @@ class ChainTTS(TTSProvider):
         raise RuntimeError("；".join(parts))
 
 
+PROXY_SYSTEM = None       # 默认：沿用系统/环境变量里的代理设置
+PROXY_DIRECT = "direct"   # 强制直连：忽略环境变量与系统代理
+
+
+class _no_system_proxy:
+    """在一次 edge-tts 调用期间，让 aiohttp 不再读取系统代理（含环境变量与 Windows 注册表）。
+    aiohttp 通过 aiohttp.client.get_env_proxy_for_url 查找代理；这里临时替换它，结束后恢复。
+    注意：这是进程内的临时替换，适合单线程的配音流程；并发调用时请勿同时使用其他依赖系统代理的请求。"""
+
+    def __enter__(self):
+        import aiohttp.client as _client
+
+        def _direct(url):
+            raise LookupError("强制直连：不使用系统代理")
+        self._mod = _client
+        self._orig = _client.get_env_proxy_for_url
+        _client.get_env_proxy_for_url = _direct
+        return self
+
+    def __exit__(self, *exc):
+        self._mod.get_env_proxy_for_url = self._orig
+        return False
+
+
 class EdgeTTS(TTSProvider):
     name = "edge-tts"
 
-    def __init__(self, timeout: float = DEFAULT_EDGE_TTS_TIMEOUT_SEC):
+    def __init__(self, timeout: float = DEFAULT_EDGE_TTS_TIMEOUT_SEC, proxy: str | None = PROXY_SYSTEM):
         try:
             import edge_tts  # noqa: F401
         except ImportError as exc:
             raise RuntimeError("未安装 edge-tts：pip install edge-tts") from exc
         self.timeout = timeout
+        # proxy: None = 系统代理；"direct" = 强制直连；其他字符串 = 指定代理地址（如 http://127.0.0.1:7890）
+        self.proxy = proxy
 
     def synth(self, text: str, out_wav: Path, voice: str) -> float:
         import edge_tts
         mp3 = out_wav.with_suffix(".mp3")
         mp3.parent.mkdir(parents=True, exist_ok=True)
 
+        direct = (self.proxy or "").strip().lower() == PROXY_DIRECT
+        explicit = None if (not self.proxy or direct) else self.proxy
+
         async def _run():
-            await asyncio.wait_for(edge_tts.Communicate(text, voice).save(str(mp3)), self.timeout)
+            comm = edge_tts.Communicate(text, voice, proxy=explicit)
+            await asyncio.wait_for(comm.save(str(mp3)), self.timeout)
 
         try:
-            asyncio.run(_run())
+            if direct:
+                with _no_system_proxy():
+                    asyncio.run(_run())
+            else:
+                asyncio.run(_run())
         except asyncio.TimeoutError as exc:
             raise RuntimeError(f"edge-tts 在线请求超时（>{self.timeout}s）：网络不通、被墙或服务端无响应。"
                                "可检查网络或代理设置后重试。") from exc

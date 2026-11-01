@@ -632,6 +632,25 @@ def set_script_retries(project_dir: str, retries: int) -> Dict[str, Any]:
     return _set_retries(project_dir, "script_max_retries", "剧本", retries)
 
 
+def set_tts_proxy(project_dir: str, mode: Optional[str]) -> Dict[str, Any]:
+    """配音（edge-tts）的网络方式：None = 系统代理（默认）；"direct" = 强制直连，不使用任何代理；
+    其他字符串 = 指定代理地址，如 http://127.0.0.1:7890。"""
+    pdir = Path(project_dir)
+    value = (mode or "").strip() or None
+    if value and value != "direct" and not (value.startswith("http://") or value.startswith("socks")):
+        return _fail("代理地址应为 direct，或以 http:// / socks 开头")
+    try:
+        proj = ps.read_json(pdir / "project.json")
+    except (OSError, ValueError) as exc:
+        return _fail(str(exc))
+    tts = dict(proj.get("tts") or {})
+    tts["edge_tts_proxy"] = value
+    proj["tts"] = tts
+    ps.write_json_atomic(pdir / "project.json", proj)
+    ps.append_progress(pdir, f"配音网络方式设为 {value or '系统代理'}")
+    return _ok({"edge_tts_proxy": value})
+
+
 def set_shots_retries(project_dir: str, retries: int) -> Dict[str, Any]:
     """镜头规划校验失败后自动带反馈修正的次数（默认 5；0 = 不修正、直接失败；上限 5）。"""
     return _set_retries(project_dir, "shots_max_retries", "镜头规划", retries)

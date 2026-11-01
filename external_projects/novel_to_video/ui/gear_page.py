@@ -59,6 +59,17 @@ def page_gear() -> None:
         bad = next((r for r in res if not r["ok"]), None)
         (st.error if bad else st.success)(bad["error"]["message"] if bad else "已保存")
 
+    st.markdown("#### 配音网络")
+    cur_proxy = (proj_cfg.get("tts") or {}).get("edge_tts_proxy")
+    modes = ["系统代理（默认）", "强制直连（不使用任何代理）"]
+    idx = 1 if cur_proxy == "direct" else 0
+    picked = st.radio("edge-tts 连接方式", modes, index=idx, horizontal=True, key="gear_tts_proxy",
+                      help="如果系统里设置了代理，而代理不允许访问微软语音服务，会出现 403。选择强制直连可绕过系统代理。")
+    if (picked == modes[1]) != (idx == 1) and st.button("保存配音网络", key="gear_tts_proxy_save"):
+        res = tool_api.set_tts_proxy(pdir, "direct" if picked == modes[1] else None)
+        (st.success if res["ok"] else st.error)("已保存" if res["ok"] else res["error"]["message"])
+    st.caption("只影响 edge-tts 配音。若要使用指定代理地址，请在项目配置 tts.edge_tts_proxy 中填写。")
+
     st.markdown("#### 检查点策略")
     st.dataframe([{"检查点": cp, **{g: ("自动" if pol["table"][g][cp] == "auto" else "手动") for g in pol["gears"]}}
                   for cp in pol["table"]["G0"]], hide_index=True, width='stretch')

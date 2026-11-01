@@ -10,7 +10,7 @@ ERR_403 = ("403, message='Invalid response status', url='wss://speech.platform.b
 
 
 class _Fail:
-    def __init__(self, text, voice):
+    def __init__(self, text, voice, proxy=None):   # 与真实 edge_tts.Communicate 的签名一致
         pass
 
     async def save(self, path):

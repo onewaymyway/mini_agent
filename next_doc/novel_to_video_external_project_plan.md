@@ -1001,3 +1001,15 @@ Phase 2 是风险最高的一期（涉及外部视频 API、一致性核查、�
 - 日志：每段配音记录实际引擎；第一次降级时写一条警告，包含各引擎失败原因；章节结束时打印“配音引擎使用：…”。
 - 注意：CosyVoice 的说话人按性别映射（中文男 / 中文女），不使用 edge-tts 的音色名。
 - 测试：`tests/test_tts_chain.py`。
+
+## edge-tts 网络方式（直连 / 代理）
+
+- 现场：edge-tts 报 403，且系统设置了代理。代理不允许访问 speech.platform.bing.com 时就会出现 403。
+- 配置 `tts.edge_tts_proxy`：
+  - `null`（默认）：沿用系统或环境变量里的代理；
+  - `"direct"`：强制直连。调用期间临时让 aiohttp 不读取系统代理（包括环境变量与 Windows 注册表），结束后恢复，失败时也会恢复；
+  - 其他字符串：指定代理地址（如 `http://127.0.0.1:7890`），原样传给 edge-tts。
+- 挡位页“配音网络”可切换 系统代理 / 强制直连。
+- 注意：强制直连是进程内的临时替换，只适合单线程的配音流程。
+- 实现：`providers/tts.py`（`_no_system_proxy`、`EdgeTTS(proxy=...)`）、`providers/factory.py`、`tool_api.py`（`set_tts_proxy`）、`ui/gear_page.py`、`project_store.py`（默认配置）。
+- 测试：`tests/test_edge_tts_proxy.py`。
