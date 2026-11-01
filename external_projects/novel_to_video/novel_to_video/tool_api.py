@@ -449,3 +449,43 @@ def compose_book(project_dir: str, *, transition: str = "cut", use_cover: Option
     except Exception as exc:
         return _fail(str(exc))
     return _ok(res)
+
+
+# ---------------------------------------------------------------- 驾驶舱：后台运行与状态
+
+from . import runtime as _rt
+from . import cockpit as _ck
+
+
+def cockpit_status(project_dir: str) -> Dict[str, Any]:
+    try:
+        return _ok(_ck.build_cockpit(Path(project_dir)))
+    except Exception as exc:
+        return _fail(f"读取驾驶舱失败：{exc}")
+
+
+def start_queue_background(project_dir: str, numbers: Optional[List[int]] = None,
+                           gear: Optional[str] = None) -> Dict[str, Any]:
+    """在后台线程运行队列（驾驶舱使用）。锁被占用时立即返回失败，不阻塞界面。"""
+    pdir = Path(project_dir)
+    try:
+        proj = ps.read_json(pdir / "project.json")
+        g = _gates.normalize_gear(gear or proj.get("gear"))
+        rows = ps.load_project(pdir)["chapters"]
+    except Exception as exc:
+        return _fail(f"读取项目失败：{exc}")
+    targets = [r["no"] for r in rows if r.get("selected")] if numbers is None else numbers
+    if not targets:
+        return _fail("没有选中的章节")
+    res = _rt.start_background(pdir, targets, g, lambda: _run_queue_locked(project_dir, targets, gear=g))
+    if not res["ok"]:
+        return _fail(res["error"])
+    return _ok({"started": True, "chapters": targets, "gear": g})
+
+
+def stop_queue(project_dir: str) -> Dict[str, Any]:
+    pdir = Path(project_dir)
+    if not _rt.read_state(pdir).get("state") in ("running", "stopping"):
+        return _fail("当前没有正在运行的队列")
+    _rt.request_stop(pdir)
+    return _ok({"stop_requested": True})

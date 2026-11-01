@@ -17,6 +17,7 @@ import streamlit as st  # noqa: E402
 
 from ui.assets_page import page_assets  # noqa: E402
 from ui.auto_added_page import page_auto_added  # noqa: E402
+from ui.cockpit_page import page_cockpit  # noqa: E402
 from ui.final_page import page_final  # noqa: E402
 from ui.gender_page import page_gender  # noqa: E402
 from ui.gear_page import page_gear  # noqa: E402
@@ -25,6 +26,7 @@ from ui.import_page import page_import  # noqa: E402
 from ui.projects_page import page_projects  # noqa: E402
 
 PAGES = {
+    "🧭 驾驶舱": page_cockpit,
     "📥 导入导出目录": page_import,
     "📚 项目列表": page_projects,
     "🎭 全书素材": page_assets,

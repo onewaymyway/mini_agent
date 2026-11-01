@@ -12,6 +12,8 @@ APP = str(Path(__file__).resolve().parent.parent / "app.py")
 def test_app_renders_import_page():
     at = AppTest.from_file(APP, default_timeout=30).run()
     assert not at.exception
+    at.sidebar.radio[0].set_value("📥 导入导出目录").run()
+    assert not at.exception
     assert any("导入 novel_writer 导出目录" in h.value for h in at.header)
 
 
@@ -19,6 +21,7 @@ def test_check_and_create_flow(tmp_path):
     src = build_export(tmp_path / "src")
     out = tmp_path / "out"
     at = AppTest.from_file(APP, default_timeout=60).run()
+    at.sidebar.radio[0].set_value("📥 导入导出目录").run()
     at.text_input(key="imp_src").input(str(src)).run()
     at.text_input(key="imp_root").input(str(out)).run()
     at.button(key="imp_check").click().run()

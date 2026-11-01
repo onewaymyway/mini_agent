@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional
 
 from . import chapter_io as cio
 from . import gates
+from . import runtime as rt
 from . import shot_review as sr
 from .call_log import count_calls
 from .project_store import append_progress, load_project, read_json
@@ -134,11 +135,15 @@ def run_queue(project_dir: Path, numbers: List[int], *, gear: str, run_one) -> D
     halted: Optional[str] = None
     started = time.monotonic()
     for no in numbers:
+        if rt.stop_requested(project_dir):
+            halted = "用户请求停止"
+            break
         reason = check_budget(project_dir, gear, budget)
         if reason:
             halted = reason
             break
         t0 = time.monotonic()
+        rt.begin_chapter(project_dir, no)
         res = run_one(no)
         _add_minutes(project_dir, (time.monotonic() - t0) / 60.0)
         res = _recover_failure(project_dir, no, gear, res, run_one, budget, results)
@@ -149,5 +154,6 @@ def run_queue(project_dir: Path, numbers: List[int], *, gear: str, run_one) -> D
                 res = run_one(no)  # 自动通过后继续推进到合成
                 res["auto_approved"] = approved
         results[no] = res
+        rt.note_chapter(project_dir, no, res)
     return {"results": results, "halted": halted, "gear": gear,
             "elapsed_sec": round(time.monotonic() - started, 2)}
