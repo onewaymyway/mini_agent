@@ -102,6 +102,25 @@ _LABEL_END = re.compile(r"^(?:$|[：:（(\s*】])")
 NOTE_START_MAX_LEN = 100
 
 
+# 模型误写进文件的工具调用/标记残留：独占一行的 </parameter>、</intext>、<content> 等
+_STRAY_TAG = re.compile(
+    r"^\s*</?(?:parameter|intext|content|invoke|function_calls|function_results|file_text|new_string|old_string|"
+    r"tool_use|tool_result|result|output|antml:[\w\-]+)(?:\s[^<>]*)?>\s*$", re.I)
+# 括号包住的整行：「（本章无待兑现伏笔）」「（无）」——备注字段值常这样单独成行
+_BRACKETED = re.compile(r"^\s*[（(【\[].{0,60}[）)】\]]\s*$")
+
+
+def is_stray_tag(line: str) -> bool:
+    """是否为独占一行的工具调用残留标签（如 `</parameter>`、`</intext>`）。"""
+    return bool(_STRAY_TAG.match(line))
+
+
+def strip_stray_tags(lines: Sequence[str]) -> Tuple[List[str], int]:
+    """删除所有工具调用残留标签行，返回 (剩余行, 删除数)。"""
+    kept = [l for l in lines if not is_stray_tag(l)]
+    return kept, len(lines) - len(kept)
+
+
 def is_framework_marker(line: str) -> bool:
     """是否为框架追加的「[full output saved — …]」截断提示行。"""
     return bool(_FRAMEWORK_MARKER.match(line))
@@ -152,8 +171,18 @@ def _in_note_block(line: str) -> bool:
         return True
     if s.startswith(("-", "•", "✓", "✗", "×", "✔", "*", "[")):
         return True
-    return (is_framework_marker(line) or bool(_BOLD_LABEL.match(line)) or is_note_start(line)
-            or _is_field_line(line))
+    return (is_framework_marker(line) or is_stray_tag(line) or bool(_BOLD_LABEL.match(line))
+            or bool(_BRACKETED.match(line)) or is_note_start(line) or _is_field_line(line))
+
+
+def _is_value_line(lines: Sequence[str], block_start: int, idx: int) -> bool:
+    """备注字段的值单独成行：上一行有内容的行是以冒号结尾的标签（「兑现伏笔（id）：」），本行较短，则本行是它的值。"""
+    if len(lines[idx].strip()) > 80:
+        return False
+    for k in range(idx - 1, block_start - 1, -1):
+        if lines[k].strip() and lines[k].strip() not in _SEPARATORS:
+            return norm(lines[k]).endswith(("：", ":"))
+    return False
 
 
 def find_note_blocks(lines: Sequence[str]) -> List[Tuple[int, int]]:
@@ -170,7 +199,9 @@ def find_note_blocks(lines: Sequence[str]) -> List[Tuple[int, int]]:
             while start > 0 and (not lines[start - 1].strip() or lines[start - 1].strip() in _SEPARATORS):
                 start -= 1
             end = i + 1
-            while end < n and _in_note_block(lines[end]):
+            while end < n:
+                if not _in_note_block(lines[end]) and not _is_value_line(lines, i, end):
+                    break
                 end += 1
             blocks.append((start, end))
             i = end
@@ -209,6 +240,9 @@ def layout_problems(text: str) -> List[str]:
     if markers:
         issues.append(f"章节文件中混入了 {markers} 处「[full output saved …]」工具截断提示：删除这些行，"
                       "并按提示里的路径读取完整原文，核对正文是否被截断后补全")
+    tags = sum(1 for l in lines if is_stray_tag(l))
+    if tags:
+        issues.append(f"章节文件中混入了 {tags} 行工具调用残留标签（如 </parameter>、</intext>）：直接删除这些行")
     blocks = find_note_blocks(lines)
     # 紧挨着的两个备注块会被合并成一个区间，所以同时按「写作备注」标题的个数判断
     heads = sum(1 for l in lines if norm(l).startswith("写作备注"))

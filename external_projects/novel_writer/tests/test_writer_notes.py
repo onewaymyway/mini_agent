@@ -132,3 +132,9 @@ def test_notes_strict_is_off_by_default_and_escalates_layout_problems_when_on(tm
 
     strict = C.machine_findings(ws, 1, {"notes_strict": True})
     assert any("写作备注位置不规范" in h and "之后仍有" in h for h in strict["hard"])
+
+
+def test_layout_problems_flag_stray_tool_tags():
+    text = "# 第1章\n\n" + PROSE + "\n\n" + WN.render_notes(FIELDS) + "\n</parameter>\n"
+    assert any("工具调用残留标签" in i for i in WN.layout_problems(text))
+    assert not any("之后仍有" in i for i in WN.layout_problems(text))     # 标签属于杂质，不算「备注后的正文」

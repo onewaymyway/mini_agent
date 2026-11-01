@@ -13,7 +13,8 @@
    冒号、括号等标签结束符）开始，吸收标题、列表、缩进行、加粗标签行，直到恢复成正文段落为止。
    备注块可以在文件中间（备注后又被追加了内容）；块内某一行长得像正文也不会让整块漏切。
    备注块之后仍有正文时，正文保留，并记为高优先级警告（多半是重复/追加的结尾，需人工确认）。
-4. 框架追加的「[full output saved — …]」截断提示行全部删除，并警告该章可能基于被截断的输出写入。
+4. 框架追加的「[full output saved — …]」截断提示行、模型误写的 `</parameter>` `</intext>` 等工具调用残留标签行全部删除，
+   并警告该章写入时输出被污染/截断，请核对完整性。
 5. 末尾的「第X章 完」「（本章完）」收尾标记删除。
 6. 切除后仍残留备注样式的行，记为警告，不会静默通过。
 清洗后正文为空，或切除行为异常时，该章记入 errors 并跳过，不会把备注写进最终稿。
@@ -108,12 +109,17 @@ def clean_chapter(raw: str, *, number: int, fallback_title: str = "") -> Tuple[s
     if marker_count:
         warnings.append(f"第{number}章含 {marker_count} 处工具截断提示行（[full output saved …]），已删除；"
                         "该章可能基于被截断的输出写入，请核对正文是否完整")
+    body, tag_count = WN.strip_stray_tags(body)
+    if tag_count:
+        warnings.append(f"第{number}章含 {tag_count} 行工具调用残留标签（如 </parameter>），已删除；"
+                        "说明写入时输出被污染，请核对章节是否完整")
     blocks = WN.find_note_blocks(body)
     after = WN.content_after_first_block(body, blocks)
+    first_after = next((l.strip() for l in body[blocks[0][1]:] if l.strip() and l.strip() not in _SEPARATORS), "") if blocks else ""
     body, _ = WN.strip_note_blocks(body)
     if after:
         warnings.append(f"第{number}章写作备注块之后仍有 {after} 行正文，已保留；"
-                        "疑似重复或追加的结尾，请人工确认是否需要删除")
+                        f"疑似重复或追加的结尾（从「{first_after[:20]}」起），请人工确认是否需要删除")
     body = _strip_blank_and_separators(body)
     while body and _END_MARK.match(body[-1].strip()):
         body.pop()

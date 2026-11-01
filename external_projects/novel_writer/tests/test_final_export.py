@@ -210,3 +210,31 @@ def test_plain_label_field_whose_value_starts_with_a_quote_is_note():
     assert "钩子文本" not in text and "写作备注" not in text and "chapter_type" not in text
     assert "影子说" in text                       # 正文里的对白不能误删
     assert warn == []
+
+
+# ── 回归：第4/8/47章 ────────────────────────────────────────────────────────
+
+def test_field_value_on_its_own_line_after_a_label_is_part_of_the_note():
+    """第4章：「兑现伏笔（id）：」下一行单独写值「（本章无待兑现伏笔）」，这一行也属于备注。"""
+    raw = (PROSE + "\n\n---\n\n**写作备注**\n\n实际字数：约4120（中文）\n\n埋设伏笔（id）：\n- fs_003源头：已确认\n\n"
+           "兑现伏笔（id）：\n（本章无待兑现伏笔）\n\n角色状态变化：\n- 林远：被标记为异常\n\n章末钩子类型：悬念钩子——退路已断\n")
+    text, warn = clean_chapter(raw, number=4, fallback_title="旧城区遗迹")
+    assert "本章无待兑现" not in text and "写作备注" not in text and "章末钩子" not in text
+    assert PROSE in text and warn == []
+
+
+@pytest.mark.parametrize("tag", ["</intext>", "</parameter>"])
+def test_stray_tool_call_tags_are_removed_with_warning(tag):
+    """第8章 `</intext>`、第47章 `</parameter>`：模型把工具调用标记写进了文件末尾。"""
+    raw = PROSE + "\n\n---\n\n## 写作备注\n\n- 实际字数：4128\n- chapter_type：conflict\n- 章末钩子类型：代价钩子\n\n" + tag + "\n"
+    text, warn = clean_chapter(raw, number=8, fallback_title="觉醒")
+    assert tag not in text and "写作备注" not in text and PROSE in text
+    assert any("工具调用残留标签" in w for w in warn)
+    assert not any("备注块之后" in w for w in warn)
+
+
+def test_bracketed_line_in_body_without_a_note_block_is_kept():
+    """没有备注块时，括号包住的整行是正文，不能误删。"""
+    raw = PROSE + "\n\n（他笑了笑。）\n\n" + PROSE + "\n"
+    text, _ = clean_chapter(raw, number=6, fallback_title="括号")
+    assert "（他笑了笑。）" in text
