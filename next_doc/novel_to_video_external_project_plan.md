@@ -978,3 +978,16 @@ Phase 2 是风险最高的一期（涉及外部视频 API、一致性核查、�
 - 测试：`tests/test_failure_reasons.py`。
 
 实现：`chapter_pipeline.py`（`STAGE_NAMES`、`run_chapter` 的异常分支）、`tool_api.py`（`run_chapter`）、`batch.py`（队列结束行）。
+
+## 配音（edge-tts）失败的原因说明
+
+- 现场：C-6 配音报 `WSServerHandshakeError: 403`，来自 Microsoft 在线语音服务的握手校验，多数情况是 edge-tts 版本过旧。
+- `requirements.txt` 声明 `edge-tts>=7.2`（沙箱中可获取的最新版本为 7.3.1；未能在沙箱内对真实服务做联机验证）。
+- `providers/tts.py` 把错误翻译成可操作的说明：
+  - 403：提示执行 `pip install -U edge-tts`，并附上当前版本与原始错误；
+  - DNS / 网络不通：提示检查网络或代理；
+  - 超时：提示超时阈值与网络；
+  - 其他：保留原始异常类型与信息。
+- 错误抛出为 `RuntimeError`，被流水线按预期错误处理，阶段名会一并显示（如“C-6 配音：…”）。
+- 测试：`tests/test_edge_tts_errors.py`。
+- 与 `.claude/skills/novel-video-studio/scripts/tts_engine.py` 对比：两者调用的都是 `edge_tts.Communicate(...).save()`，差异主要在运行环境中的 edge-tts 版本。若该 skill 在同一台机器上可以正常配音，请在两个环境里分别执行 `pip show edge-tts` 对比版本。
