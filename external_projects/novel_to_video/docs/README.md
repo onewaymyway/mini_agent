@@ -17,7 +17,7 @@ python entrypoints/health.py        # 输出 ok 即健康
 ### 界面
 
 ```bash
-streamlit run app.py
+streamlit run app.py --server.port 8505
 ```
 
 1. 打开「导入导出目录」，填写导出目录路径；
