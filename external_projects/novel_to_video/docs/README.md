@@ -1,6 +1,6 @@
 # novel_to_video 使用说明
 
-把 `novel_writer` 导出的小说转换为竖屏短剧视频的工作台。当前版本（Phase 0–4）完成导入、项目创建、全书级素材、单章流水线、多章队列、挡位 G0–G5、预算、修改分级回退，以及全书合成（封面、转场、成片校验）。Phase 5 为加固与真实 API 冒烟。
+把 `novel_writer` 导出的小说转换为竖屏短剧视频的工作台。当前版本（Phase 0–4）完成导入、项目创建、全书级素材、单章流水线、多章队列、挡位 G0–G5、预算、修改分级回退，以及全书合成（封面、转场、成片校验）。Phase 5 完成加固：项目运行锁与崩溃回收、key 池切换修复，并提供真实 API 冒烟脚本。
 
 ## 环境
 
@@ -217,4 +217,27 @@ python entrypoints/compose_book.py novel_output/<项目> --no-cover
 | G5 不停机 | 与 G3 相同；章节失败后重置失败阶段重试，最多 3 次 |
 
 G4 和 G5 都必须设置预算上限。全书合成在所有挡位下都需要人工确认。
+
+## 10. 真实 API 冒烟（Phase 5，需本机执行）
+
+投入整章生成前，先用最小花费确认接口可用：
+
+```bash
+# Windows PowerShell
+$env:AGNES_API_KEYS="key1,key2"
+# macOS / Linux
+export AGNES_API_KEYS="key1,key2"
+
+cd external_projects/novel_to_video
+python entrypoints/smoke_real_api.py --out smoke_out
+```
+
+脚本生成一张定妆图与一个 4 秒镜头，逐步输出结果。全部通过退出码为 0。若失败，把 JSON 输出（不含 key）反馈即可定位问题。仅测图像：加 `--skip-video`。
+
+## 11. 崩溃与恢复
+
+- 队列运行时会在项目目录写入 `.runlock`。正常结束会删除该文件。
+- 若进程被强制结束，遗留的锁会在下次运行时被识别并回收（持有进程已退出，或心跳超过 5 分钟）。
+- 遗留的 `running` 章节会回退到稳定状态（已有成片则为 done，有待审镜头则为 waiting_review，否则为 pending），之后可直接重新运行。
+- 同一项目不能被两个进程同时运行，第二个会收到“项目正在运行”的提示。
 

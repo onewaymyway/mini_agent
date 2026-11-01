@@ -302,6 +302,21 @@ def gear_policy() -> Dict[str, Any]:
 
 def run_queue(project_dir: str, numbers: Optional[List[int]] = None, *,
               gear: Optional[str] = None) -> Dict[str, Any]:
+    """按挡位批量运行选中章节（持有项目锁；锁被占用时拒绝）。"""
+    from . import runlock as _rl
+    pdir = Path(project_dir)
+    try:
+        _rl.acquire(pdir)
+    except _rl.LockBusy as exc:
+        return _fail(str(exc))
+    try:
+        return _run_queue_locked(project_dir, numbers, gear=gear)
+    finally:
+        _rl.release(pdir)
+
+
+def _run_queue_locked(project_dir: str, numbers: Optional[List[int]] = None, *,
+                      gear: Optional[str] = None) -> Dict[str, Any]:
     """按挡位批量运行选中章节。某章停止不影响其他章；预算超限则整批停止。"""
     pdir = Path(project_dir)
     try:
@@ -314,7 +329,10 @@ def run_queue(project_dir: str, numbers: Optional[List[int]] = None, *,
     if not targets:
         return _fail("没有选中的章节")
 
+    from . import runlock as _rl
+
     def run_one(no: int) -> Dict[str, Any]:
+        _rl.heartbeat(pdir)
         r = run_chapter(project_dir, no)
         return r["data"] if r["ok"] else {"status": "failed", "message": r["error"]["message"]}
 

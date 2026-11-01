@@ -74,8 +74,10 @@ class AgnesVideoProvider(VideoProvider):
         while attempts < self.max_retries:
             key = self.pool.acquire()
             if key is None:
+                # 全部 key 冷却：等待一次（计入尝试次数，防止无限空转），仍不可用则放弃
+                attempts += 1
                 wait = self.pool.min_wait()
-                if wait <= 0:
+                if wait <= 0 or attempts >= self.max_retries:
                     return None, ("所有 API key 均在冷却中", False)
                 self._sleep(min(wait, 120))
                 continue
@@ -110,10 +112,22 @@ class AgnesVideoProvider(VideoProvider):
         """返回视频 url；失败或超时抛 RuntimeError。"""
         waited = 0.0
         while waited < self.max_wait:
-            key = self.pool.acquire() or ""
+            key = self.pool.acquire()
+            if key is None:
+                # 全部 key 冷却中：等待最早恢复的 key，绝不用空 key 发请求
+                wait = self.pool.min_wait()
+                self._sleep(min(max(wait, 0.1), 120))
+                waited += max(wait, 0.1)
+                continue
             resp = self.session.get(self.query, params={"video_id": video_id, "model_name": self.model},
                                     headers=self._headers(key), timeout=60)
+            if is_rate_limit(resp.status_code, resp.text or ""):
+                self.pool.report_rate_limit(key)  # 冷却并切换，下一轮用新 key
+                self._sleep(self.poll_interval)
+                waited += self.poll_interval
+                continue
             body = resp.json() if resp.ok else {}
+            self.pool.report_success(key)
             status = body.get("status")
             if status == "completed":
                 url = body.get("video_url") or body.get("url")
