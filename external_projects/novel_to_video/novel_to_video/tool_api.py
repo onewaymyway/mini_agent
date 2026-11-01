@@ -14,7 +14,11 @@ from . import project_store as ps
 from .call_log import count_calls
 from .source_import import import_source
 from .steps import global_visual as gv
-from .providers.factory import ProviderError, make_image_provider, make_text_llm
+from .providers.factory import (ProviderError, make_image_provider, make_text_llm, make_tts_provider,
+                                make_video_provider)
+from . import chapter_io as cio
+from . import chapter_pipeline as cp
+from . import shot_review as sr
 
 
 def _ok(data: Any) -> Dict[str, Any]:
@@ -184,3 +188,83 @@ def edit_asset(project_dir: str, kind: str, eid: str, fields: Dict[str, Any]) ->
     except Exception as exc:
         return _fail(str(exc))
     return _ok(item)
+
+
+# ---------------------------------------------------------------- Phase 2：章节流水线
+
+def _providers_for(project_dir: Path) -> Dict[str, Any]:
+    p = _project_providers(project_dir)
+    return {
+        "text": make_text_llm(p.get("text")),
+        "image": make_image_provider(p.get("image")),
+        "video": make_video_provider(p.get("video")),
+        "tts": make_tts_provider(p.get("tts")),
+    }
+
+
+def run_chapter(project_dir: str, no: int, *, force_script: bool = False) -> Dict[str, Any]:
+    """运行单章 C-1…C-9（可重入）。返回 status 与 message，见 chapter_pipeline。"""
+    pdir = Path(project_dir)
+    try:
+        prov = _providers_for(pdir)
+    except ProviderError as exc:
+        return _fail(str(exc))
+    try:
+        res = cp.run_chapter(pdir, no, text_llm=prov["text"], image=prov["image"],
+                             video=prov["video"], tts=prov["tts"], force_script=force_script)
+    except Exception as exc:
+        return _fail(f"章节 {no} 运行异常：{exc}")
+    return _ok(res)
+
+
+def run_chapters(project_dir: str, numbers: Optional[List[int]] = None, *,
+                 force_script: bool = False) -> Dict[str, Any]:
+    """依次运行多章；某章停在 waiting_* 或 failed 时继续下一章，最后汇总。"""
+    pdir = Path(project_dir)
+    rows = ps.load_project(pdir)["chapters"]
+    targets = [r["no"] for r in rows if r.get("selected")] if numbers is None else numbers
+    results = {}
+    for no in targets:
+        results[no] = run_chapter(project_dir, no, force_script=force_script)
+    return _ok(results)
+
+
+def chapter_view(project_dir: str, no: int) -> Dict[str, Any]:
+    try:
+        return _ok(cp.chapter_view(Path(project_dir), no))
+    except Exception as exc:
+        return _fail(f"读取章节失败：{exc}")
+
+
+def chapters_overview(project_dir: str) -> Dict[str, Any]:
+    pdir = Path(project_dir)
+    try:
+        rows = ps.load_project(pdir)["chapters"]
+    except Exception as exc:
+        return _fail(str(exc))
+    return _ok([{"no": r["no"], "title": r["title"], "selected": r.get("selected"),
+                 "status": r.get("status"), "message": r.get("message")} for r in rows])
+
+
+def review_shot(project_dir: str, no: int, sid: str, action: str, note: str = "") -> Dict[str, Any]:
+    pdir = Path(project_dir)
+    try:
+        if action == "approve":
+            data = sr.approve(pdir, no, sid)
+        elif action == "reject":
+            data = sr.reject(pdir, no, sid, note)
+        else:
+            return _fail(f"未知审核动作：{action}")
+    except Exception as exc:
+        return _fail(str(exc))
+    return _ok(data)
+
+
+def edit_shot(project_dir: str, no: int, sid: str, *, visual_hint_en: Optional[str] = None,
+              visual_hint_zh: Optional[str] = None, block_texts: Optional[Dict[int, str]] = None) -> Dict[str, Any]:
+    try:
+        data = sr.edit(Path(project_dir), no, sid, visual_hint_en=visual_hint_en,
+                       visual_hint_zh=visual_hint_zh, block_texts=block_texts)
+    except Exception as exc:
+        return _fail(str(exc))
+    return _ok(data)

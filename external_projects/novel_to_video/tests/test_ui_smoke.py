@@ -57,3 +57,17 @@ def test_assets_page_renders_with_project(tmp_path, monkeypatch):
     assert not at.exception
     assert any("全书级素材（G-2 / G-3）" in h.value for h in at.header)
     assert any(b.key == "ok_p_character:char_001" for b in at.button)
+
+
+def test_chapter_page_renders(tmp_path, monkeypatch):
+    monkeypatch.setenv("NOVEL_TO_VIDEO_PROVIDERS", "stub")
+    src = build_export(tmp_path / "src", chapters=(1,))
+    out = tmp_path / "out"
+    from novel_to_video import tool_api
+    res = tool_api.create_project_from_source(str(out), str(src), title="书")
+    assert res["ok"]
+    at = AppTest.from_file(APP, default_timeout=60).run()
+    at.radio(key="nav").set_value("🎬 章节生产").run()
+    at.text_input(key="chap_root").input(str(out)).run()
+    assert not at.exception
+    assert any("章节生产（C-1 … C-9）" in h.value for h in at.header)

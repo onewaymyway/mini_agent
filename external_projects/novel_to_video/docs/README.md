@@ -1,6 +1,6 @@
 # novel_to_video 使用说明
 
-把 `novel_writer` 导出的小说转换为竖屏短剧视频的工作台。当前版本（Phase 0–1）完成导入、项目创建与全书级素材（角色/地点的视觉设定、声音设定与定妆图）；章节视频生成尚未接入（Phase 2）。
+把 `novel_writer` 导出的小说转换为竖屏短剧视频的工作台。当前版本（Phase 0–2）完成导入、项目创建、全书级素材（角色/地点的视觉设定、声音设定与定妆图），以及单章流水线（剧本 → 镜头 → 配音 → 小场景视频 → 逐镜审核 → 章节合成）。全书合成与封面转场属于 Phase 4。
 
 ## 环境
 
@@ -97,7 +97,47 @@ python entrypoints/build_assets.py novel_output/<项目> --stage portrait --ids 
 
 每个被生成或人工修改的字段都带有 `*_source` 标记：`miniagent`（真实 LLM）、`rules`（规则兜底，需审核）、`manual`（人工编辑）。导出包原有内容没有来源标记。
 
-## 5. 导入之后要做什么
+## 5. 章节生产（C-1 … C-9）
+
+### 配置
+
+- 视频：`AGNES_API_KEYS` 或 `AGNES_API_KEY`（与图像共用同一套 key）。
+- 配音：默认 edge-tts，需要 `pip install edge-tts` 并能访问微软语音服务；未安装时会提示错误。离线测试可用 `NOVEL_TO_VIDEO_PROVIDERS=stub`。
+- ffmpeg：需要在 PATH 中，或设置 `FFMPEG_BIN` / `FFPROBE_BIN`。
+- 单章目标时长在 `project.json` 的 `target_chapter_duration_sec` 中设置（默认 90 秒）。剧本会按 `时长 × 4.2 字/秒` 压缩口播字数，超过目标 1.6 倍即校验失败。
+
+### 运行
+
+```bash
+# 运行全部已选中章节（可重入，已完成的阶段会跳过）
+python entrypoints/run_chapter.py novel_output/<项目>
+
+# 只运行部分章节；--force-script 强制重新生成剧本
+python entrypoints/run_chapter.py novel_output/<项目> --chapters 1-3
+```
+
+输出 JSON，每章的 status 为：
+
+| status | 含义 | 下一步 |
+|---|---|---|
+| `waiting_assets` | 镜头里出现了库中没有的角色，或缺少定妆图 | 到「全书素材」页确认补建角色的文本设定与定妆图，再重新运行 |
+| `waiting_review` | 小场景视频已全部生成 | 到「章节生产」页逐镜审核，再重新运行 |
+| `failed` | 某阶段失败，`message` 说明原因 | 修正后重新运行 |
+| `done` | 章节成片 `chapters/NNN/chapter_NNN.mp4` 已生成 | — |
+
+### 界面
+
+「章节生产」页：选择章节 → 运行本章 → 查看阶段状态与剧本 → 逐个小场景预览视频与口播音频，然后：
+
+- 「通过」：确认该镜头；
+- 「驳回并重生成」：填写意见后删除旧视频，下次运行时重新生成；
+- 「编辑镜头内容」：修改英文画面描述、中文描述或口播文字。对白必须仍能在原文中逐字找到。保存后已通过的审核会变为「需重审」，需要重新运行本章。
+
+### 补建角色
+
+剧本中出现的新说话人会被自动起草为角色（`source: auto_added`，`auto_added_chapter` 为出现的章节号）。在全书素材页确认其文本设定和定妆图之前，本章不会进入配音和视频生成。
+
+## 6. 导入之后要做什么
 
 导入报告中的提示需要人工确认：
 

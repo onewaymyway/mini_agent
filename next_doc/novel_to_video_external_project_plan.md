@@ -1,6 +1,6 @@
 # 小说转短剧外部项目设计方案（novel_to_video）
 
-> 状态：**Phase 0、Phase 1 已完成（2026-11-01），按 Phase 2→5 继续实施**。路线、章节粒度、人设来源、剧本来源、外部依赖、审核粒度、封面与转场等决策点已由用户确认（见第 2 节）；第 13 节未决小问题按推荐项采用。实施记录见第 14 节。
+> 状态：**Phase 0、Phase 1、Phase 2 已完成（2026-11-01），按 Phase 3→5 继续实施**。路线、章节粒度、人设来源、剧本来源、外部依赖、审核粒度、封面与转场等决策点已由用户确认（见第 2 节）；第 13 节未决小问题按推荐项采用。实施记录见第 14 节。
 > 落地位置：`external_projects/novel_to_video/`（代码与项目说明）；本文件位于 `next_doc/novel_to_video_external_project_plan.md`。
 > 依据：`external_projects/novel_writer`（导出格式、外部项目结构、挡位 G0–G5、Streamlit 界面范式）、`.claude/skills/novel-video-studio`（短剧生产流水线、外部 API key 池机制、校验脚本范式）、`mini_agent.workflow` 的 `skill_agent` 调用模式。
 
@@ -451,8 +451,54 @@ Phase 2 是风险最高的一期（涉及外部视频 API、一致性核查、�
 - 设置 `AGNES_API_KEYS` 后执行 `build_assets.py <项目> --stage portrait --ids char_001`，确认返回图片可解码、保存成功；
 - 配置好 mini_agent 的 LLM 后执行 `--stage text --ids char_001`，检查 `visual_anchor_en` 是否与人设卡一致，并确认 `gender_source` 为 `miniagent`。
 
-### 14.3 后续阶段
+### 14.3 Phase 2：单章端到端（已完成，2026-11-01，离线 stub 验证）
 
-Phase 2 起按本文件第 11 节推进。每完成一期，在本节追加对应的实施记录（交付物、验收结果、相对原方案的偏差、未实现项）。
+**交付物**（位于 `external_projects/novel_to_video/novel_to_video/`）：
+
+| 文件 | 作用 |
+|---|---|
+| `chapter_io.py` | 章节路径、内容哈希、状态与共享数据读写 |
+| `steps/chapter_script.py` | C-1 剧本转换（带目标字数）、C-2 机械校验（对白逐字、场次连续、字数上限） |
+| `steps/chapter_shots.py` | C-3/C-4 镜头规划：对白逐字校验、超长口播切分、镜头估算时长不超过 10 秒 |
+| `steps/chapter_assets.py` | C-5 补建角色与门禁；C-8 前的定妆图完整性检查 |
+| `steps/chapter_audio.py` | C-6 配音：块级缓存，镜头时长 clamp 到 4–12 秒，超长标记为需拆分 |
+| `steps/chapter_clips.py` | C-7 提示词拼装与锚点机械一致性检查；C-8 小场景视频（参考图 + 音频，clip_key 缓存） |
+| `steps/chapter_compose.py` | C-9 章节合成（要求全部镜头通过审核） |
+| `chapter_pipeline.py` | 可重入的单章流水线，停止点 waiting_assets / waiting_review / failed / done；章节视图 |
+| `shot_review.py` | 小场景审核：通过、驳回重生成、编辑；内容变化后已通过的审核变为 stale |
+| `media/ffmpeg.py` | 统一输出 720×1280、24fps、H.264+AAC，所有片段带音轨 |
+| `providers/video.py` | Agnes 视频接口（多 key 池）与 StubVideoProvider |
+| `providers/tts.py` | EdgeTTS 与 SilenceTTS；按角色性别选音色 |
+| `tool_api.py`（扩展） | `run_chapter` / `run_chapters` / `chapter_view` / `chapters_overview` / `review_shot` / `edit_shot` |
+| `entrypoints/run_chapter.py` | 命令行入口 |
+| `ui/chapter_page.py` | 章节生产页：运行、停止点提示、逐镜预览与审核、编辑 |
+
+**验收结果**：
+
+- 真实导出包第 1 章（stub 模式）：剧本压缩到 359 字（目标 378 字），13 个小场景，人工全部通过后合成 `chapter_001.mp4`，时长 98.05 秒（目标 90 秒）。
+- 抽帧检查：成片可正常解码，画面为占位图的推近效果。
+- 测试 84 项通过（新增流水线全流程、补建角色门禁、对白篡改拦截、驳回与过期、视频接口 create/poll/429/非重试、ffmpeg 时长、界面渲染）。
+
+**相对原方案的偏差**：
+
+1. **遗漏并补上：剧本必须压缩到目标时长。** 设计阶段只写了"单章目标时长 90 秒"，没有约束剧本长度。实测第 1 章原文约 5000 字，口播约 20 分钟，远超目标。现在剧本提示词包含目标字数（时长 × 4.2 字/秒），校验超过 1.6 倍即失败，离线规则版也按目标截断。剧本缓存键加入了目标时长与版本号，修改设置后会自动重算。
+2. **C-3（大场景）与 C-4（小场景）合并为一次镜头规划**，由代码完成对白校验、切分与时长估算。没有实现 macro_scene 层，镜头直接按 scene_no 分组。
+3. **C-7 的一致性只做机械检查**（锚点原样出现在提示词中）。计划中的语义核查（画面是否符合情节）推迟到 Phase 5。
+4. **章节状态新增 waiting_assets / waiting_review 两个停止点**，流水线可重复运行，各阶段通过哈希判断是否需要重做。
+5. **小场景审核键为 clip_key**：审核时记录视频的 clip_key，之后任何改动（画面描述、台词、音频、参考图）都会使 clip_key 变化，已通过的审核自动变为 stale。驳回会删除旧视频并清空 clip_key。
+6. **补建角色门禁分两段**：先确认文本设定，再生成定妆图并确认，之后才进入配音与视频生成。门禁检查使用的是生成后重新读取的角色列表（修复了一处门禁检查读取过期数据的问题）。
+7. **TTS 默认 edge-tts，CosyVoice 未接入**。
+
+**未验证、需要本机冒烟的事项**：
+
+- Agnes 视频接口：请求与轮询结构依据 gen_video_with_text skill 实现，未在真实 key 下调用。建议先对单个镜头（4 秒）测试。
+- edge-tts：需要安装并能访问微软语音服务，未在本环境验证。
+- 真实文本模型：剧本转换、镜头规划、补建角色的输出质量未验证。镜头规划的 JSON 结构由校验函数强制检查，不合格会以错误形式返回而不是静默通过。
+
+**未实现（留给后续阶段）**：分级回退（改分镜自动清空整章后续，Phase 3）、挡位自动化（Phase 3）、语义一致性核查（Phase 5）、全书合成与封面（Phase 4）。
+
+### 14.4 后续阶段
+
+Phase 3 起按本文件第 11 节推进。每完成一期，在本节追加对应的实施记录（交付物、验收结果、相对原方案的偏差、未实现项）。
 
 *本文件为设计方案，实施前以本文件为准；实施过程中的偏差记入 `PROJECT.md` 的里程碑进度与已知限制。*

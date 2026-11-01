@@ -1,6 +1,6 @@
 # project.yaml — novel_to_video 与 daemon 之间的契约（字段规范见 src/mini_agent/external_projects/manifest.py）。
 #
-# 里程碑进度见 PROJECT.md。当前为 Phase 1：导入、全书级素材（G-2/G-3）。
+# 里程碑进度见 PROJECT.md。当前为 Phase 2：导入、全书级素材（G-2/G-3）、单章流水线（C-1…C-9）。
 # 本项目默认不登记任何 cron 调度；图像/视频生成属于高成本操作，需要用户在界面确认后手动触发。
 
 name: novel_to_video
@@ -15,13 +15,16 @@ entrypoints:
   build_assets:
     cmd: "python entrypoints/build_assets.py"
     timeout_sec: 3600
+  run_chapter:
+    cmd: "python entrypoints/run_chapter.py"
+    timeout_sec: 14400
 
 health_check:
   cmd: "python entrypoints/health.py"
 
 resources:
-  # Phase 1 起调用 Agnes 生图接口（apihub.agnes-ai.com），文本 LLM 由 mini_agent 宿主完成
-  allowed_domains: ["apihub.agnes-ai.com"]
+  # 调用 Agnes 生图/生视频接口（apihub.agnes-ai.com）；edge-tts 需要访问微软语音服务；文本 LLM 由 mini_agent 宿主完成
+  allowed_domains: ["apihub.agnes-ai.com", "speech.platform.bing.com"]
   max_concurrency: 1
 
 review:

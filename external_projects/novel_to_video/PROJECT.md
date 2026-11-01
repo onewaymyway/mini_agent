@@ -19,12 +19,12 @@
 |---|---|---|
 | Phase 0 脚手架与导入 | **已完成（2026-11-01）** | 只读导入 novel_writer 导出目录（章节/角色/地点/问题清单/指纹）；原子写入的项目目录创建；章节范围选择；dry-run 检查；项目列表与导出变更检测；Streamlit 导入页与项目页；入口 `import_novel` / `list_projects` / `health`；测试 40 项通过 |
 | Phase 1 全书级素材 | **已完成（2026-11-01，离线 stub 验证；真实 API 待本机 key 冒烟）** | G-2 视觉锚点/声音设定/缺失性别补全（逐实体、可断点续跑）；G-3 定妆图生成（Agnes 生图，多 key 池）；逐条审核、驳回重生成、人工编辑（改视觉字段自动标记定妆图过期）；全部通过后 `ready` 门禁；调用留痕 |
-| Phase 2 单章端到端 | 未开始 | C-1 至 C-9：剧本、分镜、补建分支、配音、提示词与一致性核查、小场景视频、章节合成 |
+| Phase 2 单章端到端 | **已完成（2026-11-01，离线 stub 全流程验证；真实视频/TTS/文本模型待本机冒烟）** | C-1…C-9：剧本压缩与校验、镜头规划、补建角色门禁、配音、提示词与机械一致性、小场景视频、逐镜审核、章节合成；可重入流水线与停止点 |
 | Phase 3 多章循环与挡位 | 未开始 | 章节排队、G0–G3 挡位、预算、修改分级回退与 stale 传播 |
 | Phase 4 全书合成与收尾 | 未开始 | F-1 至 F-4：章节检查、封面、全书拼接、成片校验、G4/G5 |
 | Phase 5 加固 | 未开始 | 桩全链路测试、真实 API 冒烟、崩溃恢复与 key 切换演练 |
 
-## 当前能力（Phase 0–1）
+## 当前能力（Phase 0–2）
 
 - `source_import.py`：读取导出目录，产出章节清单（章号、章名、字数、总结文件）、角色库（映射自 `设定/人物/角色/char_*.md`，补充人设卡「外在呈现」）、地点库（映射自 `设定/世界观/地点详情/*.md`）、问题清单（error / warning / info）与目录指纹。**不写任何文件。**
 - `project_store.py`：项目目录 `<书名>_<时间戳>`，原子写入 JSON/YAML，章节范围解析（`all`、`1-10`、`20-`、`3,7,9-12`），PROGRESS.md 只追加。
@@ -38,9 +38,29 @@
   - `steps/global_visual.py`：G-2（补全 visual_anchor_en、voice_profile，仅在缺失时补 gender）与 G-3（定妆图，版本化文件名）。
   - `review.py`：每个实体的文本/定妆图审核状态，存于 `global/review.json`。
   - `call_log.py`：外部调用留痕 `logs/api_calls.jsonl`（不含 key）。
+- Phase 2 新增：
+  - `steps/chapter_script.py`：C-1 剧本转换（按目标口播字数压缩）与 C-2 机械校验（对白必须逐字来自原文、场次连续、字数超标即失败）。
+  - `steps/chapter_shots.py`：C-3/C-4 镜头规划；对白逐字校验，超长口播按标点切分，单镜头估算不超过 10 秒。
+  - `steps/chapter_assets.py`：C-5 补建角色（LLM 起草 → 等待文本确认 → 生成定妆图 → 等待定妆图确认），定妆图缺失时硬性拦截 C-8。
+  - `steps/chapter_audio.py`：C-6 配音（按块缓存，镜头时长 clamp 到 4–12 秒）。
+  - `steps/chapter_clips.py`：C-7 提示词（代码拼装）与一致性机械检查；C-8 小场景视频（参考图 + 音频，clip_key 缓存）。
+  - `steps/chapter_compose.py`：C-9 章节合成，要求全部镜头审核通过。
+  - `chapter_pipeline.py`：可重入的单章流水线，停止点为 waiting_assets / waiting_review / failed / done。
+  - `shot_review.py`：小场景审核（通过、驳回重生成、编辑；内容变化后已通过的审核自动变为过期）。
+  - `media/ffmpeg.py`：统一输出 720×1280、24fps、H.264+AAC；所有片段都带音轨。
+  - `providers/video.py`：Agnes 视频接口（create → poll → download，多 key 池）与 `StubVideoProvider`（ffmpeg 静帧推近）。
+  - `providers/tts.py`：`EdgeTTS`（需安装 edge-tts）与 `SilenceTTS`（按字数估算时长的静音，离线用）。
 
 ## 已知限制
 
+- **Phase 2 只做了离线 stub 验证**：Agnes 视频接口、edge-tts、真实文本模型均未在真实环境下调用。接口结构依据 gen_video_with_text skill 与 edge-tts 文档实现，需本机冒烟后确认。
+- **离线剧本是截断式**：`rules` 模式只把原文压成旁白，没有对白，不具备制作质量，仅用于验证流程。
+- **一致性只做机械检查**：C-7 只确认提示词包含出镜角色与地点的视觉锚点，不做“画面是否符合情节”的语义核查（计划中的 Agent 语义核查留给 Phase 5 加固）。
+- **没有大场景（macro_scene）层**：镜头直接按场次（scene_no）分组，原方案 C-3 的大场景弹性时长未实现。
+- **镜头规划由模型一次给出**：超长或时长不合适的镜头只能人工编辑后重跑，尚未自动回到规划阶段重新拆分。
+- **CosyVoice 未接入**：TTS 目前为 edge-tts 与静音两种。
+- **章节成片的音画时长以镜头为准**：镜头 4–12 秒取整，章节总时长可能比目标多出几秒（实测 90 秒目标得到 98 秒）。
+- **修改回退只到镜头级**：驳回、编辑会正确失效下游，但没有实现 Phase 3 的分级回退（如“改分镜”自动清空整章后续）。
 - **导出包没有性别字段**：21 个角色的 `gender` 全部为 null。G-2 的真实文本模型会从资料推断并标记 `gender_source`；离线 `rules` 模式不推断，角色会保持“缺失性别”，无法通过 ready 门禁，需人工在界面补全。
 - **真实 API 未验证**：Phase 1 在沙箱中只跑了 stub（离线图像占位 + 规则文本）与单元测试；Agnes 生图的请求/响应结构按 gen_image_with_text skill 实现，但未在真实 key 下调用，需本机冒烟（建议先用 `--ids char_001` 生成一张）。
 - **G-2 产出需人工审核**：LLM 生成的 visual_anchor_en 与 voice_profile 可能与资料不符（如臆造服饰），必须逐条查看后再通过。
@@ -51,7 +71,6 @@
 - **年龄段阈值**为经验值：<13 child，<18 teen，<35 youth，<60 middle_aged，其余 elderly。
 - 章节目录统一三位补零（`chapters/001/`），与 `设计方案` 中的 `NN` 有偏差，原因见设计文档第 14 节。
 - 目前没有文件锁，同一项目只应由一个进程写入（界面与 CLI 同时写同一项目未做保护）。
-- 视频与 TTS 尚未接入（Phase 2 起）。
 
 ## 目录约定
 
@@ -66,8 +85,16 @@ novel_output/                       # 项目数据（默认位置，已加入 .g
     ├── global/locations.json       # 地点库
     ├── global/review.json          # 全书级素材审核状态
     ├── global/assets/              # 定妆图 character_*.png / location_*.png（_vN 为重生成版本）
-    ├── chapters/index.yaml         # 章节清单与选中状态
-    ├── chapters/001/ ...           # 章节工作目录（选中章节创建）
+    ├── chapters/index.yaml         # 章节清单、选中状态与章节状态
+    ├── chapters/001/               # 章节工作目录（三位补零）
+    │   ├── script.md               # C-1 剧本
+    │   ├── script_review.yaml      # C-2 校验结论
+    │   ├── shots.yaml              # C-3/4 镜头规划（含各镜头的哈希与审核依据）
+    │   ├── audio/                  # C-6 口播 wav（块级 + 镜头级）
+    │   ├── clips/                  # C-8 小场景视频 sNN.mp4（raw/ 为未配音原片）
+    │   ├── review.json             # 小场景审核记录
+    │   ├── state.json              # 各阶段状态
+    │   └── chapter_001.mp4         # C-9 章节成片
     ├── exports/                    # 全书成片（Phase 4 起）
     └── logs/                       # api_calls.jsonl 外部调用留痕（不含 key）
 ```

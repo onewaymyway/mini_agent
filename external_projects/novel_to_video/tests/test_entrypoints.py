@@ -52,3 +52,11 @@ def test_build_assets_entrypoint_stub(tmp_path, export_dir):
     assert p2.returncode == 0, p2.stdout + p2.stderr
     data = json.loads(p2.stdout)
     assert data["ok"] and data["status"]["data"]["counts"]["total"] == 3
+
+
+def test_run_chapter_entrypoint_rejects_unknown_chapter(tmp_path, export_dir):
+    out = tmp_path / "o"
+    run("entrypoints/import_novel.py", str(export_dir), "--projects-root", str(out), "--title", "书")
+    created = next(out.iterdir())
+    p = run("entrypoints/run_chapter.py", str(created), "--chapters", "99")
+    assert p.returncode == 1

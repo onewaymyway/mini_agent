@@ -53,6 +53,17 @@ class RuleTextLLM(TextLLM):
     def ask(self, prompt: str, system: str = "") -> str:
         m = re.search(r"RULE_INPUT=(\{.*\})", prompt, re.S)
         info = json.loads(m.group(1)) if m else {}
+        task = info.get("task")
+        if task == "script":
+            return _rule_script(info)
+        if task == "shots":
+            return json.dumps({"shots": _rule_shots(info)}, ensure_ascii=False)
+        if task == "entity":
+            return json.dumps({
+                "gender": "unknown", "age_range": "unknown",
+                "description_zh": "待人工确认（规则占位）",
+                "visual_anchor_en": f"{info.get('name', 'character')}, adult person, [needs manual review]",
+                "voice_profile": "待人工确认（rules 占位）"}, ensure_ascii=False)
         if info.get("kind") == "location":
             return json.dumps({"visual_anchor_en": (
                 f"{info.get('name', 'location')}, {info.get('location_type') or 'urban setting'}, "
@@ -65,3 +76,44 @@ class RuleTextLLM(TextLLM):
                                 "[needs manual review]",
             "voice_profile": "待人工确认（rules 占位）",
         }, ensure_ascii=False)
+
+
+_SENT_SPLIT = re.compile(r"(?<=[。！？!?])")
+
+
+def _rule_script(info: dict) -> str:
+    """离线剧本：全部作为旁白，按句子分组，单场，按目标字数截断（不产生对白）。"""
+    text = info.get("text") or ""
+    target = int(info.get("target_chars") or 10**9)
+    paras = [p.strip() for p in text.splitlines() if p.strip() and not p.startswith("#")]
+    sentences = [s.strip() for p in paras for s in _SENT_SPLIT.split(p) if s.strip()]
+    lines = ["### 场次 1｜未知地点·未知时间（内景）"]
+    buf, used = "", 0
+    for sent in sentences:
+        if used + len(sent) > target:
+            break
+        used += len(sent)
+        if len(buf) + len(sent) > 60 and buf:
+            lines.append(f"旁白：{buf}")
+            buf = ""
+        buf += sent
+    if buf:
+        lines.append(f"旁白：{buf}")
+    return "\n".join(lines) + "\n"
+
+
+def _rule_shots(info: dict) -> list:
+    """离线镜头：每 3 行旁白一个镜头，地点取第一个地点，无角色。"""
+    script = info.get("script") or ""
+    locs = info.get("locations") or []
+    loc_id = locs[0]["id"] if locs else None
+    lines = [l for l in script.splitlines() if l.startswith("旁白：")]
+    shots = []
+    for i in range(0, len(lines), 3):
+        group = lines[i:i + 3]
+        blocks = [{"type": "narration", "text": l[len("旁白："):], "speaker_id": None, "speaker_name": None}
+                  for l in group]
+        hint = blocks[0]["text"][:40]
+        shots.append({"scene_no": 1, "location_id": loc_id, "character_ids": [], "blocks": blocks,
+                      "visual_hint_zh": hint, "visual_hint_en": "cinematic medium shot, dystopian city, no people"})
+    return shots

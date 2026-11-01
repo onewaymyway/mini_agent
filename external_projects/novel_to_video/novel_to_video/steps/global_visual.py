@@ -34,6 +34,11 @@ class StepError(RuntimeError):
 
 # ---------------------------------------------------------------- 文件读写
 
+def save_entities_ids(project_dir: Path, doc: Dict[str, Any]) -> None:
+    """整体写回角色库（用于 C-5 补建角色）。"""
+    write_json_atomic(project_dir / "global" / "characters.json", doc)
+
+
 def _load_entities(project_dir: Path, kind: str) -> Dict[str, Any]:
     name = "characters.json" if kind == "character" else "locations.json"
     return read_json(project_dir / "global" / name)

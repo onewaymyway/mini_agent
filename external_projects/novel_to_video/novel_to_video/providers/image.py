@@ -128,7 +128,8 @@ class StubImageProvider(ImageProvider):
         img = Image.new("RGB", (768, 1024), (38, 44, 56))
         draw = ImageDraw.Draw(img)
         draw.rectangle([24, 24, 744, 1000], outline=(120, 140, 170), width=4)
-        lines = ["STUB PORTRAIT", ""] + [prompt[i:i + 44] for i in range(0, min(len(prompt), 220), 44)]
+        ascii_prompt = prompt.encode("ascii", "ignore").decode("ascii")  # 字库仅覆盖 ASCII
+        lines = ["STUB PORTRAIT", ""] + [ascii_prompt[i:i + 44] for i in range(0, min(len(ascii_prompt), 220), 44)]
         for i, line in enumerate(lines):
             draw.text((48, 60 + i * 28), line, fill=(230, 230, 230))
         img.save(save_path, format="PNG")
