@@ -108,7 +108,7 @@ def build_cron_agent(
 
     # registry 留空 → Agent.__init__ 回退到 get_default_registry()，
     # 即全量继承主 Agent 可用的工具集合（按用户明确要求）。
-    return Agent(
+    agent = Agent(
         cfg=cfg,
         guard=guard,
         llm_client=create_client(llm_cfg),
@@ -117,6 +117,18 @@ def build_cron_agent(
         tool_cache=None,
         is_subagent=True,
     )
+
+    # [SYS-PROFILE] 为 cron agent 初始化用户画像管理器
+    # build_cron_agent() 构造的是独立 Agent 实例，其 _profile_mgr 默认
+    # 为 None。若 cron 任务需要执行 /profile 命令（如 sys:profile_refresh），
+    # 必须在构造后显式初始化，否则 _maybe_refresh_profile() 会因
+    # if not self._profile_mgr: return 而短路。
+    if cfg.profile_enabled:
+        from mini_agent.profile import UserProfileManager
+        from mini_agent.storage.paths import AgentPaths
+        agent._profile_mgr = UserProfileManager(AgentPaths(cfg.project_root), user_id=None)
+
+    return agent
 
 
 _TOOL_RESULT_BLOCK_RE = re.compile(r"<tool_result>\s*(.*?)\s*</tool_result>", re.DOTALL)
