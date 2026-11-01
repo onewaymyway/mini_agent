@@ -59,7 +59,8 @@ def chapter_row(project_dir: Path, no: int) -> Dict[str, Any]:
 
 def source_text(project_dir: Path, no: int) -> str:
     """读取章节原文（去掉首个标题行），路径相对于 novel_writer 导出目录。"""
-    src_dir = Path(read_json(project_dir / "source" / "manifest.json")["source_dir"])
+    from .project_store import working_source_dir
+    src_dir = working_source_dir(project_dir)
     row = chapter_row(project_dir, no)
     text = (src_dir / row["source_file"]).read_text(encoding="utf-8")
     lines = text.splitlines()

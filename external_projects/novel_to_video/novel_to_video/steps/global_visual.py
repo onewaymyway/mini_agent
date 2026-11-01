@@ -63,9 +63,8 @@ def _persona_excerpt(project_dir: Path, char: Dict[str, Any]) -> str:
     rel = char.get("persona_card")
     if not rel:
         return ""
-    src_dir = read_json(project_dir / "source" / "manifest.json").get("source_dir")
-    if not src_dir:
-        return ""
+    from ..project_store import working_source_dir
+    src_dir = working_source_dir(project_dir)
     real = Path(src_dir) / rel
     return real.read_text(encoding="utf-8")[:2000] if real.is_file() else ""
 
@@ -102,8 +101,9 @@ def visual_text_pass(project_dir: Path, text_llm: TextLLM, *, only_missing: bool
             if ids and eid not in ids:
                 continue
             key = entity_key(kind, eid)
+            # 性别不属于 G-2 的补全范围（只能经人工确认），因此不计入 needs，避免反复调用 LLM
             needs = not ent.get("visual_anchor_en") or (
-                kind == "character" and (not ent.get("voice_profile") or not ent.get("gender")))
+                kind == "character" and not ent.get("voice_profile"))
             if only_missing and not needs:
                 summary["skipped"].append(eid)
                 continue
@@ -127,13 +127,8 @@ def visual_text_pass(project_dir: Path, text_llm: TextLLM, *, only_missing: bool
                         raise StepError("voice_profile 为空")
                     ent["voice_profile"] = voice
                     ent["voice_profile_source"] = text_llm.name
-                    if not ent.get("gender"):
-                        g = str(obj.get("gender") or "unknown").strip().lower()
-                        if g not in VALID_GENDER:
-                            g = "unknown"
-                        if g != "unknown":
-                            ent["gender"] = g
-                            ent["gender_source"] = text_llm.name
+                    # 性别不再由 LLM 直接写入：只能经用户确认（见 gender_review.confirm）。
+                    # LLM 返回的 gender 仅作为参考，记入建议文件中，不改动角色。
                 _save_entities(project_dir, kind, data)
                 item = get_item(review, key)
                 old_text = item.get("text_status")
@@ -255,7 +250,8 @@ def update_entity(project_dir: Path, kind: str, eid: str, fields: Dict[str, Any]
         if k == "gender" and v not in VALID_GENDER:
             raise StepError("gender 只能是 male / female / unknown")
         ent[k] = v
-        ent[f"{k}_source"] = "manual"
+        # 手动编辑性别等同于人工确认，来源记为 user（门禁只认 user / persona）
+        ent[f"{k}_source"] = "user" if k == "gender" else "manual"
     _save_entities(project_dir, kind, data)
 
     key = entity_key(kind, eid)
@@ -285,8 +281,8 @@ def visual_status(project_dir: Path) -> Dict[str, Any]:
             if kind == "character":
                 if not ent.get("voice_profile"):
                     missing.append("voice_profile")
-                if not ent.get("gender"):
-                    missing.append("gender")
+                if ent.get("gender_source") not in ("user", "persona") or not ent.get("gender"):
+                    missing.append("gender（待人工确认）")
             rows.append({
                 "key": key, "kind": kind, "id": ent["id"],
                 "name": (ent.get("names") or [ent.get("name", "")])[0] if kind == "character" else ent.get("name"),

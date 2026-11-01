@@ -328,6 +328,8 @@ def _load_characters(root: Path, issues: List[ImportIssue]) -> List[Dict[str, An
             "age": identity.get("age"),
             "age_range": _age_range(identity.get("age")),
             "gender": gender,
+            # 人设卡明确写出“性别：男/女”即为 persona 来源，可直接通过门禁；缺失则为 None
+            "gender_source": "persona" if gender else None,
             "description_zh": _describe_character(identity, persona_text),
             "speech_pattern": psychology.get("speech_pattern"),
             "first_appear": meta.get("introduced_chapter"),
@@ -409,7 +411,14 @@ def default_title(root: Path) -> str:
 
 # ---------------------------------------------------------------- 入口
 
-def import_source(source_dir: str | Path, title: Optional[str] = None) -> ImportResult:
+def import_source(source_dir: str | Path, title: Optional[str] = None,
+                  normalize_into: Optional[str | Path] = None) -> ImportResult:
+    """读取导出目录。若目录名/文件名被转义（#U5c0f 形式），先规范化副本再解析。
+
+    normalize_into：规范化副本的落盘位置（项目创建时传入 source/normalized）。
+    为 None 时使用临时目录，解析结束即删除，只用于预检。
+    指纹始终基于原始目录，以便检测导出是否被改动。
+    """
     root = Path(source_dir).expanduser().resolve()
     issues: List[ImportIssue] = []
     if not root.is_dir():
@@ -417,18 +426,49 @@ def import_source(source_dir: str | Path, title: Optional[str] = None) -> Import
         return ImportResult(source_dir=str(root), source_title=title or root.name,
                             fingerprint="", issues=issues)
 
-    chapters = _load_chapters(root, issues)
-    characters = _load_characters(root, issues)
-    locations = _load_locations(root, issues)
-    _export_notes(root, issues)
+    from .name_normalize import has_escape, normalize_tree
+    import tempfile
+    fingerprint = _fingerprint(root)
+    working = root
+    tmp_ctx = None
+    normalized_info = None
+    if has_escape(root):
+        if normalize_into is not None:
+            dest = Path(normalize_into)
+        else:
+            tmp_ctx = tempfile.TemporaryDirectory(prefix="n2v_norm_")
+            dest = Path(tmp_ctx.name) / "norm"
+        try:
+            normalized_info = normalize_tree(root, dest)
+        except FileExistsError:
+            # 已有规范化副本：直接复用，避免重复复制
+            normalized_info = {"copied": 0, "renamed": -1, "examples": [], "skipped_links": 0, "reused": True}
+        working = dest
+        issues.append(ImportIssue(LEVEL_INFO, "NAME_ESCAPE_NORMALIZED",
+                                  f"导出目录名/文件名为转义形式（#U…），已在规范化副本中解析"
+                                  f"（复制 {normalized_info.get('copied', 0)} 个文件）"))
+    try:
+        return _import_working(root, working, title, issues, fingerprint)
+    finally:
+        if tmp_ctx is not None:
+            tmp_ctx.cleanup()
 
-    if not (root / "小说_全书合稿.txt").is_file():
+
+def _import_working(root: Path, working: Path, title: Optional[str], issues: List[ImportIssue],
+                    fingerprint: str) -> ImportResult:
+    root_for_read = working
+    chapters = _load_chapters(root_for_read, issues)
+    characters = _load_characters(root_for_read, issues)
+    locations = _load_locations(root_for_read, issues)
+    _export_notes(root_for_read, issues)
+
+    if not (root_for_read / "小说_全书合稿.txt").is_file():
         issues.append(ImportIssue(LEVEL_INFO, "NO_FULL_TEXT", "导出目录没有 小说_全书合稿.txt（不影响导入）"))
 
     return ImportResult(
         source_dir=str(root),
         source_title=title or default_title(root),
-        fingerprint=_fingerprint(root),
+        fingerprint=fingerprint,
         chapters=chapters,
         characters=characters,
         locations=locations,

@@ -65,12 +65,12 @@ def test_text_pass_fills_fields_and_marks_source(project):
     chars = _chars(project)
     assert chars["char_001"]["visual_anchor_en"].startswith("young adult woman")
     assert chars["char_001"]["voice_profile"] == "清亮，语速偏快"
-    # char_001 性别来自人设卡，不应被 LLM 覆盖
+    # char_001 性别来自人设卡明确字段，不应被 LLM 覆盖，来源标记为 persona
     assert chars["char_001"]["gender"] == "male"
-    assert chars["char_001"].get("gender_source") is None
-    # char_002 性别缺失，由 LLM 补全并标注来源
-    assert chars["char_002"]["gender"] == "female"
-    assert chars["char_002"]["gender_source"] == "fake"
+    assert chars["char_001"].get("gender_source") == "persona"
+    # char_002 性别缺失：G-2 不再由 LLM 直接写入，必须经人工确认
+    assert chars["char_002"].get("gender") is None
+    assert chars["char_002"].get("gender_source") is None
     review = load_review(project)["items"]
     assert review["character:char_002"]["text_status"] == "pending"
 
@@ -108,6 +108,10 @@ def test_portrait_pass_and_approval_gate(project, tmp_path):
     summary = gv.portrait_pass(project, StubImageProvider())
     assert set(summary["done"]) == {"char_001", "char_002", "loc_01"}
     assert (project / _chars(project)["char_001"]["asset_path"]).is_file()
+
+    # 性别只能经人工确认：char_002 的性别由用户选择 female
+    from novel_to_video import gender_review
+    gender_review.confirm(project, "char_002", "female", note="测试确认")
 
     for kind, eid in [("character", "char_001"), ("character", "char_002"), ("location", "loc_01")]:
         gv.approve(project, kind, eid, "text")
@@ -182,3 +186,14 @@ def test_tool_api_flow_with_stub_env(project, monkeypatch):
     assert res["ok"]
     bad = tool_api.edit_asset(str(project), "character", "char_001", {"names": ["x"]})
     assert not bad["ok"]
+
+
+def test_llm_cannot_write_gender_directly(project):
+    """回归：G-2 的 LLM 返回性别时，不得写入角色，门禁也不得放行。"""
+    gv.visual_text_pass(project, FakeLLM())
+    c = _chars(project)["char_002"]
+    assert c.get("gender") is None
+    st = gv.visual_status(project)
+    row = next(r for r in st["rows"] if r["id"] == "char_002") if "rows" in st else None
+    if row is not None:
+        assert any("gender" in m for m in row["missing_fields"])

@@ -1,6 +1,6 @@
 # 小说转短剧外部项目设计方案（novel_to_video）
 
-> 状态：**Phase 0–5 已完成（2026-11-01）**。Phase 5 中真实 API 冒烟需要用户在本机执行，见第 14.5 节。路线、章节粒度、人设来源、剧本来源、外部依赖、审核粒度、封面与转场等决策点已由用户确认（见第 2 节）；第 13 节未决小问题按推荐项采用。实施记录见第 14 节。
+> 状态：**Phase 0–5 已完成（2026-11-01）**；补充见第 14.6 节（转义导出修复、性别确认、Phase 0 验收更正）。Phase 5 中真实 API 冒烟需要用户在本机执行，见第 14.5 节。路线、章节粒度、人设来源、剧本来源、外部依赖、审核粒度、封面与转场等决策点已由用户确认（见第 2 节）；第 13 节未决小问题按推荐项采用。实施记录见第 14 节。
 > 落地位置：`external_projects/novel_to_video/`（代码与项目说明）；本文件位于 `next_doc/novel_to_video_external_project_plan.md`。
 > 依据：`external_projects/novel_writer`（导出格式、外部项目结构、挡位 G0–G5、Streamlit 界面范式）、`.claude/skills/novel-video-studio`（短剧生产流水线、外部 API key 池机制、校验脚本范式）、`mini_agent.workflow` 的 `skill_agent` 调用模式。
 
@@ -605,6 +605,33 @@ Phase 2 是风险最高的一期（涉及外部视频 API、一致性核查、�
 
 - 真实 API 冒烟：在本机设置 `AGNES_API_KEYS` 后运行 `python entrypoints/smoke_real_api.py`。沙箱没有 key，只验证了“无 key 时正确报错”这一路径。
 - 真实视频接口的请求结构依据 gen_video_with_text skill 实现，未在真实环境调用。
+
+### 14.6 补充：转义导出、性别确认与 Phase 0 验收更正（2026-11-01）
+
+**更正 Phase 0 验收结论**：第 14.1 节记载的“对 `小说_20261101_101309` 导出目录 dry-run：50 章、21 个角色、4 个地点”，是在目录名为中文的环境中得出的。本次上传的压缩包中目录与文件名被转义为 `#U5c0f` 形式，导入器在该包上原先报阻断错误。Phase 0 的验收结论仅在中文文件名的导出包上成立；转义导出需要本节的修复才能导入。
+
+**转义导出的修复**：
+
+1. `name_normalize.py`：检测 `#UXXXX` 转义，把整棵目录树复制为中文名副本（文件内容不变）。
+2. `source_import.py`：检测到转义时使用规范化副本解析，指纹仍基于原始目录；报告中增加 `NAME_ESCAPE_NORMALIZED` 提示（info）。
+3. `project_store.py`：创建项目时把规范化副本落盘到 `source/normalized/`，manifest 记录 `working_dir`。
+4. 所有读取导出内容的代码统一经 `project_store.working_source_dir()` 取得工作目录：章节正文（`chapter_io.source_text`）、人设卡（`global_visual._persona_excerpt`）、性别线索（`gender_review._load_texts`）。
+   - 缺陷根因：导入时的副本位于临时目录并被删除，项目内没有保存，导致单章剧本转换与性别检索在该包上读不到正文。
+
+**性别确认（替代 LLM 直接判定）**：
+
+- 检索：`gender_evidence.py` 在人设卡与全部正文中检索含角色名的句子，分为亲属/称谓词与代词两类，附章节号与原句，按全书等距抽样展示。
+- 判定规则：只有人设卡中明确写出“性别：男/女”才给出高置信建议（basis=persona_field）；代词必须与名字同句才计入；非人类实体（AI、无人机、投影、盖亚）不做建议。
+- 写入：`gender_review.confirm` 是唯一写入途径，写入 `gender_source = user`；`unknown` 清空性别；每次确认记录在 `global/gender_suggestions.json` 的 decisions 中并追加 PROGRESS.md。
+- G-2 的文本模型不再直接写入 `gender`（回归测试覆盖）；手动编辑性别视为用户确认。
+- 门禁：`gender_source` 必须为 `user` 或 `persona`，否则角色视为缺少性别。
+- 导入时人设卡明确字段标记为 `gender_source = persona`。
+
+**与原需求的偏差**：用户要求“给出预测信息让用户确认”。实际实现为“检索证据 + 建议 + 人工确认”。原因：用真实正文验证发现，规则从文本自动推断性别的准确率不足（代词归属、亲属称谓误判，例如林星被判为男性）。在该导出包中，人设卡不含性别字段，因此人类角色的建议全部为 unknown，证据列表供用户判断。若需要语义预测，应接入文本模型并保留用户确认，另立计划。
+
+**本次修复后的真实数据检查**：第 1 章正文读取 3128 字；性别证据总计 856 条（林远 432 条，影子 247 条，苏槿 5 条）；非人类实体 4 个被拦截。
+
+**测试**：163 项通过，1 项跳过（需真实导出环境变量）。新增 `test_gender.py`（17 项）与 `test_escaped_export.py`（4 项）；`test_global_visual.py` 因行为变更更新了 3 处断言并新增 1 项回归测试。
 
 ### 14.4 后续阶段
 

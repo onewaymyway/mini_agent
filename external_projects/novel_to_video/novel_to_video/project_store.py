@@ -63,6 +63,15 @@ def write_json_atomic(path: Path, data: Any) -> None:
     _write_atomic(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 
 
+def working_source_dir(project_dir: Path) -> Path:
+    """读取导出内容时使用的目录：转义导出为项目内规范化副本，否则为原始导出目录。
+    所有读取正文、人设卡的代码都应通过此函数，而不是直接使用 manifest 的 source_dir。"""
+    man = read_json(project_dir / "source" / "manifest.json")
+    if man.get("working_dir"):
+        return project_dir / man["working_dir"]
+    return Path(man["source_dir"])
+
+
 def read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -177,9 +186,17 @@ def create_project(
         "updated_at": timestamp,
         **opts,
     })
+    working_rel = None
+    src_path = Path(result.source_dir)
+    from .name_normalize import has_escape, normalize_tree
+    if src_path.is_dir() and has_escape(src_path):
+        # 转义导出：把规范化副本落盘到项目内，之后所有读取都指向它（导入时的临时副本会被删除）
+        normalize_tree(src_path, proj / "source" / "normalized")
+        working_rel = "source/normalized"
     write_json_atomic(proj / "source" / "manifest.json", {
         "schema_version": SCHEMA_VERSION,
         "source_dir": result.source_dir,
+        "working_dir": working_rel,
         "fingerprint": result.fingerprint,
         "imported_at": timestamp,
         "stats": result.stats,
