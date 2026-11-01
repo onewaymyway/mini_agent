@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 from .. import prompts
 from ..call_log import log_call
 from .. import joblog
+from .. import llm_trace
 from .. import runtime as _rt
 from ..project_store import read_json, write_json_atomic
 from ..providers.image import ImageProvider
@@ -122,7 +123,8 @@ def visual_text_pass(project_dir: Path, text_llm: TextLLM, *, only_missing: bool
                     prompt = prompts.character_prompt(ent, _persona_excerpt(project_dir, ent))
                 else:
                     prompt = prompts.location_prompt(ent)
-                raw = text_llm.ask(prompt, system=prompts.SYSTEM_VISUAL)
+                raw = llm_trace.ask_traced(project_dir, text_llm, prompt, system=prompts.SYSTEM_VISUAL,
+                                           scope="assets", label=f"G-2 补全：{name}（{eid}）", step="G-2")
                 obj = parse_json_object(raw)
                 anchor = str(obj.get("visual_anchor_en") or "").strip()
                 if not anchor:

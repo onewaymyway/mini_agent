@@ -40,6 +40,14 @@ def page_gear() -> None:
         res = tool_api.set_gear(pdir, cur, budget or None)
         (st.success if res["ok"] else st.error)(res["data"] if res["ok"] else res["error"]["message"])
 
+    cur_retry = int(json.loads((Path(pdir) / "project.json").read_text(encoding="utf-8")).get("script_max_retries") or 0)
+    retry = st.number_input("剧本校验失败后自动带反馈重试次数（0 = 不重试，默认）", min_value=0, max_value=3,
+                            value=cur_retry, step=1, key="gear_script_retry",
+                            help="每次重试多一次文本模型调用。模型输出过长或对白不在原文中时，会把校验问题反馈给模型再生成。")
+    if int(retry) != cur_retry and st.button("保存重试次数", key="gear_script_retry_save"):
+        res = tool_api.set_script_retries(pdir, int(retry))
+        (st.success if res["ok"] else st.error)("已保存" if res["ok"] else res["error"]["message"])
+
     st.markdown("#### 检查点策略")
     st.dataframe([{"检查点": cp, **{g: ("自动" if pol["table"][g][cp] == "auto" else "手动") for g in pol["gears"]}}
                   for cp in pol["table"]["G0"]], hide_index=True, width='stretch')

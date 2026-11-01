@@ -555,3 +555,29 @@ def job_stop(project_dir: str) -> Dict[str, Any]:
 def job_logs(project_dir: str, scopes: Optional[List[str]] = None, limit: int = 200) -> Dict[str, Any]:
     rows = _joblog.tail(Path(project_dir), limit=limit, scopes=scopes)
     return _ok(rows)
+
+
+def llm_trace(project_dir: str, chapter: Optional[int] = None, scopes: Optional[List[str]] = None,
+              steps: Optional[List[str]] = None, limit: int = 20) -> Dict[str, Any]:
+    """文本模型调用的完整输入/输出（最近 limit 条，新到旧），供界面展示。"""
+    from . import llm_trace as _lt
+    try:
+        return _ok(_lt.tail(Path(project_dir), limit=limit, chapter=chapter, scopes=scopes, steps=steps))
+    except OSError as exc:
+        return _fail(f"读取模型调用记录失败：{exc}")
+
+
+def set_script_retries(project_dir: str, retries: int) -> Dict[str, Any]:
+    """剧本校验失败后自动带反馈重试的次数（0 = 不重试，默认；上限 3）。"""
+    pdir = Path(project_dir)
+    try:
+        n = int(retries)
+        if not 0 <= n <= 3:
+            return _fail("重试次数应在 0–3 之间")
+        proj = ps.read_json(pdir / "project.json")
+    except (OSError, ValueError) as exc:
+        return _fail(str(exc))
+    proj["script_max_retries"] = n
+    ps.write_json_atomic(pdir / "project.json", proj)
+    ps.append_progress(pdir, f"剧本校验失败后的自动重试次数设为 {n}")
+    return _ok({"script_max_retries": n})

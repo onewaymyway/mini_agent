@@ -122,6 +122,13 @@ def _current_stage(project_dir: Path, no: int) -> str:
     return "compose"
 
 
+def _read_yaml(path: Path) -> Optional[Dict[str, Any]]:
+    if not path.is_file():
+        return None
+    import yaml
+    return yaml.safe_load(path.read_text(encoding="utf-8")) or None
+
+
 def chapter_view(project_dir: Path, no: int) -> Dict[str, Any]:
     """供界面展示：章节状态、各阶段、镜头列表与审核状态。"""
     project_dir = Path(project_dir)
@@ -148,6 +155,7 @@ def chapter_view(project_dir: Path, no: int) -> Dict[str, Any]:
         "selected": row.get("selected"),
         "stages": cio.load_state(project_dir, no).get("stages", {}),
         "script": (cdir / "script.md").read_text(encoding="utf-8") if (cdir / "script.md").is_file() else None,
+        "script_review": _read_yaml(cdir / "script_review.yaml"),
         "shots": shots,
         "output": str(out_path.relative_to(project_dir)) if out_path.is_file() else None,
         "counts": {s: sum(1 for v in states.values() if v == s) for s in

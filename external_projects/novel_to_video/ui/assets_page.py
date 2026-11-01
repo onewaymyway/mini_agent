@@ -39,6 +39,8 @@ def _run_panel(pdir: str) -> None:
             _start_result(tool_api.start_portraits_background(
                 pdir, ids=[x.strip() for x in ids.split(",") if x.strip()], regenerate=True))
     render_job_panel(pdir, ["assets"], title="素材生成日志")
+    from ui.llm_trace_panel import render_llm_trace
+    render_llm_trace(pdir, scopes=["assets"], title="G-2 模型调用记录（输入 / 输出）", key_prefix="trace_assets")
 
 
 def _start_result(res: dict) -> None:

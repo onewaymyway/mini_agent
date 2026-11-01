@@ -54,8 +54,8 @@ class RuleTextLLM(TextLLM):
         m = re.search(r"RULE_INPUT=(\{.*\})", prompt, re.S)
         info = json.loads(m.group(1)) if m else {}
         task = info.get("task")
-        if task == "script":
-            return _rule_script(info)
+        if task in ("script", "script_fix"):
+            return _rule_script({**info, "text": info.get("text") or _source_from_prompt(prompt)})
         if task == "shots":
             return json.dumps({"shots": _rule_shots(info)}, ensure_ascii=False)
         if task == "entity":
@@ -79,6 +79,12 @@ class RuleTextLLM(TextLLM):
 
 
 _SENT_SPLIT = re.compile(r"(?<=[。！？!?])")
+
+
+def _source_from_prompt(prompt: str) -> str:
+    """剧本提示词中原文只出现一次，位于“原文：”与 RULE_INPUT 之间。"""
+    m = re.search(r"原文：\n(.*?)\n\nRULE_INPUT=", prompt, re.S)
+    return m.group(1) if m else ""
 
 
 def _rule_script(info: dict) -> str:

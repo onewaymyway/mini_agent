@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from .. import joblog
+from .. import llm_trace
 from .. import prompts
 from ..chapter_io import chapter_dir, load_entities, load_shots, mark_stage, save_shots, source_text
 from ..review import entity_key, get_item, load_review, save_review
@@ -41,8 +42,11 @@ def _speaker_context(script: str, name: str) -> List[str]:
 
 
 def _draft_entity(project_dir: Path, text_llm: TextLLM, name: str, context: List[str], chapter_no: int, eid: str) -> Dict[str, Any]:
-    with joblog.timed(project_dir, "chapter", f"C-5 起草补建角色「{name}」设定"):
-        raw = text_llm.ask(prompts.entity_draft_prompt(name, context), system=prompts.SYSTEM_VISUAL)
+    label = f"第 {chapter_no} 章 C-5 起草补建角色「{name}」设定"
+    with joblog.timed(project_dir, "chapter", label):
+        raw = llm_trace.ask_traced(project_dir, text_llm, prompts.entity_draft_prompt(name, context),
+                                   system=prompts.SYSTEM_VISUAL, scope="chapter", label=label,
+                                   step="C-5", chapter=chapter_no)
     obj = parse_json_object(raw)
     anchor = str(obj.get("visual_anchor_en") or "").strip()
     voice = str(obj.get("voice_profile") or "").strip()

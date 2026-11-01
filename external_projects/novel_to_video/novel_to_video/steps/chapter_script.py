@@ -5,17 +5,22 @@ C-2 的机械校验（不依赖模型，结果可复现）：
   * 场次号连续、场次标题存在；
   * 旁白过长（>200 字）给出提示；
   * 说话人不在角色库中给出提示（由 C-5 补建处理，不算失败）。
+
+C-1 的模型输出是纯文本剧本。即便模型仍把它包进 JSON（如 {"script": "..."}）或代码块，
+_clean_script 也会自动解包，并在日志中提示，避免因包装格式而整章失败。
 """
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 import yaml
 
 from .. import joblog
+from .. import llm_trace
 from .. import prompts
 from ..chapter_io import chapter_dir, chapter_row, norm, source_text, sha12, mark_stage
 from ..project_store import read_json, write_yaml_atomic
@@ -41,7 +46,9 @@ def parse_script(text: str) -> List[Dict[str, Any]]:
             scenes.append({"no": int(m.group(1)), "header": line, "lines": [], "lineno": lineno})
             continue
         if not scenes:
-            raise ScriptError(f"第 {lineno} 行出现在任何场次标题之前：{line[:30]}")
+            raise ScriptError(f"第 {lineno} 行出现在任何场次标题之前：{line[:30]}"
+                              "（剧本必须以“### 场次 N｜…”开头；模型输出可能带了 JSON/代码块/解释文字，"
+                              "请在“模型调用记录”中查看原始输出）")
         lm = LINE_RE.match(line)
         if not lm:
             raise ScriptError(f"第 {lineno} 行格式错误（应为“旁白：”或“角色名：”）：{line[:30]}")
@@ -113,7 +120,10 @@ def target_chars_for(project_dir: Path) -> int:
 
 
 def run_script(project_dir: Path, no: int, text_llm: TextLLM, *, force: bool = False) -> Dict[str, Any]:
-    """C-1 + C-2。缓存键 = 原文 + 目标字数 + 版本；未变且已通过则跳过。"""
+    """C-1 + C-2。缓存键 = 原文 + 目标字数 + 版本；未变且已通过则跳过。
+
+    项目选项 script_max_retries（默认 0，即不重试）>0 时，校验失败后把问题反馈给模型再生成，
+    最多重试该次数。默认关闭，避免未经同意地增加模型调用。"""
     cdir = chapter_dir(project_dir, no)
     cdir.mkdir(parents=True, exist_ok=True)
     source = source_text(project_dir, no)
@@ -129,25 +139,69 @@ def run_script(project_dir: Path, no: int, text_llm: TextLLM, *, force: bool = F
             return {"skipped": True, "status": "pass"}
 
     row = chapter_row(project_dir, no)
-    with joblog.timed(project_dir, "chapter", f"第 {no} 章 C-1 调用文本模型生成剧本（输入 {len(source)} 字）"):
-        raw = text_llm.ask(prompts.script_prompt(no, row["title"], source, target), system=prompts.SYSTEM_VISUAL)
-    script_text = _clean_script(raw)
-    script_path.write_text(script_text, encoding="utf-8")
-
     chars = read_json(project_dir / "global" / "characters.json")["characters"]
     known = [n for c in chars for n in c.get("names", [])]
-    result = check_script(script_text, source, known, target_chars=target)
+    retries = max(0, int(read_json(project_dir / "project.json").get("script_max_retries") or 0))
+
+    prompt = prompts.script_prompt(no, row["title"], source, target)
+    attempt = 0
+    while True:
+        label = f"第 {no} 章 C-1 调用文本模型生成剧本" + (f"（第 {attempt} 次修正）" if attempt else f"（输入 {len(source)} 字）")
+        with joblog.timed(project_dir, "chapter", label):
+            raw = llm_trace.ask_traced(project_dir, text_llm, prompt, system=prompts.SYSTEM_SCRIPT,
+                                       scope="chapter", label=label, step="C-1", chapter=no)
+        script_text = _clean_script(raw, log=lambda m: joblog.log(project_dir, "chapter", m, level="warn"))
+        script_path.write_text(script_text, encoding="utf-8")
+        result = check_script(script_text, source, known, target_chars=target)
+        if result["status"] == "pass" or attempt >= retries:
+            break
+        attempt += 1
+        joblog.log(project_dir, "chapter",
+                   f"第 {no} 章 C-2 校验未通过，按 script_max_retries={retries} 把问题反馈给模型重试（第 {attempt} 次）", level="warn")
+        prompt = prompts.script_fix_prompt(no, row["title"], source, target, script_text, result["issues"])
+
     result.update(source_hash=src_hash, script_hash=sha12(script_text), target_chars=target,
-                  spoken_chars=spoken_chars(script_text))
+                  spoken_chars=spoken_chars(script_text), attempts=attempt + 1)
     write_yaml_atomic(review_path, result)
+    errors = [i["message"] for i in result["issues"] if i["level"] == "error"]
     mark_stage(project_dir, no, "script", "done" if result["status"] == "pass" else "failed",
-               None if result["status"] == "pass" else "剧本校验未通过")
+               None if result["status"] == "pass" else "剧本校验未通过：" + (errors[0] if errors else ""))
     return {"skipped": False, "status": result["status"], "issues": result["issues"]}
 
 
-def _clean_script(raw: str) -> str:
+_JSON_TEXT_KEYS = ("script", "剧本", "text", "content")
+
+
+def _unwrap_json(text: str) -> Optional[str]:
+    """模型把剧本包进 JSON 时取出其中的剧本文本；不是 JSON 或取不出则返回 None。"""
+    if not text.startswith(("{", "[", '"')):
+        return None
+    try:
+        obj = json.loads(text)
+    except ValueError:
+        return None
+    if isinstance(obj, str):
+        return obj
+    if isinstance(obj, list) and obj and all(isinstance(x, str) for x in obj):
+        return "\n".join(obj)
+    if isinstance(obj, dict):
+        for k in _JSON_TEXT_KEYS:
+            if isinstance(obj.get(k), str):
+                return obj[k]
+        strs = [v for v in obj.values() if isinstance(v, str)]
+        if len(strs) == 1:
+            return strs[0]
+    return None
+
+
+def _clean_script(raw: str, log: Optional[Callable[[str], None]] = None) -> str:
     text = (raw or "").strip()
-    text = re.sub(r"^```[a-z]*|```$", "", text, flags=re.M).strip()
+    text = re.sub(r"^```[\w-]*|```$", "", text, flags=re.M).strip()
+    inner = _unwrap_json(text)
+    if inner is not None:
+        if log:
+            log("模型把剧本包进了 JSON，已自动解包（剧本调用应只返回纯文本）")
+        text = re.sub(r"^```[\w-]*|```$", "", inner.strip(), flags=re.M).strip()
     if not text:
         raise ScriptError("LLM 返回的剧本为空")
     return text + "\n"

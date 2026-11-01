@@ -11,6 +11,14 @@ SYSTEM_VISUAL = (
 )
 
 
+# 剧本是纯文本，不是 JSON。第 1 章曾因剧本调用沿用 SYSTEM_VISUAL（要求只输出 JSON 对象），
+# 模型把剧本包进 {"script": "..."}，导致校验在第 1 行失败（见计划文档 14.13）。
+SYSTEM_SCRIPT = (
+    "你是短剧编剧助手。只输出剧本正文纯文本：第一行必须是“### 场次 N｜…”场次标题，"
+    "不要使用 JSON，不要使用 Markdown 代码块，不要任何解释、前言或后记。"
+)
+
+
 def character_prompt(char: Dict[str, Any], persona_excerpt: str) -> str:
     known_gender = char.get("gender")
     info = {
@@ -64,22 +72,57 @@ def portrait_prompt(art_style: str, anchor: str, *, kind: str, name: str = "") -
 # ---------------------------------------------------------------- Phase 2：章节级
 
 SCRIPT_RULES = """剧本格式（严格遵守）：
-1. 按场划分，每场一行标题：`### 场次 N｜地点·时间（内景/外景）`，地点时间无法确定时写“未知”，不得编造。
+1. 按场划分，每场一行标题：`### 场次 N｜地点·时间（内景/外景）`，场次号从 1 连续递增；地点时间无法确定时写“未知”，不得编造。
 2. 旁白行以“旁白：”开头，内容为环境、动作、神态、心理及间接转述，可适度口播化改写，不得新增情节。
 3. 对白行格式为“角色名：台词”，台词必须从原文逐字摘录，不得改写。
 4. 原文中没有直接引语的转述一律写成旁白，不得标为对白。
-5. 只输出剧本正文，不要解释。"""
+5. 每个非空行都必须是场次标题、“旁白：…”或“角色名：…”三者之一。
+6. 只输出剧本正文纯文本：不要 JSON，不要代码块，不要解释；第一行必须是场次标题。"""
+
+SCRIPT_EXAMPLE = """输出格式示例（仅示意格式，内容以原文为准）：
+### 场次 1｜铁城街道·清晨（外景）
+旁白：……
+角色名：……
+### 场次 2｜公寓·清晨（内景）
+旁白：……"""
+
+
+def script_budget(target_chars: int) -> Dict[str, int]:
+    """口播字数预算：目标 ±20%，以及建议的场次上限。"""
+    return {"target": target_chars, "lo": int(round(target_chars * 0.8)),
+            "hi": int(round(target_chars * 1.2)), "max_scenes": max(2, int(round(target_chars / 180)))}
 
 
 def script_prompt(chapter_no: int, title: str, text: str, target_chars: int) -> str:
     """target_chars：本章口播（旁白+对白）的目标总字数，由 目标时长 × 语速 得出。
-    原文远长于目标时长，必须压缩：保留主线与关键对白，删减次要描写。"""
+    原文远长于目标时长，必须压缩：保留主线与关键对白，删减次要描写。
+
+    原文只出现一次（RULE_INPUT 不再重复携带 text，离线 RuleTextLLM 从“原文：”之后取）。"""
+    b = script_budget(target_chars)
     info = {"task": "script", "chapter_no": chapter_no, "title": title, "target_chars": target_chars}
     return (
-        f"TASK=script\n将第 {chapter_no} 章《{title}》改编为一集短剧的剧本。\n{SCRIPT_RULES}\n"
-        f"6. 口播总字数（旁白+对白，不含场次标题）目标约 {target_chars} 字，允许上下浮动 20%，"
-        "超出时删减次要情节与描写，优先保留主线与关键对白。\n\n"
-        f"原文：\n{text}\n\nRULE_INPUT={json.dumps({**info, 'text': text}, ensure_ascii=False)}"
+        f"TASK=script\n将第 {chapter_no} 章《{title}》改编为一集短剧的剧本。\n\n"
+        f"【篇幅要求（最重要）】原文约 {len(text)} 字；本集口播（旁白+对白，不含场次标题）目标约 {b['target']} 字，"
+        f"允许 {b['lo']}–{b['hi']} 字，绝不能超过 {b['hi']} 字。必须大幅压缩：只保留主线与关键对白，"
+        f"删减次要描写与重复的心理活动，场次建议不超过 {b['max_scenes']} 场。"
+        "写完后自行估算口播字数，超出就继续删减。\n\n"
+        f"{SCRIPT_RULES}\n\n{SCRIPT_EXAMPLE}\n\n"
+        f"原文：\n{text}\n\nRULE_INPUT={json.dumps(info, ensure_ascii=False)}"
+    )
+
+
+def script_fix_prompt(chapter_no: int, title: str, text: str, target_chars: int,
+                      prev_script: str, issues: list) -> str:
+    """校验失败后的修正请求（仅在项目选项 script_max_retries>0 时使用）。"""
+    b = script_budget(target_chars)
+    info = {"task": "script_fix", "chapter_no": chapter_no, "title": title, "target_chars": target_chars}
+    listed = "\n".join(f"- {i['message']}" for i in issues if i.get("level") == "error") or "- （无）"
+    return (
+        f"TASK=script_fix\n上一版第 {chapter_no} 章《{title}》剧本校验未通过，请修正后输出完整的新剧本。\n\n"
+        f"校验未通过的问题：\n{listed}\n\n"
+        f"口播（旁白+对白）目标约 {b['target']} 字，允许 {b['lo']}–{b['hi']} 字；对白必须逐字来自原文。\n\n"
+        f"{SCRIPT_RULES}\n\n上一版剧本：\n{prev_script}\n\n"
+        f"原文：\n{text}\n\nRULE_INPUT={json.dumps(info, ensure_ascii=False)}"
     )
 
 

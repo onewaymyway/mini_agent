@@ -30,6 +30,7 @@ DEFAULT_OPTIONS: Dict[str, Any] = {
     "art_style": DEFAULT_ART_STYLE,
     "providers": {"image": "agnes", "text": "miniagent", "video": "agnes", "tts": "edge-tts"},
     "target_chapter_duration_sec": 90,
+    "script_max_retries": 0,  # 剧本校验失败后带反馈重试的次数；默认不重试（opt-in）
     "orientation": "portrait",
     "aspect_ratio": "9:16",
     "tts": {"engine": "cosyvoice", "fallback": "edge-tts", "voice": None},

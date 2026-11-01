@@ -22,7 +22,7 @@
 | Phase 2 单章端到端 | **已完成（2026-11-01，离线 stub 全流程验证；真实视频/TTS/文本模型待本机冒烟）** | C-1…C-9：剧本压缩与校验、镜头规划、补建角色门禁、配音、提示词与机械一致性、小场景视频、逐镜审核、章节合成；可重入流水线与停止点 |
 | Phase 3 多章循环与挡位 | **已完成（2026-11-01，离线 stub 验证）** | 章节队列（单章停止不影响其他章）；G0–G3 挡位与检查点策略；G3 预算必填与超限停止；修改四级回退（clip_only / prompt / dialogue / shot_plan）与章节/全书 stale 传播；补建审核页；测试 106 项通过 |
 | Phase 4 全书合成与收尾 | **已完成（2026-11-01，离线 stub 验证）** | F-1 章节检查（未完成或过期即拒绝）；F-2 封面（背景图与叠字分离，三种布局）；F-3 全书拼接（封面硬切前置，章节间硬切或淡化）；F-4 成片校验（时长、分辨率、帧率、音轨）；人工确认任何挡位都不可跳过；G4/G5 有限恢复；测试 127 项通过 |
-| Phase 5 加固 | **已完成（2026-11-01）；真实 API 冒烟待本机执行** | 项目运行锁与遗留回收（SIGKILL 子进程演练）；key 池切换演练并修复 3 处真实缺陷；真实 API 冒烟脚本；测试 208 项通过（1 项需真实导出环境变量跳过）；章节各阶段（文本模型、逐镜视频、配音）的过程日志；G-3/视频的 skill 输出（重试、失败、轮询）同步进入界面日志；驾驶舱；实时日志；图像/视频改为调用 mini_agent 的 Agnes skill，key 从 providers.json 解析|
+| Phase 5 加固 | **已完成（2026-11-01）；真实 API 冒烟待本机执行** | 项目运行锁与遗留回收（SIGKILL 子进程演练）；key 池切换演练并修复 3 处真实缺陷；真实 API 冒烟脚本；测试 231 项通过（1 项需真实导出环境变量跳过）；章节各阶段（文本模型、逐镜视频、配音）的过程日志；G-3/视频的 skill 输出（重试、失败、轮询）同步进入界面日志；驾驶舱；实时日志；图像/视频改为调用 mini_agent 的 Agnes skill，key 从 providers.json 解析|
 
 ## 当前能力（Phase 0–5）
 
@@ -38,6 +38,7 @@
   - `steps/global_visual.py`：G-2（补全 visual_anchor_en、voice_profile，仅在缺失时补 gender）与 G-3（定妆图，版本化文件名）。
   - `review.py`：每个实体的文本/定妆图审核状态，存于 `global/review.json`。
   - `call_log.py`：外部调用留痕 `logs/api_calls.jsonl`（不含 key）。
+  - `llm_trace.py`：文本模型调用的完整输入/输出留痕 `logs/llm_trace.jsonl`（C-1/C-3/C-5/G-2），界面「模型调用记录」读取它。
 - Phase 2 新增：
   - `steps/chapter_script.py`：C-1 剧本转换（按目标口播字数压缩）与 C-2 机械校验（对白必须逐字来自原文、场次连续、字数超标即失败）。
   - `steps/chapter_shots.py`：C-3/C-4 镜头规划；对白逐字校验，超长口播按标点切分，单镜头估算不超过 10 秒。
@@ -71,6 +72,8 @@
 ## 已知限制
 
 - **图像与视频依赖 mini_agent 的 skill**：项目必须位于 mini_agent 仓库内，或设置 `NOVEL_TO_VIDEO_SKILLS_DIR`。key 来自 mini_agent 根目录的 providers.json（或环境变量）。
+- **模型调用记录只覆盖文本模型**：C-1/C-3/C-5/G-2 的完整输入输出可在界面查看；图像、视频、配音的请求参数仍只在 `logs/api_calls.jsonl` 与实时日志中。`llm_trace.jsonl` 只追加不轮转，长期运行后可手动清理。
+- **剧本自动重试默认关闭**：`script_max_retries` 默认 0；模型输出过长或对白改写时需手动重跑，或在「挡位与队列」页开启重试（每次重试多一次模型调用）。
 - **旧的直接 HTTP provider 仍保留**（`AgnesImageProvider`、`AgnesVideoProvider`），仅供测试引用，未在生产流程中使用。
 - **驾驶舱的后台运行是同进程线程**：界面进程退出即停止运行，遗留锁由下次运行前回收。不适合独立监控。
 - **停止是协作式的**：当前章节不会被中途切断。
@@ -131,5 +134,5 @@ novel_output/                       # 项目数据（默认位置，已加入 .g
     │   ├── state.json              # 各阶段状态
     │   └── chapter_001.mp4         # C-9 章节成片
     ├── exports/                    # video.mp4 全书成片；confirm.json 人工确认记录；stale.json 表示需重新合成
-    └── logs/                       # api_calls.jsonl 外部调用留痕；batch_runs.json 累计耗时
+    └── logs/                       # api_calls.jsonl 外部调用留痕；llm_trace.jsonl 文本模型完整输入输出；job.jsonl 实时日志；batch_runs.json 累计耗时
 ```

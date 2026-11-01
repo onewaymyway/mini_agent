@@ -82,6 +82,22 @@ def _stages(view: dict) -> None:
         cols[4].metric("失败", c.get("failed", 0))
 
 
+def _script_review(v: dict) -> None:
+    """C-2 剧本校验结果：状态、字数与问题清单（含对白在原文中找不到的具体行）。"""
+    rv = v.get("script_review")
+    if not rv:
+        return
+    st.markdown("#### 剧本校验（C-2）")
+    ok = rv.get("status") == "pass"
+    (st.success if ok else st.error)(
+        f"{'通过' if ok else '未通过'}　场次 {rv.get('scenes', 0)}　口播 {rv.get('spoken_chars', '-')} 字"
+        f"（目标 {rv.get('target_chars', '-')} 字）　生成次数 {rv.get('attempts', 1)}")
+    issues = rv.get("issues") or []
+    if issues:
+        st.dataframe([{"级别": "错误" if i["level"] == "error" else "提示", "说明": i["message"]} for i in issues],
+                     width='stretch', hide_index=True)
+
+
 def _shot_card(pdir: str, no: int, sh: dict) -> None:
     root = Path(pdir)
     with st.container(border=True):
@@ -163,9 +179,12 @@ def page_chapters() -> None:
     if v.get("output"):
         st.markdown("#### 章节成片")
         st.video(str(Path(pdir) / v["output"]))
+    _script_review(v)
     if v.get("script"):
-        with st.expander("剧本"):
+        with st.expander("剧本（模型输出整理后的文本）"):
             st.code(v["script"], language="markdown")
+    from ui.llm_trace_panel import render_llm_trace
+    render_llm_trace(pdir, chapter=no, key_prefix=f"trace_ch{no}")
     if v["shots"]:
         st.markdown("#### 小场景逐镜审核")
         for sh in v["shots"]:
