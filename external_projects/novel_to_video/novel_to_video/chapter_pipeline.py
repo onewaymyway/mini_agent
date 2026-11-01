@@ -129,6 +129,18 @@ def _read_yaml(path: Path) -> Optional[Dict[str, Any]]:
     return yaml.safe_load(path.read_text(encoding="utf-8")) or None
 
 
+def _unknown_speakers(project_dir: Path, cdir: Path) -> list:
+    path = cdir / "script.md"
+    if not path.is_file():
+        return []
+    from .steps.chapter_script import unknown_speakers
+    try:
+        chars = read_json(project_dir / "global" / "characters.json")["characters"]
+    except (OSError, KeyError, ValueError):
+        return []
+    return unknown_speakers(path.read_text(encoding="utf-8"), [n for c in chars for n in c.get("names", [])])
+
+
 def chapter_view(project_dir: Path, no: int) -> Dict[str, Any]:
     """供界面展示：章节状态、各阶段、镜头列表与审核状态。"""
     project_dir = Path(project_dir)
@@ -156,6 +168,7 @@ def chapter_view(project_dir: Path, no: int) -> Dict[str, Any]:
         "stages": cio.load_state(project_dir, no).get("stages", {}),
         "script": (cdir / "script.md").read_text(encoding="utf-8") if (cdir / "script.md").is_file() else None,
         "script_review": _read_yaml(cdir / "script_review.yaml"),
+        "unknown_speakers": _unknown_speakers(project_dir, cdir),
         "shots": shots,
         "output": str(out_path.relative_to(project_dir)) if out_path.is_file() else None,
         "counts": {s: sum(1 for v in states.values() if v == s) for s in

@@ -89,6 +89,7 @@ def check_script(script_text: str, source: str, known_names: List[str], target_c
         if not sc["lines"]:
             issues.append({"level": "error", "message": f"场次 {sc['no']} 没有内容"})
     src_norm = norm(source)
+    unknown: Dict[str, List[int]] = {}   # 库中没有的说话人 → 出现的行号（每个说话人只提示一次）
     for sc in scenes:
         for ln in sc["lines"]:
             if ln["type"] == "dialogue":
@@ -98,10 +99,13 @@ def check_script(script_text: str, source: str, known_names: List[str], target_c
                     issues.append({"level": "error",
                                    "message": f"第 {ln['lineno']} 行对白未在原文中找到（疑似改写或臆造）：{ln['text'][:30]}"})
                 if ln["speaker"] not in known_names:
-                    issues.append({"level": "warning",
-                                   "message": f"说话人“{ln['speaker']}”不在角色库中，将在 C-5 补建"})
+                    unknown.setdefault(ln["speaker"], []).append(ln["lineno"])
             elif len(ln["text"]) > 200:
                 issues.append({"level": "warning", "message": f"第 {ln['lineno']} 行旁白超过 200 字，建议拆分"})
+    for name, linenos in unknown.items():
+        issues.append({"level": "warning", "message": (
+            f"说话人“{name}”不在角色库中（{len(linenos)} 处，首见第 {linenos[0]} 行）。无需处理剧本：运行到 C-5 时会自动起草其设定，"
+            "之后在本页“补建角色”区确认设定与定妆图，再重新运行本章")})
     if target_chars:
         spoken = spoken_chars(script_text)
         if spoken > target_chars * OVER_RATIO:
@@ -111,6 +115,20 @@ def check_script(script_text: str, source: str, known_names: List[str], target_c
             issues.append({"level": "warning", "message": f"口播总字数 {spoken} 明显少于目标 {target_chars} 字"})
     status = "fail" if any(i["level"] == "error" for i in issues) else "pass"
     return {"status": status, "issues": issues, "scenes": len(scenes)}
+
+
+def unknown_speakers(script_text: str, known_names: List[str]) -> List[Dict[str, Any]]:
+    """剧本中不在角色库里的说话人及出现次数（按首次出现顺序）。剧本无法解析时返回空列表。"""
+    try:
+        scenes = parse_script(script_text)
+    except ScriptError:
+        return []
+    counts: Dict[str, int] = {}
+    for sc in scenes:
+        for ln in sc["lines"]:
+            if ln["type"] == "dialogue" and ln["speaker"] not in known_names:
+                counts[ln["speaker"]] = counts.get(ln["speaker"], 0) + 1
+    return [{"name": n, "lines": c} for n, c in counts.items()]
 
 
 def target_chars_for(project_dir: Path) -> int:

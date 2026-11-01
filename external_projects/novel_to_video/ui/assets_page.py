@@ -83,32 +83,47 @@ def _status_table(status: dict) -> None:
 def _gallery(pdir: str, status: dict) -> None:
     st.markdown("#### 逐条审核")
     for r in status["rows"]:
-        with st.container(border=True):
-            left, right = st.columns([1, 2])
-            with left:
-                path = Path(pdir) / r["asset_path"] if r["asset_path"] else None
-                if path and path.is_file():
-                    st.image(str(path), caption=f"{r['id']} · {r['name']} · v{r['portrait_version']}",
-                             width='stretch')
-                else:
-                    st.caption(f"{r['id']} · {r['name']} · 暂无定妆图")
-            with right:
-                st.markdown(f"**{r['name']}**（{r['id']}）　设定：{STATUS_LABEL.get(r['text_status'])}"
-                            f"　定妆图：{STATUS_LABEL.get(r['portrait_status'])}")
-                _entity_detail(pdir, r)
-                b1, b2, b3 = st.columns(3)
-                if b1.button("通过设定", key=f"ok_t_{r['key']}", disabled=r["text_status"] != "pending"
-                             or bool(r["missing_fields"])):
-                    tool_api.review_asset(pdir, r["kind"], r["id"], "approve", "text")
-                    st.rerun()
-                if b2.button("通过定妆图", key=f"ok_p_{r['key']}",
-                             disabled=r["portrait_status"] not in ("pending",)):
-                    tool_api.review_asset(pdir, r["kind"], r["id"], "approve", "portrait")
-                    st.rerun()
-                if b3.button("驳回并重生成", key=f"rj_{r['key']}",
-                             disabled=r["portrait_status"] not in ("pending", "approved", "stale")):
-                    _start_result(tool_api.start_portraits_background(pdir, ids=[r["id"]], regenerate=True))
-                    st.rerun()
+        entity_card(pdir, r)
+
+
+def entity_card(pdir: str, r: dict, *, with_generate: bool = False) -> None:
+    """单个角色/地点的审核卡片：定妆图、设定编辑、通过/驳回按钮。章节页与补建审核页复用。
+    with_generate：设定已通过但还没有定妆图时，显示“生成定妆图”按钮。"""
+    with st.container(border=True):
+        left, right = st.columns([1, 2])
+        with left:
+            path = Path(pdir) / r["asset_path"] if r["asset_path"] else None
+            if path and path.is_file():
+                st.image(str(path), caption=f"{r['id']} · {r['name']} · v{r['portrait_version']}",
+                         width='stretch')
+            else:
+                st.caption(f"{r['id']} · {r['name']} · 暂无定妆图")
+        with right:
+            st.markdown(f"**{r['name']}**（{r['id']}）　设定：{STATUS_LABEL.get(r['text_status'])}"
+                        f"　定妆图：{STATUS_LABEL.get(r['portrait_status'])}")
+            if r.get("last_error"):
+                st.error(r["last_error"])
+            _entity_detail(pdir, r)
+            b1, b2, b3 = st.columns(3)
+            if b1.button("通过设定", key=f"ok_t_{r['key']}", disabled=r["text_status"] != "pending"
+                         or bool(r["missing_fields"])):
+                tool_api.review_asset(pdir, r["kind"], r["id"], "approve", "text")
+                st.rerun()
+            if b2.button("通过定妆图", key=f"ok_p_{r['key']}",
+                         disabled=r["portrait_status"] not in ("pending",)):
+                tool_api.review_asset(pdir, r["kind"], r["id"], "approve", "portrait")
+                st.rerun()
+            if b3.button("驳回并重生成", key=f"rj_{r['key']}",
+                         disabled=r["portrait_status"] not in ("pending", "approved", "stale")):
+                _start_result(tool_api.start_portraits_background(pdir, ids=[r["id"]], regenerate=True))
+                st.rerun()
+            if r["text_status"] == "pending" and r["missing_fields"]:
+                st.warning("「通过设定」暂时点不了：还缺 " + "、".join(r["missing_fields"])
+                           + "。请展开上方「查看与编辑设定」补全——性别在下拉框里选（无法判断就选 unknown），"
+                           "再点「保存修改」，之后即可通过设定。")
+            if with_generate and r["text_status"] == "approved" and r["portrait_status"] in ("missing", "failed"):
+                if st.button("生成定妆图", key=f"gen_{r['key']}", type="primary"):
+                    _start_result(tool_api.start_portraits_background(pdir, ids=[r["id"]]))
 
 
 def _vkey(prefix: str, rkey: str, value) -> str:
@@ -142,7 +157,13 @@ def _entity_detail(pdir: str, r: dict) -> None:
             st.caption("来源：" + "，".join(f"{k}={v}" for k, v in src.items()))
         if st.button("保存修改", key=f"save_{r['key']}"):
             clean = {k: v for k, v in fields.items() if v is not None and ent.get(k) != v}
-            if clean:
+            # 模型起草/推断的性别不算确认：值相同也要写入，使来源变为 user（否则「通过设定」永远点不了）
+            if (r["kind"] == "character" and fields.get("gender")
+                    and ent.get("gender_source") not in ("user", "persona")):
+                clean["gender"] = fields["gender"]
+            if not clean:
+                st.info("没有改动。")
+            else:
                 res = tool_api.edit_asset(pdir, r["kind"], r["id"], clean)
                 if res["ok"]:
                     st.success("已保存。改动视觉字段时，相关定妆图会标记为需重生成。")

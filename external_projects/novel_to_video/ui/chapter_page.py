@@ -82,6 +82,27 @@ def _stages(view: dict) -> None:
         cols[4].metric("失败", c.get("failed", 0))
 
 
+def _auto_added_section(pdir: str, no: int, v: dict) -> None:
+    """补建角色：剧本里有库中没有的说话人时，在本页直接确认，不必跳到别的页面。"""
+    from ui.auto_added_page import render_auto_added
+    unknown = v.get("unknown_speakers") or []
+    queue = tool_api.auto_added_queue(pdir)
+    mine = [r for r in (queue["data"] if queue["ok"] else []) if r["chapter"] == no]
+    if not unknown and not mine:
+        return
+    st.markdown("#### 补建角色（需要你确认）")
+    if v.get("status") == "waiting_assets":
+        st.warning(f"本章正在等待补建角色确认：请在下面完成设定与定妆图的确认，然后点上方「运行第 {no} 章流水线」继续。")
+    if unknown:
+        names = "、".join(f"{u['name']}（{u['lines']} 句）" for u in unknown)
+        st.info(f"剧本里有 {len(unknown)} 个说话人不在角色库中：{names}。剧本本身没有问题，无需修改。"
+                f"点击上方「运行第 {no} 章流水线」，运行到 C-5 时会自动起草这些角色的设定，起草完成后在这里确认。")
+    if mine:
+        open_n = render_auto_added(pdir, chapter=no, key_prefix=f"aa_ch{no}")
+        if open_n == 0:
+            st.success("本章的补建角色已全部确认，可以重新运行本章继续。")
+
+
 def _script_review(v: dict) -> None:
     """C-2 剧本校验结果：状态、字数与问题清单（含对白在原文中找不到的具体行）。"""
     rv = v.get("script_review")
@@ -176,6 +197,7 @@ def page_chapters() -> None:
     v = view["data"]
     st.subheader(f"第 {no} 章 · {v['title']}")
     _stages(v)
+    _auto_added_section(pdir, no, v)
     if v.get("output"):
         st.markdown("#### 章节成片")
         st.video(str(Path(pdir) / v["output"]))

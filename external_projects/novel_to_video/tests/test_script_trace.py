@@ -234,3 +234,91 @@ def test_chapter_page_shows_prompt_response_and_review(proj):
     errs = " ".join(e.value for e in at.error)
     assert "剧本校验" in " ".join(m.value for m in at.markdown) and "未通过" in errs
     assert any("压缩" in str(r) for df in at.dataframe for r in [df.value.to_dict("records")])
+
+
+# ---------------------------------------------------------------- 补建角色：提示合并，并在章节页直接操作
+
+DUP_SCRIPT = """### 场次 1｜铁城·清晨（外景）
+旁白：铁城的清晨很安静。
+新人：我也要去。
+新人：我也要去。
+路人：等一下。
+"""
+DUP_SOURCE = "铁城的清晨很安静。新人：“我也要去。”路人：“等一下。”"
+
+
+def test_unknown_speaker_warning_is_merged_and_says_what_to_do():
+    res = check_script(DUP_SCRIPT, DUP_SOURCE, ["林远"])
+    warns = [i["message"] for i in res["issues"] if i["level"] == "warning"]
+    assert len(warns) == 2                       # 新人、路人各一条，不再每句一条
+    new = next(w for w in warns if "新人" in w)
+    assert "2 处" in new and "首见第 3 行" in new and "补建角色" in new and "重新运行本章" in new
+    assert res["status"] == "pass"               # 仍然只是提示
+
+
+def test_unknown_speakers_helper():
+    from novel_to_video.steps.chapter_script import unknown_speakers
+    assert unknown_speakers(DUP_SCRIPT, ["林远"]) == [{"name": "新人", "lines": 2}, {"name": "路人", "lines": 1}]
+    assert unknown_speakers(DUP_SCRIPT, ["新人", "路人"]) == []
+    assert unknown_speakers("不是剧本", []) == []
+
+
+def _open_chapter_page(proj):
+    at = AppTest.from_file(APP, default_timeout=180).run()
+    at.sidebar.radio[0].set_value("🎬 章节生产").run()
+    at.text_input(key="chap_root").input(str(proj.parent)).run()
+    assert not at.exception, at.exception
+    return at
+
+
+def test_chapter_page_guides_unknown_speakers_then_confirms_in_place(proj):
+    from novel_to_video import chapter_pipeline as cp
+    from novel_to_video import shot_review  # noqa: F401
+    from novel_to_video.providers.tts import SilenceTTS
+    from novel_to_video.providers.video import StubVideoProvider
+    from test_chapter_pipeline import ChapterLLM
+
+    # 1) 只有剧本、说话人还没起草：页面说明下一步，不给空按钮
+    run_script(proj, 1, RecLLM(SCRIPT))
+    at = _open_chapter_page(proj)
+    info = " ".join(i.value for i in at.info)
+    assert "新人" in info and "运行第 1 章流水线" in info and "自动起草" in info
+
+    # 2) 流水线跑到 C-5：补建角色已起草，章节等待确认；页面直接给出操作按钮
+    r = cp.run_chapter(proj, 1, text_llm=ChapterLLM(), image=StubImageProvider(),
+                       video=StubVideoProvider(), tts=SilenceTTS())
+    assert r["status"] == "waiting_assets", r
+    at = _open_chapter_page(proj)
+    assert any("等待补建角色确认" in w.value for w in at.warning)
+    keys = [b.key for b in at.button if b.key]
+    ok_text = next(k for k in keys if k.startswith("ok_t_"))
+    assert any(k.startswith("ok_p_") for k in keys) and any(k.startswith("save_") for k in keys)
+
+    # 3) 模型起草的性别不算确认：「通过设定」是灰的，页面必须说明原因和做法
+    assert at.button(key=ok_text).disabled
+    warn = " ".join(w.value for w in at.warning)
+    assert "通过设定」暂时点不了" in warn and "gender" in warn and "保存修改" in warn
+
+    # 4) 在本页选性别并保存 → 「通过设定」可点 → 点击生效 → 出现「生成定妆图」，全程无需跳页
+    next(sb for sb in at.selectbox if sb.label == "性别").set_value("male").run()
+    at.button(key=next(k for k in keys if k.startswith("save_"))).click().run()
+    assert not at.exception, at.exception
+    at.button(key=ok_text).click().run()
+    assert not at.exception, at.exception
+    item = tool_api.auto_added_queue(str(proj))["data"][0]
+    assert item["text_status"] == "approved"
+    assert any((b.key or "").startswith("gen_") for b in at.button)
+
+
+def test_auto_added_page_has_action_buttons(proj):
+    from novel_to_video import chapter_pipeline as cp
+    from novel_to_video.providers.tts import SilenceTTS
+    from novel_to_video.providers.video import StubVideoProvider
+    from test_chapter_pipeline import ChapterLLM
+    cp.run_chapter(proj, 1, text_llm=ChapterLLM(), image=StubImageProvider(),
+                   video=StubVideoProvider(), tts=SilenceTTS())
+    at = AppTest.from_file(APP, default_timeout=180).run()
+    at.sidebar.radio[0].set_value("🧩 补建角色审核").run()
+    at.text_input(key="auto_root").input(str(proj.parent)).run()
+    assert not at.exception, at.exception
+    assert any((b.key or "").startswith("ok_t_") for b in at.button)
