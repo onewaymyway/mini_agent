@@ -4434,7 +4434,7 @@ def _render_goal_card(
             else:
                 st.toast("✅ 已激活，开始进入调度", icon="✅")
                 st.rerun()
-    if st.button("📋 详情 / 操作", key=f"{key_prefix}goal_detail_btn_{n.get('id')}", use_container_width=True):
+    if st.button("📋 详情 / 操作", key=f"{key_prefix}goal_detail_btn_{n.get('id')}", width='stretch'):
         _show_goal_detail_dialog(
             client, n, status_key, execution=execution,
             cron_next_run_by_id=cron_next_run_by_id, cron_jobs_by_id=cron_jobs_by_id,
@@ -12648,7 +12648,7 @@ def _oreg_projects_section(client: AgentClient) -> list[dict]:
             "最新版本": p.get("latest_version") or "-",
             "所属管理项目": p.get("owner_goal_id") or "-",
         } for p in projects],
-        use_container_width=True, hide_index=True,
+        width='stretch', hide_index=True,
     )
     unmanaged = [p["slug"] for p in projects if not p.get("managed")]
     if unmanaged:
@@ -12730,7 +12730,7 @@ def _oreg_patrol_section(client: AgentClient):
             "说明": f.get("detail"),
             "建议": f.get("suggestion"),
         } for f in findings],
-        use_container_width=True, hide_index=True,
+        width='stretch', hide_index=True,
     )
 
 
@@ -13751,7 +13751,7 @@ def _render_cron_job_card(client: AgentClient, job: dict) -> None:
                         st.success("已重置，下次触发将从头开始执行。")
                         st.rerun()
 
-        if st.button("📋 详情 / 操作", key=f"cron_card_detail_{job_id}", use_container_width=True):
+        if st.button("📋 详情 / 操作", key=f"cron_card_detail_{job_id}", width='stretch'):
             # 每次重新打开详情弹窗都先清掉上一次遗留的"删除二次确认态"——
             # 用户上次点了「🗑️ 删除」进入确认态后，可能通过 ✕/Esc/点击外部
             # 关掉了弹窗（这几种方式不会触发任何回调），标记就会一直留在

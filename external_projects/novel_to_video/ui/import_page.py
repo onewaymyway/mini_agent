@@ -27,7 +27,7 @@ def _render_report(report: dict) -> None:
         st.dataframe(
             [{"级别": LEVEL_LABEL.get(i["level"], i["level"]), "代码": i["code"],
               "说明": i["message"], "位置": i.get("path") or ""} for i in report["issues"]],
-            use_container_width=True, hide_index=True,
+            width='stretch', hide_index=True,
         )
     else:
         st.success("没有导入问题。")
@@ -37,7 +37,7 @@ def _render_report(report: dict) -> None:
             [{"章号": c["no"], "章名": c["title"], "字数": c["char_count"],
               "有总结": "是" if c["summary_file"] else "否", "源文件": c["source_file"]}
              for c in report["chapters"]],
-            use_container_width=True, hide_index=True,
+            width='stretch', hide_index=True,
         )
     with st.expander(f"角色库（{len(report['characters'])} 个，来自人设卡）"):
         st.dataframe(
@@ -45,13 +45,13 @@ def _render_report(report: dict) -> None:
               "年龄段": c["age_range"], "性别": c["gender"] or "（缺失，G-2 补全）",
               "首次出场章": c["first_appear"], "人设卡": "有" if c["persona_card"] else "无"}
              for c in report["characters"]],
-            use_container_width=True, hide_index=True,
+            width='stretch', hide_index=True,
         )
     with st.expander(f"地点库（{len(report['locations'])} 个）"):
         st.dataframe(
             [{"id": l["id"], "名称": l["name"], "类型": l["location_type"],
               "首次出现章": l["first_appear"]} for l in report["locations"]],
-            use_container_width=True, hide_index=True,
+            width='stretch', hide_index=True,
         )
 
 

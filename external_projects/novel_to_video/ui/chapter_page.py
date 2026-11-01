@@ -62,7 +62,7 @@ def _show_run(res: dict) -> None:
     if d["status"] == "waiting_assets":
         st.info("请到「全书素材」页确认补建角色的设定与定妆图，然后回到这里重新运行。")
     if d.get("issues"):
-        st.dataframe([i for i in d["issues"]], use_container_width=True, hide_index=True)
+        st.dataframe([i for i in d["issues"]], width='stretch', hide_index=True)
 
 
 def _stages(view: dict) -> None:
@@ -71,7 +71,7 @@ def _stages(view: dict) -> None:
         st_info = view["stages"].get(key, {})
         rows.append({"阶段": label, "状态": st_info.get("status", "未运行"),
                      "说明": st_info.get("error") or ""})
-    st.dataframe(rows, use_container_width=True, hide_index=True)
+    st.dataframe(rows, width='stretch', hide_index=True)
     if view.get("counts"):
         c = view["counts"]
         cols = st.columns(5)
@@ -147,7 +147,7 @@ def page_chapters() -> None:
     overview = ov["data"]
     st.dataframe([{"章号": r["no"], "章名": r["title"], "选中": r["selected"],
                    "状态": STATUS_LABEL.get(r["status"], r["status"]), "说明": r.get("message") or ""}
-                  for r in overview], use_container_width=True, hide_index=True)
+                  for r in overview], width='stretch', hide_index=True)
     _run_panel(pdir, overview)
 
     no = st.session_state.get("chap_no")

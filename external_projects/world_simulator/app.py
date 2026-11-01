@@ -1639,7 +1639,7 @@ def page_list() -> None:
     manifests = list_simulations(DATA_DIR)
     col_new, _ = st.columns([1, 4])
     with col_new:
-        if st.button("＋ 新建模拟", use_container_width=True):
+        if st.button("＋ 新建模拟", width='stretch'):
             st.session_state["view"] = "create"
             st.rerun()
 
@@ -1675,12 +1675,12 @@ def page_list() -> None:
             )
             c1, c2, c3 = st.columns([1, 1, 1])
             with c1:
-                if st.button("打开", key=f"open_{m.sim_id}", use_container_width=True):
+                if st.button("打开", key=f"open_{m.sim_id}", width='stretch'):
                     st.session_state["view"] = "detail"
                     st.session_state["sim_id"] = m.sim_id
                     st.rerun()
             with c2:
-                with st.popover("✏️ 改标题", use_container_width=True):
+                with st.popover("✏️ 改标题", width='stretch'):
                     new_title = st.text_input(
                         "新标题", value=m.title, key=f"rename_input_{m.sim_id}",
                     )
@@ -1694,7 +1694,7 @@ def page_list() -> None:
                         else:
                             st.rerun()
             with c3:
-                with st.popover("🗑 删除", use_container_width=True):
+                with st.popover("🗑 删除", width='stretch'):
                     st.markdown(
                         f'<div class="ws-danger-zone"><b>删除「{m.title}」？</b>'
                         "<div class=\"ws-muted\">此操作不可逆，会连同全部分支/"
@@ -1882,9 +1882,9 @@ def page_create() -> None:
 
     gen_col, back_col = st.columns([1, 1])
     with gen_col:
-        gen_clicked = st.button("生成提案草稿", type="primary", use_container_width=True)
+        gen_clicked = st.button("生成提案草稿", type="primary", width='stretch')
     with back_col:
-        if st.button("← 返回列表", use_container_width=True):
+        if st.button("← 返回列表", width='stretch'):
             st.session_state["view"] = "list"
             st.rerun()
 
@@ -2374,12 +2374,12 @@ def page_create() -> None:
     st.markdown("---")
     confirm_cols = st.columns([1, 1])
     with confirm_cols[0]:
-        confirm_only_clicked = st.button("确认创建（方向留到之后再选）", use_container_width=True)
+        confirm_only_clicked = st.button("确认创建（方向留到之后再选）", width='stretch')
     with confirm_cols[1]:
         advance_after_create = st.button(
             "确认创建并按选定方向直接推进第一步",
             type="primary",
-            use_container_width=True,
+            width='stretch',
             disabled=chosen_option_id is None,
         )
         if chosen_option_id is None:
@@ -3384,7 +3384,7 @@ def _render_anatomy_forecast(manifest: Any, history: Any, sim_id: str, line_id: 
                 st.markdown(f"- {_html_text(_e['name'])}：成立 → P50 {_fmt_days(_e['p50_true'])} 天（{_e['p_reached_true']:.0%}）；不成立 → {_fmt_days(_e['p50_false'])} 天（{_e['p_reached_false']:.0%}）", unsafe_allow_html=True)
     for _s in view["sensitivity"]:
         with st.expander(f"敏感性（龙卷风）：{_s['milestone']}（基线 P50 {_fmt_days(_s['baseline']['p50'])} 天，达成 {_s['baseline']['p_reached']:.0%}）"):
-            st.dataframe([{"项": r["label"], "低端": f"{r['low']['value']} → P50 {_fmt_days(r['low']['p50'])}", "高端": f"{r['high']['value']} → P50 {_fmt_days(r['high']['p50'])}", "P50 摆幅(天)": r["swing_days"], "概率摆幅": r["swing_p"]} for r in _s["rows"]], use_container_width=True)
+            st.dataframe([{"项": r["label"], "低端": f"{r['low']['value']} → P50 {_fmt_days(r['low']['p50'])}", "高端": f"{r['high']['value']} → P50 {_fmt_days(r['high']['p50'])}", "P50 摆幅(天)": r["swing_days"], "概率摆幅": r["swing_p"]} for r in _s["rows"]], width='stretch')
     if cur.get("sens") and not cur["sens"].get("ok"):
         st.warning(cur["sens"].get("reason") or "敏感性分析失败")
     if cur.get("sens") and cur["sens"].get("ok") and cur["sens"]["meta"]["skipped"]:
@@ -4902,7 +4902,7 @@ def _render_brief_element(e: Dict[str, Any]) -> None:
         st.markdown("**里程碑时间分布**（从现在起）")
         st.dataframe(
             [{"里程碑": m["name"], "视野内达成": f"{m['p_reached']:.0%}", "P10": fd(m["p10"]), "P50": fd(m["p50"]), "P90": fd(m["p90"])} for m in pend],
-            use_container_width=True,
+            width='stretch',
         )
     for mt in e["metrics"]:
         st.markdown(f"指标 **{mt['name']}** {mt.get('unit') or ''}（P10 / P50 / P90 分位带）")
@@ -4912,7 +4912,7 @@ def _render_brief_element(e: Dict[str, Any]) -> None:
         st.dataframe(
             [{"项": r["label"], "低端": f"{r['low']['value']} → P50 {forecast_brief_mod.fmt_days(r['low']['p50'])}",
               "高端": f"{r['high']['value']} → P50 {forecast_brief_mod.fmt_days(r['high']['p50'])}"} for r in e["sensitivity_rows"]],
-            use_container_width=True,
+            width='stretch',
         )
 
 
@@ -6448,15 +6448,15 @@ def page_detail() -> None:
     ctrl1, ctrl2, ctrl3 = st.columns(3)
     with ctrl1:
         if manifest.status == "active":
-            if st.button("暂停", use_container_width=True):
+            if st.button("暂停", width='stretch'):
                 set_status(DATA_DIR, sim_id, "paused")
                 st.rerun()
         elif manifest.status == "paused":
-            if st.button("恢复", use_container_width=True):
+            if st.button("恢复", width='stretch'):
                 set_status(DATA_DIR, sim_id, "active")
                 st.rerun()
     with ctrl2:
-        if manifest.status != "ended" and st.button("标记为已结束", use_container_width=True):
+        if manifest.status != "ended" and st.button("标记为已结束", width='stretch'):
             set_status(DATA_DIR, sim_id, "ended")
             st.rerun()
 
@@ -8162,22 +8162,22 @@ def main() -> None:
         st.markdown("### 🌌 world_simulator", unsafe_allow_html=True)
         st.markdown('<span class="ws-muted">万物模拟器</span>', unsafe_allow_html=True)
         st.markdown("---")
-        if st.button("📜 模拟列表", use_container_width=True):
+        if st.button("📜 模拟列表", width='stretch'):
             st.session_state["view"] = "list"
             st.rerun()
-        if st.button("＋ 新建模拟", use_container_width=True):
+        if st.button("＋ 新建模拟", width='stretch'):
             st.session_state["view"] = "create"
             st.rerun()
-        if st.button("⚖ 对比视图", use_container_width=True):
+        if st.button("⚖ 对比视图", width='stretch'):
             st.session_state["view"] = "compare"
             st.rerun()
-        if st.button("🧪 对比实验", use_container_width=True):
+        if st.button("🧪 对比实验", width='stretch'):
             st.session_state["view"] = "experiment"
             st.rerun()
-        if st.button("🗄 存档管理", use_container_width=True):
+        if st.button("🗄 存档管理", width='stretch'):
             st.session_state["view"] = "archive"
             st.rerun()
-        if st.button("📚 知识库", use_container_width=True):
+        if st.button("📚 知识库", width='stretch'):
             st.session_state["view"] = "knowledge"
             st.rerun()
 

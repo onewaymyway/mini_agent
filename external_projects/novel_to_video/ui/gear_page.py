@@ -42,7 +42,7 @@ def page_gear() -> None:
 
     st.markdown("#### 检查点策略")
     st.dataframe([{"检查点": cp, **{g: ("自动" if pol["table"][g][cp] == "auto" else "手动") for g in pol["gears"]}}
-                  for cp in pol["table"]["G0"]], hide_index=True, use_container_width=True)
+                  for cp in pol["table"]["G0"]], hide_index=True, width='stretch')
     st.caption("全书合成（F-1）在任何挡位下都需要人工确认。")
 
     st.markdown("#### 批量运行")

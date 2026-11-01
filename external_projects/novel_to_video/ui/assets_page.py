@@ -72,7 +72,7 @@ def _status_table(status: dict) -> None:
         "设定": STATUS_LABEL.get(r["text_status"], r["text_status"]),
         "定妆图": STATUS_LABEL.get(r["portrait_status"], r["portrait_status"]),
         "版本": r["portrait_version"], "错误": r["last_error"] or "",
-    } for r in status["rows"]], use_container_width=True, hide_index=True)
+    } for r in status["rows"]], width='stretch', hide_index=True)
 
 
 def _gallery(pdir: str, status: dict) -> None:
@@ -84,7 +84,7 @@ def _gallery(pdir: str, status: dict) -> None:
                 path = Path(pdir) / r["asset_path"] if r["asset_path"] else None
                 if path and path.is_file():
                     st.image(str(path), caption=f"{r['id']} · {r['name']} · v{r['portrait_version']}",
-                             use_container_width=True)
+                             width='stretch')
                 else:
                     st.caption(f"{r['id']} · {r['name']} · 暂无定妆图")
             with right:

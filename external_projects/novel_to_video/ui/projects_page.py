@@ -23,7 +23,7 @@ def page_projects() -> None:
     if not rows:
         st.info("这里还没有项目。先到「导入导出目录」页面创建一个。")
         return
-    st.dataframe(rows, use_container_width=True, hide_index=True)
+    st.dataframe(rows, width='stretch', hide_index=True)
 
     choice = st.selectbox("查看项目", [r["dir"] for r in rows if "error" not in r],
                           format_func=lambda p: Path(p).name, key="proj_pick")
@@ -45,7 +45,7 @@ def page_projects() -> None:
     st.markdown("#### 章节")
     st.dataframe([{"章号": c["no"], "章名": c["title"], "选中": c["selected"], "状态": c["status"],
                    "字数": c["char_count"]} for c in info["chapters"]],
-                 use_container_width=True, hide_index=True)
+                 width='stretch', hide_index=True)
     with st.expander("项目设置（project.json）"):
         st.json(proj)
     with st.expander("进度日志（PROGRESS.md）"):
