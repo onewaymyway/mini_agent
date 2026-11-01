@@ -24,7 +24,7 @@ import _common  # noqa: F401
 from _common import force_utf8_stdio
 
 from novel_to_video.providers.factory import ProviderError, make_image_provider, make_video_provider
-from novel_to_video.providers.keypool import keys_from_env
+from novel_to_video.providers.skill_bridge import key_config
 
 PROMPT_IMAGE = ("cinematic realistic, dystopian sci-fi, muted cold palette. A lone figure in a grey work jacket "
                 "standing before a steel dome city at dawn. Vertical 9:16 frame, no text, no watermark.")
@@ -47,8 +47,10 @@ def main(argv=None) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     steps = []
 
-    n_keys = len(keys_from_env())
-    steps.append(_step("key 配置", n_keys > 0, f"检测到 {n_keys} 把 key（不显示内容）"))
+    cfg = key_config()
+    n_keys = cfg["count"]
+    steps.append(_step("key 配置", n_keys > 0,
+                       f"检测到 {n_keys} 把 key，来源：{cfg['source']}（不显示内容）"))
     if n_keys == 0:
         return _finish(steps, 1)
 

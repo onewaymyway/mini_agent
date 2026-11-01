@@ -275,3 +275,19 @@ python entrypoints/smoke_real_api.py --out smoke_out
 - 任务运行中可点击「请求停止」，当前实体或步骤完成后停止；
 - 同一项目同一时间只能运行一个任务（素材、章节队列、合成共用），冲突时会提示“项目正在运行”。
 
+## 16. API key 配置（图像与视频）
+
+图像（G-3 定妆图）与视频（C-8 小场景）通过 mini_agent 的 Agnes skill 调用，key 由 skill 自动解析，无需在本项目中额外设置。
+
+在 mini_agent 项目根目录放置 `providers.json`（可从 `providers.agnes.example` 复制），任选一种写法：
+
+```json
+{ "providers": { "agnes": { "api_keys": ["key1", "key2"], "key_rotation": "round_robin", "key_cooldown": 60 } } }
+```
+
+或在 `llm_fallback_chain` 中配置 `provider` 为 `agnes` 的条目的 `api_keys`。
+
+优先级：环境变量 `AGNES_API_KEYS`（逗号分隔）→ `providers.json` → 环境变量 `AGNES_API_KEY`。
+
+若提示“未找到可用的 Agnes API key”，错误信息会列出实际检查过的位置，并给出找到的 providers.json 路径或说明未找到。
+

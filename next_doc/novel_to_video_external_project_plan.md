@@ -707,6 +707,24 @@ Phase 2 是风险最高的一期（涉及外部视频 API、一致性核查、�
 
 **测试**：`tests/test_ui_refresh.py` 两项回归测试，分别复现素材设定与性别选择的旧值问题。全量测试 193 项通过，1 项跳过。
 
+### 14.10 修复：图像与视频改为调用 mini_agent 的 skill（2026-11-01）
+
+**问题**：G-2 之后的 G-3 报“未配置图像 API key”，但 mini_agent 的 providers.json 中已有 agnes 的 key。原因是项目的 key 只读取环境变量，并且图像与视频各自实现了一套 HTTP 调用，没有使用 skill 中已经实现的 key 解析。
+
+**修复**：
+
+1. 新增 `providers/skill_bridge.py`：从 mini_agent 的 `.claude/skills` 加载 `gen_image_with_text` 与 `gen_video_with_text` 的客户端。两个 skill 的模块名相同，因此分别以不同的模块名加载。查找顺序：环境变量 `NOVEL_TO_VIDEO_SKILLS_DIR`，否则从本项目向上查找。
+2. key 由 skill 解析，顺序与 skill 一致：`AGNES_API_KEYS` → 项目根目录 `providers.json`（`providers.agnes.api_keys`，或 `llm_fallback_chain` 中 `provider=agnes` 的 `api_keys`）→ `AGNES_API_KEY`。
+3. 新增 `providers/skill_providers.py`：`SkillImageProvider` 与 `SkillVideoProvider` 对外保持原有的 `ImageProvider` / `VideoProvider` 接口。图像调用 `generate_image`，视频调用 `generate_video`（有参考图时使用 `reference` 模式）。限流切换 key、不可重试错误识别都由 skill 完成。
+4. `providers/factory.py` 的 agnes 分支改为使用上述 provider。没有 key 时，错误信息列出实际检查过的位置，以及找到的 providers.json 路径（或说明未找到）。
+5. `entrypoints/smoke_real_api.py` 的 key 检测改为走 skill 的解析结果。
+
+**保留的旧代码**：`providers/image.py` 的 `AgnesImageProvider` 与 `providers/video.py` 的 `AgnesVideoProvider`（直接 HTTP 版本）已不再被工厂使用，仅为现有测试保留（`test_providers.py`、`test_phase5_keypool.py`）。后续可以删除，删除时需要同步调整这两个测试文件。
+
+**测试**：`tests/test_skill_bridge.py` 共 11 项。测试在临时目录中复制 skill、放置临时 providers.json，并模拟 HTTP，不产生真实调用。覆盖：从 providers.json 与 llm_fallback_chain 解析 key、环境变量优先、缺 key 时的提示、图像成功保存、鉴权错误不可重试、限流切换 key 后成功、视频参考图流程。全量测试 204 项通过，1 项跳过。
+
+**注意**：本地沙箱没有 providers.json，因此没有对真实 key 做调用。真实冒烟仍需在本机运行 `entrypoints/smoke_real_api.py`。
+
 ### 14.4 后续阶段
 
 本计划的 Phase 0–5 已全部完成。后续若要做后台 worker、语义一致性核查或真实模型的质量评估，应另立计划文档。每完成一期，在本节追加对应的实施记录（交付物、验收结果、相对原方案的偏差、未实现项）。

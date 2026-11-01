@@ -9,11 +9,12 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-from .image import AgnesImageProvider, ImageProvider, StubImageProvider
-from .video import AgnesVideoProvider, StubVideoProvider, VideoProvider
+from .image import ImageProvider, StubImageProvider
+from .video import StubVideoProvider, VideoProvider
 from .tts import EdgeTTS, SilenceTTS, TTSProvider
-from .keypool import pool_from_env
 from .text import MiniAgentTextLLM, RuleTextLLM, TextLLM
+from . import skill_bridge
+from .skill_providers import SkillImageProvider, SkillVideoProvider
 
 
 class ProviderError(RuntimeError):
@@ -24,15 +25,37 @@ def _forced_stub() -> bool:
     return os.environ.get("NOVEL_TO_VIDEO_PROVIDERS", "").strip().lower() == "stub"
 
 
+def no_key_message(kind: str) -> str:
+    """没有可用 key 时的说明：列出实际检查过的位置，便于用户定位。"""
+    try:
+        cfg = skill_bridge.key_config()
+        pj = skill_bridge.providers_json_path()
+        where = f"providers.json（已找到：{pj}）" if pj else "providers.json（未找到，应位于 mini_agent 项目根目录）"
+    except skill_bridge.SkillUnavailable as exc:
+        return f"无法使用 Agnes skill：{exc}"
+    return (f"未找到可用的 Agnes API key（{kind}）。skill 按以下顺序查找：环境变量 AGNES_API_KEYS、"
+            f"{where} 中 providers.agnes.api_keys 或 llm_fallback_chain 里 provider=agnes 的 api_keys、"
+            f"环境变量 AGNES_API_KEY。当前解析结果：{cfg['count']} 把 key（来源：{cfg['source']}）。")
+
+
+def _skill_or_raise(factory, kind: str):
+    try:
+        return factory()
+    except RuntimeError as exc:
+        if str(exc) == "no-key":
+            raise ProviderError(no_key_message(kind)) from exc
+        raise ProviderError(str(exc)) from exc
+    except skill_bridge.SkillUnavailable as exc:
+        raise ProviderError(f"无法使用 Agnes skill：{exc}") from exc
+
+
 def make_image_provider(name: Optional[str] = None) -> ImageProvider:
+    """图像 provider。agnes 通过 mini_agent 的 gen_image_with_text skill 调用，key 由 skill 解析。"""
     name = "stub" if _forced_stub() else (name or "agnes")
     if name == "stub":
         return StubImageProvider()
     if name == "agnes":
-        pool = pool_from_env()
-        if pool is None:
-            raise ProviderError("未配置图像 API key：请设置环境变量 AGNES_API_KEYS（逗号分隔）或 AGNES_API_KEY")
-        return AgnesImageProvider(pool)
+        return _skill_or_raise(lambda: SkillImageProvider(), "图像")
     raise ProviderError(f"未知图像 provider：{name}")
 
 
@@ -46,14 +69,12 @@ def make_text_llm(name: Optional[str] = None) -> TextLLM:
 
 
 def make_video_provider(name: Optional[str] = None) -> VideoProvider:
+    """视频 provider。agnes 通过 mini_agent 的 gen_video_with_text skill 调用，key 由 skill 解析。"""
     name = "stub" if _forced_stub() else (name or "agnes")
     if name == "stub":
         return StubVideoProvider()
     if name == "agnes":
-        pool = pool_from_env()
-        if pool is None:
-            raise ProviderError("未配置视频 API key：请设置 AGNES_API_KEYS 或 AGNES_API_KEY")
-        return AgnesVideoProvider(pool)
+        return _skill_or_raise(lambda: SkillVideoProvider(), "视频")
     raise ProviderError(f"未知视频 provider：{name}")
 
 
