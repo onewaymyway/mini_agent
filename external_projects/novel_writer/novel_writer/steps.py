@@ -323,7 +323,10 @@ def chapter_steps(n: int, title: str, *, total: Optional[int], prev_last: str,
                 deps=(p("context_pack"),), **common),
         StepDef(id=p("write_chapter"), title=f"第{n}章：写作", stage=_stage_of(n), category=CAT_CHAPTER_WRITE,
                 executor=EXECUTOR_SKILL, skill="chapter-writer",
-                instructions=f"写第 {n} 章正文。严格遵循上下文包与章前情节清单；产出正文并在回执里给出字数与写作备注。",
+                instructions=(f"写第 {n} 章正文。严格遵循上下文包与章前情节清单。\n"
+                              "写作备注按 chapter-writer 技能「输出格式」的统一模板，写在正文文件的最末尾（只写一次）；"
+                              "不要把备注写进回执，回执 summary 只需一句话。"
+                              "不要把工具返回的「[full output saved …]」提示或被截断的内容写进章节文件。"),
                 inputs=(rel("context_pack", n=n), rel("style_hint", n=n), rel("chapter_tasks", n=n),
                         rel("quota_file", n=n)),
                 outputs=(chapter_text,), deps=(p("style_hint"),), **common),

@@ -352,10 +352,15 @@ def machine_findings(ws: Workspace, n: int, settings: Dict[str, Any], path: Opti
         if len(para) > LONG_PARAGRAPH:
             warn.append(f"超长段落（{len(para)} 字），考虑拆分")
             break
-    # 写作备注格式（过渡阶段：只作提示，不阻断，用于观察违规率）
+    # 写作备注格式（过渡阶段：默认只作提示，不阻断，用于观察违规率）
+    # notes_strict 开启时，「位置/结构」问题（备注后仍有正文、多个备注块、混入工具截断提示）升级为硬问题
     from novel_writer import writer_notes as WN
+    layout = set(WN.layout_problems(text)) if (settings or {}).get("notes_strict") else set()
     for issue in WN.audit_notes(text):
-        warn.append(f"写作备注格式不统一：{issue}")
+        if issue in layout:
+            hard.append(f"写作备注位置不规范：{issue}")
+        else:
+            warn.append(f"写作备注格式不统一：{issue}")
     return {"chapter": n, "words": words, "quota": quota, "hard": hard, "warn": warn, "checked_at": _now()}
 
 
@@ -783,6 +788,8 @@ def revise_cycle(ws: Workspace, n: int, *, stage: str, invoker, settings: Dict[s
             instructions=(
                 f"这是第 {n} 章的修改（第 {k}/{max_rounds} 轮）。请只针对下列问题做**最小修改**："
                 "只改动指出问题的句段，不改动其它段落，不改变情节走向与出场设定，字数保持在配额附近。\n"
+                "文件末尾的写作备注块必须原样保留在最末尾：新增或改写的正文一律写在备注块之前，"
+                "不得在备注块之后追加内容；改完后只更新备注里的「实际字数」，不要新增备注块或额外字段。\n"
                 "问题与要求：\n" + "\n".join(f"- {i}" for i in requests) +
                 "\n完成后在回执 summary 中逐条说明改了什么。"
             ),

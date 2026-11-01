@@ -81,3 +81,54 @@ def test_machine_findings_warns_on_nonstandard_notes(tmp_path, monkeypatch):
     tool_api.save_chapter(str(ws.root), 2, "# 第2章 乙\n\n" + PROSE + "\n\n" + WN.render_notes(FIELDS))
     good = C.machine_findings(ws, 2, {})
     assert not any("写作备注格式不统一" in w for w in good["warn"])
+
+
+# ── 按块识别 + 位置/结构检查 + notes_strict ──────────────────────────────────
+
+def test_layout_problems_detect_marker_multi_block_and_content_after():
+    clean = "# 第1章\n\n" + PROSE + "\n\n" + WN.render_notes(FIELDS)
+    assert WN.layout_problems(clean) == []
+
+    after = clean + "\n追加的第二个结尾。\n"
+    assert any("之后仍有" in i for i in WN.layout_problems(after))
+
+    twice = clean + "\n" + WN.render_notes(FIELDS)
+    assert any("2 个写作备注块" in i for i in WN.layout_problems(twice))
+
+    marked = clean + '\n[full output saved — 10 chars total. Use read_file(path="x")]\n'
+    assert any("工具截断提示" in i for i in WN.layout_problems(marked))
+
+
+def test_note_label_requires_label_terminator():
+    assert WN.is_note_label("实际字数：5487") and WN.is_note_label("## 写作备注") and WN.is_note_label("**chapter_type：** setup")
+    assert not WN.is_note_label("实际字数的问题他并没有想过")
+
+
+def _make_book(tmp_path, monkeypatch):
+    from novel_writer import config, tool_api
+    from novel_writer.workspace import Workspace
+    monkeypatch.setattr(config, "NOVELS_DIR", tmp_path / "novels")
+    monkeypatch.setattr(config, "SHELF_INDEX_FILE", tmp_path / "shelf.json")
+    monkeypatch.setenv("NOVEL_WRITER_NO_SPAWN", "1")
+    r = tool_api.create_novel("测试", novels_dir=str(tmp_path / "novels"),
+                              index_file=str(tmp_path / "shelf.json"), gear="G3", total_chapters_planned=2)
+    return Workspace(r["data"]["workspace"]), tool_api
+
+
+def test_notes_strict_is_off_by_default_and_escalates_layout_problems_when_on(tmp_path, monkeypatch):
+    from novel_writer import chapter_ops as C
+    from novel_writer import settings as SET
+    assert SET.validate_settings({})["notes_strict"] is False       # 保守默认：关闭
+    with pytest.raises(Exception):
+        SET.validate_settings({"notes_strict": "yes"})
+
+    ws, tool_api = _make_book(tmp_path, monkeypatch)
+    bad = "# 第1章 甲\n\n" + PROSE + "\n\n" + WN.render_notes(FIELDS) + "\n备注之后追加的第二个结尾。\n"
+    tool_api.save_chapter(str(ws.root), 1, bad)
+
+    default = C.machine_findings(ws, 1, {})
+    assert not any("写作备注" in h for h in default["hard"])              # 默认只提示
+    assert any("写作备注格式不统一" in w and "之后仍有" in w for w in default["warn"])
+
+    strict = C.machine_findings(ws, 1, {"notes_strict": True})
+    assert any("写作备注位置不规范" in h and "之后仍有" in h for h in strict["hard"])

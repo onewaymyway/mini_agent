@@ -9,9 +9,13 @@
 正文清洗规则（章节文件的元信息格式不统一，见下）：
 1. 开头误入的文件名行（如「第44章_候选B.md」）删除。
 2. 若存在「正文」标记行（如 `## 正文`），标记之前的内容视为元信息头部，全部丢弃；章节标题从头部取。
-3. 结尾的写作备注：从最早出现的备注关键字行（写作备注 / 实际字数 / chapter_type / 完成情节任务 …）开始，
-   到文件末尾全部丢弃，但只有当其后不存在正文样式的长段落时才切（防止误删正文）。
-4. 切除后仍残留备注样式的行，记为警告，不会静默通过。
+3. 写作备注按「块」删除：从备注起始行（写作备注 / 实际字数 / chapter_type / 完成情节任务 …，关键字后须紧跟
+   冒号、括号等标签结束符）开始，吸收标题、列表、缩进行、加粗标签行，直到恢复成正文段落为止。
+   备注块可以在文件中间（备注后又被追加了内容）；块内某一行长得像正文也不会让整块漏切。
+   备注块之后仍有正文时，正文保留，并记为高优先级警告（多半是重复/追加的结尾，需人工确认）。
+4. 框架追加的「[full output saved — …]」截断提示行全部删除，并警告该章可能基于被截断的输出写入。
+5. 末尾的「第X章 完」「（本章完）」收尾标记删除。
+6. 切除后仍残留备注样式的行，记为警告，不会静默通过。
 清洗后正文为空，或切除行为异常时，该章记入 errors 并跳过，不会把备注写进最终稿。
 """
 
@@ -40,6 +44,8 @@ _STRAY_NAME = re.compile(r"^第\d+章[_\s].*\.md$")
 _HEADING = re.compile(r"^#{1,6}\s*(第[^章\n]{0,12}章.*)$")
 _TITLE_PREFIX = re.compile(r"^第[^章]{0,12}章\s*")
 _FILE_TITLE = re.compile(r"^第\d+章[_\s]*(.*)\.md$")
+# 章末收尾标记：「第二十一章 完」「（本章完）」，不属于正文
+_END_MARK = re.compile(r"^[（(【]?\s*(第[^章\s]{1,12}章\s*完|本章完)\s*[）)】]?$")
 
 
 def _norm(line: str) -> str:
@@ -55,6 +61,7 @@ def _is_prose(line: str) -> bool:
 
 
 def _tail_cut(lines: List[str]) -> int:
+    """兼容保留：导出清洗已改用按块删除（WN.strip_note_blocks），不再使用。"""
     return WN.tail_cut(lines)
 
 
@@ -96,9 +103,21 @@ def clean_chapter(raw: str, *, number: int, fallback_title: str = "") -> Tuple[s
         if title_full:
             break
 
-    body = body[:_tail_cut(body)]
-    body = _strip_blank_and_separators(body)
     warnings: List[str] = []
+    body, marker_count = WN.strip_framework_markers(body)
+    if marker_count:
+        warnings.append(f"第{number}章含 {marker_count} 处工具截断提示行（[full output saved …]），已删除；"
+                        "该章可能基于被截断的输出写入，请核对正文是否完整")
+    blocks = WN.find_note_blocks(body)
+    after = WN.content_after_first_block(body, blocks)
+    body, _ = WN.strip_note_blocks(body)
+    if after:
+        warnings.append(f"第{number}章写作备注块之后仍有 {after} 行正文，已保留；"
+                        "疑似重复或追加的结尾，请人工确认是否需要删除")
+    body = _strip_blank_and_separators(body)
+    while body and _END_MARK.match(body[-1].strip()):
+        body.pop()
+        body = _strip_blank_and_separators(body)
     if candidate_marked:
         warnings.append(f"第{number}章标题带有「候选」标记，请确认导出的是正式正文而非候选稿")
     if not any(l.strip() for l in body):
