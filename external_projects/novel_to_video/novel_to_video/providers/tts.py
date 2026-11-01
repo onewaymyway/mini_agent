@@ -67,9 +67,11 @@ def edge_tts_error_hint(exc: Exception) -> str:
     text = str(exc)
     ver = edge_tts_version()
     if "403" in text or "Invalid response status" in text:
-        return (f"edge-tts 服务拒绝连接（403，当前 edge-tts 版本 {ver}）。"
-                "多数情况是 edge-tts 版本过旧，请在运行环境执行：pip install -U edge-tts ，"
-                "然后重新运行本章。若仍失败，检查是否有代理或防火墙拦截 speech.platform.bing.com。"
+        return (f"edge-tts 服务拒绝连接（403，当前 edge-tts 版本 {ver}）。按顺序排查："
+                "①执行 pip install -U edge-tts 升级到最新版；"
+                "②在挡位页“配音网络”选择“强制直连”（或在 tts.edge_tts_proxy 设为 direct），绕过系统代理；"
+                "③若系统代理是必需的，把 tts.edge_tts_proxy 设为可用的代理地址；"
+                "④以上都无效时，服务端可能已拒绝该客户端，需要改用其他配音引擎。"
                 f"原始错误：{raw}")
     if "Name or service not known" in text or "ClientConnectorDNSError" in text or "ClientConnectorError" in text:
         return (f"无法连接 edge-tts 服务（DNS/网络不通，当前版本 {ver}）。请检查网络或代理设置。原始错误：{raw}")
