@@ -24,6 +24,7 @@ from ..chapter_io import (MAX_BLOCK_CHARS, SHOT_PLAN_SEC, chapter_dir, load_enti
                           mark_stage, norm, save_shots, sha12)
 from ..providers.text import TextLLM
 from ..providers.tts import CHARS_PER_SEC, estimate_seconds
+from ..project_store import auto_fix_retries, write_yaml_atomic
 from .chapter_script import parse_script, spoken_chars
 from .global_visual import StepError, parse_json_object
 
@@ -168,7 +169,59 @@ def strategy_block_limit(project_dir: Path, no: int) -> int:
     return MAX_BLOCK_CHARS
 
 
+def _closest_script_line(text: str, script_lines: List[Dict[str, str]]) -> str:
+    """剧本对白行里与 text 最接近的一句，用于告诉模型“应该照抄哪里”。找不到像样的返回空串。"""
+    from difflib import SequenceMatcher
+    nt = norm(text)
+    best, best_score = None, 0.0
+    for ln in script_lines:
+        nl = norm(ln["text"])
+        if not nl or not nt:
+            continue
+        m = SequenceMatcher(None, nt, nl, autojunk=False)
+        score = sum(b.size for b in m.get_matching_blocks()) / len(nt)
+        if score > best_score:
+            best, best_score = ln, score
+    if best is None or best_score < 0.4:
+        return ""
+    return f"{best['speaker']}：{best['text']}"
+
+
+def collect_shot_issues(raw_shots: List[Dict[str, Any]], script: str,
+                        characters: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """一次性找出镜头规划里的全部问题（而不是遇到第一个就停），用于把完整问题清单反馈给模型自动修正。
+    检查项与 validate_and_build 一致：口播块合法、对白是剧本中的连续原文、对白有说话人。"""
+    issues: List[Dict[str, str]] = []
+    if not raw_shots:
+        return [{"message": "没有返回任何镜头（shots 为空）"}]
+    script_norm = norm(script)
+    try:
+        script_lines = [{"speaker": ln["speaker"], "text": ln["text"]}
+                        for sc in parse_script(script) for ln in sc["lines"] if ln["type"] == "dialogue"]
+    except Exception:
+        script_lines = []
+    char_by_id = {c["id"] for c in characters}
+    for i, rs in enumerate(raw_shots, start=1):
+        for j, rb in enumerate(rs.get("blocks") or [], start=1):
+            where = f"第 {i} 个镜头的第 {j} 个口播块"
+            btype = rb.get("type")
+            text = str(rb.get("text") or "").strip()
+            if btype not in ("narration", "dialogue") or not text:
+                issues.append({"message": f"{where}非法：type 只能是 narration 或 dialogue，text 不能为空（当前 type={btype}）"})
+                continue
+            if btype != "dialogue":
+                continue
+            if norm(text) not in script_norm:
+                near = _closest_script_line(text, script_lines)
+                hint = f"；剧本里最接近的原句是“{near}”" if near else ""
+                issues.append({"message": f"{where}的对白“{text[:60]}”不是剧本中的连续原文{hint}"})
+            elif rb.get("speaker_id") not in char_by_id and not str(rb.get("speaker_name") or "").strip():
+                issues.append({"message": f"{where}的对白“{text[:30]}”缺少说话人（speaker_id 不在角色库中且没有 speaker_name）"})
+    return issues
+
+
 def run_shots(project_dir: Path, no: int, text_llm: TextLLM, *, force: bool = False) -> Dict[str, Any]:
+    """C-3/C-4。校验失败时把全部问题反馈给模型自动修正，最多 shots_max_retries 次（默认 2，写 0 则直接失败）。"""
     cdir = chapter_dir(project_dir, no)
     script_path = cdir / "script.md"
     if not script_path.is_file():
@@ -185,19 +238,47 @@ def run_shots(project_dir: Path, no: int, text_llm: TextLLM, *, force: bool = Fa
     ents = load_entities(project_dir)
     characters = ents["characters"]["characters"]
     locations = ents["locations"]["locations"]
-    label = f"第 {no} 章 C-3 调用文本模型规划镜头（剧本 {len(script)} 字）"
-    with joblog.timed(project_dir, "chapter", label):
-        per_shot = int(SHOT_PLAN_SEC * CHARS_PER_SEC * 0.9)
-        expected = max(1, math.ceil(spoken_chars(script) / per_shot))
-        raw = llm_trace.ask_traced(project_dir, text_llm,
-                                   prompts.shots_prompt(script, characters, locations,
-                                                        max_chars_per_shot=per_shot, expected_shots=expected),
-                                   system=prompts.SYSTEM_VISUAL, scope="chapter", label=label,
-                                   step="C-3", chapter=no)
-    obj = parse_json_object(raw)
-    built = validate_and_build(obj.get("shots") or [], script, locations, characters, no, block_limit=limit)
+    per_shot = int(SHOT_PLAN_SEC * CHARS_PER_SEC * 0.9)
+    expected = max(1, math.ceil(spoken_chars(script) / per_shot))
+    retries = auto_fix_retries(project_dir, "shots_max_retries")
+    review_path = cdir / "shots_review.yaml"
+    prompt = prompts.shots_prompt(script, characters, locations,
+                                  max_chars_per_shot=per_shot, expected_shots=expected)
+    attempt = 0
+    while True:
+        label = (f"第 {no} 章 C-3 调用文本模型规划镜头"
+                 + (f"（第 {attempt} 次修正）" if attempt else f"（剧本 {len(script)} 字）"))
+        with joblog.timed(project_dir, "chapter", label):
+            raw = llm_trace.ask_traced(project_dir, text_llm, prompt, system=prompts.SYSTEM_VISUAL,
+                                       scope="chapter", label=label, step="C-3", chapter=no)
+        built, obj, issues = None, None, []
+        try:
+            obj = parse_json_object(raw)
+            issues = collect_shot_issues(obj.get("shots") or [], script, characters)
+            if not issues:
+                built = validate_and_build(obj.get("shots") or [], script, locations, characters, no, block_limit=limit)
+        except StepError as exc:
+            issues = issues or [{"message": str(exc)}]
+        if built is not None:
+            break
+        write_yaml_atomic(review_path, {"status": "fail", "attempts": attempt + 1, "issues": issues})
+        if attempt >= retries:
+            more = f"（共 {len(issues)} 个问题）" if len(issues) > 1 else ""
+            raise StepError(f"镜头规划校验未通过{more}"
+                            + (f"，已自动修正 {attempt} 次仍未解决" if attempt else "")
+                            + "：" + issues[0]["message"])
+        attempt += 1
+        joblog.log(project_dir, "chapter",
+                   f"第 {no} 章 C-3 校验未通过（{len(issues)} 个问题），自动把问题反馈给模型修正（第 {attempt}/{retries} 次）：\n"
+                   + "\n".join(f"- {i['message']}" for i in issues), level="warn")
+        prompt = prompts.shots_fix_prompt(script, characters, locations,
+                                          json.dumps(obj, ensure_ascii=False) if obj is not None else (raw or "")[:6000],
+                                          issues, max_chars_per_shot=per_shot, expected_shots=expected)
     built["script_hash"] = script_hash
     built["block_limit"] = limit
+    built["attempts"] = attempt + 1
     save_shots(project_dir, no, built)
+    write_yaml_atomic(review_path, {"status": "pass", "attempts": attempt + 1, "issues": []})
     mark_stage(project_dir, no, "shots", "done")
-    return {"skipped": False, "shots": len(built["shots"]), "new_speakers": built["new_speakers"]}
+    return {"skipped": False, "shots": len(built["shots"]), "new_speakers": built["new_speakers"],
+            "attempts": attempt + 1}

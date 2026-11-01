@@ -119,6 +119,23 @@ def _auto_added_section(pdir: str, no: int, v: dict) -> None:
             st.success("本章的补建角色已全部确认，可以重新运行本章继续。")
 
 
+def _shots_review(v: dict) -> None:
+    """C-3 镜头规划校验：自动修正次数与未解决的问题（失败时章节停在这里，这里能看到全部原因）。"""
+    rv = v.get("shots_review")
+    if not rv:
+        return
+    ok = rv.get("status") == "pass"
+    if ok and rv.get("attempts", 1) <= 1:
+        return
+    st.markdown("#### 镜头规划校验（C-3）")
+    if ok:
+        st.success(f"通过：自动修正 {rv['attempts'] - 1} 次后通过")
+        return
+    st.error(f"未通过：已生成 {rv.get('attempts', 1)} 次仍有 {len(rv.get('issues') or [])} 个问题。"
+             "完整的输入与模型原始输出见下方「模型调用记录」；也可以在「挡位与队列」页调高自动修正次数后重新运行。")
+    st.dataframe([{"问题": i["message"]} for i in rv.get("issues") or []], width='stretch', hide_index=True)
+
+
 def _plan_warnings(pdir: str, no: int, v: dict) -> None:
     """镜头规划的质量提示：模型把一大段口播写成一个镜头，代码只能按时长拆开，拆出的镜头共用同一条画面描述。"""
     warns = v.get("plan_warnings") or []
@@ -267,6 +284,7 @@ def page_chapters() -> None:
         st.markdown("#### 章节成片")
         st.video(str(Path(pdir) / v["output"]))
     _script_review(v)
+    _shots_review(v)
     if v.get("script"):
         with st.expander("剧本（模型输出整理后的文本）"):
             st.code(v["script"], language="markdown")

@@ -56,7 +56,7 @@ class RuleTextLLM(TextLLM):
         task = info.get("task")
         if task in ("script", "script_fix"):
             return _rule_script({**info, "text": info.get("text") or _source_from_prompt(prompt)})
-        if task == "shots":
+        if task in ("shots", "shots_fix"):
             return json.dumps({"shots": _rule_shots(info)}, ensure_ascii=False)
         if task == "entity":
             return json.dumps({

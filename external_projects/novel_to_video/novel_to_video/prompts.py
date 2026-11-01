@@ -137,7 +137,8 @@ def shots_prompt(script: str, characters: list, locations: list, *,
         "把剧本拆分为小场景镜头（shots）。每个镜头 4–10 秒口播内容，包含若干 blocks。\n"
         "要求：\n"
         "1. blocks 的 type 为 narration（旁白）或 dialogue（对白）；\n"
-        "2. dialogue 的 text 必须逐字来自剧本对应对白行，不得改写；\n"
+        "2. dialogue 的 text 必须是剧本对白行中的连续原文：可以只截取原句中连续的一段，但不能删减中间的字、"
+        "不能改写、不能把不相邻的句子拼在一起。原句太长时，拆成多个镜头，每个镜头各取一段连续原文；\n"
         "3. dialogue 的 speaker_id 从 characters 中选；若剧本中的说话人不在 characters 中，speaker_id 置 null 并填 speaker_name；\n"
         "4. location_id 从 locations 中选，场景切换时必须换镜头；\n"
         "5. visual_hint_zh 为中文画面描述，visual_hint_en 为对应英文画面描述（不写人名，只写动作与构图）；\n"
@@ -150,6 +151,30 @@ def shots_prompt(script: str, characters: list, locations: list, *,
           "9. 只输出 JSON：{\"shots\": [{\"scene_no\": int, \"location_id\": str, \"character_ids\": [..], "
         "\"blocks\": [{\"type\": ..., \"text\": ..., \"speaker_id\": ..., \"speaker_name\": ...}], "
         "\"visual_hint_zh\": str, \"visual_hint_en\": str}]}\n\n"
+        f"剧本：\n{script}\n\nRULE_INPUT={json.dumps({**info, 'script': script}, ensure_ascii=False)}"
+    )
+
+
+def shots_fix_prompt(script: str, characters: list, locations: list, prev_output: str, issues: list, *,
+                    max_chars_per_shot: int = 0, expected_shots: int = 0) -> str:
+    """镜头规划校验失败后的修正请求：列出全部问题（含剧本里最接近的原句），要求输出完整的新 JSON。"""
+    chars = [{"id": c["id"], "name": (c.get("names") or [""])[0], "gender": c.get("gender")}
+             for c in characters]
+    locs = [{"id": l["id"], "name": l["name"]} for l in locations]
+    info = {"task": "shots_fix", "characters": chars, "locations": locs}
+    listed = "\n".join(f"- {i['message']}" for i in issues[:12])
+    more = f"\n（另有 {len(issues) - 12} 个同类问题未列出）" if len(issues) > 12 else ""
+    limit = (f"每个镜头的口播总字数不超过 {max_chars_per_shot} 字；" if max_chars_per_shot else "")
+    return (
+        "TASK=shots_fix\n上一次的镜头规划没有通过校验。请逐条修正下列问题，其余内容尽量保持不变，"
+        "输出完整的新镜头规划，格式与之前完全相同，只输出 JSON。\n\n"
+        f"校验未通过的问题：\n{listed}{more}\n\n"
+        "修正原则：\n"
+        "1. 对白 text 必须是剧本对白行中的连续原文（可截取连续的一段，不能删字、改字、拼接不相邻的句子）；"
+        "做不到时，把这句改为旁白或拆成多个镜头各取一段连续原文；\n"
+        f"2. {limit}同一场次内相邻镜头的画面描述必须不同；character_ids 要列全画面中出现的角色；\n"
+        "3. dialogue 的 speaker_id 从 characters 中选，不在其中时 speaker_id 置 null 并填 speaker_name。\n\n"
+        f"上一次的输出：\n{prev_output}\n\n"
         f"剧本：\n{script}\n\nRULE_INPUT={json.dumps({**info, 'script': script}, ensure_ascii=False)}"
     )
 

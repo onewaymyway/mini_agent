@@ -23,7 +23,7 @@ from .. import joblog
 from .. import llm_trace
 from .. import prompts
 from ..chapter_io import chapter_dir, chapter_row, norm, source_text, sha12, mark_stage
-from ..project_store import read_json, write_yaml_atomic
+from ..project_store import auto_fix_retries, read_json, write_yaml_atomic
 from ..providers.text import TextLLM
 
 SCENE_RE = re.compile(r"^###\s*场次\s*(\d+)\s*[｜|](.*)$")
@@ -193,8 +193,8 @@ def target_chars_for(project_dir: Path) -> int:
 def run_script(project_dir: Path, no: int, text_llm: TextLLM, *, force: bool = False) -> Dict[str, Any]:
     """C-1 + C-2。缓存键 = 原文 + 目标字数 + 版本；未变且已通过则跳过。
 
-    项目选项 script_max_retries（默认 0，即不重试）>0 时，校验失败后把问题反馈给模型再生成，
-    最多重试该次数。默认关闭，避免未经同意地增加模型调用。"""
+    校验失败时，把问题清单与上一版剧本反馈给模型自动修正，最多 script_max_retries 次（默认 2，
+    写 0 则关闭、直接失败）。每次修正是一次额外的文本模型调用。"""
     cdir = chapter_dir(project_dir, no)
     cdir.mkdir(parents=True, exist_ok=True)
     source = source_text(project_dir, no)
@@ -212,7 +212,7 @@ def run_script(project_dir: Path, no: int, text_llm: TextLLM, *, force: bool = F
     row = chapter_row(project_dir, no)
     chars = read_json(project_dir / "global" / "characters.json")["characters"]
     known = [n for c in chars for n in c.get("names", [])]
-    retries = max(0, int(read_json(project_dir / "project.json").get("script_max_retries") or 0))
+    retries = auto_fix_retries(project_dir, "script_max_retries")
 
     prompt = prompts.script_prompt(no, row["title"], source, target)
     attempt = 0
@@ -228,7 +228,8 @@ def run_script(project_dir: Path, no: int, text_llm: TextLLM, *, force: bool = F
             break
         attempt += 1
         joblog.log(project_dir, "chapter",
-                   f"第 {no} 章 C-2 校验未通过，按 script_max_retries={retries} 把问题反馈给模型重试（第 {attempt} 次）", level="warn")
+                   f"第 {no} 章 C-2 校验未通过，自动把问题反馈给模型修正（第 {attempt}/{retries} 次）：\n"
+                   + "\n".join(f"- {i['message']}" for i in result["issues"] if i["level"] == "error"), level="warn")
         prompt = prompts.script_fix_prompt(no, row["title"], source, target, script_text, result["issues"])
 
     result.update(source_hash=src_hash, script_hash=sha12(script_text), target_chars=target,

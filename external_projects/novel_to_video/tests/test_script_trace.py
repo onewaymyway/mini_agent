@@ -183,19 +183,12 @@ def test_oversized_fields_are_truncated(proj):
     assert len(resp) < llm_trace.MAX_FIELD_CHARS + 100 and "已截断" in resp
 
 
-# ---------------------------------------------------------------- 重试（opt-in）
+# ---------------------------------------------------------------- 校验失败后的自动修正
 
 LONG = "### 场次 1｜a·b（内景）\n旁白：" + "铁城的清晨很安静。" * 400 + "\n"
 
 
-def test_no_retry_by_default(proj):
-    llm = RecLLM(LONG, SCRIPT)
-    r = run_script(proj, 1, llm)
-    assert r["status"] == "fail" and len(llm.calls) == 1
-
-
-def test_retry_feeds_back_issues_when_enabled(proj):
-    assert tool_api.set_script_retries(str(proj), 1)["ok"]
+def test_auto_fix_is_on_by_default_and_feeds_back_issues(proj):
     llm = RecLLM(LONG, SCRIPT)
     r = run_script(proj, 1, llm)
     assert r["status"] == "pass" and len(llm.calls) == 2
@@ -204,19 +197,41 @@ def test_retry_feeds_back_issues_when_enabled(proj):
     review = (proj / "chapters/001/script_review.yaml").read_text(encoding="utf-8")
     assert "attempts: 2" in review
     assert len(llm_trace.tail(proj, chapter=1)) == 2
+    msgs = [x["message"] for x in joblog.tail(proj, scopes=["chapter"]) if x["level"] == "warn"]
+    assert any("自动把问题反馈给模型修正（第 1/2 次）" in m and "压缩" in m for m in msgs)
 
 
-def test_retry_stops_at_limit(proj):
-    tool_api.set_script_retries(str(proj), 2)
+def test_auto_fix_can_be_turned_off(proj):
+    assert tool_api.set_script_retries(str(proj), 0)["ok"]
+    llm = RecLLM(LONG, SCRIPT)
+    r = run_script(proj, 1, llm)
+    assert r["status"] == "fail" and len(llm.calls) == 1
+
+
+def test_legacy_project_without_the_option_uses_default(proj):
+    p = proj / "project.json"
+    cfg = json.loads(p.read_text(encoding="utf-8"))
+    cfg.pop("script_max_retries", None)
+    cfg.pop("shots_max_retries", None)
+    p.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
+    llm = RecLLM(LONG, SCRIPT)
+    assert run_script(proj, 1, llm)["status"] == "pass" and len(llm.calls) == 2
+
+
+def test_auto_fix_stops_at_limit(proj):
     llm = RecLLM(LONG)
     r = run_script(proj, 1, llm)
-    assert r["status"] == "fail" and len(llm.calls) == 3
+    assert r["status"] == "fail" and len(llm.calls) == 3          # 1 次生成 + 默认 2 次修正
+    tool_api.set_script_retries(str(proj), 1)
+    llm = RecLLM(LONG)
+    run_script(proj, 1, llm, force=True)
+    assert len(llm.calls) == 2
 
 
-def test_set_script_retries_validates_range(proj):
-    assert not tool_api.set_script_retries(str(proj), 4)["ok"]
-    assert not tool_api.set_script_retries(str(proj), -1)["ok"]
-    assert tool_api.set_script_retries(str(proj), 0)["ok"]
+def test_set_retries_validates_range(proj):
+    for fn in (tool_api.set_script_retries, tool_api.set_shots_retries):
+        assert not fn(str(proj), 4)["ok"] and not fn(str(proj), -1)["ok"]
+        assert fn(str(proj), 0)["ok"]
 
 
 # ---------------------------------------------------------------- 界面

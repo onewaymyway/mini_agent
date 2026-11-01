@@ -165,7 +165,8 @@ def test_fabricated_dialogue_fails_chapter(project):
         {"type": "dialogue", "text": "这句话原文没有", "speaker_id": "char_002", "speaker_name": None}],
         "visual_hint_zh": "x", "visual_hint_en": "x"}]}
     r = _run(project, ChapterLLM(shots=bad))
-    assert r["status"] == "failed" and "未在剧本中找到" in r["message"]
+    # 模型始终编造对白：自动修正用尽后仍然失败，并说明修正过几次
+    assert r["status"] == "failed" and "不是剧本中的连续原文" in r["message"] and "已自动修正 2 次" in r["message"]
 
 
 def test_missing_location_portrait_blocks_clips(project):

@@ -30,13 +30,26 @@ DEFAULT_OPTIONS: Dict[str, Any] = {
     "art_style": DEFAULT_ART_STYLE,
     "providers": {"image": "agnes", "text": "miniagent", "video": "agnes", "tts": "edge-tts"},
     "target_chapter_duration_sec": 90,
-    "script_max_retries": 0,  # 剧本校验失败后带反馈重试的次数；默认不重试（opt-in）
+    "script_max_retries": 2,  # 剧本校验失败后，把问题反馈给模型自动修正的最多次数
+    "shots_max_retries": 2,   # 镜头规划校验失败后，同上
     "orientation": "portrait",
     "aspect_ratio": "9:16",
     "tts": {"engine": "cosyvoice", "fallback": "edge-tts", "voice": None},
     "gear": "G0",
     "budget": {"max_video_calls": None, "max_image_calls": None, "max_minutes": None},
 }
+
+DEFAULT_AUTO_FIX_RETRIES = 2   # 校验失败后自动修正的最多次数；项目里显式写 0 表示不修正、直接失败
+
+
+def auto_fix_retries(project_dir: Path, key: str) -> int:
+    """读取 script_max_retries / shots_max_retries。键不存在（旧项目）用默认值；写了 0 就是 0。"""
+    try:
+        val = read_json(Path(project_dir) / "project.json").get(key)
+    except (OSError, ValueError):
+        val = None
+    return DEFAULT_AUTO_FIX_RETRIES if val is None else max(0, min(5, int(val)))
+
 
 CHAPTER_STATUSES = ("pending", "planned", "in_review", "done", "stale")
 

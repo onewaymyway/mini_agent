@@ -205,6 +205,7 @@ def chapter_view(project_dir: Path, no: int) -> Dict[str, Any]:
         "stages": cio.load_state(project_dir, no).get("stages", {}),
         "script": (cdir / "script.md").read_text(encoding="utf-8") if (cdir / "script.md").is_file() else None,
         "script_review": _read_yaml(cdir / "script_review.yaml"),
+        "shots_review": _read_yaml(cdir / "shots_review.yaml"),
         "speakers": _speakers(project_dir, cdir, shots_doc),
         "shots": shots,
         # 新规划的镜头自带拆分记录；旧文件没有，则按“相邻镜头场次与画面描述完全相同”推断
