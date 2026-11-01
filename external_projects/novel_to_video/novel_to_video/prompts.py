@@ -134,14 +134,14 @@ def script_fix_prompt(chapter_no: int, title: str, text: str, target_chars: int,
 
 
 def shots_prompt(script: str, characters: list, locations: list, *,
-                 max_chars_per_shot: int = 0, expected_shots: int = 0) -> str:
+                 max_chars_per_shot: int = 0, expected_shots: int = 0, min_chars_per_shot: int = 0) -> str:
     chars = [{"id": c["id"], "name": (c.get("names") or [""])[0], "gender": c.get("gender")}
              for c in characters]
     locs = [{"id": l["id"], "name": l["name"]} for l in locations]
     info = {"task": "shots", "characters": chars, "locations": locs}
     return (
         "TASK=shots\n"
-        "把剧本拆分为小场景镜头（shots）。每个镜头 4–10 秒口播内容，包含若干 blocks。\n"
+        "把剧本拆分为小场景镜头（shots）。每个镜头的口播时长必须在 4–15 秒之间（硬要求），包含若干 blocks。\n"
         "要求：\n"
         "1. blocks 的 type 为 narration（旁白）或 dialogue（对白）；\n"
         "2. dialogue 的 text 必须是剧本对白行中的连续原文：可以只截取原句中连续的一段，但不能删减中间的字、"
@@ -149,11 +149,13 @@ def shots_prompt(script: str, characters: list, locations: list, *,
         "3. dialogue 的 speaker_id 从 characters 中选；若剧本中的说话人不在 characters 中，speaker_id 置 null 并填 speaker_name；\n"
         "4. location_id 从 locations 中选，场景切换时必须换镜头；\n"
         "5. visual_hint_zh 为中文画面描述，visual_hint_en 为对应英文画面描述（不写人名，只写动作与构图）；\n"
-        + (f"6. 每个镜头的口播（旁白+对白）总字数不超过 {max_chars_per_shot} 字（约 10 秒）；一场戏通常需要多个镜头，"
-           f"绝不能把整场戏写成一个镜头。整章预计约 {expected_shots} 个镜头。\n"
+        + (f"6. 每个镜头的口播（旁白+对白）字数必须在 {min_chars_per_shot}–{max_chars_per_shot} 字之间（约 4–15 秒），"
+           f"这是硬要求：超过上限就在自然的动作或对白转折处拆成多个镜头，每个镜头各写自己的画面；"
+           f"不足下限就与同场次相邻镜头合并。一场戏通常需要多个镜头，绝不能把整场戏写成一个镜头。"
+           f"整章预计约 {expected_shots} 个镜头。\n"
            if max_chars_per_shot else "")
         + "7. 同一场次内相邻镜头的 visual_hint 必须不同：景别（远景/中景/近景/特写）、机位或主体动作至少一项不同，"
-          "且描述的是该镜头自己的口播内容，不要把整场戏的画面复述到每个镜头里；\n"
+          "且描述的是该镜头自己的口播内容，不要把整场戏的画面复述到每个镜头里；拆分出的镜头画面必须各不相同；\n"
           "8. character_ids 列出该镜头画面中出现的所有角色，包括画面里出现但没有台词的角色（例如旁白描写林远的动作，就要包含林远）；\n"
           "9. 只输出 JSON：{\"shots\": [{\"scene_no\": int, \"location_id\": str, \"character_ids\": [..], "
         "\"blocks\": [{\"type\": ..., \"text\": ..., \"speaker_id\": ..., \"speaker_name\": ...}], "
@@ -163,7 +165,7 @@ def shots_prompt(script: str, characters: list, locations: list, *,
 
 
 def shots_fix_prompt(script: str, characters: list, locations: list, prev_output: str, issues: list, *,
-                    max_chars_per_shot: int = 0, expected_shots: int = 0) -> str:
+                    max_chars_per_shot: int = 0, expected_shots: int = 0, min_chars_per_shot: int = 0) -> str:
     """镜头规划校验失败后的修正请求：列出全部问题（含剧本里最接近的原句），要求输出完整的新 JSON。"""
     chars = [{"id": c["id"], "name": (c.get("names") or [""])[0], "gender": c.get("gender")}
              for c in characters]
@@ -171,7 +173,8 @@ def shots_fix_prompt(script: str, characters: list, locations: list, prev_output
     info = {"task": "shots_fix", "characters": chars, "locations": locs}
     listed = "\n".join(f"- {i['message']}" for i in issues[:12])
     more = f"\n（另有 {len(issues) - 12} 个同类问题未列出）" if len(issues) > 12 else ""
-    limit = (f"每个镜头的口播总字数不超过 {max_chars_per_shot} 字；" if max_chars_per_shot else "")
+    limit = (f"每个镜头的口播字数必须在 {min_chars_per_shot}–{max_chars_per_shot} 字之间（4–15 秒，硬要求）；"
+             if max_chars_per_shot else "")
     return (
         "TASK=shots_fix\n上一次的镜头规划没有通过校验。请逐条修正下列问题，其余内容尽量保持不变，"
         "输出完整的新镜头规划，格式与之前完全相同，只输出 JSON。\n\n"

@@ -18,7 +18,7 @@ from ..chapter_io import SHOT_MAX_SEC, SHOT_MIN_SEC, chapter_dir, load_entities,
 from ..providers.tts import TTSProvider, voice_for
 
 GAP_SEC = 0.2
-MAX_SPEECH_SEC = 11.6
+MAX_SPEECH_SEC = SHOT_MAX_SEC - 0.4   # 留出 0.4 秒余量，保证 ceil(speech+0.4) 不超过镜头上限
 
 
 def _concat_wavs(parts: List[Path], out: Path, gap: float) -> float:

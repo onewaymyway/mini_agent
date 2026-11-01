@@ -33,7 +33,7 @@ GOOD = json.dumps(SHOTS, ensure_ascii=False)
 def _bad(text="我们快走。"):
     """对白不是剧本里的连续原文（删减过）。"""
     return json.dumps({"shots": [{"scene_no": 1, "location_id": "loc_01", "character_ids": [],
-        "blocks": [{"type": "narration", "text": "铁城的清晨很安静。"},
+        "blocks": [{"type": "narration", "text": "铁城的清晨很安静，穹顶遮住了天空，街道上空无一人。"},
                    {"type": "dialogue", "text": text, "speaker_id": None, "speaker_name": "林远"}],
         "visual_hint_zh": "街道", "visual_hint_en": "street"}]}, ensure_ascii=False)
 

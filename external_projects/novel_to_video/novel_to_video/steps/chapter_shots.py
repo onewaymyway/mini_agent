@@ -20,7 +20,7 @@ from typing import Any, Dict, List
 from .. import joblog
 from .. import llm_trace
 from .. import prompts
-from ..chapter_io import (MAX_BLOCK_CHARS, SHOT_PLAN_SEC, chapter_dir, load_entities, load_shots,
+from ..chapter_io import (MAX_BLOCK_CHARS, SHOT_MAX_SEC, SHOT_MIN_SEC, SHOT_PLAN_SEC, chapter_dir, load_entities, load_shots,
                           mark_stage, norm, save_shots, sha12)
 from ..providers.text import TextLLM
 from ..providers.tts import CHARS_PER_SEC, estimate_seconds
@@ -59,20 +59,8 @@ def _block_seconds(block: Dict[str, Any]) -> float:
     return estimate_seconds(block["text"]) + 0.2
 
 
-def _group_into_shots(blocks: List[Dict[str, Any]], base: Dict[str, Any]) -> List[Dict[str, Any]]:
-    shots: List[Dict[str, Any]] = []
-    cur: List[Dict[str, Any]] = []
-    cur_sec = 0.0
-    for b in blocks:
-        sec = _block_seconds(b)
-        if cur and cur_sec + sec > SHOT_PLAN_SEC:
-            shots.append({**copy.deepcopy(base), "blocks": cur})   # 各镜头独立副本，避免共享列表对象
-            cur, cur_sec = [], 0.0
-        cur.append(b)
-        cur_sec += sec
-    if cur:
-        shots.append({**copy.deepcopy(base), "blocks": cur})
-    return shots
+def _shot_seconds(blocks: List[Dict[str, Any]]) -> float:
+    return sum(_block_seconds({"text": str(b.get("text") or "")}) for b in blocks if str(b.get("text") or "").strip())
 
 
 def validate_and_build(raw_shots: List[Dict[str, Any]], script: str, locations: List[Dict[str, Any]],
@@ -88,7 +76,7 @@ def validate_and_build(raw_shots: List[Dict[str, Any]], script: str, locations: 
     shots: List[Dict[str, Any]] = []
     scenes: Dict[int, Dict[str, Any]] = {}
 
-    plan_warnings: List[Dict[str, Any]] = []
+    plan_warnings: List[Dict[str, Any]] = []  # 保留字段；代码不再拆镜头，不再产生拆分警告
     for raw_idx, rs in enumerate(raw_shots, start=1):
         scene_no = int(rs.get("scene_no") or 1)
         loc = rs.get("location_id")
@@ -131,14 +119,8 @@ def validate_and_build(raw_shots: List[Dict[str, Any]], script: str, locations: 
                 "visual_hint_zh": str(rs.get("visual_hint_zh") or "").strip(),
                 "visual_hint_en": str(rs.get("visual_hint_en") or "").strip() or "cinematic medium shot, no text"}
         scenes.setdefault(scene_no, {"scene_no": scene_no, "location_id": loc})
-        parts = _group_into_shots(blocks, base)
-        for k, part in enumerate(parts, start=1):
-            part["split_from"], part["split_part"], part["split_total"] = raw_idx, k, len(parts)
-        if len(parts) > 1:
-            # 模型把一大段口播写成一个镜头，代码只能按时长拆开，这些镜头共用同一条画面描述
-            plan_warnings.append({"raw_index": raw_idx, "scene_no": scene_no, "parts": len(parts),
-                                  "seconds": round(sum(_block_seconds(b) for b in blocks), 1)})
-        shots.extend(parts)
+        # 一条模型镜头 = 一个镜头。时长与画面的修正由模型完成（见 collect_shot_issues），代码不机械拆分。
+        shots.append({**copy.deepcopy(base), "blocks": blocks})
 
     for i, sh in enumerate(shots, start=1):
         sh["id"] = f"s{i:02d}"
@@ -249,7 +231,43 @@ def collect_shot_issues(raw_shots: List[Dict[str, Any]], script: str,
             script_speaker = near["speaker"] if near else ""
             issues.append({"message": f"{where}的对白“{text[:30]}”缺少说话人（speaker_id 不在角色库中且没有 speaker_name）。"
                                       + _speaker_hint(script_speaker, characters)})
+    issues.extend(_shot_level_issues(raw_shots))
     return issues
+
+
+def _shot_level_issues(raw_shots: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """镜头级硬要求：每个镜头 4–15 秒；相邻镜头画面描述不能相同。
+    代码不替模型拆分或合并镜头，只把问题与修正方法反馈给模型。
+    唯一例外：整章只有一个镜头时（例如极短的测试章节），无法凭空补足 4 秒，下限不作为失败条件。"""
+    issues: List[Dict[str, str]] = []
+    for i, rs in enumerate(raw_shots, start=1):
+        sec = _shot_seconds(rs.get("blocks") or [])
+        if sec > SHOT_MAX_SEC:
+            issues.append({"message": (
+                f"第 {i} 个镜头口播估算 {sec:.1f} 秒，超过 {SHOT_MAX_SEC} 秒上限。请不要删字，也不要把它截断；"
+                f"请在一个自然的动作、停顿或对白转折处，把这个镜头拆成 2 个或以上的镜头，每个镜头口播 "
+                f"{SHOT_MIN_SEC}–{SHOT_MAX_SEC} 秒，各自写该镜头自己的景别、机位或主体动作（不能沿用原描述）。"
+                f"对白仍须是剧本中的连续原文。")})
+        elif sec < SHOT_MIN_SEC and len(raw_shots) > 1:
+            issues.append({"message": (
+                f"第 {i} 个镜头口播估算仅 {sec:.1f} 秒，低于 {SHOT_MIN_SEC} 秒下限。请与同一场次中相邻的镜头"
+                f"在逻辑上合并（合并后不超过 {SHOT_MAX_SEC} 秒），或在剧本已有内容的范围内补足该镜头的动作与反应。"
+                f"不要凭空添加剧本中没有的台词。")})
+    for i in range(2, len(raw_shots) + 1):
+        prev, cur = raw_shots[i - 2], raw_shots[i - 1]
+        if prev.get("scene_no") != cur.get("scene_no"):
+            continue
+        same_zh = _norm_hint(prev.get("visual_hint_zh")) and _norm_hint(prev.get("visual_hint_zh")) == _norm_hint(cur.get("visual_hint_zh"))
+        same_en = _norm_hint(prev.get("visual_hint_en")) and _norm_hint(prev.get("visual_hint_en")) == _norm_hint(cur.get("visual_hint_en"))
+        if same_zh or same_en:
+            issues.append({"message": (
+                f"第 {i} 个镜头与第 {i - 1} 个镜头画面描述相同。请根据第 {i} 个镜头自己的口播内容，重新写它的画面："
+                f"至少改变景别（远景/中景/近景/特写）、机位或主体动作中的一项，且不要复述整场戏的画面。")})
+    return issues
+
+
+def _norm_hint(text: Any) -> str:
+    return re.sub(r"\s", "", str(text or "")).lower()
 
 
 def run_shots(project_dir: Path, no: int, text_llm: TextLLM, *, force: bool = False) -> Dict[str, Any]:
@@ -270,12 +288,13 @@ def run_shots(project_dir: Path, no: int, text_llm: TextLLM, *, force: bool = Fa
     ents = load_entities(project_dir)
     characters = ents["characters"]["characters"]
     locations = ents["locations"]["locations"]
-    per_shot = int(SHOT_PLAN_SEC * CHARS_PER_SEC * 0.9)
-    expected = max(1, math.ceil(spoken_chars(script) / per_shot))
+    per_shot = int(SHOT_MAX_SEC * CHARS_PER_SEC)                 # 单镜头口播字数上限（约 15 秒）
+    min_per_shot = int(SHOT_MIN_SEC * CHARS_PER_SEC)             # 单镜头口播字数下限（约 4 秒）
+    expected = max(1, math.ceil(spoken_chars(script) / int(SHOT_PLAN_SEC * CHARS_PER_SEC)))
     retries = auto_fix_retries(project_dir, "shots_max_retries")
     review_path = cdir / "shots_review.yaml"
     prompt = prompts.shots_prompt(script, characters, locations,
-                                  max_chars_per_shot=per_shot, expected_shots=expected)
+                                  max_chars_per_shot=per_shot, min_chars_per_shot=min_per_shot, expected_shots=expected)
     attempt = 0
     while True:
         label = (f"第 {no} 章 C-3 调用文本模型规划镜头"
@@ -305,7 +324,8 @@ def run_shots(project_dir: Path, no: int, text_llm: TextLLM, *, force: bool = Fa
                    + "\n".join(f"- {i['message']}" for i in issues), level="warn")
         prompt = prompts.shots_fix_prompt(script, characters, locations,
                                           json.dumps(obj, ensure_ascii=False) if obj is not None else (raw or "")[:6000],
-                                          issues, max_chars_per_shot=per_shot, expected_shots=expected)
+                                          issues, max_chars_per_shot=per_shot, min_chars_per_shot=min_per_shot,
+                                          expected_shots=expected)
     built["script_hash"] = script_hash
     built["block_limit"] = limit
     built["attempts"] = attempt + 1

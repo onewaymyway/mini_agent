@@ -109,17 +109,50 @@ def _rule_script(info: dict) -> str:
 
 
 def _rule_shots(info: dict) -> list:
-    """离线镜头：每 3 行旁白一个镜头，地点取第一个地点，无角色。"""
+    """离线镜头：按口播字数分组，保证每镜头约 4–15 秒（约 17–63 字）。
+    超长旁白按标点切成小段，短尾巴并入上一镜头；画面描述按镜头序号区分。"""
+    import re as _re
     script = info.get("script") or ""
     locs = info.get("locations") or []
     loc_id = locs[0]["id"] if locs else None
-    lines = [l for l in script.splitlines() if l.startswith("旁白：")]
+    MAX, MIN = 60, 18
+    texts = [l[len("旁白："):] for l in script.splitlines() if l.startswith("旁白：")]
+    pieces = []
+    for t in texts:
+        buf = ""
+        for part in _re.split(r"(?<=[。！？；])", t):
+            if not part:
+                continue
+            if buf and len(buf) + len(part) > MAX:
+                pieces.append(buf)
+                buf = part
+            else:
+                buf += part
+        if buf:
+            pieces.append(buf)
+    groups, cur = [], ""
+    for pc in pieces:
+        if cur and len(cur) + len(pc) > MAX:
+            groups.append(cur)
+            cur = pc
+        else:
+            cur += pc
+    if cur:
+        groups.append(cur)
+    i = 0
+    while len(groups) > 1 and i < len(groups):
+        if len(groups[i]) < MIN:
+            j = i - 1 if i > 0 else i + 1
+            a, b = sorted((i, j))
+            if len(groups[a]) + len(groups[b]) <= MAX:
+                groups[a] += groups.pop(b)
+                i = 0
+                continue
+        i += 1
     shots = []
-    for i in range(0, len(lines), 3):
-        group = lines[i:i + 3]
-        blocks = [{"type": "narration", "text": l[len("旁白："):], "speaker_id": None, "speaker_name": None}
-                  for l in group]
-        hint = blocks[0]["text"][:40]
+    for n, g in enumerate(groups, start=1):
+        blocks = [{"type": "narration", "text": g, "speaker_id": None, "speaker_name": None}]
         shots.append({"scene_no": 1, "location_id": loc_id, "character_ids": [], "blocks": blocks,
-                      "visual_hint_zh": hint, "visual_hint_en": "cinematic medium shot, dystopian city, no people"})
+                      "visual_hint_zh": f"第{n}镜：{g[:28]}",
+                      "visual_hint_en": f"cinematic shot {n}, dystopian city, no people"})
     return shots

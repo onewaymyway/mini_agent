@@ -49,3 +49,52 @@ def test_unknown_script_speaker_asks_for_speaker_name_and_lists_library():
 def test_valid_plan_has_no_issues():
     ok = _shot("因为那些人的存在已经没有意义了。", speaker_id="char_004")
     assert collect_shot_issues([ok], SCRIPT, CHARS) == []
+
+
+# ---- 镜头级硬要求：4–15 秒，相邻画面不同 ----
+from novel_to_video.steps.chapter_shots import _shot_seconds  # noqa: E402
+
+LONG = "铁城的清晨很安静，穹顶遮住了天空，街道上空无一人，只有监视塔的摄像头不停地转动着，扫过每一扇窗。"  # ≈ 17 秒以上
+SHORT = "是的。"  # ≈ 1 秒
+
+
+def _narr(text, scene=1, zh="中景：林远", en="medium shot: a man"):
+    return {"scene_no": scene, "location_id": "loc_04", "character_ids": [],
+            "blocks": [{"type": "narration", "text": text, "speaker_id": None, "speaker_name": None}],
+            "visual_hint_zh": zh, "visual_hint_en": en}
+
+
+def test_overlong_shot_is_flagged_with_split_instruction():
+    issues = collect_shot_issues([_narr(LONG + LONG)], SCRIPT, CHARS)
+    msg = "\n".join(i["message"] for i in issues)
+    assert "超过 15 秒上限" in msg and "拆成 2 个或以上" in msg
+
+
+def test_short_shot_flagged_when_chapter_has_several_shots():
+    issues = collect_shot_issues([_narr(SHORT), _narr(LONG, zh="远景：穹顶", en="wide shot: dome")], SCRIPT, CHARS)
+    msg = "\n".join(i["message"] for i in issues)
+    assert "低于 4 秒下限" in msg and "合并" in msg
+
+
+def test_single_short_shot_chapter_is_exempt_from_minimum():
+    issues = collect_shot_issues([_narr(SHORT)], SCRIPT, CHARS)
+    assert not any("低于 4 秒下限" in i["message"] for i in issues)
+
+
+def test_adjacent_same_scene_identical_visuals_are_flagged():
+    a = _narr(LONG, zh="中景：林远", en="medium shot: a man")
+    b = _narr(LONG, zh="中景：林远", en="medium shot: a man")
+    msg = "\n".join(i["message"] for i in collect_shot_issues([a, b], SCRIPT, CHARS))
+    assert "第 2 个镜头与第 1 个镜头画面描述相同" in msg
+
+
+def test_identical_visuals_across_different_scenes_are_allowed():
+    a = _narr(LONG, scene=1, zh="中景：林远", en="medium shot: a man")
+    b = _narr(LONG, scene=2, zh="中景：林远", en="medium shot: a man")
+    assert not any("画面描述相同" in i["message"] for i in collect_shot_issues([a, b], SCRIPT, CHARS))
+
+
+def test_distinct_visuals_pass_duration_checks():
+    a = _narr(LONG, zh="远景：穹顶", en="wide shot: dome")
+    b = _narr(LONG, zh="特写：摄像头", en="close-up: camera lens")
+    assert collect_shot_issues([a, b], SCRIPT, CHARS) == []

@@ -137,18 +137,19 @@ def _shots_review(v: dict) -> None:
 
 
 def _plan_warnings(pdir: str, no: int, v: dict) -> None:
-    """镜头规划的质量提示：模型把一大段口播写成一个镜头，代码只能按时长拆开，拆出的镜头共用同一条画面描述。"""
+    """旧版本的镜头规划质量提示：旧版代码会把超长口播按时长机械拆成多个镜头，这些镜头共用同一条画面描述。
+    新版本不再这样拆（超长镜头由模型自行拆分并写不同画面），所以只有旧文件才会显示这个提示。"""
     warns = v.get("plan_warnings") or []
-    if not warns:
-        return
-    total = len(v["shots"])
-    split_shots = sum(w["parts"] for w in warns)
-    st.warning(f"镜头规划质量提示：模型给出的 {total - split_shots + len(warns)} 个镜头里，有 {len(warns)} 个口播太长，"
-               f"被代码拆成了 {split_shots} 个镜头；拆出的镜头共用同一条画面描述，生成的视频会很相似。"
-               "可以逐个编辑画面描述，或重新规划本章镜头（提示词已要求每镜头不超过约 10 秒、相邻镜头画面不同）。")
-    with st.expander("查看哪些镜头被拆分"):
-        st.dataframe([{"原始镜头": w["raw_index"], "场次": w["scene_no"], "口播约（秒）": w["seconds"],
-                       "拆成镜头数": w["parts"]} for w in warns], width='stretch', hide_index=True)
+    if warns:
+        total = len(v["shots"])
+        split_shots = sum(w["parts"] for w in warns)
+        st.warning(f"旧版镜头规划提示：本章有 {len(warns)} 段口播被旧版代码机械拆成了 {split_shots} 个镜头，"
+                   f"这些镜头共用同一条画面描述，生成的视频会很相似（当前共 {total} 个镜头）。"
+                   "建议重新规划本章镜头，新规划会要求每镜头 4–15 秒、相邻镜头画面各不相同。")
+        with st.expander("查看哪些镜头被拆分"):
+            st.dataframe([{"原始镜头": w["raw_index"], "场次": w["scene_no"], "口播约（秒）": w["seconds"],
+                           "拆成镜头数": w["parts"]} for w in warns], width='stretch', hide_index=True)
+    # 重新规划对任何章节都可用（不只在有旧版提示时）
     sure = st.checkbox("我确认丢弃本章当前镜头（及其配音、视频、逐镜审核）并重新规划", key=f"replan_ok_{no}")
     if st.button("重新规划本章镜头", key=f"replan_{no}", disabled=not sure):
         res = tool_api.replan_shots(pdir, no)

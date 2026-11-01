@@ -14,9 +14,9 @@ import yaml
 from .project_store import read_json, read_yaml, write_json_atomic, write_yaml_atomic
 
 MAX_BLOCK_CHARS = 40          # 单个口播块的字数上限（超出则按标点切分）
-SHOT_MIN_SEC = 4
-SHOT_MAX_SEC = 12
-SHOT_PLAN_SEC = 10.0          # 规划阶段的单镜头估算上限（留出余量）
+SHOT_MIN_SEC = 4              # 单镜头口播时长下限（硬要求）
+SHOT_MAX_SEC = 15             # 单镜头口播时长上限（硬要求）；代码不再按时长机械拆镜头，超限由校验反馈给模型
+SHOT_PLAN_SEC = 10.0          # 规划提示词中的参考时长（建议值，不是硬限制）
 
 
 def sha12(*parts: str) -> str:

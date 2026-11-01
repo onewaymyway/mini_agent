@@ -33,12 +33,13 @@ SCRIPT = """### 场次 1｜铁城·清晨（外景）
 SHOTS = {"shots": [
     {"scene_no": 1, "location_id": "loc_01", "character_ids": [],
      "blocks": [
-         {"type": "narration", "text": "铁城的清晨很安静。", "speaker_id": None, "speaker_name": None},
+         {"type": "narration", "text": "铁城的清晨很安静，穹顶遮住了天空，街道上空无一人。", "speaker_id": None, "speaker_name": None},
          {"type": "dialogue", "text": "我们走。", "speaker_id": None, "speaker_name": "林远"},
      ],
      "visual_hint_zh": "清晨街道", "visual_hint_en": "dawn street, wide shot"},
     {"scene_no": 1, "location_id": "loc_01", "character_ids": [],
      "blocks": [
+         {"type": "narration", "text": "一个陌生的身影从巷口的阴影里走了出来，停在他们面前。", "speaker_id": None, "speaker_name": None},
          {"type": "dialogue", "text": "我也要去。", "speaker_id": None, "speaker_name": "新人"},
      ],
      "visual_hint_zh": "新人走出阴影", "visual_hint_en": "figure steps out of shadow, medium shot"},

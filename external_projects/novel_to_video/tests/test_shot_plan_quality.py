@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 import pytest
+from novel_to_video.steps.global_visual import StepError
 from streamlit.testing.v1 import AppTest
 
 from conftest import build_export
@@ -69,9 +70,19 @@ def _plan(p, raw_shots):
 
 
 def _long_raw(p):
-    return [{"scene_no": 1, "location_id": "x", "character_ids": [_cid(p, "林远")],
-             "blocks": [{"type": "narration", "text": LONG_NARR}],
-             "visual_hint_zh": "林远坐在窗边", "visual_hint_en": "a man by the window"}]
+    """模型按规则自行拆好的三个镜头：每个 4–15 秒、画面各不相同。代码不再替它拆分。"""
+    lin = [_cid(p, "林远")]
+    return [
+        {"scene_no": 1, "location_id": "x", "character_ids": lin,
+         "blocks": [{"type": "narration", "text": "铁城的清晨很安静，穹顶遮住了天空。林远睁开眼。"}],
+         "visual_hint_zh": "远景：穹顶城市的清晨剪影", "visual_hint_en": "wide shot: dome city at dawn"},
+        {"scene_no": 1, "location_id": "x", "character_ids": lin,
+         "blocks": [{"type": "narration", "text": "他坐到窗边，防弹玻璃外是转动的监视塔。"}],
+         "visual_hint_zh": "中景：林远坐在窗边", "visual_hint_en": "medium shot: a man seated by the window"},
+        {"scene_no": 1, "location_id": "x", "character_ids": lin,
+         "blocks": [{"type": "narration", "text": "摄像头扫过他的脸，他低下头，没有说话。"}],
+         "visual_hint_zh": "特写：监视镜头扫过林远的侧脸", "visual_hint_en": "close-up: surveillance lens sweeping a man's profile"},
+    ]
 
 
 # ---------------------------------------------------------------- shots.yaml 的重复
@@ -88,19 +99,30 @@ def test_yaml_has_no_anchors_and_shots_do_not_share_lists(proj):
     assert "char_999" not in shots[1]["character_ids"]
 
 
-def test_split_shots_are_tagged_and_warned(proj):
+def test_overlong_shot_is_rejected_not_silently_split(proj):
+    """超过 15 秒的镜头不能被代码悄悄拆开（那样会共用同一画面描述），必须反馈给模型自行拆分。"""
+    from novel_to_video.steps.chapter_shots import collect_shot_issues
+    long_one = _long_raw(proj)[0]
+    long_one["blocks"] = [{"type": "narration", "text": LONG_NARR}]
+    issues = collect_shot_issues([long_one], SCRIPT, _chars(proj))
+    assert any("超过 15 秒上限" in i["message"] and "拆成 2 个或以上" in i["message"] for i in issues)
+
+
+def test_overlong_shot_never_becomes_several_shots_with_one_hint(proj):
+    from novel_to_video.steps.chapter_shots import collect_shot_issues
+    long_one = _long_raw(proj)[0]
+    long_one["blocks"] = [{"type": "narration", "text": LONG_NARR}]
+    with pytest.raises(StepError):
+        _plan(proj, [long_one])
+
+
+def test_model_split_plan_with_distinct_hints_passes(proj):
+    doc = cio.load_shots(proj, 1)
     _plan(proj, _long_raw(proj))
     doc = cio.load_shots(proj, 1)
-    assert [(s["split_from"], s["split_part"], s["split_total"]) for s in doc["shots"]] == [(1, 1, 3), (1, 2, 3), (1, 3, 3)]
-    assert len({s["visual_hint_en"] for s in doc["shots"]}) == 1       # 共用同一描述（问题本身）
-    w = doc["plan_warnings"]
-    assert len(w) == 1 and w[0]["parts"] == 3 and w[0]["scene_no"] == 1
-    # 模型自己拆好、每个镜头描述不同时没有提示
-    raw = [{"scene_no": 1, "location_id": "x", "blocks": [{"type": "narration", "text": "铁城的清晨很安静。"}],
-            "visual_hint_zh": "a", "visual_hint_en": "a"},
-           {"scene_no": 1, "location_id": "x", "blocks": [{"type": "narration", "text": "街道上没有人。"}],
-            "visual_hint_zh": "b", "visual_hint_en": "b"}]
-    assert validate_and_build(raw, SCRIPT, [], _chars(proj), 1)["plan_warnings"] == []
+    assert len(doc["shots"]) == 3
+    assert len({s["visual_hint_en"] for s in doc["shots"]}) == 3
+    assert doc["plan_warnings"] == []
 
 
 def test_assets_backfill_dedupes_cast_and_prunes_new_speakers(proj):
@@ -126,7 +148,7 @@ def test_shots_prompt_demands_short_distinct_shots(proj):
     llm = RecLLM(json.dumps({"shots": _long_raw(proj)}, ensure_ascii=False))
     run_shots(proj, 1, llm)
     p = llm.calls[0]
-    assert "不超过 37 字" in p and "整章预计约" in p
+    assert "4–15 秒" in p and "整章预计约" in p and "硬要求" in p
     assert "相邻镜头的 visual_hint 必须不同" in p and "character_ids 列出该镜头画面中出现的所有角色" in p
     assert "绝不能把整场戏写成一个镜头" in p
 
@@ -207,9 +229,9 @@ def test_review_page_shows_cast_warning_and_replan(proj):
     _plan(proj, raw)
     at = _open(proj)
     caps = " ".join(c.value for c in at.caption)
-    assert "**林远**" in caps and "由同一个原始镜头拆出（第 1/3 段）" in caps
+    assert "**林远**" in caps
     warns = " ".join(w.value for w in at.warning)
-    assert "镜头规划质量提示" in warns and "影子" in warns and "编辑镜头内容" in warns
+    assert "影子" in warns and "编辑镜头内容" in warns
     # 编辑里有出镜角色多选，且默认值是当前角色
     ms = next(m for m in at.multiselect if (m.key or "").startswith("cast_1_s01"))
     assert ms.value == [lin]
@@ -222,14 +244,14 @@ def test_review_page_shows_cast_warning_and_replan(proj):
 
 
 def test_legacy_shots_yaml_gets_derived_warnings_and_is_rewritten_without_anchors(proj):
-    """用户手里的旧文件：没有 plan_warnings / split_* 字段，且带 &id001 锚点。"""
+    """用户手里的旧文件：旧版代码机械拆出的镜头（共用同一画面描述、带 split_* 字段、带 &id001 锚点）。"""
     _plan(proj, _long_raw(proj))
     path = cio.chapter_dir(proj, 1) / "shots.yaml"
     doc = cio.load_shots(proj, 1)
     doc.pop("plan_warnings")
-    for s in doc["shots"]:
-        for k in ("split_from", "split_part", "split_total"):
-            s.pop(k)
+    for n, s in enumerate(doc["shots"], start=1):
+        s["split_from"], s["split_part"], s["split_total"] = 1, n, 3
+        s["visual_hint_en"] = "one shared description"
     shared = doc["shots"][0]["character_ids"]
     for s in doc["shots"]:
         s["character_ids"] = shared

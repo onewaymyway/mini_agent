@@ -943,3 +943,15 @@ Phase 2 是风险最高的一期（涉及外部视频 API、一致性核查、�
 - 镜头规划仍按每个镜头 4–10 秒的口播块切分，因此长章节会得到更多镜头，这是预期行为。
 
 实现位于 `novel_to_video/steps/chapter_script.py`（`target_chars_for`）、`novel_to_video/prompts.py`（`_length_requirement`）、`ui/import_page.py`、`entrypoints/import_novel.py`；测试见 `tests/test_script_unlimited.py`。
+
+## 镜头时长与画面（C-3 规划质量，硬要求）
+
+- 每个镜头口播估算时长必须在 4–15 秒之间（`SHOT_MIN_SEC=4`、`SHOT_MAX_SEC=15`，见 `chapter_io.py`）。配音阶段的上限同步为 15 秒（`chapter_audio.py` 的 `MAX_SPEECH_SEC = SHOT_MAX_SEC - 0.4`）。
+- 代码不再按时长机械拆镜头。模型给出几个镜头，就保存为几个镜头；超长镜头在校验中被拒绝，并把修正方法反馈给模型：在自然的动作、停顿或对白转折处拆成 2 个或以上镜头，各写自己的景别、机位或动作。
+- 相邻镜头（同一场次内）的中文或英文画面描述相同，视为不合格，要求模型重新描述。跨场次允许相同。
+- 过短镜头（低于 4 秒）要求与同场次相邻镜头合并，不得凭空添加台词。唯一例外：整章只有一个镜头时不作下限要求。
+- 旧版文件里由代码拆出的镜头（带 `split_*` 字段）仍会显示“旧版镜头规划提示”，建议重新规划。重新规划按钮对所有章节可用。
+- 离线 `RuleTextLLM` 的镜头生成已同步按字数分组，保证测试与离线运行也满足上述规则。
+
+实现：`steps/chapter_shots.py`（`collect_shot_issues`、`_shot_level_issues`、`_shot_seconds`）、`prompts.py`（`shots_prompt`、`_length_requirement` 之外的镜头提示词）、`providers/text.py`（`_rule_shots`）、`ui/chapter_page.py`（`_plan_warnings`）。
+测试：`tests/test_shots_feedback.py`、`tests/test_shot_plan_quality.py`。
