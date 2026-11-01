@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from . import project_store as ps
+from .call_log import count_calls
 from .source_import import import_source
+from .steps import global_visual as gv
+from .providers.factory import ProviderError, make_image_provider, make_text_llm
 
 
 def _ok(data: Any) -> Dict[str, Any]:
@@ -111,3 +114,73 @@ def project_health() -> Dict[str, Any]:
     except OSError as exc:
         problems.append(f"临时目录不可写：{exc}")
     return _ok({"ok": not problems, "problems": problems})
+
+
+# ---------------------------------------------------------------- Phase 1：全书级素材
+
+def _project_providers(project_dir: Path) -> Dict[str, str]:
+    proj = ps.read_json(project_dir / "project.json")
+    return proj.get("providers") or {"image": "agnes", "text": "miniagent"}
+
+
+def run_visual_text(project_dir: str, *, ids: Optional[List[str]] = None,
+                    only_missing: bool = True, text_provider: Optional[str] = None) -> Dict[str, Any]:
+    """G-2：补全视觉锚点、声音设定、性别（仅缺失时）。"""
+    pdir = Path(project_dir)
+    try:
+        llm = make_text_llm(text_provider or _project_providers(pdir).get("text"))
+    except ProviderError as exc:
+        return _fail(str(exc))
+    try:
+        summary = gv.visual_text_pass(pdir, llm, only_missing=only_missing, ids=ids)
+    except Exception as exc:
+        return _fail(f"G-2 执行异常：{exc}")
+    return _ok(summary)
+
+
+def run_portraits(project_dir: str, *, ids: Optional[List[str]] = None, regenerate: bool = False,
+                  image_provider: Optional[str] = None) -> Dict[str, Any]:
+    """G-3：生成定妆图。regenerate=True 时对 ids 强制生成新版本。"""
+    pdir = Path(project_dir)
+    try:
+        image = make_image_provider(image_provider or _project_providers(pdir).get("image"))
+    except ProviderError as exc:
+        return _fail(str(exc))
+    try:
+        summary = gv.portrait_pass(pdir, image, ids=ids, regenerate=regenerate)
+    except Exception as exc:
+        return _fail(f"G-3 执行异常：{exc}")
+    return _ok(summary)
+
+
+def get_visual_status(project_dir: str) -> Dict[str, Any]:
+    try:
+        status = gv.visual_status(Path(project_dir))
+    except Exception as exc:
+        return _fail(f"读取素材状态失败：{exc}")
+    status["api_calls"] = {"text": count_calls(Path(project_dir), "text"),
+                           "image": count_calls(Path(project_dir), "image")}
+    return _ok(status)
+
+
+def review_asset(project_dir: str, kind: str, eid: str, action: str, what: Optional[str] = None) -> Dict[str, Any]:
+    """action: approve（what=text|portrait）/ reject_portrait（驳回定妆图，等待重生成）。"""
+    pdir = Path(project_dir)
+    try:
+        if action == "approve":
+            item = gv.approve(pdir, kind, eid, what or "")
+        elif action == "reject_portrait":
+            item = gv.reject_portrait(pdir, kind, eid)
+        else:
+            return _fail(f"未知审核动作：{action}")
+    except Exception as exc:
+        return _fail(str(exc))
+    return _ok(item)
+
+
+def edit_asset(project_dir: str, kind: str, eid: str, fields: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        item = gv.update_entity(Path(project_dir), kind, eid, fields)
+    except Exception as exc:
+        return _fail(str(exc))
+    return _ok(item)

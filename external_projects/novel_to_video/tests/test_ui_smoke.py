@@ -40,3 +40,20 @@ def test_projects_page_lists_created(tmp_path):
     at.text_input(key="proj_root").input(str(out)).run()
     assert not at.exception
     assert len(at.dataframe) >= 1
+
+
+def test_assets_page_renders_with_project(tmp_path, monkeypatch):
+    monkeypatch.setenv("NOVEL_TO_VIDEO_PROVIDERS", "stub")
+    src = build_export(tmp_path / "src")
+    out = tmp_path / "out"
+    from novel_to_video import tool_api
+    res = tool_api.create_project_from_source(str(out), str(src), title="书")
+    proj = res["data"]["project_dir"]
+    tool_api.run_visual_text(proj)
+    tool_api.run_portraits(proj)
+    at = AppTest.from_file(APP, default_timeout=60).run()
+    at.radio(key="nav").set_value("🎭 全书素材").run()
+    at.text_input(key="assets_root").input(str(out)).run()
+    assert not at.exception
+    assert any("全书级素材（G-2 / G-3）" in h.value for h in at.header)
+    assert any(b.key == "ok_p_character:char_001" for b in at.button)

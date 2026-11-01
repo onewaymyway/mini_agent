@@ -38,3 +38,17 @@ def test_import_entrypoint_creates_and_lists(tmp_path, export_dir):
 def test_import_entrypoint_blocked_exit_code(tmp_path):
     p = run("entrypoints/import_novel.py", str(tmp_path / "nope"), "--projects-root", str(tmp_path / "o"))
     assert p.returncode == 1
+
+
+def test_build_assets_entrypoint_stub(tmp_path, export_dir):
+    import os
+    out = tmp_path / "o"
+    p = run("entrypoints/import_novel.py", str(export_dir), "--projects-root", str(out), "--title", "书")
+    proj = json.loads(p.stdout) if False else None
+    created = [d for d in out.iterdir()][0]
+    env = dict(os.environ, NOVEL_TO_VIDEO_PROVIDERS="stub")
+    p2 = subprocess.run([sys.executable, "entrypoints/build_assets.py", str(created)],
+                        cwd=ROOT, capture_output=True, text=True, encoding="utf-8", env=env)
+    assert p2.returncode == 0, p2.stdout + p2.stderr
+    data = json.loads(p2.stdout)
+    assert data["ok"] and data["status"]["data"]["counts"]["total"] == 3

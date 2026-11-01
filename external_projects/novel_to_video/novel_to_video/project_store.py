@@ -23,7 +23,12 @@ from .source_import import ImportResult
 SCHEMA_VERSION = 1
 PROGRESS_FILE = "PROGRESS.md"
 
+DEFAULT_ART_STYLE = ("cinematic realistic, dystopian sci-fi, muted cold palette, "
+                     "soft volumetric light, high detail")
+
 DEFAULT_OPTIONS: Dict[str, Any] = {
+    "art_style": DEFAULT_ART_STYLE,
+    "providers": {"image": "agnes", "text": "miniagent"},
     "target_chapter_duration_sec": 90,
     "orientation": "portrait",
     "aspect_ratio": "9:16",

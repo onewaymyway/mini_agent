@@ -15,12 +15,14 @@ if str(_ROOT) not in sys.path:
 
 import streamlit as st  # noqa: E402
 
+from ui.assets_page import page_assets  # noqa: E402
 from ui.import_page import page_import  # noqa: E402
 from ui.projects_page import page_projects  # noqa: E402
 
 PAGES = {
     "📥 导入导出目录": page_import,
     "📚 项目列表": page_projects,
+    "🎭 全书素材": page_assets,
 }
 
 
@@ -28,7 +30,7 @@ def main() -> None:
     st.set_page_config(page_title="novel_to_video", page_icon="🎬", layout="wide")
     with st.sidebar:
         st.markdown("### 🎬 novel_to_video")
-        st.caption("小说转短剧工作台 · Phase 0")
+        st.caption("小说转短剧工作台 · Phase 1")
         choice = st.radio("导航", list(PAGES), label_visibility="collapsed", key="nav")
     PAGES[choice]()
 

@@ -1,6 +1,6 @@
 # 小说转短剧外部项目设计方案（novel_to_video）
 
-> 状态：**Phase 0 已完成（2026-11-01），按 Phase 1→5 继续实施**。路线、章节粒度、人设来源、剧本来源、外部依赖、审核粒度、封面与转场等决策点已由用户确认（见第 2 节）；第 13 节未决小问题按推荐项采用。实施记录见第 14 节。
+> 状态：**Phase 0、Phase 1 已完成（2026-11-01），按 Phase 2→5 继续实施**。路线、章节粒度、人设来源、剧本来源、外部依赖、审核粒度、封面与转场等决策点已由用户确认（见第 2 节）；第 13 节未决小问题按推荐项采用。实施记录见第 14 节。
 > 落地位置：`external_projects/novel_to_video/`（代码与项目说明）；本文件位于 `next_doc/novel_to_video_external_project_plan.md`。
 > 依据：`external_projects/novel_writer`（导出格式、外部项目结构、挡位 G0–G5、Streamlit 界面范式）、`.claude/skills/novel-video-studio`（短剧生产流水线、外部 API key 池机制、校验脚本范式）、`mini_agent.workflow` 的 `skill_agent` 调用模式。
 
@@ -409,10 +409,50 @@ Phase 2 是风险最高的一期（涉及外部视频 API、一致性核查、�
 - 第 8、43、47 章残留工具调用标签或截断提示，需确认章节完整性；
 - 第 21 章在写作备注之后有 14 行疑似重复的结尾，需人工决定是否删除，删除前不应进入剧本转换。
 
-### 14.2 后续阶段
+### 14.2 Phase 1：全书级素材（已完成，2026-11-01，离线验证）
 
-Phase 1 起按本文件第 11 节推进。每完成一期，在本节追加对应的实施记录（交付物、验收结果、相对原方案的偏差、未实现项）。
+**交付物**（位于 `external_projects/novel_to_video/novel_to_video/`）：
 
----
+| 文件 | 作用 |
+|---|---|
+| `providers/keypool.py` | 多 key 池：429 冷却并切换 key（不消耗重试次数），400/401/403/404/422 不重试；key 只读环境变量 |
+| `providers/image.py` | `AgnesImageProvider`（与 gen_image_with_text skill 同接口，b64 返回）与 `StubImageProvider` |
+| `providers/text.py` | `MiniAgentTextLLM`（复用 mini_agent `LLMHelper`）与 `RuleTextLLM`（离线兜底，输出标记 rules） |
+| `providers/factory.py` | 按名称构造 provider；`NOVEL_TO_VIDEO_PROVIDERS=stub` 强制离线 |
+| `steps/global_visual.py` | G-2 `visual_text_pass`（逐实体、断点续跑、失败隔离）；G-3 `portrait_pass`（版本化文件名、非重试错误停机）；`update_entity` 人工编辑；`visual_status` 门禁 |
+| `review.py` | 实体审核状态 `global/review.json` |
+| `prompts.py` | G-2/G-3 提示词集中管理 |
+| `call_log.py` | `logs/api_calls.jsonl` 外部调用留痕，不记录 key |
+| `tool_api.py`（扩展） | `run_visual_text` / `run_portraits` / `get_visual_status` / `review_asset` / `edit_asset` |
+| `entrypoints/build_assets.py` | 命令行入口（`--stage text|portrait|all`、`--ids`、`--regenerate`） |
+| `ui/assets_page.py` | 全书素材页：执行、画廊审核、字段编辑、门禁提示 |
+
+**验收结果**：
+
+- 真实导出包（50 章中选取前 3 章的项目）在 stub 模式下完成 G-2 与 G-3：25 个实体（21 角色 + 4 地点）全部生成文本设定与定妆图，失败 0。
+- 定妆图视觉检查通过（占位图内容与提示词一致）。
+- 测试 65 项通过（新增 provider 层、G-2/G-3 流程、界面冒烟、入口脚本）。
+- `project.yaml` 通过 manifest 校验，新增入口 `build_assets`。
+- 门禁：stub 模式下性别缺失，`ready=false`，符合设计预期（rules 不推断性别）。
+
+**相对原方案的偏差**：
+
+1. **key 池与生图接口为独立实现**，而非调用 skill 脚本，但策略与接口与 gen_image_with_text 保持一致（计划要求“沿用机制”）。
+2. **G-2 不通过 skill_agent 工作流执行**，而是直接调用 mini_agent 的 `LLMHelper.ask`。原因：G-2 是单实体、结构化 JSON 输出的短调用，不需要 agent 工具循环；直接调用更简单，错误也更容易定位。若后续需要 agent 式检索人设，再切换到 `skill_agent`。
+3. **新增 `*_source` 来源标记与 `review.json` 版本号**：原方案只写了“标记 generated”，实施时细化为 `miniagent` / `rules` / `manual` 三类，便于后续区分可信度。
+4. **门禁增加缺失字段检查**：`ready` 不仅要求审核通过，还要求 visual_anchor_en、voice_profile、gender 均已存在，避免性别缺失的角色进入章节生产。
+5. **G-3 发生非重试类错误时立即停机**（`stopped` 字段），避免对每个实体重复发送同样错误的请求。
+6. **未在真实 key 下运行**：Agnes 接口的请求结构依据 skill 实现，真实调用需本机冒烟后确认。
+
+**未实现（留给后续阶段）**：视频与 TTS（Phase 2）、补建角色分支（Phase 2 C-5）、挡位自动化（Phase 3）、定妆图替换上传（当前只支持重生成）。
+
+**需要本机冒烟的事项**：
+
+- 设置 `AGNES_API_KEYS` 后执行 `build_assets.py <项目> --stage portrait --ids char_001`，确认返回图片可解码、保存成功；
+- 配置好 mini_agent 的 LLM 后执行 `--stage text --ids char_001`，检查 `visual_anchor_en` 是否与人设卡一致，并确认 `gender_source` 为 `miniagent`。
+
+### 14.3 后续阶段
+
+Phase 2 起按本文件第 11 节推进。每完成一期，在本节追加对应的实施记录（交付物、验收结果、相对原方案的偏差、未实现项）。
 
 *本文件为设计方案，实施前以本文件为准；实施过程中的偏差记入 `PROJECT.md` 的里程碑进度与已知限制。*
