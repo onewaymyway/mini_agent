@@ -65,8 +65,10 @@ def page_import() -> None:
         title = st.text_input("书名（导出包不含书名，留空则取目录名）", key="imp_title")
     with col2:
         spec = st.text_input("章节范围（留空 = 全部；示例 1-10,12,20-）", key="imp_spec")
+        unlimited = st.checkbox("不限制时长（按原文实际情况生成，不限制字数）", key="imp_unlimited")
         duration = st.number_input("单章目标时长（秒）", min_value=30, max_value=300, value=90, step=10,
-                                   key="imp_dur")
+                                   key="imp_dur", disabled=unlimited)
+        duration = 0 if unlimited else duration
         root = st.text_input("项目存放目录", value=DEFAULT_PROJECTS_ROOT, key="imp_root")
 
     if st.button("检查导出目录", type="primary", disabled=not src.strip(), key="imp_check"):

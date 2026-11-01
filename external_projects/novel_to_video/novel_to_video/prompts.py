@@ -93,19 +93,27 @@ def script_budget(target_chars: int) -> Dict[str, int]:
             "hi": int(round(target_chars * 1.2)), "max_scenes": max(2, int(round(target_chars / 180)))}
 
 
+def _length_requirement(source_len: int, target_chars: int) -> str:
+    """篇幅说明。target_chars 为 0 表示不限制时长：不给字数预算，按原文实际情况改编。"""
+    if not target_chars:
+        return (f"【篇幅】原文约 {source_len} 字。本章不限制时长与字数：请按原文的实际情况完整改编，"
+                "保留原文的主要情节、关键对白与必要的场景，不要为了凑短而大幅删减，也不要无故拉长。")
+    b = script_budget(target_chars)
+    return (f"【篇幅要求（最重要）】原文约 {source_len} 字；本集口播（旁白+对白，不含场次标题）目标约 {b['target']} 字，"
+            f"允许 {b['lo']}–{b['hi']} 字，绝不能超过 {b['hi']} 字。必须大幅压缩：只保留主线与关键对白，"
+            f"删减次要描写与重复的心理活动，场次建议不超过 {b['max_scenes']} 场。"
+            "写完后自行估算口播字数，超出就继续删减。")
+
+
 def script_prompt(chapter_no: int, title: str, text: str, target_chars: int) -> str:
     """target_chars：本章口播（旁白+对白）的目标总字数，由 目标时长 × 语速 得出。
     原文远长于目标时长，必须压缩：保留主线与关键对白，删减次要描写。
 
     原文只出现一次（RULE_INPUT 不再重复携带 text，离线 RuleTextLLM 从“原文：”之后取）。"""
-    b = script_budget(target_chars)
     info = {"task": "script", "chapter_no": chapter_no, "title": title, "target_chars": target_chars}
     return (
         f"TASK=script\n将第 {chapter_no} 章《{title}》改编为一集短剧的剧本。\n\n"
-        f"【篇幅要求（最重要）】原文约 {len(text)} 字；本集口播（旁白+对白，不含场次标题）目标约 {b['target']} 字，"
-        f"允许 {b['lo']}–{b['hi']} 字，绝不能超过 {b['hi']} 字。必须大幅压缩：只保留主线与关键对白，"
-        f"删减次要描写与重复的心理活动，场次建议不超过 {b['max_scenes']} 场。"
-        "写完后自行估算口播字数，超出就继续删减。\n\n"
+        f"{_length_requirement(len(text), target_chars)}\n\n"
         f"{SCRIPT_RULES}\n\n{SCRIPT_EXAMPLE}\n\n"
         f"原文：\n{text}\n\nRULE_INPUT={json.dumps(info, ensure_ascii=False)}"
     )
@@ -114,13 +122,12 @@ def script_prompt(chapter_no: int, title: str, text: str, target_chars: int) -> 
 def script_fix_prompt(chapter_no: int, title: str, text: str, target_chars: int,
                       prev_script: str, issues: list) -> str:
     """校验失败后的修正请求（仅在项目选项 script_max_retries>0 时使用）。"""
-    b = script_budget(target_chars)
     info = {"task": "script_fix", "chapter_no": chapter_no, "title": title, "target_chars": target_chars}
     listed = "\n".join(f"- {i['message']}" for i in issues if i.get("level") == "error") or "- （无）"
     return (
         f"TASK=script_fix\n上一版第 {chapter_no} 章《{title}》剧本校验未通过，请修正后输出完整的新剧本。\n\n"
         f"校验未通过的问题：\n{listed}\n\n"
-        f"口播（旁白+对白）目标约 {b['target']} 字，允许 {b['lo']}–{b['hi']} 字；对白必须逐字来自原文。\n\n"
+        f"{_length_requirement(len(text), target_chars)}；对白必须逐字来自原文。\n\n"
         f"{SCRIPT_RULES}\n\n上一版剧本：\n{prev_script}\n\n"
         f"原文：\n{text}\n\nRULE_INPUT={json.dumps(info, ensure_ascii=False)}"
     )

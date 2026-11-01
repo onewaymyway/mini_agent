@@ -185,8 +185,13 @@ def speaker_resolution(script_text: str, shots_doc: Optional[Dict[str, Any]],
 
 
 def target_chars_for(project_dir: Path) -> int:
+    """单章口播目标字数。target_chapter_duration_sec 为 0（或负数）表示不限制时长：返回 0，
+    剧本生成不设字数预算，校验也不做字数检查，按原文实际情况生成。未设置时默认 90 秒。"""
     from ..providers.tts import CHARS_PER_SEC
-    sec = int(read_json(project_dir / "project.json").get("target_chapter_duration_sec") or 90)
+    raw = read_json(project_dir / "project.json").get("target_chapter_duration_sec")
+    sec = 90 if raw is None else int(raw)
+    if sec <= 0:
+        return 0
     return int(round(sec * CHARS_PER_SEC))
 
 

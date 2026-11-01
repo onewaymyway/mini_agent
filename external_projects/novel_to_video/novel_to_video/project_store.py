@@ -29,7 +29,7 @@ DEFAULT_ART_STYLE = ("cinematic realistic, dystopian sci-fi, muted cold palette,
 DEFAULT_OPTIONS: Dict[str, Any] = {
     "art_style": DEFAULT_ART_STYLE,
     "providers": {"image": "agnes", "text": "miniagent", "video": "agnes", "tts": "edge-tts"},
-    "target_chapter_duration_sec": 90,
+    "target_chapter_duration_sec": 90,  # 单章目标时长（秒）；0 = 不限制时长与字数，按原文实际情况生成
     "script_max_retries": 2,  # 剧本校验失败后，把问题反馈给模型自动修正的最多次数
     "shots_max_retries": 2,   # 镜头规划校验失败后，同上
     "orientation": "portrait",

@@ -934,3 +934,12 @@ Phase 2 是风险最高的一期（涉及外部视频 API、一致性核查、�
 实现位于 `external_projects/novel_to_video/novel_to_video/steps/chapter_shots.py`（`collect_shot_issues`、`_speaker_hint`），测试见 `tests/test_shots_feedback.py`。
 
 注：本项是“对白由代码切片、说话人由代码从剧本行取得”的结构性修法的第一步。反馈变具体后，模型仍需自行改写；后续阶段再改为由代码切片。
+
+## 不限制时长（单章目标时长 = 0）
+
+- 项目选项 `target_chapter_duration_sec` 为 0（或负数）时，表示不限制时长与字数。未设置时仍默认 90 秒。
+- `target_chars_for` 返回 0；剧本提示词（生成与修正）改为“按原文实际情况完整改编，不设字数预算”；剧本校验不做口播字数的超限与不足检查。
+- 导入页提供“不限制时长”复选框；CLI 用 `--duration 0`。
+- 镜头规划仍按每个镜头 4–10 秒的口播块切分，因此长章节会得到更多镜头，这是预期行为。
+
+实现位于 `novel_to_video/steps/chapter_script.py`（`target_chars_for`）、`novel_to_video/prompts.py`（`_length_requirement`）、`ui/import_page.py`、`entrypoints/import_novel.py`；测试见 `tests/test_script_unlimited.py`。

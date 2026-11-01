@@ -26,12 +26,12 @@ def main(argv=None) -> int:
     ap.add_argument("--projects-root", default=str(PROJECT_ROOT / "novel_output"))
     ap.add_argument("--title", default=None)
     ap.add_argument("--chapters", default=None, help="章节范围，默认全部")
-    ap.add_argument("--duration", type=int, default=None, help="单章目标时长（秒）")
+    ap.add_argument("--duration", type=int, default=None, help="单章目标时长（秒）；0 = 不限制时长与字数")
     ap.add_argument("--dry-run", action="store_true", help="只检查，不创建项目")
     args = ap.parse_args(argv)
 
     options = {}
-    if args.duration:
+    if args.duration is not None:
         options["target_chapter_duration_sec"] = args.duration
 
     result = tool_api.create_project_from_source(
