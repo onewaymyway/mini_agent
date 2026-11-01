@@ -21,15 +21,15 @@
 | Phase 1 全书级素材 | **已完成（2026-11-01，离线 stub 验证；真实 API 待本机 key 冒烟）** | G-2 视觉锚点/声音设定/缺失性别补全（逐实体、可断点续跑）；G-3 定妆图生成（Agnes 生图，多 key 池）；逐条审核、驳回重生成、人工编辑（改视觉字段自动标记定妆图过期）；全部通过后 `ready` 门禁；调用留痕 |
 | Phase 2 单章端到端 | **已完成（2026-11-01，离线 stub 全流程验证；真实视频/TTS/文本模型待本机冒烟）** | C-1…C-9：剧本压缩与校验、镜头规划、补建角色门禁、配音、提示词与机械一致性、小场景视频、逐镜审核、章节合成；可重入流水线与停止点 |
 | Phase 3 多章循环与挡位 | **已完成（2026-11-01，离线 stub 验证）** | 章节队列（单章停止不影响其他章）；G0–G3 挡位与检查点策略；G3 预算必填与超限停止；修改四级回退（clip_only / prompt / dialogue / shot_plan）与章节/全书 stale 传播；补建审核页；测试 106 项通过 |
-| Phase 4 全书合成与收尾 | 未开始 | F-1 至 F-4：章节检查、封面、全书拼接、成片校验、G4/G5 |
+| Phase 4 全书合成与收尾 | **已完成（2026-11-01，离线 stub 验证）** | F-1 章节检查（未完成或过期即拒绝）；F-2 封面（背景图与叠字分离，三种布局）；F-3 全书拼接（封面硬切前置，章节间硬切或淡化）；F-4 成片校验（时长、分辨率、帧率、音轨）；人工确认任何挡位都不可跳过；G4/G5 有限恢复；测试 127 项通过 |
 | Phase 5 加固 | 未开始 | 桩全链路测试、真实 API 冒烟、崩溃恢复与 key 切换演练 |
 
-## 当前能力（Phase 0–3）
+## 当前能力（Phase 0–4）
 
 - `source_import.py`：读取导出目录，产出章节清单（章号、章名、字数、总结文件）、角色库（映射自 `设定/人物/角色/char_*.md`，补充人设卡「外在呈现」）、地点库（映射自 `设定/世界观/地点详情/*.md`）、问题清单（error / warning / info）与目录指纹。**不写任何文件。**
 - `project_store.py`：项目目录 `<书名>_<时间戳>`，原子写入 JSON/YAML，章节范围解析（`all`、`1-10`、`20-`、`3,7,9-12`），PROGRESS.md 只追加。
 - `tool_api.py`：UI/CLI/daemon 统一接口，返回 `{ok, data, error}`。
-- 入口：`entrypoints/import_novel.py`、`list_projects.py`、`health.py`、`build_assets.py`、`run_chapter.py`、`run_queue.py`。
+- 入口：`entrypoints/import_novel.py`、`list_projects.py`、`health.py`、`build_assets.py`、`run_chapter.py`、`run_queue.py`、`compose_book.py`。
 - 界面：`streamlit run app.py`，导入页（检查 → 确认报告 → 创建）、项目页（章节表、导出变更提示、进度日志）、全书素材页（G-2/G-3 执行、画廊审核、字段编辑）、章节生产页、挡位与队列页、补建角色审核页。
 - Phase 1 新增：
   - `providers/keypool.py`：多 key 池，遇 429 冷却并切 key，400/401/403/404/422 不重试；key 只从环境变量 `AGNES_API_KEYS` / `AGNES_API_KEY` 读取。
@@ -56,8 +56,20 @@
   - `batch.py`：多章队列。每章前检查预算，超限则停止后续章节并返回原因；G3 下对机械合格的镜头自动通过，记入 review.json（`auto: true`）与 PROGRESS.md。
   - `revision.py`：修改回退四级（仅重生视频 / 改提示词 / 改台词 / 改分镜）。只清理目标镜头（改分镜则截断其后的镜头）；章节成片与全书成片标记为 stale，不删除文件；其他章节的文件与状态保持不变。
   - `tool_api.py`：`set_gear`、`gear_policy`、`run_queue`、`invalidate_shot`、`final_status`、`auto_added_queue`。
+- Phase 4 新增：
+  - `steps/final_compose.py`：F-1 检查（所有选中章节 done 且未 stale）；人工确认绑定章节成片快照，成片变化后失效；合成成功后清除确认。
+  - `media/cover.py`：封面叠字（PIL），布局 `center` / `bottom_bar` / `top_classic`，中文字体可用 `NOVEL_TO_VIDEO_FONT` 指定。
+  - `media/concat_final.py`：全书拼接；封面与正片之间硬切；章节间硬切或 0.5 秒淡化。
+  - `batch.py`：G4 失败后收紧口播块并重规划（最多 1 次）；G5 失败后重置失败阶段重试（最多 3 次）；G3 不恢复。
+  - `gates.py`：挡位扩展至 G0–G5，`final_compose` 在任何挡位都为手动。
+  - `entrypoints/compose_book.py`：`--check` / `--confirm` / 合成。
 
 ## 已知限制
+
+- **Phase 4 只做了离线 stub 验证**：封面背景图的真实生成、转场在真实素材上的观感均未验证。
+- **转场只有硬切与淡化**：没有其他样式。
+- **G4/G5 的全书合成仍需人工确认**：与计划表中“全自动”的字面不同，依据第 8 节 F-1 不可跳过的规则。
+- **G4 的策略切换只有一种**：收紧口播块上限，不会改变剧本内容。
 
 - **Phase 2 只做了离线 stub 验证**：Agnes 视频接口、edge-tts、真实文本模型均未在真实环境下调用。接口结构依据 gen_video_with_text skill 与 edge-tts 文档实现，需本机冒烟后确认。
 - **离线剧本是截断式**：`rules` 模式只把原文压成旁白，没有对白，不具备制作质量，仅用于验证流程。
@@ -104,6 +116,6 @@ novel_output/                       # 项目数据（默认位置，已加入 .g
     │   ├── review.json             # 小场景审核记录
     │   ├── state.json              # 各阶段状态
     │   └── chapter_001.mp4         # C-9 章节成片
-    ├── exports/                    # 全书成片（Phase 4 起）；stale.json 存在时表示需重新合成
+    ├── exports/                    # video.mp4 全书成片；confirm.json 人工确认记录；stale.json 表示需重新合成
     └── logs/                       # api_calls.jsonl 外部调用留痕；batch_runs.json 累计耗时
 ```

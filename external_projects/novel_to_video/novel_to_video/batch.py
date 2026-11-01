@@ -78,6 +78,49 @@ def auto_approve_shots(project_dir: Path, no: int) -> List[str]:
     return approved
 
 
+def _recover_failure(project_dir: Path, no: int, gear: str, res: Dict[str, Any], run_one,
+                     budget: Dict[str, Any], results: Dict[int, Dict[str, Any]]) -> Dict[str, Any]:
+    """G4 / G5 的失败恢复，次数有上限。
+
+    G4：失败后降低口播块长度并重跑一次（策略切换）。
+    G5：失败后清除失败阶段标记，重试至多 3 次。
+    其余挡位不恢复，直接返回失败。每次重试前都重新检查预算。
+    """
+    limit = gates.RETRY_LIMITS.get(gear, 0)
+    attempts = 0
+    while res.get("status") == "failed" and attempts < limit:
+        if check_budget(project_dir, gear, budget):
+            break
+        attempts += 1
+        if gear == "G4":
+            _switch_strategy(project_dir, no)
+        else:
+            _reset_failed_stage(project_dir, no)
+        res = run_one(no)
+        res["recovery"] = {"gear": gear, "attempts": attempts}
+    if attempts:
+        append_progress(project_dir, f"第 {no} 章 {gear} 失败恢复 {attempts} 次，结果：{res.get('status')}")
+    return res
+
+
+def _switch_strategy(project_dir: Path, no: int) -> None:
+    """G4 策略切换：把镜头口播块上限收紧一半，触发重新切分。"""
+    from .chapter_io import MAX_BLOCK_CHARS
+    cfg_path = cio.chapter_dir(project_dir, no) / "strategy.json"
+    from .project_store import write_json_atomic
+    write_json_atomic(cfg_path, {"max_block_chars": max(10, MAX_BLOCK_CHARS // 2)})
+    cio.mark_stage(project_dir, no, "shots", "failed", "G4 策略切换：重新切分镜头")
+
+
+def _reset_failed_stage(project_dir: Path, no: int) -> None:
+    """G5：仅清除失败阶段的标记，让流水线从该阶段重新执行（已成功阶段保持不变）。"""
+    state = cio.load_state(project_dir, no)
+    for name, st in list(state.get("stages", {}).items()):
+        if st.get("status") == "failed":
+            state["stages"][name] = {"status": "pending", "error": None}
+    cio.save_state(project_dir, no, state)
+
+
 def run_queue(project_dir: Path, numbers: List[int], *, gear: str, run_one) -> Dict[str, Any]:
     """依次运行章节。run_one(no) -> {"status": ..., "message": ...}，由调用方注入（便于测试）。
 
@@ -98,7 +141,8 @@ def run_queue(project_dir: Path, numbers: List[int], *, gear: str, run_one) -> D
         t0 = time.monotonic()
         res = run_one(no)
         _add_minutes(project_dir, (time.monotonic() - t0) / 60.0)
-        if gear == "G3" and res.get("status") == "waiting_review":
+        res = _recover_failure(project_dir, no, gear, res, run_one, budget, results)
+        if gear in ("G3", "G4", "G5") and res.get("status") == "waiting_review":
             approved = auto_approve_shots(project_dir, no)
             res["auto_approved"] = approved
             if approved:

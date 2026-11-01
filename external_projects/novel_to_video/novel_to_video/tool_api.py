@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -366,3 +367,67 @@ def auto_added_queue(project_dir: str) -> Dict[str, Any]:
                      "voice_profile": c.get("voice_profile"), "text_status": item.get("text_status", "missing"),
                      "portrait_status": item.get("portrait_status", "missing")})
     return _ok(rows)
+
+
+# ---------------------------------------------------------------- Phase 4：全书合成与收尾
+
+from .steps import final_compose as _fc
+
+
+def final_check(project_dir: str) -> Dict[str, Any]:
+    """F-1：章节是否全部就绪，以及封面与确认状态。"""
+    pdir = Path(project_dir)
+    try:
+        chk = _fc.check_chapters_ready(pdir)
+        return _ok({**chk, "cover": _fc.cover_status(pdir),
+                    "confirm": _fc.confirm_state(pdir),
+                    "final_stale": _rev.final_is_stale(pdir),
+                    "exists": (pdir / "exports" / "video.mp4").is_file()})
+    except Exception as exc:
+        return _fail(f"F-1 检查失败：{exc}")
+
+
+def set_cover(project_dir: str, *, enabled: bool, title: Optional[str] = None,
+              layout: Optional[str] = None, duration_sec: Optional[float] = None) -> Dict[str, Any]:
+    try:
+        cov = _fc.set_cover(Path(project_dir), enabled=enabled, title=title, layout=layout,
+                            duration_sec=duration_sec)
+    except Exception as exc:
+        return _fail(str(exc))
+    ps.append_progress(Path(project_dir), f"封面设置：{cov}")
+    return _ok(cov)
+
+
+def render_cover(project_dir: str, *, image_provider: Optional[str] = None) -> Dict[str, Any]:
+    """F-2：生成背景图（缺失时）并叠字。背景图生成需要图像 provider。"""
+    pdir = Path(project_dir)
+    try:
+        prov = make_image_provider(image_provider or _project_providers(pdir).get("image"))
+    except ProviderError as exc:
+        return _fail(str(exc))
+    try:
+        out = _fc.render_cover_assets(pdir, bg_provider=prov)
+    except Exception as exc:
+        return _fail(str(exc))
+    return _ok(out)
+
+
+def confirm_final(project_dir: str, note: str = "") -> Dict[str, Any]:
+    try:
+        return _ok(_fc.confirm_final(Path(project_dir), note=note))
+    except Exception as exc:
+        return _fail(str(exc))
+
+
+def compose_book(project_dir: str, *, transition: str = "cut", use_cover: Optional[bool] = None) -> Dict[str, Any]:
+    """F-3 + F-4。挡位只影响前面的检查点，本步骤在任何挡位下都需要先人工确认。"""
+    pdir = Path(project_dir)
+    try:
+        gear = json.loads((pdir / "project.json").read_text(encoding="utf-8")).get("gear", "G0")
+    except (OSError, ValueError) as exc:
+        return _fail(f"读取挡位失败：{exc}")
+    try:
+        res = _fc.compose_book(pdir, gear=gear, transition=transition, use_cover=use_cover)
+    except Exception as exc:
+        return _fail(str(exc))
+    return _ok(res)

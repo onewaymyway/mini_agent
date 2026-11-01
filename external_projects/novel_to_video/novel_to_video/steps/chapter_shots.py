@@ -72,7 +72,8 @@ def _group_into_shots(blocks: List[Dict[str, Any]], base: Dict[str, Any]) -> Lis
 
 
 def validate_and_build(raw_shots: List[Dict[str, Any]], script: str, locations: List[Dict[str, Any]],
-                       characters: List[Dict[str, Any]], chapter_no: int) -> Dict[str, Any]:
+                       characters: List[Dict[str, Any]], chapter_no: int,
+                       block_limit: int = MAX_BLOCK_CHARS) -> Dict[str, Any]:
     if not raw_shots:
         raise StepError("LLM 没有返回任何镜头")
     loc_ids = {l["id"] for l in locations}
@@ -106,11 +107,11 @@ def validate_and_build(raw_shots: List[Dict[str, Any]], script: str, locations: 
                 if sid is None:
                     if name not in new_speakers:
                         new_speakers.append(name)
-                for piece in split_text(text):
+                for piece in split_text(text, block_limit):
                     blocks.append({"type": "dialogue", "text": piece, "speaker_id": sid,
                                    "speaker_name": None if sid else name})
             else:
-                for piece in split_text(text):
+                for piece in split_text(text, block_limit):
                     blocks.append({"type": "narration", "text": piece, "speaker_id": None, "speaker_name": None})
         if not blocks:
             continue
@@ -146,13 +147,24 @@ def validate_and_build(raw_shots: List[Dict[str, Any]], script: str, locations: 
     }
 
 
+def strategy_block_limit(project_dir: Path, no: int) -> int:
+    """G4 策略切换写入的口播块上限；没有策略文件时用默认值。"""
+    from ..project_store import read_json
+    p = chapter_dir(project_dir, no) / "strategy.json"
+    if p.is_file():
+        return int(read_json(p).get("max_block_chars") or MAX_BLOCK_CHARS)
+    return MAX_BLOCK_CHARS
+
+
 def run_shots(project_dir: Path, no: int, text_llm: TextLLM, *, force: bool = False) -> Dict[str, Any]:
     cdir = chapter_dir(project_dir, no)
     script_path = cdir / "script.md"
     if not script_path.is_file():
         raise StepError("缺少剧本，请先执行 C-1/C-2")
     script = script_path.read_text(encoding="utf-8")
-    script_hash = sha12(script)
+    limit = strategy_block_limit(project_dir, no)
+    # 缓存键包含口播块上限：策略切换后必然重新规划
+    script_hash = sha12(script, str(limit))
     existing = load_shots(project_dir, no)
     if not force and existing and existing.get("script_hash") == script_hash and existing.get("shots"):
         mark_stage(project_dir, no, "shots", "done")
@@ -163,8 +175,9 @@ def run_shots(project_dir: Path, no: int, text_llm: TextLLM, *, force: bool = Fa
     locations = ents["locations"]["locations"]
     raw = text_llm.ask(prompts.shots_prompt(script, characters, locations), system=prompts.SYSTEM_VISUAL)
     obj = parse_json_object(raw)
-    built = validate_and_build(obj.get("shots") or [], script, locations, characters, no)
+    built = validate_and_build(obj.get("shots") or [], script, locations, characters, no, block_limit=limit)
     built["script_hash"] = script_hash
+    built["block_limit"] = limit
     save_shots(project_dir, no, built)
     mark_stage(project_dir, no, "shots", "done")
     return {"skipped": False, "shots": len(built["shots"]), "new_speakers": built["new_speakers"]}

@@ -13,6 +13,8 @@ GEAR_HELP = {
     "G1": "引导：章节合成自动完成，其余手动",
     "G2": "半自动：剧本/分镜自动，小场景仍逐镜审核",
     "G3": "全自动：机械校验通过的镜头自动通过；必须设置预算上限",
+    "G4": "托管：全自动，失败后换一次策略（收紧口播块）；必须设置预算上限",
+    "G5": "不停机：全自动，失败后自动重置重试最多 3 次；必须设置预算上限；全书合成仍需人工确认",
 }
 
 
@@ -29,7 +31,7 @@ def page_gear() -> None:
     cur = st.selectbox("挡位", pol["gears"], index=pol["gears"].index(cur_gear),
                        format_func=lambda g: f"{g} · {GEAR_HELP[g]}", key="gear_pick")
     budget = {}
-    if cur == "G3":
+    if cur in ("G3", "G4", "G5"):
         c1, c2, c3 = st.columns(3)
         budget["max_video_calls"] = c1.number_input("视频调用上限", min_value=0, value=20, step=1)
         budget["max_image_calls"] = c2.number_input("图像调用上限", min_value=0, value=20, step=1)

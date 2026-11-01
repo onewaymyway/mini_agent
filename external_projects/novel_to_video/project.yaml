@@ -1,6 +1,6 @@
 # project.yaml — novel_to_video 与 daemon 之间的契约（字段规范见 src/mini_agent/external_projects/manifest.py）。
 #
-# 里程碑进度见 PROJECT.md。当前为 Phase 3：导入、全书级素材（G-2/G-3）、单章流水线（C-1…C-9）、多章队列与挡位 G0–G3、分级回退。
+# 里程碑进度见 PROJECT.md。当前为 Phase 4：导入、全书级素材（G-2/G-3）、单章流水线（C-1…C-9）、多章队列与挡位 G0–G3、分级回退。
 # 本项目默认不登记任何 cron 调度；图像/视频生成属于高成本操作，需要用户在界面确认后手动触发。
 
 name: novel_to_video
@@ -21,6 +21,9 @@ entrypoints:
   run_queue:
     cmd: "python entrypoints/run_queue.py"
     timeout_sec: 86400
+  compose_book:
+    cmd: "python entrypoints/compose_book.py"
+    timeout_sec: 3600
 
 health_check:
   cmd: "python entrypoints/health.py"

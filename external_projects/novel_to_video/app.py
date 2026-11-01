@@ -17,6 +17,7 @@ import streamlit as st  # noqa: E402
 
 from ui.assets_page import page_assets  # noqa: E402
 from ui.auto_added_page import page_auto_added  # noqa: E402
+from ui.final_page import page_final  # noqa: E402
 from ui.gear_page import page_gear  # noqa: E402
 from ui.chapter_page import page_chapters  # noqa: E402
 from ui.import_page import page_import  # noqa: E402
@@ -29,6 +30,7 @@ PAGES = {
     "🎬 章节生产": page_chapters,
     "🚦 挡位与队列": page_gear,
     "🧩 补建角色审核": page_auto_added,
+    "🎞️ 全书合成": page_final,
 }
 
 
@@ -36,7 +38,7 @@ def main() -> None:
     st.set_page_config(page_title="novel_to_video", page_icon="🎬", layout="wide")
     with st.sidebar:
         st.markdown("### 🎬 novel_to_video")
-        st.caption("小说转短剧工作台 · Phase 3")
+        st.caption("小说转短剧工作台 · Phase 4")
         choice = st.radio("导航", list(PAGES), label_visibility="collapsed", key="nav")
     PAGES[choice]()
 

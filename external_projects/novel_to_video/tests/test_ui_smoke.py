@@ -97,3 +97,23 @@ def test_gear_and_auto_added_pages_render(tmp_path, monkeypatch):
     assert not at.exception
     assert any("补建角色审核" in h.value for h in at.header)
     assert any("当前没有待审核" in i.value for i in at.info)
+
+
+def test_final_page_renders(tmp_path, monkeypatch):
+    monkeypatch.setenv("NOVEL_TO_VIDEO_PROVIDERS", "stub")
+    from novel_to_video import tool_api
+    from novel_to_video.providers.image import StubImageProvider
+    from novel_to_video.providers.text import RuleTextLLM
+    from novel_to_video.steps import global_visual as gv
+    src = build_export(tmp_path / "src")
+    out = tmp_path / "out"
+    res = tool_api.create_project_from_source(str(out), str(src), title="t")
+    proj = Path(res["data"]["project_dir"])
+    gv.visual_text_pass(proj, RuleTextLLM())
+    gv.portrait_pass(proj, StubImageProvider())
+    at = AppTest.from_file(APP, default_timeout=60).run()
+    at.sidebar.radio[0].set_value("🎞️ 全书合成").run()
+    at.text_input(key="final_root").input(str(out)).run()
+    assert not at.exception
+    assert any("全书合成" in h.value for h in at.header)
+    assert any("F-1 章节检查" in m.value for m in at.markdown)

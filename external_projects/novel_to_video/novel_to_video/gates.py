@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-GEARS = ("G0", "G1", "G2", "G3")
+GEARS = ("G0", "G1", "G2", "G3", "G4", "G5")
 DEFAULT_GEAR = "G0"
 
 # 检查点：manual | auto
@@ -31,9 +31,21 @@ _POLICY: Dict[str, Dict[str, str]] = {
            "shot_review": "manual", "chapter_compose": "auto", "auto_add": "manual"},
     "G3": {"asset_text": "auto", "asset_portrait": "auto", "chapter_script": "auto",
            "shot_review": "auto", "chapter_compose": "auto", "auto_add": "auto"},
+    "G4": {"asset_text": "auto", "asset_portrait": "auto", "chapter_script": "auto",
+           "shot_review": "auto", "chapter_compose": "auto", "auto_add": "auto"},
+    "G5": {"asset_text": "auto", "asset_portrait": "auto", "chapter_script": "auto",
+           "shot_review": "auto", "chapter_compose": "auto", "auto_add": "auto"},
+}
+
+# G4/G5 的失败恢复策略（有上限，避免在付费接口上无限重试）
+RETRY_LIMITS = {"G3": 0, "G4": 1, "G5": 3}
+RECOVERY = {
+    "G4": "失败后换策略一次：降低口播块长度（重新切分镜头）后重跑该章",
+    "G5": "失败后重置该章失败阶段并重试，最多 3 次，仍失败则停止并记录",
 }
 
 # 任何挡位都不可跳过的检查点
+# 任何挡位都不可跳过的检查点：全书合成（F-1 与人工确认）
 ALWAYS_MANUAL = ("final_compose",)
 
 
