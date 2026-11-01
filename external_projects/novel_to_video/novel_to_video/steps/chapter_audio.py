@@ -13,6 +13,7 @@ import wave
 from pathlib import Path
 from typing import Any, Dict, List
 
+from .. import joblog
 from ..chapter_io import SHOT_MAX_SEC, SHOT_MIN_SEC, chapter_dir, load_entities, load_shots, mark_stage, save_shots, sha12
 from ..providers.tts import TTSProvider, voice_for
 
@@ -62,6 +63,8 @@ def run_audio(project_dir: Path, no: int, tts: TTSProvider) -> Dict[str, Any]:
             path = adir / f"{sh['id']}_b{b['idx']:02d}.wav"
             if not path.is_file() or b.get("audio_key") != key:
                 b["duration"] = tts.synth(b["text"], path, voice)
+                joblog.log(project_dir, "chapter", f"第 {no} 章 C-6 配音 {sh['id']}/{b['idx']:02d}：{voice}，"
+                           f"{len(b['text'])} 字 → {float(b['duration']):.1f} 秒")
                 b["audio_key"] = key
                 synthesized += 1
             block_keys.append(key)

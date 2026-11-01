@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List
 
+from .. import joblog
 from ..chapter_io import chapter_dir, load_entities, load_shots, mark_stage, save_shots, sha12
 from ..media import ffmpeg as mf
 from ..project_store import read_json
@@ -96,8 +97,11 @@ def run_clips(project_dir: Path, no: int, video: VideoProvider) -> Dict[str, Any
         if clip.is_file() and sh.get("clip_key") == clip_key:
             continue
         raw = cdir / "raw" / f"{sh['id']}.mp4"
+        joblog.log(project_dir, "chapter", f"第 {no} 章 C-8 镜头 {sh['id']}：提交视频生成"
+                   f"（{int(sh['duration_sec'])} 秒，参考图 {len(refs)} 张）")
         res = video.generate(sh["prompt_en"], raw, seconds=int(sh["duration_sec"]), reference_images=refs)
         if not res.ok:
+            joblog.log(project_dir, "chapter", f"第 {no} 章 C-8 镜头 {sh['id']} 失败：{res.error}", level="error")
             sh["clip_error"] = res.error
             failed.append(sh["id"])
             if res.non_retryable:
@@ -106,6 +110,7 @@ def run_clips(project_dir: Path, no: int, video: VideoProvider) -> Dict[str, Any
                 return {"blocked": [], "generated": generated, "failed": failed, "stopped": res.error}
             continue
         mf.mux_clip(raw, cdir.parent / "audio" / f"{sh['id']}.wav", clip, float(sh["duration_sec"]))
+        joblog.log(project_dir, "chapter", f"第 {no} 章 C-8 镜头 {sh['id']} 完成（已合入配音）", level="ok")
         sh["clip_key"] = clip_key
         sh["clip_error"] = None
         generated.append(sh["id"])

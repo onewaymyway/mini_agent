@@ -132,3 +132,17 @@ class _ConsoleTee(io.TextIOBase):
 
 def console_tee() -> _ConsoleTee:
     return _ConsoleTee(sys.stdout)
+
+
+@contextlib.contextmanager
+def timed(project_dir: Path, scope: str, label: str):
+    """记录一个耗时步骤：开始、完成（含耗时）或失败（含原因）。异常照常抛出。"""
+    import time as _time
+    t0 = _time.monotonic()
+    log(project_dir, scope, f"{label}…")
+    try:
+        yield
+    except Exception as exc:
+        log(project_dir, scope, f"{label} 失败（{_time.monotonic() - t0:.1f} 秒）：{exc}", level="error")
+        raise
+    log(project_dir, scope, f"{label} 完成（{_time.monotonic() - t0:.1f} 秒）", level="ok")

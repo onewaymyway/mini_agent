@@ -15,6 +15,7 @@ from typing import Any, Dict, List
 
 import yaml
 
+from .. import joblog
 from .. import prompts
 from ..chapter_io import chapter_dir, chapter_row, norm, source_text, sha12, mark_stage
 from ..project_store import read_json, write_yaml_atomic
@@ -128,7 +129,8 @@ def run_script(project_dir: Path, no: int, text_llm: TextLLM, *, force: bool = F
             return {"skipped": True, "status": "pass"}
 
     row = chapter_row(project_dir, no)
-    raw = text_llm.ask(prompts.script_prompt(no, row["title"], source, target), system=prompts.SYSTEM_VISUAL)
+    with joblog.timed(project_dir, "chapter", f"第 {no} 章 C-1 调用文本模型生成剧本（输入 {len(source)} 字）"):
+        raw = text_llm.ask(prompts.script_prompt(no, row["title"], source, target), system=prompts.SYSTEM_VISUAL)
     script_text = _clean_script(raw)
     script_path.write_text(script_text, encoding="utf-8")
 

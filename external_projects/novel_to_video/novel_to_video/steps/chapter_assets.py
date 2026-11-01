@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
+from .. import joblog
 from .. import prompts
 from ..chapter_io import chapter_dir, load_entities, load_shots, mark_stage, save_shots, source_text
 from ..review import entity_key, get_item, load_review, save_review
@@ -39,8 +40,9 @@ def _speaker_context(script: str, name: str) -> List[str]:
     return out
 
 
-def _draft_entity(text_llm: TextLLM, name: str, context: List[str], chapter_no: int, eid: str) -> Dict[str, Any]:
-    raw = text_llm.ask(prompts.entity_draft_prompt(name, context), system=prompts.SYSTEM_VISUAL)
+def _draft_entity(project_dir: Path, text_llm: TextLLM, name: str, context: List[str], chapter_no: int, eid: str) -> Dict[str, Any]:
+    with joblog.timed(project_dir, "chapter", f"C-5 起草补建角色「{name}」设定"):
+        raw = text_llm.ask(prompts.entity_draft_prompt(name, context), system=prompts.SYSTEM_VISUAL)
     obj = parse_json_object(raw)
     anchor = str(obj.get("visual_anchor_en") or "").strip()
     voice = str(obj.get("voice_profile") or "").strip()
@@ -88,7 +90,7 @@ def run_assets(project_dir: Path, no: int, text_llm: TextLLM, image: ImageProvid
         if name in by_name:
             continue
         eid = _next_char_id(chars)
-        ent = _draft_entity(text_llm, name, _speaker_context(script, name), no, eid)
+        ent = _draft_entity(project_dir, text_llm, name, _speaker_context(script, name), no, eid)
         chars.append(ent)
         by_name[name] = eid
         get_item(review, entity_key("character", eid)).update(text_status="pending", portrait_status="missing")

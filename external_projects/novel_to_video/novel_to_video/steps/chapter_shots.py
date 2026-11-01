@@ -16,6 +16,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List
 
+from .. import joblog
 from .. import prompts
 from ..chapter_io import (MAX_BLOCK_CHARS, SHOT_PLAN_SEC, chapter_dir, load_entities, load_shots,
                           mark_stage, norm, save_shots, sha12)
@@ -173,7 +174,8 @@ def run_shots(project_dir: Path, no: int, text_llm: TextLLM, *, force: bool = Fa
     ents = load_entities(project_dir)
     characters = ents["characters"]["characters"]
     locations = ents["locations"]["locations"]
-    raw = text_llm.ask(prompts.shots_prompt(script, characters, locations), system=prompts.SYSTEM_VISUAL)
+    with joblog.timed(project_dir, "chapter", f"第 {no} 章 C-3 调用文本模型规划镜头（剧本 {len(script)} 字）"):
+        raw = text_llm.ask(prompts.shots_prompt(script, characters, locations), system=prompts.SYSTEM_VISUAL)
     obj = parse_json_object(raw)
     built = validate_and_build(obj.get("shots") or [], script, locations, characters, no, block_limit=limit)
     built["script_hash"] = script_hash
