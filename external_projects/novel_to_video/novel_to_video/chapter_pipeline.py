@@ -129,16 +129,17 @@ def _read_yaml(path: Path) -> Optional[Dict[str, Any]]:
     return yaml.safe_load(path.read_text(encoding="utf-8")) or None
 
 
-def _unknown_speakers(project_dir: Path, cdir: Path) -> list:
+def _speakers(project_dir: Path, cdir: Path, shots_doc: dict) -> list:
+    """剧本说话人的最终处理结果（见 chapter_script.speaker_resolution）。"""
     path = cdir / "script.md"
     if not path.is_file():
         return []
-    from .steps.chapter_script import unknown_speakers
+    from .steps.chapter_script import speaker_resolution
     try:
         chars = read_json(project_dir / "global" / "characters.json")["characters"]
     except (OSError, KeyError, ValueError):
         return []
-    return unknown_speakers(path.read_text(encoding="utf-8"), [n for c in chars for n in c.get("names", [])])
+    return speaker_resolution(path.read_text(encoding="utf-8"), shots_doc, chars)
 
 
 def chapter_view(project_dir: Path, no: int) -> Dict[str, Any]:
@@ -168,7 +169,7 @@ def chapter_view(project_dir: Path, no: int) -> Dict[str, Any]:
         "stages": cio.load_state(project_dir, no).get("stages", {}),
         "script": (cdir / "script.md").read_text(encoding="utf-8") if (cdir / "script.md").is_file() else None,
         "script_review": _read_yaml(cdir / "script_review.yaml"),
-        "unknown_speakers": _unknown_speakers(project_dir, cdir),
+        "speakers": _speakers(project_dir, cdir, shots_doc),
         "shots": shots,
         "output": str(out_path.relative_to(project_dir)) if out_path.is_file() else None,
         "counts": {s: sum(1 for v in states.values() if v == s) for s in

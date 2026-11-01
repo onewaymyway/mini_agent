@@ -252,7 +252,7 @@ def test_unknown_speaker_warning_is_merged_and_says_what_to_do():
     warns = [i["message"] for i in res["issues"] if i["level"] == "warning"]
     assert len(warns) == 2                       # 新人、路人各一条，不再每句一条
     new = next(w for w in warns if "新人" in w)
-    assert "2 处" in new and "首见第 3 行" in new and "补建角色" in new and "重新运行本章" in new
+    assert "2 处" in new and "首见第 3 行" in new and "镜头规划" in new and "补建角色" in new
     assert res["status"] == "pass"               # 仍然只是提示
 
 
@@ -282,7 +282,9 @@ def test_chapter_page_guides_unknown_speakers_then_confirms_in_place(proj):
     run_script(proj, 1, RecLLM(SCRIPT))
     at = _open_chapter_page(proj)
     info = " ".join(i.value for i in at.info)
-    assert "新人" in info and "运行第 1 章流水线" in info and "自动起草" in info
+    assert "运行第 1 章流水线" in info and "自动起草" in info
+    rows = [r for df in at.dataframe for r in df.value.to_dict("records")]
+    assert any(r.get("说话人") == "新人" and "还没做镜头规划" in r.get("处理结果", "") for r in rows)
 
     # 2) 流水线跑到 C-5：补建角色已起草，章节等待确认；页面直接给出操作按钮
     r = cp.run_chapter(proj, 1, text_llm=ChapterLLM(), image=StubImageProvider(),
@@ -322,3 +324,59 @@ def test_auto_added_page_has_action_buttons(proj):
     at.text_input(key="auto_root").input(str(proj.parent)).run()
     assert not at.exception, at.exception
     assert any((b.key or "").startswith("ok_t_") for b in at.button)
+
+
+# ---------------------------------------------------------------- 说话人处理结果以镜头规划为准
+
+MAP_SCRIPT = """### 场次 1｜铁城·清晨（外景）
+旁白：铁城的清晨很安静。
+影子：等一下。
+新人：我也要去。
+"""
+
+
+def _chars(proj):
+    return json.loads((proj / "global/characters.json").read_text(encoding="utf-8"))["characters"]
+
+
+def test_speaker_resolution_follows_shot_plan_not_exact_names(proj):
+    """复现现场：剧本里有两个库外说话人，但镜头规划把其中一个归入了已有角色，只需补建另一个。"""
+    from novel_to_video.steps.chapter_script import speaker_resolution
+    chars = _chars(proj)
+    shots = {"shots": [{"blocks": [
+        {"type": "dialogue", "text": "等一下。", "speaker_id": chars[1]["id"], "speaker_name": None},
+        {"type": "dialogue", "text": "我也要去。", "speaker_id": None, "speaker_name": "新人"}]}]}
+    res = {r["name"]: r for r in speaker_resolution(MAP_SCRIPT, shots, chars)}
+    assert res["影子"]["status"] == "library"
+    # 脚本里叫“新人”的人，台词被镜头规划归给了 pending 的新人
+    assert res["新人"]["status"] == "pending"
+    # 没有镜头规划 → unplanned
+    assert {r["status"] for r in speaker_resolution(MAP_SCRIPT, None, chars[:1])} == {"unplanned"}
+    # 台词归入已有角色 → mapped，并给出角色名
+    shots2 = {"shots": [{"blocks": [
+        {"type": "dialogue", "text": "我也要去。", "speaker_id": chars[0]["id"], "speaker_name": None}]}]}
+    r2 = {r["name"]: r for r in speaker_resolution(MAP_SCRIPT, shots2, chars[:1])}
+    assert r2["新人"]["status"] == "mapped" and r2["新人"]["target"] == chars[0]["names"][0]
+
+
+def test_chapter_page_says_mapped_speaker_needs_no_review(proj):
+    from novel_to_video.steps.chapter_shots import run_shots
+    from test_chapter_pipeline import ChapterLLM
+    chars = _chars(proj)
+    run_script(proj, 1, RecLLM(SCRIPT))            # SCRIPT 里有 林远/影子/新人
+    shots = {"shots": [{"scene_no": 1, "location_id": "x", "character_ids": [],
+                        "blocks": [{"type": "narration", "text": "铁城的清晨很安静。"},
+                                   {"type": "dialogue", "text": "我们走。", "speaker_id": chars[0]["id"]},
+                                   {"type": "dialogue", "text": "等一下。", "speaker_id": chars[1]["id"]},
+                                   # 模型把“新人”归入了已有角色（真实运行中“盖亚播报”就是这样）
+                                   {"type": "dialogue", "text": "我也要去。", "speaker_id": chars[0]["id"],
+                                    "speaker_name": "新人"}],
+                        "visual_hint_zh": "街道", "visual_hint_en": "street"}]}
+    run_shots(proj, 1, ChapterLLM(shots=shots))
+    assert tool_api.auto_added_queue(str(proj))["data"] == []         # 没有需要审核的补建角色
+    at = _open_chapter_page(proj)
+    rows = [r for df in at.dataframe for r in df.value.to_dict("records")]
+    row = next(r for r in rows if r.get("说话人") == "新人")
+    assert "已归入已有角色" in row["处理结果"] and chars[0]["names"][0] in row["处理结果"]
+    assert any("没有需要确认的补建角色" in s.value for s in at.success)
+    assert not any("运行第 1 章流水线" in i.value and "自动起草" in i.value for i in at.info)

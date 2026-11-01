@@ -82,21 +82,37 @@ def _stages(view: dict) -> None:
         cols[4].metric("失败", c.get("failed", 0))
 
 
+SPEAKER_NOTE = {
+    "unplanned": "还没做镜头规划：规划时会先尝试归入已有角色，归不进去的才补建",
+    "mapped": "镜头规划已归入已有角色，无需补建",
+    "pending": "库中没有对应角色，运行到 C-5 会自动起草，起草后在下方确认",
+    "auto_added": "已补建，需要在下方确认设定与定妆图",
+    "unknown": "没能把这个说话人的台词对应到镜头（可能被改动），请查看镜头列表",
+}
+
+
 def _auto_added_section(pdir: str, no: int, v: dict) -> None:
-    """补建角色：剧本里有库中没有的说话人时，在本页直接确认，不必跳到别的页面。"""
+    """补建角色：以镜头规划的实际结果为准，逐个说话人说明是否需要补建；需要确认的卡片直接在本页操作。"""
     from ui.auto_added_page import render_auto_added
-    unknown = v.get("unknown_speakers") or []
+    speakers = [s for s in (v.get("speakers") or []) if s["status"] != "library"]
     queue = tool_api.auto_added_queue(pdir)
     mine = [r for r in (queue["data"] if queue["ok"] else []) if r["chapter"] == no]
-    if not unknown and not mine:
+    if not speakers and not mine:
         return
     st.markdown("#### 补建角色（需要你确认）")
     if v.get("status") == "waiting_assets":
         st.warning(f"本章正在等待补建角色确认：请在下面完成设定与定妆图的确认，然后点上方「运行第 {no} 章流水线」继续。")
-    if unknown:
-        names = "、".join(f"{u['name']}（{u['lines']} 句）" for u in unknown)
-        st.info(f"剧本里有 {len(unknown)} 个说话人不在角色库中：{names}。剧本本身没有问题，无需修改。"
-                f"点击上方「运行第 {no} 章流水线」，运行到 C-5 时会自动起草这些角色的设定，起草完成后在这里确认。")
+    if speakers:
+        st.caption("剧本里不在角色库中的说话人，以及它们在镜头规划里的实际处理结果（只有“需要确认”的才有审核卡片）：")
+        st.dataframe([{"说话人": s["name"], "台词句数": s["lines"],
+                       "处理结果": SPEAKER_NOTE.get(s["status"], s["status"]) +
+                       (f"：{s['target']}" if s["status"] == "mapped" and s.get("target") else "")}
+                      for s in speakers], width='stretch', hide_index=True)
+        if any(s["status"] in ("unplanned", "pending") for s in speakers):
+            st.info(f"剧本本身没有问题，无需修改。点击上方「运行第 {no} 章流水线」，镜头规划后仍归不进已有角色的，"
+                    "会在 C-5 自动起草设定，起草完成后在这里确认。")
+        elif not mine:
+            st.success("这些说话人都已归入已有角色，本章没有需要确认的补建角色。")
     if mine:
         open_n = render_auto_added(pdir, chapter=no, key_prefix=f"aa_ch{no}")
         if open_n == 0:

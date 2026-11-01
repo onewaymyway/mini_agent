@@ -104,8 +104,8 @@ def check_script(script_text: str, source: str, known_names: List[str], target_c
                 issues.append({"level": "warning", "message": f"第 {ln['lineno']} 行旁白超过 200 字，建议拆分"})
     for name, linenos in unknown.items():
         issues.append({"level": "warning", "message": (
-            f"说话人“{name}”不在角色库中（{len(linenos)} 处，首见第 {linenos[0]} 行）。无需处理剧本：运行到 C-5 时会自动起草其设定，"
-            "之后在本页“补建角色”区确认设定与定妆图，再重新运行本章")})
+            f"说话人“{name}”不在角色库中（{len(linenos)} 处，首见第 {linenos[0]} 行）。无需处理剧本：镜头规划（C-3）会先尝试把它"
+            "归入已有角色，归不进去的在 C-5 自动起草；是否需要补建以本页“补建角色”区的说明为准")})
     if target_chars:
         spoken = spoken_chars(script_text)
         if spoken > target_chars * OVER_RATIO:
@@ -129,6 +129,59 @@ def unknown_speakers(script_text: str, known_names: List[str]) -> List[Dict[str,
             if ln["type"] == "dialogue" and ln["speaker"] not in known_names:
                 counts[ln["speaker"]] = counts.get(ln["speaker"], 0) + 1
     return [{"name": n, "lines": c} for n, c in counts.items()]
+
+
+def speaker_resolution(script_text: str, shots_doc: Optional[Dict[str, Any]],
+                       characters: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """剧本中每个说话人最终的处理结果（按首次出现顺序）。status：
+      library     名字就在角色库中；
+      auto_added  已补建的角色（需要确认）；
+      mapped      镜头规划把它归入了库中已有角色（target 为角色名），无需补建；
+      pending     镜头规划后仍没有对应角色，C-5 会自动起草；
+      unplanned   还没有镜头规划，结果未知；
+      unknown     有镜头规划但无法把台词对应到镜头（例如台词被大幅改动）。
+    台词与镜头的对应按文本包含关系匹配（很短的台词要求完全相等），仅用于界面说明。"""
+    from ..chapter_io import norm
+    try:
+        scenes = parse_script(script_text)
+    except ScriptError:
+        return []
+    by_id = {c["id"]: c for c in characters}
+    by_name = {n: c for c in characters for n in c.get("names", [])}
+    blocks = [b for sh in (shots_doc or {}).get("shots", []) for b in sh["blocks"] if b["type"] == "dialogue"]
+    order: Dict[str, Dict[str, Any]] = {}
+    for sc in scenes:
+        for ln in sc["lines"]:
+            if ln["type"] != "dialogue":
+                continue
+            r = order.setdefault(ln["speaker"], {"lines": 0, "ids": [], "pending": False})
+            r["lines"] += 1
+            t = norm(ln["text"])
+            for b in blocks:
+                bt = norm(b["text"])
+                if not bt or bt not in t or (len(bt) < 6 and bt != t):
+                    continue
+                if b.get("speaker_id"):
+                    if b["speaker_id"] not in r["ids"]:
+                        r["ids"].append(b["speaker_id"])
+                else:
+                    r["pending"] = True
+    out: List[Dict[str, Any]] = []
+    for name, r in order.items():
+        row = {"name": name, "lines": r["lines"], "status": "unknown", "target": None}
+        if name in by_name:
+            c = by_name[name]
+            row.update(status="auto_added" if c.get("source") == "auto_added" else "library",
+                       target=c["names"][0])
+        elif not shots_doc or not shots_doc.get("shots"):
+            row["status"] = "unplanned"
+        elif r["ids"]:
+            targets = [by_id[i] for i in r["ids"] if i in by_id]
+            row.update(status="mapped", target="、".join(c["names"][0] for c in targets))
+        elif r["pending"]:
+            row["status"] = "pending"
+        out.append(row)
+    return out
 
 
 def target_chars_for(project_dir: Path) -> int:
