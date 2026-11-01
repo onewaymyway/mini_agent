@@ -126,7 +126,8 @@ def script_fix_prompt(chapter_no: int, title: str, text: str, target_chars: int,
     )
 
 
-def shots_prompt(script: str, characters: list, locations: list) -> str:
+def shots_prompt(script: str, characters: list, locations: list, *,
+                 max_chars_per_shot: int = 0, expected_shots: int = 0) -> str:
     chars = [{"id": c["id"], "name": (c.get("names") or [""])[0], "gender": c.get("gender")}
              for c in characters]
     locs = [{"id": l["id"], "name": l["name"]} for l in locations]
@@ -140,7 +141,13 @@ def shots_prompt(script: str, characters: list, locations: list) -> str:
         "3. dialogue 的 speaker_id 从 characters 中选；若剧本中的说话人不在 characters 中，speaker_id 置 null 并填 speaker_name；\n"
         "4. location_id 从 locations 中选，场景切换时必须换镜头；\n"
         "5. visual_hint_zh 为中文画面描述，visual_hint_en 为对应英文画面描述（不写人名，只写动作与构图）；\n"
-        "6. 只输出 JSON：{\"shots\": [{\"scene_no\": int, \"location_id\": str, \"character_ids\": [..], "
+        + (f"6. 每个镜头的口播（旁白+对白）总字数不超过 {max_chars_per_shot} 字（约 10 秒）；一场戏通常需要多个镜头，"
+           f"绝不能把整场戏写成一个镜头。整章预计约 {expected_shots} 个镜头。\n"
+           if max_chars_per_shot else "")
+        + "7. 同一场次内相邻镜头的 visual_hint 必须不同：景别（远景/中景/近景/特写）、机位或主体动作至少一项不同，"
+          "且描述的是该镜头自己的口播内容，不要把整场戏的画面复述到每个镜头里；\n"
+          "8. character_ids 列出该镜头画面中出现的所有角色，包括画面里出现但没有台词的角色（例如旁白描写林远的动作，就要包含林远）；\n"
+          "9. 只输出 JSON：{\"shots\": [{\"scene_no\": int, \"location_id\": str, \"character_ids\": [..], "
         "\"blocks\": [{\"type\": ..., \"text\": ..., \"speaker_id\": ..., \"speaker_name\": ...}], "
         "\"visual_hint_zh\": str, \"visual_hint_en\": str}]}\n\n"
         f"剧本：\n{script}\n\nRULE_INPUT={json.dumps({**info, 'script': script}, ensure_ascii=False)}"

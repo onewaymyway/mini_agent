@@ -142,6 +142,32 @@ def _speakers(project_dir: Path, cdir: Path, shots_doc: dict) -> list:
     return speaker_resolution(path.read_text(encoding="utf-8"), shots_doc, chars)
 
 
+def _derive_plan_warnings(shots: list) -> list:
+    out, group = [], []
+    for sh in shots + [None]:
+        if group and (sh is None or (sh.get("scene_no"), sh.get("visual_hint_en")) !=
+                      (group[0].get("scene_no"), group[0].get("visual_hint_en"))):
+            if len(group) > 1:
+                out.append({"raw_index": len(out) + 1, "scene_no": group[0].get("scene_no"), "parts": len(group),
+                            "seconds": round(sum(float(g.get("est_seconds") or 0) for g in group), 1)})
+            group = []
+        if sh is not None:
+            group.append(sh)
+    return out
+
+
+def _entity_lookup(project_dir: Path) -> Dict[str, Dict[str, Any]]:
+    try:
+        ents = cio.load_entities(project_dir)
+    except (OSError, KeyError, ValueError):
+        return {"chars": {}, "locs": {}}
+    chars = {c["id"]: {"id": c["id"], "name": (c.get("names") or [c["id"]])[0], "names": list(c.get("names") or []),
+                       "gender": c.get("gender"), "asset": c.get("asset_path")}
+             for c in ents["characters"]["characters"]}
+    locs = {l["id"]: {"id": l["id"], "name": l.get("name")} for l in ents["locations"]["locations"]}
+    return {"chars": chars, "locs": locs}
+
+
 def chapter_view(project_dir: Path, no: int) -> Dict[str, Any]:
     """供界面展示：章节状态、各阶段、镜头列表与审核状态。"""
     project_dir = Path(project_dir)
@@ -150,12 +176,22 @@ def chapter_view(project_dir: Path, no: int) -> Dict[str, Any]:
     states = shot_states(project_dir, no) if shots_doc.get("shots") else {}
     cdir = cio.chapter_dir(project_dir, no)
     shots = []
+    lookup = _entity_lookup(project_dir)
     for sh in shots_doc.get("shots", []):
+        cast = [lookup["chars"][cid] for cid in sh.get("character_ids") or [] if cid in lookup["chars"]]
+        hint = sh.get("visual_hint_zh") or ""
         shots.append({
             **{k: sh.get(k) for k in ("id", "scene_no", "location_id", "character_ids", "visual_hint_zh",
                                       "visual_hint_en", "duration_sec", "speech_sec", "error", "clip_error",
-                                      "consistency", "prompt_en")},
-            "blocks": sh["blocks"],
+                                      "consistency", "prompt_en", "split_from", "split_part", "split_total")},
+            "characters": cast,
+            "location_name": (lookup["locs"].get(sh.get("location_id")) or {}).get("name"),
+            # 画面描述里提到了某个角色，但出镜角色里没有：视频提示词不会带上他的外观，审核时要留意
+            "missing_mentions": [c["name"] for cid, c in lookup["chars"].items()
+                                 if cid not in (sh.get("character_ids") or [])
+                                 and any(len(n) >= 2 and n in hint for n in c["names"])],
+            "blocks": [{**b, "speaker_label": (lookup["chars"].get(b.get("speaker_id")) or {}).get("name")
+                        or b.get("speaker_name")} for b in sh["blocks"]],
             "state": states.get(sh["id"], "missing"),
             "clip": str((cdir / "clips" / f"{sh['id']}.mp4").relative_to(project_dir))
             if (cdir / "clips" / f"{sh['id']}.mp4").is_file() else None,
@@ -171,6 +207,10 @@ def chapter_view(project_dir: Path, no: int) -> Dict[str, Any]:
         "script_review": _read_yaml(cdir / "script_review.yaml"),
         "speakers": _speakers(project_dir, cdir, shots_doc),
         "shots": shots,
+        # 新规划的镜头自带拆分记录；旧文件没有，则按“相邻镜头场次与画面描述完全相同”推断
+        "plan_warnings": (shots_doc["plan_warnings"] if "plan_warnings" in shots_doc
+                          else _derive_plan_warnings(shots_doc.get("shots") or [])),
+        "all_characters": [{"id": cid, "name": c["name"]} for cid, c in lookup["chars"].items()],
         "output": str(out_path.relative_to(project_dir)) if out_path.is_file() else None,
         "counts": {s: sum(1 for v in states.values() if v == s) for s in
                    ("approved", "pending", "stale", "rejected", "missing", "failed")} if states else {},

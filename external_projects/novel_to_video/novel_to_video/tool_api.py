@@ -263,13 +263,36 @@ def review_shot(project_dir: str, no: int, sid: str, action: str, note: str = ""
 
 
 def edit_shot(project_dir: str, no: int, sid: str, *, visual_hint_en: Optional[str] = None,
-              visual_hint_zh: Optional[str] = None, block_texts: Optional[Dict[int, str]] = None) -> Dict[str, Any]:
+              visual_hint_zh: Optional[str] = None, block_texts: Optional[Dict[int, str]] = None,
+              character_ids: Optional[List[str]] = None) -> Dict[str, Any]:
     try:
         data = sr.edit(Path(project_dir), no, sid, visual_hint_en=visual_hint_en,
-                       visual_hint_zh=visual_hint_zh, block_texts=block_texts)
+                       visual_hint_zh=visual_hint_zh, block_texts=block_texts, character_ids=character_ids)
     except Exception as exc:
         return _fail(str(exc))
     return _ok(data)
+
+
+def replan_shots(project_dir: str, no: int) -> Dict[str, Any]:
+    """丢弃本章当前的镜头规划，下次运行本章时由模型重新规划（C-3/C-4）。
+    已生成的配音与视频、逐镜审核一并清理（按“改分镜”层级），章节与全书成片标记为 stale。
+    剧本与补建角色不动。"""
+    from . import revision as rev
+    pdir = Path(project_dir)
+    try:
+        doc = cio.load_shots(pdir, no)
+        shots = doc.get("shots") or []
+        if not shots:
+            return _fail("本章还没有镜头规划")
+        out = rev.invalidate(pdir, no, shots[0]["id"], "shot_plan")
+        doc = cio.load_shots(pdir, no)
+        doc.pop("plan_warnings", None)
+        cio.save_shots(pdir, no, doc)
+        cio.mark_stage(pdir, no, "shots", "stale", "已请求重新规划镜头")
+        ps.append_progress(pdir, f"第 {no} 章丢弃镜头规划，等待重新规划（{len(shots)} 个镜头）")
+    except Exception as exc:
+        return _fail(f"重新规划失败：{exc}")
+    return _ok({"discarded": len(shots), **out})
 
 
 # ---------------------------------------------------------------- Phase 3：挡位、批量、分级回退

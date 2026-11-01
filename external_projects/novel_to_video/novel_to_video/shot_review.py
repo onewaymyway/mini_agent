@@ -85,7 +85,8 @@ def reject(project_dir: Path, no: int, sid: str, note: str) -> Dict[str, Any]:
 
 
 def edit(project_dir: Path, no: int, sid: str, *, visual_hint_en: str | None = None,
-         visual_hint_zh: str | None = None, block_texts: Dict[int, str] | None = None) -> Dict[str, Any]:
+         visual_hint_zh: str | None = None, block_texts: Dict[int, str] | None = None,
+         character_ids: list | None = None) -> Dict[str, Any]:
     """修改镜头内容。对白必须仍能在剧本中逐字找到。修改后下次运行会自动重算音频/提示词/视频，
     已通过的审核会因 clip_key 变化而变为 stale。"""
     shots = load_shots(project_dir, no)
@@ -109,5 +110,18 @@ def edit(project_dir: Path, no: int, sid: str, *, visual_hint_en: str | None = N
         if b["type"] == "dialogue" and norm(text) not in norm(script):
             raise ValueError(f"对白必须逐字来自剧本：{text[:30]}")
         b["text"] = text
+    if character_ids is not None:
+        from .chapter_io import load_entities
+        known = {c["id"] for c in load_entities(project_dir)["characters"]["characters"]}
+        cast: list = []
+        for cid in character_ids:
+            if cid not in known:
+                raise ValueError(f"角色不存在：{cid}")
+            if cid not in cast:
+                cast.append(cid)
+        speakers = {b["speaker_id"] for b in sh["blocks"] if b.get("speaker_id")}
+        if speakers - set(cast):
+            raise ValueError("有台词的说话人必须保留在出镜角色中：" + "、".join(sorted(speakers - set(cast))))
+        sh["character_ids"] = cast
     save_shots(project_dir, no, shots)
     return {"id": sid, "edited": True}

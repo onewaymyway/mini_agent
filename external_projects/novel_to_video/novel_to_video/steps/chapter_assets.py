@@ -111,13 +111,20 @@ def run_assets(project_dir: Path, no: int, text_llm: TextLLM, image: ImageProvid
                 b["speaker_id"] = by_name[b["speaker_name"]]
                 b["speaker_name"] = None
                 changed = True
-        cast = [b["speaker_id"] for b in sh["blocks"] if b.get("speaker_id")]
+        cast: List[str] = []
+        for b in sh["blocks"]:                       # 同一说话人多句台词只记一次（原先会写成 [A, B, A]）
+            if b.get("speaker_id") and b["speaker_id"] not in cast:
+                cast.append(b["speaker_id"])
         for cid in sh.get("character_ids") or []:
             if cid not in cast:
                 cast.append(cid)
         if sh.get("character_ids") != cast:
             sh["character_ids"] = cast
             changed = True
+    pending = [n for n in shots.get("new_speakers") or [] if n not in by_name]
+    if pending != (shots.get("new_speakers") or []):
+        shots["new_speakers"] = pending
+        changed = True
     if changed:
         save_shots(project_dir, no, shots)
 

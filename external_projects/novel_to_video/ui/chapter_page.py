@@ -119,6 +119,29 @@ def _auto_added_section(pdir: str, no: int, v: dict) -> None:
             st.success("本章的补建角色已全部确认，可以重新运行本章继续。")
 
 
+def _plan_warnings(pdir: str, no: int, v: dict) -> None:
+    """镜头规划的质量提示：模型把一大段口播写成一个镜头，代码只能按时长拆开，拆出的镜头共用同一条画面描述。"""
+    warns = v.get("plan_warnings") or []
+    if not warns:
+        return
+    total = len(v["shots"])
+    split_shots = sum(w["parts"] for w in warns)
+    st.warning(f"镜头规划质量提示：模型给出的 {total - split_shots + len(warns)} 个镜头里，有 {len(warns)} 个口播太长，"
+               f"被代码拆成了 {split_shots} 个镜头；拆出的镜头共用同一条画面描述，生成的视频会很相似。"
+               "可以逐个编辑画面描述，或重新规划本章镜头（提示词已要求每镜头不超过约 10 秒、相邻镜头画面不同）。")
+    with st.expander("查看哪些镜头被拆分"):
+        st.dataframe([{"原始镜头": w["raw_index"], "场次": w["scene_no"], "口播约（秒）": w["seconds"],
+                       "拆成镜头数": w["parts"]} for w in warns], width='stretch', hide_index=True)
+    sure = st.checkbox("我确认丢弃本章当前镜头（及其配音、视频、逐镜审核）并重新规划", key=f"replan_ok_{no}")
+    if st.button("重新规划本章镜头", key=f"replan_{no}", disabled=not sure):
+        res = tool_api.replan_shots(pdir, no)
+        if res["ok"]:
+            st.toast("已丢弃当前镜头规划，请点上方「运行本章流水线」重新规划")
+            st.rerun()
+        else:
+            st.error(res["error"]["message"])
+
+
 def _script_review(v: dict) -> None:
     """C-2 剧本校验结果：状态、字数与问题清单（含对白在原文中找不到的具体行）。"""
     rv = v.get("script_review")
@@ -135,7 +158,25 @@ def _script_review(v: dict) -> None:
                      width='stretch', hide_index=True)
 
 
-def _shot_card(pdir: str, no: int, sh: dict) -> None:
+def _cast_row(pdir: str, sh: dict) -> None:
+    """镜头里的出镜角色：定妆图 + 名字，便于审核视频里的人物对不对。"""
+    cast = sh.get("characters") or []
+    if not cast:
+        st.caption("出镜角色：无（纯环境镜头）")
+    else:
+        cols = st.columns(min(len(cast), 6) or 1)
+        for col, c in zip(cols, cast):
+            with col:
+                p = Path(pdir) / c["asset"] if c.get("asset") else None
+                if p and p.is_file():
+                    st.image(str(p), width=64)
+                st.caption(f"**{c['name']}**")
+    if sh.get("missing_mentions"):
+        st.warning("画面描述里提到了 " + "、".join(sh["missing_mentions"]) +
+                   "，但出镜角色里没有：视频提示词不会带上他的外观与参考图。请在「编辑镜头内容」里补上出镜角色。")
+
+
+def _shot_card(pdir: str, no: int, sh: dict, all_chars: list) -> None:
     root = Path(pdir)
     with st.container(border=True):
         left, right = st.columns([1, 2])
@@ -148,12 +189,15 @@ def _shot_card(pdir: str, no: int, sh: dict) -> None:
                 st.audio(str(root / sh["audio"]))
         with right:
             dur = sh.get("duration_sec")
-            st.markdown(f"**{sh['id']}**　场次 {sh['scene_no']}　地点 {sh.get('location_id') or '-'}"
+            st.markdown(f"**{sh['id']}**　场次 {sh['scene_no']}　地点 {sh.get('location_name') or sh.get('location_id') or '-'}"
                         f"　时长 {dur or '-'} 秒　状态：**{SHOT_LABEL.get(sh['state'], sh['state'])}**")
+            if (sh.get("split_total") or 1) > 1:
+                st.caption(f"由同一个原始镜头拆出（第 {sh['split_part']}/{sh['split_total']} 段），与同组镜头共用画面描述")
+            _cast_row(pdir, sh)
             if sh.get("error") or sh.get("clip_error"):
                 st.error(sh.get("error") or sh.get("clip_error"))
             for b in sh["blocks"]:
-                who = "旁白" if b["type"] == "narration" else (b.get("speaker_id") or b.get("speaker_name") or "?")
+                who = "旁白" if b["type"] == "narration" else (b.get("speaker_label") or b.get("speaker_id") or "?")
                 st.write(f"· **{who}**：{b['text']}")
             st.caption(f"画面：{sh.get('visual_hint_zh') or ''}　|　{sh.get('visual_hint_en') or ''}")
 
@@ -170,6 +214,10 @@ def _shot_card(pdir: str, no: int, sh: dict) -> None:
             with st.expander("编辑镜头内容"):
                 en = st.text_area("画面描述（英文）", value=sh.get("visual_hint_en") or "", key=f"en_{no}_{sh['id']}")
                 zh = st.text_input("画面描述（中文）", value=sh.get("visual_hint_zh") or "", key=f"zh_{no}_{sh['id']}")
+                names = {c["id"]: c["name"] for c in all_chars}
+                cast_ids = st.multiselect("出镜角色（决定视频提示词里的角色外观与参考图）", list(names),
+                                          default=[c for c in (sh.get("character_ids") or []) if c in names],
+                                          format_func=lambda i: f"{names[i]}（{i}）", key=f"cast_{no}_{sh['id']}")
                 texts = {}
                 for b in sh["blocks"]:
                     texts[b["idx"]] = st.text_input(
@@ -179,7 +227,8 @@ def _shot_card(pdir: str, no: int, sh: dict) -> None:
                     changed = {i: t for i, t in texts.items()
                                if t != next(x["text"] for x in sh["blocks"] if x["idx"] == i)}
                     res = tool_api.edit_shot(pdir, no, sh["id"], visual_hint_en=en, visual_hint_zh=zh,
-                                             block_texts=changed or None)
+                                             block_texts=changed or None,
+                                             character_ids=cast_ids if cast_ids != (sh.get("character_ids") or []) else None)
                     if res["ok"]:
                         st.success("已保存。下次运行本章时会自动重算音频、提示词并重新生成视频。")
                     else:
@@ -225,7 +274,8 @@ def page_chapters() -> None:
     render_llm_trace(pdir, chapter=no, key_prefix=f"trace_ch{no}")
     if v["shots"]:
         st.markdown("#### 小场景逐镜审核")
+        _plan_warnings(pdir, no, v)
         for sh in v["shots"]:
-            _shot_card(pdir, no, sh)
+            _shot_card(pdir, no, sh, v.get("all_characters") or [])
     else:
         st.caption("还没有镜头规划，先运行本章流水线。")

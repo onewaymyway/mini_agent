@@ -77,8 +77,16 @@ def read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+class _NoAliasDumper(yaml.SafeDumper):
+    """同一个列表对象被多处引用时，PyYAML 默认写成 &id001 / *id001 锚点与别名，肉眼看像是“内容重复”，
+    手工编辑一处还会影响其他处。这里关闭别名，每处都完整展开。"""
+
+    def ignore_aliases(self, data: Any) -> bool:
+        return True
+
+
 def write_yaml_atomic(path: Path, data: Any) -> None:
-    _write_atomic(path, yaml.safe_dump(data, allow_unicode=True, sort_keys=False))
+    _write_atomic(path, yaml.dump(data, Dumper=_NoAliasDumper, allow_unicode=True, sort_keys=False))
 
 
 def read_yaml(path: Path) -> Any:

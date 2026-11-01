@@ -10,6 +10,7 @@ LLM 给出镜头与口播块；代码负责：
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 import re
@@ -22,8 +23,8 @@ from .. import prompts
 from ..chapter_io import (MAX_BLOCK_CHARS, SHOT_PLAN_SEC, chapter_dir, load_entities, load_shots,
                           mark_stage, norm, save_shots, sha12)
 from ..providers.text import TextLLM
-from ..providers.tts import estimate_seconds
-from .chapter_script import parse_script
+from ..providers.tts import CHARS_PER_SEC, estimate_seconds
+from .chapter_script import parse_script, spoken_chars
 from .global_visual import StepError, parse_json_object
 
 _SPLIT = re.compile(r"(?<=[。！？；!?;，,])")
@@ -64,12 +65,12 @@ def _group_into_shots(blocks: List[Dict[str, Any]], base: Dict[str, Any]) -> Lis
     for b in blocks:
         sec = _block_seconds(b)
         if cur and cur_sec + sec > SHOT_PLAN_SEC:
-            shots.append({**base, "blocks": cur})
+            shots.append({**copy.deepcopy(base), "blocks": cur})   # 各镜头独立副本，避免共享列表对象
             cur, cur_sec = [], 0.0
         cur.append(b)
         cur_sec += sec
     if cur:
-        shots.append({**base, "blocks": cur})
+        shots.append({**copy.deepcopy(base), "blocks": cur})
     return shots
 
 
@@ -86,7 +87,8 @@ def validate_and_build(raw_shots: List[Dict[str, Any]], script: str, locations: 
     shots: List[Dict[str, Any]] = []
     scenes: Dict[int, Dict[str, Any]] = {}
 
-    for rs in raw_shots:
+    plan_warnings: List[Dict[str, Any]] = []
+    for raw_idx, rs in enumerate(raw_shots, start=1):
         scene_no = int(rs.get("scene_no") or 1)
         loc = rs.get("location_id")
         if loc not in loc_ids:
@@ -128,7 +130,14 @@ def validate_and_build(raw_shots: List[Dict[str, Any]], script: str, locations: 
                 "visual_hint_zh": str(rs.get("visual_hint_zh") or "").strip(),
                 "visual_hint_en": str(rs.get("visual_hint_en") or "").strip() or "cinematic medium shot, no text"}
         scenes.setdefault(scene_no, {"scene_no": scene_no, "location_id": loc})
-        shots.extend(_group_into_shots(blocks, base))
+        parts = _group_into_shots(blocks, base)
+        for k, part in enumerate(parts, start=1):
+            part["split_from"], part["split_part"], part["split_total"] = raw_idx, k, len(parts)
+        if len(parts) > 1:
+            # 模型把一大段口播写成一个镜头，代码只能按时长拆开，这些镜头共用同一条画面描述
+            plan_warnings.append({"raw_index": raw_idx, "scene_no": scene_no, "parts": len(parts),
+                                  "seconds": round(sum(_block_seconds(b) for b in blocks), 1)})
+        shots.extend(parts)
 
     for i, sh in enumerate(shots, start=1):
         sh["id"] = f"s{i:02d}"
@@ -146,6 +155,7 @@ def validate_and_build(raw_shots: List[Dict[str, Any]], script: str, locations: 
         "scenes": list(scenes.values()),
         "shots": shots,
         "new_speakers": new_speakers,
+        "plan_warnings": plan_warnings,
     }
 
 
@@ -177,7 +187,11 @@ def run_shots(project_dir: Path, no: int, text_llm: TextLLM, *, force: bool = Fa
     locations = ents["locations"]["locations"]
     label = f"第 {no} 章 C-3 调用文本模型规划镜头（剧本 {len(script)} 字）"
     with joblog.timed(project_dir, "chapter", label):
-        raw = llm_trace.ask_traced(project_dir, text_llm, prompts.shots_prompt(script, characters, locations),
+        per_shot = int(SHOT_PLAN_SEC * CHARS_PER_SEC * 0.9)
+        expected = max(1, math.ceil(spoken_chars(script) / per_shot))
+        raw = llm_trace.ask_traced(project_dir, text_llm,
+                                   prompts.shots_prompt(script, characters, locations,
+                                                        max_chars_per_shot=per_shot, expected_shots=expected),
                                    system=prompts.SYSTEM_VISUAL, scope="chapter", label=label,
                                    step="C-3", chapter=no)
     obj = parse_json_object(raw)
