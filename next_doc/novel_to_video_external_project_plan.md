@@ -967,3 +967,14 @@ Phase 2 是风险最高的一期（涉及外部视频 API、一致性核查、�
 - 接口 `set_script_retries` / `set_shots_retries` 的允许范围同为 0–5。
 
 实现：`steps/global_visual.py`（`parse_json_object`、`_repair_json`）、`project_store.py`、`tool_api.py`、`ui/gear_page.py`、`ui/import_page.py`。测试：`tests/test_json_repair_and_retries.py`。
+
+## 失败必须带阶段与原因
+
+- 章节运行的任何失败都记录“阶段 + 原因”，阶段名见 `chapter_pipeline.STAGE_NAMES`（如“C-5 补建角色：…”）。
+- 之前未预期的异常（不在已知异常列表内，如 TypeError）会被 `tool_api` 包装成“章节 N 运行异常”，阶段不标记失败，章节日志也没有原因，队列只显示 `failed`。现在：
+  - `chapter_pipeline.run_chapter` 捕获所有异常：阶段标记为 failed，原因写入阶段状态，章节日志记录异常类型、信息与堆栈末尾 12 行（级别 error）。
+  - `tool_api.run_chapter` 的兜底异常也写入章节日志，不再只返回。
+  - 队列的“第 N 章结束”行带上原因：`队列：第 N 章结束 → failed：<阶段>：<原因>`。
+- 测试：`tests/test_failure_reasons.py`。
+
+实现：`chapter_pipeline.py`（`STAGE_NAMES`、`run_chapter` 的异常分支）、`tool_api.py`（`run_chapter`）、`batch.py`（队列结束行）。

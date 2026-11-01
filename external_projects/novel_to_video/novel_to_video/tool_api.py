@@ -215,7 +215,11 @@ def run_chapter(project_dir: str, no: int, *, force_script: bool = False) -> Dic
         res = cp.run_chapter(pdir, no, text_llm=prov["text"], image=prov["image"],
                              video=prov["video"], tts=prov["tts"], force_script=force_script)
     except Exception as exc:
-        return _fail(f"章节 {no} 运行异常：{exc}")
+        import traceback
+        from . import joblog as _jl
+        msg = f"章节 {no} 运行异常：{type(exc).__name__}：{exc}"
+        _jl.log(pdir, "chapter", msg + "\n" + "\n".join(traceback.format_exc().strip().splitlines()[-12:]), level="error")
+        return _fail(msg)
     return _ok(res)
 
 

@@ -110,8 +110,25 @@ def run_chapter(project_dir: Path, no: int, *, text_llm: TextLLM, image: ImagePr
         return stop("done", f"章节视频已生成（{comp['duration']} 秒）", output=comp["output"],
                     duration=comp["duration"])
     except (StepError, ProviderError, MediaError, RuntimeError, ValueError, KeyError) as exc:
-        cio.mark_stage(project_dir, no, _current_stage(project_dir, no), "failed", str(exc))
-        return stop("failed", str(exc))
+        stage = _current_stage(project_dir, no)
+        msg = f"{STAGE_NAMES.get(stage, stage)}：{exc}"
+        cio.mark_stage(project_dir, no, stage, "failed", msg)
+        return stop("failed", msg)
+    except Exception as exc:  # noqa: BLE001 - 未预期的异常也必须带阶段与原因，不能静默失败
+        import traceback
+        stage = _current_stage(project_dir, no)
+        msg = f"{STAGE_NAMES.get(stage, stage)}：未预期的错误 {type(exc).__name__}：{exc}"
+        cio.mark_stage(project_dir, no, stage, "failed", msg)
+        tb = traceback.format_exc().strip().splitlines()
+        joblog.log(project_dir, "chapter", f"第 {no} 章 {msg}\n" + "\n".join(tb[-12:]), level="error")
+        return stop("failed", msg)
+
+
+STAGE_NAMES = {
+    "script": "C-1/C-2 剧本", "shots": "C-3/C-4 镜头规划", "assets": "C-5 补建角色",
+    "audio": "C-6 配音", "prompts": "C-7 提示词", "clips": "C-8 小场景视频",
+    "compose": "C-9 章节合成",
+}
 
 
 def _current_stage(project_dir: Path, no: int) -> str:
