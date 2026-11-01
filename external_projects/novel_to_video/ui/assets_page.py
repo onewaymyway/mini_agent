@@ -109,6 +109,14 @@ def _gallery(pdir: str, status: dict) -> None:
                     st.rerun()
 
 
+def _vkey(prefix: str, rkey: str, value) -> str:
+    """控件 key 包含存储值的指纹。Streamlit 会保留同一 key 的控件状态，忽略新的 value=；
+    值变化时换一个 key，控件才会以最新内容重新创建（否则刷新前会一直显示旧值）。"""
+    import hashlib
+    fp = hashlib.md5(str(value if value is not None else "").encode("utf-8")).hexdigest()[:8]
+    return f"{prefix}_{rkey}_{fp}"
+
+
 def _entity_detail(pdir: str, r: dict) -> None:
     info = ps.read_json(Path(pdir) / "global" / ("characters.json" if r["kind"] == "character"
                                                  else "locations.json"))
@@ -116,15 +124,15 @@ def _entity_detail(pdir: str, r: dict) -> None:
                 if e["id"] == r["id"]), {})
     with st.expander("查看与编辑设定"):
         anchor = st.text_area("visual_anchor_en（定妆图提示核心）", value=ent.get("visual_anchor_en") or "",
-                              key=f"anc_{r['key']}")
+                              key=_vkey("anc", r["key"], ent.get("visual_anchor_en")))
         fields = {"visual_anchor_en": anchor}
         if r["kind"] == "character":
             voice = st.text_input("voice_profile（配音音色设定）", value=ent.get("voice_profile") or "",
-                                  key=f"voi_{r['key']}")
+                                  key=_vkey("voi", r["key"], ent.get("voice_profile")))
             gender = st.selectbox("性别", ["", "male", "female", "unknown"],
                                   index=["", "male", "female", "unknown"].index(ent.get("gender") or "")
                                   if (ent.get("gender") or "") in ("", "male", "female", "unknown") else 0,
-                                  key=f"gen_{r['key']}")
+                                  key=_vkey("gen", r["key"], ent.get("gender")))
             fields.update(voice_profile=voice, gender=gender or None)
         src = {k: ent.get(f"{k}_source") for k in ("visual_anchor", "voice_profile", "gender")
                if ent.get(f"{k}_source")}

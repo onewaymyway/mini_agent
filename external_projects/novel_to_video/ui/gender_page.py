@@ -54,12 +54,14 @@ def page_gender() -> None:
                     st.markdown(f"- {KIND_LABEL.get(e['kind'], e['kind'])} · {e['where']}：{e['quote']}")
             else:
                 st.caption("没有检索到含该角色名的句子。")
+            # key 含已确认的选择：确认后换 key，单选框才会显示新的选择
+            shown = decided["choice"] if decided else "none"
             choice = st.radio("选择性别", ["male", "female", "unknown"],
                               format_func=lambda k: CHOICE_LABEL[k],
                               index=["male", "female", "unknown"].index(decided["choice"]) if decided else 2,
-                              horizontal=True, key=f"gen_{cid}")
-            note = st.text_input("确认依据（可选）", key=f"gen_note_{cid}")
-            if st.button("确认", key=f"gen_ok_{cid}"):
+                              horizontal=True, key=f"gen_{cid}_{shown}")
+            note = st.text_input("确认依据（可选）", key=f"gen_note_{cid}_{shown}")
+            if st.button("确认", key=f"gen_ok_{cid}_{shown}"):
                 try:
                     gender_review.confirm(p, cid, choice, note=note)
                     st.rerun()
