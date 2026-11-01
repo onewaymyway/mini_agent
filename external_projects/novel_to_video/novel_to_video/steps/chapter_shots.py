@@ -169,8 +169,8 @@ def strategy_block_limit(project_dir: Path, no: int) -> int:
     return MAX_BLOCK_CHARS
 
 
-def _closest_script_line(text: str, script_lines: List[Dict[str, str]]) -> str:
-    """剧本对白行里与 text 最接近的一句，用于告诉模型“应该照抄哪里”。找不到像样的返回空串。"""
+def _closest_script_line_obj(text: str, script_lines: List[Dict[str, str]]) -> Dict[str, str] | None:
+    """剧本对白行里与 text 最接近的一行（dict: speaker/text），找不到像样的返回 None。"""
     from difflib import SequenceMatcher
     nt = norm(text)
     best, best_score = None, 0.0
@@ -183,14 +183,35 @@ def _closest_script_line(text: str, script_lines: List[Dict[str, str]]) -> str:
         if score > best_score:
             best, best_score = ln, score
     if best is None or best_score < 0.4:
-        return ""
-    return f"{best['speaker']}：{best['text']}"
+        return None
+    return best
+
+
+def _closest_script_line(text: str, script_lines: List[Dict[str, str]]) -> str:
+    """剧本对白行里与 text 最接近的一句，用于告诉模型“应该照抄哪里”。找不到像样的返回空串。"""
+    best = _closest_script_line_obj(text, script_lines)
+    return f"{best['speaker']}：{best['text']}" if best else ""
+
+
+def _speaker_hint(script_speaker: str, characters: List[Dict[str, Any]]) -> str:
+    """把剧本里的说话人名字翻译成模型能直接照做的修正指令（给出角色库 id 或 speaker_name）。"""
+    if not script_speaker:
+        return "请在 speaker_id 中从角色库选择说话人，或把 speaker_id 置 null 并填 speaker_name"
+    for c in characters:
+        names = c.get("names") or [c.get("name")]
+        if script_speaker in names:
+            return f"剧本里的说话人是“{script_speaker}”，角色库中对应的 id 为 {c['id']}，请设置 speaker_id=\"{c['id']}\""
+    known = "、".join(f"{c['id']}（{c.get('name', '')}）" for c in characters[:30]) or "（角色库为空）"
+    return (f"剧本里的说话人是“{script_speaker}”，角色库中没有这个名字。若它其实是角色库中的某个人，"
+            f"请从下列 id 中选择并设置 speaker_id；否则把 speaker_id 置 null，并设置 speaker_name=\"{script_speaker}\"。"
+            f"角色库：{known}")
 
 
 def collect_shot_issues(raw_shots: List[Dict[str, Any]], script: str,
                         characters: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     """一次性找出镜头规划里的全部问题（而不是遇到第一个就停），用于把完整问题清单反馈给模型自动修正。
-    检查项与 validate_and_build 一致：口播块合法、对白是剧本中的连续原文、对白有说话人。"""
+    检查项与 validate_and_build 一致：口播块合法、对白是剧本中的连续原文、对白有说话人。
+    每条 message 都写明：位置、出错的原文、剧本里对应的原句与说话人、以及具体怎么改。"""
     issues: List[Dict[str, str]] = []
     if not raw_shots:
         return [{"message": "没有返回任何镜头（shots 为空）"}]
@@ -207,16 +228,27 @@ def collect_shot_issues(raw_shots: List[Dict[str, Any]], script: str,
             btype = rb.get("type")
             text = str(rb.get("text") or "").strip()
             if btype not in ("narration", "dialogue") or not text:
-                issues.append({"message": f"{where}非法：type 只能是 narration 或 dialogue，text 不能为空（当前 type={btype}）"})
+                issues.append({"message": f"{where}非法：type 只能是 narration 或 dialogue，text 不能为空（当前 type={btype}）。"
+                                          f"请改为 narration 或 dialogue，并填入非空的 text。"})
                 continue
             if btype != "dialogue":
                 continue
             if norm(text) not in script_norm:
-                near = _closest_script_line(text, script_lines)
-                hint = f"；剧本里最接近的原句是“{near}”" if near else ""
-                issues.append({"message": f"{where}的对白“{text[:60]}”不是剧本中的连续原文{hint}"})
-            elif rb.get("speaker_id") not in char_by_id and not str(rb.get("speaker_name") or "").strip():
-                issues.append({"message": f"{where}的对白“{text[:30]}”缺少说话人（speaker_id 不在角色库中且没有 speaker_name）"})
+                near = _closest_script_line_obj(text, script_lines)
+                if near:
+                    hint = (f"剧本里最接近的原句是“{near['speaker']}：{near['text']}”。"
+                            f"请从这一行中截取一段连续原文作为 text，不要删字、改字或拼接不相邻的句子；"
+                            f"原句太长时拆成多个镜头，各取一段。")
+                else:
+                    hint = "剧本中找不到相近的对白行。请改为 narration，或只使用剧本对白行中的原文。"
+                issues.append({"message": f"{where}的对白“{text[:60]}”不是剧本中的连续原文。{hint}"})
+                continue
+            if rb.get("speaker_id") in char_by_id or str(rb.get("speaker_name") or "").strip():
+                continue
+            near = _closest_script_line_obj(text, script_lines)
+            script_speaker = near["speaker"] if near else ""
+            issues.append({"message": f"{where}的对白“{text[:30]}”缺少说话人（speaker_id 不在角色库中且没有 speaker_name）。"
+                                      + _speaker_hint(script_speaker, characters)})
     return issues
 
 
