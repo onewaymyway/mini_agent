@@ -268,3 +268,101 @@ def edit_shot(project_dir: str, no: int, sid: str, *, visual_hint_en: Optional[s
     except Exception as exc:
         return _fail(str(exc))
     return _ok(data)
+
+
+# ---------------------------------------------------------------- Phase 3：挡位、批量、分级回退
+
+from . import gates as _gates
+from . import batch as _batch
+from . import revision as _rev
+
+
+def set_gear(project_dir: str, gear: str, budget: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """设置挡位与预算。G3 必须同时给出三项预算上限，否则拒绝保存。"""
+    pdir = Path(project_dir)
+    try:
+        g = _gates.normalize_gear(gear)
+        proj = ps.read_json(pdir / "project.json")
+        new_budget = {**(proj.get("budget") or {}), **(budget or {})}
+        _gates.validate_budget(new_budget, g)
+    except (_gates.GateError, OSError, ValueError) as exc:
+        return _fail(str(exc))
+    proj["gear"] = g
+    proj["budget"] = new_budget
+    ps.write_json_atomic(pdir / "project.json", proj)
+    ps.append_progress(pdir, f"挡位设为 {g}，预算 {new_budget}")
+    return _ok({"gear": g, "budget": new_budget})
+
+
+def gear_policy() -> Dict[str, Any]:
+    return _ok({"gears": list(_gates.GEARS), "table": _gates.policy_table(),
+                "always_manual": list(_gates.ALWAYS_MANUAL)})
+
+
+def run_queue(project_dir: str, numbers: Optional[List[int]] = None, *,
+              gear: Optional[str] = None) -> Dict[str, Any]:
+    """按挡位批量运行选中章节。某章停止不影响其他章；预算超限则整批停止。"""
+    pdir = Path(project_dir)
+    try:
+        proj = ps.read_json(pdir / "project.json")
+        g = _gates.normalize_gear(gear or proj.get("gear"))
+        rows = ps.load_project(pdir)["chapters"]
+    except Exception as exc:
+        return _fail(f"读取项目失败：{exc}")
+    targets = [r["no"] for r in rows if r.get("selected")] if numbers is None else numbers
+    if not targets:
+        return _fail("没有选中的章节")
+
+    def run_one(no: int) -> Dict[str, Any]:
+        r = run_chapter(project_dir, no)
+        return r["data"] if r["ok"] else {"status": "failed", "message": r["error"]["message"]}
+
+    try:
+        out = _batch.run_queue(pdir, targets, gear=g, run_one=run_one)
+    except _gates.GateError as exc:
+        return _fail(str(exc))
+    return _ok(out)
+
+
+def invalidate_shot(project_dir: str, no: int, sid: str, level: str) -> Dict[str, Any]:
+    try:
+        data = _rev.invalidate(Path(project_dir), no, sid, level)
+    except Exception as exc:
+        return _fail(str(exc))
+    ps.append_progress(Path(project_dir), f"第 {no} 章 {sid} 修改（层级 {level}）：清理 {data['removed']}")
+    return _ok(data)
+
+
+def final_status(project_dir: str) -> Dict[str, Any]:
+    pdir = Path(project_dir)
+    try:
+        rows = ps.load_project(pdir)["chapters"]
+    except Exception as exc:
+        return _fail(str(exc))
+    selected = [r for r in rows if r.get("selected")]
+    done = [r["no"] for r in selected if r.get("status") == "done"]
+    stale = [r["no"] for r in selected if r.get("status") == "stale"]
+    pending = [r["no"] for r in selected if r["no"] not in done]
+    return _ok({"selected": [r["no"] for r in selected], "done": done, "stale": stale,
+                "pending": pending, "final_stale": _rev.final_is_stale(pdir),
+                "ready": bool(selected) and not pending and not stale})
+
+
+def auto_added_queue(project_dir: str) -> Dict[str, Any]:
+    """补建审核页数据：所有 source=auto_added 的角色及其审核状态。"""
+    pdir = Path(project_dir)
+    try:
+        chars = ps.read_json(pdir / "global" / "characters.json")["characters"]
+        review = ps.read_json(pdir / "global" / "review.json") if (pdir / "global" / "review.json").is_file() else {"items": {}}
+    except Exception as exc:
+        return _fail(str(exc))
+    rows = []
+    for c in chars:
+        if c.get("source") != "auto_added":
+            continue
+        item = review.get("items", {}).get(f"character:{c['id']}", {})
+        rows.append({"id": c["id"], "name": (c.get("names") or [""])[0], "chapter": c.get("auto_added_chapter"),
+                     "description_zh": c.get("description_zh"), "visual_anchor_en": c.get("visual_anchor_en"),
+                     "voice_profile": c.get("voice_profile"), "text_status": item.get("text_status", "missing"),
+                     "portrait_status": item.get("portrait_status", "missing")})
+    return _ok(rows)

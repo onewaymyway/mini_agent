@@ -20,17 +20,17 @@
 | Phase 0 脚手架与导入 | **已完成（2026-11-01）** | 只读导入 novel_writer 导出目录（章节/角色/地点/问题清单/指纹）；原子写入的项目目录创建；章节范围选择；dry-run 检查；项目列表与导出变更检测；Streamlit 导入页与项目页；入口 `import_novel` / `list_projects` / `health`；测试 40 项通过 |
 | Phase 1 全书级素材 | **已完成（2026-11-01，离线 stub 验证；真实 API 待本机 key 冒烟）** | G-2 视觉锚点/声音设定/缺失性别补全（逐实体、可断点续跑）；G-3 定妆图生成（Agnes 生图，多 key 池）；逐条审核、驳回重生成、人工编辑（改视觉字段自动标记定妆图过期）；全部通过后 `ready` 门禁；调用留痕 |
 | Phase 2 单章端到端 | **已完成（2026-11-01，离线 stub 全流程验证；真实视频/TTS/文本模型待本机冒烟）** | C-1…C-9：剧本压缩与校验、镜头规划、补建角色门禁、配音、提示词与机械一致性、小场景视频、逐镜审核、章节合成；可重入流水线与停止点 |
-| Phase 3 多章循环与挡位 | 未开始 | 章节排队、G0–G3 挡位、预算、修改分级回退与 stale 传播 |
+| Phase 3 多章循环与挡位 | **已完成（2026-11-01，离线 stub 验证）** | 章节队列（单章停止不影响其他章）；G0–G3 挡位与检查点策略；G3 预算必填与超限停止；修改四级回退（clip_only / prompt / dialogue / shot_plan）与章节/全书 stale 传播；补建审核页；测试 106 项通过 |
 | Phase 4 全书合成与收尾 | 未开始 | F-1 至 F-4：章节检查、封面、全书拼接、成片校验、G4/G5 |
 | Phase 5 加固 | 未开始 | 桩全链路测试、真实 API 冒烟、崩溃恢复与 key 切换演练 |
 
-## 当前能力（Phase 0–2）
+## 当前能力（Phase 0–3）
 
 - `source_import.py`：读取导出目录，产出章节清单（章号、章名、字数、总结文件）、角色库（映射自 `设定/人物/角色/char_*.md`，补充人设卡「外在呈现」）、地点库（映射自 `设定/世界观/地点详情/*.md`）、问题清单（error / warning / info）与目录指纹。**不写任何文件。**
 - `project_store.py`：项目目录 `<书名>_<时间戳>`，原子写入 JSON/YAML，章节范围解析（`all`、`1-10`、`20-`、`3,7,9-12`），PROGRESS.md 只追加。
 - `tool_api.py`：UI/CLI/daemon 统一接口，返回 `{ok, data, error}`。
-- 入口：`entrypoints/import_novel.py`、`list_projects.py`、`health.py`、`build_assets.py`。
-- 界面：`streamlit run app.py`，导入页（检查 → 确认报告 → 创建）、项目页（章节表、导出变更提示、进度日志）、全书素材页（G-2/G-3 执行、画廊审核、字段编辑）。
+- 入口：`entrypoints/import_novel.py`、`list_projects.py`、`health.py`、`build_assets.py`、`run_chapter.py`、`run_queue.py`。
+- 界面：`streamlit run app.py`，导入页（检查 → 确认报告 → 创建）、项目页（章节表、导出变更提示、进度日志）、全书素材页（G-2/G-3 执行、画廊审核、字段编辑）、章节生产页、挡位与队列页、补建角色审核页。
 - Phase 1 新增：
   - `providers/keypool.py`：多 key 池，遇 429 冷却并切 key，400/401/403/404/422 不重试；key 只从环境变量 `AGNES_API_KEYS` / `AGNES_API_KEY` 读取。
   - `providers/image.py`：Agnes 生图（b64 返回）与离线 `StubImageProvider`。
@@ -51,6 +51,12 @@
   - `providers/video.py`：Agnes 视频接口（create → poll → download，多 key 池）与 `StubVideoProvider`（ffmpeg 静帧推近）。
   - `providers/tts.py`：`EdgeTTS`（需安装 edge-tts）与 `SilenceTTS`（按字数估算时长的静音，离线用）。
 
+- Phase 3 新增：
+  - `gates.py`：G0–G3 检查点策略表；`final_compose` 在任何挡位都为手动；G3 必须同时设置视频/图像调用上限与耗时上限。
+  - `batch.py`：多章队列。每章前检查预算，超限则停止后续章节并返回原因；G3 下对机械合格的镜头自动通过，记入 review.json（`auto: true`）与 PROGRESS.md。
+  - `revision.py`：修改回退四级（仅重生视频 / 改提示词 / 改台词 / 改分镜）。只清理目标镜头（改分镜则截断其后的镜头）；章节成片与全书成片标记为 stale，不删除文件；其他章节的文件与状态保持不变。
+  - `tool_api.py`：`set_gear`、`gear_policy`、`run_queue`、`invalidate_shot`、`final_status`、`auto_added_queue`。
+
 ## 已知限制
 
 - **Phase 2 只做了离线 stub 验证**：Agnes 视频接口、edge-tts、真实文本模型均未在真实环境下调用。接口结构依据 gen_video_with_text skill 与 edge-tts 文档实现，需本机冒烟后确认。
@@ -60,7 +66,9 @@
 - **镜头规划由模型一次给出**：超长或时长不合适的镜头只能人工编辑后重跑，尚未自动回到规划阶段重新拆分。
 - **CosyVoice 未接入**：TTS 目前为 edge-tts 与静音两种。
 - **章节成片的音画时长以镜头为准**：镜头 4–12 秒取整，章节总时长可能比目标多出几秒（实测 90 秒目标得到 98 秒）。
-- **修改回退只到镜头级**：驳回、编辑会正确失效下游，但没有实现 Phase 3 的分级回退（如“改分镜”自动清空整章后续）。
+- **修改回退的“改分镜”是截断式**：删除目标镜头及其后的镜头记录并交由 C-4 重新规划，不保留前半段并重排编号。
+- **G2 的章节间推进由调用方驱动**：`run_queue` 一次运行后返回，没有后台循环；后台 worker 留给 Phase 5。
+- **预算耗时只计队列运行时间**：不含界面等待与人工确认的时间。
 - **导出包没有性别字段**：21 个角色的 `gender` 全部为 null。G-2 的真实文本模型会从资料推断并标记 `gender_source`；离线 `rules` 模式不推断，角色会保持“缺失性别”，无法通过 ready 门禁，需人工在界面补全。
 - **真实 API 未验证**：Phase 1 在沙箱中只跑了 stub（离线图像占位 + 规则文本）与单元测试；Agnes 生图的请求/响应结构按 gen_image_with_text skill 实现，但未在真实 key 下调用，需本机冒烟（建议先用 `--ids char_001` 生成一张）。
 - **G-2 产出需人工审核**：LLM 生成的 visual_anchor_en 与 voice_profile 可能与资料不符（如臆造服饰），必须逐条查看后再通过。
@@ -71,6 +79,7 @@
 - **年龄段阈值**为经验值：<13 child，<18 teen，<35 youth，<60 middle_aged，其余 elderly。
 - 章节目录统一三位补零（`chapters/001/`），与 `设计方案` 中的 `NN` 有偏差，原因见设计文档第 14 节。
 - 目前没有文件锁，同一项目只应由一个进程写入（界面与 CLI 同时写同一项目未做保护）。
+- 同名函数 `run_chapter`：`tool_api.py` 中 Phase 2 的单章入口与 Phase 3 的队列共用该名称（队列调用的是 Phase 2 版本），后续若拆分请统一。
 
 ## 目录约定
 
@@ -95,6 +104,6 @@ novel_output/                       # 项目数据（默认位置，已加入 .g
     │   ├── review.json             # 小场景审核记录
     │   ├── state.json              # 各阶段状态
     │   └── chapter_001.mp4         # C-9 章节成片
-    ├── exports/                    # 全书成片（Phase 4 起）
-    └── logs/                       # api_calls.jsonl 外部调用留痕（不含 key）
+    ├── exports/                    # 全书成片（Phase 4 起）；stale.json 存在时表示需重新合成
+    └── logs/                       # api_calls.jsonl 外部调用留痕；batch_runs.json 累计耗时
 ```
