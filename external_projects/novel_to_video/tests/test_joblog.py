@@ -181,3 +181,39 @@ def test_final_and_gender_pages_render_log_panels(proj):
     at.text_input(key="gen_root").input(str(proj.parent)).run()
     assert not at.exception
     assert any("性别检索日志" in m.value for m in at.markdown)
+
+
+# ---------------------------------------------------------------- G-3 运行信息进入界面日志
+
+def test_g3_background_shows_skill_messages_in_job_log(proj, monkeypatch, capsys):
+    """回归：G-3 的 skill 输出（原先只打印到命令行）必须写入任务日志，界面可见；命令行输出仍保留。"""
+    import requests
+    from novel_to_video.providers import skill_bridge
+
+    monkeypatch.delenv("NOVEL_TO_VIDEO_PROVIDERS", raising=False)  # 使用真实 provider 路径（经 skill）
+    monkeypatch.setenv("AGNES_API_KEYS", "k1")
+    skill_bridge._CACHE.clear()
+
+    class Resp:
+        status_code = 401
+        text = "invalid api key"
+        ok = False
+
+        def json(self):
+            return {"error": "invalid api key"}
+
+    monkeypatch.setattr(requests.Session, "post", lambda self, url, **kw: Resp())
+    gv.visual_text_pass(proj, RuleTextLLM())
+
+    r = tool_api.start_portraits_background(str(proj))
+    assert r["ok"], r
+    st = _wait(proj)
+    assert st["state"] in ("done", "stopped")
+
+    msgs = [x["message"] for x in joblog.tail(proj, scopes=["assets"])]
+    assert any(m.startswith("图像接口请求") for m in msgs), msgs
+    assert any("不可重试错误" in m for m in msgs), msgs
+    assert any(m.startswith("G-3 失败") for m in msgs), msgs
+    # 命令行输出仍然保留
+    assert "不可重试错误" in capsys.readouterr().out
+    skill_bridge._CACHE.clear()

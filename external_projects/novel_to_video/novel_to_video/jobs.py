@@ -69,7 +69,8 @@ def start(project_dir: Path, *, name: str, label: str, scope: str,
     def worker() -> None:
         final: Dict[str, Any] = {"state": "failed"}
         try:
-            result = fn()
+            with joblog.bind(project_dir, scope):  # skill 输出与子步骤日志写入本任务
+                result = fn()
             summary = _summarize(result)
             final = {"state": "done", "summary": summary}
             if result.get("stopped"):

@@ -56,3 +56,79 @@ def format_row(row: Dict[str, Any]) -> str:
     mark = {"info": "  ", "ok": "✔ ", "warn": "⚠ ", "error": "✘ "}.get(row.get("level"), "  ")
     ts = str(row.get("ts", ""))[11:19]
     return f"{ts} {mark}{row.get('message', '')}"
+
+
+# ---------------------------------------------------------------- 线程绑定与输出转发
+#
+# 后台任务在线程中运行，而 skill 客户端通过 print 输出重试、失败、轮询等过程信息。
+# 这里把“当前线程绑定的项目与 scope”记在线程本地变量中，并把标准输出按行转发到日志，
+# 同时保留原有的命令行输出。未绑定的线程不受影响。
+
+import contextlib
+import io
+import sys
+
+_TLS = threading.local()
+_MSG_LIMIT = 400
+
+
+@contextlib.contextmanager
+def bind(project_dir: Path, scope: str):
+    prev = getattr(_TLS, "ctx", None)
+    _TLS.ctx = (Path(project_dir), scope)
+    try:
+        yield
+    finally:
+        _TLS.ctx = prev
+
+
+def infer_level(message: str) -> str:
+    if "不可重试" in message:
+        return "warn"
+    if any(k in message for k in ("失败", "异常", "错误", "error", "Error")):
+        return "error"
+    if any(k in message for k in ("完成", "成功", "通过")):
+        return "ok"
+    return "info"
+
+
+def bound_log(message: str, level: Optional[str] = None) -> None:
+    """写入当前线程绑定的项目与 scope；未绑定时什么也不做。"""
+    ctx = getattr(_TLS, "ctx", None)
+    if not ctx:
+        return
+    log(ctx[0], ctx[1], message, level=level or infer_level(message))
+
+
+class _ConsoleTee(io.TextIOBase):
+    """同时写入原始控制台与日志（按行）。"""
+
+    def __init__(self, original):
+        self._original = original
+        self._pending = ""
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, s: str) -> int:
+        try:
+            self._original.write(s)
+        except Exception:
+            pass
+        self._pending += s
+        while "\n" in self._pending:
+            line, self._pending = self._pending.split("\n", 1)
+            text = line.strip()
+            if text:
+                bound_log(text[:_MSG_LIMIT])
+        return len(s)
+
+    def flush(self) -> None:
+        try:
+            self._original.flush()
+        except Exception:
+            pass
+
+
+def console_tee() -> _ConsoleTee:
+    return _ConsoleTee(sys.stdout)

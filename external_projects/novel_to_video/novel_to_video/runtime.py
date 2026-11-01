@@ -89,7 +89,9 @@ def start_background(project_dir: Path, numbers: List[int], gear: str,
     def worker() -> None:
         final: Dict[str, Any] = {"state": "failed", "phase": "finished", "chapter": None}
         try:
-            res = run_fn()
+            from . import joblog
+            with joblog.bind(project_dir, "chapter"):  # 章节运行中 skill 的输出写入章节日志
+                res = run_fn()
             if res.get("ok"):
                 data = res["data"]
                 results = {str(k): v.get("status") for k, v in data.get("results", {}).items()}

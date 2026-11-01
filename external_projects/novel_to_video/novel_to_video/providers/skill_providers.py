@@ -6,8 +6,12 @@
 
 from __future__ import annotations
 
+import contextlib
+import time
 from pathlib import Path
 from typing import List, Optional
+
+from .. import joblog
 
 from .image import ImageProvider, ImageResult
 from .skill_bridge import build_pool, modules
@@ -41,11 +45,17 @@ class SkillImageProvider(ImageProvider):
                  size: str = "1024x1024") -> ImageResult:
         save_path = Path(save_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
+        tier = _image_tier(size)
+        joblog.bound_log(f"图像接口请求：档位 {tier}，比例 {ratio or '默认'}，模型 {self.client.model}")
+        t0 = time.monotonic()
         try:
-            result = self.client.generate_image(prompt=prompt, size=_image_tier(size), ratio=ratio,
-                                                save_path=str(save_path))
+            with contextlib.redirect_stdout(joblog.console_tee()):  # skill 的重试与失败信息写入日志
+                result = self.client.generate_image(prompt=prompt, size=tier, ratio=ratio,
+                                                    save_path=str(save_path))
         except Exception as exc:  # 网络等底层异常也要包装成结果，避免中断整批任务
+            joblog.bound_log(f"图像接口异常：{type(exc).__name__}: {exc}", level="error")
             return ImageResult(ok=False, error=f"{type(exc).__name__}: {exc}")
+        joblog.bound_log(f"图像接口返回，用时 {time.monotonic() - t0:.1f} 秒")
         if result.get("success") and save_path.is_file():
             return ImageResult(ok=True, path=str(save_path))
         text, non_retryable = _failure(result)
@@ -66,8 +76,12 @@ class SkillVideoProvider(VideoProvider):
         save_path = Path(save_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
         images = [str(p) for p in reference_images] or None
+        joblog.bound_log(f"视频接口请求：{seconds} 秒，比例 {aspect_ratio}，"
+                         f"{'参考图 ' + str(len(images)) + ' 张' if images else '纯文本'}（生成通常需要数分钟）")
+        t0 = time.monotonic()
         try:
-            result = self.client.generate_video(
+            with contextlib.redirect_stdout(joblog.console_tee()):
+                result = self.client.generate_video(
                 prompt=prompt,
                 mode="reference" if images else "text",
                 seconds=str(int(seconds)),
@@ -76,7 +90,9 @@ class SkillVideoProvider(VideoProvider):
                 save_path=str(save_path),
             )
         except Exception as exc:
+            joblog.bound_log(f"视频接口异常：{type(exc).__name__}: {exc}", level="error")
             return VideoResult(ok=False, error=f"{type(exc).__name__}: {exc}")
+        joblog.bound_log(f"视频接口返回，用时 {time.monotonic() - t0:.1f} 秒")
         if result.get("success") and save_path.is_file():
             return VideoResult(ok=True, path=str(save_path))
         text, non_retryable = _failure(result)
