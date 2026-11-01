@@ -955,3 +955,15 @@ Phase 2 是风险最高的一期（涉及外部视频 API、一致性核查、�
 
 实现：`steps/chapter_shots.py`（`collect_shot_issues`、`_shot_level_issues`、`_shot_seconds`）、`prompts.py`（`shots_prompt`、`_length_requirement` 之外的镜头提示词）、`providers/text.py`（`_rule_shots`）、`ui/chapter_page.py`（`_plan_warnings`）。
 测试：`tests/test_shots_feedback.py`、`tests/test_shot_plan_quality.py`。
+
+## JSON 解析兜底与自动修正次数（界面可设）
+
+- LLM 输出先用严格 JSON 解析；失败时用 `json_repair` 修复（常见：少逗号、多余引号、截断），修复只改语法，内容由后续校验把关。`json_repair` 不可用或修复失败时，仍报“JSON 解析失败”，并进入自动修正。依赖见 `requirements.txt`（`json-repair>=0.30`）。
+- 自动修正次数默认 5，上限 5。常量在 `project_store.py`：`DEFAULT_AUTO_FIX_RETRIES`、`MAX_AUTO_FIX_RETRIES`。
+- 设置位置：
+  - 新建项目：导入页的“剧本自动修正次数”“镜头规划自动修正次数”。
+  - 已有项目：挡位页的“校验失败后的自动修正”。
+- 已有项目如果在 `project.json` 里保存了旧值（例如 2），会保留该值；要改为 5，请在挡位页修改。
+- 接口 `set_script_retries` / `set_shots_retries` 的允许范围同为 0–5。
+
+实现：`steps/global_visual.py`（`parse_json_object`、`_repair_json`）、`project_store.py`、`tool_api.py`、`ui/gear_page.py`、`ui/import_page.py`。测试：`tests/test_json_repair_and_retries.py`。

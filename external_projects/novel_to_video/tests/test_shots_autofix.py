@@ -100,10 +100,11 @@ def test_every_attempt_is_traced_and_logged_in_full(proj):
     rows = llm_trace.tail(proj, chapter=1, steps=["C-3"])
     assert len(rows) == 2 and "第 1 次修正" in rows[0]["label"]
     warn = [x["message"] for x in joblog.tail(proj, scopes=["chapter"]) if x["level"] == "warn"]
-    assert any("自动把问题反馈给模型修正（第 1/2 次）" in m and "我们快走。" in m for m in warn), warn
+    assert any("自动把问题反馈给模型修正（第 1/5 次）" in m and "我们快走。" in m for m in warn), warn
 
 
 def test_gives_up_after_retries_and_reports_all_issues(proj):
+    assert tool_api.set_shots_retries(str(proj), 2)["ok"]                 # 本测试按 2 次修正验证
     llm = Seq(_bad())
     with pytest.raises(StepError) as e:
         run_shots(proj, 1, llm)
@@ -179,6 +180,7 @@ def _open(proj, page="🎬 章节生产", root_key="chap_root"):
 
 
 def test_chapter_page_shows_unresolved_issues(proj):
+    assert tool_api.set_shots_retries(str(proj), 2)["ok"]                 # 本测试按 2 次修正验证
     with pytest.raises(StepError):
         run_shots(proj, 1, Seq(_bad()))
     at = _open(proj)

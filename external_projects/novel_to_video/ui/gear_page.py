@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import streamlit as st
 
+from novel_to_video import project_store as ps
 from novel_to_video import tool_api
 from ui.common import DEFAULT_PROJECTS_ROOT
 from ui.chapter_page import _pick_project
@@ -42,14 +43,16 @@ def page_gear() -> None:
 
     proj_cfg = json.loads((Path(pdir) / "project.json").read_text(encoding="utf-8"))
     st.markdown("#### 校验失败后的自动修正")
-    st.caption("剧本或镜头规划没通过校验时（例如对白不是剧本原文、口播超长），自动把全部问题反馈给模型修正，"
-               "而不是直接让整章失败。每次修正多一次文本模型调用；设为 0 则关闭、直接失败。")
+    st.caption("剧本或镜头规划没通过校验时（例如对白不是剧本原文、镜头超过 15 秒），自动把全部问题反馈给模型修正，"
+               "而不是直接让整章失败。每次修正多一次文本模型调用；设为 0 则关闭、直接失败。"
+               f"默认 {ps.DEFAULT_AUTO_FIX_RETRIES} 次，上限 {ps.MAX_AUTO_FIX_RETRIES} 次。"
+               "已创建的项目保留它保存的次数，要改请在这里修改。")
     r1, r2 = st.columns(2)
-    cur_s = int(proj_cfg.get("script_max_retries", 2))
-    cur_p = int(proj_cfg.get("shots_max_retries", 2))
-    new_s = r1.number_input("剧本（C-1/C-2）最多自动修正次数", min_value=0, max_value=3, value=cur_s, step=1,
+    cur_s = int(proj_cfg.get("script_max_retries", ps.DEFAULT_AUTO_FIX_RETRIES))
+    cur_p = int(proj_cfg.get("shots_max_retries", ps.DEFAULT_AUTO_FIX_RETRIES))
+    new_s = r1.number_input("剧本（C-1/C-2）最多自动修正次数", min_value=0, max_value=ps.MAX_AUTO_FIX_RETRIES, value=cur_s, step=1,
                             key="gear_script_retry")
-    new_p = r2.number_input("镜头规划（C-3/C-4）最多自动修正次数", min_value=0, max_value=3, value=cur_p, step=1,
+    new_p = r2.number_input("镜头规划（C-3/C-4）最多自动修正次数", min_value=0, max_value=ps.MAX_AUTO_FIX_RETRIES, value=cur_p, step=1,
                             key="gear_shots_retry")
     if (int(new_s) != cur_s or int(new_p) != cur_p) and st.button("保存自动修正次数", key="gear_retry_save"):
         res = [tool_api.set_script_retries(pdir, int(new_s)), tool_api.set_shots_retries(pdir, int(new_p))]

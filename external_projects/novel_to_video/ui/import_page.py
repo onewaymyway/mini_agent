@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import streamlit as st
 
+from novel_to_video import project_store as ps
 from novel_to_video import tool_api
 
 from .common import DEFAULT_PROJECTS_ROOT, LEVEL_LABEL
@@ -69,12 +70,17 @@ def page_import() -> None:
         duration = st.number_input("单章目标时长（秒）", min_value=30, max_value=300, value=90, step=10,
                                    key="imp_dur", disabled=unlimited)
         duration = 0 if unlimited else duration
+        r_s = st.number_input("剧本自动修正次数", min_value=0, max_value=ps.MAX_AUTO_FIX_RETRIES,
+                              value=ps.DEFAULT_AUTO_FIX_RETRIES, step=1, key="imp_retry_s")
+        r_p = st.number_input("镜头规划自动修正次数", min_value=0, max_value=ps.MAX_AUTO_FIX_RETRIES,
+                              value=ps.DEFAULT_AUTO_FIX_RETRIES, step=1, key="imp_retry_p")
+        retry_opts = {"script_max_retries": int(r_s), "shots_max_retries": int(r_p)}
         root = st.text_input("项目存放目录", value=DEFAULT_PROJECTS_ROOT, key="imp_root")
 
     if st.button("检查导出目录", type="primary", disabled=not src.strip(), key="imp_check"):
         res = tool_api.create_project_from_source(
             root, src.strip(), title=title.strip() or None,
-            chapter_spec=spec.strip() or None, options={"target_chapter_duration_sec": int(duration)},
+            chapter_spec=spec.strip() or None, options={"target_chapter_duration_sec": int(duration), **retry_opts},
             dry_run=True,
         )
         st.session_state["imp_result"] = res
@@ -95,7 +101,7 @@ def page_import() -> None:
     if st.button("创建项目", type="primary", key="imp_create"):
         created = tool_api.create_project_from_source(
             root, src.strip(), title=title.strip() or None,
-            chapter_spec=spec.strip() or None, options={"target_chapter_duration_sec": int(duration)},
+            chapter_spec=spec.strip() or None, options={"target_chapter_duration_sec": int(duration), **retry_opts},
         )
         if created["ok"]:
             st.success(f"项目已创建：{created['data']['project_dir']}")

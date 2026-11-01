@@ -611,8 +611,8 @@ def _set_retries(project_dir: str, key: str, label: str, retries: int) -> Dict[s
     pdir = Path(project_dir)
     try:
         n = int(retries)
-        if not 0 <= n <= 3:
-            return _fail("自动修正次数应在 0–3 之间")
+        if not 0 <= n <= ps.MAX_AUTO_FIX_RETRIES:
+            return _fail(f"自动修正次数应在 0–{ps.MAX_AUTO_FIX_RETRIES} 之间")
         proj = ps.read_json(pdir / "project.json")
     except (OSError, ValueError) as exc:
         return _fail(str(exc))
@@ -623,10 +623,10 @@ def _set_retries(project_dir: str, key: str, label: str, retries: int) -> Dict[s
 
 
 def set_script_retries(project_dir: str, retries: int) -> Dict[str, Any]:
-    """剧本校验失败后自动带反馈修正的次数（默认 2；0 = 不修正、直接失败；上限 3）。"""
+    """剧本校验失败后自动带反馈修正的次数（默认 5；0 = 不修正、直接失败；上限 5）。"""
     return _set_retries(project_dir, "script_max_retries", "剧本", retries)
 
 
 def set_shots_retries(project_dir: str, retries: int) -> Dict[str, Any]:
-    """镜头规划校验失败后自动带反馈修正的次数（默认 2；0 = 不修正、直接失败；上限 3）。"""
+    """镜头规划校验失败后自动带反馈修正的次数（默认 5；0 = 不修正、直接失败；上限 5）。"""
     return _set_retries(project_dir, "shots_max_retries", "镜头规划", retries)

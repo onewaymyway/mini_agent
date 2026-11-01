@@ -198,7 +198,7 @@ def test_auto_fix_is_on_by_default_and_feeds_back_issues(proj):
     assert "attempts: 2" in review
     assert len(llm_trace.tail(proj, chapter=1)) == 2
     msgs = [x["message"] for x in joblog.tail(proj, scopes=["chapter"]) if x["level"] == "warn"]
-    assert any("自动把问题反馈给模型修正（第 1/2 次）" in m and "压缩" in m for m in msgs)
+    assert any("自动把问题反馈给模型修正（第 1/5 次）" in m and "压缩" in m for m in msgs)
 
 
 def test_auto_fix_can_be_turned_off(proj):
@@ -221,7 +221,7 @@ def test_legacy_project_without_the_option_uses_default(proj):
 def test_auto_fix_stops_at_limit(proj):
     llm = RecLLM(LONG)
     r = run_script(proj, 1, llm)
-    assert r["status"] == "fail" and len(llm.calls) == 3          # 1 次生成 + 默认 2 次修正
+    assert r["status"] == "fail" and len(llm.calls) == 6          # 1 次生成 + 默认 5 次修正
     tool_api.set_script_retries(str(proj), 1)
     llm = RecLLM(LONG)
     run_script(proj, 1, llm, force=True)
@@ -230,7 +230,7 @@ def test_auto_fix_stops_at_limit(proj):
 
 def test_set_retries_validates_range(proj):
     for fn in (tool_api.set_script_retries, tool_api.set_shots_retries):
-        assert not fn(str(proj), 4)["ok"] and not fn(str(proj), -1)["ok"]
+        assert not fn(str(proj), 6)["ok"] and not fn(str(proj), -1)["ok"]
         assert fn(str(proj), 0)["ok"]
 
 

@@ -80,13 +80,30 @@ def parse_json_object(text: str) -> Dict[str, Any]:
     m = re.search(r"\{.*\}", cleaned, re.S)
     if not m:
         raise StepError(f"LLM 输出中没有 JSON 对象：{text[:120]}")
+    body = m.group(0)
     try:
-        obj = json.loads(m.group(0))
+        obj = json.loads(body)
     except json.JSONDecodeError as exc:
-        raise StepError(f"LLM 输出 JSON 解析失败：{exc}") from exc
+        # 严格解析失败（常见：少逗号、多余引号、截断）时，用 json_repair 修复后再取值。
+        # 修复只改语法，不改内容；修复后的对白、字数等仍由后续校验把关。
+        obj = _repair_json(body)
+        if obj is None:
+            raise StepError(f"LLM 输出 JSON 解析失败（json_repair 也无法修复）：{exc}") from exc
     if not isinstance(obj, dict):
         raise StepError("LLM 输出不是 JSON 对象")
     return obj
+
+
+def _repair_json(body: str) -> Optional[Dict[str, Any]]:
+    try:
+        import json_repair
+    except ImportError:
+        return None
+    try:
+        obj = json_repair.loads(body)
+    except Exception:  # noqa: BLE001 - 修复失败就按不可解析处理
+        return None
+    return obj if isinstance(obj, dict) else None
 
 
 # ---------------------------------------------------------------- G-2

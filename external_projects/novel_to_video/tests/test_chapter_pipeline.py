@@ -167,7 +167,7 @@ def test_fabricated_dialogue_fails_chapter(project):
         "visual_hint_zh": "x", "visual_hint_en": "x"}]}
     r = _run(project, ChapterLLM(shots=bad))
     # 模型始终编造对白：自动修正用尽后仍然失败，并说明修正过几次
-    assert r["status"] == "failed" and "不是剧本中的连续原文" in r["message"] and "已自动修正 2 次" in r["message"]
+    assert r["status"] == "failed" and "不是剧本中的连续原文" in r["message"] and "已自动修正 5 次" in r["message"]
 
 
 def test_missing_location_portrait_blocks_clips(project):

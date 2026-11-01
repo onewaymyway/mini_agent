@@ -26,12 +26,15 @@ PROGRESS_FILE = "PROGRESS.md"
 DEFAULT_ART_STYLE = ("cinematic realistic, dystopian sci-fi, muted cold palette, "
                      "soft volumetric light, high detail")
 
+DEFAULT_AUTO_FIX_RETRIES = 5   # 校验失败后自动修正的默认次数；项目里显式写 0 表示不修正、直接失败
+MAX_AUTO_FIX_RETRIES = 5       # 界面与接口允许设置的上限
+
 DEFAULT_OPTIONS: Dict[str, Any] = {
     "art_style": DEFAULT_ART_STYLE,
     "providers": {"image": "agnes", "text": "miniagent", "video": "agnes", "tts": "edge-tts"},
     "target_chapter_duration_sec": 90,  # 单章目标时长（秒）；0 = 不限制时长与字数，按原文实际情况生成
-    "script_max_retries": 2,  # 剧本校验失败后，把问题反馈给模型自动修正的最多次数
-    "shots_max_retries": 2,   # 镜头规划校验失败后，同上
+    "script_max_retries": DEFAULT_AUTO_FIX_RETRIES,  # 剧本校验失败后，把问题反馈给模型自动修正的最多次数
+    "shots_max_retries": DEFAULT_AUTO_FIX_RETRIES,   # 镜头规划校验失败后，同上
     "orientation": "portrait",
     "aspect_ratio": "9:16",
     "tts": {"engine": "cosyvoice", "fallback": "edge-tts", "voice": None},
@@ -39,7 +42,6 @@ DEFAULT_OPTIONS: Dict[str, Any] = {
     "budget": {"max_video_calls": None, "max_image_calls": None, "max_minutes": None},
 }
 
-DEFAULT_AUTO_FIX_RETRIES = 2   # 校验失败后自动修正的最多次数；项目里显式写 0 表示不修正、直接失败
 
 
 def auto_fix_retries(project_dir: Path, key: str) -> int:
@@ -48,7 +50,7 @@ def auto_fix_retries(project_dir: Path, key: str) -> int:
         val = read_json(Path(project_dir) / "project.json").get(key)
     except (OSError, ValueError):
         val = None
-    return DEFAULT_AUTO_FIX_RETRIES if val is None else max(0, min(5, int(val)))
+    return DEFAULT_AUTO_FIX_RETRIES if val is None else max(0, min(MAX_AUTO_FIX_RETRIES, int(val)))
 
 
 CHAPTER_STATUSES = ("pending", "planned", "in_review", "done", "stale")
