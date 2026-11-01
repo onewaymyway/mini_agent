@@ -17,6 +17,7 @@ from . import gender_evidence as ge
 from .project_store import append_progress, read_json, write_json_atomic
 from .source_import import import_source
 from .name_normalize import decode_name
+from . import joblog
 
 SUGGEST_FILE = "global/gender_suggestions.json"
 CONFIRMED_SOURCES = ("user", "persona")
@@ -44,11 +45,15 @@ def _load_texts(project_dir: Path) -> Dict[str, Any]:
 
 def suggest_all(project_dir: Path) -> Dict[str, Any]:
     chars = read_json(project_dir / "global" / "characters.json")["characters"]
+    joblog.log(project_dir, "gender", f"性别线索检索开始：{len(chars)} 个角色")
     texts = _load_texts(project_dir)
+    joblog.log(project_dir, "gender", f"已读取正文 {len(texts['chapters'])} 章、人设卡 {len(texts['persona'])} 份")
     out = {}
     for c in chars:
         sug = ge.suggest(c, texts["chapters"], texts["persona"])
         out[c["id"]] = sug.to_dict()
+        joblog.log(project_dir, "gender",
+                   f"{c['names'][0]}：建议 {sug.suggested}，证据 {sug.evidence_total} 条（{sug.basis}）")
     prev = read_json(_path(project_dir)) if _path(project_dir).is_file() else {}
     data = {"generated_at": datetime.now().isoformat(timespec="seconds"),
             "suggestions": out,

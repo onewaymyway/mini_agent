@@ -48,9 +48,7 @@ def page_final() -> None:
         r = tool_api.set_cover(pdir, enabled=enabled, title=title, layout=layout, duration_sec=dur)
         (st.success if r["ok"] else st.error)("已保存" if r["ok"] else r["error"]["message"])
     if enabled and st.button("生成 / 更新封面"):
-        with st.spinner("生成背景图（缺失时）并叠字…"):
-            r = tool_api.render_cover(pdir)
-        (st.success if r["ok"] else st.error)("封面已生成" if r["ok"] else r["error"]["message"])
+        _start(tool_api.start_cover_background(pdir), "封面生成已开始")
     if cov["cover_exists"]:
         st.image(str(Path(pdir) / "global" / "assets" / "cover.png"), width=240)
 
@@ -68,16 +66,19 @@ def page_final() -> None:
                 (st.success if r["ok"] else st.error)("已确认" if r["ok"] else r["error"]["message"])
                 st.rerun()
     if d["ready"] and d["confirm"].get("confirmed") and st.button("合成全书"):
-        with st.spinner("拼接并校验成片…"):
-            r = tool_api.compose_book(pdir, transition=transition)
-        if r["ok"]:
-            v = r["data"]["verify"]
-            st.success(f"成片已生成：{r['data']['duration']} 秒（期望 {r['data']['expected']} 秒），"
-                       f"{v.get('width')}x{v.get('height')}")
-        else:
-            st.error(r["error"]["message"])
+        _start(tool_api.start_compose_background(pdir, transition=transition), "全书合成已开始，进度见下方日志")
+
+    from ui.joblog_panel import render_job_panel
+    render_job_panel(pdir, ["final"], title="全书合成日志", height=280)
 
     out = Path(pdir) / "exports" / "video.mp4"
     if out.is_file():
         st.markdown("#### 全书成片")
         st.video(str(out))
+
+
+def _start(res: dict, ok_msg: str) -> None:
+    if res["ok"]:
+        st.toast(ok_msg)
+    else:
+        st.error(res["error"]["message"])

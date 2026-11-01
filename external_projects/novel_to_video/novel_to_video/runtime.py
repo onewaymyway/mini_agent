@@ -67,8 +67,11 @@ def request_stop(project_dir: Path) -> None:
         update(project_dir, state="stopping", message="已请求停止，将在当前章节完成后停止")
 
 
-def _clear_stop(project_dir: Path) -> None:
+def clear_stop(project_dir: Path) -> None:
     (project_dir / STOP_FILE).unlink(missing_ok=True)
+
+
+_clear_stop = clear_stop  # 兼容旧名称
 
 
 def start_background(project_dir: Path, numbers: List[int], gear: str,

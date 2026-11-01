@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import project_store as ps
+from . import gender_review
 from .call_log import count_calls
 from .source_import import import_source
 from .steps import global_visual as gv
@@ -489,3 +490,68 @@ def stop_queue(project_dir: str) -> Dict[str, Any]:
         return _fail("当前没有正在运行的队列")
     _rt.request_stop(pdir)
     return _ok({"stop_requested": True})
+
+
+# ---------------------------------------------------------------- 后台任务与实时日志
+
+from . import jobs as _jobs
+from . import joblog as _joblog
+
+
+def _unwrap(res: Dict[str, Any]) -> Any:
+    if not res.get("ok"):
+        raise RuntimeError(res["error"]["message"])
+    return res["data"]
+
+
+def _start_job(project_dir: str, *, name: str, label: str, scope: str, fn) -> Dict[str, Any]:
+    pdir = Path(project_dir)
+    res = _jobs.start(pdir, name=name, label=label, scope=scope, fn=fn)
+    if not res["ok"]:
+        return _fail(res["error"])
+    return _ok({"started": name, "label": label})
+
+
+def start_visual_text_background(project_dir: str, *, ids: Optional[List[str]] = None,
+                                 only_missing: bool = True) -> Dict[str, Any]:
+    return _start_job(project_dir, name="assets_text", label="G-2 文本设定补全", scope="assets",
+                      fn=lambda: _unwrap(run_visual_text(project_dir, ids=ids, only_missing=only_missing)))
+
+
+def start_portraits_background(project_dir: str, *, ids: Optional[List[str]] = None,
+                               regenerate: bool = False) -> Dict[str, Any]:
+    label = "G-3 重新生成定妆图" if regenerate else "G-3 生成定妆图"
+    return _start_job(project_dir, name="assets_portrait", label=label, scope="assets",
+                      fn=lambda: _unwrap(run_portraits(project_dir, ids=ids, regenerate=regenerate)))
+
+
+def start_cover_background(project_dir: str) -> Dict[str, Any]:
+    return _start_job(project_dir, name="cover", label="封面生成", scope="final",
+                      fn=lambda: _unwrap(render_cover(project_dir)))
+
+
+def start_compose_background(project_dir: str, *, transition: str = "cut",
+                             use_cover: Optional[bool] = None) -> Dict[str, Any]:
+    return _start_job(project_dir, name="final_compose", label="F-3/F-4 全书合成", scope="final",
+                      fn=lambda: _unwrap(compose_book(project_dir, transition=transition, use_cover=use_cover)))
+
+
+def start_gender_suggest_background(project_dir: str) -> Dict[str, Any]:
+    def fn() -> Dict[str, Any]:
+        data = gender_review.suggest_all(Path(project_dir))
+        return {"done": list(data["suggestions"].keys()), "failed": [], "skipped": []}
+    return _start_job(project_dir, name="gender_suggest", label="性别线索检索", scope="gender", fn=fn)
+
+
+def job_status(project_dir: str) -> Dict[str, Any]:
+    return _ok(_jobs.status(Path(project_dir)))
+
+
+def job_stop(project_dir: str) -> Dict[str, Any]:
+    res = _jobs.request_stop(Path(project_dir))
+    return _ok(res) if res["ok"] else _fail(res["error"])
+
+
+def job_logs(project_dir: str, scopes: Optional[List[str]] = None, limit: int = 200) -> Dict[str, Any]:
+    rows = _joblog.tail(Path(project_dir), limit=limit, scopes=scopes)
+    return _ok(rows)

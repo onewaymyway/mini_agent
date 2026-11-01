@@ -48,6 +48,9 @@ def page_cockpit() -> None:
     _start_controls(pdir, d)
     _chapter_table(d)
     _gates(d)
+    from ui.joblog_panel import render_job_panel
+    st.subheader("最近日志")
+    render_job_panel(pdir, None, title="全部日志", height=260, limit=120)
 
 
 def _header_metrics(d: dict) -> None:

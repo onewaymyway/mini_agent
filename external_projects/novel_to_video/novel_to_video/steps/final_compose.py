@@ -25,6 +25,7 @@ from ..media import ffmpeg as mf
 from ..media.cover import LAYOUTS, CoverError, render_cover
 from ..revision import clear_final_stale, final_is_stale
 from ..project_store import read_json, write_json_atomic
+from .. import joblog
 
 DURATION_TOL_SEC = 0.2
 EXPORTS = "exports"
@@ -107,9 +108,11 @@ def render_cover_assets(project_dir: Path, *, bg_provider=None) -> Dict[str, Any
         art = read_json(project_dir / "project.json").get("art_style") or ""
         prompt = (f"Cinematic vertical poster background, no text, no letters, no typography, no watermark. "
                   f"Mood and palette: {art}. Symbolic composition of the whole story, not a single scene.")
+        joblog.log(project_dir, "final", "生成封面背景图…")
         res = bg_provider.generate(prompt, bg, ratio="9:16")
         if not res.ok:
             raise FinalError(f"封面背景生成失败：{res.error}")
+    joblog.log(project_dir, "final", f"封面叠字：布局 {cov.get('layout', 'center')}")
     try:
         render_cover(bg, assets / "cover.png", title, cov.get("layout", "center"))
     except CoverError as exc:
@@ -153,6 +156,7 @@ def compose_book(project_dir: Path, *, gear: str, transition: str = "cut",
     fr = check_chapters_ready(project_dir)
     if not fr["ready"]:
         raise FinalError("章节未全部就绪：" + "；".join(fr["problems"]))
+    joblog.log(project_dir, "final", f"F-1 检查通过：{len(fr['chapters'])} 章均已完成")
     conf = confirm_state(project_dir)
     if not conf.get("confirmed"):
         raise FinalError("请先在全书合成页完成人工确认")
@@ -167,10 +171,15 @@ def compose_book(project_dir: Path, *, gear: str, transition: str = "cut",
 
     chapter_files = [cio.chapter_dir(project_dir, n) / f"chapter_{n:03d}.mp4" for n in fr["chapters"]]
     out = _exports(project_dir) / "video.mp4"
+    joblog.log(project_dir, "final", f"F-3 开始拼接：{len(chapter_files)} 章" + ("，含封面" if enable_cover else "")
+               + f"，转场 {transition}")
     res = cf.compose_final(chapter_files, out,
                            cover_png=cover_png if enable_cover else None,
                            cover_sec=float(cov.get("duration_sec", 3.0)), transition=transition)
     verdict = verify_final(out, res["expected"], expect_audio=True)
+    joblog.log(project_dir, "final", f"F-4 成片校验：时长 {res['duration']} 秒（期望 {res['expected']}），"
+               + ("通过" if verdict["ok"] else "未通过：" + "；".join(verdict["problems"])),
+               level="ok" if verdict["ok"] else "error")
     if not verdict["ok"]:
         raise FinalError("成片校验未通过：" + "；".join(verdict["problems"]))
     clear_final_stale(project_dir)

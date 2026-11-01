@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional
 from . import chapter_io as cio
 from . import gates
 from . import runtime as rt
+from . import joblog
 from . import shot_review as sr
 from .call_log import count_calls
 from .project_store import append_progress, load_project, read_json
@@ -137,6 +138,7 @@ def run_queue(project_dir: Path, numbers: List[int], *, gear: str, run_one) -> D
     for no in numbers:
         if rt.stop_requested(project_dir):
             halted = "用户请求停止"
+            joblog.log(project_dir, "queue", "队列已停止（用户请求）", level="warn")
             break
         reason = check_budget(project_dir, gear, budget)
         if reason:
@@ -144,6 +146,7 @@ def run_queue(project_dir: Path, numbers: List[int], *, gear: str, run_one) -> D
             break
         t0 = time.monotonic()
         rt.begin_chapter(project_dir, no)
+        joblog.log(project_dir, "queue", f"队列：开始第 {no} 章（挡位 {gear}）")
         res = run_one(no)
         _add_minutes(project_dir, (time.monotonic() - t0) / 60.0)
         res = _recover_failure(project_dir, no, gear, res, run_one, budget, results)
@@ -155,5 +158,7 @@ def run_queue(project_dir: Path, numbers: List[int], *, gear: str, run_one) -> D
                 res["auto_approved"] = approved
         results[no] = res
         rt.note_chapter(project_dir, no, res)
+        joblog.log(project_dir, "queue", f"队列：第 {no} 章结束 → {res.get('status')}",
+                   level={"done": "ok", "failed": "error"}.get(res.get("status"), "info"))
     return {"results": results, "halted": halted, "gear": gear,
             "elapsed_sec": round(time.monotonic() - started, 2)}

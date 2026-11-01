@@ -29,22 +29,22 @@ def _pick_project(root: str):
 
 
 def _run_panel(pdir: str, overview: list) -> None:
+    from ui.joblog_panel import render_job_panel
     selected = [r["no"] for r in overview if r.get("selected")]
     c1, c2 = st.columns(2)
     no = c1.selectbox("章节", selected, key="chap_no") if selected else None
     if no is not None and c1.button(f"运行第 {no} 章流水线", type="primary", key="chap_run"):
-        with st.spinner("运行中：剧本 → 镜头 → 配音 → 视频…（视频生成可能较慢）"):
-            res = tool_api.run_chapter(pdir, no)
-        _show_run(res)
+        _queue_result(tool_api.start_queue_background(pdir, [no]))
     if selected and c2.button("运行全部已选章节", key="chap_run_all"):
-        with st.spinner("依次运行各章，请耐心等待…"):
-            res = tool_api.run_chapters(pdir)
-        if res["ok"]:
-            for k, v in res["data"].items():
-                st.write(f"第 {k} 章：{STATUS_LABEL.get(v['data']['status'], v['data']['status'])}"
-                         f" — {v['data'].get('message', '')}" if v["ok"] else f"第 {k} 章：{v['error']['message']}")
-        else:
-            st.error(res["error"]["message"])
+        _queue_result(tool_api.start_queue_background(pdir))
+    render_job_panel(pdir, ["chapter", "queue"], title="章节运行日志", height=320)
+
+
+def _queue_result(res: dict) -> None:
+    if res["ok"]:
+        st.toast("已在后台开始运行，可在下方查看进度")
+    else:
+        st.error(res["error"]["message"])
 
 
 def _show_run(res: dict) -> None:

@@ -17,6 +17,8 @@ from typing import Any, Dict, List, Optional
 
 from .. import prompts
 from ..call_log import log_call
+from .. import joblog
+from .. import runtime as _rt
 from ..project_store import read_json, write_json_atomic
 from ..providers.image import ImageProvider
 from ..providers.text import TextLLM
@@ -91,8 +93,9 @@ def parse_json_object(text: str) -> Dict[str, Any]:
 def visual_text_pass(project_dir: Path, text_llm: TextLLM, *, only_missing: bool = True,
                      ids: Optional[List[str]] = None) -> Dict[str, Any]:
     """为角色/地点补全 visual_anchor_en、voice_profile（角色）与 gender（角色，仅缺失时）。"""
-    summary = {"done": [], "failed": [], "skipped": []}
+    summary = {"done": [], "failed": [], "skipped": [], "stopped": None}
     review = load_review(project_dir)
+    joblog.log(project_dir, "assets", f"G-2 文本设定补全开始（{'仅缺失项' if only_missing else '全部'}）")
 
     for kind in ("character", "location"):
         data = _load_entities(project_dir, kind)
@@ -100,13 +103,20 @@ def visual_text_pass(project_dir: Path, text_llm: TextLLM, *, only_missing: bool
             eid = ent["id"]
             if ids and eid not in ids:
                 continue
+            if _rt.stop_requested(project_dir):
+                summary["stopped"] = "用户请求停止"
+                joblog.log(project_dir, "assets", "G-2 已停止（用户请求）", level="warn")
+                return summary
             key = entity_key(kind, eid)
+            name = (ent.get("names") or [ent.get("name", eid)])[0] if kind == "character" else ent.get("name", eid)
             # 性别不属于 G-2 的补全范围（只能经人工确认），因此不计入 needs，避免反复调用 LLM
             needs = not ent.get("visual_anchor_en") or (
                 kind == "character" and not ent.get("voice_profile"))
             if only_missing and not needs:
                 summary["skipped"].append(eid)
+                joblog.log(project_dir, "assets", f"跳过 {name}（设定已完整）")
                 continue
+            joblog.log(project_dir, "assets", f"G-2 补全：{name}（{eid}）")
             try:
                 if kind == "character":
                     prompt = prompts.character_prompt(ent, _persona_excerpt(project_dir, ent))
@@ -138,7 +148,9 @@ def visual_text_pass(project_dir: Path, text_llm: TextLLM, *, only_missing: bool
                 save_review(project_dir, review)
                 log_call(project_dir, {"kind": "text", "provider": text_llm.name, "entity": key, "ok": True})
                 summary["done"].append(eid)
+                joblog.log(project_dir, "assets", f"G-2 完成：{name}", level="ok")
             except Exception as exc:
+                joblog.log(project_dir, "assets", f"G-2 失败：{name}：{exc}", level="error")
                 review = load_review(project_dir)
                 get_item(review, key)["last_error"] = f"G-2 失败：{exc}"
                 save_review(project_dir, review)
@@ -165,6 +177,7 @@ def portrait_pass(project_dir: Path, image: ImageProvider, *, only_missing: bool
     summary = {"done": [], "failed": [], "skipped": [], "stopped": None}
     style = _art_style(project_dir)
     review = load_review(project_dir)
+    joblog.log(project_dir, "assets", f"G-3 定妆图生成开始（{'重新生成所选' if regenerate else '仅缺失项'}）")
 
     for kind in ("character", "location"):
         data = _load_entities(project_dir, kind)
@@ -172,16 +185,24 @@ def portrait_pass(project_dir: Path, image: ImageProvider, *, only_missing: bool
             eid = ent["id"]
             if ids and eid not in ids:
                 continue
+            if _rt.stop_requested(project_dir):
+                summary["stopped"] = "用户请求停止"
+                joblog.log(project_dir, "assets", "G-3 已停止（用户请求）", level="warn")
+                return summary
             key = entity_key(kind, eid)
             item = get_item(review, key)
+            name = (ent.get("names") or [eid])[0] if kind == "character" else ent.get("name", eid)
             if not ent.get("visual_anchor_en"):
                 summary["skipped"].append(eid)
+                joblog.log(project_dir, "assets", f"跳过 {name}：尚未补全视觉设定", level="warn")
                 continue
             asset_exists = bool(ent.get("asset_path")) and (project_dir / ent["asset_path"]).is_file()
             if only_missing and not regenerate and asset_exists and item.get("portrait_status") in (
                     "pending", "approved"):
                 summary["skipped"].append(eid)
+                joblog.log(project_dir, "assets", f"跳过 {name}（定妆图已存在）")
                 continue
+            joblog.log(project_dir, "assets", f"G-3 生成定妆图：{name}（{kind}，{eid}）")
 
             version = int(item.get("portrait_version") or 0)
             if regenerate or not asset_exists or item.get("portrait_status") == "stale":
@@ -200,7 +221,9 @@ def portrait_pass(project_dir: Path, image: ImageProvider, *, only_missing: bool
                 _save_entities(project_dir, kind, data)
                 item.update(portrait_status="pending", portrait_version=version, last_error=None)
                 summary["done"].append(eid)
+                joblog.log(project_dir, "assets", f"G-3 完成：{name} → {rel}", level="ok")
             else:
+                joblog.log(project_dir, "assets", f"G-3 失败：{name}：{result.error}", level="error")
                 item.update(portrait_status="failed", last_error=f"G-3 失败：{result.error}")
                 summary["failed"].append({"id": eid, "error": result.error})
                 save_review(project_dir, review)

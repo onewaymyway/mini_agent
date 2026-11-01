@@ -26,23 +26,26 @@ def _pick_project(root: str):
 
 
 def _run_panel(pdir: str) -> None:
+    from ui.joblog_panel import render_job_panel
     st.markdown("#### 生成")
     c1, c2, c3 = st.columns(3)
     if c1.button("① 补全视觉与声音设定（G-2）", key="assets_text", type="primary"):
-        with st.spinner("调用文本模型补全中…"):
-            res = tool_api.run_visual_text(pdir)
-        _show_result("G-2", res)
+        _start_result(tool_api.start_visual_text_background(pdir))
     if c2.button("② 生成缺失的定妆图（G-3）", key="assets_portrait"):
-        with st.spinner("生成定妆图中，请耐心等待…"):
-            res = tool_api.run_portraits(pdir)
-        _show_result("G-3", res)
+        _start_result(tool_api.start_portraits_background(pdir))
     with c3:
         ids = st.text_input("重生成的实体 id（逗号分隔）", key="assets_regen_ids", placeholder="char_001")
         if st.button("重新生成所选定妆图", key="assets_regen", disabled=not ids.strip()):
-            with st.spinner("重新生成中…"):
-                res = tool_api.run_portraits(pdir, ids=[x.strip() for x in ids.split(",") if x.strip()],
-                                             regenerate=True)
-            _show_result("重新生成", res)
+            _start_result(tool_api.start_portraits_background(
+                pdir, ids=[x.strip() for x in ids.split(",") if x.strip()], regenerate=True))
+    render_job_panel(pdir, ["assets"], title="素材生成日志")
+
+
+def _start_result(res: dict) -> None:
+    if res["ok"]:
+        st.toast(f"已开始：{res['data']['label']}")
+    else:
+        st.error(res["error"]["message"])
 
 
 def _show_result(label: str, res: dict) -> None:
@@ -102,8 +105,7 @@ def _gallery(pdir: str, status: dict) -> None:
                     st.rerun()
                 if b3.button("驳回并重生成", key=f"rj_{r['key']}",
                              disabled=r["portrait_status"] not in ("pending", "approved", "stale")):
-                    res = tool_api.run_portraits(pdir, ids=[r["id"]], regenerate=True)
-                    _show_result("重新生成", res)
+                    _start_result(tool_api.start_portraits_background(pdir, ids=[r["id"]], regenerate=True))
                     st.rerun()
 
 

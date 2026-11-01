@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from novel_to_video import gender_review
+from novel_to_video import gender_review, tool_api
 from ui.common import DEFAULT_PROJECTS_ROOT
 from ui.chapter_page import _pick_project
 
@@ -26,21 +26,12 @@ def page_gender() -> None:
         return
     from pathlib import Path
     p = Path(pdir)
+    from ui.joblog_panel import render_job_panel
     if st.button("重新检索线索"):
-        try:
-            gender_review.suggest_all(p)
-            st.success("已重新检索")
-        except Exception as exc:
-            st.error(f"检索失败：{exc}")
-    try:
-        data = gender_review.load(p)
-    except FileNotFoundError:
-        try:
-            gender_review.suggest_all(p)
-            data = gender_review.load(p)
-        except Exception as exc:
-            st.error(f"检索失败：{exc}")
-            return
+        r = tool_api.start_gender_suggest_background(pdir)
+        (st.toast if r["ok"] else st.error)("已开始检索，进度见下方日志" if r["ok"] else r["error"]["message"])
+    render_job_panel(pdir, ["gender"], title="性别检索日志", height=240)
+    data = gender_review.load(p)  # 不存在时返回空结构，首次检索请点击上方按钮
     if not data.get("suggestions"):
         st.info("还没有检索结果，请点击“重新检索线索”。")
         return
