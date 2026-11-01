@@ -1,0 +1,3 @@
+pyyaml>=6.0
+streamlit>=1.40
+pytest>=8.0

@@ -1,7 +1,7 @@
 # 小说转短剧外部项目设计方案（novel_to_video）
 
-> 状态：**待确认后实施**。路线、章节粒度、人设来源、剧本来源、外部依赖、审核粒度、封面与转场等决策点已由用户确认（见第 2 节）。
-> 落地位置（确认后）：`external_projects/novel_to_video/`，本文件同步放入 `next_doc/novel_to_video_external_project_plan.md`。
+> 状态：**Phase 0 已完成（2026-11-01），按 Phase 1→5 继续实施**。路线、章节粒度、人设来源、剧本来源、外部依赖、审核粒度、封面与转场等决策点已由用户确认（见第 2 节）；第 13 节未决小问题按推荐项采用。实施记录见第 14 节。
+> 落地位置：`external_projects/novel_to_video/`（代码与项目说明）；本文件位于 `next_doc/novel_to_video_external_project_plan.md`。
 > 依据：`external_projects/novel_writer`（导出格式、外部项目结构、挡位 G0–G5、Streamlit 界面范式）、`.claude/skills/novel-video-studio`（短剧生产流水线、外部 API key 池机制、校验脚本范式）、`mini_agent.workflow` 的 `skill_agent` 调用模式。
 
 ---
@@ -127,7 +127,7 @@ novel_output/小说名_20261101/           # 项目目录（独立于 external_p
 │   └── review.json                     # 全书级素材的审核状态
 ├── chapters/
 │   ├── index.yaml                      # 章节清单与状态（pending / planned / in_review / done）
-│   └── NN/
+│   └── NNN/                            # 三位补零（Phase 0 偏差，见第 14 节）
 │       ├── script.md                   # 章节剧本
 │       ├── script_review.yaml          # 剧本校验结论
 │       ├── scenes.yaml                 # 大场景清单（弹性时长）
@@ -250,6 +250,8 @@ external_projects/novel_to_video/
 - 地点：解析 `设定/世界观/地点详情/*.md`，映射 `name`、`location_type`、`description_zh`；
 - 缺失字段（如英文外观锚点、声音设定）由 G-2 补全，补全内容标记 `source: generated`，与原始人设字段区分；
 - 若人设卡与角色索引不一致，报告为导入警告，由用户裁定，不静默选择。
+- **（Phase 0 实测）导出包没有 `gender` 字段**：人设卡与角色文件中均不含性别信息，真实导出的 21 个角色全部为 null。导入以 `MISSING_GENDER` 警告提示，性别补全归入 G-2，并标记 `source: generated`。配音的音色选择依赖性别，因此 G-2 必须先于 C-6 完成。
+- **（Phase 0 实测）年龄段阈值**：<13 child，<18 teen，<35 youth，<60 middle_aged，其余 elderly。阈值由 Phase 0 测试校准，原草案中青年上限 25 会把 28 岁主角误判为中年，已调整。
 
 ### 10.2 剧本（C-1 / C-2）
 - 剧本按"场次"组织，格式：场次标题 `### 场次 N｜地点·时间（内景/外景）`，行格式 `旁白：…` 或 `角色名：台词`；
@@ -358,12 +360,58 @@ Phase 2 是风险最高的一期（涉及外部视频 API、一致性核查、�
 
 ---
 
-## 13. 待确认事项
+## 13. 待确认事项（已按推荐项采用）
 
-1. 小场景确认是否允许"批量通过本章全部小场景"的快捷操作（作为 G1/G2 的可选项）？默认关闭；
-2. 章节单集目标时长默认值（建议 60–120 秒，对应大场景弹性时长），是否需要按章节字数自动推算？
-3. 全书合成时章节之间默认硬切还是淡入淡出？（你已确认转场统一放在全书合成，这里只需确认默认值）；
-4. 补建角色的 `source: auto_added` 实体是否需要在全书素材页单独标记并允许批量确认？
+用户在确认实施时未另外指定，以下四项均按推荐项采用，如需调整可随时修改：
+
+1. 小场景确认**不提供**"批量通过本章全部小场景"快捷操作（默认关闭，G1/G2 的批量能力仅限全书素材与章节剧本）。
+2. 单章目标时长默认 **90 秒**（可在导入时用 `--duration` / 界面修改），不按字数自动推算，由大场景弹性时长约束决定实际分段。
+3. 全书合成默认**硬切**，淡入淡出作为可选项留给 Phase 4 的全书合成设置。
+4. 补建角色的 `source: auto_added` 实体在全书素材页单独标记，支持批量确认（Phase 2 实现）。
+
+---
+
+## 14. 实施记录
+
+### 14.1 Phase 0：脚手架与导入（已完成，2026-11-01）
+
+**交付物**（位于 `external_projects/novel_to_video/`）：
+
+| 文件 | 作用 |
+|---|---|
+| `novel_to_video/source_import.py` | 只读导入导出目录，产出章节/角色/地点/问题清单/指纹 |
+| `novel_to_video/project_store.py` | 项目目录创建、原子写入、章节范围解析、PROGRESS.md 追加 |
+| `novel_to_video/tool_api.py` | UI/CLI/daemon 统一接口，返回 `{ok, data, error}` |
+| `entrypoints/import_novel.py` `list_projects.py` `health.py` | 命令行入口，JSON 输出 |
+| `app.py` `ui/import_page.py` `ui/projects_page.py` | Streamlit 导入页与项目页 |
+| `project.yaml` `PROJECT.md` `docs/README.md` `requirements.txt` `.gitignore` | 项目契约与文档 |
+| `tests/` | 40 项测试（含 Streamlit AppTest 冒烟与入口脚本测试），1 项真实导出冒烟（需环境变量开启） |
+
+**验收结果**：
+
+- 对 `小说_20261101_101309` 导出目录 dry-run：50 章、21 个角色、4 个地点，阻断错误 0，提示 5 条（21 个角色缺性别、4 条导出清洗提示）。满足计划验收标准。
+- `project.yaml` 已通过 mini_agent 的 `manifest.load_manifest` 校验，入口 `import_novel`、`list_projects` 正常注册。
+- 全部测试通过（`python -m pytest -q tests`）。
+
+**相对原方案的偏差（已同步到代码与文档）**：
+
+1. **章节目录三位补零**（`chapters/001/`，原方案为 `NN`）。原因：计划明确要支持超过 99 章，两位数会在第 100 章起冲突。
+2. **年龄段青年上限 25 → 35**：原阈值把 28 岁主角归为中年，不符合常识，由测试发现后调整。
+3. **导出包无性别字段**：计划假设人设卡可提供性别，实际没有。改为导入警告 + G-2 补全，并已写入第 10.1 节。
+4. **书名无法从导出包获取**：合稿与 README 都不含书名，默认取目录名去掉时间戳，导入时可改。
+5. **默认项目存放目录**为 `external_projects/novel_to_video/novel_output/`（已加入 .gitignore），便于随项目整体移动。
+6. **角色关系 `relations` 暂为空**：人设卡中的关系信息格式尚未核实，留到 G-2 处理。
+
+**未在 Phase 0 实现（明确留给后续阶段）**：视频/图像/TTS 调用、LLM 剧本与分镜、文件锁、G0–G5 挡位、修改回退。
+
+**Phase 0 发现、需要后续阶段处理的导出数据问题**（已在导入报告中以警告呈现，不做自动修正）：
+
+- 第 8、43、47 章残留工具调用标签或截断提示，需确认章节完整性；
+- 第 21 章在写作备注之后有 14 行疑似重复的结尾，需人工决定是否删除，删除前不应进入剧本转换。
+
+### 14.2 后续阶段
+
+Phase 1 起按本文件第 11 节推进。每完成一期，在本节追加对应的实施记录（交付物、验收结果、相对原方案的偏差、未实现项）。
 
 ---
 
