@@ -6,12 +6,13 @@
 
 from __future__ import annotations
 
-import os
-import shutil
 import subprocess
+import os
 import wave
 from pathlib import Path
 from typing import List, Optional, Sequence
+
+from . import binaries
 
 W, H, FPS = 720, 1280, 24
 AUDIO_RATE = 24000
@@ -19,13 +20,6 @@ AUDIO_RATE = 24000
 
 class MediaError(RuntimeError):
     pass
-
-
-def _bin(name: str, env: str) -> str:
-    path = os.environ.get(env) or shutil.which(name)
-    if not path:
-        raise MediaError(f"找不到 {name}，请安装 ffmpeg 或设置环境变量 {env}")
-    return path
 
 
 def _run(args: Sequence[str]) -> str:
@@ -37,11 +31,19 @@ def _run(args: Sequence[str]) -> str:
 
 
 def ffmpeg() -> str:
-    return _bin("ffmpeg", "FFMPEG_BIN")
+    """ffmpeg 路径，统一由 media.binaries 查找（环境变量 → imageio_ffmpeg → conda → PATH）。"""
+    try:
+        return binaries.find_ffmpeg()
+    except binaries.BinaryNotFound as exc:
+        raise MediaError(str(exc)) from exc
 
 
 def ffprobe() -> str:
-    return _bin("ffprobe", "FFPROBE_BIN")
+    """ffprobe 路径，统一由 media.binaries 查找。"""
+    try:
+        return binaries.find_ffprobe()
+    except binaries.BinaryNotFound as exc:
+        raise MediaError(str(exc)) from exc
 
 
 def probe_duration(path: Path) -> float:

@@ -1030,3 +1030,16 @@ Phase 2 是风险最高的一期（涉及外部视频 API、一致性核查、�
 - 现在 `ui/joblog_panel.py` 用 `components.html` 渲染：固定高度、可滚动，加载后（每 2 秒刷新时也会重新加载）自动滚动到最新一行。文本经过转义；深色模式下配色自动切换。
 - 已知取舍：每次日志内容变化会重新加载面板并滚动到底部，如果正在往上翻看旧日志，会被拉回底部。
 - 测试：`tests/test_log_autoscroll.py`。
+
+## ffmpeg / ffprobe 统一查找（与 novel-video-studio 一致）
+
+- 现场：edge-tts 配音后转码时报“找不到 ffmpeg”。原来只查环境变量 FFMPEG_BIN 与系统 PATH，而 skill 能找到的 imageio-ffmpeg 与 conda 环境里的 ffmpeg 都没查。
+- 统一入口：`novel_to_video/media/binaries.py`（`find_ffmpeg()`、`find_ffprobe()`）。`media/ffmpeg.py` 的 `ffmpeg()` / `ffprobe()` 委托给它，所有调用（配音转码、静帧转视频、拼接、合成、探测时长与流信息）都经由这两个函数。
+- 查找优先级（与 skill `common.py` 一致，找到即停）：
+  1. 环境变量 `FFMPEG_BIN` / `FFPROBE_BIN`（本项目），或 `NOVEL_FFMPEG_PATH` / `NOVEL_FFPROBE_PATH`（skill）；
+  2. `imageio_ffmpeg`（ffprobe 按同目录同名规则猜测）；
+  3. conda 环境自动探测：当前激活环境，其次名字含 novel/mv/video 的环境，再次其它环境；
+  4. 系统 PATH。
+- 找不到时，错误信息列出每一种尝试过的方式，并给出安装命令（`pip install imageio-ffmpeg`）或设置变量的说明。
+- 结果缓存；失败不缓存，安装后下一次调用即生效。
+- 测试：`tests/test_ffmpeg_lookup.py`。
