@@ -39,7 +39,7 @@ def _shot_index(shots: List[Dict[str, Any]], sid: str) -> int:
     raise KeyError(f"镜头不存在：{sid}")
 
 
-def invalidate(project_dir: Path, no: int, sid: str, level: str) -> Dict[str, Any]:
+def invalidate(project_dir: Path, no: int, sid: str, level: str, *, touch_script: bool = True) -> Dict[str, Any]:
     """按层级清理下游产物。返回被清理的文件与被重置的镜头，便于日志与界面展示。"""
     if level not in LEVELS:
         raise ValueError(f"未知修改层级：{level}")
@@ -85,7 +85,7 @@ def invalidate(project_dir: Path, no: int, sid: str, level: str) -> Dict[str, An
                 review["items"][s]["status"] = "stale"
         write_json_atomic(review_path, review)
 
-    if level == "dialogue":
+    if level == "dialogue" and touch_script:
         # 台词变化必须在剧本中仍可逐字找到，否则标记剧本需人工处理
         script_path = cdir / "script.md"
         if script_path.is_file():

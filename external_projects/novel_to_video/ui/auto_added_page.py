@@ -15,7 +15,7 @@ from ui.chapter_page import _pick_project
 
 STATUS = {"missing": "未生成", "pending": "待确认", "approved": "已通过", "stale": "需重审", "failed": "失败"}
 
-STEPS_HELP = ("处理顺序：① 展开「查看与编辑设定」，核对设定并选择性别（模型起草的性别不算确认），点「保存修改」"
+STEPS_HELP = ("如果这个角色其实已经存在，展开卡片里的「这个角色其实已经存在？合并到已有角色」直接合并，不用再审核。\n\n处理顺序：① 展开「查看与编辑设定」，核对设定并选择性别（模型起草的性别不算确认），点「保存修改」"
               "→ ② 点「通过设定」→ ③ 点「生成定妆图」→ ④ 看图后点「通过定妆图」→ ⑤ 回到「章节生产」页重新运行本章。")
 
 
@@ -37,7 +37,7 @@ def render_auto_added(pdir: str, chapter: Optional[int] = None, *, key_prefix: s
     open_n = sum(1 for r in rows if not (r["text_status"] == "approved" and r["portrait_status"] == "approved"))
     st.caption(STEPS_HELP)
     for r in rows:
-        entity_card(pdir, r, with_generate=True)
+        entity_card(pdir, r, with_generate=True, allow_merge=True)
     return open_n
 
 

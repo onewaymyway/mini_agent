@@ -567,6 +567,23 @@ def llm_trace(project_dir: str, chapter: Optional[int] = None, scopes: Optional[
         return _fail(f"读取模型调用记录失败：{exc}")
 
 
+def merge_candidates(project_dir: str, auto_id: str) -> Dict[str, Any]:
+    from . import merge_character as _mc
+    try:
+        return _ok(_mc.merge_candidates(Path(project_dir), auto_id))
+    except Exception as exc:
+        return _fail(f"读取角色列表失败：{exc}")
+
+
+def merge_auto_added(project_dir: str, auto_id: str, target_id: str) -> Dict[str, Any]:
+    """把补建角色合并到已有角色（别名、改写镜头引用、清理已生成的下游产物）。"""
+    from . import merge_character as _mc
+    try:
+        return _ok(_mc.merge_auto_added(Path(project_dir), auto_id, target_id))
+    except (_mc.MergeError, OSError, KeyError, ValueError) as exc:
+        return _fail(str(exc))
+
+
 def set_script_retries(project_dir: str, retries: int) -> Dict[str, Any]:
     """剧本校验失败后自动带反馈重试的次数（0 = 不重试，默认；上限 3）。"""
     pdir = Path(project_dir)

@@ -86,9 +86,10 @@ def _gallery(pdir: str, status: dict) -> None:
         entity_card(pdir, r)
 
 
-def entity_card(pdir: str, r: dict, *, with_generate: bool = False) -> None:
+def entity_card(pdir: str, r: dict, *, with_generate: bool = False, allow_merge: bool = False) -> None:
     """单个角色/地点的审核卡片：定妆图、设定编辑、通过/驳回按钮。章节页与补建审核页复用。
-    with_generate：设定已通过但还没有定妆图时，显示“生成定妆图”按钮。"""
+    with_generate：设定已通过但还没有定妆图时，显示“生成定妆图”按钮。
+    allow_merge：补建角色显示“其实已经存在？合并到已有角色”（见 merge_character）。"""
     with st.container(border=True):
         left, right = st.columns([1, 2])
         with left:
@@ -117,6 +118,8 @@ def entity_card(pdir: str, r: dict, *, with_generate: bool = False) -> None:
                          disabled=r["portrait_status"] not in ("pending", "approved", "stale")):
                 _start_result(tool_api.start_portraits_background(pdir, ids=[r["id"]], regenerate=True))
                 st.rerun()
+            if allow_merge:
+                _merge_panel(pdir, r)
             if r["text_status"] == "pending" and r["missing_fields"]:
                 st.warning("「通过设定」暂时点不了：还缺 " + "、".join(r["missing_fields"])
                            + "。请展开上方「查看与编辑设定」补全——性别在下拉框里选（无法判断就选 unknown），"
@@ -124,6 +127,30 @@ def entity_card(pdir: str, r: dict, *, with_generate: bool = False) -> None:
             if with_generate and r["text_status"] == "approved" and r["portrait_status"] in ("missing", "failed"):
                 if st.button("生成定妆图", key=f"gen_{r['key']}", type="primary"):
                     _start_result(tool_api.start_portraits_background(pdir, ids=[r["id"]]))
+
+
+def _merge_panel(pdir: str, r: dict) -> None:
+    """补建角色其实就是库里已有的人：选择对应的已有角色合并，不再单独审核。"""
+    cands = tool_api.merge_candidates(pdir, r["id"])
+    with st.expander("这个角色其实已经存在？合并到已有角色"):
+        if not cands["ok"] or not cands["data"]:
+            st.caption("库里没有可合并的角色。")
+            return
+        by_id = {c["id"]: c for c in cands["data"]}
+        target = st.selectbox("合并到已有角色", list(by_id), key=f"mg_sel_{r['key']}",
+                              format_func=lambda i: f"{by_id[i]['name']}（{i}）"
+                              + ("　· 也是补建角色" if by_id[i]["source"] == "auto_added" else ""))
+        st.caption(f"合并后：“{r['name']}”成为所选角色的别名，各章镜头里这个说话人改归所选角色（沿用其音色与形象）；"
+                   "本补建角色从库中删除，不再需要审核。已经为它生成过的音频、提示词、视频会被清理，需要重新生成；"
+                   "定妆图文件保留在磁盘上。")
+        sure = st.checkbox("我确认这是同一个角色，合并", key=f"mg_ok_{r['key']}")
+        if st.button("合并", key=f"mg_btn_{r['key']}", disabled=not sure):
+            res = tool_api.merge_auto_added(pdir, r["id"], target)
+            if res["ok"]:
+                st.toast(f"已把“{r['name']}”合并到“{by_id[target]['name']}”")
+                st.rerun()
+            else:
+                st.error(res["error"]["message"])
 
 
 def _vkey(prefix: str, rkey: str, value) -> str:
