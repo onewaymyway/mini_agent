@@ -1023,3 +1023,10 @@ Phase 2 是风险最高的一期（涉及外部视频 API、一致性核查、�
   - `runtime` 后台线程的任何异常，同时写入队列日志（级别 error，含堆栈末尾 12 行）。
 - 另：长阶段（C-1 至 C-9）与引擎初始化（`joblog.heartbeat`）每 30 秒写一条“仍在进行（已 N 秒）”；引擎初始化失败进入章节日志并把章节状态置为 failed。
 - 测试：`tests/test_windows_lock_robustness.py`、`tests/test_progress_visibility.py`。
+
+## 运行日志自动滚动到最新一行
+
+- 原来的日志面板使用 `st.code` 放在固定高度容器里，Streamlit 不会在内容变化时滚动到底部，需要手动滚动。
+- 现在 `ui/joblog_panel.py` 用 `components.html` 渲染：固定高度、可滚动，加载后（每 2 秒刷新时也会重新加载）自动滚动到最新一行。文本经过转义；深色模式下配色自动切换。
+- 已知取舍：每次日志内容变化会重新加载面板并滚动到底部，如果正在往上翻看旧日志，会被拉回底部。
+- 测试：`tests/test_log_autoscroll.py`。

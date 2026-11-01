@@ -77,6 +77,9 @@ def test_chapter_page_shows_run_log(proj):
     at.sidebar.radio[0].set_value("🎬 章节生产").run()
     at.text_input(key="chap_root").input(str(proj.parent)).run()
     assert not at.exception
-    shown = " ".join(c.value for c in at.code)
+    # 日志面板现在是 components.html（iframe 的 srcdoc），取出其中的文本
+    import html as _h
+    frames = [el.proto.srcdoc for el in at.get("iframe") if getattr(el.proto, "srcdoc", "")]
+    shown = " ".join([c.value for c in at.code] + [_h.unescape(f) for f in frames])
     assert "C-1 调用文本模型生成剧本" in shown, shown[:300]
     assert "C-8 镜头 s01" in shown

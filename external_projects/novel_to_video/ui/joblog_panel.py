@@ -11,12 +11,36 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List, Optional
 
+import html as _html
+
 import streamlit as st
+import streamlit.components.v1 as components
 
 from novel_to_video import joblog, runtime, tool_api
 
 REFRESH_SECONDS = 2
 JOB_LABEL = {"idle": "空闲", "running": "运行中", "done": "已完成", "stopped": "已停止", "failed": "失败"}
+
+
+def build_log_html(text: str, height: int) -> str:
+    """日志面板的 HTML：固定高度的可滚动区域，加载后自动滚动到最新一行（即底部）。
+    st.code 不会自动滚动，所以这里用一小段脚本完成。文本经过转义，日志内容不会破坏页面。"""
+    body = _html.escape(text)
+    return f"""<!doctype html><html><head><meta charset="utf-8"><style>
+html,body{{margin:0;padding:0;background:transparent;}}
+#log{{box-sizing:border-box;height:{int(height)}px;overflow-y:auto;margin:0;padding:8px 10px;
+border:1px solid rgba(128,128,128,.35);border-radius:6px;background:#f7f7f7;color:#222;
+font:12px/1.5 Consolas,'Courier New',monospace;white-space:pre-wrap;word-break:break-all;}}
+@media (prefers-color-scheme: dark){{#log{{background:#1e1e1e;color:#ddd;}}}}
+</style></head><body><pre id="log">{body}</pre>
+<script>
+(function(){{
+  var el = document.getElementById('log');
+  function toBottom(){{ el.scrollTop = el.scrollHeight; }}
+  toBottom();
+  window.addEventListener('load', toBottom);
+}})();
+</script></body></html>"""
 
 
 def render_job_panel(pdir: str, scopes: Optional[List[str]], *, title: str = "运行日志",
@@ -63,5 +87,4 @@ def _panel(pdir: str, scopes, title: str, height: int, limit: int) -> None:
             (st.success if ok else st.error)("已请求停止，将在当前实体或章节完成后停止" if ok else r["error"]["message"])
     rows = tool_api.job_logs(pdir, list(scopes) if scopes else None, limit)["data"]
     text = "\n".join(joblog.format_row(r) for r in rows) or "（暂无日志）"
-    with st.container(height=height, border=True):
-        st.code(text, language="text")
+    components.html(build_log_html(text, height), height=height + 4, scrolling=False)
