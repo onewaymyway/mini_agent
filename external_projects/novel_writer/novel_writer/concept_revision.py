@@ -185,6 +185,9 @@ def _require_blueprint(ws: Workspace) -> Dict[str, Any]:
 
 def _scope_steps(ws: Workspace, scope: str, direction: str, rid: str) -> List[S.StepDef]:
     """某个范围要运行的步骤（已注入新思路）。"""
+    if scope == "blueprint":
+        # 蓝图草稿由 plan_blueprint 产出（校验 output_check=blueprint）；拆分与下游步骤由作者之后运行
+        return [_direction_step(S.plan_blueprint_step(), direction, rid, scope)]
     if scope == "theme":
         return [_direction_step(S.design_theme_step(), direction, rid, scope)]
     if scope == "pacing":

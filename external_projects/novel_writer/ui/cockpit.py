@@ -364,7 +364,16 @@ def _render_answer_form(ws: str, step: dict) -> None:
                 else:
                     show_error(res)
             else:
-                _report_ok(tool_api.answer_step(ws, step["id"], answers))
+                # 「提交答复并重跑此步」必须真的重跑：答复只写文件并重置为待运行，不会自动执行
+                res = tool_api.answer_step(ws, step["id"], answers)
+                if not res["ok"]:
+                    show_error(res)
+                else:
+                    run = tool_api.run_novel(ws, mode="single", step_id=step["id"])
+                    if run["ok"]:
+                        st.success("已提交答复，本步骤已开始重跑。进度见下方后台任务。")
+                    else:
+                        show_error(run)
 
 
 def _report_ok(res: dict) -> None:

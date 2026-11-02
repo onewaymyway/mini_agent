@@ -49,6 +49,9 @@ def _task(ws: Workspace, title: str, kind: str, **fields: Any) -> Dict[str, Any]
     return base
 
 
+_REQUEST_LABEL = {"revision": "修订", "idea": "灵感评估", "assist": "AI 辅助", "concept": "构思修订"}
+
+
 def _request_rows(ws: Workspace, title: str) -> List[Dict[str, Any]]:
     rows = []
     for req in _ondemand.list_requests(ws):
@@ -60,11 +63,12 @@ def _request_rows(ws: Workspace, title: str) -> List[Dict[str, Any]]:
         status = entry.get("status", st.ST_PENDING)
         if status in st.FINISHED_STATUSES:
             continue
-        label = {"revision": "修订", "idea": "灵感评估", "assist": "AI 辅助"}[kind]
+        # 标签表必须覆盖所有请求类型：缺一个就会让整个后台任务面板报 KeyError
+        label = _REQUEST_LABEL.get(kind, kind)
         rows.append(_task(
             ws, title, KIND_REQUEST, step=sid, status=status,
             request_kind=kind, request_id=req["id"],
-            step_title=req.get("instruction") or req.get("text") or req.get("mode") or "",
+            step_title=req.get("instruction") or req.get("direction") or req.get("text") or req.get("mode") or "",
             detail=f"{label} · 创建于 {req.get('created_at', '')[:16]}",
         ))
     return rows

@@ -154,3 +154,35 @@ def test_scope_paths_cover_every_scope(tmp_path):
         paths = CR.scope_paths(ws, scope)
         assert paths and all(str(p).startswith(str(ws.root)) for p, _ in paths)
     assert build_plan(ws)                                # 计划可以正常展开（撤销时会用到）
+
+
+def test_background_task_rows_accept_concept_requests(tmp_path):
+    """后台任务面板：构思修订请求必须有标签且不报 KeyError（曾因标签表缺 concept 导致整个面板报错）。"""
+    from novel_writer import tasks as TK
+    ws = _ws(tmp_path)
+    OD.create_request(ws, "concept", direction="要包含 sky 光遇的关键元素", scopes=["blueprint"])
+    rows = TK._request_rows(ws, "构思测试")
+    assert len(rows) == 1
+    assert "构思修订" in rows[0]["detail"]
+    assert rows[0]["step_title"].startswith("要包含 sky")
+
+
+def test_confirmed_blueprint_answer_proceeds_to_execution(tmp_path):
+    """作者确认后，同一步骤再次运行必须真正执行（不再要求答复，并调用执行器）。"""
+    from novel_writer.runner import _answers_file
+    ws = _ws(tmp_path)
+    rid = OD.create_request(ws, "concept", direction="结构改为三幕", scopes=["blueprint"])["id"]
+    path = _answers_file(ws, f"cpt.{rid}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"answers": {"decision": "确认，改写蓝图"}}', encoding="utf-8")
+    fake = FakeInvoker(ws.root)
+    err = None
+    try:
+        CR.h_concept(ws, _concept_step(rid), {}, invoker=fake)
+    except NeedsUser:
+        raise AssertionError("确认后仍然要求答复")
+    except Exception as exc:   # 桩执行器产出可能不通过蓝图校验；门槛已通过是关键，这里记录原因便于诊断
+        err = exc
+    assert fake.calls, f"确认后没有调用执行器，异常：{type(err).__name__}: {err}"
+    assert fake.calls[0] == f"cpt.{rid}.blueprint"
+    assert not path.exists()
