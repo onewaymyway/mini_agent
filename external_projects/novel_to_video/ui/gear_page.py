@@ -59,6 +59,22 @@ def page_gear() -> None:
         bad = next((r for r in res if not r["ok"]), None)
         (st.error if bad else st.success)(bad["error"]["message"] if bad else "已保存")
 
+    st.markdown("#### 视频接口等待与重试")
+    vcfg = {**ps.DEFAULT_VIDEO_WAIT, **(proj_cfg.get("video") or {})}
+    c1, c2, c3 = st.columns(3)
+    v_wait = c1.number_input("等待视频完成上限（秒）", min_value=60, max_value=6 * 3600, step=60,
+                             value=int(vcfg["max_wait_sec"]), key="gear_v_wait",
+                             help="提交后轮询等待视频完成的最长时间。视频通常需要数分钟，默认 3600 秒。")
+    v_retry = c2.number_input("普通错误重试次数", min_value=0, max_value=10, step=1,
+                              value=int(vcfg["max_retries"]), key="gear_v_retry",
+                              help="网络异常、5xx 等普通错误的重试次数。")
+    v_queue = c3.number_input("排队满时最多等待（秒）", min_value=0, max_value=6 * 3600, step=60,
+                              value=int(vcfg["queue_wait_sec"]), key="gear_v_queue",
+                              help="服务端提示 please retry later（排队已满）时，持续等待的上限；这期间不计入重试次数。")
+    if st.button("保存视频等待设置", key="gear_v_save"):
+        res = tool_api.set_video_wait(pdir, int(v_wait), int(v_retry), int(v_queue))
+        (st.success if res["ok"] else st.error)("已保存" if res["ok"] else res["error"]["message"])
+
     st.markdown("#### 配音网络")
     cur_proxy = (proj_cfg.get("tts") or {}).get("edge_tts_proxy")
     modes = ["系统代理（默认）", "强制直连（不使用任何代理）"]

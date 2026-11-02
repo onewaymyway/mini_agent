@@ -69,13 +69,15 @@ def make_text_llm(name: Optional[str] = None) -> TextLLM:
     raise ProviderError(f"未知文本 provider：{name}")
 
 
-def make_video_provider(name: Optional[str] = None) -> VideoProvider:
-    """视频 provider。agnes 通过 mini_agent 的 gen_video_with_text skill 调用，key 由 skill 解析。"""
+def make_video_provider(name: Optional[str] = None, video_cfg: Optional[dict] = None) -> VideoProvider:
+    """视频 provider。agnes 通过 mini_agent 的 gen_video_with_text skill 调用，key 由 skill 解析。
+    video_cfg 来自项目配置的 video 块：max_wait_sec（轮询上限）、max_retries（普通错误重试次数）、
+    queue_wait_sec（服务端排队已满时最多等待多久，期间不计入重试次数）。"""
     name = "stub" if _forced_stub() else (name or "agnes")
     if name == "stub":
         return StubVideoProvider()
     if name == "agnes":
-        return _skill_or_raise(lambda: SkillVideoProvider(), "视频")
+        return _skill_or_raise(lambda: SkillVideoProvider(video_cfg=video_cfg), "视频")
     raise ProviderError(f"未知视频 provider：{name}")
 
 

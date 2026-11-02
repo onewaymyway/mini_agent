@@ -29,6 +29,9 @@ DEFAULT_ART_STYLE = ("cinematic realistic, dystopian sci-fi, muted cold palette,
 DEFAULT_AUTO_FIX_RETRIES = 5   # 校验失败后自动修正的默认次数；项目里显式写 0 表示不修正、直接失败
 MAX_AUTO_FIX_RETRIES = 5       # 界面与接口允许设置的上限
 
+# 视频接口的等待与重试（可在挡位页调整）
+DEFAULT_VIDEO_WAIT = {"max_wait_sec": 3600, "max_retries": 5, "queue_wait_sec": 3600}
+
 DEFAULT_OPTIONS: Dict[str, Any] = {
     "art_style": DEFAULT_ART_STYLE,
     "providers": {"image": "agnes", "text": "miniagent", "video": "agnes", "tts": "edge-tts"},
@@ -38,6 +41,7 @@ DEFAULT_OPTIONS: Dict[str, Any] = {
     "orientation": "portrait",
     "aspect_ratio": "9:16",
     # 配音引擎链：先 engine，失败后降级到 fallback（null = 不降级）。与 novel-video-studio 默认一致。
+    "video": dict(DEFAULT_VIDEO_WAIT),
     "tts": {"engine": "cosyvoice", "fallback": "edge-tts", "voice": None,
             "cosyvoice_model_dir": None, "cosyvoice_timeout_sec": 60, "edge_tts_timeout_sec": 45,
             "edge_tts_proxy": None},   # None = 系统代理；"direct" = 强制直连；或指定代理地址

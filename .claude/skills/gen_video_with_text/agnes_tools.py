@@ -27,8 +27,9 @@ class AgnesVideoClient:
         # max_retries=3 最坏要等 90 分钟且中途无输出，才会报错。改成 120s，
         # 配合上面新加的重试日志，能更快暴露问题；如需要更长可显式传入。
         timeout: int = 120,
-        max_retries: int = 3,
+        max_retries: int = 5,
         verify_ssl: bool = False,
+        queue_wait_seconds: int = 3600,
     ):
         """
         Args:
@@ -44,6 +45,9 @@ class AgnesVideoClient:
         self.timeout = timeout
         self.max_retries = max_retries
         self.verify_ssl = verify_ssl
+        # 服务端返回 "please retry later"（如 video_queue_full）时，不计入 max_retries，
+        # 一直等待排队，直到累计等待超过 queue_wait_seconds 才放弃。
+        self.queue_wait_seconds = queue_wait_seconds
 
         self.session = requests.Session()
 
@@ -107,10 +111,18 @@ class AgnesVideoClient:
     # =========================
     # retry request
     # =========================
+    @staticmethod
+    def _is_queue_busy(status_code: int, text: str) -> bool:
+        """服务端排队已满，提示稍后重试：这类错误不是请求本身的问题，应一直等待。"""
+        t = (text or "").lower()
+        return status_code in (429, 503) and ("retry later" in t or "queue is full" in t or "video_queue_full" in t)
+
     def _post(self, url: str, payload: dict) -> dict:
         """带重试的 POST，限流自动切换 key（详见 _get 上的说明，逻辑一致）。"""
         last_err = None
         attempt = 0
+        queue_waited = 0.0
+        queue_round = 0
 
         while attempt < self.max_retries:
             if self.key_pool:
@@ -148,6 +160,19 @@ class AgnesVideoClient:
                         print(f"    [POST 不可重试错误] status_code={resp.status_code}，"
                               f"判定为参数/鉴权/内容类错误，立即停止重试: {resp.text[:200]}")
                         return {"success": False, "error": last_err, "non_retryable": True}
+
+                    if self._is_queue_busy(resp.status_code, resp.text):
+                        # 排队已满：不计入 attempt，按退避等待，累计超过 queue_wait_seconds 才放弃
+                        queue_round += 1
+                        delay = min(5 + 2 * queue_round, 30)
+                        if queue_waited >= self.queue_wait_seconds:
+                            print(f"    [POST 排队超时] 已因排队满等待 {int(queue_waited)}s，放弃: {resp.text[:200]}")
+                            return {"success": False, "error": last_err}
+                        print(f"    [POST 排队已满] 第 {queue_round} 次，{delay}s 后重试"
+                              f"（不计入重试次数，已等待 {int(queue_waited)}s/{self.queue_wait_seconds}s）")
+                        time.sleep(delay)
+                        queue_waited += delay
+                        continue
 
                     attempt += 1
                     # [LOG-FIX] 之前这里重试/异常完全没有输出，外部看起来像卡死。
@@ -357,7 +382,7 @@ class AgnesVideoClient:
         seed: Optional[int] = None,
         save_path: Optional[str] = None,
         poll_interval: float = 5.0,
-        max_wait_seconds: int = 1800,
+        max_wait_seconds: int = 3600,
     ) -> dict:
         """Create a video task and poll until completed/failed, optionally saving the result."""
 

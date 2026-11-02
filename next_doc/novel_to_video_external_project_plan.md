@@ -1075,3 +1075,15 @@ Phase 2 是风险最高的一期（涉及外部视频 API、一致性核查、�
 - 相邻镜头画面描述相同仍视为不合格（这是唯一保留的镜头级硬性校验）。
 - 改动位置：`chapter_io.py`（`requested_video_seconds`）、`steps/chapter_audio.py`（去掉超长拒绝）、`steps/chapter_clips.py`（用 `fit_clip` 替代强制截断）、`media/ffmpeg.py`（`fit_clip`）、`steps/chapter_shots.py`（去掉时长检查）、`prompts.py`（时长改为建议）。
 - 测试：`tests/test_video_seconds.py`（取整与真实媒体的对齐）、`tests/test_shots_feedback.py`、`tests/test_shot_plan_quality.py`。
+
+## 视频接口等待与重试：可配置，排队满时持续等待
+
+- 现场 1：轮询等待视频完成的上限是 1800 秒，视频还在生成（in_progress）时就超时。改为可配置，默认 3600 秒。
+- 现场 2：服务端返回 503 `video_queue_full`（提示 please retry later），原来只重试 3 次。
+- 项目配置 `video` 块（挡位页“视频接口等待与重试”可修改）：
+  - `max_wait_sec`（默认 3600）：轮询等待视频完成的上限，范围 60–21600 秒；
+  - `max_retries`（默认 5）：普通错误（网络异常、5xx 等）的重试次数，范围 0–10；
+  - `queue_wait_sec`（默认 3600）：服务端排队已满时最多持续等待多久，范围 0–21600 秒。期间不计入 `max_retries`。
+- skill `gen_video_with_text/agnes_tools.py`（`AgnesVideoClient._post`）：识别 503/429 且提示 `retry later` / `queue is full` / `video_queue_full` 的响应，按 5 秒起的退避等待（最长 30 秒），不计入重试次数；累计超过 `queue_wait_seconds` 才放弃。不可重试错误（400 参数、鉴权等）仍立即停止。
+- `SkillVideoProvider` 把 `max_wait_sec` 作为 `generate_video(max_wait_seconds=…)` 传入，把 `max_retries` 与 `queue_wait_seconds` 传给客户端。
+- 测试：`tests/test_video_wait_and_queue.py`。

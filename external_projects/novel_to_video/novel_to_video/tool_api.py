@@ -200,7 +200,7 @@ def _providers_for(project_dir: Path) -> Dict[str, Any]:
     return {
         "text": make_text_llm(p.get("text")),
         "image": make_image_provider(p.get("image")),
-        "video": make_video_provider(p.get("video")),
+        "video": make_video_provider(p.get("video"), ps.read_json(project_dir / "project.json").get("video") or {}),
         "tts": make_tts_provider(p.get("tts"), tts_cfg),
     }
 
@@ -663,6 +663,27 @@ def _set_retries(project_dir: str, key: str, label: str, retries: int) -> Dict[s
 def set_script_retries(project_dir: str, retries: int) -> Dict[str, Any]:
     """剧本校验失败后自动带反馈修正的次数（默认 5；0 = 不修正、直接失败；上限 5）。"""
     return _set_retries(project_dir, "script_max_retries", "剧本", retries)
+
+
+def set_video_wait(project_dir: str, max_wait_sec: int, max_retries: int, queue_wait_sec: int) -> Dict[str, Any]:
+    """视频接口的等待与重试设置。max_wait_sec：等待视频完成的上限；max_retries：普通错误的重试次数（0–10）；
+    queue_wait_sec：服务端排队已满（please retry later）时最多等待多久，期间不计入重试次数。"""
+    if not (60 <= int(max_wait_sec) <= 6 * 3600):
+        return _fail("等待视频完成的上限应在 60–21600 秒之间")
+    if not (0 <= int(max_retries) <= 10):
+        return _fail("重试次数应在 0–10 之间")
+    if not (0 <= int(queue_wait_sec) <= 6 * 3600):
+        return _fail("排队等待上限应在 0–21600 秒之间")
+    pdir = Path(project_dir)
+    try:
+        proj = ps.read_json(pdir / "project.json")
+    except (OSError, ValueError) as exc:
+        return _fail(str(exc))
+    proj["video"] = {"max_wait_sec": int(max_wait_sec), "max_retries": int(max_retries),
+                     "queue_wait_sec": int(queue_wait_sec)}
+    ps.write_json_atomic(pdir / "project.json", proj)
+    ps.append_progress(pdir, f"视频等待设置：完成上限 {max_wait_sec}s，重试 {max_retries} 次，排队等待上限 {queue_wait_sec}s")
+    return _ok(proj["video"])
 
 
 def set_tts_proxy(project_dir: str, mode: Optional[str]) -> Dict[str, Any]:
