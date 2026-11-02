@@ -29,9 +29,29 @@ from novel_writer.fsutil import atomic_write_text
 
 ITEM_ID = re.compile(r"^[A-Za-z0-9_\-]{1,40}$")
 INDEX_NAME = "角色索引.md"          # 位于角色目录之外，避免被 `角色/*.md` 的产出 glob 计入
-FIELD_ORDER = ("id", "name", "role", "introduced_chapter", "identity", "psychology", "behavior_guide",
+FIELD_ORDER = ("id", "name", "role", "introduced_chapter", "identity", "visual", "psychology", "behavior_guide",
                "abilities", "arc", "state_log", "current_state", "relationships")
-DICT_FIELDS = ("identity", "psychology", "behavior_guide", "abilities", "arc", "current_state", "relationships")
+DICT_FIELDS = ("identity", "visual", "psychology", "behavior_guide", "abilities", "arc", "current_state", "relationships")
+
+# 外形与声音的结构化字段（供写作保持一致，也供视频生成直接使用）。
+# 固定外形放在 visual；会变化的装扮只写在 current_state.outfit 与 state_log 的 appearance_change。
+GENDER_VALUES = ("male", "female", "nonbinary", "unknown")
+VISUAL_SUBDICTS = ("eyes", "hair", "build", "default_outfit", "voice")
+VISUAL_TEMPLATE = {
+    "gender": "male|female|nonbinary|unknown（性别必须明确，不确定时写 unknown）",
+    "age_look": "外观年龄感，如：看起来约17岁，少年感明显",
+    "skin_tone": "肤色，如：偏白，略有风霜感",
+    "face": "脸型与五官特征，如：瓜子脸，眉骨清晰，下颌线利落",
+    "eyes": {"color": "瞳色", "shape": "眼型", "feature": "显著特征（可空）"},
+    "hair": {"style": "发型（长度+造型）", "color": "发色", "texture": "发质", "distinctive": "显著特征（可空）"},
+    "build": {"height_cm": "身高（整数，厘米）", "body_type": "体型与姿态"},
+    "default_outfit": {"top": "上装", "bottom": "下装", "footwear": "鞋", "outerwear": "外套（无则写无）",
+                       "palette": ["主色", "辅色"], "material": "面料", "condition": "新旧与磨损"},
+    "accessories": ["配饰与随身物件（每项一条，含位置）"],
+    "voice": {"timbre": "音色", "pace": "语速", "accent": "口音（普通话/方言等）"},
+    "signature_visual": "最容易被辨认的一个外形标记",
+    "anchor_en": "英文外形锚点，单段，供视频/图像提示词直接使用：年龄感+性别+发型发色+脸部特征+体型+默认装扮与配饰；不写抽象性格词",
+}
 
 # 给 LLM 的统一格式说明（同步 / 建档 / 迁移共用，只此一处定义）
 LAYOUT_RULES = """【角色文件格式（必须严格遵守）】
@@ -41,13 +61,14 @@ id: "char_001"
 name: "李凌云"
 role: "protagonist"
 introduced_chapter: 1
-identity: {"one_line_essence":"用强大武装自己的孤独者","age":17,"appearance":"身形单薄","signature_detail":"左手旧伤疤"}
+identity: {"one_line_essence":"用强大武装自己的孤独者","age":17,"signature_detail":"左手旧伤疤"}
+visual: {"gender":"male","age_look":"看起来约17岁，少年感明显","skin_tone":"偏白，略有风霜感","face":"瓜子脸，眉骨清晰，下颌线利落","eyes":{"color":"深褐","shape":"狭长凤眼","feature":"眼下有淡青影"},"hair":{"style":"齐肩短发，右侧挽起","color":"黑","texture":"柔软略乱","distinctive":"右鬓一缕白发"},"build":{"height_cm":172,"body_type":"身形单薄，肩背挺直"},"default_outfit":{"top":"靛蓝交领长衫","bottom":"深灰束腿长裤","footwear":"黑色布靴","outerwear":"无","palette":["靛蓝","灰","白"],"material":"粗麻与棉布","condition":"洗旧，袖口磨损"},"accessories":["左手背旧伤疤","腰间青色玉佩"],"voice":{"timbre":"清亮偏低","pace":"慢","accent":"普通话"},"signature_visual":"左手背旧伤疤，说话时习惯性摩挲","anchor_en":"17-year-old slim young man, male, shoulder-length black hair tied up on the right side with one white streak, pale skin, oval face with sharp jawline, deep brown narrow almond eyes, indigo high-collar robe, dark grey trousers, black cloth boots, jade pendant at waist, scar on back of left hand"}
 psychology: {"core_desire":"证明自身价值","core_fear":"被抛弃","speech_pattern":"话少","stress_response":"沉默独自承担"}
 behavior_guide: {"will_do":["无路可退时迸发意志力"],"wont_do":["无原则向敌人求饶"]}
 abilities: {"current_level":"炼气第七层","special_skills":["剑法天赋异禀"],"weaknesses":["不擅团战"]}
 arc: {"type":"成长弧","start_belief":"情感是弱点","end_belief":"接受自己的脆弱","cost":"放弃自我保护壳","current_stage":"扭曲信念期"}
-state_log: [{"chapter":8,"status":"晋升内门弟子","key_change":"初次展现真实实力","emotional_state":"略有松动","relationship_changes":["与王道长：陌生→微妙"]}]
-current_state: {"as_of_chapter":8,"location":"青云峰","physical":"轻伤已愈","emotional":"略感希望","known_secrets":["体质特殊"],"active_goals":["突破炼气期"]}
+state_log: [{"chapter":8,"status":"晋升内门弟子","key_change":"初次展现真实实力","emotional_state":"略有松动","relationship_changes":["与王道长：陌生→微妙"],"appearance_change":"换上内门弟子青色道袍，头发束起"}]
+current_state: {"as_of_chapter":8,"location":"青云峰","physical":"轻伤已愈","emotional":"略感希望","outfit":"青色内门道袍，腰间玉佩","known_secrets":["体质特殊"],"active_goals":["突破炼气期"]}
 relationships: {"char_002":{"type":"师徒","planned_evolution":"陌生→微妙→信任→揭秘","current_actual":"微妙","tension":"低","last_updated_chapter":8}}
 ---
 （正文可留空；系统会自动生成正文。）
@@ -56,7 +77,9 @@ relationships: {"char_002":{"type":"师徒","planned_evolution":"陌生→微妙
 2. id 必须与文件名一致；name 必须存在，且全书唯一。
 3. state_log 中同一章只能有一条：更新某章时替换该章的条目，不要追加重复条目。
 4. 未涉及的字段保持原样，不要删除。
-5. JSON 字符串里需要引号时用中文「」『』，不要使用英文双引号。"""
+5. JSON 字符串里需要引号时用中文「」『』，不要使用英文双引号。
+6. visual 是外形与声音的结构化设定，必须具体到可以直接画出来：gender 只能是 male/female/nonbinary/unknown；发型写长度、造型、发色；装扮写上装、下装、鞋、配饰与颜色；anchor_en 用英文写成一段外形描述。visual 只写固定外形，不写会变化的装扮。
+7. 装扮或外貌发生变化（换装、受伤、发型改变）时，只改 current_state.outfit 与本章 state_log 条目的 appearance_change，不要改 visual。"""
 
 
 class CharacterStoreError(Exception):
@@ -81,6 +104,52 @@ def _decode(text: str, where: str) -> Dict[str, Any]:
         raise CharacterStoreError(exc.problems)
 
 
+def visual_summary(rec: Dict[str, Any]) -> str:
+    """把外形字段压成一行中文，供写作摘要与正文使用。缺失项不编造，直接省略。"""
+    vis = rec.get("visual") if isinstance(rec.get("visual"), dict) else {}
+    cs = rec.get("current_state") if isinstance(rec.get("current_state"), dict) else {}
+    parts: List[str] = []
+    gmap = {"male": "男", "female": "女", "nonbinary": "非二元"}
+    if gmap.get(vis.get("gender")):
+        parts.append(gmap[vis["gender"]])
+    if vis.get("age_look"):
+        parts.append(str(vis["age_look"]))
+    hair = vis.get("hair") if isinstance(vis.get("hair"), dict) else {}
+    if hair.get("style") or hair.get("color"):
+        parts.append("发型：" + "，".join(str(hair[k]) for k in ("style", "color") if hair.get(k)))
+    out = vis.get("default_outfit") if isinstance(vis.get("default_outfit"), dict) else {}
+    outfit = "、".join(str(out[k]) for k in ("top", "bottom", "footwear", "outerwear")
+                      if out.get(k) and out[k] != "无")
+    if outfit:
+        parts.append(f"默认装扮：{outfit}")
+    if vis.get("signature_visual"):
+        parts.append(f"标志：{vis['signature_visual']}")
+    line = "，".join(parts)
+    if cs.get("outfit"):
+        line += f"｜当前装扮：{cs['outfit']}"
+    return line
+
+
+def visual_anchor(rec: Dict[str, Any]) -> str:
+    vis = rec.get("visual") if isinstance(rec.get("visual"), dict) else {}
+    return str(vis.get("anchor_en") or "").strip()
+
+
+def visual_gaps(rec: Dict[str, Any]) -> List[str]:
+    """外形字段中尚未填写的关键项（供建档后提示补全；不影响校验通过）。"""
+    vis = rec.get("visual") if isinstance(rec.get("visual"), dict) else {}
+    gaps = []
+    if vis.get("gender") in (None, "", "unknown"):
+        gaps.append("性别")
+    if not isinstance(vis.get("hair"), dict) or not vis["hair"].get("style"):
+        gaps.append("发型")
+    if not isinstance(vis.get("default_outfit"), dict) or not vis["default_outfit"].get("top"):
+        gaps.append("默认装扮")
+    if not visual_anchor(rec):
+        gaps.append("英文外形锚点")
+    return gaps
+
+
 def _body(rec: Dict[str, Any]) -> str:
     name = rec.get("name") or rec.get("id")
     lines = [f"# {name}（{rec.get('id')}）", "", "> 本文件由系统生成正文，结构化字段以文件头为准，修改请改文件头。", ""]
@@ -89,6 +158,8 @@ def _body(rec: Dict[str, Any]) -> str:
     ident = rec.get("identity") if isinstance(rec.get("identity"), dict) else {}
     if ident.get("one_line_essence"):
         lines.append(f"- 一句话：{ident['one_line_essence']}")
+    if visual_summary(rec):
+        lines.append(f"- 外形：{visual_summary(rec)}")
     cs = rec.get("current_state") if isinstance(rec.get("current_state"), dict) else {}
     if cs:
         lines.append(f"- 当前（第 {cs.get('as_of_chapter')} 章）：{cs.get('location', '')}，{cs.get('emotional', '')}")
@@ -126,6 +197,22 @@ def record_problems(rec: Any, where: str, expected_id: Optional[str] = None) -> 
     ic = rec.get("introduced_chapter")
     if ic is not None and not (_is_int(ic) and ic >= 1):
         p.append(f"{where}：introduced_chapter 应为正整数或 null")
+    vis = rec.get("visual")
+    if vis is not None:
+        if not isinstance(vis, dict):
+            p.append(f"{where}：visual 应为对象")
+        else:
+            g = vis.get("gender")
+            if g is not None and g not in GENDER_VALUES:
+                p.append(f"{where}：visual.gender 只能是 {'/'.join(GENDER_VALUES)}，当前为 {g!r}")
+            for k in VISUAL_SUBDICTS:
+                if k in vis and not isinstance(vis[k], dict):
+                    p.append(f"{where}：visual.{k} 应为对象")
+            if "accessories" in vis and not (isinstance(vis["accessories"], list)
+                                              and all(isinstance(x, str) for x in vis["accessories"])):
+                p.append(f"{where}：visual.accessories 应为字符串数组")
+            if "anchor_en" in vis and not isinstance(vis["anchor_en"], str):
+                p.append(f"{where}：visual.anchor_en 应为字符串")
     cs = rec.get("current_state")
     if isinstance(cs, dict) and cs.get("as_of_chapter") is not None and not _is_int(cs.get("as_of_chapter")):
         p.append(f"{where}：current_state.as_of_chapter 应为整数")
@@ -412,8 +499,10 @@ def brief_for(chars: Dict[str, Dict[str, Any]], names: List[str]) -> str:
         bg = r.get("behavior_guide") if isinstance(r.get("behavior_guide"), dict) else {}
         wont = "、".join(str(x) for x in (bg.get("wont_do") or [])[:4])
         secrets = "、".join(str(x) for x in (cs.get("known_secrets") or [])[:4])
+        looks = visual_summary(r)
         out.append(
             f"- {nm}（{r.get('id')}，{r.get('role', '')}）：{ident.get('one_line_essence', '')}\n"
+            + (f"  外形：{looks}\n" if looks else "  外形：（未记录，写作时不要随意描写具体外貌）\n") +
             f"  当前（第 {cs.get('as_of_chapter')} 章）：{cs.get('location', '')}，{cs.get('emotional', '')}\n"
             f"  说话：{ps.get('speech_pattern', '')}\n"
             f"  不会：{wont or '（未记录）'}；已知：{secrets or '（未记录）'}"

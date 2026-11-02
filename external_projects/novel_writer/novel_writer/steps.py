@@ -148,7 +148,7 @@ def design_character_step(name: str) -> StepDef:
     return StepDef(
         id=f"design_character:{name}", title=f"人设设计：{name}", stage="p1", category=CAT_DESIGN,
         executor=EXECUTOR_SKILL, skill="character-designer",
-        instructions=f"为主要角色「{name}」设计人设卡（人设卡文件名即角色名）。",
+        instructions=f"为主要角色「{name}」设计人设卡（人设卡文件名即角色名）。必须包含「外形规格」一节：性别（男/女/非二元/不确定）、年龄感、肤色、脸型与五官、眼睛、发型（长度/造型/发色/显著特征）、体型与身高、默认装扮（上装/下装/鞋/外套、颜色与面料、新旧）、随身配饰、声音（音色/语速/口音）、最易辨认的标志外形，以及一段英文外形锚点。外形要具体到能直接画出来。",
         inputs=(rel("blueprint"),), outputs=(rel("character_card", name=name),),
         deps=("blueprint_split",), extra={"character": name},
     )
@@ -166,7 +166,7 @@ def build_characters_step(card_names: Sequence[str]) -> StepDef:
         id="build_characters", title="建立人物档案", stage="p1", category=CAT_BUILD,
         executor=EXECUTOR_SKILL, skill="character-manager",
         instructions=("把人设卡转换为角色文件：为每张人设卡在角色目录下建立一个角色文件（一卡一文件，"
-                      "id 取 char_ 加三位编号），把身份、心理、行为边界、能力、弧线写入对应字段；"
+                      "id 取 char_ 加三位编号），把身份、外形、心理、行为边界、能力、弧线写入对应字段；人设卡中的「外形规格」必须逐项写入 visual（gender 必填、发型、体型、默认装扮、配饰、声音、英文锚点），不能只保留一句外貌描述；"
                       "state_log 为空数组，current_state.as_of_chapter 为 0；"
                       "「他会做 / 他不会做」写入 behavior_guide.will_do / wont_do。\n" + LAYOUT_RULES),
         inputs=tuple(rel("character_card", name=n) for n in card_names),
@@ -191,7 +191,7 @@ def _character_sync_instructions(n: int) -> str:
     return (f"【本章人物更新】请直接编辑本章出场角色的文件（目录：{rel('characters_dir')}，每个角色一个 {{id}}.md）。"
             f"出场角色以蓝图第 {n} 章的 characters_present 为准（蓝图：{rel('blueprint')}）。"
             f"对每个出场的主角与重要配角（普通配角仅在本章有明确变化时更新，路人不更新）：更新 state_log 中第 {n} 章的条目（没有则新增，已有则替换，保持精简）；"
-            f"更新 current_state（as_of_chapter={n}）；按概述更新 relationships 中的 current_actual 与 last_updated_chapter。"
+            f"更新 current_state（as_of_chapter={n}）；若本章换装、受伤或发型改变，如实写入 current_state.outfit 与 state_log 本章条目的 appearance_change；按概述更新 relationships 中的 current_actual 与 last_updated_chapter。"
             "概述中出现的新角色：新建角色文件（id 取 char_ 加未占用的三位编号）。未出场角色的文件不要改动。\n"
             + LAYOUT_RULES)
 

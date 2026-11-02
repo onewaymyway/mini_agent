@@ -26,6 +26,8 @@ description: 小说人物管理技能。负责创建和维护所有角色的完�
 核心信念/扭曲信念         → psychology.belief / distorted_belief
 道德底线                  → psychology.moral_limit
 标志性外形细节            → identity.signature_detail
+性别 / 发型 / 装扮 / 体型 / 声音 / 英文锚点 → visual.gender / visual.hair / visual.default_outfit / visual.build / visual.voice / visual.anchor_en（固定外形，不写会变化的装扮）
+换装 / 受伤 / 发型改变等临时变化 → current_state.outfit 与本章 state_log 条目的 appearance_change
 说话方式特征              → psychology.speech_pattern
 压力应激反应              → psychology.stress_response
 决策倾向                  → psychology.decision_logic

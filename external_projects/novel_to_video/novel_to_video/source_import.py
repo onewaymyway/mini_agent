@@ -257,7 +257,33 @@ def _load_chapters(root: Path, issues: List[ImportIssue]) -> List[Dict[str, Any]
 
 # ---------------------------------------------------------------- 角色
 
-def _describe_character(identity: Dict[str, Any], persona_text: str) -> str:
+def _visual_text(visual: Dict[str, Any]) -> str:
+    """把 novel_writer 角色文件的 visual 字段压成一段中文外形描述（供人工与 G-2 参考）。"""
+    if not visual:
+        return ""
+    parts = []
+    hair = visual.get("hair") if isinstance(visual.get("hair"), dict) else {}
+    if hair.get("style") or hair.get("color"):
+        parts.append("发型：" + "，".join(str(hair[k]) for k in ("style", "color") if hair.get(k)))
+    out = visual.get("default_outfit") if isinstance(visual.get("default_outfit"), dict) else {}
+    outfit = "、".join(str(out[k]) for k in ("top", "bottom", "footwear", "outerwear") if out.get(k) and out[k] != "无")
+    if outfit:
+        parts.append(f"默认装扮：{outfit}")
+    if visual.get("accessories"):
+        parts.append("配饰：" + "、".join(str(x) for x in visual["accessories"]))
+    if visual.get("face"):
+        parts.append(f"脸部：{visual['face']}")
+    return "；".join(parts)
+
+
+def _voice_text(visual: Dict[str, Any]) -> Optional[str]:
+    voice = visual.get("voice") if isinstance(visual.get("voice"), dict) else {}
+    bits = [f"{label}{voice[k]}" for k, label in (("timbre", "音色"), ("pace", "语速"), ("accent", "口音"))
+            if voice.get(k)]
+    return "，".join(bits) or None
+
+
+def _describe_character(identity: Dict[str, Any], persona_text: str, visual: Optional[Dict[str, Any]] = None) -> str:
     parts: List[str] = []
     if identity.get("one_line_essence"):
         parts.append(f"定位：{identity['one_line_essence']}")
@@ -265,6 +291,9 @@ def _describe_character(identity: Dict[str, Any], persona_text: str) -> str:
         parts.append(f"外貌：{identity['appearance']}")
     if identity.get("signature_detail"):
         parts.append(f"标志：{identity['signature_detail']}")
+    look = _visual_text(visual or {})
+    if look:
+        parts.append(f"外形：{look}")
     text = "；".join(parts)
     persona_look = _section(persona_text, "外在呈现") if persona_text else ""
     if persona_look:
@@ -316,8 +345,12 @@ def _load_characters(root: Path, issues: List[ImportIssue]) -> List[Dict[str, An
 
         persona_path = persona_dir / f"{name}.md"
         persona_text = _read(persona_path) if persona_path.is_file() else ""
-        gm = GENDER_RE.search(persona_text) or GENDER_RE.search(body)
-        gender = GENDER_MAP[gm.group(1)] if gm else None
+        visual = meta.get("visual") if isinstance(meta.get("visual"), dict) else {}
+        # 结构化的 visual.gender 优先（作者明确写定）；否则退回人设卡文字中的“性别：男/女”
+        gender = visual.get("gender") if visual.get("gender") in ("male", "female") else None
+        if gender is None:
+            gm = GENDER_RE.search(persona_text) or GENDER_RE.search(body)
+            gender = GENDER_MAP[gm.group(1)] if gm else None
         if gender is None:
             no_gender.append(name)
 
@@ -330,12 +363,13 @@ def _load_characters(root: Path, issues: List[ImportIssue]) -> List[Dict[str, An
             "gender": gender,
             # 人设卡明确写出“性别：男/女”即为 persona 来源，可直接通过门禁；缺失则为 None
             "gender_source": "persona" if gender else None,
-            "description_zh": _describe_character(identity, persona_text),
+            "description_zh": _describe_character(identity, persona_text, visual),
             "speech_pattern": psychology.get("speech_pattern"),
             "first_appear": meta.get("introduced_chapter"),
             "relations": [],
-            "visual_anchor_en": None,
-            "voice_profile": None,
+            # 作者写定的英文外形锚点与声音直接采用；G-2 只补缺失项，不覆盖
+            "visual_anchor_en": str(visual.get("anchor_en") or "").strip() or None,
+            "voice_profile": _voice_text(visual),
             "asset_path": None,
             "appearance_variants": [],
             "persona_card": _rel(root, persona_path) if persona_text else None,
