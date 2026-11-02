@@ -14,8 +14,10 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
+from .. import autogate
 from .. import joblog
 from .. import llm_trace
+from ..project_store import write_json_atomic
 from .. import prompts
 from ..chapter_io import chapter_dir, load_entities, load_shots, mark_stage, save_shots, source_text
 from ..review import entity_key, get_item, load_review, save_review
@@ -97,11 +99,16 @@ def run_assets(project_dir: Path, no: int, text_llm: TextLLM, image: ImageProvid
         ent = _draft_entity(project_dir, text_llm, name, _speaker_context(script, name), no, eid)
         chars.append(ent)
         by_name[name] = eid
-        get_item(review, entity_key("character", eid)).update(text_status="pending", portrait_status="missing")
+        get_item(review, entity_key("character", eid)).update(
+            text_status="approved" if autogate.is_auto(project_dir, "asset_text") else "pending",
+            portrait_status="missing")
         drafted.append(eid)
     if drafted:
         save_entities_ids(project_dir, chars_doc)
         save_review(project_dir, review)
+
+    # 1b) 草拟剧本中出现、但全局地点库没有的地点（补充到全局库，文本与定妆图确认后参与镜头）
+    drafted_locs = _draft_missing_locations(project_dir, text_llm, shots, no)
 
     # 2) 回填镜头中的说话人 id
     changed = False
@@ -154,8 +161,111 @@ def run_assets(project_dir: Path, no: int, text_llm: TextLLM, image: ImageProvid
         if c.get("asset_path") and item["portrait_status"] != "approved":
             waiting.append(f"{c['id']} {c['names'][0]}：等待确认定妆图")
 
+    # 4) 本章草拟的地点：文本确认 → 定妆图生成 → 定妆图确认（与补建角色相同的门槛）
+    waiting += _locations_waiting(project_dir, no, image)
+
     mark_stage(project_dir, no, "assets", "waiting" if waiting else "done")
-    return {"drafted": drafted, "waiting": waiting}
+    return {"drafted": drafted, "drafted_locations": drafted_locs, "waiting": waiting}
+
+
+def _next_loc_id(locs: List[Dict[str, Any]]) -> str:
+    nums = [int(l["id"].split("_")[1]) for l in locs
+            if l["id"].startswith("loc_") and l["id"].split("_")[1].isdigit()]
+    return f"loc_{(max(nums) + 1 if nums else 1):02d}"
+
+
+def _location_context(script: str, name: str) -> List[str]:
+    out = []
+    for line in script.splitlines():
+        if name in line and line.strip():
+            out.append(line.strip())
+    return out[:6]
+
+
+def _draft_missing_locations(project_dir: Path, text_llm: TextLLM, shots: Dict[str, Any], no: int) -> List[str]:
+    """为 new_locations 中的地点起草设定，写入全局地点库，并把镜头的地点回填为新 id。"""
+    names = [n for n in (shots.get("new_locations") or []) if n]
+    if not names:
+        return []
+    ents = load_entities(project_dir)
+    locs_doc = ents["locations"]
+    locs = locs_doc["locations"]
+    by_name = {}
+    for l in locs:
+        for n in [l.get("name")] + list(l.get("aliases") or []):
+            if n:
+                by_name[n] = l["id"]
+    script = (chapter_dir(project_dir, no) / "script.md").read_text(encoding="utf-8")
+    review = load_review(project_dir)
+    drafted: List[str] = []
+    for name in names:
+        if name in by_name:
+            continue
+        eid = _next_loc_id(locs)
+        label = f"第 {no} 章 C-5 起草缺失地点「{name}」设定"
+        ent = {"id": eid, "name": name, "aliases": [], "location_type": None, "era_setting": None,
+               "first_appear": no, "description_zh": "剧本中出现的地点。上下文：" + "；".join(_location_context(script, name)),
+               "visual_anchor_en": None, "visual_anchor_source": None, "asset_path": None,
+               "appearance_variants": [], "source": "auto_added", "auto_added_chapter": no}
+        with joblog.timed(project_dir, "chapter", label):
+            raw = llm_trace.ask_traced(project_dir, text_llm, prompts.location_prompt(ent),
+                                       system=prompts.SYSTEM_VISUAL, scope="chapter", label=label,
+                                       step="C-5", chapter=no)
+        obj = parse_json_object(raw)
+        anchor = str(obj.get("visual_anchor_en") or "").strip()
+        if not anchor:
+            raise StepError(f"地点「{name}」的草稿缺少 visual_anchor_en")
+        ent["visual_anchor_en"] = anchor
+        ent["visual_anchor_source"] = text_llm.name
+        locs.append(ent)
+        by_name[name] = eid
+        get_item(review, entity_key("location", eid)).update(
+            text_status="approved" if autogate.is_auto(project_dir, "asset_text") else "pending",
+            portrait_status="missing")
+        drafted.append(eid)
+    if drafted:
+        write_json_atomic(project_dir / "global" / "locations.json", locs_doc)
+        save_review(project_dir, review)
+    # 回填镜头：地点名 → 新 id；仍未解决的留在 new_locations 中
+    for sh in shots.get("shots") or []:
+        if sh.get("location_id") is None and sh.get("location_name") in by_name:
+            sh["location_id"] = by_name[sh["location_name"]]
+            sh["location_name"] = None
+    shots["new_locations"] = [n for n in names if n not in by_name]
+    save_shots(project_dir, no, shots)
+    return drafted
+
+
+def _locations_waiting(project_dir: Path, no: int, image: ImageProvider) -> List[str]:
+    waiting: List[str] = []
+    locs = load_entities(project_dir)["locations"]["locations"]
+    mine = [l for l in locs if l.get("auto_added_chapter") == no]
+    if not mine:
+        return waiting
+    review = load_review(project_dir)
+    need = []
+    for l in mine:
+        item = get_item(review, entity_key("location", l["id"]))
+        if item["text_status"] != "approved":
+            waiting.append(f"{l['id']} {l.get('name')}：等待确认地点设定")
+        elif not l.get("asset_path"):
+            need.append(l["id"])
+    if need:
+        summary = portrait_pass(project_dir, image, ids=need)
+        if summary.get("stopped"):
+            raise StepError(summary["stopped"])
+        locs = load_entities(project_dir)["locations"]["locations"]
+        review = load_review(project_dir)
+        for l in locs:
+            if l["id"] in need and not l.get("asset_path"):
+                waiting.append(f"{l['id']}：地点定妆图生成失败，请查看全书素材页")
+    for l in locs:
+        if l.get("auto_added_chapter") != no:
+            continue
+        item = get_item(review, entity_key("location", l["id"]))
+        if l.get("asset_path") and item["portrait_status"] != "approved":
+            waiting.append(f"{l['id']} {l.get('name')}：等待确认地点定妆图")
+    return waiting
 
 
 def missing_portraits(project_dir: Path, no: int) -> List[str]:

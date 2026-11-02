@@ -26,6 +26,7 @@ from ..providers.text import TextLLM
 from ..review import entity_key, get_item, load_review, save_review, update_item
 
 from ..project_store import DEFAULT_ART_STYLE
+from .. import autogate
 from .. import video_format
 CHAR_RATIO = "3:4"
 # 地点定妆图的比例跟随项目的视频格式（横屏 16:9 / 竖屏 9:16），见 video_format.py
@@ -239,7 +240,8 @@ def portrait_pass(project_dir: Path, image: ImageProvider, *, only_missing: bool
             if result.ok:
                 ent["asset_path"] = rel
                 _save_entities(project_dir, kind, data)
-                item.update(portrait_status="pending", portrait_version=version, last_error=None)
+                item.update(portrait_status="approved" if autogate.is_auto(project_dir, "asset_portrait") else "pending",
+                            portrait_version=version, last_error=None)
                 summary["done"].append(eid)
                 joblog.log(project_dir, "assets", f"G-3 完成：{name} → {rel}", level="ok")
             else:

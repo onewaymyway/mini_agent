@@ -1133,3 +1133,13 @@ Phase 2 是风险最高的一期（涉及外部视频 API、一致性核查、�
 - 提示词与参考图使用镜头所选形象。
 
 测试：`tests/test_shot_plan_quality.py::test_unknown_location_is_recorded_not_silently_replaced`，以及对应的章节视图测试。
+
+## 阶段 2（已完成）：缺失地点草拟、补充全局库、按挡位自动审核
+
+- C-5 对 `shots.new_locations` 中库里没有的地点起草设定（`prompts.location_prompt`，要求 visual_anchor_en），写入 `global/locations.json`，记 `source=auto_added`、`auto_added_chapter`，id 为 `loc_NN`。草稿的审核项为 `location:<id>`。
+- 草稿写入后，镜头的 `location_id` 回填为新 id，`location_name` 清空；仍未解决的名字保留在 `new_locations`。
+- 文本确认与定妆图确认沿用补建角色的门槛：未通过则章节停在 waiting_assets；定妆图生成后按需确认。
+- 挡位自动审核：`autogate.is_auto(project_dir, checkpoint)` 读取项目挡位，`asset_text` 为 auto 时草稿文本直接通过，`asset_portrait` 为 auto 时定妆图生成后直接通过（角色与地点共用）。
+- 审核接口 `tool_api.review_asset(kind="location", …)` 与角色相同，可在全书素材页确认（审核函数与类型无关）。
+- 测试：`tests/test_location_drafts.py`（草拟与回填、手动挡位等待、G3 自动通过）。
+- 未完成：全书素材页是否列出新地点的卡片，尚未在界面上逐项验证。

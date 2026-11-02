@@ -132,9 +132,8 @@ def _missing_locations(v: dict) -> None:
     names = v.get("new_locations") or []
     if not names:
         return
-    st.warning("本章有 {0} 个地点不在全局地点库中：{1}。这些镜头暂时没有地点，画面不会带上场景设定。"
-               "请在「全书素材」里补充这些地点，或修改剧本中的地点名后重新规划本章。".format(
-                   len(names), "、".join(names)))
+    st.warning("以下地点还没有对应的全局地点：{0}。运行本章（C-5）时会为它们起草设定并写入全局地点库，"
+               "之后需要在「全书素材」中确认文本与定妆图。".format("、".join(names)))
 
 
 def _shots_review(v: dict) -> None:
