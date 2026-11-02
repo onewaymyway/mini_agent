@@ -238,6 +238,7 @@ def chapter_view(project_dir: Path, no: int) -> Dict[str, Any]:
         "plan_warnings": (shots_doc["plan_warnings"] if "plan_warnings" in shots_doc
                           else _derive_plan_warnings(shots_doc.get("shots") or [])),
         "all_characters": [{"id": cid, "name": c["name"]} for cid, c in lookup["chars"].items()],
+        "new_locations": list(shots_doc.get("new_locations") or []),   # 剧本/镜头中库里没有的地点
         "output": str(out_path.relative_to(project_dir)) if out_path.is_file() else None,
         "counts": {s: sum(1 for v in states.values() if v == s) for s in
                    ("approved", "pending", "stale", "rejected", "missing", "failed")} if states else {},

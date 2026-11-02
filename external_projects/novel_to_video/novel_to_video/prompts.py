@@ -147,7 +147,7 @@ def shots_prompt(script: str, characters: list, locations: list, *,
         "2. dialogue 的 text 必须是剧本对白行中的连续原文：可以只截取原句中连续的一段，但不能删减中间的字、"
         "不能改写、不能把不相邻的句子拼在一起。原句太长时，拆成多个镜头，每个镜头各取一段连续原文；\n"
         "3. dialogue 的 speaker_id 从 characters 中选；若剧本中的说话人不在 characters 中，speaker_id 置 null 并填 speaker_name；\n"
-        "4. location_id 从 locations 中选，场景切换时必须换镜头；\n"
+        "4. location_id 从 locations 中选；剧本地点不在 locations 中时，location_id 置 null，并在 location_name 中填写剧本里的地点名（不要编造）；场景切换时必须换镜头；\n"
         "5. visual_hint_zh 为中文画面描述，visual_hint_en 为对应英文画面描述（不写人名，只写动作与构图）；\n"
         + (f"6. 每个镜头的口播（旁白+对白）建议在 {min_chars_per_shot}–{max_chars_per_shot} 字左右（约 4–12 秒，差几秒可以接受）；"
            f"一场戏通常需要多个镜头，不要把整场戏写成一个镜头。整章预计约 {expected_shots} 个镜头。\\n"

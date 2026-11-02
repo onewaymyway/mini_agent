@@ -151,7 +151,8 @@ def test_shots_prompt_demands_short_distinct_shots(proj):
 
 def test_chapter_view_lists_cast_location_and_speaker_names(proj):
     lin, ying = _cid(proj, "林远"), _cid(proj, "影子")
-    raw = [{"scene_no": 1, "location_id": "x", "character_ids": [],
+    loc_name = cio.load_entities(proj)["locations"]["locations"][0]["name"]
+    raw = [{"scene_no": 1, "location_id": None, "location_name": loc_name, "character_ids": [],
             "blocks": [{"type": "dialogue", "text": "我们走。", "speaker_id": lin},
                        {"type": "dialogue", "text": "等一下。", "speaker_id": ying}],
             "visual_hint_zh": "林远走向门口", "visual_hint_en": "walk to door"}]
@@ -258,3 +259,15 @@ def test_legacy_shots_yaml_gets_derived_warnings_and_is_rewritten_without_anchor
     assert len(w) == 1 and w[0]["parts"] == 3 and w[0]["scene_no"] == 1
     cio.save_shots(proj, 1, cio.load_shots(proj, 1))                 # 任何一次保存都会去掉锚点
     assert "&id" not in path.read_text(encoding="utf-8")
+
+def test_unknown_location_is_recorded_not_silently_replaced(proj):
+    """库中没有的地点不再悄悄挂到第一个地点上：记为缺失素材，镜头地点留空。"""
+    lin = _cid(proj, "林远")
+    raw = [{"scene_no": 1, "location_id": None, "location_name": "旧码头", "character_ids": [],
+            "blocks": [{"type": "dialogue", "text": "我们走。", "speaker_id": lin}],
+            "visual_hint_zh": "码头", "visual_hint_en": "old pier"}]
+    _plan(proj, raw)
+    doc = cio.load_shots(proj, 1)
+    assert doc["new_locations"] == ["旧码头"]
+    assert doc["shots"][0]["location_id"] is None
+    assert doc["shots"][0]["location_name"] == "旧码头"

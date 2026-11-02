@@ -127,6 +127,16 @@ def _auto_added_section(pdir: str, no: int, v: dict) -> None:
                           for s in handled], width='stretch', hide_index=True)
 
 
+def _missing_locations(v: dict) -> None:
+    """缺失素材：镜头里提到、但全局地点库中没有的地点。补充到全局库的流程在下一阶段实现，这里先明确列出。"""
+    names = v.get("new_locations") or []
+    if not names:
+        return
+    st.warning("本章有 {0} 个地点不在全局地点库中：{1}。这些镜头暂时没有地点，画面不会带上场景设定。"
+               "请在「全书素材」里补充这些地点，或修改剧本中的地点名后重新规划本章。".format(
+                   len(names), "、".join(names)))
+
+
 def _shots_review(v: dict) -> None:
     """C-3 镜头规划校验：自动修正次数与未解决的问题（失败时章节停在这里，这里能看到全部原因）。"""
     rv = v.get("shots_review")
@@ -293,6 +303,7 @@ def page_chapters() -> None:
         st.markdown("#### 章节成片")
         st.video(str(Path(pdir) / v["output"]))
     _script_review(v)
+    _missing_locations(v)
     _shots_review(v)
     if v.get("script"):
         with st.expander("剧本（模型输出整理后的文本）"):

@@ -1105,3 +1105,31 @@ Phase 2 是风险最高的一期（涉及外部视频 API、一致性核查、�
   - 缓存：小场景的缓存键包含格式，修改格式后，下次运行 C-8 会重新生成。
 - 注意：已生成的地点定妆图和封面背景不会自动重做，需要时请重新生成。
 - 测试：`tests/test_video_format.py`；`test_project_store.py`、`test_phase4.py` 的默认尺寸断言已更新为横屏。
+
+## 缺失素材（地点 / 道具 / 角色形象）：已确认的决策与分阶段计划
+
+已确认：
+- 角色形象全局共享；由模型标注形象，代码只负责去重与校验。
+- 新素材先进入全局库（草稿），确认定妆图后才参与镜头。
+- 不同档位可以自动审核：沿用 gates 的 `asset_text` / `asset_portrait`（G3 及以上为自动）。
+- 道具纳入范围。
+
+阶段 1（本次已完成）：
+- 镜头规划不再把库中没有的地点悄悄挂到第一个地点上（原有 bug）。地点按库中名称/别名匹配，匹配不到则记为 `new_locations`，镜头 `location_id` 置空、保留 `location_name`。
+- 章节视图返回 `new_locations`，章节页面以警告形式列出缺失地点。
+- 提示词允许模型在地点不在库中时填写 `location_name`。
+
+阶段 2（待实施）：
+- C-5 为缺失地点草拟设定（描述与视觉锚点），写入 `global/locations.json`，记 `source=auto_added`、`auto_added_chapter`；按名称回填镜头的 `location_id`。
+- 草稿的文本确认与定妆图确认沿用补建角色的审核流程，并按档位自动通过。
+- 全书素材页与章节页补充地点的确认入口。
+
+阶段 3（待实施）：道具
+- 新增 `global/props.json` 与 `prop` 审核类型；镜头输出 `prop_names`，按名称匹配或记为缺失；草拟、定妆图（静物，无人物）与确认流程同地点。
+
+阶段 4（待实施）：角色形象
+- 角色增加 `looks` 列表（标签、描述、视觉锚点、定妆图、审核状态），图片存放于 `characters/<id>/<look_id>.png`。
+- 镜头输出每个出镜角色的形象标签；新标签由模型给出描述，代码去重；新形象进入草稿，确认定妆图后才用于生成。
+- 提示词与参考图使用镜头所选形象。
+
+测试：`tests/test_shot_plan_quality.py::test_unknown_location_is_recorded_not_silently_replaced`，以及对应的章节视图测试。

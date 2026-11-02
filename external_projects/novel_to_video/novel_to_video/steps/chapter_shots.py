@@ -69,6 +69,12 @@ def validate_and_build(raw_shots: List[Dict[str, Any]], script: str, locations: 
     if not raw_shots:
         raise StepError("LLM 没有返回任何镜头")
     loc_ids = {l["id"] for l in locations}
+    loc_by_name = {}
+    for l in locations:
+        for n in [l.get("name")] + list(l.get("aliases") or []):
+            if n:
+                loc_by_name[str(n).strip()] = l["id"]
+    new_locations: List[str] = []
     char_by_id = {c["id"]: c for c in characters}
     char_by_name = {n: c["id"] for c in characters for n in c.get("names", [])}
     script_norm = norm(script)
@@ -80,8 +86,19 @@ def validate_and_build(raw_shots: List[Dict[str, Any]], script: str, locations: 
     for raw_idx, rs in enumerate(raw_shots, start=1):
         scene_no = int(rs.get("scene_no") or 1)
         loc = rs.get("location_id")
+        loc_name = str(rs.get("location_name") or "").strip() or None
         if loc not in loc_ids:
-            loc = locations[0]["id"] if locations else None
+            # 模型可能给的是名字而不是 id：先按库中名称/别名匹配
+            name_hit = loc_by_name.get(str(loc or "").strip()) or (loc_by_name.get(loc_name) if loc_name else None)
+            if name_hit:
+                loc = name_hit
+            else:
+                # 库中没有这个地点：记为缺失素材（不再悄悄挂到第一个地点上）
+                missing = loc_name or (str(loc).strip() if loc else None)
+                if missing and missing not in new_locations:
+                    new_locations.append(missing)
+                loc = None
+                loc_name = missing
         blocks: List[Dict[str, Any]] = []
         for rb in rs.get("blocks") or []:
             btype = rb.get("type")
@@ -115,7 +132,8 @@ def validate_and_build(raw_shots: List[Dict[str, Any]], script: str, locations: 
         for cid in rs.get("character_ids") or []:
             if cid in char_by_id and cid not in cast:
                 cast.append(cid)
-        base = {"scene_no": scene_no, "location_id": loc, "character_ids": cast,
+        base = {"scene_no": scene_no, "location_id": loc, "location_name": loc_name if loc is None else None,
+                "character_ids": cast,
                 "visual_hint_zh": str(rs.get("visual_hint_zh") or "").strip(),
                 "visual_hint_en": str(rs.get("visual_hint_en") or "").strip() or "cinematic medium shot, no text"}
         scenes.setdefault(scene_no, {"scene_no": scene_no, "location_id": loc})
@@ -138,6 +156,7 @@ def validate_and_build(raw_shots: List[Dict[str, Any]], script: str, locations: 
         "scenes": list(scenes.values()),
         "shots": shots,
         "new_speakers": new_speakers,
+        "new_locations": new_locations,
         "plan_warnings": plan_warnings,
     }
 
@@ -319,4 +338,4 @@ def run_shots(project_dir: Path, no: int, text_llm: TextLLM, *, force: bool = Fa
     write_yaml_atomic(review_path, {"status": "pass", "attempts": attempt + 1, "issues": []})
     mark_stage(project_dir, no, "shots", "done")
     return {"skipped": False, "shots": len(built["shots"]), "new_speakers": built["new_speakers"],
-            "attempts": attempt + 1}
+            "new_locations": built.get("new_locations", []), "attempts": attempt + 1}
