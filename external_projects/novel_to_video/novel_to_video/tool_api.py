@@ -746,6 +746,24 @@ def set_tts_proxy(project_dir: str, mode: Optional[str]) -> Dict[str, Any]:
     return _ok({"edge_tts_proxy": value})
 
 
+def set_subtitles(project_dir: str, enabled: bool, font_size: Optional[int] = None) -> Dict[str, Any]:
+    """章节合成是否烧录字幕（默认开启）。font_size 为空时按画面高度自动取值，允许 16–120。"""
+    pdir = Path(project_dir)
+    if font_size is not None and not (16 <= int(font_size) <= 120):
+        return _fail("字号应在 16–120 之间，或留空自动取值")
+    try:
+        proj = ps.read_json(pdir / "project.json")
+    except (OSError, ValueError) as exc:
+        return _fail(str(exc))
+    cfg = dict(proj.get("subtitles") or {})
+    cfg["enabled"] = bool(enabled)
+    cfg["font_size"] = int(font_size) if font_size else None
+    proj["subtitles"] = cfg
+    ps.write_json_atomic(pdir / "project.json", proj)
+    ps.append_progress(pdir, f"字幕：{'烧录' if enabled else '关闭'}，字号 {cfg['font_size'] or '自动'}（下次合成章节时生效）")
+    return _ok(cfg)
+
+
 def set_video_proxy(project_dir: str, use_system_proxy: bool) -> Dict[str, Any]:
     """视频接口（创建、查询）与视频下载是否使用系统代理。默认 False：直连，不读取系统代理。
     只影响视频相关请求；配音的网络方式见 set_tts_proxy。"""

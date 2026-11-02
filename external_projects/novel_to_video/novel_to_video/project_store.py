@@ -48,6 +48,8 @@ DEFAULT_OPTIONS: Dict[str, Any] = {
     "tts": {"engine": "cosyvoice", "fallback": "edge-tts", "voice": None,
             "cosyvoice_model_dir": None, "cosyvoice_timeout_sec": 60, "edge_tts_timeout_sec": 45,
             "edge_tts_proxy": None},   # None = 系统代理；"direct" = 强制直连；或指定代理地址
+    # 字幕：章节合成时烧录台词（旁白 / 说话人：对白）。font_size 为空时按画面高度自动取值。
+    "subtitles": {"enabled": True, "font_size": None},
     "character_looks_enabled": False,   # 角色多形象（换装/受伤等）：默认关闭，在挡位页开启
     "gear": "G0",
     "budget": {"max_video_calls": None, "max_image_calls": None, "max_minutes": None},

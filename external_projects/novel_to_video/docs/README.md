@@ -395,3 +395,16 @@ python entrypoints/smoke_real_api.py --out smoke_out
 
 实现位于 mini_agent 的 `.claude/skills/gen_video_with_text/agnes_tools.py`（`AgnesVideoClient(use_system_proxy=False, cancel_event=None)`），项目侧经 `providers/skill_providers.py` 读取配置。
 
+## 20. 字幕（2026-11-02）
+
+章节合成（C-9）时默认烧录字幕，参考 `.claude/skills/novel-video-studio` 的做法：
+
+- **内容**：旁白原样显示；对白前加说话人名（“林远：我们走。”）。
+- **时间**：每条字幕的起止时间取自该台词块的真实配音时长，块之间的间隔与配音拼接一致，因此与声音对齐。镜头视频因配音时长被缩放时，字幕时间同步缩放。
+- **实现**：字幕用 PIL 渲染成透明 PNG，再由 ffmpeg 的 concat 时间表叠加到画面上，不依赖 libass。音轨原样保留。
+- **字体**：优先环境变量 `NOVEL_TO_VIDEO_FONT`，其次系统中的中文字体（Windows 微软雅黑/黑体，Linux 的 Noto CJK，macOS 苹方）。找不到字体时章节失败，并提示设置该变量。
+- **设置**：挡位页「字幕」区域可以关闭字幕或设置字号（留空按画面高度自动取值，720P 约 30 像素）。关闭后输出无字幕的章节视频。
+- **生效**：修改设置后，重新运行本章即可重新合成。全书合成（F-3）直接拼接章节视频，不再处理字幕。
+
+输出：`chapters/NNN/chapter_NNN.mp4`（字幕已烧录）。拼接前的中间文件 `chapter_nosub.mp4` 会在合成后删除。
+

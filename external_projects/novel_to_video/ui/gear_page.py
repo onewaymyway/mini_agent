@@ -117,6 +117,16 @@ def page_gear() -> None:
         (st.success if res["ok"] else st.error)("已保存（下一次视频请求起生效）" if res["ok"] else res["error"]["message"])
     st.caption(f"当前：{'使用系统代理' if cur_v_proxy else '直连（默认）'}。配音的网络方式在下方“配音网络”中单独设置。")
 
+    st.markdown("#### 字幕")
+    subcfg = {**ps.DEFAULT_OPTIONS["subtitles"], **(proj_cfg.get("subtitles") or {})}
+    sub_on = st.checkbox("章节合成时烧录字幕", value=bool(subcfg.get("enabled", True)), key="gear_sub_on",
+                         help="旁白原样显示，对白前加说话人名，时间与配音对齐。关闭后输出无字幕的章节视频。")
+    sub_size = st.number_input("字号（留空自动，像素高度按画面高度取值）", min_value=0, max_value=120, step=2,
+                               value=int(subcfg.get("font_size") or 0), key="gear_sub_size")
+    if st.button("保存字幕设置", key="gear_sub_save"):
+        res = tool_api.set_subtitles(pdir, bool(sub_on), int(sub_size) or None)
+        (st.success if res["ok"] else st.error)("已保存（重新运行本章后生效）" if res["ok"] else res["error"]["message"])
+
     st.markdown("#### 配音网络")
     cur_proxy = (proj_cfg.get("tts") or {}).get("edge_tts_proxy")
     modes = ["系统代理（默认）", "强制直连（不使用任何代理）"]
