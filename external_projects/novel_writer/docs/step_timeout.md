@@ -32,3 +32,6 @@
 无时限（`step_timeout` 为 0/null，或该步骤/类别 override 为 0）时 `remaining=None`：不设截止时刻、不整树强杀，单次调用仍受 `timeout`（默认 900 秒，框架自身超时）约束。
 这样「📜 运行输出」面板里总能看到 agent 的完整过程。此前构思修订等被设成不限时的步骤只能看到「调用模型中」，具体过程在 `_studio/worker.stdout.log`。
 测试：`tests/test_log_visibility.py`。
+
+没有显式登记接收器的直接调用（数据修复 `repair.repair_attempt`、旧版迁移转换等）：`FrameworkInvoker` 会根据 `export_dir`（位于 `<工作目录>/_studio/` 之下）找到工作目录，
+同样把 agent 输出镜像进该工作目录的 run.log（`outlog.sink_for_export_dir`）；找不到 `_studio` 时只写 agent.log。

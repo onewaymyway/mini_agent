@@ -97,7 +97,7 @@ def test_subprocess_invoker_keeps_full_agent_output_in_its_own_file(ws, tmp_path
     monkeypatch.setenv("PYTHONPATH", str(stub_dir))
     inv = R.FrameworkInvoker()
     inv._CHILD_MODULE = "stub_child"
-    run_dir = ws.step_dir("t.agent", 1)
+    run_dir = tmp_path / "outside_workspace" / "run_1"   # 不在 _studio 下：不触发「按 export_dir 找工作目录」的 run.log 镜像
     result = inv._invoke_subprocess(skill="x", prompt="p", export_dir=run_dir, step_id="t.agent",
                                     max_turns=None, remaining=60)
     assert result.ok

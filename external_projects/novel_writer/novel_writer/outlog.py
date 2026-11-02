@@ -49,6 +49,23 @@ def run_log_sink(ws: Any) -> Callable[[str], None]:
     return RawRunLogSink(ws)
 
 
+def sink_for_export_dir(export_dir: Path) -> Optional[Callable[[str], None]]:
+    """没有显式登记接收器时（修复调用、旧版迁移转换等直接调用执行器的地方），
+    根据 export_dir（位于 <工作目录>/_studio/ 之下）找到工作目录，把输出同样镜像进它的 run.log。
+
+    找不到 _studio 目录（例如测试里的临时目录）时返回 None，行为与以前一致（只写 agent.log）。
+    """
+    from novel_writer.workspace import STUDIO_DIR, Workspace
+
+    for parent in Path(export_dir).resolve().parents:
+        if parent.name == STUDIO_DIR:
+            try:
+                return RawRunLogSink(Workspace(parent.parent))
+            except Exception:  # noqa: BLE001 - 镜像只是附加功能
+                return None
+    return None
+
+
 class LinePump:
     """把一个二进制流逐行写入文件（后台线程）。line_count 记录已写入的行数。
 

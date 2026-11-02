@@ -84,3 +84,34 @@ def test_step_detail_aggregates_concept_substeps_and_agent_log(ws):
     n.mkdir(parents=True)
     (n / "agent.log").write_text("x\ny\n", encoding="utf-8")
     assert tool_api.step_detail(str(ws.root), "plan_blueprint")["data"]["agent_log_tail"] == "x\ny"
+
+
+def test_direct_invoker_calls_without_sink_still_mirror_to_run_log(ws, tmp_path, monkeypatch):
+    """修复调用（repair.repair_attempt）、旧版迁移转换等直接调用执行器、没登记接收器的地方：
+    也要根据 export_dir 找到工作目录，把 agent 输出镜像进 run.log。"""
+    _stub_child(tmp_path, monkeypatch)
+    assert outlog.current_line_sink() is None
+    res = R.FrameworkInvoker()(skill="data-repair", prompt="p", step_id="ideation_review.repair",
+                               export_dir=ws.step_dir("ideation_review.repair", 1))
+    assert res.ok
+    text = ws.path("studio_log").read_text(encoding="utf-8")
+    assert "agent-step-0" in text and "agent-step-4" in text
+
+
+def test_sink_for_export_dir_outside_a_workspace_is_none(tmp_path):
+    assert outlog.sink_for_export_dir(tmp_path / "somewhere" / "run_1") is None
+
+
+def test_repair_attempt_mirrors_agent_output_into_run_log(ws, tmp_path, monkeypatch):
+    """数据修复调用 data-repair 时，agent 输出要实时进 run.log。"""
+    from novel_writer import repair as RP
+    from novel_writer import steps as S
+    _stub_child(tmp_path, monkeypatch)
+    monkeypatch.setitem(RP.VALIDATORS, "always_bad", lambda w: ["有问题"])
+    step = S.StepDef(id="some.step", title="t", stage="p1", category=S.CAT_BUILD,
+                     executor=S.EXECUTOR_PYTHON, handler="x")
+    RP.repair_attempt(ws, step, invoker=R.FrameworkInvoker(), settings=ws.settings(),
+                      request={"validator": "always_bad", "files": []})
+    text = ws.path("studio_log").read_text(encoding="utf-8")
+    assert "agent-step-0" in text and "agent-step-4" in text
+    assert outlog.current_line_sink() is None      # 用完恢复

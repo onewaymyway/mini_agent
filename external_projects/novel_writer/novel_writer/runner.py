@@ -402,7 +402,7 @@ class FrameworkInvoker:
             stdout=_sp.PIPE, stderr=_sp.STDOUT, bufsize=0, **kwargs,
         )
         pump = outlog.LinePump(proc.stdout, export_dir / outlog.AGENT_LOG_NAME,
-                               on_line=outlog.current_line_sink())
+                               on_line=outlog.current_line_sink() or outlog.sink_for_export_dir(export_dir))
 
         def _out() -> Dict[str, Any]:
             pump.join(10)
