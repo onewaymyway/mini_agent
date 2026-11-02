@@ -180,6 +180,14 @@ def restore(ws: Workspace, rid: str) -> Dict[str, Any]:
 HEARTBEAT_SEC = 60.0
 
 
+def _next_run_no(ws: Workspace, step_id: str) -> int:
+    """子步骤的下一个运行序号：每次重跑用新的 run_N 目录，不覆盖上次的 prompt、回执与 agent.log。"""
+    base = ws.step_dir(step_id, 1).parent
+    nums = [int(p.name.split("_")[1]) for p in base.glob("run_*")
+            if p.is_dir() and p.name.split("_")[-1].isdigit()] if base.is_dir() else []
+    return (max(nums) + 1) if nums else 1
+
+
 @contextlib.contextmanager
 def _heartbeat(ws: Workspace, label: str, every: float = HEARTBEAT_SEC):
     """模型调用期间每隔一段时间写一条「仍在调用」，让运行日志能看出它还在工作、已经等了多久。"""
@@ -297,7 +305,7 @@ def h_concept(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=
             t0 = time.monotonic()
             try:
                 with _heartbeat(ws, label):
-                    run_skill_step(ws, sub, invoker=invoker, settings=settings, run_no=1)
+                    run_skill_step(ws, sub, invoker=invoker, settings=settings, run_no=_next_run_no(ws, sub.id))
             except Exception as exc:  # noqa: BLE001 - 原因写入运行日志后继续抛出，由运行器记录失败
                 st.log_line(ws, f"  ✘ {label} 失败（用时 {int(time.monotonic() - t0)} 秒）：{type(exc).__name__}：{str(exc)[:300]}")
                 raise

@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from novel_writer.textio import read_text_utf8
@@ -450,20 +451,52 @@ def metrics_view(ws: Workspace) -> Dict[str, Any]:
     }
 
 
-def step_detail(ws: Workspace, step_id: str) -> Dict[str, Any]:
-    base = ws.step_dir(step_id, 1).parent
-    runs = sorted((p for p in base.glob("run_*") if p.is_dir()), key=lambda p: int(p.name.split("_")[1])) if base.is_dir() else []
+AGENT_LOG_TAIL_LINES = 200
+
+
+def _run_dirs(base: Path) -> List[Path]:
+    if not base.is_dir():
+        return []
+    return sorted((p for p in base.glob("run_*") if p.is_dir() and p.name.split("_")[-1].isdigit()),
+                  key=lambda p: int(p.name.split("_")[1]))
+
+
+def _latest_run_info(ws: Workspace, step_id: str, base: Path) -> Dict[str, Any]:
+    runs = _run_dirs(base)
     if not runs:
-        return {"step": step_id, "runs": 0, "prompt": None, "receipt": None}
+        return {"step": step_id, "runs": 0, "prompt": None, "receipt": None, "agent_log_tail": None}
     latest = runs[-1]
     prompts = sorted(latest.glob("prompt_*.md"))
+    log = latest / "agent.log"
+    tail = None
+    if log.is_file():
+        tail = "\n".join(read_text_utf8(log).splitlines()[-AGENT_LOG_TAIL_LINES:])
     return {
         "step": step_id,
         "runs": len(runs),
         "run_dir": str(latest.relative_to(ws.root)),
         "prompt": read_text_utf8(prompts[-1]) if prompts else None,
         "receipt": read_json(latest / "receipt.json", default=None),
+        "agent_log_tail": tail,
     }
+
+
+def step_detail(ws: Workspace, step_id: str) -> Dict[str, Any]:
+    """步骤详情：最近一次运行的 prompt、回执与 agent 完整输出（末尾若干行）。
+
+    构思修订 `cpt.<id>` 本身不调用 agent，agent 在它的子步骤 `cpt.<id>.<范围>` 里运行；
+    这里把子步骤的详情聚合到 `substeps`，否则外层步骤看起来「没有运行记录」。
+    """
+    base = ws.step_dir(step_id, 1).parent
+    info = _latest_run_info(ws, step_id, base)
+    if step_id.startswith("cpt.") and base.parent.is_dir():
+        subs = []
+        for d in sorted(base.parent.glob(base.name + ".*")):
+            if d.is_dir() and _run_dirs(d):
+                subs.append(_latest_run_info(ws, d.name, d))
+        if subs:
+            info["substeps"] = subs
+    return info
 
 
 def ideas_view(ws: Workspace) -> Dict[str, Any]:

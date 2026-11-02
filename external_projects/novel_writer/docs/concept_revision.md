@@ -77,3 +77,12 @@
 - 构思审核依旧需要作者批准，托管挡不会自动通过。
 
 测试：`tests/test_revision_autorun.py`（4 项）。
+
+## 日志与运行记录
+
+- 构思修订本身（`cpt.<id>`）不调用 agent，agent 在它的子步骤 `cpt.<id>.<范围>`（如 `cpt.<id>.theme`、`cpt.<id>.characters.<角色>`）里运行，运行目录为 `_studio/steps/cpt.<id>.<范围>/run_N/`。
+- 子步骤每次运行使用新的 `run_N`（`concept_revision._next_run_no`），不再固定 `run_1`：重跑不会覆盖上次的 `prompt_1.md`，`agent.log` 也不会把多次运行混在一起。
+- 「指标 → 步骤详情」选择 `cpt.<id>` 时，会列出各子步骤（回执、prompt、agent 输出末尾 200 行；完整内容见对应 `agent.log`）。普通步骤的详情同样带 agent 输出末尾。接口：`tool_api.step_detail`（新增 `agent_log_tail`、`substeps` 字段）。
+- 实时过程看总控台「📜 运行输出」：skill 调用一律走子进程并镜像进 run.log（见 `step_timeout.md`「日志可见性」），不受是否设了步骤时限影响。
+
+测试：`tests/test_log_visibility.py`。

@@ -352,17 +352,22 @@ class FrameworkInvoker:
         self, *, skill: str, prompt: str, export_dir: Path, step_id: str,
         max_turns: Optional[int] = None, timeout: Optional[int] = None,
     ) -> InvokeResult:
-        """有步骤时限（step_timeout）时放进子进程执行，超时整树强杀；没有时限则在本进程执行（旧行为）。"""
+        """一律放进子进程执行：输出经管道由 LinePump 写 agent.log 并镜像进 run.log。
+
+        有步骤时限（step_timeout）时超时整树强杀；没有时限时不设截止时刻（单次调用仍受 timeout 约束）。
+        以前「无时限」会在 worker 进程内直接运行，agent 的输出只进 worker.stdout.log，run.log 里看不到过程；
+        现在无论有没有时限，日志可见性一致。只有自带 cfg（无法传给子进程）时才在本进程执行。
+        """
         remaining = STO.remaining_sec()
-        if remaining is None or self._cfg is not None:   # 自带 cfg 无法传给子进程，退回本进程执行
+        if self._cfg is not None:
             return self._invoke_inprocess(skill=skill, prompt=prompt, export_dir=export_dir, step_id=step_id,
                                           max_turns=max_turns, timeout=timeout)
         return self._invoke_subprocess(skill=skill, prompt=prompt, export_dir=export_dir, step_id=step_id,
-                                       max_turns=max_turns, remaining=remaining)
+                                       max_turns=max_turns, remaining=remaining, timeout=timeout)
 
     def _invoke_subprocess(
         self, *, skill: str, prompt: str, export_dir: Path, step_id: str,
-        max_turns: Optional[int], remaining: float,
+        max_turns: Optional[int], remaining: Optional[float], timeout: Optional[int] = None,
     ) -> InvokeResult:
         import json as _json
         import os as _os
@@ -372,7 +377,7 @@ class FrameworkInvoker:
         from novel_writer import outlog
         from novel_writer import procs
 
-        if remaining <= 0:
+        if remaining is not None and remaining <= 0:
             return InvokeResult(False, "步骤时限已到", timed_out=True)
         export_dir.mkdir(parents=True, exist_ok=True)
         payload_file = export_dir / "_invoke_payload.json"
@@ -382,7 +387,8 @@ class FrameworkInvoker:
             "skill": skill, "prompt": prompt, "export_dir": str(export_dir), "step_id": step_id,
             "max_turns": max_turns,
             # 框架自身的超时放宽一点，让「父进程强杀」成为唯一的超时出口，避免框架超时后留下仍在后台跑的线程
-            "timeout": int(remaining) + 30, "parent_pid": _os.getpid(),
+            "timeout": (int(remaining) if remaining is not None else int(timeout or DEFAULT_TIMEOUT_SEC)) + 30,
+            "parent_pid": _os.getpid(),
         }, ensure_ascii=False), encoding="utf-8")
         kwargs: Dict[str, Any] = {}
         if sys.platform == "win32":
@@ -402,9 +408,9 @@ class FrameworkInvoker:
             pump.join(10)
             return {"output_path": str(pump.path), "output_lines": pump.line_count}
 
-        deadline = _time.monotonic() + remaining
+        deadline = _time.monotonic() + remaining if remaining is not None else None
         while proc.poll() is None:
-            if _time.monotonic() >= deadline:
+            if deadline is not None and _time.monotonic() >= deadline:
                 created = procs.process_create_time(proc.pid)
                 try:
                     info = procs.terminate_tree(proc.pid, created) if created is not None else {}

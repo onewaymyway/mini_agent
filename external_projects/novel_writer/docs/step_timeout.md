@@ -4,7 +4,7 @@
 
 ## 行为
 1. `run_step()` 开始执行时登记截止时刻。时限是**整个步骤的总时限**：修改循环、乱码守卫重生成等 python 步骤里嵌套的子 skill 调用，以及补写回执/产出的多轮尝试，都共用同一个截止时刻。
-2. 带时限的 skill 调用在**子进程**里执行（`novel_writer/invoke_child.py`），到点由父进程整树终止（`procs.terminate_tree`，连同 agent 拉起的工具子进程）。Python 线程无法被安全强杀，所以不在进程内中止。子进程的标准输出仍继承 worker 的 run.log，运行中的实时输出照常可见；worker 若被杀，子进程会自行退出，不留孤儿。
+2. skill 调用一律在**子进程**里执行（有无时限都一样，见下方「日志可见性」；以前无时限时在 worker 进程内运行，agent 输出只进 worker.stdout.log）；带时限时（`novel_writer/invoke_child.py`），到点由父进程整树终止（`procs.terminate_tree`，连同 agent 拉起的工具子进程）。Python 线程无法被安全强杀，所以不在进程内中止。子进程的标准输出经管道由 `outlog.LinePump` 写入该次调用的 `agent.log`，并逐行镜像进 run.log，运行中的实时输出照常可见；worker 若被杀，子进程会自行退出，不留孤儿。
 3. 被终止的步骤记为 `failed`，并带 `timed_out: true`；随后走现有的**自动重跑**（`step_retry`，默认最多 3 次，退避 5/15/30 秒），重跑的 prompt 会带上「已超时被强制终止、产出可能只写了一半」的提示。超时重跑与普通失败共用同一个重跑次数；用尽后与普通失败一样停下（G5 不停机挡会继续重置并重跑）。
 4. 日志、`last_run.json` 的 executed 记录里有 `timed_out` 标记，run.log 里有「⏱」与「超时被终止，自动重跑」行。
 
@@ -25,3 +25,10 @@
 - 被终止的 agent 可能已经写了一半文件；重跑会覆盖/修正，步骤边界守卫（`step_guard`）照常工作。
 - 通过 `FrameworkInvoker(cfg=...)` 传入自定义配置时无法传给子进程，退回本进程执行（无强杀）；项目内所有入口都不传 cfg。
 - 真实 LLM 下的端到端效果未验证（本项目测试均使用桩执行器）；子进程路径用「卡住的桩进程 + 孙进程」验证了整树终止。
+
+## 日志可见性（无时限也走子进程）
+
+`FrameworkInvoker.__call__` 不再按「有没有时限」分路：除调用方自带 cfg（无法传给子进程）外，一律走 `_invoke_subprocess`。
+无时限（`step_timeout` 为 0/null，或该步骤/类别 override 为 0）时 `remaining=None`：不设截止时刻、不整树强杀，单次调用仍受 `timeout`（默认 900 秒，框架自身超时）约束。
+这样「📜 运行输出」面板里总能看到 agent 的完整过程。此前构思修订等被设成不限时的步骤只能看到「调用模型中」，具体过程在 `_studio/worker.stdout.log`。
+测试：`tests/test_log_visibility.py`。

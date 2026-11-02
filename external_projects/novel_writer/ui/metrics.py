@@ -43,16 +43,29 @@ def render_metrics(ws: str) -> None:
     if ids:
         pick = st.selectbox("选择步骤", sorted(set(ids)), key="mt_step")
         d = tool_api.step_detail(ws, pick)
-        if d["ok"] and d["data"]["runs"]:
+        if d["ok"] and (d["data"]["runs"] or d["data"].get("substeps")):
             info = d["data"]
-            st.caption(f"共 {info['runs']} 次执行，显示最近一次：{info.get('run_dir')}")
-            if info.get("receipt"):
-                st.json(info["receipt"])
-            if info.get("prompt"):
-                with st.expander("prompt", expanded=False):
-                    st.code(info["prompt"], language="markdown")
+            if info["runs"]:
+                st.caption(f"共 {info['runs']} 次执行，显示最近一次：{info.get('run_dir')}")
+            _show_run(info)
+            for sub in info.get("substeps") or []:
+                with st.expander(f"子步骤 {sub['step']}（共 {sub['runs']} 次执行，最近：{sub.get('run_dir')}）",
+                                 expanded=False):
+                    _show_run(sub)
         else:
             st.caption("该步骤还没有执行记录。")
 
     with st.expander("worker 日志（最后 40 行）", expanded=False):
         st.code(m["log_tail"] or "（暂无）", language=None)
+
+
+def _show_run(info: dict) -> None:
+    """显示一次运行的回执、prompt 与 agent 完整输出（末尾部分）。"""
+    if info.get("receipt"):
+        st.json(info["receipt"])
+    if info.get("prompt"):
+        with st.expander("prompt", expanded=False):
+            st.code(info["prompt"], language="markdown")
+    if info.get("agent_log_tail"):
+        with st.expander("agent 输出（末尾部分，完整内容见该运行目录的 agent.log）", expanded=False):
+            st.code(info["agent_log_tail"], language=None)
