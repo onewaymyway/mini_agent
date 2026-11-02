@@ -85,6 +85,11 @@ def bind(project_dir: Path, scope: str):
         _TLS.ctx = prev
 
 
+def current_ctx():
+    """当前线程绑定的 (project_dir, scope)，未绑定返回 None。供 cancel.call 把绑定传给 helper 线程。"""
+    return getattr(_TLS, "ctx", None)
+
+
 def infer_level(message: str) -> str:
     if "不可重试" in message:
         return "warn"
@@ -171,9 +176,12 @@ def heartbeat(project_dir: Path, scope: str, label: str, every: Optional[float] 
     t.start()
     try:
         yield
-    except BaseException:
+    except BaseException as exc:
         stop.set()
-        log(project_dir, scope, f"{label}：异常结束（{time.monotonic() - start:.1f} 秒）", level="error")
+        if type(exc).__name__ == "Cancelled":   # 用户主动停止：不是错误
+            log(project_dir, scope, f"{label}：已停止（{time.monotonic() - start:.1f} 秒）", level="warn")
+        else:
+            log(project_dir, scope, f"{label}：异常结束（{time.monotonic() - start:.1f} 秒）", level="error")
         raise
     else:
         stop.set()

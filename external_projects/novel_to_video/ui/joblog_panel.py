@@ -81,10 +81,10 @@ def _panel(pdir: str, scopes, title: str, height: int, limit: int) -> None:
         st.caption(detail)
 
     if busy:
-        if st.button("请求停止", key=f"jobstop:{pdir}:{','.join(scopes or ['all'])}"):
+        if st.button("立即停止", key=f"jobstop:{pdir}:{','.join(scopes or ['all'])}"):
             r = tool_api.stop_queue(pdir) if queue_busy else tool_api.job_stop(pdir)
             ok = r["ok"]
-            (st.success if ok else st.error)("已请求停止，将在当前实体或章节完成后停止" if ok else r["error"]["message"])
+            (st.success if ok else st.error)("已请求立即停止，正在中断当前请求" if ok else r["error"]["message"])
     rows = tool_api.job_logs(pdir, list(scopes) if scopes else None, limit)["data"]
     text = "\n".join(joblog.format_row(r) for r in rows) or "（暂无日志）"
     components.html(build_log_html(text, height), height=height + 4, scrolling=False)

@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .. import joblog
+from .. import cancel, joblog
 from ..chapter_io import chapter_dir, load_entities, load_shots, mark_stage, save_shots, sha12
 from ..media import ffmpeg as mf
 from .. import video_format
@@ -111,6 +111,7 @@ def run_clips(project_dir: Path, no: int, video: VideoProvider) -> Dict[str, Any
     mf.apply_format(fmt)
     generated, failed = [], []
     for sh in shots["shots"]:
+        cancel.check()   # 用户请求停止：不再为后续镜头提交视频
         if sh.get("error") or not sh.get("prompt_en") or sh.get("consistency") != "pass":
             failed.append(sh["id"])
             continue

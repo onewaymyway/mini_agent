@@ -80,7 +80,7 @@ def _live_panel(pdir: str) -> None:
         cur = f"第 {run['chapter']} 章" if run.get("chapter") else "章节间"
         st.write(f"状态：**{state}**　·　当前：{cur}　·　{run.get('message') or ''}")
         if run["state"] == "running":
-            if st.button("请求停止（当前章节完成后停止）", key="ck_stop"):
+            if st.button("立即停止", key="ck_stop"):
                 r = tool_api.stop_queue(pdir)
                 (st.success if r["ok"] else st.error)("已请求停止" if r["ok"] else r["error"]["message"])
     else:

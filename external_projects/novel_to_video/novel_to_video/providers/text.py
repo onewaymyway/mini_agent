@@ -12,7 +12,7 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from .. import paths
+from .. import cancel, paths
 
 
 class TextLLM:
@@ -38,7 +38,8 @@ class MiniAgentTextLLM(TextLLM):
         return self._helper
 
     def ask(self, prompt: str, system: str = "") -> str:
-        return self._get_helper().ask(prompt, system=system)
+        # 模型请求可能持续数十秒到数分钟：经 cancel.call，用户停止时立即返回
+        return cancel.call(lambda: self._get_helper().ask(prompt, system=system))
 
 
 class RuleTextLLM(TextLLM):

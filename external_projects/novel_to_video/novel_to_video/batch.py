@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from . import cancel
 from . import chapter_io as cio
 from . import gates
 from . import runtime as rt
@@ -137,7 +138,7 @@ def run_queue(project_dir: Path, numbers: List[int], *, gear: str, run_one) -> D
     started = time.monotonic()
     for no in numbers:
         if rt.stop_requested(project_dir):
-            halted = "用户请求停止"
+            halted = cancel.STOP_MESSAGE
             joblog.log(project_dir, "queue", "队列已停止（用户请求）", level="warn")
             break
         reason = check_budget(project_dir, gear, budget)
@@ -147,19 +148,32 @@ def run_queue(project_dir: Path, numbers: List[int], *, gear: str, run_one) -> D
         t0 = time.monotonic()
         rt.begin_chapter(project_dir, no)
         joblog.log(project_dir, "queue", f"队列：开始第 {no} 章（挡位 {gear}）")
-        res = run_one(no)
-        _add_minutes(project_dir, (time.monotonic() - t0) / 60.0)
-        res = _recover_failure(project_dir, no, gear, res, run_one, budget, results)
-        if gear in ("G3", "G4", "G5") and res.get("status") == "waiting_review":
-            approved = auto_approve_shots(project_dir, no)
-            res["auto_approved"] = approved
-            if approved:
-                res = run_one(no)  # 自动通过后继续推进到合成
+        try:
+            res = run_one(no)
+            res = _recover_failure(project_dir, no, gear, res, run_one, budget, results)
+            if gear in ("G3", "G4", "G5") and res.get("status") == "waiting_review":
+                approved = auto_approve_shots(project_dir, no)
                 res["auto_approved"] = approved
+                if approved:
+                    res = run_one(no)  # 自动通过后继续推进到合成
+                    res["auto_approved"] = approved
+        except cancel.Cancelled:
+            # 用户立即停止：本章停在当前阶段（章节已回到断点），后续章节不再开始
+            _add_minutes(project_dir, (time.monotonic() - t0) / 60.0)
+            res = {"status": "stopped", "message": "已手动停止，重新运行本章即可从断点继续"}
+            results[no] = res
+            rt.note_chapter(project_dir, no, res)
+            joblog.log(project_dir, "queue", f"队列：第 {no} 章已立即停止", level="warn")
+            halted = cancel.STOP_MESSAGE
+            break
+        _add_minutes(project_dir, (time.monotonic() - t0) / 60.0)
         results[no] = res
         rt.note_chapter(project_dir, no, res)
         reason = f"：{res.get('message')}" if res.get("message") else ""
         joblog.log(project_dir, "queue", f"队列：第 {no} 章结束 → {res.get('status')}{reason}",
                    level={"done": "ok", "failed": "error"}.get(res.get("status"), "info"))
+        if res.get("status") == "stopped":   # 章节流水线报告了手动停止
+            halted = cancel.STOP_MESSAGE
+            break
     return {"results": results, "halted": halted, "gear": gear,
             "elapsed_sec": round(time.monotonic() - started, 2)}

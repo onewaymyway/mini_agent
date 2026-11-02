@@ -15,6 +15,7 @@ import re
 from abc import ABC, abstractmethod
 from pathlib import Path
 
+from .. import cancel
 from ..media import ffmpeg as mf
 
 CHARS_PER_SEC = 4.2  # 中文口播的粗略语速，仅用于 stub 与规划估算
@@ -162,7 +163,7 @@ class ChainTTS(TTSProvider):
         self.last_errors = {}
         for eng in self.engines:
             try:
-                dur = eng.synth(text, out_wav, voice)
+                dur = cancel.call(eng.synth, text, out_wav, voice)   # 停止时不再等待引擎返回
                 self.last_engine = eng.name
                 return dur
             except Exception as exc:  # noqa: BLE001 - 任何失败都归为“不可用”，走下一个引擎

@@ -106,6 +106,17 @@ def page_gear() -> None:
         res = tool_api.set_video_wait(pdir, int(v_wait), int(v_retry), int(v_queue))
         (st.success if res["ok"] else st.error)("已保存" if res["ok"] else res["error"]["message"])
 
+    st.markdown("#### 视频网络（创建 / 查询 / 下载）")
+    cur_v_proxy = bool(vcfg.get("use_system_proxy", False))
+    v_proxy = st.checkbox("使用系统代理", value=cur_v_proxy, key="gear_v_proxy",
+                          help="默认关闭（直连）：视频创建、状态查询与视频下载都不读取系统代理。"
+                               "若系统代理不允许访问视频下载域名，下载会返回 403（例如 platform-outputs 域名）。"
+                               "只有确实需要通过代理访问外网时才开启。")
+    if bool(v_proxy) != cur_v_proxy and st.button("保存视频网络设置", key="gear_v_proxy_save"):
+        res = tool_api.set_video_proxy(pdir, bool(v_proxy))
+        (st.success if res["ok"] else st.error)("已保存（下一次视频请求起生效）" if res["ok"] else res["error"]["message"])
+    st.caption(f"当前：{'使用系统代理' if cur_v_proxy else '直连（默认）'}。配音的网络方式在下方“配音网络”中单独设置。")
+
     st.markdown("#### 配音网络")
     cur_proxy = (proj_cfg.get("tts") or {}).get("edge_tts_proxy")
     modes = ["系统代理（默认）", "强制直连（不使用任何代理）"]

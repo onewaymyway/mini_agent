@@ -159,6 +159,12 @@ python gen_video.py reference "prompt" --audios https://example.com/a.mp3 --save
 
 如需自行控制轮询逻辑，可直接使用 `create_video()` 和 `query_video()` 两个低层方法。
 
+## 网络方式与立即停止
+
+- `AgnesVideoClient(use_system_proxy=False)`：默认不使用系统代理（不读取 `HTTP(S)_PROXY` 环境变量，也不读取 Windows 注册表代理）。创建任务、查询状态、下载视频共用同一个 session。下载返回 403 时多半是系统代理不允许访问下载域名，保持默认即可。确需代理时传 `use_system_proxy=True`。
+- 下载统一使用 `self.session.get`，不再调用模块级 `requests.get`。
+- `AgnesVideoClient(cancel_event=threading.Event())`：可选停止信号。置位后，轮询、排队等待、退避等待、下载分块都会尽快退出，`generate_video` 返回 `{"success": False, "cancelled": True, "error": "用户已停止"}`，之后不再创建新任务。已经在服务端创建的任务无法取消。
+
 ## API 密钥如何传递
 
 代码从环境变量读取 `AGNES_API_KEY` 并传给 `AgnesVideoClient`，与 `gen_image_with_text` skill 完全一致：

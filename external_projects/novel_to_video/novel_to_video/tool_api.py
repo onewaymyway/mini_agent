@@ -746,6 +746,22 @@ def set_tts_proxy(project_dir: str, mode: Optional[str]) -> Dict[str, Any]:
     return _ok({"edge_tts_proxy": value})
 
 
+def set_video_proxy(project_dir: str, use_system_proxy: bool) -> Dict[str, Any]:
+    """视频接口（创建、查询）与视频下载是否使用系统代理。默认 False：直连，不读取系统代理。
+    只影响视频相关请求；配音的网络方式见 set_tts_proxy。"""
+    pdir = Path(project_dir)
+    try:
+        proj = ps.read_json(pdir / "project.json")
+    except (OSError, ValueError) as exc:
+        return _fail(str(exc))
+    video = dict(proj.get("video") or {})
+    video["use_system_proxy"] = bool(use_system_proxy)
+    proj["video"] = video
+    ps.write_json_atomic(pdir / "project.json", proj)
+    ps.append_progress(pdir, f"视频网络：{'使用系统代理' if use_system_proxy else '直连（不使用系统代理，默认）'}")
+    return _ok({"use_system_proxy": bool(use_system_proxy)})
+
+
 def set_shots_retries(project_dir: str, retries: int) -> Dict[str, Any]:
     """镜头规划校验失败后自动带反馈修正的次数（默认 5；0 = 不修正、直接失败；上限 5）。"""
     return _set_retries(project_dir, "shots_max_retries", "镜头规划", retries)

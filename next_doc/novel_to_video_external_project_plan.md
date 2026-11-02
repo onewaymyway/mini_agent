@@ -1208,3 +1208,38 @@ Phase 2 是风险最高的一期（涉及外部视频 API、一致性核查、�
 - 形象之间不做“其实是同一个”的合并，也没有删除形象的界面（可直接改 `global/characters.json`，被删的形象在镜头里按基础形象处理）。
 - 开启开关不会自动重做已规划的章节，需要“重新规划本章镜头”。
 - 新增 UI（挡位页开关、章节页警告、形象卡片）没有浏览器级烟雾测试；真实模型是否克制地只在外观明显变化时指定形象，以及形象定妆图是否保持面部一致，均未在真实模型下验证。
+
+### 14.18 修补：立即停止（2026-11-02，离线测试验证）
+
+**现象**：点击“请求停止”后，正在进行的视频轮询、模型请求、配音、ffmpeg 会一直执行到结束，停止只在章节或实体之间生效。
+
+**实现**：
+- 新增 `novel_to_video/cancel.py`：每轮运行 `begin()` 换一个新的取消信号；`request()` 置位信号并 kill 登记的子进程；`call()` 在 helper 线程执行阻塞调用，调用线程每 0.2 秒检查信号；`run_process()` 替代 `subprocess.run`；`Cancelled` 继承 `BaseException`，不被各处 `except Exception` 吞掉。
+- 阻塞点接入：`MiniAgentTextLLM.ask`、图像与视频 provider、`ChainTTS` 每个引擎、ffmpeg `_run`；镜头循环（C-6 配音、C-8 视频）增加检查点。
+- 视频 skill 客户端：轮询、排队等待、退避、下载分块检查 `cancel_event`，`time.sleep` 全部换成可中断的 `_sleep`。
+- 收尾：`runtime`、`jobs` 的后台线程捕获 `Cancelled`，状态记为 `stopped`；`batch.run_queue` 停止后不再开始后续章节；`chapter_pipeline` 把停止记为“待运行”（`pending`，阶段 `已手动停止`），不记为失败。
+- 界面：驾驶舱、素材页、章节页、日志面板的按钮统一为“立即停止”。
+
+**测试中发现并修复的缺陷**：子进程被 kill 后 `communicate` 正常返回，`run_process` 把它当作普通结果。现在返回前检查信号。
+
+**与原需求的偏差与限制**：
+1. 远端已创建的视频任务无法取消，服务端可能继续生成并计费；本地只停止查询与下载。
+2. 被中断的模型或图像请求，其 helper 线程会等网络返回才结束，结果被丢弃；不会写入章节或素材。
+3. 锁的释放顺序保持“先写最终状态，再释放锁”，以免旧线程覆盖新任务的状态。因此停止后极短时间内再次启动可能提示“正在运行”。
+
+**测试**：新增 `tests/test_immediate_stop.py`（15 项）：阻塞调用与 sleep 的即时返回、子进程被终止、新旧信号隔离、后台任务与队列即时停止、批量不启动后续章节、章节停在断点且不记失败。
+
+### 14.19 修补：视频网络开关（2026-11-02，离线测试验证）
+
+**现象**：视频下载返回 `403 Forbidden`（`platform-outputs.agnes-ai.space`），日志显示请求经过 `127.0.0.1` 的本地代理。原因：下载使用裸 `requests.get`，session 读取系统代理，而代理不允许访问该域名。
+
+**实现**：
+- 视频 skill 客户端新增 `use_system_proxy`（默认 `False`，`session.trust_env=False`）；创建、查询、下载共用同一 session；下载改用 `self.session.get`。
+- 项目配置 `video.use_system_proxy`，默认 `false`；`SkillVideoProvider` 读取该键并传给客户端。
+- `tool_api.set_video_proxy()` 写入配置；挡位页“视频网络（创建 / 查询 / 下载）”新增“使用系统代理”开关，修改后下一次视频请求起生效。
+- 配音的网络方式（`tts.edge_tts_proxy`）保持独立，两个开关互不影响。
+
+**测试**：新增 `tests/test_video_proxy_switch.py`（12 项）：默认 `merge_environment_settings` 不引入代理（环境变量设为本地地址也不生效）；开启后读取环境代理；下载不调用裸 `requests.get`；下载途中停止会删除半成品；轮询与排队等待在停止后不再发请求；provider 把 `cancelled` 映射为 `Cancelled`；设置接口保留其它 `video` 字段。修改 `test_video_wait_and_queue.py` 中一处默认值断言。
+
+**未验证**：403 修复尚未在真实 Agnes 端点上验证，需要在本机直连下载确认。
+

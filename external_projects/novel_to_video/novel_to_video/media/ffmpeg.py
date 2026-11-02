@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import List, Optional, Sequence
 
 from . import binaries
+from .. import cancel
 
 W, H, FPS = 1280, 720, 24          # 默认横屏 720P 24fps；实际值由 apply_format() 按项目设置改写
 
@@ -34,11 +35,12 @@ class MediaError(RuntimeError):
 
 
 def _run(args: Sequence[str]) -> str:
-    proc = subprocess.run(list(args), capture_output=True, text=True, encoding="utf-8", errors="replace")
-    if proc.returncode != 0:
-        tail = (proc.stderr or "")[-400:]
+    # 经 cancel.run_process 运行：用户请求停止时立即终止 ffmpeg，而不是等它跑完
+    returncode, stdout, stderr = cancel.run_process(list(args))
+    if returncode != 0:
+        tail = (stderr or "")[-400:]
         raise MediaError(f"{Path(args[0]).name} 失败：{tail.strip()}")
-    return proc.stdout
+    return stdout
 
 
 def ffmpeg() -> str:

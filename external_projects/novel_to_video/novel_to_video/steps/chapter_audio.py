@@ -13,7 +13,7 @@ import wave
 from pathlib import Path
 from typing import Any, Dict, List
 
-from .. import joblog
+from .. import cancel, joblog
 from ..chapter_io import chapter_dir, requested_video_seconds, load_entities, load_shots, mark_stage, save_shots, sha12
 from ..providers.tts import TTSProvider, voice_for
 
@@ -53,6 +53,7 @@ def run_audio(project_dir: Path, no: int, tts: TTSProvider) -> Dict[str, Any]:
     engine_usage: Dict[str, int] = {}   # 实际产出每段配音的引擎计数（与 novel-video-studio 的 engine_usage 对应）
     fallback_warned = False
     for sh in shots["shots"]:
+        cancel.check()   # 用户请求停止：不再合成后续配音段
         block_keys: List[str] = []
         parts: List[Path] = []
         durations: List[float] = []

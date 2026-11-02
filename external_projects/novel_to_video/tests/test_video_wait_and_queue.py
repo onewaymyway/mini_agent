@@ -78,7 +78,8 @@ def test_queue_wait_has_an_upper_bound(client_cls, monkeypatch):
 
 
 def test_video_wait_defaults_match_the_spec():
-    assert ps.DEFAULT_VIDEO_WAIT == {"max_wait_sec": 3600, "max_retries": 5, "queue_wait_sec": 3600}
+    assert ps.DEFAULT_VIDEO_WAIT == {"max_wait_sec": 3600, "max_retries": 5, "queue_wait_sec": 3600,
+                                    "use_system_proxy": False}
 
 
 def test_set_video_wait_saves_and_validates(tmp_path):

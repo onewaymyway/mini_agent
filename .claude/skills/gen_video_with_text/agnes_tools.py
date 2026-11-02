@@ -11,6 +11,10 @@ import requests
 from agnes_key_pool import AgnesKeyPool, is_rate_limit_error, is_non_retryable_error
 
 
+class ClientCancelled(BaseException):
+    """调用方（如 novel_to_video）请求停止。BaseException：不会被本文件内的 except Exception 吞掉。"""
+
+
 class AgnesVideoClient:
     BASE_URL = "https://apihub.agnes-ai.com/v1"
     QUERY_URL = "https://apihub.agnes-ai.com/agnesapi"
@@ -30,6 +34,8 @@ class AgnesVideoClient:
         max_retries: int = 5,
         verify_ssl: bool = False,
         queue_wait_seconds: int = 3600,
+        use_system_proxy: bool = False,
+        cancel_event=None,
     ):
         """
         Args:
@@ -49,7 +55,14 @@ class AgnesVideoClient:
         # 一直等待排队，直到累计等待超过 queue_wait_seconds 才放弃。
         self.queue_wait_seconds = queue_wait_seconds
 
+        # 网络方式：默认不使用系统代理（不读取 HTTP(S)_PROXY 环境变量，也不读取 Windows 注册表代理）。
+        # 创建任务、查询状态、下载视频共用这一个 session，因此三者的代理行为保持一致。
+        # 系统代理若不允许访问视频下载域名，会出现 403（见 SKILL.md 的代理说明）。
+        self.use_system_proxy = bool(use_system_proxy)
         self.session = requests.Session()
+        self.session.trust_env = self.use_system_proxy
+        # 可选的停止信号（threading.Event）：置位后，轮询、排队等待、下载都会尽快退出
+        self.cancel_event = cancel_event
 
     # =========================
     # file utils
@@ -109,6 +122,25 @@ class AgnesVideoClient:
         }
 
     # =========================
+    # cancellation / sleep
+    # =========================
+    def _check_cancel(self) -> None:
+        if self.cancel_event is not None and self.cancel_event.is_set():
+            raise ClientCancelled("用户已请求停止")
+
+    def _sleep(self, seconds: float) -> None:
+        """可中断的等待：停止信号置位时立即抛出 ClientCancelled。"""
+        if self.cancel_event is None:
+            time.sleep(seconds)
+            return
+        if self.cancel_event.wait(seconds):
+            raise ClientCancelled("用户已请求停止")
+
+    @staticmethod
+    def _cancel_result() -> dict:
+        return {"success": False, "cancelled": True, "error": "用户已停止"}
+
+    # =========================
     # retry request
     # =========================
     @staticmethod
@@ -118,6 +150,12 @@ class AgnesVideoClient:
         return status_code in (429, 503) and ("retry later" in t or "queue is full" in t or "video_queue_full" in t)
 
     def _post(self, url: str, payload: dict) -> dict:
+        try:
+            return self._post_impl(url, payload)
+        except ClientCancelled:
+            return self._cancel_result()
+
+    def _post_impl(self, url: str, payload: dict) -> dict:
         """带重试的 POST，限流自动切换 key（详见 _get 上的说明，逻辑一致）。"""
         last_err = None
         attempt = 0
@@ -125,6 +163,7 @@ class AgnesVideoClient:
         queue_round = 0
 
         while attempt < self.max_retries:
+            self._check_cancel()
             if self.key_pool:
                 self.api_key = self.key_pool.acquire()
 
@@ -170,7 +209,7 @@ class AgnesVideoClient:
                             return {"success": False, "error": last_err}
                         print(f"    [POST 排队已满] 第 {queue_round} 次，{delay}s 后重试"
                               f"（不计入重试次数，已等待 {int(queue_waited)}s/{self.queue_wait_seconds}s）")
-                        time.sleep(delay)
+                        self._sleep(delay)
                         queue_waited += delay
                         continue
 
@@ -179,7 +218,7 @@ class AgnesVideoClient:
                     print(f"    [POST 失败] status_code={resp.status_code}，"
                           f"第 {attempt}/{self.max_retries} 次重试，"
                           f"{1.5 * attempt:.1f}s 后重试: {resp.text[:200]}")
-                    time.sleep(1.5 * attempt)
+                    self._sleep(1.5 * attempt)
                     continue
 
                 if self.key_pool:
@@ -193,7 +232,7 @@ class AgnesVideoClient:
                 # [LOG-FIX] 网络异常（超时/连接失败等）原来是静默重试，加上日志方便判断是否是超时问题。
                 print(f"    [POST 异常] {e}，第 {attempt}/{self.max_retries} 次重试，"
                       f"{1.5 * attempt:.1f}s 后重试")
-                time.sleep(1.5 * attempt)
+                self._sleep(1.5 * attempt)
 
         return {
             "success": False,
@@ -201,6 +240,12 @@ class AgnesVideoClient:
         }
 
     def _get(self, url: str, params: dict) -> dict:
+        try:
+            return self._get_impl(url, params)
+        except ClientCancelled:
+            return self._cancel_result()
+
+    def _get_impl(self, url: str, params: dict) -> dict:
         """带重试的 GET（任务轮询也可能被限流），限流自动切换 key：
         遇到 429 / 限流关键字时，若 key_pool 里还有可用 key，立即换 key
         重试且不计入 max_retries；非限流错误走原有 sleep-and-retry。"""
@@ -208,6 +253,7 @@ class AgnesVideoClient:
         attempt = 0
 
         while attempt < self.max_retries:
+            self._check_cancel()
             if self.key_pool:
                 self.api_key = self.key_pool.acquire()
 
@@ -244,7 +290,7 @@ class AgnesVideoClient:
                     print(f"    [GET 失败] status_code={resp.status_code}，"
                           f"第 {attempt}/{self.max_retries} 次重试，"
                           f"{1.5 * attempt:.1f}s 后重试: {resp.text[:200]}")
-                    time.sleep(1.5 * attempt)
+                    self._sleep(1.5 * attempt)
                     continue
 
                 if self.key_pool:
@@ -257,7 +303,7 @@ class AgnesVideoClient:
                 attempt += 1
                 print(f"    [GET 异常] {e}，第 {attempt}/{self.max_retries} 次重试，"
                       f"{1.5 * attempt:.1f}s 后重试")
-                time.sleep(1.5 * attempt)
+                self._sleep(1.5 * attempt)
 
         return {
             "success": False,
@@ -279,16 +325,22 @@ class AgnesVideoClient:
 
         last_err = None
         for attempt in range(1, self.max_retries + 1):
+            self._check_cancel()
             try:
                 # connect 10s / 单次 read 120s，避免下载环节连不上也要等满 120s。
-                r = requests.get(url, timeout=(10, 120), verify=False, stream=True)
+                # 使用本客户端的 session：不使用系统代理时 trust_env=False，直连下载地址。
+                r = self.session.get(url, timeout=(10, 120), verify=False, stream=True)
                 r.raise_for_status()
 
                 with open(save_path, "wb") as f:
                     for chunk in r.iter_content(chunk_size=1024 * 1024):
+                        self._check_cancel()
                         if chunk:
                             f.write(chunk)
                 return
+            except ClientCancelled:
+                self._remove_partial(save_path)
+                raise
             except Exception as e:
                 last_err = e
                 print(f"    [下载失败] {e}，第 {attempt}/{self.max_retries} 次重试，"
@@ -301,9 +353,18 @@ class AgnesVideoClient:
                 except Exception:
                     pass
                 if attempt < self.max_retries:
-                    time.sleep(1.5 * attempt)
+                    self._sleep(1.5 * attempt)
 
         raise RuntimeError(f"下载视频失败（重试 {self.max_retries} 次后仍失败）: {last_err}") from last_err
+
+    @staticmethod
+    def _remove_partial(save_path: str) -> None:
+        try:
+            p = Path(save_path)
+            if p.exists():
+                p.unlink()
+        except Exception:
+            pass
 
     # =========================
     # low-level API: create task
@@ -368,7 +429,14 @@ class AgnesVideoClient:
     # =========================
     # high-level API (agent friendly)
     # =========================
-    def generate_video(
+    def generate_video(self, *args, **kwargs) -> dict:
+        """创建任务并轮询直到完成/失败，可选保存视频。用户请求停止时返回 {success: False, cancelled: True}。"""
+        try:
+            return self._generate_video_impl(*args, **kwargs)
+        except ClientCancelled:
+            return self._cancel_result()
+
+    def _generate_video_impl(
         self,
         prompt: str,
         mode: str = "text",
@@ -399,6 +467,9 @@ class AgnesVideoClient:
             seed=seed,
         )
 
+        if create_result.get("cancelled"):
+            return create_result
+
         video_id = (
             create_result.get("video_id")
             or create_result.get("id")
@@ -420,8 +491,11 @@ class AgnesVideoClient:
         HEARTBEAT_EVERY = max(1, int(30 / poll_interval)) if poll_interval > 0 else 15
 
         while elapsed < max_wait_seconds:
+            self._check_cancel()
             query_result = self.query_video(video_id)
             last_query_result = query_result
+            if query_result.get("cancelled"):
+                return query_result
             poll_count += 1
 
             status = query_result.get("status")
@@ -465,7 +539,7 @@ class AgnesVideoClient:
                     "error": query_result,
                 }
 
-            time.sleep(poll_interval)
+            self._sleep(poll_interval)
             elapsed += poll_interval
 
         return {

@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
-from .. import joblog
+from .. import cancel, joblog
 
 from .image import ImageProvider, ImageResult
 from .skill_bridge import build_pool, modules
@@ -50,8 +50,9 @@ class SkillImageProvider(ImageProvider):
         t0 = time.monotonic()
         try:
             with contextlib.redirect_stdout(joblog.console_tee()):  # skill 的重试与失败信息写入日志
-                result = self.client.generate_image(prompt=prompt, size=tier, ratio=ratio,
-                                                    save_path=str(save_path))
+                # 经 cancel.call：用户停止时立即返回，不等待图像接口
+                result = cancel.call(self.client.generate_image, prompt=prompt, size=tier, ratio=ratio,
+                                     save_path=str(save_path))
         except Exception as exc:  # 网络等底层异常也要包装成结果，避免中断整批任务
             joblog.bound_log(f"图像接口异常：{type(exc).__name__}: {exc}", level="error")
             return ImageResult(ok=False, error=f"{type(exc).__name__}: {exc}")
@@ -62,7 +63,10 @@ class SkillImageProvider(ImageProvider):
         return ImageResult(ok=False, error=text, non_retryable=non_retryable)
 
 
-DEFAULT_VIDEO_CFG = {"max_wait_sec": 3600, "max_retries": 5, "queue_wait_sec": 3600, "poll_interval_sec": 5}
+# use_system_proxy 默认 False：视频创建、查询与下载都不读取系统代理（环境变量与 Windows 注册表）。
+# 系统代理若不允许访问视频下载域名，会出现 403；需要时在挡位页勾选“使用系统代理”。
+DEFAULT_VIDEO_CFG = {"max_wait_sec": 3600, "max_retries": 5, "queue_wait_sec": 3600,
+                     "poll_interval_sec": 5, "use_system_proxy": False}
 
 
 class SkillVideoProvider(VideoProvider):
@@ -75,30 +79,39 @@ class SkillVideoProvider(VideoProvider):
         cfg = {**DEFAULT_VIDEO_CFG, **{k: v for k, v in (video_cfg or {}).items() if v is not None}}
         self.max_wait_sec = int(cfg["max_wait_sec"])     # 轮询等待视频完成的上限（秒）
         self.poll_interval_sec = float(cfg.get("poll_interval_sec") or 5.0)   # 轮询间隔
+        self.use_system_proxy = bool(cfg.get("use_system_proxy", False))
         self.client = modules()["video"].AgnesVideoClient(
-            key_pool=pool, max_retries=int(cfg["max_retries"]), queue_wait_seconds=int(cfg["queue_wait_sec"]))
+            key_pool=pool, max_retries=int(cfg["max_retries"]), queue_wait_seconds=int(cfg["queue_wait_sec"]),
+            use_system_proxy=self.use_system_proxy)
 
     def generate(self, prompt: str, save_path: Path, *, seconds: int, reference_images: List[Path],
                  aspect_ratio: str = "16:9", size: str = "720P") -> VideoResult:
         save_path = Path(save_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
         images = [str(p) for p in reference_images] or None
+        # 把当前运行的取消信号交给 skill：轮询、排队等待、下载都会检查它
+        self.client.cancel_event = cancel.current_event()
         joblog.bound_log(f"视频接口请求：{seconds} 秒，比例 {aspect_ratio}，"
                          f"{'参考图 ' + str(len(images)) + ' 张' if images else '纯文本'}（生成通常需要数分钟）")
         t0 = time.monotonic()
         try:
             with contextlib.redirect_stdout(joblog.console_tee()):
-                result = self.client.generate_video(
-                prompt=prompt,
-                mode="reference" if images else "text",
-                seconds=str(int(seconds)),
-                size=size,
-                aspect_ratio=aspect_ratio,
-                poll_interval=self.poll_interval_sec,
-                max_wait_seconds=self.max_wait_sec,
-                images=images,
-                save_path=str(save_path),
-            )
+                # 经 cancel.call：用户停止时立即返回；skill 内部轮询也会在下一次检查时退出
+                result = cancel.call(
+                    self.client.generate_video,
+                    prompt=prompt,
+                    mode="reference" if images else "text",
+                    seconds=str(int(seconds)),
+                    size=size,
+                    aspect_ratio=aspect_ratio,
+                    poll_interval=self.poll_interval_sec,
+                    max_wait_seconds=self.max_wait_sec,
+                    images=images,
+                    save_path=str(save_path),
+                )
+            if result.get("cancelled"):
+                joblog.bound_log("视频接口：已按用户请求停止（远端任务如已创建，可能仍在服务端生成）", level="warn")
+                raise cancel.Cancelled(cancel.STOP_MESSAGE)
         except Exception as exc:
             joblog.bound_log(f"视频接口异常：{type(exc).__name__}: {exc}", level="error")
             return VideoResult(ok=False, error=f"{type(exc).__name__}: {exc}")

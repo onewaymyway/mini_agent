@@ -13,6 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from . import cancel
 from . import chapter_io as cio
 from .media import ffmpeg as mf
 from .project_store import read_json
@@ -57,6 +58,18 @@ def run_chapter(project_dir: Path, no: int, *, text_llm: TextLLM, image: ImagePr
         joblog.log(project_dir, "chapter", f"第 {no} 章结束：{status}　{message}",
                    level={"done": "ok", "failed": "error"}.get(status, "warn"))
         return _result(status, message, **extra)
+
+    def halt() -> Dict[str, Any]:
+        """用户立即停止：当前阶段记为待运行（不是失败），章节回到 pending，重新运行即可从断点继续。"""
+        stage = _current_stage(project_dir, no)
+        try:
+            cio.mark_stage(project_dir, no, stage, "pending", "已手动停止")
+        except Exception:  # noqa: BLE001 - 停止收尾不应因写状态失败而再抛异常
+            pass
+        cio.set_chapter_status(project_dir, no, "pending", "已手动停止：重新运行本章即可从断点继续")
+        joblog.log(project_dir, "chapter",
+                   f"第 {no} 章已立即停止（用户请求），停在：{STAGE_NAMES.get(stage, stage)}", level="warn")
+        return _result("stopped", "已手动停止")
 
     try:
         with joblog.heartbeat(project_dir, "chapter", f"第 {no} 章 C-1/C-2 剧本"):
@@ -118,12 +131,18 @@ def run_chapter(project_dir: Path, no: int, *, text_llm: TextLLM, image: ImagePr
             return stop("waiting_review", "等待审核：" + "、".join(comp["waiting"]))
         return stop("done", f"章节视频已生成（{comp['duration']} 秒）", output=comp["output"],
                     duration=comp["duration"])
+    except cancel.Cancelled:  # 用户立即停止：不计为失败
+        return halt()
     except (StepError, ProviderError, MediaError, RuntimeError, ValueError, KeyError) as exc:
+        if cancel.is_requested(project_dir):  # 停止时各步骤常以“已停止”返回，统一按手动停止处理
+            return halt()
         stage = _current_stage(project_dir, no)
         msg = f"{STAGE_NAMES.get(stage, stage)}：{exc}"
         cio.mark_stage(project_dir, no, stage, "failed", msg)
         return stop("failed", msg)
     except Exception as exc:  # noqa: BLE001 - 未预期的异常也必须带阶段与原因，不能静默失败
+        if cancel.is_requested(project_dir):
+            return halt()
         import traceback
         stage = _current_stage(project_dir, no)
         msg = f"{STAGE_NAMES.get(stage, stage)}：未预期的错误 {type(exc).__name__}：{exc}"
