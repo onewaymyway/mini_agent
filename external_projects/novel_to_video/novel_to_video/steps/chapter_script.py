@@ -25,6 +25,7 @@ from .. import prompts
 from ..chapter_io import chapter_dir, chapter_row, norm, source_text, sha12, mark_stage
 from ..project_store import auto_fix_retries, read_json, write_yaml_atomic
 from ..providers.text import TextLLM
+from .location_spots import scene_places, spots_enabled
 
 SCENE_RE = re.compile(r"^###\s*场次\s*(\d+)\s*[｜|](.*)$")
 LINE_RE = re.compile(r"^([^：:\n]{1,12})[：:](.+)$")
@@ -75,7 +76,9 @@ def spoken_chars(script_text: str) -> int:
     return total
 
 
-def check_script(script_text: str, source: str, known_names: List[str], target_chars: int = 0) -> Dict[str, Any]:
+def check_script(script_text: str, source: str, known_names: List[str], target_chars: int = 0, *,
+                 area_names: Optional[List[str]] = None) -> Dict[str, Any]:
+    """area_names 不为 None 表示地点细化已开启：场次标题只写了区域名时给警告（不判错误）。"""
     issues: List[Dict[str, str]] = []
     try:
         scenes = parse_script(script_text)
@@ -106,6 +109,14 @@ def check_script(script_text: str, source: str, known_names: List[str], target_c
         issues.append({"level": "warning", "message": (
             f"说话人“{name}”不在角色库中（{len(linenos)} 处，首见第 {linenos[0]} 行）。无需处理剧本：镜头规划（C-3）会先尝试把它"
             "归入已有角色，归不进去的在 C-5 自动起草；是否需要补建以本页“补建角色”区的说明为准")})
+    if area_names is not None:
+        places = scene_places(script_text)
+        for sc in scenes:
+            info = places.get(sc["no"]) or {}
+            if info.get("specific") and info["specific"] == info.get("area") and info["specific"] in area_names:
+                issues.append({"level": "warning", "message": (
+                    f"场次 {sc['no']} 的地点只写了区域「{info['specific']}」，没有具体场所。若这场戏发生在某个具体场所"
+                    "（办公室、街道、卧室…），请把标题写成「区域·场所·时间」；只有纯粹的区域全景才保留区域名")})
     if target_chars:
         spoken = spoken_chars(script_text)
         if spoken > target_chars * OVER_RATIO:
@@ -195,6 +206,20 @@ def target_chars_for(project_dir: Path) -> int:
     return int(round(sec * CHARS_PER_SEC))
 
 
+def _area_names(project_dir: Path) -> List[str]:
+    """库中区域级地点的名称与别名（场次标题只写到这一级时需要提醒）。"""
+    try:
+        locs = read_json(project_dir / "global" / "locations.json").get("locations", [])
+    except (OSError, ValueError):
+        return []
+    out: List[str] = []
+    for l in locs:
+        if (l.get("level") or "area") != "area":
+            continue
+        out += [str(n).strip() for n in [l.get("name")] + list(l.get("aliases") or []) if n and str(n).strip()]
+    return out
+
+
 def run_script(project_dir: Path, no: int, text_llm: TextLLM, *, force: bool = False) -> Dict[str, Any]:
     """C-1 + C-2。缓存键 = 原文 + 目标字数 + 版本；未变且已通过则跳过。
 
@@ -204,7 +229,10 @@ def run_script(project_dir: Path, no: int, text_llm: TextLLM, *, force: bool = F
     cdir.mkdir(parents=True, exist_ok=True)
     source = source_text(project_dir, no)
     target = target_chars_for(project_dir)
-    src_hash = sha12(source, str(target), SCRIPT_VERSION)
+    spots = spots_enabled(project_dir)
+    area_names = _area_names(project_dir) if spots else None
+    # 开关关闭时哈希与改动前相同；开关开启时纳入哈希，切换后自动重算剧本
+    src_hash = sha12(source, str(target), SCRIPT_VERSION, *(["location_spots"] if spots else []))
     script_path = cdir / "script.md"
     review_path = cdir / "script_review.yaml"
 
@@ -219,7 +247,7 @@ def run_script(project_dir: Path, no: int, text_llm: TextLLM, *, force: bool = F
     known = [n for c in chars for n in c.get("names", [])]
     retries = auto_fix_retries(project_dir, "script_max_retries")
 
-    prompt = prompts.script_prompt(no, row["title"], source, target)
+    prompt = prompts.script_prompt(no, row["title"], source, target, spots_enabled=spots)
     attempt = 0
     while True:
         label = f"第 {no} 章 C-1 调用文本模型生成剧本" + (f"（第 {attempt} 次修正）" if attempt else f"（输入 {len(source)} 字）")
@@ -228,14 +256,15 @@ def run_script(project_dir: Path, no: int, text_llm: TextLLM, *, force: bool = F
                                        scope="chapter", label=label, step="C-1", chapter=no)
         script_text = _clean_script(raw, log=lambda m: joblog.log(project_dir, "chapter", m, level="warn"))
         script_path.write_text(script_text, encoding="utf-8")
-        result = check_script(script_text, source, known, target_chars=target)
+        result = check_script(script_text, source, known, target_chars=target, area_names=area_names)
         if result["status"] == "pass" or attempt >= retries:
             break
         attempt += 1
         joblog.log(project_dir, "chapter",
                    f"第 {no} 章 C-2 校验未通过，自动把问题反馈给模型修正（第 {attempt}/{retries} 次）：\n"
                    + "\n".join(f"- {i['message']}" for i in result["issues"] if i["level"] == "error"), level="warn")
-        prompt = prompts.script_fix_prompt(no, row["title"], source, target, script_text, result["issues"])
+        prompt = prompts.script_fix_prompt(no, row["title"], source, target, script_text, result["issues"],
+                                           spots_enabled=spots)
 
     result.update(source_hash=src_hash, script_hash=sha12(script_text), target_chars=target,
                   spoken_chars=spoken_chars(script_text), attempts=attempt + 1)

@@ -75,6 +75,7 @@
 - 缺失素材（阶段 3，2026-11-02）：镜头输出 `prop_names`（仅关键道具，每镜头 ≤3），库中无则 C-5 起草入 `global/props.json`，确认流程与地点一致；道具定妆图 1:1；视频参考图有余量时才带道具。
 - 角色多形象（阶段 4，2026-11-02，**默认关闭**，挡位页开启）：角色可选带 `looks`；镜头用 `character_looks` 指定形象，缺失形象由 C-5 起草并走与补建角色相同的确认流程；提示词与参考图使用形象，形象无定妆图时拦截 C-8。模块 `steps/character_looks.py`。
 - 地点细化 L1（2026-11-02，**默认关闭**，挡位页开启，项目选项 `location_spots_enabled`）：镜头规划逐镜头判断「现有地点是否真的是戏发生的场所」，不是则规划新场景点（`new_location_specs`：所属区域/内外景/理由）；`steps/location_spots.py` 用剧本场次标题做确定性核对并把问题反馈给模型修正（次数用尽只警告）；C-5 把场景点写入全局库（`level=spot`/`parent_id`/`spot_kind`，继承区域风格），定妆图提示词区分内/外景。测试 `tests/test_location_spots.py`（10 例）。后续 L2/L3 见 `next_doc/novel_to_video_location_spots_plan.md`。
+- 地点细化 L2（2026-11-02，同样默认关闭）：C-1 剧本规则要求场次标题写到「区域·场所·时间」；C-2 对只写区域名的场次给 warning（不判失败）；开关切换后剧本缓存自动重算。关闭时提示词与校验逐字节不变。测试 `tests/test_location_spots_l2.py`（9 项）。L3 待实施。
 
 ## 已知限制
 

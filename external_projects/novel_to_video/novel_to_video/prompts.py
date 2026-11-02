@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import json
 from typing import Any, Dict
 
@@ -135,6 +137,24 @@ SCRIPT_RULES = """剧本格式（严格遵守）：
 5. 每个非空行都必须是场次标题、“旁白：…”或“角色名：…”三者之一。
 6. 只输出剧本正文纯文本：不要 JSON，不要代码块，不要解释；第一行必须是场次标题。"""
 
+# 地点细化（L2）：场次标题要写到具体场所；关闭时使用上面的原文本，输出逐字节不变。
+_RULE1_LINE = re.compile(r"^1\. 按场划分.*$", re.M)
+_SPOT_RULE1 = ("1. 按场划分，每场一行标题：`### 场次 N｜区域·场所·时间（内景/外景）`，场次号从 1 连续递增。"
+               "地点必须写到剧情真正发生的具体场所（如“铁城·市政厅办公室”“铁城·东三街”），"
+               "不要只写区域名（如“铁城”）；只有纯粹的区域全景才只写区域名。时间无法确定写“未知”，不得编造。")
+SCRIPT_RULES_SPOTS = _RULE1_LINE.sub(_SPOT_RULE1, SCRIPT_RULES, count=1)
+SCRIPT_EXAMPLE_SPOTS = """输出格式示例（仅示意格式，内容以原文为准）：
+### 场次 1｜铁城·东三街·清晨（外景）
+旁白：……
+角色名：……
+### 场次 2｜铁城·市政厅办公室·清晨（内景）
+旁白：……"""
+
+
+def _script_rules(spots_enabled: bool) -> tuple:
+    return (SCRIPT_RULES_SPOTS, SCRIPT_EXAMPLE_SPOTS) if spots_enabled else (SCRIPT_RULES, SCRIPT_EXAMPLE)
+
+
 SCRIPT_EXAMPLE = """输出格式示例（仅示意格式，内容以原文为准）：
 ### 场次 1｜铁城街道·清晨（外景）
 旁白：……
@@ -161,22 +181,24 @@ def _length_requirement(source_len: int, target_chars: int) -> str:
             "写完后自行估算口播字数，超出就继续删减。")
 
 
-def script_prompt(chapter_no: int, title: str, text: str, target_chars: int) -> str:
+def script_prompt(chapter_no: int, title: str, text: str, target_chars: int, *,
+                  spots_enabled: bool = False) -> str:
     """target_chars：本章口播（旁白+对白）的目标总字数，由 目标时长 × 语速 得出。
     原文远长于目标时长，必须压缩：保留主线与关键对白，删减次要描写。
 
     原文只出现一次（RULE_INPUT 不再重复携带 text，离线 RuleTextLLM 从“原文：”之后取）。"""
     info = {"task": "script", "chapter_no": chapter_no, "title": title, "target_chars": target_chars}
+    rules, example = _script_rules(spots_enabled)
     return (
         f"TASK=script\n将第 {chapter_no} 章《{title}》改编为一集短剧的剧本。\n\n"
         f"{_length_requirement(len(text), target_chars)}\n\n"
-        f"{SCRIPT_RULES}\n\n{SCRIPT_EXAMPLE}\n\n"
+        f"{rules}\n\n{example}\n\n"
         f"原文：\n{text}\n\nRULE_INPUT={json.dumps(info, ensure_ascii=False)}"
     )
 
 
 def script_fix_prompt(chapter_no: int, title: str, text: str, target_chars: int,
-                      prev_script: str, issues: list) -> str:
+                      prev_script: str, issues: list, *, spots_enabled: bool = False) -> str:
     """校验失败后的修正请求（仅在项目选项 script_max_retries>0 时使用）。"""
     info = {"task": "script_fix", "chapter_no": chapter_no, "title": title, "target_chars": target_chars}
     listed = "\n".join(f"- {i['message']}" for i in issues if i.get("level") == "error") or "- （无）"
@@ -184,7 +206,7 @@ def script_fix_prompt(chapter_no: int, title: str, text: str, target_chars: int,
         f"TASK=script_fix\n上一版第 {chapter_no} 章《{title}》剧本校验未通过，请修正后输出完整的新剧本。\n\n"
         f"校验未通过的问题：\n{listed}\n\n"
         f"{_length_requirement(len(text), target_chars)}；对白必须逐字来自原文。\n\n"
-        f"{SCRIPT_RULES}\n\n上一版剧本：\n{prev_script}\n\n"
+        f"{_script_rules(spots_enabled)[0]}\n\n上一版剧本：\n{prev_script}\n\n"
         f"原文：\n{text}\n\nRULE_INPUT={json.dumps(info, ensure_ascii=False)}"
     )
 
