@@ -1,6 +1,6 @@
 """media/ffmpeg.py — 所有视频/音频处理统一走这里。
 
-统一输出参数：竖屏 720x1280、24fps、H.264 + AAC 单声道 24kHz。
+统一输出参数：画面尺寸与帧率由项目的视频格式决定（默认横屏 1280x720、24fps），H.264 + AAC 单声道 24kHz。
 每个小场景片段都带音轨（无对白时为静音），保证拼接时流结构一致。
 """
 
@@ -14,7 +14,18 @@ from typing import List, Optional, Sequence
 
 from . import binaries
 
-W, H, FPS = 720, 1280, 24
+W, H, FPS = 1280, 720, 24          # 默认横屏 720P 24fps；实际值由 apply_format() 按项目设置改写
+
+
+def apply_format(fmt) -> None:
+    """把当前项目的视频格式（横屏/竖屏、分辨率、帧率）写入合成参数。进入任何媒体合成前调用。"""
+    global W, H, FPS
+    W, H, FPS = int(fmt.width), int(fmt.height), int(fmt.fps)
+
+
+def use_project_format(project_dir) -> None:
+    from ..video_format import load
+    apply_format(load(project_dir))
 AUDIO_RATE = 24000
 
 

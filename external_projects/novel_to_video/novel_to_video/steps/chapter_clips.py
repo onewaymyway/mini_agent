@@ -15,13 +15,15 @@ from typing import Any, Dict, List
 from .. import joblog
 from ..chapter_io import chapter_dir, load_entities, load_shots, mark_stage, save_shots, sha12
 from ..media import ffmpeg as mf
+from .. import video_format
 from ..project_store import read_json
 from ..providers.video import VideoProvider
 from .chapter_assets import missing_portraits
 from .global_visual import DEFAULT_ART_STYLE
 
 
-def build_prompt(art_style: str, shot: Dict[str, Any], chars: Dict[str, Dict], locs: Dict[str, Dict]) -> Dict[str, Any]:
+def build_prompt(art_style: str, shot: Dict[str, Any], chars: Dict[str, Dict], locs: Dict[str, Dict],
+                 frame_prompt: str = "vertical 9:16 frame") -> Dict[str, Any]:
     char_anchors = []
     for cid in shot.get("character_ids") or []:
         c = chars.get(cid)
@@ -34,7 +36,7 @@ def build_prompt(art_style: str, shot: Dict[str, Any], chars: Dict[str, Dict], l
         parts.append("Characters: " + " | ".join(char_anchors))
     if loc_anchor:
         parts.append("Setting: " + loc_anchor)
-    parts.append("vertical 9:16 frame, consistent character design, no text, no subtitles")
+    parts.append(f"{frame_prompt}, consistent character design, no text, no subtitles")
     prompt = ". ".join(p.strip().rstrip(".") for p in parts if p and p.strip()) + "."
     missing = [a for a in char_anchors + ([loc_anchor] if loc_anchor else []) if a not in prompt]
     return {"prompt": prompt, "consistency": "pass" if not missing else "fail",
@@ -47,9 +49,10 @@ def run_prompts(project_dir: Path, no: int, art_style: str | None = None) -> Dic
     chars = {c["id"]: c for c in ents["characters"]["characters"]}
     locs = {l["id"]: l for l in ents["locations"]["locations"]}
     style = art_style or read_json(project_dir / "project.json").get("art_style") or DEFAULT_ART_STYLE
+    fmt = video_format.load(project_dir)
     failed = []
     for sh in shots["shots"]:
-        built = build_prompt(style, sh, chars, locs)
+        built = build_prompt(style, sh, chars, locs, frame_prompt=fmt.frame_prompt)
         sh["prompt_en"] = built["prompt"]
         sh["prompt_hash"] = sha12(built["prompt"])
         sh["consistency"] = built["consistency"]
@@ -85,6 +88,8 @@ def run_clips(project_dir: Path, no: int, video: VideoProvider) -> Dict[str, Any
     chars = {c["id"]: c for c in ents["characters"]["characters"]}
     locs = {l["id"]: l for l in ents["locations"]["locations"]}
     cdir = chapter_dir(project_dir, no) / "clips"
+    fmt = video_format.load(project_dir)
+    mf.apply_format(fmt)
     generated, failed = [], []
     for sh in shots["shots"]:
         if sh.get("error") or not sh.get("prompt_en") or sh.get("consistency") != "pass":
@@ -92,14 +97,15 @@ def run_clips(project_dir: Path, no: int, video: VideoProvider) -> Dict[str, Any
             continue
         refs = _reference_images(project_dir, sh, chars, locs)
         ref_key = sha12(*[f"{p.name}:{p.stat().st_size}" for p in refs])
-        clip_key = sha12(sh["prompt_hash"], sh["audio_key"], str(sh["duration_sec"]), ref_key)
+        clip_key = sha12(sh["prompt_hash"], sh["audio_key"], str(sh["duration_sec"]), ref_key, fmt.key)
         clip = cdir / f"{sh['id']}.mp4"
         if clip.is_file() and sh.get("clip_key") == clip_key:
             continue
         raw = cdir / "raw" / f"{sh['id']}.mp4"
         joblog.log(project_dir, "chapter", f"第 {no} 章 C-8 镜头 {sh['id']}：提交视频生成"
                    f"（{int(sh['duration_sec'])} 秒，参考图 {len(refs)} 张）")
-        res = video.generate(sh["prompt_en"], raw, seconds=int(sh["duration_sec"]), reference_images=refs)
+        res = video.generate(sh["prompt_en"], raw, seconds=int(sh["duration_sec"]), reference_images=refs,
+                             aspect_ratio=fmt.aspect_ratio, size=fmt.resolution)
         if not res.ok:
             joblog.log(project_dir, "chapter", f"第 {no} 章 C-8 镜头 {sh['id']} 失败：{res.error}", level="error")
             sh["clip_error"] = res.error

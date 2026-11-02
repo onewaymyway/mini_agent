@@ -94,6 +94,7 @@ def set_cover(project_dir: Path, *, enabled: bool, title: Optional[str] = None,
 
 
 def render_cover_assets(project_dir: Path, *, bg_provider=None) -> Dict[str, Any]:
+    mf.use_project_format(project_dir)
     """F-2：若缺少 cover_bg.png 则生成（需要 image provider），再叠字得到 cover.png。"""
     cov = read_json(project_dir / "project.json").get("cover") or {}
     if not cov.get("enabled"):
@@ -106,10 +107,13 @@ def render_cover_assets(project_dir: Path, *, bg_provider=None) -> Dict[str, Any
         if bg_provider is None:
             raise FinalError("缺少 cover_bg.png，请先生成背景图")
         art = read_json(project_dir / "project.json").get("art_style") or ""
-        prompt = (f"Cinematic vertical poster background, no text, no letters, no typography, no watermark. "
+        from .. import video_format
+        fmt = video_format.load(project_dir)
+        orient = "vertical" if fmt.is_portrait else "horizontal"
+        prompt = (f"Cinematic {orient} poster background, no text, no letters, no typography, no watermark. "
                   f"Mood and palette: {art}. Symbolic composition of the whole story, not a single scene.")
         joblog.log(project_dir, "final", "生成封面背景图…")
-        res = bg_provider.generate(prompt, bg, ratio="9:16")
+        res = bg_provider.generate(prompt, bg, ratio=fmt.aspect_ratio)
         if not res.ok:
             raise FinalError(f"封面背景生成失败：{res.error}")
     joblog.log(project_dir, "final", f"封面叠字：布局 {cov.get('layout', 'center')}")
@@ -150,6 +154,7 @@ def _chapter_snapshot(project_dir: Path, nos: List[int]) -> Dict[str, str]:
 def compose_book(project_dir: Path, *, gear: str, transition: str = "cut",
                  use_cover: Optional[bool] = None) -> Dict[str, Any]:
     """F-3 + F-4。必须先通过 F-1 与人工确认；任何挡位都不跳过确认。"""
+    mf.use_project_format(project_dir)
     gear = gates.normalize_gear(gear)
     if gates.is_auto(gear, "final_compose"):  # 防御：策略表保证永远为 False
         raise FinalError("内部错误：全书合成不允许自动执行")

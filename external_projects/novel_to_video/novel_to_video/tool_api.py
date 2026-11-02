@@ -665,6 +665,32 @@ def set_script_retries(project_dir: str, retries: int) -> Dict[str, Any]:
     return _set_retries(project_dir, "script_max_retries", "剧本", retries)
 
 
+def set_video_format(project_dir: str, orientation: str, resolution: str, fps: int,
+                     poll_interval_sec: float) -> Dict[str, Any]:
+    """视频输出格式：orientation 为 landscape（横屏 16:9，默认）或 portrait（竖屏 9:16）；
+    resolution 为 720P 或 1080P；fps 为 24/25/30；poll_interval_sec 为轮询视频状态的间隔（1–60 秒）。"""
+    from .video_format import FPS_CHOICES, ORIENTATIONS, RESOLUTIONS
+    if orientation not in ORIENTATIONS:
+        return _fail("画面方向应为 landscape（横屏）或 portrait（竖屏）")
+    if resolution not in RESOLUTIONS:
+        return _fail("分辨率应为 720P 或 1080P")
+    if int(fps) not in FPS_CHOICES:
+        return _fail(f"帧率应为 {'/'.join(str(x) for x in FPS_CHOICES)}")
+    if not (1 <= float(poll_interval_sec) <= 60):
+        return _fail("轮询间隔应在 1–60 秒之间")
+    pdir = Path(project_dir)
+    try:
+        proj = ps.read_json(pdir / "project.json")
+    except (OSError, ValueError) as exc:
+        return _fail(str(exc))
+    video = dict(proj.get("video") or {})
+    video.update(orientation=orientation, resolution=resolution, fps=int(fps), poll_interval_sec=float(poll_interval_sec))
+    proj["video"] = video
+    ps.write_json_atomic(pdir / "project.json", proj)
+    ps.append_progress(pdir, f"视频输出格式：{orientation} {resolution} {int(fps)}fps，轮询间隔 {poll_interval_sec}s")
+    return _ok({k: video[k] for k in ("orientation", "resolution", "fps", "poll_interval_sec")})
+
+
 def set_video_wait(project_dir: str, max_wait_sec: int, max_retries: int, queue_wait_sec: int) -> Dict[str, Any]:
     """视频接口的等待与重试设置。max_wait_sec：等待视频完成的上限；max_retries：普通错误的重试次数（0–10）；
     queue_wait_sec：服务端排队已满（please retry later）时最多等待多久，期间不计入重试次数。"""
@@ -679,11 +705,12 @@ def set_video_wait(project_dir: str, max_wait_sec: int, max_retries: int, queue_
         proj = ps.read_json(pdir / "project.json")
     except (OSError, ValueError) as exc:
         return _fail(str(exc))
-    proj["video"] = {"max_wait_sec": int(max_wait_sec), "max_retries": int(max_retries),
-                     "queue_wait_sec": int(queue_wait_sec)}
+    video = dict(proj.get("video") or {})
+    video.update(max_wait_sec=int(max_wait_sec), max_retries=int(max_retries), queue_wait_sec=int(queue_wait_sec))
+    proj["video"] = video
     ps.write_json_atomic(pdir / "project.json", proj)
     ps.append_progress(pdir, f"视频等待设置：完成上限 {max_wait_sec}s，重试 {max_retries} 次，排队等待上限 {queue_wait_sec}s")
-    return _ok(proj["video"])
+    return _ok({k: video[k] for k in ("max_wait_sec", "max_retries", "queue_wait_sec")})
 
 
 def set_tts_proxy(project_dir: str, mode: Optional[str]) -> Dict[str, Any]:

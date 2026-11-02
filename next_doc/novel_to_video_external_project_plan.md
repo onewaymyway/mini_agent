@@ -1087,3 +1087,21 @@ Phase 2 是风险最高的一期（涉及外部视频 API、一致性核查、�
 - skill `gen_video_with_text/agnes_tools.py`（`AgnesVideoClient._post`）：识别 503/429 且提示 `retry later` / `queue is full` / `video_queue_full` 的响应，按 5 秒起的退避等待（最长 30 秒），不计入重试次数；累计超过 `queue_wait_seconds` 才放弃。不可重试错误（400 参数、鉴权等）仍立即停止。
 - `SkillVideoProvider` 把 `max_wait_sec` 作为 `generate_video(max_wait_seconds=…)` 传入，把 `max_retries` 与 `queue_wait_seconds` 传给客户端。
 - 测试：`tests/test_video_wait_and_queue.py`。
+
+## 视频输出格式（默认横屏 16:9）与视频参数可配置
+
+- 现场：项目里没有地方配置横竖屏；画面固定为 720x1280 竖屏，提示词也写死“vertical 9:16”。
+- 新增 `novel_to_video/video_format.py`，是格式的唯一来源：
+  - 默认：横屏 16:9、720P（1280x720）、24fps、轮询间隔 5 秒；
+  - 可选：画面方向 landscape / portrait；分辨率 720P / 1080P（短边像素）；帧率 24 / 25 / 30；轮询间隔 1–60 秒。
+  - `VideoFormat` 提供 `aspect_ratio`、`width`、`height`、`fps`、`frame_prompt`，以及用于缓存键的 `key`。
+- 配置位于项目 `project.json` 的 `video` 块（与 max_wait_sec、max_retries、queue_wait_sec 同一块）。挡位页“视频输出格式”可修改。旧的顶层 `orientation`、`aspect_ratio` 键已删除，不再使用。
+- 各处的使用：
+  - 媒体合成：`media/ffmpeg.py` 的 `apply_format` / `use_project_format` 设置画面尺寸与帧率；章节运行、C-8、成片合成、封面渲染开始时调用。`cover.py` 改为调用时读取尺寸，不再在导入时固定。
+  - 视频接口：`aspect_ratio`（16:9 / 9:16）与 `size`（720P / 1080P）随每次请求发送；轮询间隔传给 skill 的 `generate_video`。
+  - 提示词：小场景提示词的画幅描述随格式变化（horizontal 16:9 / vertical 9:16）。
+  - 定妆图：地点的比例跟随格式；角色仍为 3:4。
+  - 封面：背景比例与描述跟随格式。
+  - 缓存：小场景的缓存键包含格式，修改格式后，下次运行 C-8 会重新生成。
+- 注意：已生成的地点定妆图和封面背景不会自动重做，需要时请重新生成。
+- 测试：`tests/test_video_format.py`；`test_project_store.py`、`test_phase4.py` 的默认尺寸断言已更新为横屏。

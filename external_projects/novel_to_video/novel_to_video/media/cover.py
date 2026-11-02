@@ -13,7 +13,7 @@ from typing import Optional, Tuple
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-from .ffmpeg import H, W
+from . import ffmpeg as _mf
 
 LAYOUTS = ("center", "bottom_bar", "top_classic")
 DEFAULT_LAYOUT = "center"
@@ -64,28 +64,28 @@ def render_cover(bg: Path, out: Path, title: str, layout: str = DEFAULT_LAYOUT) 
         raise CoverError(f"缺少背景图：{bg.name}，请先生成 cover_bg.png")
 
     img = Image.open(bg).convert("RGB")
-    img = img.resize((W, H), Image.LANCZOS)
+    img = img.resize((_mf.W, _mf.H), Image.LANCZOS)
     draw = ImageDraw.Draw(img, "RGBA")
     font = ImageFont.truetype(resolve_font(), size=72)
-    max_w = int(W * 0.84)
+    max_w = int(_mf.W * 0.84)
     lines = _wrap(draw, title, font, max_w)[:4]
     line_h = int(font.size * 1.35)
     block_h = line_h * len(lines)
 
     if layout == "center":
-        top = int(H * 0.30) - block_h // 2
-        veil = (0, int(top - 40), W, int(top + block_h + 40))
-        draw.rectangle((0, veil[1], W, veil[3]), fill=(0, 0, 0, 120))
+        top = int(_mf.H * 0.30) - block_h // 2
+        veil = (0, int(top - 40), _mf.W, int(top + block_h + 40))
+        draw.rectangle((0, veil[1], _mf.W, veil[3]), fill=(0, 0, 0, 120))
     elif layout == "bottom_bar":
-        top = int(H * 0.84) - block_h // 2
-        draw.rectangle((0, top - 36, W, top + block_h + 36), fill=(0, 0, 0, 150))
+        top = int(_mf.H * 0.84) - block_h // 2
+        draw.rectangle((0, top - 36, _mf.W, top + block_h + 36), fill=(0, 0, 0, 150))
     else:  # top_classic：描边，无蒙层
-        top = int(H * 0.16) - block_h // 2
+        top = int(_mf.H * 0.16) - block_h // 2
 
     y = top
     for line in lines:
         w = draw.textlength(line, font=font)
-        x = (W - w) / 2
+        x = (_mf.W - w) / 2
         if layout == "top_classic":
             for dx in (-3, 0, 3):
                 for dy in (-3, 0, 3):

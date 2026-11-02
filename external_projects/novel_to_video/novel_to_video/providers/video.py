@@ -38,7 +38,7 @@ class VideoProvider(ABC):
 
     @abstractmethod
     def generate(self, prompt: str, save_path: Path, *, seconds: int, reference_images: List[Path],
-                 aspect_ratio: str = "9:16") -> VideoResult: ...
+                 aspect_ratio: str = "16:9", size: str = "720P") -> VideoResult: ...
 
 
 def _data_uri(path: Path) -> str:
@@ -143,14 +143,14 @@ class AgnesVideoProvider(VideoProvider):
         raise RuntimeError(f"视频生成超时（>{self.max_wait}s）")
 
     def generate(self, prompt: str, save_path: Path, *, seconds: int, reference_images: List[Path],
-                 aspect_ratio: str = "9:16") -> VideoResult:
+                 aspect_ratio: str = "16:9", size: str = "720P") -> VideoResult:
         bad = _seconds_error(seconds)
         if bad:
             # 在发请求之前拦住：接口会以 400 拒绝，浪费一次调用
             return VideoResult(False, error=bad, non_retryable=True)
         payload = {
             "model": self.model, "prompt": prompt, "mode": "reference",
-            "seconds": str(seconds), "size": "720P", "aspect_ratio": aspect_ratio,
+            "seconds": str(seconds), "size": size, "aspect_ratio": aspect_ratio,
             "images": [_data_uri(p) for p in reference_images[:3]],
         }
         vid, err = self._create(payload)
@@ -180,7 +180,7 @@ class StubVideoProvider(VideoProvider):
     name = "stub"
 
     def generate(self, prompt: str, save_path: Path, *, seconds: int, reference_images: List[Path],
-                 aspect_ratio: str = "9:16") -> VideoResult:
+                 aspect_ratio: str = "16:9", size: str = "720P") -> VideoResult:
         if not reference_images:
             return VideoResult(False, error="stub 视频需要至少一张参考图")
         try:

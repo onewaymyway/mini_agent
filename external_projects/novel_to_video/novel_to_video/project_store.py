@@ -31,6 +31,9 @@ MAX_AUTO_FIX_RETRIES = 5       # 界面与接口允许设置的上限
 
 # 视频接口的等待与重试（可在挡位页调整）
 DEFAULT_VIDEO_WAIT = {"max_wait_sec": 3600, "max_retries": 5, "queue_wait_sec": 3600}
+# 视频输出格式与轮询（默认横屏 16:9、720P、24fps），见 video_format.py
+from .video_format import DEFAULT_FORMAT as _DEFAULT_FORMAT  # noqa: E402
+DEFAULT_VIDEO_SETTINGS = {**_DEFAULT_FORMAT, **DEFAULT_VIDEO_WAIT}
 
 DEFAULT_OPTIONS: Dict[str, Any] = {
     "art_style": DEFAULT_ART_STYLE,
@@ -38,10 +41,8 @@ DEFAULT_OPTIONS: Dict[str, Any] = {
     "target_chapter_duration_sec": 90,  # 单章目标时长（秒）；0 = 不限制时长与字数，按原文实际情况生成
     "script_max_retries": DEFAULT_AUTO_FIX_RETRIES,  # 剧本校验失败后，把问题反馈给模型自动修正的最多次数
     "shots_max_retries": DEFAULT_AUTO_FIX_RETRIES,   # 镜头规划校验失败后，同上
-    "orientation": "portrait",
-    "aspect_ratio": "9:16",
     # 配音引擎链：先 engine，失败后降级到 fallback（null = 不降级）。与 novel-video-studio 默认一致。
-    "video": dict(DEFAULT_VIDEO_WAIT),
+    "video": dict(DEFAULT_VIDEO_SETTINGS),
     "tts": {"engine": "cosyvoice", "fallback": "edge-tts", "voice": None,
             "cosyvoice_model_dir": None, "cosyvoice_timeout_sec": 60, "edge_tts_timeout_sec": 45,
             "edge_tts_proxy": None},   # None = 系统代理；"direct" = 强制直连；或指定代理地址

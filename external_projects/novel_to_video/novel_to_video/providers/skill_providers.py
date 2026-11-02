@@ -62,7 +62,7 @@ class SkillImageProvider(ImageProvider):
         return ImageResult(ok=False, error=text, non_retryable=non_retryable)
 
 
-DEFAULT_VIDEO_CFG = {"max_wait_sec": 3600, "max_retries": 5, "queue_wait_sec": 3600}
+DEFAULT_VIDEO_CFG = {"max_wait_sec": 3600, "max_retries": 5, "queue_wait_sec": 3600, "poll_interval_sec": 5}
 
 
 class SkillVideoProvider(VideoProvider):
@@ -74,11 +74,12 @@ class SkillVideoProvider(VideoProvider):
             raise RuntimeError("no-key")
         cfg = {**DEFAULT_VIDEO_CFG, **{k: v for k, v in (video_cfg or {}).items() if v is not None}}
         self.max_wait_sec = int(cfg["max_wait_sec"])     # 轮询等待视频完成的上限（秒）
+        self.poll_interval_sec = float(cfg.get("poll_interval_sec") or 5.0)   # 轮询间隔
         self.client = modules()["video"].AgnesVideoClient(
             key_pool=pool, max_retries=int(cfg["max_retries"]), queue_wait_seconds=int(cfg["queue_wait_sec"]))
 
     def generate(self, prompt: str, save_path: Path, *, seconds: int, reference_images: List[Path],
-                 aspect_ratio: str = "9:16") -> VideoResult:
+                 aspect_ratio: str = "16:9", size: str = "720P") -> VideoResult:
         save_path = Path(save_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
         images = [str(p) for p in reference_images] or None
@@ -91,8 +92,10 @@ class SkillVideoProvider(VideoProvider):
                 prompt=prompt,
                 mode="reference" if images else "text",
                 seconds=str(int(seconds)),
-                max_wait_seconds=self.max_wait_sec,
+                size=size,
                 aspect_ratio=aspect_ratio,
+                poll_interval=self.poll_interval_sec,
+                max_wait_seconds=self.max_wait_sec,
                 images=images,
                 save_path=str(save_path),
             )

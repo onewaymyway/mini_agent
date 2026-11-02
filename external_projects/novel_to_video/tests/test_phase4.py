@@ -52,7 +52,7 @@ def test_cover_layouts_render_and_reject_unknown(tmp_path):
     for layout in LAYOUTS:
         out = render_cover(bg, tmp_path / f"c_{layout}.png", "铁城·第一次背叛", layout)
         im = Image.open(out)
-        assert im.size == (720, 1280)
+        assert im.size == (1280, 720)          # 默认横屏 720P
     with pytest.raises(CoverError):
         render_cover(bg, tmp_path / "x.png", "标题", "diagonal")
     with pytest.raises(CoverError):

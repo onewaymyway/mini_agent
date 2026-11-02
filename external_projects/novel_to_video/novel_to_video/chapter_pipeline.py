@@ -41,6 +41,8 @@ def _result(status: str, message: str = "", **extra: Any) -> Dict[str, Any]:
 
 def run_chapter(project_dir: Path, no: int, *, text_llm: TextLLM, image: ImageProvider,
                 video: VideoProvider, tts: TTSProvider, force_script: bool = False) -> Dict[str, Any]:
+    from .media import ffmpeg as _mf_fmt
+    _mf_fmt.use_project_format(project_dir)
     project_dir = Path(project_dir)
     row = cio.chapter_row(project_dir, no)
     if not row.get("selected"):

@@ -26,8 +26,9 @@ from ..providers.text import TextLLM
 from ..review import entity_key, get_item, load_review, save_review, update_item
 
 from ..project_store import DEFAULT_ART_STYLE
+from .. import video_format
 CHAR_RATIO = "3:4"
-LOC_RATIO = "9:16"
+# 地点定妆图的比例跟随项目的视频格式（横屏 16:9 / 竖屏 9:16），见 video_format.py
 VALID_GENDER = {"male", "female", "unknown"}
 
 
@@ -229,7 +230,7 @@ def portrait_pass(project_dir: Path, image: ImageProvider, *, only_missing: bool
             rel = _portrait_rel(kind, eid, version)
             prompt = prompts.portrait_prompt(style, ent["visual_anchor_en"], kind=kind,
                                              name=ent.get("name", ""))
-            ratio = CHAR_RATIO if kind == "character" else LOC_RATIO
+            ratio = CHAR_RATIO if kind == "character" else video_format.load(project_dir).aspect_ratio
             result = image.generate(prompt, project_dir / rel, ratio=ratio)
             log_call(project_dir, {"kind": "image", "provider": image.name, "entity": key,
                                    "ok": result.ok, "error": (result.error or "")[:300] or None})

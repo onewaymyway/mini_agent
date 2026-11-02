@@ -59,6 +59,27 @@ def page_gear() -> None:
         bad = next((r for r in res if not r["ok"]), None)
         (st.error if bad else st.success)(bad["error"]["message"] if bad else "已保存")
 
+    st.markdown("#### 视频输出格式")
+    from novel_to_video import video_format as vf
+    vcur = vf.resolve(proj_cfg.get("video") or {})
+    ori_keys = list(vf.ORIENTATIONS)
+    ori = st.radio("画面方向", ori_keys, index=ori_keys.index(vcur.orientation), horizontal=True,
+                   format_func=lambda k: vf.ORIENTATIONS[k]["label"] + "（默认）" if k == "landscape" else vf.ORIENTATIONS[k]["label"],
+                   key="gear_v_ori", help="横屏 16:9 为默认。竖屏 9:16 适合手机竖屏观看。")
+    f1, f2, f3 = st.columns(3)
+    res = f1.selectbox("分辨率", list(vf.RESOLUTIONS), index=list(vf.RESOLUTIONS).index(vcur.resolution),
+                       key="gear_v_res", help="720P 为 1280x720（横屏）；1080P 为 1920x1080（横屏）。")
+    fps = f2.selectbox("帧率（fps）", list(vf.FPS_CHOICES), index=list(vf.FPS_CHOICES).index(vcur.fps),
+                       key="gear_v_fps")
+    poll = f3.number_input("轮询视频状态间隔（秒）", min_value=1.0, max_value=60.0, step=1.0,
+                           value=float(vcur.poll_interval_sec), key="gear_v_poll",
+                           help="提交视频后，每隔多少秒查询一次生成状态。")
+    st.caption(f"当前：{vcur.describe}。"
+               "修改后，之后运行的小场景视频会按新格式生成；已生成的地点定妆图与封面背景不会自动重做，需要时请重新生成。")
+    if st.button("保存视频输出格式", key="gear_v_fmt_save"):
+        r = tool_api.set_video_format(pdir, ori, res, int(fps), float(poll))
+        (st.success if r["ok"] else st.error)("已保存" if r["ok"] else r["error"]["message"])
+
     st.markdown("#### 视频接口等待与重试")
     vcfg = {**ps.DEFAULT_VIDEO_WAIT, **(proj_cfg.get("video") or {})}
     c1, c2, c3 = st.columns(3)

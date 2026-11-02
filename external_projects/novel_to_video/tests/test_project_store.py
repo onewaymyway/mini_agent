@@ -23,7 +23,7 @@ def test_create_project_layout(tmp_path, export_dir):
 
     meta = json.loads((proj / "project.json").read_text(encoding="utf-8"))
     assert meta["title"] == "测试书"
-    assert meta["aspect_ratio"] == "9:16" and meta["gear"] == "G0"
+    assert meta["video"]["orientation"] == "landscape" and meta["gear"] == "G0"   # 默认横屏
     assert meta["target_chapter_duration_sec"] == 90
     assert meta["source_fingerprint"] == result.fingerprint
 
