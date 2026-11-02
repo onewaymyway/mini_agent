@@ -74,7 +74,14 @@ def build_summary(ws: Workspace) -> str:
     lines += ["## 节奏规划", "", _file_excerpt(ws, "pacing_design", "（尚未生成节奏规划）"), ""]
     lines += ["## 世界观", "", _world_excerpt(ws), ""]
 
-    chars = CS.load_or_none(ws.path("characters_dir"), ws.path("characters"), ws.path("characters_legacy")) or {}
+    # 角色文件损坏（如字符串里夹着英文双引号）时：先确定性修复；仍不合格则抛可修复错误（RepairableDataError），
+    # 由 worker 交给 data-repair 修复后重跑。不能直接抛 CharacterStoreError：它不可修复，只会无限重试同一个错。
+    from novel_writer import chapter_ops as C
+    from novel_writer import state as st
+    fixed = CS.repair_dir(ws.path("characters_dir"))
+    if fixed:
+        st.log_line(ws, f"🔧 构思审核：已确定性修复 {len(fixed)} 个角色文件的格式：{'、'.join(fixed[:8])}")
+    chars = C._characters_or_raise(ws) or {}
     lines += ["## 角色外形", ""]
     if not chars:
         lines.append("（尚未建立角色档案）")

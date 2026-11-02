@@ -86,3 +86,13 @@
 - 实时过程看总控台「📜 运行输出」：skill 调用一律走子进程并镜像进 run.log（见 `step_timeout.md`「日志可见性」），不受是否设了步骤时限影响。
 
 测试：`tests/test_log_visibility.py`。
+
+## 构思审核遇到损坏的角色文件
+
+构思审核清单要读取全部角色文件。某个角色文件格式损坏（典型：字符串里夹了英文双引号，如 `psychology` 字段不是合法 JSON）时：
+
+1. 先做确定性修复（`character_store.repair_dir`：BOM、缺 `---`、整份 JSON、多行值等），run.log 记「🔧 构思审核：已确定性修复…」。
+2. 仍不合格则抛**可修复错误**（`RepairableDataError`，校验器 `characters`，点名出问题的文件），worker 把问题与文件交给 `data-repair` skill 修复后重跑（`settings.auto_repair`，默认开，最多 `repair_max_attempts` 次，见 `repair.py`）。
+3. 修复次数用尽后停下等人处理，不再无限重试。
+
+以前这里直接抛不可修复的 `CharacterStoreError`，自动重跑和「不停机」重置只会反复报同一个错（日志里 ideation_review 连续失败十几次）。测试：`tests/test_ideation_review.py` 最后两例。

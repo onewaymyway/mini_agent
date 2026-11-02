@@ -200,3 +200,40 @@ def test_stale_ideation_step_runs_without_confirmation_until_review(tmp_path, ge
     assert res["reason"] != "stale_confirm", res
     assert st.get_step_state(ws, "design_pacing")["status"] == st.ST_PASSED, res
     assert st.get_step_state(ws, S.IDEATION_REVIEW_ID)["status"] == st.ST_WAITING_REVIEW, res
+
+
+# ----------------------------------------------------------------- 角色文件损坏：交给数据修复，而不是无限重试
+
+def _write_chars_with_broken_one(ws):
+    from novel_writer import character_store as CS
+    rec = {"id": "char_001", "name": "李凌云", "role": "protagonist", "introduced_chapter": 1,
+           "state_log": [{"chapter": 1, "status": "出场"}],
+           "current_state": {"as_of_chapter": 1, "location": "山门", "emotional": "平静"}}
+    CS.write_store(ws.path("characters_dir"), ws.path("characters"), {"char_001": rec})
+    good = (ws.path("characters_dir") / "char_001.md").read_text(encoding="utf-8")
+    broken = good.replace("char_001", "char_004").replace("李凌云", "沈明")
+    broken = broken.replace("\n---\n", '\npsychology: {"core_desire":"证明"光"本身就是错误的"}\n---\n', 1) \
+        if "psychology" not in broken else broken
+    (ws.path("characters_dir") / "char_004.md").write_text(broken, encoding="utf-8")
+    return "char_004.md"
+
+
+def test_broken_character_file_raises_repairable_error_not_plain_store_error(tmp_path):
+    from novel_writer import repair as RP
+    ws = _ws(tmp_path, pause=True)
+    name = _write_chars_with_broken_one(ws)
+    with pytest.raises(RP.RepairableDataError) as ei:
+        IR.build_summary(ws)
+    assert ei.value.validator == "characters"
+    assert any(f.endswith(name) for f in ei.value.files)
+
+
+def test_run_step_records_repair_request_for_ideation_review(tmp_path):
+    from novel_writer import runner as R
+    ws = _ws(tmp_path, pause=True)
+    _write_chars_with_broken_one(ws)
+    step = next(s for s in build_plan(ws) if s.id == S.IDEATION_REVIEW_ID)
+    status = R.run_step(ws, step, invoker=FakeInvoker(ws.root), settings=ws.settings())
+    assert status == st.ST_FAILED
+    req = st.get_step_state(ws, S.IDEATION_REVIEW_ID).get("repair")
+    assert req and req["validator"] == "characters" and any("char_004.md" in f for f in req["files"])
