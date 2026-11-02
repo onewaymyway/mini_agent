@@ -1,6 +1,6 @@
 # novel_to_video：地点细化（场景点）方案
 
-> 状态：**L1、L2 已实施（2026-11-02，离线 stub 验证，默认关闭）**；L3、L4 待实施。第 7 节为 L1 实施记录，第 8 节为 L2 实施记录。
+> 状态：**L1、L2、L3 已实施（2026-11-02，离线 stub 验证，默认关闭）**；L4（可选）待实施。第 7 节为 L1，第 8 节为 L2，第 9 节为 L3 实施记录。
 > 范围：`external_projects/novel_to_video`。关联文档：`next_doc/novel_to_video_external_project_plan.md`（缺失素材计划阶段 1–4 已完成，本方案在其地点机制上扩展）。
 
 ## 1. 问题
@@ -120,3 +120,16 @@
 - **测试**：新增 `tests/test_location_spots_l2.py`（9 项：提示词开关前后对比、警告的正反例、未知地点与库外地名不提醒、开关切换后缓存失效并重新调用模型）。相关回归 `test_script_trace` 31、`test_location_spots` 10、`test_script_unlimited` 9、`test_shots_autofix` 12、`test_location_drafts` 3、`test_chapter_pipeline` 9、`test_phase4` 20、`test_recompose` 6 全部通过。
 - **未验证 / 限制**：未在真实 LLM 下验证模型是否真的把场次标题写到具体场所；警告只在标题地点与库中区域名完全相同时触发，区域名不在库中时不提醒；`test_entrypoints.py` 在沙箱中超时，原因未查清，与本阶段无关，需在本机确认。
 - **下一步（L3）**：C-7 提示词附区域短描述、参考图选择、同区域名称复用与近似名合并提示、全书素材页按区域分组。待确认后开始。
+
+## 9. L3 实施记录（2026-11-02）
+
+- **C-7 提示词**：场景点的 `Setting:` 段在锚点后追加「(inside 所属区域名)」。锚点原文保留，机械一致性检查不受影响；区域地点与无所属区域的地点输出与之前相同。
+- **参考图**：未改动。场景点无定妆图时仍由 `missing_portraits` 硬性拦截，不降级为区域图。
+- **近似名提示**：`steps/location_spots.near_name_pairs` 找出同一区域内名字相近的场景点（共同后缀不少于 3 字，或相似度不低于 0.6），例如「市政厅办公室」与「市长办公室」。只提示，不自动合并。不同区域或名字不相近的不提醒。
+- **全书素材页**：地点审核按区域分组显示（「区域「铁城」的场景点」「区域地点」）；存在近似名时顶部给出提示。
+- **测试**：新增 `tests/test_location_spots_l3.py`（5 项）。相关回归 `test_location_spots_l2` 9、`test_location_spots` 10、`test_ui_smoke` 7、`test_chapter_pipeline` 9、`test_props` 12、`test_character_looks` 10、`test_location_drafts` 3、`test_ui_refresh` 2、`test_shots_feedback` 10、`test_subtitles` 14 全部通过。
+- **未做 / 限制**：
+  - 同名场景点的复用仍是全书范围按名称匹配，不是区域内匹配。两个区域里各有一个同名场所时会被合并为一个地点；这一点需要在真实数据上确认后再决定是否改成区域内匹配。
+  - 分组与近似名提示只在 Streamlit 页面中渲染，没有做浏览器级烟雾测试。
+  - 真实模型下的提示词效果未验证。
+- **下一步（L4，可选）**：区域预拆解，默认关闭，建议等 L1–L3 在真实数据上验证后再决定是否实施。

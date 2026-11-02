@@ -44,7 +44,9 @@ def build_prompt(art_style: str, shot: Dict[str, Any], chars: Dict[str, Dict], l
     if char_anchors:
         parts.append("Characters: " + " | ".join(char_anchors))
     if loc_anchor:
-        parts.append("Setting: " + loc_anchor)
+        parent = locs.get(loc.get("parent_id")) if loc.get("level") == "spot" else None
+        where = f" (inside {parent['name']})" if parent and parent.get("name") else ""   # 场景点：补一句所属区域
+        parts.append("Setting: " + loc_anchor + where)
     if prop_anchors:
         parts.append("Props: " + " | ".join(prop_anchors))
     parts.append(f"{frame_prompt}, consistent character design, no text, no subtitles")

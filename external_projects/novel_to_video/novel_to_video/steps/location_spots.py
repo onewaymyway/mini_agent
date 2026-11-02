@@ -154,3 +154,24 @@ def build_specs(raw_shots: List[Dict[str, Any]], names: List[str], script: str,
     for n in names:      # 名字有但模型没给出可用字段的：仍给出最小规格
         specs.setdefault(n, {"name": n, "parent_id": None, "spot_kind": None, "reason": "", "scene_no": None})
     return [specs[n] for n in names]
+
+
+def near_name_pairs(locations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """同一区域内名字相近的场景点（如「市政厅办公室」与「市长办公室」）：只提示，不自动合并。"""
+    from difflib import SequenceMatcher
+    spots = [l for l in locations if l.get("level") == "spot" and l.get("parent_id")]
+    out: List[Dict[str, Any]] = []
+    for i, a in enumerate(spots):
+        for b in spots[i + 1:]:
+            if a["parent_id"] != b["parent_id"] or a["name"] == b["name"]:
+                continue
+            shared_suffix = 0
+            for x, y in zip(reversed(a["name"]), reversed(b["name"])):
+                if x != y:
+                    break
+                shared_suffix += 1
+            ratio = SequenceMatcher(None, a["name"], b["name"]).ratio()
+            if shared_suffix >= 3 or ratio >= 0.6:
+                out.append({"a": a["id"], "b": b["id"], "a_name": a["name"], "b_name": b["name"],
+                            "parent_id": a["parent_id"]})
+    return out

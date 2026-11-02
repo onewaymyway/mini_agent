@@ -81,8 +81,32 @@ def _status_table(status: dict) -> None:
 
 
 def _gallery(pdir: str, status: dict) -> None:
+    """逐条审核。地点细化开启并存在场景点时：场景点按所属区域分组，并提示同区域内名字相近的场景点。"""
+    from pathlib import Path as _Path
+    from novel_to_video.project_store import read_json as _read_json
+    from novel_to_video.steps.location_spots import near_name_pairs
     st.markdown("#### 逐条审核")
+    try:
+        locs = _read_json(_Path(pdir) / "global" / "locations.json").get("locations", [])
+    except (OSError, ValueError):
+        locs = []
+    by_id = {l["id"]: l for l in locs}
+    if any(l.get("level") == "spot" for l in locs):
+        for pair in near_name_pairs(locs):
+            st.info(f"同一区域内名字相近：「{pair['a_name']}」与「{pair['b_name']}」。"
+                    "如果是同一个场所，请合并（或在全书素材页把其中一个的名称改为别名），避免重复生成定妆图。")
+    last_group = object()
     for r in status["rows"]:
+        loc = by_id.get(r.get("id")) if r.get("kind") == "location" else None
+        if loc is not None:
+            if loc.get("level") == "spot":
+                area = by_id.get(loc.get("parent_id")) or {}
+                group = f"区域「{area.get('name', '未指定')}」的场景点"
+            else:
+                group = "区域地点"
+            if group != last_group:
+                st.markdown(f"**{group}**")
+                last_group = group
         entity_card(pdir, r)
 
 
