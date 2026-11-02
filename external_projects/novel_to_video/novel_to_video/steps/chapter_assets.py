@@ -208,6 +208,8 @@ def _draft_missing_locations(project_dir: Path, text_llm: TextLLM, shots: Dict[s
                 by_name[n] = l["id"]
     script = (chapter_dir(project_dir, no) / "script.md").read_text(encoding="utf-8")
     review = load_review(project_dir)
+    specs = {sp["name"]: sp for sp in (shots.get("new_location_specs") or []) if sp.get("name")}   # 地点细化开启时才有
+    by_id = {l["id"]: l for l in locs}
     drafted: List[str] = []
     for name in names:
         if name in by_name:
@@ -218,8 +220,15 @@ def _draft_missing_locations(project_dir: Path, text_llm: TextLLM, shots: Dict[s
                "first_appear": no, "description_zh": "剧本中出现的地点。上下文：" + "；".join(_location_context(script, name)),
                "visual_anchor_en": None, "visual_anchor_source": None, "asset_path": None,
                "appearance_variants": [], "source": "auto_added", "auto_added_chapter": no}
+        spec = specs.get(name)
+        parent = None
+        if spec:    # 场景点：记录层级，并把所属区域交给模型（继承区域风格）
+            parent = by_id.get(spec.get("parent_id"))
+            ent.update({"level": "spot", "parent_id": parent["id"] if parent else None,
+                        "spot_kind": spec.get("spot_kind"),
+                        "spot_reason": spec.get("reason") or None})
         with joblog.timed(project_dir, "chapter", label):
-            raw = llm_trace.ask_traced(project_dir, text_llm, prompts.location_prompt(ent),
+            raw = llm_trace.ask_traced(project_dir, text_llm, prompts.location_prompt(ent, parent),
                                        system=prompts.SYSTEM_VISUAL, scope="chapter", label=label,
                                        step="C-5", chapter=no)
         obj = parse_json_object(raw)
@@ -229,6 +238,7 @@ def _draft_missing_locations(project_dir: Path, text_llm: TextLLM, shots: Dict[s
         ent["visual_anchor_en"] = anchor
         ent["visual_anchor_source"] = text_llm.name
         locs.append(ent)
+        by_id[eid] = ent
         by_name[name] = eid
         get_item(review, entity_key("location", eid)).update(
             text_status="approved" if autogate.is_auto(project_dir, "asset_text") else "pending",

@@ -133,6 +133,19 @@ def _missing_locations(v: dict) -> None:
     names = v.get("new_locations") or []
     if not names:
         return
+    specs = {sp["name"]: sp for sp in v.get("new_location_specs") or []}
+    if specs:    # 地点细化：显示所属区域与规划理由
+        locs = {l["id"]: l["name"] for l in v.get("all_locations") or []}
+        lines = []
+        for n in names:
+            sp = specs.get(n) or {}
+            where = f"（位于{locs.get(sp.get('parent_id'), sp.get('parent_id'))}）" if sp.get("parent_id") else ""
+            kind = {"interior": "内景", "exterior": "外景"}.get(sp.get("spot_kind") or "", "")
+            why = f"：{sp['reason']}" if sp.get("reason") else ""
+            lines.append(f"- **{n}**{where}{'，' + kind if kind else ''}{why}")
+        st.warning("镜头规划发现现有地点不能直接使用，规划了以下新场景点。运行本章（C-5）时会起草设定并写入全局地点库，"
+                   "之后需要在「全书素材」中确认文本与定妆图：\n" + "\n".join(lines))
+        return
     st.warning("以下地点还没有对应的全局地点：{0}。运行本章（C-5）时会为它们起草设定并写入全局地点库，"
                "之后需要在「全书素材」中确认文本与定妆图。".format("、".join(names)))
 

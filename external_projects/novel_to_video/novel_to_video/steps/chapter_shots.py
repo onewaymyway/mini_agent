@@ -17,6 +17,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from . import location_spots as LS
 from .character_looks import DEFAULT_LABELS as DEFAULT_LOOK_LABELS, find_look, looks_enabled
 
 from .. import joblog
@@ -69,7 +70,8 @@ def validate_and_build(raw_shots: List[Dict[str, Any]], script: str, locations: 
                        characters: List[Dict[str, Any]], chapter_no: int,
                        block_limit: int = MAX_BLOCK_CHARS,
                        props: Optional[List[Dict[str, Any]]] = None,
-                       looks_enabled: bool = False) -> Dict[str, Any]:
+                       looks_enabled: bool = False,
+                       spots_enabled: bool = False) -> Dict[str, Any]:
     if not raw_shots:
         raise StepError("LLM 没有返回任何镜头")
     loc_ids = {l["id"] for l in locations}
@@ -205,7 +207,7 @@ def validate_and_build(raw_shots: List[Dict[str, Any]], script: str, locations: 
         sh["consistency"] = None
         for j, b in enumerate(sh["blocks"]):
             b["idx"] = j
-    return {
+    out = {
         "chapter_no": chapter_no,
         "scenes": list(scenes.values()),
         "shots": shots,
@@ -215,6 +217,13 @@ def validate_and_build(raw_shots: List[Dict[str, Any]], script: str, locations: 
         "new_looks": new_looks,
         "plan_warnings": plan_warnings,
     }
+    if spots_enabled:    # 新场景点规格（仅开启时写入；关闭时输出与以前逐字节一致）
+        out["new_location_specs"] = LS.build_specs(raw_shots, new_locations, script, locations)
+        if len(new_locations) > LS.MAX_NEW_SPOTS_PER_CHAPTER:
+            plan_warnings.append({"kind": "too_many_spots",
+                                  "message": f"本章规划了 {len(new_locations)} 个新场景点（建议不超过 "
+                                             f"{LS.MAX_NEW_SPOTS_PER_CHAPTER} 个），可能拆得过细，请检查"})
+    return out
 
 
 def strategy_block_limit(project_dir: Path, no: int) -> int:
@@ -351,13 +360,15 @@ def run_shots(project_dir: Path, no: int, text_llm: TextLLM, *, force: bool = Fa
     locations = ents["locations"]["locations"]
     props = ents["props"]["props"]
     looks_on = looks_enabled(project_dir)
+    spots_on = LS.spots_enabled(project_dir)
     per_shot = int(SHOT_MAX_SEC * CHARS_PER_SEC)                 # 单镜头口播字数上限（约 12 秒）
     min_per_shot = int(SHOT_MIN_SEC * CHARS_PER_SEC)             # 单镜头口播字数下限（约 4 秒）
     expected = max(1, math.ceil(spoken_chars(script) / int(SHOT_PLAN_SEC * CHARS_PER_SEC)))
     retries = auto_fix_retries(project_dir, "shots_max_retries")
     review_path = cdir / "shots_review.yaml"
     prompt = prompts.shots_prompt(script, characters, locations, props=props, looks_enabled=looks_on,
-                                  max_chars_per_shot=per_shot, min_chars_per_shot=min_per_shot, expected_shots=expected)
+                                  max_chars_per_shot=per_shot, min_chars_per_shot=min_per_shot, expected_shots=expected,
+                                  spots_enabled=spots_on)
     attempt = 0
     while True:
         label = (f"第 {no} 章 C-3 调用文本模型规划镜头"
@@ -371,7 +382,16 @@ def run_shots(project_dir: Path, no: int, text_llm: TextLLM, *, force: bool = Fa
             issues = collect_shot_issues(obj.get("shots") or [], script, characters)
             if not issues:
                 built = validate_and_build(obj.get("shots") or [], script, locations, characters, no, block_limit=limit,
-                                           props=props, looks_enabled=looks_on)
+                                           props=props, looks_enabled=looks_on, spots_enabled=spots_on)
+                if spots_on:
+                    # 新场景识别：标题写到具体场所、镜头却挂在对不上的已有地点上 → 先反馈给模型修正；
+                    # 自动修正次数用尽则只记为警告，不让整章失败
+                    spot_issues = LS.granularity_issues(built["shots"], script, locations)
+                    if spot_issues and attempt < retries:
+                        issues, built = spot_issues, None
+                    elif spot_issues:
+                        built["plan_warnings"].extend({"kind": "location_not_specific", "message": i["message"]}
+                                                      for i in spot_issues)
         except StepError as exc:
             issues = issues or [{"message": str(exc)}]
         if built is not None:
@@ -389,7 +409,7 @@ def run_shots(project_dir: Path, no: int, text_llm: TextLLM, *, force: bool = Fa
         prompt = prompts.shots_fix_prompt(script, characters, locations,
                                           json.dumps(obj, ensure_ascii=False) if obj is not None else (raw or "")[:6000],
                                           issues, props=props, looks_enabled=looks_on, max_chars_per_shot=per_shot, min_chars_per_shot=min_per_shot,
-                                          expected_shots=expected)
+                                          expected_shots=expected, spots_enabled=spots_on)
     built["script_hash"] = script_hash
     built["block_limit"] = limit
     built["attempts"] = attempt + 1
@@ -398,4 +418,5 @@ def run_shots(project_dir: Path, no: int, text_llm: TextLLM, *, force: bool = Fa
     mark_stage(project_dir, no, "shots", "done")
     return {"skipped": False, "shots": len(built["shots"]), "new_speakers": built["new_speakers"],
             "new_locations": built.get("new_locations", []),
+            "new_location_specs": built.get("new_location_specs", []),
             "new_props": built.get("new_props", []), "new_looks": built.get("new_looks", []), "attempts": attempt + 1}

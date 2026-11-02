@@ -262,7 +262,9 @@ def chapter_view(project_dir: Path, no: int) -> Dict[str, Any]:
         "plan_warnings": (shots_doc["plan_warnings"] if "plan_warnings" in shots_doc
                           else _derive_plan_warnings(shots_doc.get("shots") or [])),
         "all_characters": [{"id": cid, "name": c["name"]} for cid, c in lookup["chars"].items()],
+        "all_locations": [{"id": lid, "name": l["name"]} for lid, l in lookup["locs"].items()],
         "new_locations": list(shots_doc.get("new_locations") or []),   # 剧本/镜头中库里没有的地点
+        "new_location_specs": list(shots_doc.get("new_location_specs") or []),   # 地点细化：新场景点的所属区域/内外景/理由
         "new_props": list(shots_doc.get("new_props") or []),           # 镜头中库里没有的道具
         "new_looks": list(shots_doc.get("new_looks") or []),           # 镜头中需要、角色还没有的形象
         "output": str(out_path.relative_to(project_dir)) if out_path.is_file() else None,

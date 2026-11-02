@@ -244,7 +244,7 @@ def portrait_pass(project_dir: Path, image: ImageProvider, *, only_missing: bool
                 version += 1
             rel = _portrait_rel(kind, eid, version)
             prompt = prompts.portrait_prompt(style, ent["visual_anchor_en"], kind=kind,
-                                             name=ent.get("name", ""))
+                                             name=ent.get("name", ""), spot_kind=ent.get("spot_kind"))
             ratio = (CHAR_RATIO if kind == "character" else PROP_RATIO if kind == "prop"
                      else video_format.load(project_dir).aspect_ratio)
             result = image.generate(prompt, project_dir / rel, ratio=ratio)

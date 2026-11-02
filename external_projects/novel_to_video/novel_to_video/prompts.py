@@ -44,13 +44,29 @@ def character_prompt(char: Dict[str, Any], persona_excerpt: str) -> str:
     )
 
 
-def location_prompt(loc: Dict[str, Any]) -> str:
+def location_prompt(loc: Dict[str, Any], parent: Dict[str, Any] | None = None) -> str:
+    """补全地点的视觉锚点。parent 不为空时，这是区域（parent）里的一个具体场景点：继承区域风格，再写本场所细节。"""
     info = {
         "kind": "location",
         "name": loc.get("name"),
         "location_type": loc.get("location_type"),
         "description_zh": (loc.get("description_zh") or "")[:1500],
     }
+    if parent:
+        kind = {"interior": "内景（室内）", "exterior": "外景（室外）"}.get(loc.get("spot_kind") or "", "")
+        info["parent"] = {"name": parent.get("name"), "description_zh": (parent.get("description_zh") or "")[:600],
+                          "visual_anchor_en": parent.get("visual_anchor_en")}
+        info["spot_kind"] = loc.get("spot_kind")
+        return (
+            f"为下列具体场景点补全短剧制作所需的视觉锚点。它位于「{parent.get('name')}」之中"
+            + (f"，是{kind}" if kind else "") + "。\n"
+            "要求：visual_anchor_en 为英文一句话（不超过 45 词）：先沿用所属区域的风格关键词（建筑风格、色调、时代、"
+            "光照氛围，见 parent.visual_anchor_en），再写本场所自己的 2-3 个标志性细节。"
+            "内景只写室内（家具、陈设、光源、窗外一笔即可），不写天空；外景只写街道/空间与周边建筑。"
+            "只描述环境，不写人物，不写剧情，不臆造资料与上下文中没有的设施。\n"
+            "输出格式：{\"visual_anchor_en\": ...}\n\n"
+            f"RULE_INPUT={json.dumps(info, ensure_ascii=False)}"
+        )
     return (
         "为下列地点补全短剧制作所需的视觉锚点。\n"
         "要求：visual_anchor_en 为英文一句话（不超过 40 词），描述建筑或环境类型、光照氛围、"
@@ -90,7 +106,7 @@ def look_prompt(name: str, base_anchor: str, label: str, context_lines: list) ->
     )
 
 
-def portrait_prompt(art_style: str, anchor: str, *, kind: str, name: str = "") -> str:
+def portrait_prompt(art_style: str, anchor: str, *, kind: str, name: str = "", spot_kind: str | None = None) -> str:
     if kind == "prop":
         return (f"{art_style}. Prop reference image of {name}. {anchor}. "
                 "Single object centered, plain neutral background, soft even lighting, "
@@ -99,6 +115,12 @@ def portrait_prompt(art_style: str, anchor: str, *, kind: str, name: str = "") -
         return (f"{art_style}. Character design reference sheet, full body, front view, "
                 f"{anchor}. Plain neutral background, soft even lighting, "
                 "no text, no letters, no watermark.")
+    if spot_kind == "interior":
+        return (f"{art_style}. Interior view of {name}. {anchor}. "
+                "Wide interior shot showing the whole room, no people, no text, no letters, no watermark.")
+    if spot_kind == "exterior":
+        return (f"{art_style}. Exterior view of {name}. {anchor}. "
+                "Wide street-level shot, no people, no text, no letters, no watermark.")
     return (f"{art_style}. Establishing location art of {name}. {anchor}. "
             "Wide shot, no people, no text, no letters, no watermark.")
 
@@ -178,13 +200,41 @@ LOOK_RULE = ("11. character_looks（可选）：只有当某个角色在该镜�
              "外观没有变化就不要写，绝大多数镜头不需要；\n")
 
 
+LOCATION_RULE_PLAIN = ("4. location_id 从 locations 中选；剧本地点不在 locations 中时，location_id 置 null，并在 location_name 中填写剧本里的地点名（不要编造）；场景切换时必须换镜头；\n")
+
+LOCATION_RULE_SPOTS = (
+    "4. 地点（逐镜头判断）：先看剧本场次标题和镜头内容，确定这场戏**真正发生的具体场所**（办公室、街道、卧室、码头……）。\n"
+    "   a) locations 里有这个具体场所 → location_id 选它；\n"
+    "   b) locations 里只有它所在的城市/区域（level=area），或别的对不上的地点 → 现有地点**不能直接使用**，要规划新场景点："
+    "location_id 置 null，location_name 写具体场所名（取剧本里的叫法，不要编造），parent_location_id 填所属区域的 id"
+    "（找不到所属区域就置 null），spot_kind 填 interior（室内）或 exterior（室外），location_reason 用一句话说明为什么现有地点不能用；\n"
+    "   c) 区域级地点只用于纯粹的城市/区域全景镜头，不得拿它代替具体场所；\n"
+    "   d) 同一场所在本章内只用同一个名字；只有剧情持续发生的场所才算新场景点，路过的背景不算；场景切换时必须换镜头；\n")
+
+SPOT_FIELDS = ('\"location_name\": str|null, \"parent_location_id\": str|null, \"spot_kind\": \"interior|exterior|null\", '
+               '\"location_reason\": str, ')
+
+
+def _spot_locs(locations: list) -> list:
+    out = []
+    for l in locations:
+        e = {"id": l["id"], "name": l["name"], "level": l.get("level") or "area"}
+        if l.get("parent_id"):
+            e["parent_id"] = l["parent_id"]
+        if l.get("location_type"):
+            e["type"] = l["location_type"]
+        out.append(e)
+    return out
+
+
 def shots_prompt(script: str, characters: list, locations: list, *, props: list | None = None,
                  looks_enabled: bool = False,
-                 max_chars_per_shot: int = 0, expected_shots: int = 0, min_chars_per_shot: int = 0) -> str:
+                 max_chars_per_shot: int = 0, expected_shots: int = 0, min_chars_per_shot: int = 0,
+                 spots_enabled: bool = False) -> str:
     chars = [{"id": c["id"], "name": (c.get("names") or [""])[0], "gender": c.get("gender"),
               **({"looks": [l["label"] for l in c.get("looks") or []]} if looks_enabled else {})}
              for c in characters]
-    locs = [{"id": l["id"], "name": l["name"]} for l in locations]
+    locs = _spot_locs(locations) if spots_enabled else [{"id": l["id"], "name": l["name"]} for l in locations]
     info = {"task": "shots", "characters": chars, "locations": locs,
             "props": [{"id": p["id"], "name": p.get("name")} for p in props or []]}
     return (
@@ -195,7 +245,7 @@ def shots_prompt(script: str, characters: list, locations: list, *, props: list 
         "2. dialogue 的 text 必须是剧本对白行中的连续原文：可以只截取原句中连续的一段，但不能删减中间的字、"
         "不能改写、不能把不相邻的句子拼在一起。原句太长时，拆成多个镜头，每个镜头各取一段连续原文；\n"
         "3. dialogue 的 speaker_id 从 characters 中选；若剧本中的说话人不在 characters 中，speaker_id 置 null 并填 speaker_name；\n"
-        "4. location_id 从 locations 中选；剧本地点不在 locations 中时，location_id 置 null，并在 location_name 中填写剧本里的地点名（不要编造）；场景切换时必须换镜头；\n"
+        + (LOCATION_RULE_PLAIN if not spots_enabled else LOCATION_RULE_SPOTS) +
         "5. visual_hint_zh 为中文画面描述，visual_hint_en 为对应英文画面描述（不写人名，只写动作与构图）；\n"
         + (f"6. 每个镜头的口播（旁白+对白）建议在 {min_chars_per_shot}–{max_chars_per_shot} 字左右（约 4–12 秒，差几秒可以接受）；"
            f"一场戏通常需要多个镜头，不要把整场戏写成一个镜头。整章预计约 {expected_shots} 个镜头。\\n"
@@ -204,7 +254,8 @@ def shots_prompt(script: str, characters: list, locations: list, *, props: list 
           "且描述的是该镜头自己的口播内容，不要把整场戏的画面复述到每个镜头里；拆分出的镜头画面必须各不相同；\n"
           "8. character_ids 列出该镜头画面中出现的所有角色，包括画面里出现但没有台词的角色（例如旁白描写林远的动作，就要包含林远）；\n"
           + PROP_RULE + (LOOK_RULE if looks_enabled else "") +
-          "10. 只输出 JSON：{\"shots\": [{\"scene_no\": int, \"location_id\": str, \"character_ids\": [..], \"prop_names\": [..], "
+          "10. 只输出 JSON：{\"shots\": [{\"scene_no\": int, \"location_id\": str, "
+        + (SPOT_FIELDS if spots_enabled else "") + "\"character_ids\": [..], \"prop_names\": [..], "
         "\"blocks\": [{\"type\": ..., \"text\": ..., \"speaker_id\": ..., \"speaker_name\": ...}], "
         "\"visual_hint_zh\": str, \"visual_hint_en\": str}]}\n\n"
         f"剧本：\n{script}\n\nRULE_INPUT={json.dumps({**info, 'script': script}, ensure_ascii=False)}"
@@ -212,11 +263,12 @@ def shots_prompt(script: str, characters: list, locations: list, *, props: list 
 
 
 def shots_fix_prompt(script: str, characters: list, locations: list, prev_output: str, issues: list, *,
-                    props: list | None = None, looks_enabled: bool = False, max_chars_per_shot: int = 0, expected_shots: int = 0, min_chars_per_shot: int = 0) -> str:
+                    props: list | None = None, looks_enabled: bool = False, max_chars_per_shot: int = 0, expected_shots: int = 0, min_chars_per_shot: int = 0,
+                    spots_enabled: bool = False) -> str:
     """镜头规划校验失败后的修正请求：列出全部问题（含剧本里最接近的原句），要求输出完整的新 JSON。"""
     chars = [{"id": c["id"], "name": (c.get("names") or [""])[0], "gender": c.get("gender")}
              for c in characters]
-    locs = [{"id": l["id"], "name": l["name"]} for l in locations]
+    locs = _spot_locs(locations) if spots_enabled else [{"id": l["id"], "name": l["name"]} for l in locations]
     info = {"task": "shots_fix", "characters": chars, "locations": locs,
             "props": [{"id": p["id"], "name": p.get("name")} for p in props or []]}
     listed = "\n".join(f"- {i['message']}" for i in issues[:12])
@@ -233,8 +285,9 @@ def shots_fix_prompt(script: str, characters: list, locations: list, prev_output
         f"2. {limit}同一场次内相邻镜头的画面描述必须不同；character_ids 要列全画面中出现的角色；\n"
         "3. dialogue 的 speaker_id 从 characters 中选，不在其中时 speaker_id 置 null 并填 speaker_name；\n"
         "4. 保留每个镜头的 prop_names（关键道具名称数组，没有就是空数组）"
-        + ("；保留需要的 character_looks。\n\n" if looks_enabled else "。\n\n")
-        + f"上一次的输出：\n{prev_output}\n\n"
+        + ("；保留需要的 character_looks。\n" if looks_enabled else "。\n")
+        + (LOCATION_RULE_SPOTS + "   输出字段：" + SPOT_FIELDS + "\n" if spots_enabled else "")
+        + "\n" + f"上一次的输出：\n{prev_output}\n\n"
         f"剧本：\n{script}\n\nRULE_INPUT={json.dumps({**info, 'script': script}, ensure_ascii=False)}"
     )
 

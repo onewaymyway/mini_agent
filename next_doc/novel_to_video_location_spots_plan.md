@@ -1,6 +1,6 @@
 # novel_to_video：地点细化（场景点）方案
 
-> 状态：**方案阶段，待确认后实施（未改代码）**（2026-11-02）
+> 状态：**L1 已实施（2026-11-02，离线 stub 验证，默认关闭）**；L2、L3、L4 待实施。第 7 节为 L1 实施记录。
 > 范围：`external_projects/novel_to_video`。关联文档：`next_doc/novel_to_video_external_project_plan.md`（缺失素材计划阶段 1–4 已完成，本方案在其地点机制上扩展）。
 
 ## 1. 问题
@@ -91,3 +91,22 @@
 2. **开关默认**：新功能默认关闭、需要时在项目选项里开启（推荐，符合此前保守默认的约定）；还是对新项目默认开启？
 3. **L4 区域预拆解**：先不做（推荐），等 L1–L3 在真实数据上验证后再决定？
 4. 是否同意按 L1→L2→L3 逐阶段实施，每阶段完成后停下来等你确认？
+
+## 7. L1 实施记录（2026-11-02）
+
+触发：你提出「做镜头拆分和规划的时候，应该要有识别新场景的能力，当发现现有场景不能直接使用的时候，规划新的场景」，据此把 L1 的核心定为**镜头规划阶段的新场景识别**，并顺带完成 C-5 起草与定妆图提示词的最小闭环（原属 L2/L3 的一部分）。
+
+**识别机制（两层）**
+1. 模型判断：`prompts.LOCATION_RULE_SPOTS`——先确定戏发生的具体场所；库里有就选；只有区域或对不上就规划新场景点（`location_id=null` + `location_name` + `parent_location_id` + `spot_kind` + `location_reason`）；区域级地点只用于纯城市全景。地点清单带 `level`/`parent_id`/`type`，模型才能判断「现有地点能否直接用」。
+2. 代码核对：`steps/location_spots.py::granularity_issues` 解析剧本场次标题（`scene_places`），标题里的具体场所与所选地点名称不相等也不互相包含时，生成修正问题交给模型（沿用 `shots_max_retries`）；次数用尽转为 `plan_warnings`（`location_not_specific`），不让整章失败。
+
+**落盘与起草**
+- `shots.yaml` 新增 `new_location_specs`（仅开启时写入）；所属区域缺失时按标题的区域段（`铁城·办公室` 的「铁城」）在库中按名称补全；
+- C-5：`level=spot`、`parent_id`、`spot_kind`、`spot_reason`；`location_prompt(ent, parent)` 要求继承区域风格；`portrait_prompt(..., spot_kind)` 区分内/外景；
+- 章节页「缺失地点」显示所属区域、内外景与理由（章节视图新增 `new_location_specs`、`all_locations`）。
+
+**开关与兼容**：`location_spots_enabled` 默认 False（`project_store.DEFAULT_OPTIONS`），`tool_api.set_location_spots`，挡位页复选框。关闭时 `shots_prompt`、`shots_fix_prompt`、`location_prompt`、`portrait_prompt` 的输出与改动前逐字节一致（已对照原版比对），镜头文件不含新字段。
+
+**测试**：`tests/test_location_spots.py` 10 例（标题解析、宽松匹配、关闭时不变、新场景识别含「第一次挂在铁城→反馈→规划新场景点」、关闭时放行、次数用尽转警告、对得上不误报、起草带父级与风格继承、内外景定妆图提示词、新场景点过多警告）；变异验证：去掉标题核对后 3 例失败。
+
+**未做/限制**：C-1 剧本规则（场次标题写到具体场所）、剧本粒度警告、C-7 提示词附区域短描述、全书素材页按区域分组、同区域近似名合并提示（L2/L3）；全部未在真实 LLM 下验证。

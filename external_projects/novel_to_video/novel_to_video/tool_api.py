@@ -697,6 +697,21 @@ def _set_retries(project_dir: str, key: str, label: str, retries: int) -> Dict[s
     return _ok({key: n})
 
 
+def set_location_spots(project_dir: str, enabled: bool) -> Dict[str, Any]:
+    """地点细化开关（默认关闭）：开启后镜头规划会判断「现有地点是否真的是戏发生的场所」，
+    不是则规划新的场景点（如「铁城·市政厅办公室」），C-5 起草并走与补建地点相同的确认流程。
+    已有镜头不受影响，需要时「重新规划本章镜头」。"""
+    pdir = Path(project_dir)
+    try:
+        proj = ps.read_json(pdir / "project.json")
+    except (OSError, ValueError) as exc:
+        return _fail(str(exc))
+    proj["location_spots_enabled"] = bool(enabled)
+    ps.write_json_atomic(pdir / "project.json", proj)
+    ps.append_progress(pdir, f"地点细化（场景点）{'开启' if enabled else '关闭'}")
+    return _ok({"location_spots_enabled": bool(enabled)})
+
+
 def set_character_looks(project_dir: str, enabled: bool) -> Dict[str, Any]:
     """角色多形象开关（默认关闭）：开启后镜头规划会在角色换装/受伤等外观变化时指定形象，
     缺失的形象由 C-5 起草并走与补建角色相同的确认流程。已有镜头不受影响，需要时「重新规划本章镜头」。"""

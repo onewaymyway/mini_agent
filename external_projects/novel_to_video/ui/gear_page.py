@@ -69,6 +69,17 @@ def page_gear() -> None:
         r = tool_api.set_character_looks(pdir, looks_new)
         (st.success if r["ok"] else st.error)("已保存" if r["ok"] else r["error"]["message"])
 
+    st.markdown("#### 地点细化（场景点，默认关闭）")
+    st.caption("开启后，镜头规划会判断「现有地点是否真的是这场戏发生的场所」：只有「铁城」这样的区域级地点、"
+               "戏却发生在市政厅办公室里时，会规划新的场景点（如「铁城·市政厅办公室」），"
+               "C-5 起草设定（继承所属区域的风格），与补建地点一样需要确认设定与定妆图。"
+               "关闭时一切与之前相同。已规划的章节不会自动改变，需要时在章节页「重新规划本章镜头」。")
+    spots_cur = bool(proj_cfg.get("location_spots_enabled", False))
+    spots_new = st.checkbox("启用地点细化", value=spots_cur, key="gear_spots")
+    if spots_new != spots_cur and st.button("保存地点细化开关", key="gear_spots_save"):
+        r = tool_api.set_location_spots(pdir, spots_new)
+        (st.success if r["ok"] else st.error)("已保存" if r["ok"] else r["error"]["message"])
+
     st.markdown("#### 视频输出格式")
     from novel_to_video import video_format as vf
     vcur = vf.resolve(proj_cfg.get("video") or {})

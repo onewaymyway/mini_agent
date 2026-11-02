@@ -51,6 +51,7 @@ DEFAULT_OPTIONS: Dict[str, Any] = {
     # 字幕：章节合成时烧录台词（旁白 / 说话人：对白）。font_size 为空时按画面高度自动取值。
     "subtitles": {"enabled": True, "font_size": None},
     "character_looks_enabled": False,   # 角色多形象（换装/受伤等）：默认关闭，在挡位页开启
+    "location_spots_enabled": False,    # 地点细化（场景点）：镜头规划识别「现有地点不能直接用」并规划新场景点；默认关闭，在挡位页开启
     "gear": "G0",
     "budget": {"max_video_calls": None, "max_image_calls": None, "max_minutes": None},
 }
