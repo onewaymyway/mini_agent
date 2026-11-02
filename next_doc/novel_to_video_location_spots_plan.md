@@ -1,6 +1,6 @@
 # novel_to_video：地点细化（场景点）方案
 
-> 状态：**L1、L2、L3 已实施（2026-11-02，离线 stub 验证，默认关闭）**；L4（可选）待实施。第 7 节为 L1，第 8 节为 L2，第 9 节为 L3 实施记录。
+> 状态：**L1、L2、L3、L4 已实施（2026-11-02，离线 stub 验证，默认关闭）**。第 7 节为 L1，第 8 节为 L2，第 9 节为 L3，第 10 节为 L4 实施记录。
 > 范围：`external_projects/novel_to_video`。关联文档：`next_doc/novel_to_video_external_project_plan.md`（缺失素材计划阶段 1–4 已完成，本方案在其地点机制上扩展）。
 
 ## 1. 问题
@@ -133,3 +133,17 @@
   - 分组与近似名提示只在 Streamlit 页面中渲染，没有做浏览器级烟雾测试。
   - 真实模型下的提示词效果未验证。
 - **下一步（L4，可选）**：区域预拆解，默认关闭，建议等 L1–L3 在真实数据上验证后再决定是否实施。
+
+## 10. L4 实施记录（2026-11-02，可选，默认关闭）
+
+- **开关**：项目选项 `location_presplit_enabled`（默认 False），`tool_api.set_location_presplit` 设置。
+- **提议**：`steps/location_presplit.propose_spots` 对一个区域级地点，把区域描述与已有剧本中出现该区域名的行（最多 40 行）交给文本模型，要求输出最多 8 个场景点候选（名称、内/外景、理由）。去掉与库中已有名称重复、空名称和重复项。**只返回候选，不写任何文件。**
+- **确认写入**：`confirm_spots` 为每个候选起草视觉锚点（复用 C-5 的 `location_prompt`，继承区域风格），写入 `global/locations.json`（`level=spot`、`parent_id`、`spot_kind`、`source=auto_added`），并登记审核项。文本审核按挡位 `asset_text` 决定是否自动通过，定妆图仍按现有流程生成与确认。同名重复确认时不会再次写入。
+- **门槛**：开关关闭时拒绝执行；传入的 parent 必须是区域级地点，场景点不能再拆。
+- **tool_api**：`presplit_propose`、`presplit_confirm`、`set_location_presplit`。
+- **测试**：新增 `tests/test_location_presplit.py`（6 项）：默认关闭拒绝且不调用模型；候选去重去空且不落盘；确认后写入带父级的场景点、锚点与审核项；重复确认不重复写入；非区域地点被拒绝；接口往返。修复了一处缺陷：`tool_api` 中使用了未导入的 `StepError`，由测试发现。相关回归 `test_location_spots*` 共 24、`test_project_store` 11、`test_ui_smoke` 7、`test_cockpit` 13、`test_phase3` 20、`test_gender` 17、`test_global_visual` 13 全部通过。
+- **未做 / 限制**：
+  - 页面入口未实现：没有在全书素材页加入「提议 → 勾选确认」的界面，目前只能通过 tool_api 调用。
+  - 候选质量取决于真实模型，未在真实数据上验证；候选可能与已有地点近似（L3 的近似名提示可以帮忙发现）。
+  - 确认流程没有批量挡位自动化，G3 以上是否自动确认候选尚未决定。
+- **建议**：先在真实数据上对 1–2 个区域试用候选质量，再决定是否做界面入口与自动确认。

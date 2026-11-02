@@ -835,3 +835,44 @@ def set_video_proxy(project_dir: str, use_system_proxy: bool) -> Dict[str, Any]:
 def set_shots_retries(project_dir: str, retries: int) -> Dict[str, Any]:
     """镜头规划校验失败后自动带反馈修正的次数（默认 5；0 = 不修正、直接失败；上限 5）。"""
     return _set_retries(project_dir, "shots_max_retries", "镜头规划", retries)
+
+
+def set_location_presplit(project_dir: str, enabled: bool) -> Dict[str, Any]:
+    """地点细化 L4（区域预拆解）开关，默认关闭。"""
+    pdir = Path(project_dir)
+    try:
+        proj = ps.read_json(pdir / "project.json")
+    except (OSError, ValueError) as exc:
+        return _fail(str(exc))
+    proj["location_presplit_enabled"] = bool(enabled)
+    ps.write_json_atomic(pdir / "project.json", proj)
+    return _ok({"location_presplit_enabled": bool(enabled)})
+
+
+def presplit_propose(project_dir: str, area_id: str, *, text_provider: Optional[str] = None) -> Dict[str, Any]:
+    """L4：为区域级地点提议场景点候选（不写文件）。"""
+    from .steps import location_presplit as lp
+    from .steps.global_visual import StepError
+    pdir = Path(project_dir)
+    try:
+        llm = make_text_llm(text_provider or _project_providers(pdir).get("text"))
+        return _ok({"area_id": area_id, "candidates": lp.propose_spots(pdir, area_id, llm)})
+    except (ProviderError, StepError) as exc:
+        return _fail(str(exc))
+    except Exception as exc:
+        return _fail(f"L4 提议异常：{exc}")
+
+
+def presplit_confirm(project_dir: str, area_id: str, spots: List[Dict[str, Any]], *,
+                     text_provider: Optional[str] = None) -> Dict[str, Any]:
+    """L4：用户确认候选后写入地点库（起草锚点，登记审核项）。"""
+    from .steps import location_presplit as lp
+    from .steps.global_visual import StepError
+    pdir = Path(project_dir)
+    try:
+        llm = make_text_llm(text_provider or _project_providers(pdir).get("text"))
+        return _ok({"added": lp.confirm_spots(pdir, area_id, spots, llm)})
+    except (ProviderError, StepError) as exc:
+        return _fail(str(exc))
+    except Exception as exc:
+        return _fail(f"L4 写入异常：{exc}")
