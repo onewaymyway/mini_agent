@@ -186,3 +186,18 @@ def test_confirmed_blueprint_answer_proceeds_to_execution(tmp_path):
     assert fake.calls, f"确认后没有调用执行器，异常：{type(err).__name__}: {err}"
     assert fake.calls[0] == f"cpt.{rid}.blueprint"
     assert not path.exists()
+
+
+def test_revision_writes_step_by_step_progress_to_run_log(tmp_path):
+    """回归：修订过程必须写入运行日志（开始、每个子步骤的开始与完成、最终结果），不能只有一行。"""
+    from novel_writer import state as st
+    ws = _ws(tmp_path)
+    _write(ws, "theme_design", "原主题")
+    rid = OD.create_request(ws, "concept", direction="把复仇改为救赎", scopes=["theme"])["id"]
+    fake = FakeInvoker(ws.root, writers={
+        "theme": lambda w: w.path("theme_design").write_text("新主题", encoding="utf-8")})
+    CR.h_concept(ws, _concept_step(rid), {}, invoker=fake)
+    log = "\n".join(st.read_log_tail(ws, lines=200))
+    assert "构思修订开始" in log and "把复仇改为救赎" in log
+    assert "调用模型中" in log and "已完成" in log
+    assert "构思修订完成" in log and "实际改动" in log

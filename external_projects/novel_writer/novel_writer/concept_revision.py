@@ -250,13 +250,24 @@ def h_concept(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=
 
     before = {sc: _snapshot(ws, [sc]) for sc in scopes}
     backup_scopes(ws, rid, scopes)
+    st.log_line(ws, f"✎ 构思修订开始：范围 {'、'.join(SCOPE_LABELS[x].split('（')[0] for x in scopes)}；"
+                    f"思路：{direction[:60]}")
+    st.log_line(ws, "  已备份修订前的产物（可在界面撤销）")
 
     for scope in SCOPE_ORDER:
         if scope not in scopes:
             continue
+        label = SCOPE_LABELS[scope].split("（")[0]
         for sub in _scope_steps(ws, scope, direction, rid):
-            run_skill_step(ws, sub, invoker=invoker, settings=settings, run_no=1)
+            st.log_line(ws, f"  ↳ {label}：{sub.title or sub.id}，调用模型中（通常需要数分钟，期间无新输出属正常）")
+            try:
+                run_skill_step(ws, sub, invoker=invoker, settings=settings, run_no=1)
+            except Exception as exc:  # noqa: BLE001 - 原因写入运行日志后继续抛出，由运行器记录失败
+                st.log_line(ws, f"  ✘ {label} 失败：{type(exc).__name__}：{str(exc)[:200]}")
+                raise
+            st.log_line(ws, f"  ✔ {label} 已完成")
         if scope == "characters":
+            st.log_line(ws, "  ↳ 刷新角色索引")
             C.h_characters_refresh(ws, S.characters_refresh_step(), settings)   # 角色文件改完后刷新索引（确定性）
 
     after = {sc: _snapshot(ws, [sc]) for sc in scopes}
@@ -280,6 +291,12 @@ def h_concept(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=
         outcome = "已按新思路修订" if changed_files else "运行完成，但产物没有变化"
     if reopened:
         outcome += "；将自动续跑到构思审核，之后请再次审核"
+    st.log_line(ws, f"✔ 构思修订完成：{outcome}")
+    if changed_scopes:
+        st.log_line(ws, "  实际改动：" + "、".join(SCOPE_LABELS[x].split("（")[0] for x in changed_scopes)
+                    + f"（{len(changed_files)} 个文件）；需重跑 {len(stale)} 步")
+    else:
+        st.log_line(ws, "  没有文件内容发生变化")
     req["result"] = {"outcome": outcome, "changed": changed_scopes, "changed_files": changed_files,
                      "deferred": deferred, "stale": stale, "auto_rerun_to_review": reopened}
     save_request(ws, req)
