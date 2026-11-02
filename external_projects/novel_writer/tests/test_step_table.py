@@ -23,3 +23,11 @@ def test_empty_pipeline_is_valid(monkeypatch):
     monkeypatch.setattr(T, "_table", lambda **kw: captured.update(kw))
     T.render_step_table([], current_id=None, statuses={})
     assert captured["data"] == {"columns": [], "rows": [], "current": None}
+
+
+def test_long_text_columns_wrap_in_component_html():
+    """回归：标题等长文本列必须可换行并限宽，否则会把整列撑得特别宽。"""
+    html = (T._COMPONENT_DIR / "index.html").read_text(encoding="utf-8")
+    assert '"标题": "wrap-title"' in html and '"说明": "wrap"' in html and '"步骤": "wrap-id"' in html
+    assert "td.wrap-title" in html and "overflow-wrap: anywhere" in html
+    assert "max-width: 22rem" in html

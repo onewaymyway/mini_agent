@@ -13,7 +13,10 @@
   table { border-collapse: separate; border-spacing: 0; width: 100%; }
   th, td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid var(--border); white-space: nowrap; vertical-align: top; }
   th { position: sticky; top: 0; background: var(--bg2); font-weight: 600; z-index: 1; }
-  td.wrap { white-space: normal; min-width: 14rem; max-width: 28rem; }
+  /* 可换行的列：宽度受限，过长内容在列内折行（含无空格的长串），不再把整列撑宽 */
+  td.wrap { white-space: normal; overflow-wrap: anywhere; min-width: 14rem; max-width: 28rem; }
+  td.wrap-title { white-space: normal; overflow-wrap: anywhere; min-width: 10rem; max-width: 22rem; }
+  td.wrap-id { white-space: normal; overflow-wrap: anywhere; min-width: 8rem; max-width: 16rem; }
   tr.cur td { background: rgba(255, 75, 75, 0.12); }
   tr.cur td:first-child { box-shadow: inset 3px 0 0 var(--primary); }
   tr.running td { font-weight: 600; }
@@ -27,6 +30,8 @@
   "use strict";
   const wrap = document.getElementById("wrap");
   let lastJson = null, lastCurrent = undefined;
+  // 需要换行的列 → 样式类（其余列保持单行，保证状态、尝试等短列整齐）
+  const WRAP_CLASS = { "说明": "wrap", "标题": "wrap-title", "步骤": "wrap-id" };
 
   function send(type, data) {
     window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, data || {}), "*");
@@ -84,7 +89,7 @@
       const isCur = data.current && r["__id"] === data.current;
       if (isCur) tr.classList.add("cur");
       if (r["__status"] === "running") tr.classList.add("running");
-      cols.forEach(c => tr.appendChild(cell(r[c], c === "说明" ? "wrap" : "")));
+      cols.forEach(c => tr.appendChild(cell(r[c], WRAP_CLASS[c] || "")));
       if (isCur) curRow = tr;
       tbody.appendChild(tr);
     });
