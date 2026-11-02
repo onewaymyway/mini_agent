@@ -18,6 +18,7 @@ from .source_import import import_source
 from .steps import global_visual as gv
 from .providers.factory import (ProviderError, make_image_provider, make_text_llm, make_tts_provider,
                                 make_video_provider)
+from . import cancel
 from . import chapter_io as cio
 from . import chapter_pipeline as cp
 from . import shot_review as sr
@@ -571,6 +572,42 @@ def _start_job(project_dir: str, *, name: str, label: str, scope: str, fn) -> Di
     if not res["ok"]:
         return _fail(res["error"])
     return _ok({"started": name, "label": label})
+
+
+def recompose_chapter(project_dir: str, no: int) -> Dict[str, Any]:
+    """同步重新合成一章（只重做声音、画面与字幕，不重新生成视频）。"""
+    from .steps import chapter_compose as _cc
+    try:
+        res = _cc.recompose_chapter(Path(project_dir), int(no))
+    except RuntimeError as exc:
+        return _fail(str(exc))
+    return _ok({"output": res.get("output"), "duration": res.get("duration"), "subtitles": res.get("subtitles")})
+
+
+def start_recompose_background(project_dir: str, numbers: List[int]) -> Dict[str, Any]:
+    """后台重新合成多章（界面按钮使用）。单章失败不影响其它章；结果汇总为 done / failed / skipped。"""
+    from .steps import chapter_compose as _cc
+    targets = [int(n) for n in numbers]
+    if not targets:
+        return _fail("没有要重新合成的章节")
+
+    def fn() -> Dict[str, Any]:
+        done: List[str] = []
+        failed: List[str] = []
+        skipped: List[str] = []
+        for no in targets:
+            cancel.check()   # 用户立即停止：不再处理后续章节
+            try:
+                res = _cc.recompose_chapter(Path(project_dir), no)
+            except RuntimeError as exc:
+                failed.append(f"第 {no} 章：{exc}")
+                _joblog.log(Path(project_dir), "chapter", f"第 {no} 章 重新合成失败：{exc}", level="error")
+                continue
+            (done if res.get("output") else skipped).append(f"第 {no} 章" if res.get("output") else f"第 {no} 章（未合成）")
+        return {"done": done, "failed": failed, "skipped": skipped}
+
+    return _start_job(project_dir, name="recompose", label=f"重新合成 {len(targets)} 章（不重新生成视频）",
+                      scope="chapter", fn=fn)
 
 
 def start_visual_text_background(project_dir: str, *, ids: Optional[List[str]] = None,

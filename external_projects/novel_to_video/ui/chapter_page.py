@@ -9,6 +9,7 @@ import streamlit as st
 from novel_to_video import tool_api
 
 from .common import DEFAULT_PROJECTS_ROOT
+from .joblog_panel import render_job_panel
 
 STATUS_LABEL = {"pending": "待生成", "running": "运行中", "waiting_assets": "等待素材确认",
                 "waiting_review": "等待审核", "done": "已完成", "failed": "失败"}
@@ -298,6 +299,31 @@ def _shot_card(pdir: str, no: int, sh: dict, all_chars: list) -> None:
                         st.error(res["error"]["message"])
 
 
+def _recompose_section(pdir: str, no: int, v: dict) -> None:
+    """单章重新合成：只重做声音、画面与字幕，不重新生成视频，也不调用配音接口。"""
+    st.markdown("#### 重新合成（不重新生成视频）")
+    st.caption("用已生成的原始视频与现有配音重新拼合声音、画面，并重新烧录字幕。"
+               "不调用视频或配音接口，不消耗生成次数。修改字幕设置或视频格式后，用它让改动生效。")
+    if not v.get("shots"):
+        st.caption("本章还没有镜头，先运行本章流水线。")
+        return
+    if st.button("重新合成本章", key=f"recomp_{no}", help="需要所有小场景已通过审核。"):
+        r = tool_api.start_recompose_background(pdir, [no])
+        (st.success if r["ok"] else st.error)(
+            "已开始重新合成，进度见下方日志。" if r["ok"] else r["error"]["message"])
+    render_job_panel(pdir, ["chapter"], title="重新合成日志", height=220, limit=120)
+
+
+def _recompose_all(pdir: str, overview: list) -> None:
+    """批量重新合成：所有已合成过的章节（done / stale）。"""
+    targets = [r["no"] for r in overview if r.get("status") in ("done", "stale")]
+    with st.expander(f"批量重新合成（{len(targets)} 章已有成片）"):
+        st.caption("对所有已有章节成片的章节逐章重新合成声音、画面与字幕，不重新生成视频。单章失败不影响其它章。")
+        if st.button("重新合成所有已完成章节", key="recomp_all", disabled=not targets):
+            r = tool_api.start_recompose_background(pdir, targets)
+            (st.success if r["ok"] else st.error)("已开始批量重新合成。" if r["ok"] else r["error"]["message"])
+
+
 def page_chapters() -> None:
     st.header("章节生产（C-1 … C-9）")
     st.caption("每章：剧本 → 镜头 → 补建角色确认 → 配音 → 提示词 → 小场景视频 → 逐镜审核 → 章节合成。")
@@ -314,6 +340,7 @@ def page_chapters() -> None:
                    "状态": STATUS_LABEL.get(r["status"], r["status"]), "说明": r.get("message") or ""}
                   for r in overview], width='stretch', hide_index=True)
     _run_panel(pdir, overview)
+    _recompose_all(pdir, overview)
 
     no = st.session_state.get("chap_no")
     if no is None:
@@ -329,6 +356,7 @@ def page_chapters() -> None:
     if v.get("output"):
         st.markdown("#### 章节成片")
         st.video(str(Path(pdir) / v["output"]))
+    _recompose_section(pdir, no, v)
     _script_review(v)
     _missing_locations(v)
     _missing_props(v)
