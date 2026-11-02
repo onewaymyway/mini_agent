@@ -183,7 +183,7 @@ def _shots_review(v: dict) -> None:
         st.success(f"通过：自动修正 {rv['attempts'] - 1} 次后通过")
         return
     st.error(f"未通过：已生成 {rv.get('attempts', 1)} 次仍有 {len(rv.get('issues') or [])} 个问题。"
-             "完整的输入与模型原始输出见下方「模型调用记录」；也可以在「挡位与队列」页调高自动修正次数后重新运行。")
+             "完整的输入与模型原始输出见下方「模型调用记录」；也可以在「设置与队列」页调高自动修正次数后重新运行。")
     st.dataframe([{"问题": i["message"]} for i in rv.get("issues") or []], width='stretch', hide_index=True)
 
 

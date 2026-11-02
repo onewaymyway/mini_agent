@@ -45,6 +45,8 @@ DEFAULT_OPTIONS: Dict[str, Any] = {
     "shots_max_retries": DEFAULT_AUTO_FIX_RETRIES,   # 镜头规划校验失败后，同上
     # 配音引擎链：先 engine，失败后降级到 fallback（null = 不降级）。与 novel-video-studio 默认一致。
     "video": dict(DEFAULT_VIDEO_SETTINGS),
+    # 图像网络（生图与图片下载）：默认直连，不读取系统代理
+    "image": {"use_system_proxy": False},
     "tts": {"engine": "cosyvoice", "fallback": "edge-tts", "voice": None,
             "cosyvoice_model_dir": None, "cosyvoice_timeout_sec": 60, "edge_tts_timeout_sec": 45,
             "edge_tts_proxy": None},   # None = 系统代理；"direct" = 强制直连；或指定代理地址

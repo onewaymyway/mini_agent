@@ -8,7 +8,7 @@
   5. 有角色性别待确认     → 性别确认
   6. 全书素材未就绪       → 全书素材
   7. 有镜头待逐镜审核     → 章节生产（逐镜审核）
-  8. 有章节待运行/过期    → 挡位与队列（运行）
+  8. 有章节待运行/过期    → 设置与队列（运行）
   9. 全部完成，未合成     → 全书合成（需人工确认）
  10. 成片已完成           → 完成
 """
@@ -93,7 +93,7 @@ def next_step(data: Dict[str, Any]) -> Dict[str, str]:
     todo = [c for c in data["chapters"] if c["status"] not in ("done",)]
     if todo:
         return {"key": "run", "title": "运行队列", "reason": f"{len(todo)} 章待运行或需重跑",
-                "page": "🚦 挡位与队列"}
+                "page": "🛠️ 设置与队列"}
     final = data["final"]
     if not final["exists"] or final["stale"]:
         if not final["confirmed"]:

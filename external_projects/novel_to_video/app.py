@@ -31,7 +31,7 @@ PAGES = {
     "📚 项目列表": page_projects,
     "🎭 全书素材": page_assets,
     "🎬 章节生产": page_chapters,
-    "🚦 挡位与队列": page_gear,
+    "🛠️ 设置与队列": page_gear,
     "🧩 补建角色审核": page_auto_added,
     "🎞️ 全书合成": page_final,
     "⚧ 性别确认": page_gender,

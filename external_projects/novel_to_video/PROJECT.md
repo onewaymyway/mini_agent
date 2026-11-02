@@ -32,7 +32,7 @@
 - `project_store.py`：项目目录 `<书名>_<时间戳>`，原子写入 JSON/YAML，章节范围解析（`all`、`1-10`、`20-`、`3,7,9-12`），PROGRESS.md 只追加。
 - `tool_api.py`：UI/CLI/daemon 统一接口，返回 `{ok, data, error}`。
 - 入口：`entrypoints/import_novel.py`、`list_projects.py`、`health.py`、`build_assets.py`、`run_chapter.py`、`run_queue.py`、`compose_book.py`。
-- 界面：`streamlit run app.py`，导入页（检查 → 确认报告 → 创建）、项目页（章节表、导出变更提示、进度日志）、全书素材页（G-2/G-3 执行、画廊审核、字段编辑）、章节生产页、挡位与队列页、补建角色审核页。
+- 界面：`streamlit run app.py`，导入页（检查 → 确认报告 → 创建）、项目页（章节表、导出变更提示、进度日志）、全书素材页（G-2/G-3 执行、画廊审核、字段编辑）、章节生产页、设置与队列页、补建角色审核页。
 - Phase 1 新增：
   - `providers/keypool.py`：多 key 池，遇 429 冷却并切 key，400/401/403/404/422 不重试；key 只从环境变量 `AGNES_API_KEYS` / `AGNES_API_KEY` 读取。
   - `providers/image.py`：Agnes 生图（b64 返回）与离线 `StubImageProvider`。
@@ -77,12 +77,14 @@
 - 地点细化 L1（2026-11-02，**默认关闭**，挡位页开启，项目选项 `location_spots_enabled`）：镜头规划逐镜头判断「现有地点是否真的是戏发生的场所」，不是则规划新场景点（`new_location_specs`：所属区域/内外景/理由）；`steps/location_spots.py` 用剧本场次标题做确定性核对并把问题反馈给模型修正（次数用尽只警告）；C-5 把场景点写入全局库（`level=spot`/`parent_id`/`spot_kind`，继承区域风格），定妆图提示词区分内/外景。测试 `tests/test_location_spots.py`（10 例）。后续 L2/L3 见 `next_doc/novel_to_video_location_spots_plan.md`。
 - 地点细化 L2（2026-11-02，同样默认关闭）：C-1 剧本规则要求场次标题写到「区域·场所·时间」；C-2 对只写区域名的场次给 warning（不判失败）；开关切换后剧本缓存自动重算。关闭时提示词与校验逐字节不变。测试 `tests/test_location_spots_l2.py`（9 项）。L3 已完成（同日）：C-7 场景点提示词注明所属区域；同区域近似名提示；全书素材页按区域分组。测试 `tests/test_location_spots_l3.py`（5 项）。L4 已完成（默认开启，项目选项 `location_presplit_enabled`，全书素材页可关闭）：对区域级地点提议场景点候选，用户勾选确认后才写入地点库；全书素材页提供「提议场景点 / 确认写入」操作入口。测试 `tests/test_location_presplit.py`（9 项）与 `tests/test_location_presplit_ui.py`（2 项）。
 - 默认开关调整（2026-11-02）：角色多形象 `character_looks_enabled`、地点细化 `location_spots_enabled`、区域预拆解 `location_presplit_enabled` 默认开启；挡位页可关闭。视频网络的系统代理 `video.use_system_proxy` 是网络方式，仍默认关闭。修复：默认开启地点细化后，章节页会遇到只有 message 没有拆分字段的新提示，原代码因此报错，现已直接显示这些提示。相关测试已更新（显式关闭或断言默认值），新增 `test_chapter_page_shows_new_plan_warnings_without_crashing`。
+- 图像网络开关（2026-11-02）：生图请求与图片下载新增“使用系统代理”，项目配置 `image.use_system_proxy`，默认 False（直连，不读取 HTTP_PROXY/HTTPS_PROXY 与系统代理）；挡位页“图像网络”区域可修改。开启后，常规重试仍失败时才额外尝试一次绕过代理直连。修复：图片下载原先直接调用 `requests.get`，不受 session 控制，代理残留时要多次超时后才兜底。`gen_image_with_text` skill 的 `AgnesImageClient` 同步增加 `use_system_proxy` 参数，默认 False；命令行 `gen_image.py` 也因此默认直连，需要代理时传入该参数。测试 `tests/test_image_proxy_switch.py`（6 项）。
+- 标签改名（2026-11-02）：「🚦 挡位与队列」改为「🛠️ 设置与队列」，页面标题改为「设置与批量队列」，因为该页主要承载各项设置与批量队列。
 
 ## 已知限制
 
 - **图像与视频依赖 mini_agent 的 skill**：项目必须位于 mini_agent 仓库内，或设置 `NOVEL_TO_VIDEO_SKILLS_DIR`。key 来自 mini_agent 根目录的 providers.json（或环境变量）。
 - **模型调用记录只覆盖文本模型**：C-1/C-3/C-5/G-2 的完整输入输出可在界面查看；图像、视频、配音的请求参数仍只在 `logs/api_calls.jsonl` 与实时日志中。`llm_trace.jsonl` 只追加不轮转，长期运行后可手动清理。
-- **自动修正有次数上限**：剧本与镜头规划校验失败时，会自动把问题反馈给模型修正，默认各最多 2 次（`script_max_retries` / `shots_max_retries`，「挡位与队列」页可改，0 为关闭）；次数用尽仍未通过才失败。每次修正多一次文本模型调用。
+- **自动修正有次数上限**：剧本与镜头规划校验失败时，会自动把问题反馈给模型修正，默认各最多 2 次（`script_max_retries` / `shots_max_retries`，「设置与队列」页可改，0 为关闭）；次数用尽仍未通过才失败。每次修正多一次文本模型调用。
 - **镜头规划质量取决于模型**：模型可能把一整场戏写成一个镜头，代码只能按时长拆开，拆出的镜头共用画面描述；界面会提示并提供「重新规划本章镜头」，但不会自动重试。
 - **旧的直接 HTTP provider 仍保留**（`AgnesImageProvider`、`AgnesVideoProvider`），仅供测试引用，未在生产流程中使用。
 - **驾驶舱的后台运行是同进程线程**：界面进程退出即停止运行，遗留锁由下次运行前回收。不适合独立监控。

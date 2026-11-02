@@ -89,9 +89,9 @@ def test_gear_and_auto_added_pages_render(tmp_path, monkeypatch):
     gv.visual_text_pass(proj, RuleTextLLM())
     gv.portrait_pass(proj, StubImageProvider())
     at = AppTest.from_file(APP, default_timeout=60).run()
-    at.sidebar.radio[0].set_value("🚦 挡位与队列").run()
+    at.sidebar.radio[0].set_value("🛠️ 设置与队列").run()
     assert not at.exception
-    assert any("挡位与批量队列" in h.value for h in at.header)
+    assert any("设置与批量队列" in h.value for h in at.header)
     at.text_input(key="gear_root").input(str(out)).run()
     assert not at.exception
     assert any(s.label == "挡位" for s in at.selectbox)

@@ -150,7 +150,7 @@ def run_portraits(project_dir: str, *, ids: Optional[List[str]] = None, regenera
     """G-3：生成定妆图。regenerate=True 时对 ids 强制生成新版本。"""
     pdir = Path(project_dir)
     try:
-        image = make_image_provider(image_provider or _project_providers(pdir).get("image"))
+        image = make_image_provider(image_provider or _project_providers(pdir).get("image"), image_cfg=_image_cfg(pdir))
     except ProviderError as exc:
         return _fail(str(exc))
     try:
@@ -200,7 +200,7 @@ def _providers_for(project_dir: Path) -> Dict[str, Any]:
     tts_cfg = ps.read_json(project_dir / "project.json").get("tts") or {}
     return {
         "text": make_text_llm(p.get("text")),
-        "image": make_image_provider(p.get("image")),
+        "image": make_image_provider(p.get("image"), image_cfg=_image_cfg(Path(project_dir))),
         "video": make_video_provider(p.get("video"), ps.read_json(project_dir / "project.json").get("video") or {}),
         "tts": make_tts_provider(p.get("tts"), tts_cfg),
     }
@@ -483,7 +483,7 @@ def render_cover(project_dir: str, *, image_provider: Optional[str] = None) -> D
     """F-2：生成背景图（缺失时）并叠字。背景图生成需要图像 provider。"""
     pdir = Path(project_dir)
     try:
-        prov = make_image_provider(image_provider or _project_providers(pdir).get("image"))
+        prov = make_image_provider(image_provider or _project_providers(pdir).get("image"), image_cfg=_image_cfg(pdir))
     except ProviderError as exc:
         return _fail(str(exc))
     try:
@@ -876,3 +876,26 @@ def presplit_confirm(project_dir: str, area_id: str, spots: List[Dict[str, Any]]
         return _fail(str(exc))
     except Exception as exc:
         return _fail(f"L4 写入异常：{exc}")
+
+
+def _image_cfg(pdir: Path) -> Dict[str, Any]:
+    """项目配置的 image 块；读取失败或旧项目缺省时返回空（即默认直连）。"""
+    try:
+        return dict(ps.read_json(Path(pdir) / "project.json").get("image") or {})
+    except (OSError, ValueError):
+        return {}
+
+
+def set_image_proxy(project_dir: str, use_system_proxy: bool) -> Dict[str, Any]:
+    """图像网络（生图请求与图片下载）是否使用系统代理。默认 False：直连。"""
+    pdir = Path(project_dir)
+    try:
+        proj = ps.read_json(pdir / "project.json")
+    except (OSError, ValueError) as exc:
+        return _fail(str(exc))
+    image = dict(proj.get("image") or {})
+    image["use_system_proxy"] = bool(use_system_proxy)
+    proj["image"] = image
+    ps.write_json_atomic(pdir / "project.json", proj)
+    ps.append_progress(pdir, f"图像网络：{'使用系统代理' if use_system_proxy else '直连（不使用系统代理，默认）'}")
+    return _ok({"use_system_proxy": bool(use_system_proxy)})

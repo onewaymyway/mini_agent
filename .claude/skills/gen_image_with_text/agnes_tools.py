@@ -35,6 +35,7 @@ class AgnesImageClient:
         timeout: int = 1800,
         max_retries: int = 3,
         verify_ssl: bool = False,
+        use_system_proxy: bool = False,
     ):
         """
         Args:
@@ -53,6 +54,9 @@ class AgnesImageClient:
         self.verify_ssl = verify_ssl
 
         self.session = requests.Session()
+        # 默认 False：生图请求与图片下载都不读取系统代理（环境变量与注册表）
+        self.use_system_proxy = bool(use_system_proxy)
+        self.session.trust_env = self.use_system_proxy
 
     # =========================
     # headers
@@ -148,7 +152,7 @@ class AgnesImageClient:
         last_err: Optional[Exception] = None
         for attempt in range(1, max_retries + 1):
             try:
-                r = requests.get(url, timeout=60, verify=False)
+                r = self.session.get(url, timeout=60, verify=False)
                 r.raise_for_status()
                 with open(save_path, "wb") as f:
                     f.write(r.content)
@@ -159,21 +163,19 @@ class AgnesImageClient:
                 if attempt < max_retries:
                     time.sleep(1.5 * attempt)
 
-        # 常规重试都失败了，很可能是代理配置问题（FileNotFoundError 出现
-        # 在 SSL 握手阶段、且发生在 _prepare_proxy 里，是典型的"代理软件
-        # 已关闭但环境变量还在"的表现）——额外尝试一次显式绕过代理直连，
-        # 作为最后的兜底，成功了就不再往上抛异常。
-        try:
-            r = requests.get(url, timeout=60, verify=False, proxies={"http": None, "https": None})
-            r.raise_for_status()
-            with open(save_path, "wb") as f:
-                f.write(r.content)
-            print("    [下载图片] 常规请求多次失败，绕过系统代理直连后成功，"
-                  "建议检查本机 HTTP_PROXY/HTTPS_PROXY 环境变量是否指向了"
-                  "一个已经关闭的代理")
-            return
-        except requests.exceptions.RequestException as e:
-            last_err = e
+        # 只有开启“使用系统代理”时，才在常规重试后额外尝试一次显式绕过代理直连（兜底）。
+        # 默认不读取系统代理：下载本身就是直连，不会因为残留的代理环境变量失败。
+        if self.use_system_proxy:
+            try:
+                r = self.session.get(url, timeout=60, verify=False, proxies={"http": None, "https": None})
+                r.raise_for_status()
+                with open(save_path, "wb") as f:
+                    f.write(r.content)
+                print("    [下载图片] 常规请求多次失败，绕过系统代理直连后成功，"
+                      "建议检查本机 HTTP_PROXY/HTTPS_PROXY 环境变量是否指向了一个已经关闭的代理")
+                return
+            except requests.exceptions.RequestException as e:
+                last_err = e
 
         raise RuntimeError(
             f"图片已生成成功但下载保存失败（重试 {max_retries} 次 + 绕过代理直连均失败）：{last_err}\n"

@@ -20,7 +20,7 @@ GEAR_HELP = {
 
 
 def page_gear() -> None:
-    st.header("挡位与批量队列")
+    st.header("设置与批量队列")
     root = st.text_input("项目存放目录", value=DEFAULT_PROJECTS_ROOT, key="gear_root")
     pdir = _pick_project(root)
     if not pdir:
@@ -127,6 +127,17 @@ def page_gear() -> None:
         res = tool_api.set_video_proxy(pdir, bool(v_proxy))
         (st.success if res["ok"] else st.error)("已保存（下一次视频请求起生效）" if res["ok"] else res["error"]["message"])
     st.caption(f"当前：{'使用系统代理' if cur_v_proxy else '直连（默认）'}。配音的网络方式在下方“配音网络”中单独设置。")
+
+    st.markdown("#### 图像网络（生图请求 / 图片下载）")
+    cur_i_proxy = bool((proj_cfg.get("image") or {}).get("use_system_proxy", False))
+    i_proxy = st.checkbox("使用系统代理", value=cur_i_proxy, key="gear_i_proxy",
+                          help="默认关闭（直连）：生图请求与图片下载都不读取系统代理。"
+                               "若本机代理软件已关闭但 HTTP_PROXY/HTTPS_PROXY 环境变量还残留，下载会失败；"
+                               "只有确实需要通过代理访问外网时才开启。")
+    if bool(i_proxy) != cur_i_proxy and st.button("保存图像网络设置", key="gear_i_proxy_save"):
+        res = tool_api.set_image_proxy(pdir, bool(i_proxy))
+        (st.success if res["ok"] else st.error)("已保存（下一次生图请求起生效）" if res["ok"] else res["error"]["message"])
+    st.caption(f"当前：{'使用系统代理' if cur_i_proxy else '直连（默认）'}。")
 
     st.markdown("#### 字幕")
     subcfg = {**ps.DEFAULT_OPTIONS["subtitles"], **(proj_cfg.get("subtitles") or {})}

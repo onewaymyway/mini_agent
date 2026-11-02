@@ -197,7 +197,7 @@ def test_chapter_page_notes_when_it_passed_after_autofix(proj):
 
 
 def test_gear_page_sets_both_retry_counts(proj):
-    at = _open(proj, "🚦 挡位与队列", "gear_root")
+    at = _open(proj, "🛠️ 设置与队列", "gear_root")
     at.number_input(key="gear_script_retry").set_value(1).run()
     at.number_input(key="gear_shots_retry").set_value(3).run()
     at.button(key="gear_retry_save").click().run()

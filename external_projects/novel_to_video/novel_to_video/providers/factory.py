@@ -50,13 +50,14 @@ def _skill_or_raise(factory, kind: str):
         raise ProviderError(f"无法使用 Agnes skill：{exc}") from exc
 
 
-def make_image_provider(name: Optional[str] = None) -> ImageProvider:
-    """图像 provider。agnes 通过 mini_agent 的 gen_image_with_text skill 调用，key 由 skill 解析。"""
+def make_image_provider(name: Optional[str] = None, image_cfg: Optional[dict] = None) -> ImageProvider:
+    """图像 provider。agnes 通过 mini_agent 的 gen_image_with_text skill 调用，key 由 skill 解析。
+    image_cfg 来自项目配置的 image 块（use_system_proxy：生图与下载是否读取系统代理，默认 False）。"""
     name = "stub" if _forced_stub() else (name or "agnes")
     if name == "stub":
         return StubImageProvider()
     if name == "agnes":
-        return _skill_or_raise(lambda: SkillImageProvider(), "图像")
+        return _skill_or_raise(lambda: SkillImageProvider(image_cfg=image_cfg), "图像")
     raise ProviderError(f"未知图像 provider：{name}")
 
 

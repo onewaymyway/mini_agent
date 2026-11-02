@@ -35,11 +35,14 @@ def _failure(result: dict) -> tuple:
 class SkillImageProvider(ImageProvider):
     name = "agnes-skill-image"
 
-    def __init__(self, pool=None, *, model: Optional[str] = None):
+    def __init__(self, pool=None, *, model: Optional[str] = None, image_cfg: Optional[dict] = None):
         pool = pool or build_pool()
         if pool is None:
             raise RuntimeError("no-key")
-        self.client = modules()["image"].AgnesImageClient(key_pool=pool, model=model)
+        # image_cfg 来自项目配置的 image 块；use_system_proxy 默认 False（直连）
+        self.use_system_proxy = bool((image_cfg or {}).get("use_system_proxy", False))
+        self.client = modules()["image"].AgnesImageClient(key_pool=pool, model=model,
+                                                          use_system_proxy=self.use_system_proxy)
 
     def generate(self, prompt: str, save_path: Path, *, ratio: Optional[str] = None,
                  size: str = "1024x1024") -> ImageResult:
