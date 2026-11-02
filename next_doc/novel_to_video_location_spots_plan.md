@@ -1,6 +1,6 @@
 # novel_to_video：地点细化（场景点）方案
 
-> 状态：**L1–L3 已实施（默认关闭）；L4 已实施（默认开启，全书素材页有操作入口）**，均为离线 stub 验证。第 7 节为 L1，第 8 节为 L2，第 9 节为 L3，第 10 节为 L4 实施记录。
+> 状态：**L1–L4 已实施，均为离线 stub 验证。** 2026-11-02 起，地点细化开关 `location_spots_enabled` 与区域预拆解开关 `location_presplit_enabled` 均默认开启（旧项目缺省该键时同样按开启处理）；挡位页可关闭。文中凡写“默认关闭”的段落均为当时的设计，以本说明为准。第 7 节为 L1，第 8 节为 L2，第 9 节为 L3，第 10 节为 L4 实施记录。
 > 范围：`external_projects/novel_to_video`。关联文档：`next_doc/novel_to_video_external_project_plan.md`（缺失素材计划阶段 1–4 已完成，本方案在其地点机制上扩展）。
 
 ## 1. 问题

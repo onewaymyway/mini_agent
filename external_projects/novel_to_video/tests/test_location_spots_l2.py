@@ -98,6 +98,7 @@ def test_run_script_toggle_switches_prompt_warning_and_cache(project):  # noqa: 
     script = f"### 场次 1｜{area}·清晨（外景）\n旁白：天亮了。\n"
 
     # 1) 关闭：提示词不含新规则，校验无地点警告
+    assert tool_api.set_location_spots(str(project), False)["ok"]
     off_llm = RecordingLLM(script)
     off = run_script(project, 1, off_llm)
     assert off["status"] == "pass"

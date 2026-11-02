@@ -64,7 +64,8 @@ def _add_look(p, label="战斗装", aliases=()):
     write_json_atomic(p / "global" / "characters.json", doc)
 
 
-def test_disabled_by_default_ignores_character_looks(project):
+def test_disabled_ignores_character_looks(project):
+    _enable(project, False)
     llm = LookLLM("战斗装")
     run_script(project, 1, llm)
     run_shots(project, 1, llm)
@@ -183,8 +184,8 @@ def test_chapter_view_shows_looks(project):
 
 
 def test_toggle_persists(project):
+    assert cl.looks_enabled(project)            # 默认开启
+    _enable(project, False)
     assert not cl.looks_enabled(project)
     _enable(project)
     assert cl.looks_enabled(project)
-    _enable(project, False)
-    assert not cl.looks_enabled(project)

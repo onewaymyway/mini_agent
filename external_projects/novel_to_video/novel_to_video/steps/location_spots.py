@@ -3,7 +3,7 @@
 背景：全局地点库来自小说设定，常常只有「铁城」这样的区域级地点。镜头规划如果只能「从库里选」，
 所有发生在铁城里的戏都会挂在这一个地点上，视频只能生成城市全景，没有具体场所（办公室、街道、卧室）。
 
-做法（项目选项 `location_spots_enabled`，默认 False，关闭时提示词、镜头与流水线与之前完全一致）：
+做法（项目选项 `location_spots_enabled`，默认 True；关闭时提示词、镜头与流水线与之前完全一致）：
   * 提示词让模型逐镜头判断「所选地点是否就是戏真正发生的场所」；不是就规划新场景点：
     location_id 置 null，location_name 写具体场所，parent_location_id 指向所属区域，spot_kind 标内/外景；
   * 代码用剧本场次标题（`### 场次 N｜地点·时间（内景/外景）`）做**确定性核对**：标题里的具体场所
@@ -29,7 +29,7 @@ MAX_NEW_SPOTS_PER_CHAPTER = 4      # 超过时在章节页警告（模型可能�
 
 def spots_enabled(project_dir: Path) -> bool:
     try:
-        return bool(read_json(Path(project_dir) / "project.json").get("location_spots_enabled", False))
+        return bool(read_json(Path(project_dir) / "project.json").get("location_spots_enabled", True))   # 旧项目未写该键时按默认开启
     except (OSError, ValueError):
         return False
 

@@ -191,6 +191,11 @@ def _plan_warnings(pdir: str, no: int, v: dict) -> None:
     """旧版本的镜头规划质量提示：旧版代码会把超长口播按时长机械拆成多个镜头，这些镜头共用同一条画面描述。
     新版本不再这样拆（超长镜头由模型自行拆分并写不同画面），所以只有旧文件才会显示这个提示。"""
     warns = v.get("plan_warnings") or []
+    # 地点细化等新提示只有 message，没有拆分字段：直接展示
+    for w in warns:
+        if "parts" not in w and w.get("message"):
+            st.warning(w["message"])
+    warns = [w for w in warns if "parts" in w]     # 旧版拆分提示：带 parts 字段
     if warns:
         total = len(v["shots"])
         split_shots = sum(w["parts"] for w in warns)

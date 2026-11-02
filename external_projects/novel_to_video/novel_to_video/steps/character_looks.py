@@ -5,7 +5,7 @@
   * 角色可选地带一个 `looks` 列表；没有 looks 的角色就是原来的“基础形象”，旧数据无需迁移；
   * 镜头只在需要时用 `character_looks` 指定形象标签，其余仍用基础形象；
   * 库里没有的标签由 C-5 起草（source=auto_added），文本与定妆图确认沿用补建角色的门槛；
-  * 项目选项 `character_looks_enabled` 默认 False（保守）：关闭时提示词、镜头与流水线与之前完全一致。
+  * 项目选项 `character_looks_enabled` 默认 True：关闭时提示词、镜头与流水线与之前完全一致。
 
 审核键：`look:<角色id>:<形象id>`；定妆图：`global/assets/characters/<角色id>/<形象id>[_vN].png`。
 """
@@ -30,7 +30,7 @@ DEFAULT_LABELS = {"", "默认", "基础", "default", "base", "none", "无"}
 
 def looks_enabled(project_dir: Path) -> bool:
     try:
-        return bool(read_json(Path(project_dir) / "project.json").get("character_looks_enabled", False))
+        return bool(read_json(Path(project_dir) / "project.json").get("character_looks_enabled", True))   # 旧项目未写该键时按默认开启
     except (OSError, ValueError):
         return False
 

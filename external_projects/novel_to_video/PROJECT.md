@@ -76,6 +76,7 @@
 - 角色多形象（阶段 4，2026-11-02，**默认关闭**，挡位页开启）：角色可选带 `looks`；镜头用 `character_looks` 指定形象，缺失形象由 C-5 起草并走与补建角色相同的确认流程；提示词与参考图使用形象，形象无定妆图时拦截 C-8。模块 `steps/character_looks.py`。
 - 地点细化 L1（2026-11-02，**默认关闭**，挡位页开启，项目选项 `location_spots_enabled`）：镜头规划逐镜头判断「现有地点是否真的是戏发生的场所」，不是则规划新场景点（`new_location_specs`：所属区域/内外景/理由）；`steps/location_spots.py` 用剧本场次标题做确定性核对并把问题反馈给模型修正（次数用尽只警告）；C-5 把场景点写入全局库（`level=spot`/`parent_id`/`spot_kind`，继承区域风格），定妆图提示词区分内/外景。测试 `tests/test_location_spots.py`（10 例）。后续 L2/L3 见 `next_doc/novel_to_video_location_spots_plan.md`。
 - 地点细化 L2（2026-11-02，同样默认关闭）：C-1 剧本规则要求场次标题写到「区域·场所·时间」；C-2 对只写区域名的场次给 warning（不判失败）；开关切换后剧本缓存自动重算。关闭时提示词与校验逐字节不变。测试 `tests/test_location_spots_l2.py`（9 项）。L3 已完成（同日）：C-7 场景点提示词注明所属区域；同区域近似名提示；全书素材页按区域分组。测试 `tests/test_location_spots_l3.py`（5 项）。L4 已完成（默认开启，项目选项 `location_presplit_enabled`，全书素材页可关闭）：对区域级地点提议场景点候选，用户勾选确认后才写入地点库；全书素材页提供「提议场景点 / 确认写入」操作入口。测试 `tests/test_location_presplit.py`（9 项）与 `tests/test_location_presplit_ui.py`（2 项）。
+- 默认开关调整（2026-11-02）：角色多形象 `character_looks_enabled`、地点细化 `location_spots_enabled`、区域预拆解 `location_presplit_enabled` 默认开启；挡位页可关闭。视频网络的系统代理 `video.use_system_proxy` 是网络方式，仍默认关闭。修复：默认开启地点细化后，章节页会遇到只有 message 没有拆分字段的新提示，原代码因此报错，现已直接显示这些提示。相关测试已更新（显式关闭或断言默认值），新增 `test_chapter_page_shows_new_plan_warnings_without_crashing`。
 
 ## 已知限制
 

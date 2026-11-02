@@ -73,9 +73,9 @@ def test_loc_fits_is_lenient():
     assert LS.loc_fits("市政厅办公室", {"name": "市政厅", "aliases": []})   # 互相包含：宁可放过
 
 
-def test_option_defaults_off_and_prompt_unchanged_when_off(project):
+def test_option_defaults_on_and_prompt_function_default_unchanged(project):
     import json as _j
-    assert _j.loads((project / "project.json").read_text(encoding="utf-8"))["location_spots_enabled"] is False
+    assert _j.loads((project / "project.json").read_text(encoding="utf-8"))["location_spots_enabled"] is True
     off = prompts.shots_prompt("s", [], [{"id": "loc_01", "name": "铁城"}])
     assert "parent_location_id" not in off and "level" not in off
     on = prompts.shots_prompt("s", [], [{"id": "loc_01", "name": "铁城"}], spots_enabled=True)
@@ -98,6 +98,7 @@ def test_new_scene_is_identified_and_planned_when_enabled(project):
 
 
 def test_when_off_behaviour_is_unchanged(project):
+    assert tool_api.set_location_spots(str(project), False)["ok"]
     llm = SpotLLM()
     run_script(project, 1, llm)
     r = run_shots(project, 1, llm)

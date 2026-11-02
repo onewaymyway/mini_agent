@@ -63,7 +63,7 @@ def page_gear() -> None:
     st.caption("开启后，镜头规划会在角色换装、受伤、伪装等外观明显变化时指定「形象」；库里没有的形象会在 C-5 起草，"
                "与补建角色一样需要确认设定与定妆图，之后该镜头的提示词与参考图使用这个形象。"
                "关闭时一切与之前相同。已规划的章节不会自动改变，需要时在章节页「重新规划本章镜头」。")
-    looks_cur = bool(proj_cfg.get("character_looks_enabled", False))
+    looks_cur = bool(proj_cfg.get("character_looks_enabled", True))
     looks_new = st.checkbox("启用角色多形象", value=looks_cur, key="gear_looks")
     if looks_new != looks_cur and st.button("保存角色多形象开关", key="gear_looks_save"):
         r = tool_api.set_character_looks(pdir, looks_new)
@@ -74,7 +74,7 @@ def page_gear() -> None:
                "戏却发生在市政厅办公室里时，会规划新的场景点（如「铁城·市政厅办公室」），"
                "C-5 起草设定（继承所属区域的风格），与补建地点一样需要确认设定与定妆图。"
                "关闭时一切与之前相同。已规划的章节不会自动改变，需要时在章节页「重新规划本章镜头」。")
-    spots_cur = bool(proj_cfg.get("location_spots_enabled", False))
+    spots_cur = bool(proj_cfg.get("location_spots_enabled", True))
     spots_new = st.checkbox("启用地点细化", value=spots_cur, key="gear_spots")
     if spots_new != spots_cur and st.button("保存地点细化开关", key="gear_spots_save"):
         r = tool_api.set_location_spots(pdir, spots_new)
