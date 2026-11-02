@@ -84,6 +84,24 @@ def still_clip(image: Path, out: Path, seconds: float) -> Path:
     return out
 
 
+def fit_clip(video: Path, audio: Path, out: Path) -> float:
+    """把生成的画面缩放到配音的真实时长（同 novel-video-studio：setpts 快放或慢放），音频保持原样。
+    返回画面的缩放系数：<1 为快放，>1 为慢放。时长差几秒可以接受，这里只做对齐，不做截断。"""
+    v_dur = probe_duration(video)
+    a_dur = probe_duration(audio)
+    if v_dur <= 0 or a_dur <= 0:
+        raise MediaError(f"无法对齐时长：画面 {v_dur:.2f}s，配音 {a_dur:.2f}s")
+    scale = a_dur / v_dur
+    out.parent.mkdir(parents=True, exist_ok=True)
+    _run([ffmpeg(), "-y", "-i", str(video), "-i", str(audio),
+          "-map", "0:v:0", "-map", "1:a:0",
+          "-vf", f"setpts={scale:.6f}*PTS," + _scale_filter(),
+          "-af", "apad", "-t", f"{a_dur:.3f}",
+          "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+          "-c:a", "aac", "-ar", str(AUDIO_RATE), "-ac", "1", str(out)])
+    return scale
+
+
 def mux_clip(video: Path, audio: Optional[Path], out: Path, seconds: float) -> Path:
     """把视频统一到目标尺寸/帧率，替换为给定音频（无音频则静音），并裁到 seconds。"""
     out.parent.mkdir(parents=True, exist_ok=True)

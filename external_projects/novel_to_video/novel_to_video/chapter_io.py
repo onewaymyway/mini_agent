@@ -18,8 +18,15 @@ MAX_BLOCK_CHARS = 40          # 单个口播块的字数上限（超出则按标
 # 接口返回 "seconds must be in [4, 12]"，超出即 400 参数错误。镜头时长必须落在此范围内。
 VIDEO_MIN_SEC = 4
 VIDEO_MAX_SEC = 12
-SHOT_MIN_SEC = VIDEO_MIN_SEC  # 单镜头口播时长下限（硬要求）
-SHOT_MAX_SEC = VIDEO_MAX_SEC  # 单镜头口播时长上限（硬要求）；代码不再按时长机械拆镜头，超限由校验反馈给模型
+SHOT_MIN_SEC = VIDEO_MIN_SEC  # 规划参考：每镜头口播约 4–12 秒（建议值，差几秒可以接受，不做硬性拦截）
+SHOT_MAX_SEC = VIDEO_MAX_SEC
+
+
+def requested_video_seconds(speech_sec: float) -> int:
+    """向视频接口请求的时长：取口播时长向上取整，并限制在接口范围内。
+    实际画面会在合成时按配音的真实时长缩放（见 media.ffmpeg.fit_clip），所以请求时长只需大致对齐。"""
+    import math
+    return int(min(VIDEO_MAX_SEC, max(VIDEO_MIN_SEC, math.ceil(speech_sec))))
 SHOT_PLAN_SEC = 10.0          # 规划提示词中的参考时长（建议值，不是硬限制）
 
 

@@ -236,23 +236,9 @@ def collect_shot_issues(raw_shots: List[Dict[str, Any]], script: str,
 
 
 def _shot_level_issues(raw_shots: List[Dict[str, Any]]) -> List[Dict[str, str]]:
-    """镜头级硬要求：每个镜头 4–12 秒；相邻镜头画面描述不能相同。
-    代码不替模型拆分或合并镜头，只把问题与修正方法反馈给模型。
-    唯一例外：整章只有一个镜头时（例如极短的测试章节），无法凭空补足 4 秒，下限不作为失败条件。"""
+    """镜头级检查：只检查相邻镜头的画面描述是否相同。
+    口播时长不做硬性限制（差几秒可以接受，合成时会按配音时长缩放画面）。"""
     issues: List[Dict[str, str]] = []
-    for i, rs in enumerate(raw_shots, start=1):
-        sec = _shot_seconds(rs.get("blocks") or [])
-        if sec > SHOT_MAX_SEC:
-            issues.append({"message": (
-                f"第 {i} 个镜头口播估算 {sec:.1f} 秒，超过 {SHOT_MAX_SEC} 秒上限。请不要删字，也不要把它截断；"
-                f"请在一个自然的动作、停顿或对白转折处，把这个镜头拆成 2 个或以上的镜头，每个镜头口播 "
-                f"{SHOT_MIN_SEC}–{SHOT_MAX_SEC} 秒，各自写该镜头自己的景别、机位或主体动作（不能沿用原描述）。"
-                f"对白仍须是剧本中的连续原文。")})
-        elif sec < SHOT_MIN_SEC and len(raw_shots) > 1:
-            issues.append({"message": (
-                f"第 {i} 个镜头口播估算仅 {sec:.1f} 秒，低于 {SHOT_MIN_SEC} 秒下限。请与同一场次中相邻的镜头"
-                f"在逻辑上合并（合并后不超过 {SHOT_MAX_SEC} 秒），或在剧本已有内容的范围内补足该镜头的动作与反应。"
-                f"不要凭空添加剧本中没有的台词。")})
     for i in range(2, len(raw_shots) + 1):
         prev, cur = raw_shots[i - 2], raw_shots[i - 1]
         if prev.get("scene_no") != cur.get("scene_no"):

@@ -64,21 +64,18 @@ def _narr(text, scene=1, zh="中景：林远", en="medium shot: a man"):
             "visual_hint_zh": zh, "visual_hint_en": en}
 
 
-def test_overlong_shot_is_flagged_with_split_instruction():
-    issues = collect_shot_issues([_narr(LONG + LONG)], SCRIPT, CHARS)
-    msg = "\n".join(i["message"] for i in issues)
-    assert "超过 12 秒上限" in msg and "拆成 2 个或以上" in msg
+def test_overlong_shot_is_accepted_without_splitting():
+    # 口播时长不做硬性限制：长镜头不报错，合成时画面会按配音时长缩放
+    assert not any("秒" in i["message"] for i in collect_shot_issues([_narr(LONG + LONG)], SCRIPT, CHARS))
 
 
-def test_short_shot_flagged_when_chapter_has_several_shots():
+def test_short_shot_is_accepted():
     issues = collect_shot_issues([_narr(SHORT), _narr(LONG, zh="远景：穹顶", en="wide shot: dome")], SCRIPT, CHARS)
-    msg = "\n".join(i["message"] for i in issues)
-    assert "低于 4 秒下限" in msg and "合并" in msg
+    assert not any("秒" in i["message"] for i in issues)
 
 
-def test_single_short_shot_chapter_is_exempt_from_minimum():
-    issues = collect_shot_issues([_narr(SHORT)], SCRIPT, CHARS)
-    assert not any("低于 4 秒下限" in i["message"] for i in issues)
+def test_single_short_shot_chapter_is_accepted():
+    assert collect_shot_issues([_narr(SHORT)], SCRIPT, CHARS) == []
 
 
 def test_adjacent_same_scene_identical_visuals_are_flagged():

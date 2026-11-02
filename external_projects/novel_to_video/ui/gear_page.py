@@ -43,7 +43,7 @@ def page_gear() -> None:
 
     proj_cfg = json.loads((Path(pdir) / "project.json").read_text(encoding="utf-8"))
     st.markdown("#### 校验失败后的自动修正")
-    st.caption("剧本或镜头规划没通过校验时（例如对白不是剧本原文、镜头超过 12 秒），自动把全部问题反馈给模型修正，"
+    st.caption("剧本或镜头规划没通过校验时（例如对白不是剧本原文），自动把全部问题反馈给模型修正，"
                "而不是直接让整章失败。每次修正多一次文本模型调用；设为 0 则关闭、直接失败。"
                f"默认 {ps.DEFAULT_AUTO_FIX_RETRIES} 次，上限 {ps.MAX_AUTO_FIX_RETRIES} 次。"
                "已创建的项目保留它保存的次数，要改请在这里修改。")

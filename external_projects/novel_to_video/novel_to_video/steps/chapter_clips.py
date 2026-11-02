@@ -109,8 +109,17 @@ def run_clips(project_dir: Path, no: int, video: VideoProvider) -> Dict[str, Any
                 mark_stage(project_dir, no, "clips", "failed", res.error)
                 return {"blocked": [], "generated": generated, "failed": failed, "stopped": res.error}
             continue
-        mf.mux_clip(raw, cdir.parent / "audio" / f"{sh['id']}.wav", clip, float(sh["duration_sec"]))
-        joblog.log(project_dir, "chapter", f"第 {no} 章 C-8 镜头 {sh['id']} 完成（已合入配音）", level="ok")
+        audio_wav = cdir.parent / "audio" / f"{sh['id']}.wav"
+        if audio_wav.is_file():
+            scale = mf.fit_clip(raw, audio_wav, clip)
+            factor = scale if scale > 1 else 1 / scale      # 慢放倍数 / 快放倍数
+            speed = "慢放" if scale > 1 else "快放"
+            note = f"画面按配音时长{speed} x{factor:.2f}" if abs(scale - 1) > 0.02 else "画面与配音时长一致"
+            lvl = "warn" if (scale < 0.5 or scale > 2) else "ok"
+            joblog.log(project_dir, "chapter", f"第 {no} 章 C-8 镜头 {sh['id']} 完成（{note}）", level=lvl)
+        else:
+            mf.mux_clip(raw, None, clip, float(sh["duration_sec"]))
+            joblog.log(project_dir, "chapter", f"第 {no} 章 C-8 镜头 {sh['id']} 完成（无配音）", level="ok")
         sh["clip_key"] = clip_key
         sh["clip_error"] = None
         generated.append(sh["id"])

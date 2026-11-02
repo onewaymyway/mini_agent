@@ -14,11 +14,10 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from .. import joblog
-from ..chapter_io import SHOT_MAX_SEC, SHOT_MIN_SEC, chapter_dir, load_entities, load_shots, mark_stage, save_shots, sha12
+from ..chapter_io import chapter_dir, requested_video_seconds, load_entities, load_shots, mark_stage, save_shots, sha12
 from ..providers.tts import TTSProvider, voice_for
 
 GAP_SEC = 0.2
-MAX_SPEECH_SEC = SHOT_MAX_SEC - 0.4   # 留出 0.4 秒余量，保证 ceil(speech+0.4) 不超过镜头上限
 
 
 def _concat_wavs(parts: List[Path], out: Path, gap: float) -> float:
@@ -86,15 +85,13 @@ def run_audio(project_dir: Path, no: int, tts: TTSProvider) -> Dict[str, Any]:
         _concat_wavs(parts, sh_audio, GAP_SEC)
         sh["audio_key"] = sha12(*block_keys)
         sh["speech_sec"] = round(speech, 2)
-        sh["duration_sec"] = int(min(SHOT_MAX_SEC, max(SHOT_MIN_SEC, math.ceil(speech + 0.4))))
-        if speech > MAX_SPEECH_SEC:
-            sh["error"] = f"口播总时长 {speech:.1f} 秒超过 {MAX_SPEECH_SEC} 秒，请拆分该镜头"
-        else:
-            sh["error"] = None
+        # 请求视频的时长只需大致对齐口播（取整并限制在接口范围内）；画面合成时再按配音真实时长缩放
+        sh["duration_sec"] = requested_video_seconds(speech)
+        sh["error"] = None
     save_shots(project_dir, no, shots)
     errors = [sh["id"] for sh in shots["shots"] if sh.get("error")]
     mark_stage(project_dir, no, "audio", "failed" if errors else "done",
-               f"镜头过长：{', '.join(errors)}" if errors else None)
+               f"配音失败：{', '.join(errors)}" if errors else None)
     summary = "、".join(f"{k} {v} 段" for k, v in engine_usage.items()) or "无新合成"
     joblog.log(project_dir, "chapter", f"第 {no} 章 C-6 配音引擎使用：{summary}")
     return {"synthesized_blocks": synthesized, "errors": errors, "engine_usage": engine_usage}

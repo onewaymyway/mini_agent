@@ -29,6 +29,30 @@ def test_boundary_seconds_are_accepted_by_the_check(sec):
     assert vp._seconds_error(sec) == ""
 
 
-def test_shot_and_speech_limits_match_the_api():
-    assert cio.SHOT_MIN_SEC == 4 and cio.SHOT_MAX_SEC == 12
-    assert ca.MAX_SPEECH_SEC <= cio.SHOT_MAX_SEC      # 配音时长不会超过镜头上限
+def test_requested_seconds_rounds_up_and_stays_in_api_range():
+    assert cio.requested_video_seconds(2.3) == 4      # 接口最小 4 秒
+    assert cio.requested_video_seconds(7.1) == 8
+    assert cio.requested_video_seconds(11.2) == 12
+    assert cio.requested_video_seconds(20.0) == 12    # 超过接口上限时取上限，画面会在合成时缩放
+
+
+def test_fit_clip_stretches_video_to_narration(tmp_path):
+    """画面按配音真实时长快放/慢放，输出时长 ≈ 配音时长（音频保持原样）。"""
+    from novel_to_video.media import ffmpeg as mf
+    raw = tmp_path / "raw.mp4"
+    # 生成一段 4 秒的画面与一段 6 秒的配音
+    _make_still(tmp_path / "ref.png")
+    mf.still_clip(tmp_path / "ref.png", raw, 4.0)
+    wav = tmp_path / "speech.wav"
+    mf.write_silence_wav(wav, 6.0)
+    out = tmp_path / "fit.mp4"
+    scale = mf.fit_clip(raw, wav, out)
+    assert abs(scale - 1.5) < 0.05                        # 4s -> 6s：慢放
+    assert abs(mf.probe_duration(out) - 6.0) < 0.2
+
+
+def _make_still(path):
+    import subprocess
+    from novel_to_video.media import ffmpeg as mf
+    subprocess.run([mf.ffmpeg(), "-y", "-f", "lavfi", "-i", "color=c=gray:s=320x480", "-frames:v", "1", str(path)],
+                   check=True, capture_output=True)

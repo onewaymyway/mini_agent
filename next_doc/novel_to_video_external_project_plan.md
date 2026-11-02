@@ -1066,3 +1066,12 @@ Phase 2 是风险最高的一期（涉及外部视频 API、一致性核查、�
   - 已自动归入已有角色的说话人收进折叠区“已自动归入已有角色（N）”，仍保留处理说明。
   - 没有待确认项时显示“本章没有需要确认的补建角色”。
 - 测试：`tests/test_replan_clears_outputs.py`；相关旧测试已按新的约定更新。
+
+## 口播时长与镜头时长：不做硬性限制，按配音时长缩放画面（参考 novel-video-studio）
+
+- 口播时长与镜头时长只是建议，差几秒可以接受。镜头校验不再因为时长过长或过短而失败。
+- 向视频接口请求的时长：`chapter_io.requested_video_seconds(speech)`，取口播时长向上取整，并限制在接口范围 [4, 12] 内（接口实际拒绝 < 4 秒的请求）。
+- 合成时按配音的真实时长对齐画面（与 skill 的 `compose_macro_scene.py` 一致）：`media/ffmpeg.py` 的 `fit_clip(video, audio, out)` 使用 `setpts` 快放或慢放画面，音频保持原样，输出时长 ≈ 配音时长。缩放系数超出 0.5–2 倍时写一条警告。
+- 相邻镜头画面描述相同仍视为不合格（这是唯一保留的镜头级硬性校验）。
+- 改动位置：`chapter_io.py`（`requested_video_seconds`）、`steps/chapter_audio.py`（去掉超长拒绝）、`steps/chapter_clips.py`（用 `fit_clip` 替代强制截断）、`media/ffmpeg.py`（`fit_clip`）、`steps/chapter_shots.py`（去掉时长检查）、`prompts.py`（时长改为建议）。
+- 测试：`tests/test_video_seconds.py`（取整与真实媒体的对齐）、`tests/test_shots_feedback.py`、`tests/test_shot_plan_quality.py`。
