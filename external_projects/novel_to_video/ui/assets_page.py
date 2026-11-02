@@ -71,7 +71,7 @@ def _status_table(status: dict) -> None:
     if status["ready"]:
         st.success("全书级素材已全部通过，可以进入章节生产（Phase 2）。")
     st.dataframe([{
-        "类型": {"character": "角色", "location": "地点", "prop": "道具"}.get(r["kind"], r["kind"]),
+        "类型": {"character": "角色", "location": "地点", "prop": "道具", "look": "角色形象"}.get(r["kind"], r["kind"]),
         "id": r["id"], "名称": r["name"],
         "缺失字段": "、".join(r["missing_fields"]) or "无",
         "设定": STATUS_LABEL.get(r["text_status"], r["text_status"]),
@@ -162,10 +162,16 @@ def _vkey(prefix: str, rkey: str, value) -> str:
 
 
 def _entity_detail(pdir: str, r: dict) -> None:
-    fname, lkey = {"character": ("characters.json", "characters"), "location": ("locations.json", "locations"),
-                   "prop": ("props.json", "props")}[r["kind"]]
-    info = ps.read_json(Path(pdir) / "global" / fname)
-    ent = next((e for e in info[lkey] if e["id"] == r["id"]), {})
+    if r["kind"] == "look":                      # 角色形象：嵌在角色的 looks 里，id 形如 char_001:look_01
+        cid, _, lid = r["id"].partition(":")
+        chars = ps.read_json(Path(pdir) / "global" / "characters.json")["characters"]
+        owner = next((c for c in chars if c["id"] == cid), {})
+        ent = next((l for l in owner.get("looks") or [] if l["id"] == lid), {})
+    else:
+        fname, lkey = {"character": ("characters.json", "characters"), "location": ("locations.json", "locations"),
+                       "prop": ("props.json", "props")}[r["kind"]]
+        info = ps.read_json(Path(pdir) / "global" / fname)
+        ent = next((e for e in info[lkey] if e["id"] == r["id"]), {})
     with st.expander("查看与编辑设定"):
         anchor = st.text_area("visual_anchor_en（定妆图提示核心）", value=ent.get("visual_anchor_en") or "",
                               key=_vkey("anc", r["key"], ent.get("visual_anchor_en")))

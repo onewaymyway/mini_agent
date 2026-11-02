@@ -18,6 +18,7 @@ from ..media import ffmpeg as mf
 from .. import video_format
 from ..project_store import read_json
 from ..providers.video import VideoProvider
+from . import character_looks
 from .chapter_assets import missing_portraits
 from .global_visual import DEFAULT_ART_STYLE
 
@@ -28,8 +29,10 @@ def build_prompt(art_style: str, shot: Dict[str, Any], chars: Dict[str, Dict], l
     char_anchors = []
     for cid in shot.get("character_ids") or []:
         c = chars.get(cid)
-        if c and c.get("visual_anchor_en"):
-            char_anchors.append(c["visual_anchor_en"])
+        if c:
+            anchor, _ = character_looks.resolve(c, (shot.get("look_ids") or {}).get(cid))
+            if anchor:
+                char_anchors.append(anchor)
     loc = locs.get(shot.get("location_id")) or {}
     loc_anchor = loc.get("visual_anchor_en") or ""
     prop_anchors = []
@@ -78,8 +81,9 @@ def _reference_images(project_dir: Path, sh: Dict[str, Any], chars: Dict[str, Di
     refs: List[Path] = []
     for cid in (sh.get("character_ids") or [])[:2]:
         c = chars.get(cid)
-        if c and c.get("asset_path"):
-            refs.append(project_dir / c["asset_path"])
+        asset = character_looks.resolve(c, (sh.get("look_ids") or {}).get(cid))[1] if c else None
+        if asset:
+            refs.append(project_dir / asset)
     loc = locs.get(sh.get("location_id"))
     if loc and loc.get("asset_path"):
         refs.append(project_dir / loc["asset_path"])

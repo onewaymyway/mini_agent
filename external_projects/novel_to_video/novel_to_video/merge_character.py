@@ -77,6 +77,12 @@ def merge_auto_added(project_dir: Path, auto_id: str, target_id: str) -> Dict[st
                 cid = target_id if cid == auto_id else cid
                 if cid not in cast:
                     cast.append(cid)
+            for k in ("look_ids", "look_labels"):            # 被合并角色的形象不再适用（目标角色沿用自己的形象）
+                if auto_id in (sh.get(k) or {}):
+                    sh[k].pop(auto_id)
+                    if not sh[k]:
+                        sh.pop(k)
+                    changed = True
             if cast != (sh.get("character_ids") or []):
                 sh["character_ids"] = cast
                 changed = True

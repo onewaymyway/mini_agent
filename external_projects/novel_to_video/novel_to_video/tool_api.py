@@ -660,6 +660,20 @@ def _set_retries(project_dir: str, key: str, label: str, retries: int) -> Dict[s
     return _ok({key: n})
 
 
+def set_character_looks(project_dir: str, enabled: bool) -> Dict[str, Any]:
+    """角色多形象开关（默认关闭）：开启后镜头规划会在角色换装/受伤等外观变化时指定形象，
+    缺失的形象由 C-5 起草并走与补建角色相同的确认流程。已有镜头不受影响，需要时「重新规划本章镜头」。"""
+    pdir = Path(project_dir)
+    try:
+        proj = ps.read_json(pdir / "project.json")
+    except (OSError, ValueError) as exc:
+        return _fail(str(exc))
+    proj["character_looks_enabled"] = bool(enabled)
+    ps.write_json_atomic(pdir / "project.json", proj)
+    ps.append_progress(pdir, f"角色多形象{'开启' if enabled else '关闭'}")
+    return _ok({"character_looks_enabled": bool(enabled)})
+
+
 def set_script_retries(project_dir: str, retries: int) -> Dict[str, Any]:
     """剧本校验失败后自动带反馈修正的次数（默认 5；0 = 不修正、直接失败；上限 5）。"""
     return _set_retries(project_dir, "script_max_retries", "剧本", retries)

@@ -23,6 +23,7 @@ from ..chapter_io import chapter_dir, load_entities, load_shots, mark_stage, sav
 from ..review import entity_key, get_item, load_review, save_review
 from ..providers.image import ImageProvider
 from ..providers.text import TextLLM
+from . import character_looks
 from .global_visual import StepError, parse_json_object, portrait_pass, save_entities_ids  # noqa: F401
 
 AGE_VALUES = {"child", "teen", "youth", "middle_aged", "elderly", "unknown"}
@@ -113,6 +114,9 @@ def run_assets(project_dir: Path, no: int, text_llm: TextLLM, image: ImageProvid
     # 1c) 草拟剧本中出现、但全局道具库没有的道具（阶段 3）
     drafted_props = _draft_missing_props(project_dir, text_llm, shots, no)
 
+    # 1d) 草拟镜头里需要、但角色还没有的形象（阶段 4，项目选项开启时才会有 new_looks）
+    drafted_looks = character_looks.draft_missing_looks(project_dir, text_llm, shots, no)
+
     # 2) 回填镜头中的说话人 id
     changed = False
     for sh in shots["shots"]:
@@ -167,10 +171,12 @@ def run_assets(project_dir: Path, no: int, text_llm: TextLLM, image: ImageProvid
     # 4) 本章草拟的地点：文本确认 → 定妆图生成 → 定妆图确认（与补建角色相同的门槛）
     waiting += _locations_waiting(project_dir, no, image)
     waiting += _props_waiting(project_dir, no, image)
+    waiting += character_looks.looks_waiting(project_dir, no, image)
 
     mark_stage(project_dir, no, "assets", "waiting" if waiting else "done")
     return {"drafted": drafted, "drafted_locations": drafted_locs,
-            "drafted_props": drafted_props, "waiting": waiting}
+            "drafted_props": drafted_props,
+            "drafted_looks": drafted_looks, "waiting": waiting}
 
 
 def _next_loc_id(locs: List[Dict[str, Any]]) -> str:
@@ -370,4 +376,5 @@ def missing_portraits(project_dir: Path, no: int) -> List[str]:
             ent = props.get(pid)
             if ent and (not ent.get("asset_path") or not (project_dir / ent["asset_path"]).is_file()):
                 missing.append(f"道具 {pid}")
+    missing += character_looks.missing_look_portraits(project_dir, shots)
     return sorted(set(missing))

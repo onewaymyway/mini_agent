@@ -76,6 +76,20 @@ def prop_prompt(prop: Dict[str, Any]) -> str:
     )
 
 
+def look_prompt(name: str, base_anchor: str, label: str, context_lines: list) -> str:
+    """角色的一个新形象（换装/受伤/伪装等）：在基础外观上只改变与该形象相关的部分，输出完整锚点。"""
+    info = {"task": "look", "name": name, "label": label, "base_anchor": base_anchor,
+            "context": context_lines[:6]}
+    return (
+        f"TASK=look\n角色“{name}”在剧本中有一个不同于基础外观的形象“{label}”。请起草这个形象的设定。\n"
+        "要求：visual_anchor_en 是完整的英文一句话（不超过 40 词）：保留基础外观里不变的特征（脸型、发型发色、体型、年龄段），"
+        "只改变与该形象相关的部分（服装、伤痕、道具等），必须与剧本上下文一致，不得臆造。\n"
+        "只输出 JSON：{\"description_zh\": str（中文一句话）, \"visual_anchor_en\": str}\n\n"
+        f"基础外观：{base_anchor or '（无）'}\n剧本上下文：{json.dumps(context_lines[:6], ensure_ascii=False)}\n\n"
+        f"RULE_INPUT={json.dumps(info, ensure_ascii=False)}"
+    )
+
+
 def portrait_prompt(art_style: str, anchor: str, *, kind: str, name: str = "") -> str:
     if kind == "prop":
         return (f"{art_style}. Prop reference image of {name}. {anchor}. "
@@ -158,9 +172,17 @@ PROP_RULE = ("9. prop_names 列出该镜头画面中需要特写或对剧情有�
              "每个镜头最多 3 个，没有就返回空数组；\n")
 
 
+LOOK_RULE = ("11. character_looks（可选）：只有当某个角色在该镜头里的服装/外观与基础外观明显不同时"
+             "（换装、受伤、伪装、年龄变化），才列出 [{\"character_id\": id, \"look\": 形象标签}]；"
+             "优先沿用 characters[].looks 里已有的标签，新标签用简短中文（如“战斗装”“病中”）；"
+             "外观没有变化就不要写，绝大多数镜头不需要；\n")
+
+
 def shots_prompt(script: str, characters: list, locations: list, *, props: list | None = None,
+                 looks_enabled: bool = False,
                  max_chars_per_shot: int = 0, expected_shots: int = 0, min_chars_per_shot: int = 0) -> str:
-    chars = [{"id": c["id"], "name": (c.get("names") or [""])[0], "gender": c.get("gender")}
+    chars = [{"id": c["id"], "name": (c.get("names") or [""])[0], "gender": c.get("gender"),
+              **({"looks": [l["label"] for l in c.get("looks") or []]} if looks_enabled else {})}
              for c in characters]
     locs = [{"id": l["id"], "name": l["name"]} for l in locations]
     info = {"task": "shots", "characters": chars, "locations": locs,
@@ -181,7 +203,7 @@ def shots_prompt(script: str, characters: list, locations: list, *, props: list 
         + "7. 同一场次内相邻镜头的 visual_hint 必须不同：景别（远景/中景/近景/特写）、机位或主体动作至少一项不同，"
           "且描述的是该镜头自己的口播内容，不要把整场戏的画面复述到每个镜头里；拆分出的镜头画面必须各不相同；\n"
           "8. character_ids 列出该镜头画面中出现的所有角色，包括画面里出现但没有台词的角色（例如旁白描写林远的动作，就要包含林远）；\n"
-          + PROP_RULE +
+          + PROP_RULE + (LOOK_RULE if looks_enabled else "") +
           "10. 只输出 JSON：{\"shots\": [{\"scene_no\": int, \"location_id\": str, \"character_ids\": [..], \"prop_names\": [..], "
         "\"blocks\": [{\"type\": ..., \"text\": ..., \"speaker_id\": ..., \"speaker_name\": ...}], "
         "\"visual_hint_zh\": str, \"visual_hint_en\": str}]}\n\n"
@@ -190,7 +212,7 @@ def shots_prompt(script: str, characters: list, locations: list, *, props: list 
 
 
 def shots_fix_prompt(script: str, characters: list, locations: list, prev_output: str, issues: list, *,
-                    props: list | None = None, max_chars_per_shot: int = 0, expected_shots: int = 0, min_chars_per_shot: int = 0) -> str:
+                    props: list | None = None, looks_enabled: bool = False, max_chars_per_shot: int = 0, expected_shots: int = 0, min_chars_per_shot: int = 0) -> str:
     """镜头规划校验失败后的修正请求：列出全部问题（含剧本里最接近的原句），要求输出完整的新 JSON。"""
     chars = [{"id": c["id"], "name": (c.get("names") or [""])[0], "gender": c.get("gender")}
              for c in characters]
@@ -210,8 +232,9 @@ def shots_fix_prompt(script: str, characters: list, locations: list, prev_output
         "做不到时，把这句改为旁白或拆成多个镜头各取一段连续原文；\n"
         f"2. {limit}同一场次内相邻镜头的画面描述必须不同；character_ids 要列全画面中出现的角色；\n"
         "3. dialogue 的 speaker_id 从 characters 中选，不在其中时 speaker_id 置 null 并填 speaker_name；\n"
-        "4. 保留每个镜头的 prop_names（关键道具名称数组，没有就是空数组）。\n\n"
-        f"上一次的输出：\n{prev_output}\n\n"
+        "4. 保留每个镜头的 prop_names（关键道具名称数组，没有就是空数组）"
+        + ("；保留需要的 character_looks。\n\n" if looks_enabled else "。\n\n")
+        + f"上一次的输出：\n{prev_output}\n\n"
         f"剧本：\n{script}\n\nRULE_INPUT={json.dumps({**info, 'script': script}, ensure_ascii=False)}"
     )
 

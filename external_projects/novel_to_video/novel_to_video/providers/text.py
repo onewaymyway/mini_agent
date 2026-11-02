@@ -64,6 +64,11 @@ class RuleTextLLM(TextLLM):
                 "description_zh": "待人工确认（规则占位）",
                 "visual_anchor_en": f"{info.get('name', 'character')}, adult person, [needs manual review]",
                 "voice_profile": "待人工确认（rules 占位）"}, ensure_ascii=False)
+        if task == "look":
+            return json.dumps({"description_zh": "待人工确认（规则占位）",
+                               "visual_anchor_en": f"{info.get('base_anchor') or 'person'}, "
+                                                   f"{info.get('label')} outfit, [needs manual review]"},
+                              ensure_ascii=False)
         if info.get("kind") == "prop":
             return json.dumps({"visual_anchor_en": (
                 f"{info.get('name', 'prop')}, single object, worn surface, muted colors, "

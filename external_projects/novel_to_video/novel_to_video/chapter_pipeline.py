@@ -214,6 +214,8 @@ def chapter_view(project_dir: Path, no: int) -> Dict[str, Any]:
             "characters": cast,
             "props": [lookup["props"][pid] for pid in sh.get("prop_ids") or [] if pid in lookup["props"]],
             "prop_names": list(sh.get("prop_names") or []),      # 库里没有的道具名（待补建）
+            "look_ids": dict(sh.get("look_ids") or {}),          # {角色id: 形象id}（阶段 4）
+            "look_labels": dict(sh.get("look_labels") or {}),    # 库里没有的形象标签（待补建）
             "location_name": (lookup["locs"].get(sh.get("location_id")) or {}).get("name"),
             # 画面描述里提到了某个角色，但出镜角色里没有：视频提示词不会带上他的外观，审核时要留意
             "missing_mentions": [c["name"] for cid, c in lookup["chars"].items()
@@ -243,6 +245,7 @@ def chapter_view(project_dir: Path, no: int) -> Dict[str, Any]:
         "all_characters": [{"id": cid, "name": c["name"]} for cid, c in lookup["chars"].items()],
         "new_locations": list(shots_doc.get("new_locations") or []),   # 剧本/镜头中库里没有的地点
         "new_props": list(shots_doc.get("new_props") or []),           # 镜头中库里没有的道具
+        "new_looks": list(shots_doc.get("new_looks") or []),           # 镜头中需要、角色还没有的形象
         "output": str(out_path.relative_to(project_dir)) if out_path.is_file() else None,
         "counts": {s: sum(1 for v in states.values() if v == s) for s in
                    ("approved", "pending", "stale", "rejected", "missing", "failed")} if states else {},

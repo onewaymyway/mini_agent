@@ -269,6 +269,10 @@ def portrait_pass(project_dir: Path, image: ImageProvider, *, only_missing: bool
                     return summary
                 continue
             save_review(project_dir, review)
+    # 角色多形象（阶段 4）：没有 looks 的项目这里什么都不做
+    from . import character_looks
+    character_looks.portrait_pass_looks(project_dir, image, summary, only_missing=only_missing,
+                                        ids=ids, regenerate=regenerate)
     return summary
 
 
@@ -298,6 +302,9 @@ EDITABLE = {
 def update_entity(project_dir: Path, kind: str, eid: str, fields: Dict[str, Any],
                   note: str = "人工编辑") -> Dict[str, Any]:
     """人工修改实体字段。改动视觉相关字段会把依赖它的定妆图标记为 stale，并重置文本审核。"""
+    if kind == "look":
+        from . import character_looks
+        return character_looks.update_look(project_dir, eid, fields, note)
     bad = set(fields) - EDITABLE[kind]
     if bad:
         raise StepError(f"不允许编辑的字段：{', '.join(sorted(bad))}")
@@ -354,6 +361,8 @@ def visual_status(project_dir: Path) -> Dict[str, Any]:
                 "asset_path": ent.get("asset_path"),
                 "last_error": item.get("last_error"),
             })
+    from . import character_looks
+    rows += character_looks.status_rows(project_dir)
     ready = bool(rows) and all(
         not r["missing_fields"] and r["text_status"] == "approved" and r["portrait_status"] == "approved"
         for r in rows)

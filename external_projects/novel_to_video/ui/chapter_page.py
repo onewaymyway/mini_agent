@@ -136,6 +136,17 @@ def _missing_locations(v: dict) -> None:
                "之后需要在「全书素材」中确认文本与定妆图。".format("、".join(names)))
 
 
+def _missing_looks(v: dict) -> None:
+    """镜头里需要、但角色还没有的形象（角色多形象开启时）：C-5 会起草，需在「全书素材」确认。"""
+    items = v.get("new_looks") or []
+    if not items:
+        return
+    names = {c["id"]: c["name"] for c in v.get("all_characters") or []}
+    st.warning("以下角色形象还不存在：{0}。运行本章（C-5）时会为它们起草设定，"
+               "之后需要在「全书素材」中确认设定与定妆图。".format(
+                   "、".join(f"{names.get(i['character_id'], i['character_id'])}·{i['label']}" for i in items)))
+
+
 def _missing_props(v: dict) -> None:
     """镜头里提到、但全局道具库中没有的道具：C-5 会起草并写入全局道具库。"""
     names = v.get("new_props") or []
@@ -238,6 +249,11 @@ def _shot_card(pdir: str, no: int, sh: dict, all_chars: list) -> None:
             if (sh.get("split_total") or 1) > 1:
                 st.caption(f"由同一个原始镜头拆出（第 {sh['split_part']}/{sh['split_total']} 段），与同组镜头共用画面描述")
             _cast_row(pdir, sh)
+            if sh.get("look_ids") or sh.get("look_labels"):
+                nm = {c["id"]: c["name"] for c in all_chars or []}
+                st.caption("角色形象：" + "、".join(
+                    [f"{nm.get(c, c)}→{l}" for c, l in (sh.get("look_ids") or {}).items()]
+                    + [f"{nm.get(c, c)}→{l}（待补建）" for c, l in (sh.get("look_labels") or {}).items()]))
             if sh.get("props") or sh.get("prop_names"):
                 names = [p["name"] for p in sh.get("props") or []] + [f"{n}（待补建）" for n in sh.get("prop_names") or []]
                 st.caption("道具：" + "、".join(names))
@@ -316,6 +332,7 @@ def page_chapters() -> None:
     _script_review(v)
     _missing_locations(v)
     _missing_props(v)
+    _missing_looks(v)
     _shots_review(v)
     if v.get("script"):
         with st.expander("剧本（模型输出整理后的文本）"):

@@ -59,6 +59,16 @@ def page_gear() -> None:
         bad = next((r for r in res if not r["ok"]), None)
         (st.error if bad else st.success)(bad["error"]["message"] if bad else "已保存")
 
+    st.markdown("#### 角色多形象（默认关闭）")
+    st.caption("开启后，镜头规划会在角色换装、受伤、伪装等外观明显变化时指定「形象」；库里没有的形象会在 C-5 起草，"
+               "与补建角色一样需要确认设定与定妆图，之后该镜头的提示词与参考图使用这个形象。"
+               "关闭时一切与之前相同。已规划的章节不会自动改变，需要时在章节页「重新规划本章镜头」。")
+    looks_cur = bool(proj_cfg.get("character_looks_enabled", False))
+    looks_new = st.checkbox("启用角色多形象", value=looks_cur, key="gear_looks")
+    if looks_new != looks_cur and st.button("保存角色多形象开关", key="gear_looks_save"):
+        r = tool_api.set_character_looks(pdir, looks_new)
+        (st.success if r["ok"] else st.error)("已保存" if r["ok"] else r["error"]["message"])
+
     st.markdown("#### 视频输出格式")
     from novel_to_video import video_format as vf
     vcur = vf.resolve(proj_cfg.get("video") or {})
