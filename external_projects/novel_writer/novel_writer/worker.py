@@ -366,6 +366,8 @@ def _loop(
             delay = backoff[min(retries - 1, len(backoff) - 1)] if backoff else 0
             timed_out = bool(st.get_step_state(ws, target.id).get("timed_out"))
             why = "超时被终止" if timed_out else "失败"
+            reason = str(st.get_step_state(ws, target.id).get("error") or "").strip()
+            st.log_line(ws, f"  失败原因：{reason[:300] or '原因未知'}")
             st.log_line(ws, f"↻ {target.id} {why}，{delay} 秒后自动重跑（第 {retries}/{max_retries} 次）")
             # 把上次失败原因带进重跑的 prompt，避免 agent 在毫无信息的情况下重蹈覆辙
             st.update_step(ws, target.id, auto_retries=retries,

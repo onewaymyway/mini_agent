@@ -18,8 +18,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import shutil
+import threading
+import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -174,10 +177,36 @@ def restore(ws: Workspace, rid: str) -> Dict[str, Any]:
 
 # ---------------------------------------------------------------- 步骤
 
-def _direction_step(step: S.StepDef, direction: str, rid: str, key: str) -> S.StepDef:
-    """复用原步骤定义，只替换 id（每次修订唯一）并在指令前加上新思路。"""
+HEARTBEAT_SEC = 60.0
+
+
+@contextlib.contextmanager
+def _heartbeat(ws: Workspace, label: str, every: float = HEARTBEAT_SEC):
+    """模型调用期间每隔一段时间写一条「仍在调用」，让运行日志能看出它还在工作、已经等了多久。"""
+    from novel_writer import state as st   # 在后台线程里使用，显式导入（线程里的 NameError 会被静默吞掉）
+    stop = threading.Event()
+    t0 = time.monotonic()
+
+    def beat() -> None:
+        while not stop.wait(every):
+            st.log_line(ws, f"  ⏳ {label}：仍在调用模型，已等待 {int(time.monotonic() - t0)} 秒")
+
+    th = threading.Thread(target=beat, name="concept-heartbeat", daemon=True)
+    th.start()
+    try:
+        yield
+    finally:
+        stop.set()
+
+
+def _direction_step(step: S.StepDef, direction: str, rid: str, key: str, hint: str = "") -> S.StepDef:
+    """复用原步骤定义，只替换 id（每次修订唯一）并在指令前加上新思路。
+
+    hint：上一次自动重试失败的原因。带进指令，让 agent 避免重蹈覆辙。
+    """
+    retry = (f"\n【上一次尝试失败，请避免同样的问题】{hint}\n") if hint else ""
     return replace(step, id=f"cpt.{rid}.{key}",
-                   instructions=NOTE_PREFIX + direction + NOTE_RULES + (step.instructions or ""))
+                   instructions=NOTE_PREFIX + direction + NOTE_RULES + retry + (step.instructions or ""))
 
 
 def _require_blueprint(ws: Workspace) -> Dict[str, Any]:
@@ -188,26 +217,26 @@ def _require_blueprint(ws: Workspace) -> Dict[str, Any]:
     return bp
 
 
-def _scope_steps(ws: Workspace, scope: str, direction: str, rid: str) -> List[S.StepDef]:
+def _scope_steps(ws: Workspace, scope: str, direction: str, rid: str, hint: str = "") -> List[S.StepDef]:
     """某个范围要运行的步骤（已注入新思路）。"""
     if scope == "blueprint":
         # 蓝图草稿由 plan_blueprint 产出（校验 output_check=blueprint）；拆分与下游步骤由作者之后运行
-        return [_direction_step(S.plan_blueprint_step(), direction, rid, scope)]
+        return [_direction_step(S.plan_blueprint_step(), direction, rid, scope, hint)]
     if scope == "theme":
-        return [_direction_step(S.design_theme_step(), direction, rid, scope)]
+        return [_direction_step(S.design_theme_step(), direction, rid, scope, hint)]
     if scope == "pacing":
-        return [_direction_step(S.design_pacing_step(), direction, rid, scope)]
+        return [_direction_step(S.design_pacing_step(), direction, rid, scope, hint)]
     if scope == "world":
-        return [_direction_step(S.build_world_step(), direction, rid, scope)]
+        return [_direction_step(S.build_world_step(), direction, rid, scope, hint)]
     if scope == "opening":
-        return [_direction_step(S.design_opening_step(), direction, rid, scope)]
+        return [_direction_step(S.design_opening_step(), direction, rid, scope, hint)]
     if scope == "characters":
         from novel_writer.pipeline import main_characters
         roles = main_characters(_require_blueprint(ws))
         if not roles:
             raise ConceptError("蓝图里没有主要角色，无法修订角色")
-        steps = [_direction_step(S.design_character_step(n), direction, rid, f"{scope}.{n}") for n in roles]
-        steps.append(_direction_step(S.build_characters_step(roles), direction, rid, f"{scope}.build"))
+        steps = [_direction_step(S.design_character_step(n), direction, rid, f"{scope}.{n}", hint) for n in roles]
+        steps.append(_direction_step(S.build_characters_step(roles), direction, rid, f"{scope}.build", hint))
         return steps
     raise ConceptError(f"未知范围 {scope!r}")
 
@@ -250,6 +279,11 @@ def h_concept(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=
 
     before = {sc: _snapshot(ws, [sc]) for sc in scopes}
     backup_scopes(ws, rid, scopes)
+    own = st.get_step_state(ws, step.id)
+    hint = str(own.get("retry_hint") or "").strip()[:800]
+    attempt = int(own.get("attempts") or 1)
+    if attempt > 1:
+        st.log_line(ws, f"  这是第 {attempt} 次尝试；上一次失败原因：{hint or '（未记录）'}（已带入本次提示）")
     st.log_line(ws, f"✎ 构思修订开始：范围 {'、'.join(SCOPE_LABELS[x].split('（')[0] for x in scopes)}；"
                     f"思路：{direction[:60]}")
     st.log_line(ws, "  已备份修订前的产物（可在界面撤销）")
@@ -258,14 +292,16 @@ def h_concept(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=
         if scope not in scopes:
             continue
         label = SCOPE_LABELS[scope].split("（")[0]
-        for sub in _scope_steps(ws, scope, direction, rid):
-            st.log_line(ws, f"  ↳ {label}：{sub.title or sub.id}，调用模型中（通常需要数分钟，期间无新输出属正常）")
+        for sub in _scope_steps(ws, scope, direction, rid, hint):
+            st.log_line(ws, f"  ↳ {label}：{sub.title or sub.id}，调用模型中（通常需要数分钟）")
+            t0 = time.monotonic()
             try:
-                run_skill_step(ws, sub, invoker=invoker, settings=settings, run_no=1)
+                with _heartbeat(ws, label):
+                    run_skill_step(ws, sub, invoker=invoker, settings=settings, run_no=1)
             except Exception as exc:  # noqa: BLE001 - 原因写入运行日志后继续抛出，由运行器记录失败
-                st.log_line(ws, f"  ✘ {label} 失败：{type(exc).__name__}：{str(exc)[:200]}")
+                st.log_line(ws, f"  ✘ {label} 失败（用时 {int(time.monotonic() - t0)} 秒）：{type(exc).__name__}：{str(exc)[:300]}")
                 raise
-            st.log_line(ws, f"  ✔ {label} 已完成")
+            st.log_line(ws, f"  ✔ {label} 已完成（用时 {int(time.monotonic() - t0)} 秒）")
         if scope == "characters":
             st.log_line(ws, "  ↳ 刷新角色索引")
             C.h_characters_refresh(ws, S.characters_refresh_step(), settings)   # 角色文件改完后刷新索引（确定性）

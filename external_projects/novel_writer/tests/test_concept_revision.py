@@ -201,3 +201,41 @@ def test_revision_writes_step_by_step_progress_to_run_log(tmp_path):
     assert "构思修订开始" in log and "把复仇改为救赎" in log
     assert "调用模型中" in log and "已完成" in log
     assert "构思修订完成" in log and "实际改动" in log
+
+
+def test_failed_sub_step_writes_the_reason_to_run_log(tmp_path):
+    """子步骤失败时，运行日志必须写出失败原因（之前只有最终的一行摘要）。"""
+    from novel_writer import state as st
+    from novel_writer.runner import StepFailed
+    ws = _ws(tmp_path)
+    _write(ws, "theme_design", "原主题")
+    rid = OD.create_request(ws, "concept", direction="救赎", scopes=["theme"])["id"]
+    fake = FakeInvoker(ws.root, fail={f"cpt.{rid}.theme"})
+    with pytest.raises(StepFailed):
+        CR.h_concept(ws, _concept_step(rid), {}, invoker=fake)
+    log = "\n".join(st.read_log_tail(ws, lines=200))
+    assert "✘ 主题设计 失败" in log and "workflow 执行未成功" in log
+
+
+def test_retry_attempt_carries_previous_failure_reason_into_prompt(tmp_path):
+    from novel_writer import state as st
+    ws = _ws(tmp_path)
+    _write(ws, "theme_design", "原主题")
+    rid = OD.create_request(ws, "concept", direction="救赎", scopes=["theme"])["id"]
+    st.update_step(ws, f"cpt.{rid}", attempts=2, retry_hint="主题产出缺少回执")
+    fake = FakeInvoker(ws.root)
+    CR.h_concept(ws, _concept_step(rid), {}, invoker=fake)
+    prompt = fake.prompts[f"cpt.{rid}.theme"][0]
+    assert "上一次尝试失败" in prompt and "主题产出缺少回执" in prompt
+    log = "\n".join(st.read_log_tail(ws, lines=200))
+    assert "这是第 2 次尝试" in log and "主题产出缺少回执" in log
+
+
+def test_heartbeat_reports_progress_while_waiting_for_model(tmp_path):
+    import time as _t
+    from novel_writer import state as st
+    ws = _ws(tmp_path)
+    with CR._heartbeat(ws, "主题设计", every=0.05):
+        _t.sleep(0.25)
+    log = "\n".join(st.read_log_tail(ws, lines=50))
+    assert "仍在调用模型" in log and "主题设计" in log

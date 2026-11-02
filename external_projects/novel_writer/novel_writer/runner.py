@@ -285,8 +285,10 @@ def _run_skill_step_inner(
             outlog.set_line_sink(None)
         _log_agent_output(ws, step.id, result)
         if getattr(result, "timed_out", False):
+            st.log_line(ws, f"⏱ {step.id} 第 {attempt + 1} 次调用超时")
             raise StepTimeout(_timeout_message(settings, step))
         if not result.ok:
+            st.log_line(ws, f"✘ {step.id} 第 {attempt + 1} 次 agent 调用失败：{str(result.error or '未知原因')[:300]}")
             raise StepFailed(f"workflow 执行未成功：{result.error or '未知原因'}")
         out_of_scope = SG.boundary_violations(ws, plan, step, guard_before)
         restored_note = ""
@@ -322,6 +324,9 @@ def _run_skill_step_inner(
         if not problems:
             return receipt
         hint = "；".join(([restored_note] if restored_note else []) + problems)
+        if attempt + 1 < MAX_RECEIPT_ATTEMPTS:
+            # 每一次未通过都写出具体问题，之后要求 agent 修正（不再只有最终的一行摘要）
+            st.log_line(ws, f"↻ {step.id} 第 {attempt + 1} 次未通过校验，要求 agent 修正：" + "；".join(problems)[:400])
     raise StepFailed(f"回执或产出校验失败：{hint}")
 
 
