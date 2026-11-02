@@ -38,7 +38,14 @@ def _locs(proj):
     return json.loads((proj / "global" / "locations.json").read_text(encoding="utf-8"))["locations"]
 
 
-def test_disabled_by_default_and_refuses(project):  # noqa: F811
+def test_enabled_by_default(project):  # noqa: F811
+    area = _area(project)
+    cands = lp.propose_spots(project, area["id"], FakeLLM())
+    assert [c["name"] for c in cands] == ["市政厅办公室", "东三街"]
+
+
+def test_disabled_refuses_and_does_not_call_model(project):  # noqa: F811
+    assert tool_api.set_location_presplit(str(project), False)["ok"]
     area = _area(project)
     llm = FakeLLM()
     with pytest.raises(StepError):
@@ -47,7 +54,6 @@ def test_disabled_by_default_and_refuses(project):  # noqa: F811
 
 
 def test_propose_returns_candidates_without_writing(project):  # noqa: F811
-    assert tool_api.set_location_presplit(str(project), True)["ok"]
     area = _area(project)
     before = (project / "global" / "locations.json").read_text(encoding="utf-8")
     cands = lp.propose_spots(project, area["id"], FakeLLM())

@@ -80,6 +80,66 @@ def _status_table(status: dict) -> None:
     } for r in status["rows"]], width='stretch', hide_index=True)
 
 
+def _presplit_panel(pdir: str) -> None:
+    """地点细化 L4：为区域级地点提议具体场景点。候选勾选后确认才写入地点库（待审核）。"""
+    from novel_to_video.steps.location_presplit import presplit_enabled
+    from novel_to_video.project_store import read_json as _read_json
+    st.markdown("#### 区域预拆解（地点细化）")
+    st.caption("为区域级地点提议具体场景点（如「铁城·市政厅办公室」），让视频有具体场所可画。"
+               "候选不会直接入库：勾选后确认写入，写入的场景点仍需逐条审核定妆图。")
+    flash = st.session_state.pop("presplit_flash", None)
+    if flash:
+        st.success(flash)
+    enabled = presplit_enabled(Path(pdir))
+    on = st.checkbox("启用区域预拆解", value=enabled, key="presplit_on")
+    if on != enabled:
+        tool_api.set_location_presplit(pdir, on)
+        st.rerun()
+    if not on:
+        st.info("区域预拆解已关闭。")
+        return
+    try:
+        locs = _read_json(Path(pdir) / "global" / "locations.json").get("locations", [])
+    except (OSError, ValueError):
+        locs = []
+    areas = [l for l in locs if (l.get("level") or "area") == "area"]
+    if not areas:
+        st.info("没有区域级地点。")
+        return
+    area = st.selectbox("选择区域", areas, format_func=lambda l: f"{l['name']}（{l['id']}）", key="presplit_area")
+    existing = [l["name"] for l in locs if l.get("level") == "spot" and l.get("parent_id") == area["id"]]
+    st.caption("该区域已有场景点：" + ("、".join(existing) if existing else "无"))
+    cand_key = f"presplit_cands_{pdir}_{area['id']}"
+    if st.button("提议场景点", key="presplit_propose", type="primary"):
+        with st.spinner("正在请模型提议场景点…"):
+            res = tool_api.presplit_propose(pdir, area["id"])
+        if res["ok"]:
+            st.session_state[cand_key] = res["data"]["candidates"]
+            if not res["data"]["candidates"]:
+                st.info("模型没有提议新的场景点（可能已覆盖或剧本中没有该区域的具体场所）。")
+        else:
+            st.error(res["error"]["message"])
+    cands = st.session_state.get(cand_key) or []
+    if not cands:
+        return
+    st.markdown(f"**候选场景点（{len(cands)} 个，勾选要写入的）**")
+    chosen = []
+    kinds = {"interior": "内景", "exterior": "外景"}
+    for i, c in enumerate(cands):
+        label = f"{c['name']}（{kinds.get(c.get('spot_kind'), '未定')}）— {c.get('reason') or '无理由'}"
+        if st.checkbox(label, value=True, key=f"presplit_pick_{area['id']}_{i}"):
+            chosen.append(c)
+    if st.button("确认写入所选场景点", key="presplit_confirm", disabled=not chosen):
+        with st.spinner("正在为场景点起草视觉锚点并写入…"):
+            res = tool_api.presplit_confirm(pdir, area["id"], chosen)
+        if res["ok"]:
+            st.session_state.pop(cand_key, None)
+            st.session_state["presplit_flash"] = f"已写入 {len(res['data']['added'])} 个场景点（待审核，见下方逐条审核）。"
+            st.rerun()
+        else:
+            st.error(res["error"]["message"])
+
+
 def _gallery(pdir: str, status: dict) -> None:
     """逐条审核。地点细化开启并存在场景点时：场景点按所属区域分组，并提示同区域内名字相近的场景点。"""
     from pathlib import Path as _Path
@@ -244,4 +304,5 @@ def page_assets() -> None:
     data = status["data"]
     st.caption(f"API 调用次数：文本 {data['api_calls']['text']}，图像 {data['api_calls']['image']}")
     _status_table(data)
+    _presplit_panel(pdir)
     _gallery(pdir, data)

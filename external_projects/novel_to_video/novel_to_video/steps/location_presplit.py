@@ -2,7 +2,7 @@
 
 对一个区域级地点，让模型根据区域描述与已有剧本中出现该区域的场次，列出常用场景点候选；
 用户确认后才写入全局地点库（level=spot、parent_id、source=auto_added），并起草视觉锚点。
-候选阶段不写任何文件。项目选项 `location_presplit_enabled` 默认关闭。
+候选阶段不写任何文件。项目选项 `location_presplit_enabled` 默认开启，可在全书素材页关闭。
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ KIND_MAP = {"interior": "interior", "exterior": "exterior", "内景": "interior"
 
 def presplit_enabled(project_dir: Path) -> bool:
     try:
-        return bool(read_json(Path(project_dir) / "project.json").get("location_presplit_enabled", False))
+        return bool(read_json(Path(project_dir) / "project.json").get("location_presplit_enabled", True))   # 旧项目未写该键时按默认开启处理
     except (OSError, ValueError):
         return False
 
@@ -50,7 +50,7 @@ def _area_context(project_dir: Path, area: Dict[str, Any]) -> List[str]:
 def propose_spots(project_dir: Path, area_id: str, text_llm: TextLLM) -> List[Dict[str, Any]]:
     """返回候选场景点（不写文件）：[{name, spot_kind, reason}]。"""
     if not presplit_enabled(project_dir):
-        raise StepError("区域预拆解未开启（项目选项 location_presplit_enabled）")
+        raise StepError("区域预拆解已关闭（全书素材页可重新开启，项目选项 location_presplit_enabled）")
     locs = _locations(project_dir)["locations"]
     area = next((l for l in locs if l["id"] == area_id), None)
     if area is None:
@@ -90,7 +90,7 @@ def propose_spots(project_dir: Path, area_id: str, text_llm: TextLLM) -> List[Di
 def confirm_spots(project_dir: Path, area_id: str, spots: List[Dict[str, Any]], text_llm: TextLLM) -> List[str]:
     """用户确认后的写入：为每个场景点起草视觉锚点，写入地点库并登记审核项。返回新增的 id。"""
     if not presplit_enabled(project_dir):
-        raise StepError("区域预拆解未开启（项目选项 location_presplit_enabled）")
+        raise StepError("区域预拆解已关闭（全书素材页可重新开启，项目选项 location_presplit_enabled）")
     doc = _locations(project_dir)
     locs = doc["locations"]
     area = next((l for l in locs if l["id"] == area_id), None)
