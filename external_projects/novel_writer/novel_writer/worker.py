@@ -171,6 +171,7 @@ def run_worker(
         error = f"{type(exc).__name__}: {exc}"
         st.append_usage(ws, {"worker_error": error, "traceback": traceback.format_exc()[-2000:]})
     finally:
+        st.write_control(ws, revision_autorun=False)    # 修改自动重跑只在本次运行内有效
         st.release_worker(ws, reason)
         st.log_line(ws, f"═══ 运行结束：{reason}（本次执行 {len(executed)} 步）═══")
         st.write_last_run(ws, {
@@ -275,6 +276,12 @@ def _loop(
             st.write_control(ws, ideation_autorun=False)
             control = st.read_control(ws)
 
+        # 修改意见产生的需重跑：没有剩余的需重跑步骤时，清除标记
+        if control.get("revision_autorun") and not any(s == st.ST_STALE for s in statuses.values()):
+            st.write_control(ws, revision_autorun=False)
+            control = st.read_control(ws)
+        revision_auto = bool(control.get("revision_autorun"))
+
         requested = control.get("run_step")
         target: Optional[S.StepDef] = None
         if requested and requested in index and statuses.get(requested, st.ST_PENDING) not in st.FINISHED_STATUSES:
@@ -306,7 +313,8 @@ def _loop(
             if _interruptible_sleep(ws, delay):
                 continue
             return "stopped" if st.read_control(ws).get("command") == "stop" else "paused"
-        if autopilot and status == st.ST_STALE and not requested == target.id and not ideation_auto:
+        if autopilot and status == st.ST_STALE and not requested == target.id and not ideation_auto \
+                and not revision_auto:
             # 因上游变化而需重跑：派生/报告类步骤自动重跑（只覆盖自身产物）；正文与全书设定类仍需作者确认。
             if AP.stale_decision(target, settings) == "refresh":
                 st.log_line(ws, f"🤖 托管：{target.id} 因上游产物变化，自动重跑（派生/报告类，只覆盖自身产物）")

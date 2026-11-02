@@ -162,6 +162,7 @@ def restore(ws: Workspace, rid: str) -> Dict[str, Any]:
         st.record_writer_paths(ws, restored_files, "author", kind="author")
     stale = st.mark_stale(ws, build_plan(ws))
     from novel_writer import ideation_review as IR
+    st.arm_revision_autorun(ws)
     reopened = IR.reopen_after_revision(ws, note="已撤销修订，正在自动续跑到构思审核")
     req["restored"] = True
     req["result"] = {**(req.get("result") or {}),
@@ -265,6 +266,8 @@ def h_concept(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=
     if changed_files:
         st.record_writer_paths(ws, changed_files, "author", kind="author")
     stale = st.mark_stale(ws, build_plan(ws))
+    if changed_files:
+        st.arm_revision_autorun(ws)     # 修改意见产生的需重跑：托管挡自动重跑
     # 构思审核开关开启时：修订后审核自动重新打开（修改循环）
     from novel_writer import ideation_review as IR
     reopened = IR.reopen_after_revision(ws) if changed_files else False

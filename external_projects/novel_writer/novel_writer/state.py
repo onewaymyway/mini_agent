@@ -668,8 +668,15 @@ def read_last_run(ws: Workspace) -> Optional[Dict[str, Any]]:
 
 # ideation_autorun：构思修订之后置位。运行器据此把构思范围内需重跑的步骤自动跑到「构思审核」为止，
 # 不再逐步弹出重跑确认（作者已经通过修订表达了意见）。审核执行或批准后自动清除。
+# revision_autorun：根据修改意见（修订、撤销、章节修改循环、蓝图确认）改动之后置位。
+# 托管挡下，由这些改动产生的「需重跑」步骤直接重跑，不再逐个确认；没有需重跑的步骤时清除，运行结束也会清除。
 CONTROL_DEFAULT: Dict[str, Any] = {"command": "none", "mode": "until_gate", "run_step": None,
-                                   "ideation_autorun": False}
+                                   "ideation_autorun": False, "revision_autorun": False}
+
+
+def arm_revision_autorun(ws: Workspace) -> None:
+    """修改意见已经产生了改动：让托管挡自动重跑由此产生的需重跑步骤。"""
+    write_control(ws, revision_autorun=True)
 
 
 def read_control(ws: Workspace) -> Dict[str, Any]:

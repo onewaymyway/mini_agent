@@ -174,6 +174,8 @@ def h_revision(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker
                 [{"id": "decision", "question": f"修订请求：{instruction}", "options": ["确认，标记受影响步骤", "取消"]}],
             )
         forced = force_stale_from(ws, n)
+        if forced:
+            st.arm_revision_autorun(ws)  # 作者确认的蓝图级修订：受影响步骤自动重跑
         req["result"] = {"outcome": "已确认，受影响步骤已标记", "stale": forced}
         save_request(ws, req)
         return {"summary": f"已标记 {len(forced)} 个受影响步骤为需重跑"}
@@ -218,6 +220,8 @@ def h_revision(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker
         run_skill_step(ws, sync_plot, invoker=invoker, settings=settings, run_no=1)
 
     stale = st.mark_stale(ws, build_plan(ws))
+    if stale:
+        st.arm_revision_autorun(ws)     # 根据修改意见产生的需重跑：托管挡自动重跑
     req["result"] = {"outcome": "修订完成", "stale": stale}
     save_request(ws, req)
     C._log(ws, n, f"修订 {level}（{instruction[:30]}）完成；标为需重跑的步骤 {len(stale)} 个")
@@ -238,6 +242,8 @@ def _revision_cycle(ws: Workspace, step: S.StepDef, req: Dict[str, Any], setting
     result = C.revise_cycle(ws, n, stage=step.stage, invoker=invoker, settings=settings,
                             id_prefix=step.id, feedback=feedback)
     stale = st.mark_stale(ws, build_plan(ws)) if result["rounds"] else []
+    if stale:
+        st.arm_revision_autorun(ws)     # 修改循环产生的需重跑：托管挡自动重跑
     if result["clean"]:
         outcome = f"修改核查完成（{result['rounds']} 轮清零）"
     else:
