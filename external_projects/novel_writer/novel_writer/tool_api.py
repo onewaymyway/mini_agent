@@ -513,6 +513,40 @@ def add_idea(workspace: str, text: str) -> Dict[str, Any]:
     return _guard(lambda: _ok(_views.add_idea(_workspace_or_raise(workspace), text)))
 
 
+def create_concept_revision(workspace: str, direction: str, scopes: List[str]) -> Dict[str, Any]:
+    """提交一次构思修订请求（按新思路调整所选范围）。返回请求 id 与对应步骤 id，需在规划页或总控台运行。"""
+    def run() -> Dict[str, Any]:
+        from novel_writer import concept_revision as CR
+        from novel_writer import ondemand as OD
+        ws = _workspace_or_raise(workspace)
+        text, chosen = CR.validate(direction, scopes)
+        req = OD.create_request(ws, "concept", direction=text, scopes=chosen)
+        return {"id": req["id"], "step": OD.request_step_id("concept", req["id"]), "scopes": chosen}
+    return _guard(lambda: _ok(run()))
+
+
+def list_concept_revisions(workspace: str) -> Dict[str, Any]:
+    def run() -> List[Dict[str, Any]]:
+        from novel_writer import ondemand as OD
+        from novel_writer import concept_revision as CR
+        ws = _workspace_or_raise(workspace)
+        rows = []
+        for req in reversed(OD.list_requests(ws, kind="concept")):
+            rows.append({**req, "scope_labels": [CR.SCOPE_LABELS.get(s, s) for s in req.get("scopes", [])],
+                         "backup": (ws.studio / "concept_backups" / req["id"] / "manifest.json").is_file()})
+        return rows
+    return _guard(lambda: _ok({"requests": run()}))
+
+
+def restore_concept_revision(workspace: str, rid: str) -> Dict[str, Any]:
+    """撤销一次构思修订：恢复修订前的产物，下游标为需重跑。"""
+    def run() -> Dict[str, Any]:
+        from novel_writer import concept_revision as CR
+        ws = _workspace_or_raise(workspace)
+        return CR.restore(ws, rid)
+    return _guard(lambda: _ok(run()))
+
+
 def request_revision(workspace: str, chapter: int, level: str, instruction: str) -> Dict[str, Any]:
     return _guard(lambda: _ok(_views.request_revision(_workspace_or_raise(workspace), int(chapter), level, instruction)))
 

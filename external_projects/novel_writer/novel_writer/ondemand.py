@@ -29,7 +29,7 @@ REVISION_LEVELS: Dict[str, str] = {
     "L3": "章节级改动：可能影响人物状态与伏笔，需同步下游状态",
     "L4": "蓝图级改动：影响结构或主线，需作者确认后，受影响步骤标为需重跑",
 }
-KINDS = ("revision", "idea", "assist")
+KINDS = ("revision", "idea", "assist", "concept")
 
 ASSIST_MODES: Dict[str, str] = {
     "polish": "润色：只改用词与句式，不改情节、事件顺序与设定",
@@ -82,7 +82,7 @@ def save_request(ws: Workspace, data: Dict[str, Any]) -> None:
     atomic_write_json(requests_dir(ws) / f"{data['kind']}_{data['id']}.json", data)
 
 
-REQUEST_STEP_PREFIX = {"revision": "rev", "idea": "idea", "assist": "asst"}
+REQUEST_STEP_PREFIX = {"revision": "rev", "idea": "idea", "assist": "asst", "concept": "cpt"}
 
 
 def request_step_id(kind: str, rid: str) -> str:
@@ -121,6 +121,13 @@ def ondemand_steps(ws: Workspace) -> List[S.StepDef]:
                 id=f"idea.{req['id']}", title=f"评估灵感：{str(req.get('text', ''))[:20]}",
                 stage="ondemand", category=S.CAT_REVISE, executor=S.EXECUTOR_PYTHON, handler="idea",
                 chapter=0, extra={"optional": True, "request": f"idea_{req['id']}", "kind": "idea"},
+            ))
+        elif req.get("kind") == "concept":
+            scopes = "、".join(str(x) for x in (req.get("scopes") or []))
+            steps.append(S.StepDef(
+                id=f"cpt.{req['id']}", title=f"构思修订（{scopes}）：{str(req.get('direction', ''))[:20]}",
+                stage="ondemand", category=S.CAT_REVISE, executor=S.EXECUTOR_PYTHON, handler="concept",
+                chapter=0, extra={"optional": True, "request": f"concept_{req['id']}", "kind": "concept"},
             ))
         elif req.get("kind") == "assist":
             n = int(req.get("chapter") or 0)
@@ -350,4 +357,9 @@ def adopt_assist(ws: Workspace, rid: str) -> Dict[str, Any]:
     return {"words": saved["words"], "stale": saved["stale"]}
 
 
-HANDLERS = {"revision": h_revision, "idea": h_idea, "assist": h_assist}
+def h_concept_entry(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:
+    from novel_writer import concept_revision as CR   # 延迟导入：避免与 ondemand 循环依赖
+    return CR.h_concept(ws, step, settings, invoker=invoker)
+
+
+HANDLERS = {"revision": h_revision, "idea": h_idea, "assist": h_assist, "concept": h_concept_entry}

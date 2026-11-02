@@ -12,6 +12,7 @@ _EDIT_COLS = ["id", "title", "act", "chapter_type", "function", "word_budget", "
 
 
 def render_planning(ws: str) -> None:
+    render_concept_revision(ws)
     res = tool_api.planning(ws)
     if not res["ok"]:
         show_error(res)
@@ -75,6 +76,67 @@ def render_planning(ws: str) -> None:
                 st.warning("以下已通过的步骤因此需要重跑：" + "、".join(d["stale"]))
 
     _docs(view["docs"])
+
+
+def render_concept_revision(ws: str) -> None:
+    """构思修订：写下新的思路，选择范围，整体按这个思路调整主题、世界观、角色等。"""
+    from novel_writer import concept_revision as CR
+
+    with st.expander("🧭 构思修订：按一个新思路整体调整", expanded=False):
+        st.caption("写下新的思路，选择要调整的范围。系统会按这个思路重写所选产物，并把依赖它们的步骤标为需重跑。"
+                   "修订前的内容会备份，随时可以撤销。蓝图是全书级改动，运行时需要在总控台确认。")
+        with st.form("concept_form"):
+            direction = st.text_area(
+                "新的思路", height=110, key="concept_direction",
+                placeholder="例：把复仇主线改为救赎；世界观改为蒸汽朋克；主角改为女性，性格更冷静。")
+            scopes = st.multiselect(
+                "调整范围", list(CR.SCOPE_ORDER), default=["theme", "world", "characters"],
+                format_func=lambda k: CR.SCOPE_LABELS[k], key="concept_scopes")
+            submitted = st.form_submit_button("提交修订请求", type="primary")
+        if submitted:
+            r = tool_api.create_concept_revision(ws, direction, scopes)
+            if r["ok"]:
+                st.success("已提交。点下面的「▶ 运行」开始修订。")
+            else:
+                show_error(r)
+
+        listing = tool_api.list_concept_revisions(ws)
+        if not listing["ok"]:
+            show_error(listing)
+            return
+        rows = listing["data"]["requests"]
+        if not rows:
+            st.info("还没有构思修订记录。")
+            return
+        for req in rows:
+            rid = req["id"]
+            with st.container(border=True):
+                st.markdown(f"**{req.get('direction', '')}**")
+                st.caption("范围：" + "、".join(req.get("scope_labels") or []))
+                res = req.get("result")
+                if res:
+                    st.caption(f"结果：{res.get('outcome', '')}；需重跑 {len(res.get('stale') or [])} 步")
+                    if res.get("deferred"):
+                        st.warning("以下范围因蓝图已改写而未运行，请在「蓝图拆分」完成后重新提交："
+                                   + "、".join(CR.SCOPE_LABELS.get(x, x) for x in res["deferred"]))
+                    if res.get("changed"):
+                        st.caption("实际改动：" + "、".join(CR.SCOPE_LABELS.get(x, x) for x in res["changed"]))
+                else:
+                    st.caption("尚未运行")
+                c1, c2 = st.columns(2)
+                if not req.get("restored") and c1.button("▶ 运行", key=f"cpt_run_{rid}"):
+                    r = tool_api.run_novel(ws, mode="single", step_id=f"cpt.{rid}")
+                    if r["ok"]:
+                        st.toast("已提交修订。进度见总控台。")
+                    else:
+                        show_error(r)
+                if req.get("backup") and res and not req.get("restored") \
+                        and c2.button("撤销，恢复修订前", key=f"cpt_undo_{rid}"):
+                    r = tool_api.restore_concept_revision(ws, rid)
+                    if r["ok"]:
+                        st.success("已恢复修订前的内容，下游步骤已标为需重跑。")
+                    else:
+                        show_error(r)
 
 
 def _is_nan(v) -> bool:
