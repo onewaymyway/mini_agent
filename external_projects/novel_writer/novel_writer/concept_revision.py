@@ -161,8 +161,11 @@ def restore(ws: Workspace, rid: str) -> Dict[str, Any]:
     if restored_files:
         st.record_writer_paths(ws, restored_files, "author", kind="author")
     stale = st.mark_stale(ws, build_plan(ws))
+    from novel_writer import ideation_review as IR
+    reopened = IR.refresh_review(ws)
     req["restored"] = True
-    req["result"] = {**(req.get("result") or {}), "outcome": "已撤销，恢复为修订前的内容", "stale": stale}
+    req["result"] = {**(req.get("result") or {}), "outcome": "已撤销，恢复为修订前的内容" + ("；构思审核已重新打开" if reopened else ""),
+                     "stale": stale, "review_reopened": reopened}
     save_request(ws, req)
     return {"restored_files": len(restored_files), "stale": stale}
 
@@ -261,6 +264,9 @@ def h_concept(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=
     if changed_files:
         st.record_writer_paths(ws, changed_files, "author", kind="author")
     stale = st.mark_stale(ws, build_plan(ws))
+    # 构思审核开关开启时：修订后审核自动重新打开（修改循环）
+    from novel_writer import ideation_review as IR
+    reopened = IR.refresh_review(ws, settings) if changed_files else False
 
     if "blueprint" in changed_scopes:
         outcome = "蓝图已按新思路改写"
@@ -268,8 +274,10 @@ def h_concept(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=
             outcome += "；其余范围需在「蓝图拆分」完成后重新修订：" + "、".join(SCOPE_LABELS[s] for s in deferred)
     else:
         outcome = "已按新思路修订" if changed_files else "运行完成，但产物没有变化"
+    if reopened:
+        outcome += "；构思审核已重新打开，请再次审核"
     req["result"] = {"outcome": outcome, "changed": changed_scopes, "changed_files": changed_files,
-                     "deferred": deferred, "stale": stale}
+                     "deferred": deferred, "stale": stale, "review_reopened": reopened}
     save_request(ws, req)
     C._log(ws, 0, f"构思修订（{direction[:30]}）：{outcome}；需重跑 {len(stale)} 步")
     return {"summary": f"{outcome}；下游需重跑 {len(stale)} 步"}

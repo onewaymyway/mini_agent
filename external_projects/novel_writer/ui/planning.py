@@ -81,8 +81,19 @@ def render_planning(ws: str) -> None:
 def render_concept_revision(ws: str) -> None:
     """构思修订：写下新的思路，选择范围，整体按这个思路调整主题、世界观、角色等。"""
     from novel_writer import concept_revision as CR
+    from novel_writer.workspace import Workspace
 
+    cur = bool(Workspace(ws).settings().get("pause_after_ideation"))
     with st.expander("🧭 构思修订：按一个新思路整体调整", expanded=False):
+        pause = st.toggle("构思完成后暂停，等我审核", value=cur, key="concept_pause",
+                          help="开启后，构思完成时会停在「构思审核」，批准后才进入章节写作。"
+                               "修订后审核会自动重新打开。")
+        if pause != cur:
+            r = tool_api.set_pause_after_ideation(ws, bool(pause))
+            if r["ok"]:
+                st.toast("已" + ("开启" if pause else "关闭") + "构思审核（下一次运行时生效）。")
+            else:
+                show_error(r)
         st.caption("写下新的思路，选择要调整的范围。系统会按这个思路重写所选产物，并把依赖它们的步骤标为需重跑。"
                    "修订前的内容会备份，随时可以撤销。蓝图是全书级改动，运行时需要在总控台确认。")
         with st.form("concept_form"):

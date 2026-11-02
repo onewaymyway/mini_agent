@@ -45,6 +45,7 @@ def create_novel(
     workspace: Optional[str] = None,
     gear: str = "G0",
     quality: str = "standard",
+    pause_after_ideation: bool = False,
     total_chapters_planned: int = 0,
     novels_dir: Optional[str] = None,
     index_file: Optional[str] = None,
@@ -58,11 +59,23 @@ def create_novel(
         root = Path(workspace).expanduser() if custom else base / workspace_dir_name(title)
         ws = Workspace(root)
         result = ws.init(title, gear=gear, quality=quality, total_chapters_planned=total_chapters_planned)
+        if pause_after_ideation:
+            ws.save_settings({**ws.settings(), "pause_after_ideation": True})
         if custom:
             shelf.register(ws.root, index_file=Path(index_file) if index_file else None)
         return _ok(result)
 
     return _guard(run)
+
+
+def set_pause_after_ideation(workspace: str, enabled: bool) -> Dict[str, Any]:
+    """设置「构思完成后暂停审核」开关。开启后，下一次运行到构思完成处会停下，等作者批准「构思审核」。"""
+    def run() -> Dict[str, Any]:
+        ws = _workspace_or_raise(workspace)
+        current = ws.settings()
+        saved = ws.save_settings({**current, "pause_after_ideation": bool(enabled)})
+        return {"pause_after_ideation": bool(saved.get("pause_after_ideation"))}
+    return _guard(lambda: _ok(run()))
 
 
 def list_novels(*, novels_dir: Optional[str] = None, index_file: Optional[str] = None) -> Dict[str, Any]:

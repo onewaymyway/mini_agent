@@ -86,6 +86,9 @@ def build_plan(ws: Workspace) -> List[S.StepDef]:
     simulate = S.simulate_blueprint_step()
     plan.append(_optional(simulate))
     plan.append(S.design_opening_step())
+    if ws.settings().get("pause_after_ideation"):
+        # 构思完成后停下，等作者审核（可通过「构思修订」提意见，修订后审核自动重新打开）
+        plan.append(S.ideation_review_step())
 
     _settings = ws.settings()
     quality = _settings.get("quality", "standard")

@@ -61,6 +61,11 @@ class GateDecision:
 
 def resolve_gate(step: S.StepDef, settings: Dict[str, Any]) -> GateDecision:
     override = (settings.get("step_overrides") or {}).get(step.id)
+    if step.id == S.IDEATION_REVIEW_ID:
+        # 构思审核开关：开启后无论挡位如何都要作者确认（只允许显式跳过）
+        if override == GATE_SKIP:
+            return GateDecision(GATE_SKIP, "override")
+        return GateDecision(GATE_REVIEW, "ideation_switch")
     stage_gears = settings.get("stage_gear_overrides") or {}
     gear = stage_gears.get(step.stage) or settings.get("gear", "G0")
     stage_hit = step.stage in stage_gears

@@ -124,6 +124,26 @@ def blueprint_split_step() -> StepDef:
     )
 
 
+IDEATION_REVIEW_ID = "ideation_review"
+
+
+def ideation_review_step() -> StepDef:
+    """构思审核检查点（开关「构思完成后暂停审核」开启时插入）。
+
+    运行后生成构思审核清单并停在 waiting_review，等作者批准才会进入章节写作。
+    输入包括所有构思产物：作者通过「构思修订」修改任何一项，本步骤都会被标为需重跑。
+    闸门由 gates.resolve_gate 强制为 review，不受挡位与自动审批影响。
+    """
+    return StepDef(
+        id=IDEATION_REVIEW_ID, title="构思审核（等待作者确认）", stage="p2", category=CAT_CHECKPOINT,
+        executor=EXECUTOR_PYTHON, handler="ideation_review",
+        inputs=(rel("blueprint"), rel("theme_design"), rel("pacing_design"), rel("world_bible"),
+                rel("characters_dir") + "/*.md", rel("opening_design")),
+        outputs=(rel("ideation_review"),),
+        deps=("design_opening",),
+    )
+
+
 def design_theme_step() -> StepDef:
     return StepDef(
         id="design_theme", title="主题设计", stage="p1", category=CAT_DESIGN,

@@ -526,6 +526,8 @@ DEFAULT_PY_HANDLERS.update(_CHAPTER_HANDLERS)
 from novel_writer.ondemand import HANDLERS as _ONDEMAND_HANDLERS  # noqa: E402
 
 DEFAULT_PY_HANDLERS.update(_ONDEMAND_HANDLERS)
+from novel_writer.ideation_review import HANDLERS as _IDEATION_HANDLERS  # noqa: E402
+DEFAULT_PY_HANDLERS.update(_IDEATION_HANDLERS)
 
 
 # ── 单步总入口 ─────────────────────────────────────────────────────────────

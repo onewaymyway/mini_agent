@@ -23,6 +23,9 @@ def page_wizard() -> None:
         total = c1.number_input("计划章节数", min_value=0, max_value=400, value=20, step=1,
                                 help="0 表示由蓝图决定；蓝图生成后以蓝图为准")
         gear = c2.selectbox("控制挡位", list(GEARS), format_func=lambda g: f"{g} {GEARS[g]}", index=0)
+        pause = st.checkbox("构思完成后暂停，等我审核", value=False, key="w_pause",
+                            help="开启后，构思（主题、世界观、角色、开篇等）完成时停下，由你审核；"
+                                 "不满意可用「构思修订」提意见，修订后审核会重新打开。")
         quality = st.selectbox("质量档位", list(QUALITIES), format_func=lambda q: QUALITIES[q], index=1)
 
         st.subheader("创作意图")
@@ -43,7 +46,7 @@ def page_wizard() -> None:
         return
     created = tool_api.create_novel(
         title.strip(), workspace=workspace.strip() or None, gear=gear, quality=quality,
-        total_chapters_planned=int(total),
+        total_chapters_planned=int(total), pause_after_ideation=bool(pause),
     )
     if not created["ok"]:
         st.error(created["error"]["message"])
