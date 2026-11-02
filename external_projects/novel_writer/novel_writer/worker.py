@@ -284,7 +284,12 @@ def _loop(
 
         requested = control.get("run_step")
         target: Optional[S.StepDef] = None
-        if requested and requested in index and statuses.get(requested, st.ST_PENDING) not in st.FINISHED_STATUSES:
+        if requested and requested in index:
+            # 作者明确点了「运行」：即使该步骤已经结束（例如之前运行过的修订请求），也要重新运行它，
+            # 不能忽略请求而退回到计划顺序（否则会先卡在前面的确认上，本次一步都不执行）。
+            if statuses.get(requested, st.ST_PENDING) in st.FINISHED_STATUSES:
+                st.update_step(ws, requested, status=st.ST_PENDING, note="手动重新运行")
+                statuses[requested] = st.ST_PENDING
             target = index[requested]
         if target is None:
             target = P.frontier(plan, statuses, settings)

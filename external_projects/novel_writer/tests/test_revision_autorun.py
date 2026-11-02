@@ -84,3 +84,22 @@ def test_concept_revision_arms_the_flag(tmp_path):
     fake = FakeInvoker(ws.root, writers={"theme": lambda w: w.path("theme_design").write_text("新", encoding="utf-8")})
     CR.h_concept(ws, step, {}, invoker=fake)
     assert st.read_control(ws)["revision_autorun"] is True
+
+
+def test_explicit_run_of_a_finished_revision_request_executes_it(tmp_path):
+    """回归：构思修订请求已运行过（已通过）后再次点「运行」，必须真正执行修订，而不是先卡在前面的节奏确认上。"""
+    from novel_writer.worker import run_worker
+    ws = _ws(tmp_path)
+    theme = ws.path("theme_design")
+    theme.parent.mkdir(parents=True, exist_ok=True)
+    theme.write_text("原主题", encoding="utf-8")
+    _prepare_stale_pacing(ws)                       # 上游已变化：节奏设计需要重跑（没有修改标记）
+    rid = OD.create_request(ws, "concept", direction="改为救赎", scopes=["theme"])["id"]
+    sid = f"cpt.{rid}"
+    st.update_step(ws, sid, status=st.ST_PASSED)    # 之前运行过
+    st.write_control(ws, run_step=sid)              # 作者再次点「运行」
+    fake = FakeInvoker(ws.root, writers={"theme": lambda w: w.path("theme_design").write_text("新", encoding="utf-8")})
+    res = run_worker(ws, mode="until_gate", invoker=fake, handlers=DEFAULT_PY_HANDLERS, heartbeat_interval=0.01)
+    assert any(c.startswith(sid) for c in fake.calls), res   # 修订确实执行了（子步骤 cpt.<id>.theme）
+    assert res["reason"] != "stale_confirm", res
+    assert theme.read_text(encoding="utf-8") == "新"
