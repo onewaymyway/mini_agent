@@ -19,8 +19,10 @@ STEPS_HELP = ("如果这个角色其实已经存在，展开卡片里的「这�
               "→ ② 点「通过设定」→ ③ 点「生成定妆图」→ ④ 看图后点「通过定妆图」→ ⑤ 回到「章节生产」页重新运行本章。")
 
 
-def render_auto_added(pdir: str, chapter: Optional[int] = None, *, key_prefix: str = "aa") -> int:
-    """渲染补建角色卡片（chapter 不为空时只显示该章），返回其中还没完全通过的数量。"""
+def render_auto_added(pdir: str, chapter: Optional[int] = None, *, key_prefix: str = "aa",
+                      only_open: bool = False) -> int:
+    """渲染补建角色卡片（chapter 不为空时只显示该章），返回其中还没完全通过的数量。
+    only_open=True 时只显示仍需确认（文本或定妆图未通过）的角色，已确认的不再占位。"""
     from ui.assets_page import entity_card
     q = tool_api.auto_added_queue(pdir)
     if not q["ok"]:
@@ -35,6 +37,8 @@ def render_auto_added(pdir: str, chapter: Optional[int] = None, *, key_prefix: s
         return 0
     rows = [r for r in status["data"]["rows"] if r["kind"] == "character" and r["id"] in ids]
     open_n = sum(1 for r in rows if not (r["text_status"] == "approved" and r["portrait_status"] == "approved"))
+    if only_open:
+        rows = [r for r in rows if not (r["text_status"] == "approved" and r["portrait_status"] == "approved")]
     st.caption(STEPS_HELP)
     for r in rows:
         entity_card(pdir, r, with_generate=True, allow_merge=True)

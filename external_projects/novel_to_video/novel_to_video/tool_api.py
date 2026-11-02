@@ -291,25 +291,41 @@ def edit_shot(project_dir: str, no: int, sid: str, *, visual_hint_en: Optional[s
 
 
 def replan_shots(project_dir: str, no: int) -> Dict[str, Any]:
-    """丢弃本章当前的镜头规划，下次运行本章时由模型重新规划（C-3/C-4）。
-    已生成的配音与视频、逐镜审核一并清理（按“改分镜”层级），章节与全书成片标记为 stale。
-    剧本与补建角色不动。"""
-    from . import revision as rev
+    """重新规划本章镜头：清空本章所有由镜头派生的产物，把进度回到 C-3 之前。
+
+    清理范围（都位于 chapters/NNN/ 下）：镜头规划 shots.yaml、镜头校验结果 shots_review.yaml、
+    逐镜审核 review.json、配音 audio/、小场景视频 clips/、本章成片 video.mp4。
+    保留：剧本（script 与剧本校验结果）与章节源文本。
+    进度：state.json 只保留 script 阶段；章节状态置为 pending，下一次运行从 C-3 开始。
+    补建角色的确认记录在全书级 global/，不随本章清空；本章的补建角色只在未确认时才会再提示。"""
+    import shutil
     pdir = Path(project_dir)
+    cdir = cio.chapter_dir(pdir, no)
     try:
         doc = cio.load_shots(pdir, no)
-        shots = doc.get("shots") or []
-        if not shots:
-            return _fail("本章还没有镜头规划")
-        out = rev.invalidate(pdir, no, shots[0]["id"], "shot_plan")
-        doc = cio.load_shots(pdir, no)
-        doc.pop("plan_warnings", None)
-        cio.save_shots(pdir, no, doc)
-        cio.mark_stage(pdir, no, "shots", "stale", "已请求重新规划镜头")
-        ps.append_progress(pdir, f"第 {no} 章丢弃镜头规划，等待重新规划（{len(shots)} 个镜头）")
+        shot_count = len(doc.get("shots") or [])
+        if not (cdir / "shots.yaml").is_file() and not (cdir / "clips").exists():
+            return _fail("本章还没有镜头规划或生成产物")
+        removed: List[str] = []
+        for sub in ("audio", "clips"):
+            d = cdir / sub
+            if d.exists():
+                shutil.rmtree(d)
+                removed.append(f"{sub}/")
+        for name in ("shots.yaml", "shots_review.yaml", "review.json", "video.mp4"):
+            f = cdir / name
+            if f.is_file():
+                f.unlink()
+                removed.append(name)
+        # 进度：只保留剧本阶段，其余阶段回到未运行
+        state = cio.load_state(pdir, no)
+        state["stages"] = {k: v for k, v in (state.get("stages") or {}).items() if k == "script"}
+        cio.save_state(pdir, no, state)
+        cio.set_chapter_status(pdir, no, "pending", "已重新规划，等待运行（将从 C-3 开始）")
+        ps.append_progress(pdir, f"第 {no} 章已清空镜头、配音、视频与审核产物（原 {shot_count} 个镜头），等待重新规划")
     except Exception as exc:
-        return _fail(f"重新规划失败：{exc}")
-    return _ok({"discarded": len(shots), **out})
+        return _fail(f"重新规划失败：{type(exc).__name__}：{exc}")
+    return _ok({"discarded": shot_count, "removed": removed})
 
 
 # ---------------------------------------------------------------- Phase 3：挡位、批量、分级回退

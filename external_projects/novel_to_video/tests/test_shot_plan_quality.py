@@ -199,8 +199,9 @@ def test_replan_discards_plan_and_next_run_plans_again(proj):
     _plan(proj, _long_raw(proj))
     assert tool_api.replan_shots(str(proj), 1)["ok"]
     doc = cio.load_shots(proj, 1)
-    assert doc["shots"] == [] and "plan_warnings" not in doc
-    assert cio.load_state(proj, 1)["stages"]["shots"]["status"] == "stale"
+    assert not doc.get("shots") and "plan_warnings" not in doc      # 镜头文件已清除
+    assert "shots" not in cio.load_state(proj, 1)["stages"]          # 镜头阶段回到未运行
+    assert cio.chapter_row(proj, 1)["status"] == "pending"
     llm = ChapterLLM(shots={"shots": [{"scene_no": 1, "location_id": "x", "blocks": [
         {"type": "narration", "text": "铁城的清晨很安静。"}], "visual_hint_zh": "a", "visual_hint_en": "a"}]})
     r = run_shots(proj, 1, llm)
@@ -240,7 +241,7 @@ def test_review_page_shows_cast_warning_and_replan(proj):
     at.checkbox(key="replan_ok_1").check().run()
     at.button(key="replan_1").click().run()
     assert not at.exception, at.exception
-    assert cio.load_shots(proj, 1)["shots"] == []
+    assert not cio.load_shots(proj, 1).get("shots")                 # 镜头文件已清除
 
 
 def test_legacy_shots_yaml_gets_derived_warnings_and_is_rewritten_without_anchors(proj):

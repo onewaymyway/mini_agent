@@ -94,29 +94,37 @@ SPEAKER_NOTE = {
 def _auto_added_section(pdir: str, no: int, v: dict) -> None:
     """补建角色：以镜头规划的实际结果为准，逐个说话人说明是否需要补建；需要确认的卡片直接在本页操作。"""
     from ui.auto_added_page import render_auto_added
-    speakers = [s for s in (v.get("speakers") or []) if s["status"] != "library"]
+    all_speakers = [s for s in (v.get("speakers") or []) if s["status"] != "library"]
+    open_speakers = [s for s in all_speakers if s["status"] in ("unplanned", "pending")]
+    handled = [s for s in all_speakers if s["status"] not in ("unplanned", "pending")]
     queue = tool_api.auto_added_queue(pdir)
-    mine = [r for r in (queue["data"] if queue["ok"] else []) if r["chapter"] == no]
-    if not speakers and not mine:
+    rows = queue["data"] if queue["ok"] else []
+    mine_open = [r for r in rows if r["chapter"] == no
+                 and not (r["text_status"] == "approved" and r["portrait_status"] == "approved")]
+    if not all_speakers and not mine_open:
         return
     st.markdown("#### 补建角色（需要你确认）")
     if v.get("status") == "waiting_assets":
-        st.warning(f"本章正在等待补建角色确认：请在下面完成设定与定妆图的确认，然后点上方「运行第 {no} 章流水线」继续。")
-    if speakers:
-        st.caption("剧本里不在角色库中的说话人，以及它们在镜头规划里的实际处理结果（只有“需要确认”的才有审核卡片）：")
+        st.warning("本章正在等待补建角色确认：请在下面完成设定与定妆图的确认，然后点上方「运行第 {0} 章流水线」继续。".format(no))
+    if open_speakers:
+        st.caption("以下说话人不在角色库中，且镜头规划后仍需要人确认：")
         st.dataframe([{"说话人": s["name"], "台词句数": s["lines"],
-                       "处理结果": SPEAKER_NOTE.get(s["status"], s["status"]) +
-                       (f"：{s['target']}" if s["status"] == "mapped" and s.get("target") else "")}
-                      for s in speakers], width='stretch', hide_index=True)
-        if any(s["status"] in ("unplanned", "pending") for s in speakers):
-            st.info(f"剧本本身没有问题，无需修改。点击上方「运行第 {no} 章流水线」，镜头规划后仍归不进已有角色的，"
-                    "会在 C-5 自动起草设定，起草完成后在这里确认。")
-        elif not mine:
-            st.success("这些说话人都已归入已有角色，本章没有需要确认的补建角色。")
-    if mine:
-        open_n = render_auto_added(pdir, chapter=no, key_prefix=f"aa_ch{no}")
+                       "处理结果": SPEAKER_NOTE.get(s["status"], s["status"])} for s in open_speakers],
+                     width='stretch', hide_index=True)
+        st.info(f"剧本本身没有问题，无需修改。点击上方「运行第 {no} 章流水线」，会在 C-5 自动起草设定，起草完成后在这里确认。")
+    if mine_open:
+        open_n = render_auto_added(pdir, chapter=no, key_prefix=f"aa_ch{no}", only_open=True)
         if open_n == 0:
             st.success("本章的补建角色已全部确认，可以重新运行本章继续。")
+    elif not open_speakers:
+        st.success("本章没有需要确认的补建角色。")
+    if handled:
+        # 已经处理完的说话人收进折叠区，只作为说明，不占用待确认区域
+        with st.expander(f"已自动归入已有角色（{len(handled)}）", expanded=False):
+            st.dataframe([{"说话人": s["name"], "台词句数": s["lines"],
+                           "处理结果": SPEAKER_NOTE.get(s["status"], s["status"]) +
+                           (f"：{s['target']}" if s["status"] == "mapped" and s.get("target") else "")}
+                          for s in handled], width='stretch', hide_index=True)
 
 
 def _shots_review(v: dict) -> None:
