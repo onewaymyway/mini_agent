@@ -666,7 +666,10 @@ def read_last_run(ws: Workspace) -> Optional[Dict[str, Any]]:
 
 # ── 控制指令 ───────────────────────────────────────────────────────────────
 
-CONTROL_DEFAULT: Dict[str, Any] = {"command": "none", "mode": "until_gate", "run_step": None}
+# ideation_autorun：构思修订之后置位。运行器据此把构思范围内需重跑的步骤自动跑到「构思审核」为止，
+# 不再逐步弹出重跑确认（作者已经通过修订表达了意见）。审核执行或批准后自动清除。
+CONTROL_DEFAULT: Dict[str, Any] = {"command": "none", "mode": "until_gate", "run_step": None,
+                                   "ideation_autorun": False}
 
 
 def read_control(ws: Workspace) -> Dict[str, Any]:

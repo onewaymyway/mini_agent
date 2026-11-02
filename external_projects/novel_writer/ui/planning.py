@@ -136,7 +136,8 @@ def render_concept_revision(ws: str) -> None:
                     st.caption("尚未运行")
                 c1, c2 = st.columns(2)
                 if not req.get("restored") and c1.button("▶ 运行", key=f"cpt_run_{rid}"):
-                    r = tool_api.run_novel(ws, mode="single", step_id=f"cpt.{rid}")
+                    # 运行到下一个检查点：修订后会自动续跑到构思审核，中途不再逐步确认
+                    r = tool_api.run_novel(ws, mode="until_gate", step_id=f"cpt.{rid}")
                     if r["ok"]:
                         st.toast("已提交修订。进度见总控台。")
                     else:

@@ -267,6 +267,13 @@ def _loop(
         stale_all.extend(st.mark_stale(ws, plan))
         statuses = {sid: entry.get("status", st.ST_PENDING) for sid, entry in st.load_state(ws)["steps"].items()}
         index = P.plan_index(plan)
+        positions = {s.id: i for i, s in enumerate(plan)}
+        review_pos = positions.get(S.IDEATION_REVIEW_ID)
+        if control.get("ideation_autorun") and (
+                review_pos is None or statuses.get(S.IDEATION_REVIEW_ID) in (st.ST_WAITING_REVIEW, st.ST_PASSED)):
+            # 构思审核已等待或已批准：自动续跑结束，清除标记
+            st.write_control(ws, ideation_autorun=False)
+            control = st.read_control(ws)
 
         requested = control.get("run_step")
         target: Optional[S.StepDef] = None
@@ -280,7 +287,12 @@ def _loop(
         status = statuses.get(target.id, st.ST_PENDING)
         autopilot = settings.get("gear") in G.AUTOPILOT_GEARS and mode == "until_gate"
         relentless = autopilot and settings.get("gear") == AP.RELENTLESS_GEAR
-        if autopilot and status in (st.ST_WAITING_REVIEW, st.ST_WAITING_USER):
+        # 构思自动续跑：构思范围内、位于构思审核之前的步骤，无需逐步确认
+        ideation_auto = bool(control.get("ideation_autorun")) and review_pos is not None \
+            and positions.get(target.id, 10**9) <= review_pos      # 包括构思审核本身
+        # 构思审核始终等作者批准，托管挡也不自动批准
+        if autopilot and status in (st.ST_WAITING_REVIEW, st.ST_WAITING_USER) \
+                and target.id != S.IDEATION_REVIEW_ID:
             if AP.handle_waiting(ws, target, status, relentless=relentless):
                 continue
             return status
@@ -294,7 +306,7 @@ def _loop(
             if _interruptible_sleep(ws, delay):
                 continue
             return "stopped" if st.read_control(ws).get("command") == "stop" else "paused"
-        if autopilot and status == st.ST_STALE and not requested == target.id:
+        if autopilot and status == st.ST_STALE and not requested == target.id and not ideation_auto:
             # 因上游变化而需重跑：派生/报告类步骤自动重跑（只覆盖自身产物）；正文与全书设定类仍需作者确认。
             if AP.stale_decision(target, settings) == "refresh":
                 st.log_line(ws, f"🤖 托管：{target.id} 因上游产物变化，自动重跑（派生/报告类，只覆盖自身产物）")
@@ -309,7 +321,7 @@ def _loop(
             st.update_step(ws, target.id, status=st.ST_SKIPPED, note="闸门为 skip，已跳过")
             continue
         is_requested = target.id == requested
-        if decision.gate == G.GATE_MANUAL and not is_requested:
+        if decision.gate == G.GATE_MANUAL and not is_requested and not ideation_auto:
             return "manual"
 
         blocked_by = None if autopilot else budget.check(target)  # 托管挡：不受预算限制，只受暂停/停止约束

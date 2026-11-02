@@ -89,69 +89,79 @@ def test_handler_writes_readable_summary_without_inventing_missing_parts(tmp_pat
     assert "# 构思审核清单" in text and "尚未生成主题设计" in text and "尚未建立角色档案" in text
 
 
-def test_review_waits_then_approval_passes(tmp_path):
+def _run_to_gate(ws, invoker=None):
+    from novel_writer.worker import run_worker
+    from novel_writer.runner import DEFAULT_PY_HANDLERS
+    inv = invoker or FakeInvoker(ws.root)
+    return run_worker(ws, mode="until_gate", invoker=inv, handlers=DEFAULT_PY_HANDLERS,
+                      heartbeat_interval=0.01), inv
+
+
+def test_autopilot_run_stops_at_review_and_never_auto_approves_it(tmp_path):
+    """托管挡（G5）下，构思完成后仍停在构思审核，不会被自动批准。"""
     ws = _ws(tmp_path, pause=True)
-    assert IR.refresh_review(ws) is True
-    assert st.get_step_state(ws, S.IDEATION_REVIEW_ID)["status"] == st.ST_WAITING_REVIEW
-    r = tool_api.approve_step(str(ws.root), S.IDEATION_REVIEW_ID)
-    assert r["ok"], r
+    _run_to_gate(ws)
+    entry = st.get_step_state(ws, S.IDEATION_REVIEW_ID)
+    assert entry["status"] == st.ST_WAITING_REVIEW
+    assert entry.get("auto_decision") != "托管：自动批准"
+    assert "已批准" not in st.read_log_tail(ws) if hasattr(st, "read_log_tail") else True
+
+
+def test_review_approval_passes_and_clears_flag(tmp_path):
+    ws = _ws(tmp_path, pause=True)
+    _run_to_gate(ws)
+    assert tool_api.approve_step(str(ws.root), S.IDEATION_REVIEW_ID)["ok"]
     assert st.get_step_state(ws, S.IDEATION_REVIEW_ID)["status"] == st.ST_PASSED
 
 
-def test_refresh_is_noop_when_switch_off(tmp_path):
+def test_reopen_is_noop_when_switch_off(tmp_path):
     ws = _ws(tmp_path, pause=False)
-    assert IR.refresh_review(ws) is False
+    assert IR.reopen_after_revision(ws) is False
+    assert st.read_control(ws).get("ideation_autorun") is False
 
 
-# ----------------------------------------------------------------- 修改循环
-
-def test_revision_after_approval_reopens_review_for_another_round(tmp_path):
-    """审核 → 批准 → 构思修订 → 审核自动重新打开（waiting_review）→ 再次批准。"""
+def test_revision_after_approval_auto_runs_back_to_review(tmp_path):
+    """审核 → 批准 → 构思修订 → 自动续跑到构思审核（不逐步确认）→ 再次批准。"""
     ws = _ws(tmp_path, pause=True)
-    theme = ws.path("theme_design")
-    theme.parent.mkdir(parents=True, exist_ok=True)
-    theme.write_text("原主题：复仇", encoding="utf-8")
-
-    # 第一轮审核
-    IR.refresh_review(ws)
+    _run_to_gate(ws)
     tool_api.approve_step(str(ws.root), S.IDEATION_REVIEW_ID)
-    assert st.get_step_state(ws, S.IDEATION_REVIEW_ID)["status"] == st.ST_PASSED
 
-    # 作者用「构思修订」提意见：桩执行器把主题改为救赎
     rid = OD.create_request(ws, "concept", direction="把复仇改为救赎", scopes=["theme"])["id"]
     fake = FakeInvoker(ws.root, writers={
         "theme": lambda w: w.path("theme_design").write_text("新主题：救赎", encoding="utf-8")})
     CR.h_concept(ws, _concept_step(rid), {}, invoker=fake)
 
-    entry = st.get_step_state(ws, S.IDEATION_REVIEW_ID)
-    assert entry["status"] == st.ST_WAITING_REVIEW          # 自动重新打开，等待第二轮审核
-    assert "重新审核" in (entry.get("note") or "")
-    assert "新主题：救赎" in ws.path("ideation_review").read_text(encoding="utf-8")  # 清单已刷新
-    req = OD.load_request(ws, "concept", rid)
-    assert req["result"]["review_reopened"] is True
+    # 修订后：审核标为需重跑，并置位自动续跑（不会直接停在等待）
+    assert st.get_step_state(ws, S.IDEATION_REVIEW_ID)["status"] == st.ST_STALE
+    assert st.read_control(ws)["ideation_autorun"] is True
+    assert OD.load_request(ws, "concept", rid)["result"]["auto_rerun_to_review"] is True
 
-    # 第二轮审核通过
+    # 运行到下一个检查点：自动跑完构思步骤，停在构思审核
+    _run_to_gate(ws, invoker=fake)
+    assert st.get_step_state(ws, S.IDEATION_REVIEW_ID)["status"] == st.ST_WAITING_REVIEW
+    assert "新主题：救赎" in ws.path("ideation_review").read_text(encoding="utf-8")
+    assert st.read_control(ws)["ideation_autorun"] is False     # 续跑结束，标记清除
+
     assert tool_api.approve_step(str(ws.root), S.IDEATION_REVIEW_ID)["ok"]
-    assert st.get_step_state(ws, S.IDEATION_REVIEW_ID)["status"] == st.ST_PASSED
 
 
-def test_undo_after_approval_reopens_review(tmp_path):
+def test_undo_also_auto_runs_back_to_review(tmp_path):
     ws = _ws(tmp_path, pause=True)
-    theme = ws.path("theme_design")
-    theme.parent.mkdir(parents=True, exist_ok=True)
-    theme.write_text("原主题", encoding="utf-8")
-    IR.refresh_review(ws)
+    _run_to_gate(ws)
     tool_api.approve_step(str(ws.root), S.IDEATION_REVIEW_ID)
 
     rid = OD.create_request(ws, "concept", direction="改", scopes=["theme"])["id"]
     fake = FakeInvoker(ws.root, writers={
         "theme": lambda w: w.path("theme_design").write_text("改后", encoding="utf-8")})
     CR.h_concept(ws, _concept_step(rid), {}, invoker=fake)
+    _run_to_gate(ws, invoker=fake)
     tool_api.approve_step(str(ws.root), S.IDEATION_REVIEW_ID)
 
-    CR.restore(ws, rid)                                       # 撤销也要让作者重新审核
+    CR.restore(ws, rid)
+    assert st.get_step_state(ws, S.IDEATION_REVIEW_ID)["status"] == st.ST_STALE
+    assert st.read_control(ws)["ideation_autorun"] is True
+    _run_to_gate(ws, invoker=fake)
     assert st.get_step_state(ws, S.IDEATION_REVIEW_ID)["status"] == st.ST_WAITING_REVIEW
-    assert theme.read_text(encoding="utf-8") == "原主题"
 
 
 def test_pipeline_frontier_stops_at_review_after_ideation(tmp_path):
@@ -164,3 +174,29 @@ def test_pipeline_frontier_stops_at_review_after_ideation(tmp_path):
     settings = {"gear": "G5", "stage_gear_overrides": {}, "step_overrides": {}}
     nxt = P.frontier(plan, statuses, settings)
     assert nxt is not None and nxt.id == S.IDEATION_REVIEW_ID
+
+
+@pytest.mark.parametrize("gear", ["G5", "G0"])
+def test_stale_ideation_step_runs_without_confirmation_until_review(tmp_path, gear):
+    """回归：修订后，依赖上游变化的构思步骤（如节奏设计）自动重跑，不弹「需重跑确认」，也不停在手动闸门。
+
+    前置状态直接构造（审核之前的步骤全部已通过），因为在 G0 下蓝图确认本身就是检查点，无法靠运行走到审核。
+    """
+    from novel_writer.worker import run_worker
+    from novel_writer.runner import DEFAULT_PY_HANDLERS
+    ws = _ws(tmp_path, pause=True)
+    ws.save_settings({**ws.settings(), "gear": gear})
+    plan = build_plan(ws)
+    review_at = [s.id for s in plan].index(S.IDEATION_REVIEW_ID)
+    for step in plan[:review_at]:
+        st.update_step(ws, step.id, status=st.ST_PASSED)
+    # 模拟：节奏设计的上游（蓝图）已变化，节奏设计被标为需重跑；审核也需要重跑；构思自动续跑已安排
+    st.update_step(ws, "design_pacing", status=st.ST_STALE, note=f"{st._UPSTREAM_NOTE}（测试）")
+    st.update_step(ws, S.IDEATION_REVIEW_ID, status=st.ST_STALE, note="构思已修订")
+    st.write_control(ws, ideation_autorun=True)
+
+    res = run_worker(ws, mode="until_gate", invoker=FakeInvoker(ws.root), handlers=DEFAULT_PY_HANDLERS,
+                     heartbeat_interval=0.01)
+    assert res["reason"] != "stale_confirm", res
+    assert st.get_step_state(ws, "design_pacing")["status"] == st.ST_PASSED, res
+    assert st.get_step_state(ws, S.IDEATION_REVIEW_ID)["status"] == st.ST_WAITING_REVIEW, res

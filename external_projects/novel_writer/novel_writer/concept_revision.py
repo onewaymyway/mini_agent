@@ -162,10 +162,11 @@ def restore(ws: Workspace, rid: str) -> Dict[str, Any]:
         st.record_writer_paths(ws, restored_files, "author", kind="author")
     stale = st.mark_stale(ws, build_plan(ws))
     from novel_writer import ideation_review as IR
-    reopened = IR.refresh_review(ws)
+    reopened = IR.reopen_after_revision(ws, note="已撤销修订，正在自动续跑到构思审核")
     req["restored"] = True
-    req["result"] = {**(req.get("result") or {}), "outcome": "已撤销，恢复为修订前的内容" + ("；构思审核已重新打开" if reopened else ""),
-                     "stale": stale, "review_reopened": reopened}
+    req["result"] = {**(req.get("result") or {}),
+                     "outcome": "已撤销，恢复为修订前的内容" + ("；将自动续跑到构思审核" if reopened else ""),
+                     "stale": stale, "auto_rerun_to_review": reopened}
     save_request(ws, req)
     return {"restored_files": len(restored_files), "stale": stale}
 
@@ -266,7 +267,7 @@ def h_concept(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=
     stale = st.mark_stale(ws, build_plan(ws))
     # 构思审核开关开启时：修订后审核自动重新打开（修改循环）
     from novel_writer import ideation_review as IR
-    reopened = IR.refresh_review(ws, settings) if changed_files else False
+    reopened = IR.reopen_after_revision(ws) if changed_files else False
 
     if "blueprint" in changed_scopes:
         outcome = "蓝图已按新思路改写"
@@ -275,9 +276,9 @@ def h_concept(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=
     else:
         outcome = "已按新思路修订" if changed_files else "运行完成，但产物没有变化"
     if reopened:
-        outcome += "；构思审核已重新打开，请再次审核"
+        outcome += "；将自动续跑到构思审核，之后请再次审核"
     req["result"] = {"outcome": outcome, "changed": changed_scopes, "changed_files": changed_files,
-                     "deferred": deferred, "stale": stale, "review_reopened": reopened}
+                     "deferred": deferred, "stale": stale, "auto_rerun_to_review": reopened}
     save_request(ws, req)
     C._log(ws, 0, f"构思修订（{direction[:30]}）：{outcome}；需重跑 {len(stale)} 步")
     return {"summary": f"{outcome}；下游需重跑 {len(stale)} 步"}

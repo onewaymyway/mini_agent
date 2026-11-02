@@ -96,26 +96,23 @@ def h_ideation_review(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], 
     return {"summary": "已生成构思审核清单，等待作者确认"}
 
 
-def refresh_review(ws: Workspace, settings: Optional[Dict[str, Any]] = None, note: str = "") -> bool:
-    """构思修订或撤销之后调用：若开关开启，重新生成清单并把审核置为 waiting_review。
+def reopen_after_revision(ws: Workspace, note: str = "构思已修订，正在自动续跑到构思审核") -> bool:
+    """构思修订或撤销之后调用（开关开启时）：
 
-    返回是否进行了刷新（开关关闭时什么也不做）。
+    * 审核标为「需重跑」（不是直接等待审核：前面失效的构思步骤必须先重新生成，清单才是最新的）；
+    * 置位 ideation_autorun，运行器会自动跑完构思范围内的步骤，然后停在构思审核等待作者批准。
+
+    返回是否已安排（开关关闭或计划中没有审核时返回 False）。
     """
     from novel_writer import state as st
     from novel_writer.pipeline import build_plan
 
     if not ws.settings().get("pause_after_ideation"):
         return False
-    plan = build_plan(ws)
-    step = next((s for s in plan if s.id == S.IDEATION_REVIEW_ID), None)
-    if step is None:
+    if not any(s.id == S.IDEATION_REVIEW_ID for s in build_plan(ws)):
         return False
-    h_ideation_review(ws, step, settings or ws.settings())
-    st.update_step(
-        ws, step.id, status=st.ST_WAITING_REVIEW,
-        note=note or "构思已修订，请重新审核",
-        input_hash=st.input_hash(ws, step), input_digests=st.input_digests(ws, step),
-    )
+    st.update_step(ws, S.IDEATION_REVIEW_ID, status=st.ST_STALE, note=note)
+    st.write_control(ws, ideation_autorun=True)
     return True
 
 
