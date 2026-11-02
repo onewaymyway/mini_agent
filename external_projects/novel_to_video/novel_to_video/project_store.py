@@ -258,6 +258,7 @@ def create_project(
     write_json_atomic(proj / "global" / "locations.json", {
         "schema_version": SCHEMA_VERSION, "locations": result.locations,
     })
+    write_json_atomic(proj / "global" / "props.json", {"schema_version": SCHEMA_VERSION, "props": []})
     write_json_atomic(proj / "global" / "review.json", {
         "schema_version": SCHEMA_VERSION, "items": {},
     })
@@ -300,6 +301,8 @@ def load_project(project_dir: Path) -> Dict[str, Any]:
         "chapters": read_yaml(project_dir / "chapters" / "index.yaml").get("chapters", []),
         "characters": read_json(project_dir / "global" / "characters.json").get("characters", []),
         "locations": read_json(project_dir / "global" / "locations.json").get("locations", []),
+        "props": (read_json(project_dir / "global" / "props.json").get("props", [])
+                  if (project_dir / "global" / "props.json").is_file() else []),
     }
 
 

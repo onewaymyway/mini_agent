@@ -15,7 +15,7 @@ import json
 import math
 import re
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from .. import joblog
 from .. import llm_trace
@@ -65,7 +65,8 @@ def _shot_seconds(blocks: List[Dict[str, Any]]) -> float:
 
 def validate_and_build(raw_shots: List[Dict[str, Any]], script: str, locations: List[Dict[str, Any]],
                        characters: List[Dict[str, Any]], chapter_no: int,
-                       block_limit: int = MAX_BLOCK_CHARS) -> Dict[str, Any]:
+                       block_limit: int = MAX_BLOCK_CHARS,
+                       props: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     if not raw_shots:
         raise StepError("LLM 没有返回任何镜头")
     loc_ids = {l["id"] for l in locations}
@@ -75,6 +76,13 @@ def validate_and_build(raw_shots: List[Dict[str, Any]], script: str, locations: 
             if n:
                 loc_by_name[str(n).strip()] = l["id"]
     new_locations: List[str] = []
+    new_props: List[str] = []
+    prop_by_name: Dict[str, str] = {}
+    for pr in props or []:
+        for n in [pr.get("name")] + list(pr.get("aliases") or []):
+            if n:
+                prop_by_name[str(n).strip()] = pr["id"]
+    prop_ids_all = {pr["id"] for pr in props or []}
     char_by_id = {c["id"]: c for c in characters}
     char_by_name = {n: c["id"] for c in characters for n in c.get("names", [])}
     script_norm = norm(script)
@@ -125,6 +133,22 @@ def validate_and_build(raw_shots: List[Dict[str, Any]], script: str, locations: 
                     blocks.append({"type": "narration", "text": piece, "speaker_id": None, "speaker_name": None})
         if not blocks:
             continue
+        # 道具：按库中名称/别名匹配；库里没有的记为缺失素材（每镜头最多 3 个）
+        shot_prop_ids: List[str] = []
+        shot_prop_names: List[str] = []
+        for raw_name in (rs.get("prop_names") or [])[:3]:
+            pname = str(raw_name or "").strip()
+            if not pname:
+                continue
+            pid = pname if pname in prop_ids_all else prop_by_name.get(pname)
+            if pid:
+                if pid not in shot_prop_ids:
+                    shot_prop_ids.append(pid)
+            else:
+                if pname not in shot_prop_names:
+                    shot_prop_names.append(pname)
+                if pname not in new_props:
+                    new_props.append(pname)
         cast = []
         for b in blocks:
             if b["speaker_id"] and b["speaker_id"] not in cast:
@@ -133,7 +157,7 @@ def validate_and_build(raw_shots: List[Dict[str, Any]], script: str, locations: 
             if cid in char_by_id and cid not in cast:
                 cast.append(cid)
         base = {"scene_no": scene_no, "location_id": loc, "location_name": loc_name if loc is None else None,
-                "character_ids": cast,
+                "character_ids": cast, "prop_ids": shot_prop_ids, "prop_names": shot_prop_names,
                 "visual_hint_zh": str(rs.get("visual_hint_zh") or "").strip(),
                 "visual_hint_en": str(rs.get("visual_hint_en") or "").strip() or "cinematic medium shot, no text"}
         scenes.setdefault(scene_no, {"scene_no": scene_no, "location_id": loc})
@@ -157,6 +181,7 @@ def validate_and_build(raw_shots: List[Dict[str, Any]], script: str, locations: 
         "shots": shots,
         "new_speakers": new_speakers,
         "new_locations": new_locations,
+        "new_props": new_props,
         "plan_warnings": plan_warnings,
     }
 
@@ -293,12 +318,13 @@ def run_shots(project_dir: Path, no: int, text_llm: TextLLM, *, force: bool = Fa
     ents = load_entities(project_dir)
     characters = ents["characters"]["characters"]
     locations = ents["locations"]["locations"]
+    props = ents["props"]["props"]
     per_shot = int(SHOT_MAX_SEC * CHARS_PER_SEC)                 # 单镜头口播字数上限（约 12 秒）
     min_per_shot = int(SHOT_MIN_SEC * CHARS_PER_SEC)             # 单镜头口播字数下限（约 4 秒）
     expected = max(1, math.ceil(spoken_chars(script) / int(SHOT_PLAN_SEC * CHARS_PER_SEC)))
     retries = auto_fix_retries(project_dir, "shots_max_retries")
     review_path = cdir / "shots_review.yaml"
-    prompt = prompts.shots_prompt(script, characters, locations,
+    prompt = prompts.shots_prompt(script, characters, locations, props=props,
                                   max_chars_per_shot=per_shot, min_chars_per_shot=min_per_shot, expected_shots=expected)
     attempt = 0
     while True:
@@ -312,7 +338,8 @@ def run_shots(project_dir: Path, no: int, text_llm: TextLLM, *, force: bool = Fa
             obj = parse_json_object(raw)
             issues = collect_shot_issues(obj.get("shots") or [], script, characters)
             if not issues:
-                built = validate_and_build(obj.get("shots") or [], script, locations, characters, no, block_limit=limit)
+                built = validate_and_build(obj.get("shots") or [], script, locations, characters, no, block_limit=limit,
+                                           props=props)
         except StepError as exc:
             issues = issues or [{"message": str(exc)}]
         if built is not None:
@@ -329,7 +356,7 @@ def run_shots(project_dir: Path, no: int, text_llm: TextLLM, *, force: bool = Fa
                    + "\n".join(f"- {i['message']}" for i in issues), level="warn")
         prompt = prompts.shots_fix_prompt(script, characters, locations,
                                           json.dumps(obj, ensure_ascii=False) if obj is not None else (raw or "")[:6000],
-                                          issues, max_chars_per_shot=per_shot, min_chars_per_shot=min_per_shot,
+                                          issues, props=props, max_chars_per_shot=per_shot, min_chars_per_shot=min_per_shot,
                                           expected_shots=expected)
     built["script_hash"] = script_hash
     built["block_limit"] = limit
@@ -338,4 +365,5 @@ def run_shots(project_dir: Path, no: int, text_llm: TextLLM, *, force: bool = Fa
     write_yaml_atomic(review_path, {"status": "pass", "attempts": attempt + 1, "issues": []})
     mark_stage(project_dir, no, "shots", "done")
     return {"skipped": False, "shots": len(built["shots"]), "new_speakers": built["new_speakers"],
-            "new_locations": built.get("new_locations", []), "attempts": attempt + 1}
+            "new_locations": built.get("new_locations", []),
+            "new_props": built.get("new_props", []), "attempts": attempt + 1}

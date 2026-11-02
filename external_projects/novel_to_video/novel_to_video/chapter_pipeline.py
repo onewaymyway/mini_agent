@@ -186,12 +186,13 @@ def _entity_lookup(project_dir: Path) -> Dict[str, Dict[str, Any]]:
     try:
         ents = cio.load_entities(project_dir)
     except (OSError, KeyError, ValueError):
-        return {"chars": {}, "locs": {}}
+        return {"chars": {}, "locs": {}, "props": {}}
     chars = {c["id"]: {"id": c["id"], "name": (c.get("names") or [c["id"]])[0], "names": list(c.get("names") or []),
                        "gender": c.get("gender"), "asset": c.get("asset_path")}
              for c in ents["characters"]["characters"]}
     locs = {l["id"]: {"id": l["id"], "name": l.get("name")} for l in ents["locations"]["locations"]}
-    return {"chars": chars, "locs": locs}
+    props = {pr["id"]: {"id": pr["id"], "name": pr.get("name")} for pr in ents["props"]["props"]}
+    return {"chars": chars, "locs": locs, "props": props}
 
 
 def chapter_view(project_dir: Path, no: int) -> Dict[str, Any]:
@@ -211,6 +212,8 @@ def chapter_view(project_dir: Path, no: int) -> Dict[str, Any]:
                                       "visual_hint_en", "duration_sec", "speech_sec", "error", "clip_error",
                                       "consistency", "prompt_en", "split_from", "split_part", "split_total")},
             "characters": cast,
+            "props": [lookup["props"][pid] for pid in sh.get("prop_ids") or [] if pid in lookup["props"]],
+            "prop_names": list(sh.get("prop_names") or []),      # 库里没有的道具名（待补建）
             "location_name": (lookup["locs"].get(sh.get("location_id")) or {}).get("name"),
             # 画面描述里提到了某个角色，但出镜角色里没有：视频提示词不会带上他的外观，审核时要留意
             "missing_mentions": [c["name"] for cid, c in lookup["chars"].items()
@@ -239,6 +242,7 @@ def chapter_view(project_dir: Path, no: int) -> Dict[str, Any]:
                           else _derive_plan_warnings(shots_doc.get("shots") or [])),
         "all_characters": [{"id": cid, "name": c["name"]} for cid, c in lookup["chars"].items()],
         "new_locations": list(shots_doc.get("new_locations") or []),   # 剧本/镜头中库里没有的地点
+        "new_props": list(shots_doc.get("new_props") or []),           # 镜头中库里没有的道具
         "output": str(out_path.relative_to(project_dir)) if out_path.is_file() else None,
         "counts": {s: sum(1 for v in states.values() if v == s) for s in
                    ("approved", "pending", "stale", "rejected", "missing", "failed")} if states else {},

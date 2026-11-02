@@ -43,7 +43,7 @@
 - Phase 2 新增：
   - `steps/chapter_script.py`：C-1 剧本转换（按目标口播字数压缩）与 C-2 机械校验（对白必须逐字来自原文、场次连续、字数超标即失败）。
   - `steps/chapter_shots.py`：C-3/C-4 镜头规划；对白逐字校验，超长口播按标点切分，单镜头估算不超过 10 秒。
-  - `steps/chapter_assets.py`：C-5 补建角色（LLM 起草 → 等待文本确认 → 生成定妆图 → 等待定妆图确认），定妆图缺失时硬性拦截 C-8。
+  - `steps/chapter_assets.py`：C-5 补建角色（LLM 起草 → 等待文本确认 → 生成定妆图 → 等待定妆图确认），定妆图缺失时硬性拦截 C-8；缺失地点与缺失道具（阶段 2/3）走同一门槛，写入 `global/locations.json` / `global/props.json`。
   - `steps/chapter_audio.py`：C-6 配音（按块缓存，镜头时长 clamp 到 4–12 秒）。
   - `steps/chapter_clips.py`：C-7 提示词（代码拼装）与一致性机械检查；C-8 小场景视频（参考图 + 音频，clip_key 缓存）。
   - `steps/chapter_compose.py`：C-9 章节合成，要求全部镜头审核通过。
@@ -70,6 +70,8 @@
   - `providers/video.py` 修复：轮询切换 key、全部冷却时等待、创建路径不会无限空转。
   - `entrypoints/smoke_real_api.py`：真实 API 冒烟（一张图 + 一个 4 秒镜头），不打印 key。
 
+- 缺失素材（阶段 3，2026-11-02）：镜头输出 `prop_names`（仅关键道具，每镜头 ≤3），库中无则 C-5 起草入 `global/props.json`，确认流程与地点一致；道具定妆图 1:1；视频参考图有余量时才带道具。阶段 4（角色多形象 `looks`）待实施。
+
 ## 已知限制
 
 - **图像与视频依赖 mini_agent 的 skill**：项目必须位于 mini_agent 仓库内，或设置 `NOVEL_TO_VIDEO_SKILLS_DIR`。key 来自 mini_agent 根目录的 providers.json（或环境变量）。
@@ -92,7 +94,7 @@
 
 - **Phase 2 只做了离线 stub 验证**：Agnes 视频接口、edge-tts、真实文本模型均未在真实环境下调用。接口结构依据 gen_video_with_text skill 与 edge-tts 文档实现，需本机冒烟后确认。
 - **离线剧本是截断式**：`rules` 模式只把原文压成旁白，没有对白，不具备制作质量，仅用于验证流程。
-- **一致性只做机械检查**：C-7 只确认提示词包含出镜角色与地点的视觉锚点，不做“画面是否符合情节”的语义核查（未实现，见已知限制）。
+- **一致性只做机械检查**：C-7 只确认提示词包含出镜角色、地点与道具的视觉锚点，不做“画面是否符合情节”的语义核查（未实现，见已知限制）。
 - **没有大场景（macro_scene）层**：镜头直接按场次（scene_no）分组，原方案 C-3 的大场景弹性时长未实现。
 - **镜头规划由模型一次给出**：超长或时长不合适的镜头只能人工编辑后重跑，尚未自动回到规划阶段重新拆分。
 - **CosyVoice 未接入**：TTS 目前为 edge-tts 与静音两种。
@@ -123,6 +125,7 @@ novel_output/                       # 项目数据（默认位置，已加入 .g
     ├── source/manifest.json        # 导出目录路径、指纹、导入统计与问题
     ├── global/characters.json      # 角色库（Phase 1 起含 visual_anchor_en / voice_profile / gender 及来源）
     ├── global/locations.json       # 地点库
+    ├── global/props.json           # 道具库（阶段 3；旧项目没有该文件按空库处理）
     ├── global/review.json          # 全书级素材审核状态
     ├── global/assets/              # 定妆图 character_*.png / location_*.png（_vN 为重生成版本）
     ├── chapters/index.yaml         # 章节清单、选中状态与章节状态

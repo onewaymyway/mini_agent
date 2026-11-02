@@ -60,7 +60,27 @@ def location_prompt(loc: Dict[str, Any]) -> str:
     )
 
 
+def prop_prompt(prop: Dict[str, Any]) -> str:
+    """道具的视觉锚点（G-2 补全 / C-5 草拟共用）。道具是静物：只描述物品本身。"""
+    info = {
+        "kind": "prop",
+        "name": prop.get("name"),
+        "description_zh": (prop.get("description_zh") or "")[:1500],
+    }
+    return (
+        "为下列道具补全短剧制作所需的视觉锚点。\n"
+        "要求：visual_anchor_en 为英文一句话（不超过 40 词），描述物品的类别、材质、颜色、尺寸感与"
+        "1-2 个显著细节。只描述物品本身，不写人物、不写剧情，不臆造资料中没有的特征。\n"
+        "输出格式：{\"visual_anchor_en\": ...}\n\n"
+        f"RULE_INPUT={json.dumps(info, ensure_ascii=False)}"
+    )
+
+
 def portrait_prompt(art_style: str, anchor: str, *, kind: str, name: str = "") -> str:
+    if kind == "prop":
+        return (f"{art_style}. Prop reference image of {name}. {anchor}. "
+                "Single object centered, plain neutral background, soft even lighting, "
+                "no people, no hands, no text, no letters, no watermark.")
     if kind == "character":
         return (f"{art_style}. Character design reference sheet, full body, front view, "
                 f"{anchor}. Plain neutral background, soft even lighting, "
@@ -133,12 +153,18 @@ def script_fix_prompt(chapter_no: int, title: str, text: str, target_chars: int,
     )
 
 
-def shots_prompt(script: str, characters: list, locations: list, *,
+PROP_RULE = ("9. prop_names 列出该镜头画面中需要特写或对剧情有意义的关键道具（如信物、武器、证件、关键文件），"
+             "名称优先使用 props 库中已有的名称，库里没有时直接写剧本里的叫法；不要列出无关紧要的日常物品，"
+             "每个镜头最多 3 个，没有就返回空数组；\n")
+
+
+def shots_prompt(script: str, characters: list, locations: list, *, props: list | None = None,
                  max_chars_per_shot: int = 0, expected_shots: int = 0, min_chars_per_shot: int = 0) -> str:
     chars = [{"id": c["id"], "name": (c.get("names") or [""])[0], "gender": c.get("gender")}
              for c in characters]
     locs = [{"id": l["id"], "name": l["name"]} for l in locations]
-    info = {"task": "shots", "characters": chars, "locations": locs}
+    info = {"task": "shots", "characters": chars, "locations": locs,
+            "props": [{"id": p["id"], "name": p.get("name")} for p in props or []]}
     return (
         "TASK=shots\n"
         "把剧本拆分为小场景镜头（shots）。每个镜头的口播约 4–12 秒（建议值，差几秒可以接受），包含若干 blocks。\n"
@@ -155,7 +181,8 @@ def shots_prompt(script: str, characters: list, locations: list, *,
         + "7. 同一场次内相邻镜头的 visual_hint 必须不同：景别（远景/中景/近景/特写）、机位或主体动作至少一项不同，"
           "且描述的是该镜头自己的口播内容，不要把整场戏的画面复述到每个镜头里；拆分出的镜头画面必须各不相同；\n"
           "8. character_ids 列出该镜头画面中出现的所有角色，包括画面里出现但没有台词的角色（例如旁白描写林远的动作，就要包含林远）；\n"
-          "9. 只输出 JSON：{\"shots\": [{\"scene_no\": int, \"location_id\": str, \"character_ids\": [..], "
+          + PROP_RULE +
+          "10. 只输出 JSON：{\"shots\": [{\"scene_no\": int, \"location_id\": str, \"character_ids\": [..], \"prop_names\": [..], "
         "\"blocks\": [{\"type\": ..., \"text\": ..., \"speaker_id\": ..., \"speaker_name\": ...}], "
         "\"visual_hint_zh\": str, \"visual_hint_en\": str}]}\n\n"
         f"剧本：\n{script}\n\nRULE_INPUT={json.dumps({**info, 'script': script}, ensure_ascii=False)}"
@@ -163,12 +190,13 @@ def shots_prompt(script: str, characters: list, locations: list, *,
 
 
 def shots_fix_prompt(script: str, characters: list, locations: list, prev_output: str, issues: list, *,
-                    max_chars_per_shot: int = 0, expected_shots: int = 0, min_chars_per_shot: int = 0) -> str:
+                    props: list | None = None, max_chars_per_shot: int = 0, expected_shots: int = 0, min_chars_per_shot: int = 0) -> str:
     """镜头规划校验失败后的修正请求：列出全部问题（含剧本里最接近的原句），要求输出完整的新 JSON。"""
     chars = [{"id": c["id"], "name": (c.get("names") or [""])[0], "gender": c.get("gender")}
              for c in characters]
     locs = [{"id": l["id"], "name": l["name"]} for l in locations]
-    info = {"task": "shots_fix", "characters": chars, "locations": locs}
+    info = {"task": "shots_fix", "characters": chars, "locations": locs,
+            "props": [{"id": p["id"], "name": p.get("name")} for p in props or []]}
     listed = "\n".join(f"- {i['message']}" for i in issues[:12])
     more = f"\n（另有 {len(issues) - 12} 个同类问题未列出）" if len(issues) > 12 else ""
     limit = (f"每个镜头的口播字数必须在 {min_chars_per_shot}–{max_chars_per_shot} 字之间（4–12 秒，硬要求）；"
@@ -181,7 +209,8 @@ def shots_fix_prompt(script: str, characters: list, locations: list, prev_output
         "1. 对白 text 必须是剧本对白行中的连续原文（可截取连续的一段，不能删字、改字、拼接不相邻的句子）；"
         "做不到时，把这句改为旁白或拆成多个镜头各取一段连续原文；\n"
         f"2. {limit}同一场次内相邻镜头的画面描述必须不同；character_ids 要列全画面中出现的角色；\n"
-        "3. dialogue 的 speaker_id 从 characters 中选，不在其中时 speaker_id 置 null 并填 speaker_name。\n\n"
+        "3. dialogue 的 speaker_id 从 characters 中选，不在其中时 speaker_id 置 null 并填 speaker_name；\n"
+        "4. 保留每个镜头的 prop_names（关键道具名称数组，没有就是空数组）。\n\n"
         f"上一次的输出：\n{prev_output}\n\n"
         f"剧本：\n{script}\n\nRULE_INPUT={json.dumps({**info, 'script': script}, ensure_ascii=False)}"
     )

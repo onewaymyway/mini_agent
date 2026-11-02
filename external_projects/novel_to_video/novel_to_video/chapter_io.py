@@ -109,7 +109,10 @@ def save_shots(project_dir: Path, no: int, data: Dict[str, Any]) -> None:
 def load_entities(project_dir: Path) -> Dict[str, Any]:
     chars = read_json(project_dir / "global" / "characters.json")
     locs = read_json(project_dir / "global" / "locations.json")
-    return {"characters": chars, "locations": locs}
+    props_path = project_dir / "global" / "props.json"          # 旧项目没有该文件：按空库处理
+    props = read_json(props_path) if props_path.is_file() else {"props": []}
+    props.setdefault("props", [])
+    return {"characters": chars, "locations": locs, "props": props}
 
 
 def save_characters(project_dir: Path, data: Dict[str, Any]) -> None:

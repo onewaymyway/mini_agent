@@ -10,7 +10,7 @@ C-8：参考图为出镜角色定妆图（最多 2 个）+ 地点定妆图（1 �
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from .. import joblog
 from ..chapter_io import chapter_dir, load_entities, load_shots, mark_stage, save_shots, sha12
@@ -23,7 +23,8 @@ from .global_visual import DEFAULT_ART_STYLE
 
 
 def build_prompt(art_style: str, shot: Dict[str, Any], chars: Dict[str, Dict], locs: Dict[str, Dict],
-                 frame_prompt: str = "vertical 9:16 frame") -> Dict[str, Any]:
+                 frame_prompt: str = "vertical 9:16 frame",
+                 props: Optional[Dict[str, Dict]] = None) -> Dict[str, Any]:
     char_anchors = []
     for cid in shot.get("character_ids") or []:
         c = chars.get(cid)
@@ -31,16 +32,23 @@ def build_prompt(art_style: str, shot: Dict[str, Any], chars: Dict[str, Dict], l
             char_anchors.append(c["visual_anchor_en"])
     loc = locs.get(shot.get("location_id")) or {}
     loc_anchor = loc.get("visual_anchor_en") or ""
+    prop_anchors = []
+    for pid in shot.get("prop_ids") or []:
+        pr = (props or {}).get(pid)
+        if pr and pr.get("visual_anchor_en"):
+            prop_anchors.append(pr["visual_anchor_en"])
     parts = [art_style, shot.get("visual_hint_en") or ""]
     if char_anchors:
         parts.append("Characters: " + " | ".join(char_anchors))
     if loc_anchor:
         parts.append("Setting: " + loc_anchor)
+    if prop_anchors:
+        parts.append("Props: " + " | ".join(prop_anchors))
     parts.append(f"{frame_prompt}, consistent character design, no text, no subtitles")
     prompt = ". ".join(p.strip().rstrip(".") for p in parts if p and p.strip()) + "."
-    missing = [a for a in char_anchors + ([loc_anchor] if loc_anchor else []) if a not in prompt]
+    missing = [a for a in char_anchors + ([loc_anchor] if loc_anchor else []) + prop_anchors if a not in prompt]
     return {"prompt": prompt, "consistency": "pass" if not missing else "fail",
-            "missing": missing, "anchors": len(char_anchors) + (1 if loc_anchor else 0)}
+            "missing": missing, "anchors": len(char_anchors) + (1 if loc_anchor else 0) + len(prop_anchors)}
 
 
 def run_prompts(project_dir: Path, no: int, art_style: str | None = None) -> Dict[str, Any]:
@@ -48,11 +56,12 @@ def run_prompts(project_dir: Path, no: int, art_style: str | None = None) -> Dic
     ents = load_entities(project_dir)
     chars = {c["id"]: c for c in ents["characters"]["characters"]}
     locs = {l["id"]: l for l in ents["locations"]["locations"]}
+    props = {p["id"]: p for p in ents["props"]["props"]}
     style = art_style or read_json(project_dir / "project.json").get("art_style") or DEFAULT_ART_STYLE
     fmt = video_format.load(project_dir)
     failed = []
     for sh in shots["shots"]:
-        built = build_prompt(style, sh, chars, locs, frame_prompt=fmt.frame_prompt)
+        built = build_prompt(style, sh, chars, locs, frame_prompt=fmt.frame_prompt, props=props)
         sh["prompt_en"] = built["prompt"]
         sh["prompt_hash"] = sha12(built["prompt"])
         sh["consistency"] = built["consistency"]
@@ -65,7 +74,7 @@ def run_prompts(project_dir: Path, no: int, art_style: str | None = None) -> Dic
 
 
 def _reference_images(project_dir: Path, sh: Dict[str, Any], chars: Dict[str, Dict],
-                      locs: Dict[str, Dict]) -> List[Path]:
+                      locs: Dict[str, Dict], props: Optional[Dict[str, Dict]] = None) -> List[Path]:
     refs: List[Path] = []
     for cid in (sh.get("character_ids") or [])[:2]:
         c = chars.get(cid)
@@ -74,6 +83,11 @@ def _reference_images(project_dir: Path, sh: Dict[str, Any], chars: Dict[str, Di
     loc = locs.get(sh.get("location_id"))
     if loc and loc.get("asset_path"):
         refs.append(project_dir / loc["asset_path"])
+    # 视频接口最多 3 张参考图：角色与地点优先，有余量时才带道具（道具外观始终写在提示词里）
+    for pid in sh.get("prop_ids") or []:
+        pr = (props or {}).get(pid)
+        if len(refs) < 3 and pr and pr.get("asset_path"):
+            refs.append(project_dir / pr["asset_path"])
     return refs[:3]
 
 
@@ -87,6 +101,7 @@ def run_clips(project_dir: Path, no: int, video: VideoProvider) -> Dict[str, Any
     ents = load_entities(project_dir)
     chars = {c["id"]: c for c in ents["characters"]["characters"]}
     locs = {l["id"]: l for l in ents["locations"]["locations"]}
+    props = {p["id"]: p for p in ents["props"]["props"]}
     cdir = chapter_dir(project_dir, no) / "clips"
     fmt = video_format.load(project_dir)
     mf.apply_format(fmt)
@@ -95,7 +110,7 @@ def run_clips(project_dir: Path, no: int, video: VideoProvider) -> Dict[str, Any
         if sh.get("error") or not sh.get("prompt_en") or sh.get("consistency") != "pass":
             failed.append(sh["id"])
             continue
-        refs = _reference_images(project_dir, sh, chars, locs)
+        refs = _reference_images(project_dir, sh, chars, locs, props)
         ref_key = sha12(*[f"{p.name}:{p.stat().st_size}" for p in refs])
         clip_key = sha12(sh["prompt_hash"], sh["audio_key"], str(sh["duration_sec"]), ref_key, fmt.key)
         clip = cdir / f"{sh['id']}.mp4"

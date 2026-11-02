@@ -136,6 +136,15 @@ def _missing_locations(v: dict) -> None:
                "之后需要在「全书素材」中确认文本与定妆图。".format("、".join(names)))
 
 
+def _missing_props(v: dict) -> None:
+    """镜头里提到、但全局道具库中没有的道具：C-5 会起草并写入全局道具库。"""
+    names = v.get("new_props") or []
+    if not names:
+        return
+    st.warning("以下道具还没有对应的全局道具：{0}。运行本章（C-5）时会为它们起草设定并写入全局道具库，"
+               "之后需要在「全书素材」中确认文本与定妆图。".format("、".join(names)))
+
+
 def _shots_review(v: dict) -> None:
     """C-3 镜头规划校验：自动修正次数与未解决的问题（失败时章节停在这里，这里能看到全部原因）。"""
     rv = v.get("shots_review")
@@ -229,6 +238,9 @@ def _shot_card(pdir: str, no: int, sh: dict, all_chars: list) -> None:
             if (sh.get("split_total") or 1) > 1:
                 st.caption(f"由同一个原始镜头拆出（第 {sh['split_part']}/{sh['split_total']} 段），与同组镜头共用画面描述")
             _cast_row(pdir, sh)
+            if sh.get("props") or sh.get("prop_names"):
+                names = [p["name"] for p in sh.get("props") or []] + [f"{n}（待补建）" for n in sh.get("prop_names") or []]
+                st.caption("道具：" + "、".join(names))
             if sh.get("error") or sh.get("clip_error"):
                 st.error(sh.get("error") or sh.get("clip_error"))
             for b in sh["blocks"]:
@@ -303,6 +315,7 @@ def page_chapters() -> None:
         st.video(str(Path(pdir) / v["output"]))
     _script_review(v)
     _missing_locations(v)
+    _missing_props(v)
     _shots_review(v)
     if v.get("script"):
         with st.expander("剧本（模型输出整理后的文本）"):

@@ -44,18 +44,30 @@ def save_entities_ids(project_dir: Path, doc: Dict[str, Any]) -> None:
     write_json_atomic(project_dir / "global" / "characters.json", doc)
 
 
+# 素材类型 → (文件名, 列表键)。道具 prop 为阶段 3 新增，旧项目没有 props.json 时按空库处理。
+KINDS = ("character", "location", "prop")
+_KIND_FILE = {"character": ("characters.json", "characters"), "location": ("locations.json", "locations"),
+              "prop": ("props.json", "props")}
+PROP_RATIO = "1:1"
+
+
 def _load_entities(project_dir: Path, kind: str) -> Dict[str, Any]:
-    name = "characters.json" if kind == "character" else "locations.json"
-    return read_json(project_dir / "global" / name)
+    fname, key = _KIND_FILE[kind]
+    path = project_dir / "global" / fname
+    if kind == "prop" and not path.is_file():
+        return {"props": []}
+    data = read_json(path)
+    if kind == "prop":
+        data.setdefault("props", [])
+    return data
 
 
 def _save_entities(project_dir: Path, kind: str, data: Dict[str, Any]) -> None:
-    name = "characters.json" if kind == "character" else "locations.json"
-    write_json_atomic(project_dir / "global" / name, data)
+    write_json_atomic(project_dir / "global" / _KIND_FILE[kind][0], data)
 
 
 def _entity_list(data: Dict[str, Any], kind: str) -> List[Dict[str, Any]]:
-    return data["characters" if kind == "character" else "locations"]
+    return data[_KIND_FILE[kind][1]]
 
 
 def _art_style(project_dir: Path) -> str:
@@ -117,7 +129,7 @@ def visual_text_pass(project_dir: Path, text_llm: TextLLM, *, only_missing: bool
     review = load_review(project_dir)
     joblog.log(project_dir, "assets", f"G-2 文本设定补全开始（{'仅缺失项' if only_missing else '全部'}）")
 
-    for kind in ("character", "location"):
+    for kind in KINDS:
         data = _load_entities(project_dir, kind)
         for ent in _entity_list(data, kind):
             eid = ent["id"]
@@ -140,6 +152,8 @@ def visual_text_pass(project_dir: Path, text_llm: TextLLM, *, only_missing: bool
             try:
                 if kind == "character":
                     prompt = prompts.character_prompt(ent, _persona_excerpt(project_dir, ent))
+                elif kind == "prop":
+                    prompt = prompts.prop_prompt(ent)
                 else:
                     prompt = prompts.location_prompt(ent)
                 raw = llm_trace.ask_traced(project_dir, text_llm, prompt, system=prompts.SYSTEM_VISUAL,
@@ -200,7 +214,7 @@ def portrait_pass(project_dir: Path, image: ImageProvider, *, only_missing: bool
     review = load_review(project_dir)
     joblog.log(project_dir, "assets", f"G-3 定妆图生成开始（{'重新生成所选' if regenerate else '仅缺失项'}）")
 
-    for kind in ("character", "location"):
+    for kind in KINDS:
         data = _load_entities(project_dir, kind)
         for ent in _entity_list(data, kind):
             eid = ent["id"]
@@ -231,7 +245,8 @@ def portrait_pass(project_dir: Path, image: ImageProvider, *, only_missing: bool
             rel = _portrait_rel(kind, eid, version)
             prompt = prompts.portrait_prompt(style, ent["visual_anchor_en"], kind=kind,
                                              name=ent.get("name", ""))
-            ratio = CHAR_RATIO if kind == "character" else video_format.load(project_dir).aspect_ratio
+            ratio = (CHAR_RATIO if kind == "character" else PROP_RATIO if kind == "prop"
+                     else video_format.load(project_dir).aspect_ratio)
             result = image.generate(prompt, project_dir / rel, ratio=ratio)
             log_call(project_dir, {"kind": "image", "provider": image.name, "entity": key,
                                    "ok": result.ok, "error": (result.error or "")[:300] or None})
@@ -276,6 +291,7 @@ def reject_portrait(project_dir: Path, kind: str, eid: str) -> Dict[str, Any]:
 EDITABLE = {
     "character": {"visual_anchor_en", "voice_profile", "gender", "description_zh"},
     "location": {"visual_anchor_en", "description_zh", "location_type"},
+    "prop": {"visual_anchor_en", "description_zh"},
 }
 
 
@@ -315,7 +331,7 @@ def update_entity(project_dir: Path, kind: str, eid: str, fields: Dict[str, Any]
 def visual_status(project_dir: Path) -> Dict[str, Any]:
     review = load_review(project_dir)
     rows = []
-    for kind in ("character", "location"):
+    for kind in KINDS:
         data = _load_entities(project_dir, kind)
         for ent in _entity_list(data, kind):
             key = entity_key(kind, ent["id"])
