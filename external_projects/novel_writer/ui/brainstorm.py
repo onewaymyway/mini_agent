@@ -173,6 +173,114 @@ def _dialogue_tab(root: str) -> None:
                 show_error(r) if not r["ok"] else st.rerun()
 
 
+_WORLD_LABEL = {"rules": "规则", "locations": "地点", "factions": "势力", "timeline": "时间线", "taboos": "禁忌"}
+
+
+def _world_tab(root: str) -> None:
+    res = BA.get_project(root)
+    if not res["ok"]:
+        show_error(res)
+        return
+    world = res["data"]["cards"]["world"]
+    st.caption("世界观条目直接编辑，立即生效。规则请写明代价，之后的冲突会更好写。")
+    key = st.selectbox("分类", list(_WORLD_LABEL), format_func=lambda k: _WORLD_LABEL[k], key="bs_world_kind")
+    with st.form(f"bs_world_add_{key}", clear_on_submit=True):
+        text = st.text_area(f"新增{_WORLD_LABEL[key]}", key=f"bs_world_text_{key}", height=70)
+        cost = st.text_input("代价（仅规则需要）", key=f"bs_world_cost_{key}") if key == "rules" else ""
+        if st.form_submit_button("添加") and text.strip():
+            item = {"text": text.strip(), "cost": cost.strip()} if key == "rules" else text.strip()
+            r = BA.world_add(root, key, item)
+            show_error(r) if not r["ok"] else st.rerun()
+    items = world[key]
+    if not items:
+        st.caption("（暂无）")
+    for idx, item in enumerate(items):
+        with st.container(border=True):
+            if isinstance(item, dict):
+                st.write(item.get("text", ""))
+                if item.get("cost"):
+                    st.caption("代价：" + item["cost"])
+            else:
+                st.write(str(item))
+            if st.button("删除", key=f"bs_world_del_{key}_{idx}"):
+                r = BA.world_remove(root, key, idx)
+                show_error(r) if not r["ok"] else st.rerun()
+
+
+def _cast_tab(root: str) -> None:
+    res = BA.get_project(root)
+    if not res["ok"]:
+        show_error(res)
+        return
+    cast = res["data"]["cards"]["cast"]
+    with st.expander("➕ 新增角色", expanded=not cast):
+        with st.form("bs_cast_add", clear_on_submit=True):
+            name = st.text_input("名字", key="bs_cast_new_name")
+            role = st.text_input("定位（主角、对手、导师……）", key="bs_cast_new_role")
+            want = st.text_input("想要什么", key="bs_cast_new_want")
+            need = st.text_input("需要什么（真正需要的）", key="bs_cast_new_need")
+            flaw = st.text_input("缺陷", key="bs_cast_new_flaw")
+            if st.form_submit_button("添加角色") and name.strip():
+                r = BA.cast_add(root, {"name": name.strip(), "role": role, "want": want, "need": need, "flaw": flaw})
+                show_error(r) if not r["ok"] else st.rerun()
+    if not cast:
+        st.caption("还没有角色。")
+    for cid, card in cast.items():
+        with st.expander(f"{card.get('name', cid)}　·　{card.get('role', '')}"):
+            with st.form(f"bs_cast_edit_{cid}"):
+                fields = {}
+                fields["name"] = st.text_input("名字", value=card.get("name", ""), key=f"bs_ce_name_{cid}")
+                fields["role"] = st.text_input("定位", value=card.get("role", ""), key=f"bs_ce_role_{cid}")
+                fields["want"] = st.text_input("想要什么", value=card.get("want", ""), key=f"bs_ce_want_{cid}")
+                fields["need"] = st.text_input("需要什么", value=card.get("need", ""), key=f"bs_ce_need_{cid}")
+                fields["flaw"] = st.text_input("缺陷", value=card.get("flaw", ""), key=f"bs_ce_flaw_{cid}")
+                fields["lie"] = st.text_input("相信的谎言", value=card.get("lie", ""), key=f"bs_ce_lie_{cid}")
+                fields["arc"] = st.text_input("弧光（起点到终点）", value=card.get("arc", ""), key=f"bs_ce_arc_{cid}")
+                rel_text = st.text_area("关系（每行：角色id:说明，例如 char_abc:弟弟）",
+                                        value="\n".join(card.get("relations", [])), key=f"bs_ce_rel_{cid}")
+                fields["relations"] = [x.strip() for x in rel_text.splitlines() if x.strip()]
+                c1, c2 = st.columns(2)
+                save = c1.form_submit_button("保存")
+                remove = c2.form_submit_button("删除角色")
+            if save:
+                r = BA.cast_update(root, cid, fields)
+                show_error(r) if not r["ok"] else st.rerun()
+            if remove:
+                r = BA.cast_remove(root, cid)
+                show_error(r) if not r["ok"] else st.rerun()
+
+
+def _remember_check(r) -> None:
+    st.session_state["bs_check_last"] = r["data"]["id"]
+
+
+def _check_tab(root: str) -> None:
+    st.caption("质检只报告，不修改任何卡片。结构检查不调用模型；AI 审阅会额外调用一次模型。")
+    c1, c2 = st.columns(2)
+    if c1.button("▶ 结构检查", key="bs_check_struct"):
+        r = BA.run_check(root, use_llm=False)
+        show_error(r) if not r["ok"] else _remember_check(r)
+    if c2.button("▶ 结构检查 + AI 审阅", key="bs_check_llm"):
+        with st.spinner("AI 正在审阅……"):
+            r = BA.run_check(root, use_llm=True)
+        show_error(r) if not r["ok"] else _remember_check(r)
+    hist = BA.check_history(root)
+    if not hist["ok"]:
+        show_error(hist)
+        return
+    for rec in hist["data"][:5]:
+        n = len(rec["findings"])
+        with st.expander(f"{rec['created_at']} · {'含 AI 审阅' if rec['use_llm'] else '结构检查'} · {n} 条",
+                         expanded=rec["id"] == st.session_state.get("bs_check_last")):
+            if not rec["findings"]:
+                st.success("没有发现问题。")
+            for f in rec["findings"]:
+                mark = "⚠" if f["severity"] == "warn" else "ℹ"
+                st.markdown(f"{mark} **{f['issue']}**　`{f['where']}`")
+                if f.get("suggestion"):
+                    st.caption("建议：" + f["suggestion"])
+
+
 def page_brainstorm() -> None:
     st.header("💡 灵感构思工作室")
     st.caption("独立于小说项目：先把灵感、题材、世界观与剧情打磨成构思包，之后再据此创建小说。")
@@ -180,7 +288,7 @@ def page_brainstorm() -> None:
     root = _current_root()
     if not root:
         return
-    tabs = st.tabs(["对话", "题材卡", "灵感池", "发散"])
+    tabs = st.tabs(["对话", "题材卡", "灵感池", "发散", "世界观", "角色", "质检"])
     with tabs[0]:
         _dialogue_tab(root)
     with tabs[1]:
@@ -189,3 +297,9 @@ def page_brainstorm() -> None:
         _ideas_tab(root)
     with tabs[3]:
         _spark_tab(root)
+    with tabs[4]:
+        _world_tab(root)
+    with tabs[5]:
+        _cast_tab(root)
+    with tabs[6]:
+        _check_tab(root)

@@ -116,3 +116,36 @@ def accept_proposal(root: str, pid: str, edited_value: Any = None) -> Dict[str, 
 
 def reject_proposal(root: str, pid: str) -> Dict[str, Any]:
     return _guard(lambda: PR.reject(_ws(root), pid))
+
+
+# ── B3：世界观、角色、质检 ──
+from novel_writer.brainstorm import checks as K  # noqa: E402
+from novel_writer.brainstorm import edit as E  # noqa: E402
+
+
+def world_add(root: str, key: str, item: Any) -> Dict[str, Any]:
+    return _guard(lambda: E.add_world_item(_ws(root), key, item))
+
+
+def world_remove(root: str, key: str, index: int) -> Dict[str, Any]:
+    return _guard(lambda: E.remove_world_item(_ws(root), key, index))
+
+
+def cast_add(root: str, card: Dict[str, Any]) -> Dict[str, Any]:
+    return _guard(lambda: E.add_cast(_ws(root), card))
+
+
+def cast_update(root: str, cid: str, changes: Dict[str, Any]) -> Dict[str, Any]:
+    return _guard(lambda: E.update_cast(_ws(root), cid, changes))
+
+
+def cast_remove(root: str, cid: str) -> Dict[str, Any]:
+    return _guard(lambda: E.remove_cast(_ws(root), cid))
+
+
+def run_check(root: str, use_llm: bool = False, generator=None) -> Dict[str, Any]:
+    return _guard(lambda: K.run(_ws(root), use_llm=use_llm, generator=generator))
+
+
+def check_history(root: str) -> Dict[str, Any]:
+    return _guard(lambda: K.history(_ws(root)))
