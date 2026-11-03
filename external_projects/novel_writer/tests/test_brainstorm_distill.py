@@ -198,3 +198,24 @@ def test_page_shows_distill_box(tmp_path, monkeypatch):
     at.run()
     assert not at.exception, at.exception
     assert any("整理对话" in e.label for e in at.expander)
+
+
+# ── 错误结构：界面的 show_error 必须能读取（回归：曾因 error 为字符串而崩溃） ──
+
+def test_api_errors_follow_project_shape(tmp_path):
+    root = BA.create_project("湾口", base=str(tmp_path))["data"]["root"]
+    res = BA.distill_run(root, modules=["magic"], generator=_gen(BASE))
+    assert res["ok"] is False
+    assert isinstance(res["error"], dict) and res["error"]["message"]
+    assert res["error_type"] == "BrainstormError"
+
+
+def test_show_error_accepts_both_shapes(monkeypatch):
+    from ui import components
+
+    shown = []
+    monkeypatch.setattr(components.st, "error", lambda m: shown.append(m))
+    components.show_error({"ok": False, "error": {"type": "X", "message": "甲"}})
+    components.show_error({"ok": False, "error": "乙"})
+    components.show_error({"ok": False})
+    assert shown == ["甲", "乙", "未知错误"]

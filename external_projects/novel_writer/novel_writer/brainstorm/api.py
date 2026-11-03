@@ -19,7 +19,9 @@ def _ok(data: Any = None) -> Dict[str, Any]:
 
 
 def _err(exc: Exception) -> Dict[str, Any]:
-    return {"ok": False, "error": str(exc), "error_type": type(exc).__name__}
+    # 与 tool_api 的约定一致：error 是 {type, message}，界面的 show_error 直接读取 message
+    kind = type(exc).__name__
+    return {"ok": False, "error": {"type": kind, "message": str(exc)}, "error_type": kind}
 
 
 def _guard(fn: Callable[[], Any]) -> Dict[str, Any]:

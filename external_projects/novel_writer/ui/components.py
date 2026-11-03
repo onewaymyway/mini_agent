@@ -55,7 +55,10 @@ def current_ws():
 
 
 def show_error(result: dict) -> None:
-    st.error(result.get("error", {}).get("message", "未知错误"))
+    """显示接口返回的错误。兼容 {type, message} 与纯文字两种形式。"""
+    err = result.get("error", "未知错误") if isinstance(result, dict) else result
+    message = err.get("message", "未知错误") if isinstance(err, dict) else str(err)
+    st.error(message)
 
 
 def require_ws():
