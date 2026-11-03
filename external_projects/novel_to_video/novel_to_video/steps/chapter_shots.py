@@ -322,7 +322,31 @@ def collect_shot_issues(raw_shots: List[Dict[str, Any]], script: str,
             script_speaker = near["speaker"] if near else ""
             issues.append({"message": f"{where}的对白“{text[:30]}”缺少说话人（speaker_id 不在角色库中且没有 speaker_name）。"
                                       + _speaker_hint(script_speaker, characters)})
+    issues.extend(_scene_coverage_issues(raw_shots, script))
     issues.extend(_shot_level_issues(raw_shots))
+    return issues
+
+
+def _scene_coverage_issues(raw_shots: List[Dict[str, Any]], script: str) -> List[Dict[str, str]]:
+    """每个剧本场次都必须至少有一个镜头；镜头引用的场次号必须存在。缺场次会导致大场景没有镜头。"""
+    from . import chapter_scenes as CS
+    scenes = CS.parse_script_scenes(script)
+    if not scenes:
+        return []
+    titles = {s["scene_no"]: s["header"] for s in scenes}
+    got = set()
+    for rs in raw_shots:
+        try:
+            got.add(int(rs.get("scene_no")))
+        except (TypeError, ValueError):
+            pass
+    issues: List[Dict[str, str]] = []
+    for n in sorted(set(titles) - got):
+        issues.append({"message": f"剧本第 {n} 场「{titles[n]}」没有任何镜头。每一场都必须至少有一个镜头，"
+                                  f"请为第 {n} 场补充镜头（画面与口播都取自该场的剧本内容，scene_no 填 {n}）；"
+                                  f"不要把该场内容并入其它场次的镜头而丢掉它。"})
+    for n in sorted(got - set(titles)):
+        issues.append({"message": f"有镜头的 scene_no 为 {n}，但剧本中没有第 {n} 场。scene_no 只能是剧本中存在的场次号。"})
     return issues
 
 

@@ -149,7 +149,7 @@ def test_pipeline_continues_past_c3_after_autofix(proj):
 # ---------------------------------------------------------------- 问题收集
 
 def test_collect_all_issues_not_just_first(proj):
-    raw = [{"blocks": [{"type": "dialogue", "text": "我们快走。", "speaker_name": "林远"},
+    raw = [{"scene_no": 1, "blocks": [{"type": "dialogue", "text": "我们快走。", "speaker_name": "林远"},
                        {"type": "dialogue", "text": "完全无关的话。", "speaker_name": "影子"},
                        {"type": "dialogue", "text": "等一下。"},                     # 缺说话人
                        {"type": "monologue", "text": "x"}]}]                          # 非法类型

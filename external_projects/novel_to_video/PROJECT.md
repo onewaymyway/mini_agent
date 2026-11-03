@@ -197,3 +197,9 @@ novel_output/                       # 项目数据（默认位置，已加入 .g
 - C-3a 由模型划分大场景并经代码校验（连续覆盖全部场次）；失败按地点自动归并兜底。结果保存在 `chapters/NNN/big_scenes.yaml`。
 - 镜头标注 `big_scene_no`，大场景汇总共用的地点、出镜角色、道具；章节页按大场景分块展示。
 - 代码：`steps/chapter_scenes.py`；测试：`tests/test_big_scenes.py`。
+
+## 镜头覆盖检查（每场至少一个镜头）
+
+- C-3 校验新增：剧本中的每个场次都必须至少有一个镜头；镜头引用的场次号必须存在于剧本。缺失的场次作为问题反馈给模型自动修正（`chapter_shots._scene_coverage_issues`）。
+- 大场景中没有镜头时，章节页显示警告。
+- 测试：`tests/test_big_scenes.py` 中的覆盖用例。

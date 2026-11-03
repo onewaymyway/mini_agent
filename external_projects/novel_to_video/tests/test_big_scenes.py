@@ -114,3 +114,20 @@ def test_attach_marks_shots_and_rolls_up_shared_assets(tmp_path):
     assert g1["location_id"] == "loc_01"                                # 多数镜头所在的地点
     assert g1["character_ids"] == ["char_01", "char_02"]                # 出镜角色去重汇总
     assert g1["prop_names"] == ["工作证"]
+
+
+def test_every_script_scene_must_have_a_shot():
+    from novel_to_video.steps import chapter_shots as cs
+    missing = [{"scene_no": 1, "blocks": [{"type": "narration", "text": "x"}]},
+               {"scene_no": 3, "blocks": [{"type": "narration", "text": "y"}]}]
+    issues = cs._scene_coverage_issues(missing, SCRIPT)
+    assert any("第 2 场" in i["message"] for i in issues)
+    assert any("第 4 场" in i["message"] for i in issues) and any("第 5 场" in i["message"] for i in issues)
+    full = [{"scene_no": n, "blocks": []} for n in range(1, 6)]
+    assert cs._scene_coverage_issues(full, SCRIPT) == []
+
+
+def test_unknown_scene_number_is_reported():
+    from novel_to_video.steps import chapter_shots as cs
+    issues = cs._scene_coverage_issues([{"scene_no": 9, "blocks": []}], SCRIPT)
+    assert any("第 9 个" in i["message"] or "第 9 场" in i["message"] for i in issues)

@@ -278,6 +278,8 @@ def _render_big_scenes(pdir: str, no: int, v: dict) -> None:
             chars = "、".join(names_c.get(cid, cid) for cid in g.get("character_ids") or []) or "无"
             props = "、".join(g.get("prop_names") or []) or "无"
             st.caption(f"共用素材：出镜角色 {chars}　｜　道具 {props}")
+            if not mine:
+                st.warning("这个大场景没有对应的镜头，请重新运行本章 C-3 镜头规划。")
             for sh in mine:
                 _shot_card(pdir, no, sh, v.get("all_characters") or [])
     orphans = [sh for sh in shots if sh.get("big_scene_no") not in known]

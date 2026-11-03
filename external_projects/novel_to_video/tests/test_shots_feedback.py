@@ -58,7 +58,7 @@ LONG = "铁城的清晨很安静，穹顶遮住了天空，街道上空无一人
 SHORT = "是的。"  # ≈ 1 秒
 
 
-def _narr(text, scene=1, zh="中景：林远", en="medium shot: a man"):
+def _narr(text, scene=4, zh="中景：林远", en="medium shot: a man"):
     return {"scene_no": scene, "location_id": "loc_04", "character_ids": [],
             "blocks": [{"type": "narration", "text": text, "speaker_id": None, "speaker_name": None}],
             "visual_hint_zh": zh, "visual_hint_en": en}
