@@ -35,6 +35,29 @@ class ValidationResult:
 async def validate_node(
     node: ProxyNode, check_url: str = DEFAULT_CHECK_URL, timeout: float = 8.0
 ) -> ValidationResult:
+    """验证单个代理节点可用性。
+
+    HTTP / plain SOCKS5 不走 local proxy 中转,直接用 httpx.proxies 测试;
+    其他协议走 start_local_proxy + SOCKS5 中转测试。
+    """
+    # HTTP / plain SOCKS5 直接通过 httpx.proxies 验证
+    if node.protocol == "http":
+        proxy_url = f"http://{node.server}:{node.port}"
+        try:
+            start = time.monotonic()
+            async with httpx.AsyncClient(
+                proxy=proxy_url,
+                timeout=timeout,
+            ) as client:
+                resp = await client.get(check_url)
+                latency = (time.monotonic() - start) * 1000
+                ok = resp.status_code in (200, 204)
+                return ValidationResult(node=node, ok=ok, latency_ms=latency if ok else None)
+        except Exception as e:  # noqa: BLE001
+            from mini_agent.errors import log_exception
+            log_exception(e, where='mini_agent.proxy.validator.validate_node')
+            return ValidationResult(node=node, ok=False, latency_ms=None, error=str(e))
+
     running = None
     try:
         running = await start_local_proxy(node)
