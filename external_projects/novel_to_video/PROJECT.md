@@ -184,3 +184,9 @@ novel_output/                       # 项目数据（默认位置，已加入 .g
 3. **一键通过定妆图**：通过所有已生成的定妆图。尚无图片的项跳过并说明原因。
 
 后端：`tool_api.batch_review`、`tool_api.chapter_portrait_ids`、`tool_api.start_chapter_portraits_background`。界面：`ui/auto_added_page.render_batch_bar`。测试：`tests/test_batch_review.py`（4 项）。
+
+## C-8 视频日志带镜头号
+
+- 每个镜头的视频请求在 `joblog.task_label("第 N 章 C-8 镜头 sXX")` 下执行：skill 内部的排队、重试、失败、用时等信息自动加上镜头前缀，例如「第 1 章 C-8 镜头 s05：[POST 排队已满] 第 1 次，7s 后重试」。
+- 视频生成的“仍在进行”心跳标签为「第 N 章 C-8 镜头 sXX 视频生成」，每个镜头单独计时；章节级的 C-8 心跳已取消，避免出现不带镜头号的“仍在进行”。
+- 测试：`tests/test_shot_log_labels.py`。

@@ -134,8 +134,11 @@ def run_clips(project_dir: Path, no: int, video: VideoProvider) -> Dict[str, Any
         raw = cdir / "raw" / f"{sh['id']}.mp4"
         joblog.log(project_dir, "chapter", f"第 {no} 章 C-8 镜头 {sh['id']}：提交视频生成"
                    f"（{int(sh['duration_sec'])} 秒，参考图 {len(refs)} 张）")
-        res = video.generate(sh["prompt_en"], raw, seconds=int(sh["duration_sec"]), reference_images=refs,
-                             aspect_ratio=fmt.aspect_ratio, size=fmt.resolution)
+        shot_label = f"第 {no} 章 C-8 镜头 {sh['id']}"
+        with joblog.task_label(shot_label), \
+                joblog.heartbeat(project_dir, "chapter", f"{shot_label} 视频生成"):
+            res = video.generate(sh["prompt_en"], raw, seconds=int(sh["duration_sec"]), reference_images=refs,
+                                 aspect_ratio=fmt.aspect_ratio, size=fmt.resolution)
         if not res.ok:
             joblog.log(project_dir, "chapter", f"第 {no} 章 C-8 镜头 {sh['id']} 失败：{res.error}", level="error")
             sh["clip_error"] = res.error

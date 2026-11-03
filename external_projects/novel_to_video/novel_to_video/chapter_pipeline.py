@@ -107,8 +107,7 @@ def run_chapter(project_dir: Path, no: int, *, text_llm: TextLLM, image: ImagePr
         if pr["failed"]:
             return stop("failed", f"提示词一致性检查未通过：{', '.join(pr['failed'])}")
 
-        with joblog.heartbeat(project_dir, "chapter", f"第 {no} 章 C-8 小场景视频"):
-            clips = run_clips(project_dir, no, video)
+        clips = run_clips(project_dir, no, video)      # 每个镜头自带心跳与镜头标签（见 chapter_clips）
         joblog.log(project_dir, "chapter", f"第 {no} 章 C-8 小场景视频：生成 {len(clips.get('generated', []))} 个，失败 {len(clips.get('failed', []))} 个",
                    level="warn" if clips.get("failed") else "info")
         if clips.get("blocked"):

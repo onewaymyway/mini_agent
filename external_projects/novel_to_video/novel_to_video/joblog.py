@@ -100,11 +100,26 @@ def infer_level(message: str) -> str:
     return "info"
 
 
+@contextlib.contextmanager
+def task_label(label: str):
+    """给当前线程的日志加上前缀（如「第 1 章 C-8 镜头 s05」）。用于 skill 内部的重试、排队、失败信息：
+    它们由 print 产生，本身不知道是哪个镜头，有了前缀才能对应到具体视频。"""
+    prev = getattr(_TLS, "label", None)
+    _TLS.label = label
+    try:
+        yield
+    finally:
+        _TLS.label = prev
+
+
 def bound_log(message: str, level: Optional[str] = None) -> None:
-    """写入当前线程绑定的项目与 scope；未绑定时什么也不做。"""
+    """写入当前线程绑定的项目与 scope；未绑定时什么也不做。若设置了 task_label，消息带上前缀。"""
     ctx = getattr(_TLS, "ctx", None)
     if not ctx:
         return
+    label = getattr(_TLS, "label", None)
+    if label:
+        message = f"{label}：{message}"
     log(ctx[0], ctx[1], message, level=level or infer_level(message))
 
 
