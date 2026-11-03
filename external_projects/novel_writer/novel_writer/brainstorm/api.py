@@ -87,3 +87,32 @@ def spark_history(root: str) -> Dict[str, Any]:
 
 def adopt_candidates(root: str, spark_id: str, cids: list) -> Dict[str, Any]:
     return _guard(lambda: S.adopt(_ws(root), spark_id, list(cids)))
+
+
+# ── B2：对话与提议 ──
+from novel_writer.brainstorm import chat as CH  # noqa: E402
+from novel_writer.brainstorm import proposals as PR  # noqa: E402
+
+
+def chat_send(root: str, text: str, mode: str = "追问", runner=None) -> Dict[str, Any]:
+    return _guard(lambda: CH.send(_ws(root), text, mode, runner=runner))
+
+
+def chat_history(root: str, limit: Optional[int] = None) -> Dict[str, Any]:
+    return _guard(lambda: CH.history(_ws(root), limit))
+
+
+def chat_new(root: str) -> Dict[str, Any]:
+    return _guard(lambda: CH.new_chat(_ws(root)))
+
+
+def list_proposals(root: str, status: Optional[str] = "pending") -> Dict[str, Any]:
+    return _guard(lambda: PR.list_items(_ws(root), status))
+
+
+def accept_proposal(root: str, pid: str, edited_value: Any = None) -> Dict[str, Any]:
+    return _guard(lambda: PR.accept(_ws(root), pid, edited_value))
+
+
+def reject_proposal(root: str, pid: str) -> Dict[str, Any]:
+    return _guard(lambda: PR.reject(_ws(root), pid))

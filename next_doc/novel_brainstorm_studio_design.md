@@ -1,6 +1,6 @@
 # 小说灵感构思工作室：设计方案（草案，待确认）
 
-> 状态：已确认，按阶段实施。**B0、B1 已完成**；B2–B5 未开始。
+> 状态：已确认，按阶段实施。**B0、B1、B2 已完成**；B3–B5 未开始。
 > 实现说明见 `external_projects/novel_writer/docs/brainstorm_studio.md`。
 >
 > 已确认：会话续接由 mini_agent 的 Agent 提供（`run_turn` / `save_session` / `load_session`）；独立入口；允许 AI 主动提议（需确认）；其余按本文。
@@ -162,3 +162,10 @@ external_projects/novel_writer/
 - 页面 `ui/brainstorm.py` 与 `app.py` 导航「💡 灵感构思」；
 - 发散的候选不直接入池，需要作者采纳；默认生成器未经真实模型验证；
 - 测试 `tests/test_brainstorm_b1.py` 15 例（含页面 AppTest 冒烟），与 B0 合计 31 例通过。
+
+### B2（已完成）
+- `proposals.py`：提议的登记、校验、采纳（应用到卡片副本后再校验，失败保持待确认）、拒绝；
+- `chat.py`：对话记录、提示词（卡片摘要 + 最近几轮）、提议块解析、会话续接（框架 Agent 的 session id）；
+- 页面「对话」标签：聊天、模式切换、新开对话、待确认提议的采纳与拒绝；
+- 测试 `tests/test_brainstorm_b2.py` 20 例，覆盖确认前不落卡、逐条采纳、拒绝、修改后采纳、无效提议、会话续接、页面渲染；
+- 偏差：快捷回复按钮和「修改后采纳」的界面未做，仅保留接口。

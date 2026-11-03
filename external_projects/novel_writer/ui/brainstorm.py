@@ -5,6 +5,7 @@ from __future__ import annotations
 import streamlit as st
 
 from novel_writer.brainstorm import api as BA
+from novel_writer.brainstorm import chat as CH
 from novel_writer.intake import INTAKE_FIELDS
 from ui.components import show_error
 
@@ -121,6 +122,57 @@ def _spark_tab(root: str) -> None:
                 show_error(r) if not r["ok"] else st.rerun()
 
 
+_KIND_LABEL = {"brief": "题材", "premise": "命题", "ideas": "灵感", "open_questions": "开放问题",
+               "world": "世界观", "cast": "角色", "plot": "剧情"}
+_OP_LABEL = {"add": "新增", "set": "修改"}
+
+
+def _dialogue_tab(root: str) -> None:
+    hist = BA.chat_history(root, limit=40)
+    if not hist["ok"]:
+        show_error(hist)
+        return
+    top = st.columns([3, 1])
+    mode = top[0].radio("模式", list(CH.MODES), horizontal=True, key="bs_chat_mode")
+    if top[1].button("新开对话", key="bs_chat_new", help="丢弃续接的会话，之后不再记得之前的内容（记录保留）"):
+        BA.chat_new(root)
+        st.rerun()
+    for rec in hist["data"]:
+        role = "user" if rec["role"] == "user" else "assistant"
+        with st.chat_message(role):
+            st.write(rec["text"])
+    text = st.chat_input("说点什么……（例如：我想写一个会吞噬记忆的港口）", key="bs_chat_input")
+    if text:
+        with st.spinner("思考中……"):
+            r = BA.chat_send(root, text, mode)
+        show_error(r) if not r["ok"] else st.rerun()
+    pending = BA.list_proposals(root, "pending")
+    if not pending["ok"]:
+        show_error(pending)
+        return
+    if pending["data"]:
+        st.subheader(f"待确认的提议（{len(pending['data'])}）")
+        st.caption("AI 的建议不会自动生效。采纳后才会写入卡片。")
+    for item in pending["data"]:
+        with st.container(border=True):
+            label = f"{_OP_LABEL.get(item['op'], item['op'])}{_KIND_LABEL.get(item['module'], item['module'])}"
+            if item.get("target"):
+                label += f"（{item['target']}）"
+            st.markdown(f"**{label}**")
+            st.json(item["value"], expanded=False)
+            if item.get("reason"):
+                st.caption("理由：" + item["reason"])
+            if item.get("error"):
+                st.warning("上次采纳失败：" + item["error"])
+            c1, c2 = st.columns(2)
+            if c1.button("采纳", key=f"bs_acc_{item['pid']}"):
+                r = BA.accept_proposal(root, item["pid"])
+                show_error(r) if not r["ok"] else st.rerun()
+            if c2.button("拒绝", key=f"bs_rej_{item['pid']}"):
+                r = BA.reject_proposal(root, item["pid"])
+                show_error(r) if not r["ok"] else st.rerun()
+
+
 def page_brainstorm() -> None:
     st.header("💡 灵感构思工作室")
     st.caption("独立于小说项目：先把灵感、题材、世界观与剧情打磨成构思包，之后再据此创建小说。")
@@ -128,10 +180,12 @@ def page_brainstorm() -> None:
     root = _current_root()
     if not root:
         return
-    tabs = st.tabs(["题材卡", "灵感池", "发散"])
+    tabs = st.tabs(["对话", "题材卡", "灵感池", "发散"])
     with tabs[0]:
-        _brief_tab(root)
+        _dialogue_tab(root)
     with tabs[1]:
-        _ideas_tab(root)
+        _brief_tab(root)
     with tabs[2]:
+        _ideas_tab(root)
+    with tabs[3]:
         _spark_tab(root)
