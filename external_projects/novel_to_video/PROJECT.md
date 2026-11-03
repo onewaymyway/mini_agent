@@ -215,3 +215,9 @@ novel_output/                       # 项目数据（默认位置，已加入 .g
 - C-3b 改为每个大场景单独调用一次模型，每段独立校验与修正；合并后镜头重新编号。解决整章一次规划时后面场次被漏掉、修正反馈难以定位的问题。设计见 `next_doc/novel_to_video_big_scene_plan.md` 第 8 节。
 - 空结果的反馈同时指出缺哪一场。
 - 测试：`tests/test_big_scenes.py`（分段调用与只修正漏场的那一段）。
+
+## 大场景显示场景参考图
+
+- 章节视图的每个大场景带 `refs`：该大场景镜头实际使用的场景参考图（与 C-8 选图规则一致：镜头所选设定图，否则地点定妆图），去重，并标注是否已生成。
+- 小场景逐镜审核中，大场景块在“共用素材”下方显示这些参考图；未生成的显示占位文字。
+- 代码：`chapter_pipeline.big_scene_refs`；界面：`ui/chapter_page._render_big_scenes`；测试：`tests/test_scene_refs.py`。

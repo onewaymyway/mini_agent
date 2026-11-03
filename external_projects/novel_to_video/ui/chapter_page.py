@@ -278,6 +278,19 @@ def _render_big_scenes(pdir: str, no: int, v: dict) -> None:
             chars = "、".join(names_c.get(cid, cid) for cid in g.get("character_ids") or []) or "无"
             props = "、".join(g.get("prop_names") or []) or "无"
             st.caption(f"共用素材：出镜角色 {chars}　｜　道具 {props}")
+            refs = g.get("refs") or []
+            if refs:
+                st.caption("场景参考图（本大场景镜头生成视频时使用的参考图）")
+                cols = st.columns(min(4, len(refs)))
+                for i, r in enumerate(refs):
+                    with cols[i % len(cols)]:
+                        if r.get("exists") and r.get("path"):
+                            from pathlib import Path as _P
+                            st.image(str(_P(pdir) / r["path"]), caption=r["label"], width="stretch")
+                        else:
+                            st.caption(f"{r['label']}（尚未生成）")
+            else:
+                st.caption("场景参考图：无（地点尚未生成定妆图或设定图）")
             if not mine:
                 st.warning("这个大场景没有对应的镜头，请重新运行本章 C-3 镜头规划。")
             for sh in mine:

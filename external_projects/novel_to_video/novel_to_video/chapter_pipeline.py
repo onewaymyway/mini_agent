@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from . import cancel
 from . import chapter_io as cio
@@ -200,6 +200,39 @@ def _derive_plan_warnings(shots: list) -> list:
     return out
 
 
+def big_scene_refs(project_dir: Path, shots: List[Dict[str, Any]], big_scenes: List[Dict[str, Any]],
+                   raw_locs: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """每个大场景实际使用的场景参考图：与 C-8 选图规则相同（镜头所选设定图，否则地点定妆图），去重。"""
+    from .steps import location_sheets as LS
+    out = []
+    for g in big_scenes or []:
+        refs, seen = [], set()
+        for sh in shots or []:
+            if sh.get("big_scene_no") != g.get("big_no"):
+                continue
+            loc = raw_locs.get(sh.get("location_id"))
+            if not loc:
+                continue
+            sheet = LS.sheet_for_shot(loc, sh)
+            rel = (sheet or {}).get("asset_path") or loc.get("asset_path")
+            label = (sheet or {}).get("label") or "地点定妆图"
+            key = (sh.get("location_id"), rel or label)
+            if key in seen:
+                continue
+            seen.add(key)
+            refs.append({"label": f"{loc.get('name') or sh.get('location_id')}·{label}", "path": rel,
+                         "exists": bool(rel) and (Path(project_dir) / rel).is_file()})
+        out.append({**g, "refs": refs})
+    return out
+
+
+def _raw_locations(project_dir: Path) -> Dict[str, Dict[str, Any]]:
+    try:
+        return {l["id"]: l for l in cio.load_entities(project_dir)["locations"]["locations"]}
+    except (OSError, KeyError, ValueError):
+        return {}
+
+
 def _entity_lookup(project_dir: Path) -> Dict[str, Dict[str, Any]]:
     try:
         ents = cio.load_entities(project_dir)
@@ -257,7 +290,7 @@ def chapter_view(project_dir: Path, no: int) -> Dict[str, Any]:
         "shots_review": _read_yaml(cdir / "shots_review.yaml"),
         "speakers": _speakers(project_dir, cdir, shots_doc),
         "shots": shots,
-        "big_scenes": list(shots_doc.get("big_scenes") or []),     # 大场景（一章 → 多个大场景 → 多个镜头）
+        "big_scenes": big_scene_refs(project_dir, shots_doc.get("shots") or [], shots_doc.get("big_scenes") or [], _raw_locations(project_dir)),  # 大场景（含其场景参考图）
         # 新规划的镜头自带拆分记录；旧文件没有，则按“相邻镜头场次与画面描述完全相同”推断
         "plan_warnings": (shots_doc["plan_warnings"] if "plan_warnings" in shots_doc
                           else _derive_plan_warnings(shots_doc.get("shots") or [])),
