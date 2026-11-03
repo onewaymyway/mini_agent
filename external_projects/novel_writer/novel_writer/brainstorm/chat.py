@@ -24,6 +24,8 @@ RECENT_TURNS = 4
 MODES = {
     "追问": "围绕作者已有的想法追问，每次只问一两个最关键的问题（优先问代价、谁受影响、为什么是现在）。",
     "自由": "就作者的话自由交流：可以发散、质疑、给出例子，但不要一次塞入太多内容。",
+    "收敛": "帮作者把已有的想法收束成 2–3 个备选方向（如两种结局、两种主线走向），逐项说明优缺点，"
+            "给出你的推荐但不替作者决定。若作者需要，可以用 options 提议把某个方向登记为备选。",
 }
 Runner = Callable[[str, Optional[str]], Tuple[str, Optional[str]]]
 _BLOCK = re.compile(r"```proposals\s*(.*?)```", re.S)
@@ -101,10 +103,11 @@ def build_prompt(ws: BrainstormWorkspace, text: str, mode: str) -> str:
         f"【最近对话】\n{recent_text}\n\n"
         "如果你认为应当修改构思卡片，在回复最后附一个代码块（只在确有必要时附）：\n"
         "```proposals\n"
-        '[{"module": "ideas|premise|brief|open_questions|world|cast|plot", "op": "add|set", '
+        '[{"module": "ideas|premise|brief|open_questions|world|cast|plot|options", "op": "add|set", '
         '"target": "（set 时需要：目标 id；world 时为列表名 rules/locations/factions/timeline/taboos）", '
         '"value": {...或文字}, "reason": "为什么建议这样改"}]\n'
         "```\n"
+        "options 的格式：op 为 add，value 为 {\"name\": 备选名, \"module\": \"premise 或 plot\", \"content\": 可选的完整内容, \"notes\": 优缺点}。\n"
         "注意：你的建议只是提议，作者确认后才会生效。\n\n"
         f"作者说：{text}"
     )

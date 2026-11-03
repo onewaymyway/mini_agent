@@ -1,6 +1,6 @@
 # 小说灵感构思工作室：设计方案（草案，待确认）
 
-> 状态：已确认，按阶段实施。**B0–B3 已完成**；B4、B5 未开始。
+> 状态：已确认，按阶段实施。**B0–B4 已完成**；B5 未开始。
 > 实现说明见 `external_projects/novel_writer/docs/brainstorm_studio.md`。
 >
 > 已确认：会话续接由 mini_agent 的 Agent 提供（`run_turn` / `save_session` / `load_session`）；独立入口；允许 AI 主动提议（需确认）；其余按本文。
@@ -175,3 +175,11 @@ external_projects/novel_writer/
 - 页面新增「世界观」「角色」「质检」标签；
 - 测试 `tests/test_brainstorm_b3.py` 14 例，覆盖质检前后卡片哈希不变、非法输出不落盘、页面标签；
 - 偏差：剧情骨架的编辑界面放到 B4（与剧情骨架一起做）。
+
+### B4（已完成）
+- `edit.py` 补充剧情骨架编辑（幕、转折点、反转、结局候选）；
+- `options.py`：备选的创建、对比（diff）、合并（保留主线备份）、撤销、放弃；
+- `proposals.py` 新增 options 提议（只新建备选）；`chat.py` 新增「收敛」模式；
+- 页面新增「剧情」标签（含备选方案区）；
+- 测试 `tests/test_brainstorm_b4.py` 15 例，覆盖创建备选不改主线、合并可撤销、放弃不可合并、备选提议确认后才生效。
+- 偏差：备选只支持剧情与命题两个模块。

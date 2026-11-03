@@ -281,6 +281,95 @@ def _check_tab(root: str) -> None:
                     st.caption("建议：" + f["suggestion"])
 
 
+def _plot_tab(root: str) -> None:
+    res = BA.get_project(root)
+    if not res["ok"]:
+        show_error(res)
+        return
+    plot = res["data"]["cards"]["plot"]
+    st.caption("剧情骨架：幕、转折点、反转与结局候选。直接编辑，立即生效。")
+    for i, act in enumerate(plot["acts"]):
+        with st.expander(f"第{i + 1}幕　{act.get('title', '')}"):
+            for j, beat in enumerate(act.get("beats", [])):
+                c1, c2 = st.columns([8, 1])
+                c1.write(f"• {beat}")
+                if c2.button("×", key=f"bs_beat_del_{i}_{j}"):
+                    r = BA.plot_remove_beat(root, i, j)
+                    show_error(r) if not r["ok"] else st.rerun()
+            with st.form(f"bs_beat_add_{i}", clear_on_submit=True):
+                beat = st.text_input("新增转折点", key=f"bs_beat_text_{i}")
+                c1, c2 = st.columns(2)
+                add = c1.form_submit_button("添加转折点")
+                drop = c2.form_submit_button("删除本幕")
+            if add and beat.strip():
+                r = BA.plot_add_beat(root, i, beat)
+                show_error(r) if not r["ok"] else st.rerun()
+            if drop:
+                r = BA.plot_remove_act(root, i)
+                show_error(r) if not r["ok"] else st.rerun()
+    with st.form("bs_act_add", clear_on_submit=True):
+        title = st.text_input("新增一幕（标题）", key="bs_act_title")
+        if st.form_submit_button("添加幕") and title.strip():
+            r = BA.plot_add_act(root, title)
+            show_error(r) if not r["ok"] else st.rerun()
+    for key, label in (("twists", "反转"), ("endings", "结局候选")):
+        st.markdown(f"**{label}**")
+        for idx, text in enumerate(plot.get(key, [])):
+            c1, c2 = st.columns([8, 1])
+            c1.write(f"• {text}")
+            if c2.button("×", key=f"bs_{key}_del_{idx}"):
+                r = BA.plot_remove_item(root, key, idx)
+                show_error(r) if not r["ok"] else st.rerun()
+        with st.form(f"bs_{key}_add", clear_on_submit=True):
+            text = st.text_input(f"新增{label}", key=f"bs_{key}_text")
+            if st.form_submit_button(f"添加{label}") and text.strip():
+                r = BA.plot_add_item(root, key, text)
+                show_error(r) if not r["ok"] else st.rerun()
+    _options_section(root)
+
+
+def _options_section(root: str) -> None:
+    st.divider()
+    st.markdown("**备选方案**")
+    st.caption("为剧情或命题保留另一种走向。对比后可以合并为主线；合并前的主线会保存，可以撤销。")
+    with st.form("bs_option_new", clear_on_submit=True):
+        name = st.text_input("备选名称（如：开放式结局）", key="bs_opt_name")
+        module = st.radio("对应模块", ["plot", "premise"], horizontal=True,
+                          format_func=lambda m: "剧情骨架" if m == "plot" else "核心命题", key="bs_opt_module")
+        notes = st.text_area("优缺点（可空）", key="bs_opt_notes", height=60)
+        if st.form_submit_button("以当前主线新建备选") and name.strip():
+            r = BA.option_create(root, name, module, None, notes)
+            show_error(r) if not r["ok"] else st.rerun()
+    res = BA.option_list(root)
+    if not res["ok"]:
+        show_error(res)
+        return
+    for opt in res["data"]:
+        label = {"open": "待定", "merged": "已合并为主线", "discarded": "已放弃"}[opt["status"]]
+        with st.container(border=True):
+            st.markdown(f"**{opt['name']}**　·　{'剧情' if opt['module'] == 'plot' else '命题'}　·　{label}")
+            if opt.get("notes"):
+                st.caption(opt["notes"])
+            d = BA.option_diff(root, opt["oid"])
+            if d["ok"]:
+                with st.expander("与当前主线的差异"):
+                    st.code(d["data"], language="diff")
+            else:
+                show_error(d)
+            cols = st.columns(3)
+            if opt["status"] == "open":
+                if cols[0].button("合并为主线", key=f"bs_opt_merge_{opt['oid']}"):
+                    r = BA.option_merge(root, opt["oid"])
+                    show_error(r) if not r["ok"] else st.rerun()
+                if cols[1].button("放弃", key=f"bs_opt_drop_{opt['oid']}"):
+                    r = BA.option_discard(root, opt["oid"])
+                    show_error(r) if not r["ok"] else st.rerun()
+            elif opt["status"] == "merged":
+                if cols[0].button("撤销合并", key=f"bs_opt_undo_{opt['oid']}"):
+                    r = BA.option_undo_merge(root, opt["oid"])
+                    show_error(r) if not r["ok"] else st.rerun()
+
+
 def page_brainstorm() -> None:
     st.header("💡 灵感构思工作室")
     st.caption("独立于小说项目：先把灵感、题材、世界观与剧情打磨成构思包，之后再据此创建小说。")
@@ -288,7 +377,7 @@ def page_brainstorm() -> None:
     root = _current_root()
     if not root:
         return
-    tabs = st.tabs(["对话", "题材卡", "灵感池", "发散", "世界观", "角色", "质检"])
+    tabs = st.tabs(["对话", "题材卡", "灵感池", "发散", "世界观", "角色", "剧情", "质检"])
     with tabs[0]:
         _dialogue_tab(root)
     with tabs[1]:
@@ -302,4 +391,6 @@ def page_brainstorm() -> None:
     with tabs[5]:
         _cast_tab(root)
     with tabs[6]:
+        _plot_tab(root)
+    with tabs[7]:
         _check_tab(root)

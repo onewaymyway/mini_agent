@@ -149,3 +149,55 @@ def run_check(root: str, use_llm: bool = False, generator=None) -> Dict[str, Any
 
 def check_history(root: str) -> Dict[str, Any]:
     return _guard(lambda: K.history(_ws(root)))
+
+
+# ── B4：剧情骨架与备选方案 ──
+from novel_writer.brainstorm import options as O  # noqa: E402
+
+
+def plot_add_act(root: str, title: str) -> Dict[str, Any]:
+    return _guard(lambda: E.add_act(_ws(root), title))
+
+
+def plot_remove_act(root: str, act: int) -> Dict[str, Any]:
+    return _guard(lambda: E.remove_act(_ws(root), act))
+
+
+def plot_add_beat(root: str, act: int, text: str) -> Dict[str, Any]:
+    return _guard(lambda: E.add_beat(_ws(root), act, text))
+
+
+def plot_remove_beat(root: str, act: int, beat: int) -> Dict[str, Any]:
+    return _guard(lambda: E.remove_beat(_ws(root), act, beat))
+
+
+def plot_add_item(root: str, key: str, text: str) -> Dict[str, Any]:
+    return _guard(lambda: E.add_plot_item(_ws(root), key, text))
+
+
+def plot_remove_item(root: str, key: str, index: int) -> Dict[str, Any]:
+    return _guard(lambda: E.remove_plot_item(_ws(root), key, index))
+
+
+def option_create(root: str, name: str, module: str, content: Any = None, notes: str = "") -> Dict[str, Any]:
+    return _guard(lambda: O.create(_ws(root), name, module, content, notes))
+
+
+def option_list(root: str) -> Dict[str, Any]:
+    return _guard(lambda: O.list_options(_ws(root)))
+
+
+def option_diff(root: str, oid: str) -> Dict[str, Any]:
+    return _guard(lambda: O.diff(_ws(root), oid))
+
+
+def option_merge(root: str, oid: str) -> Dict[str, Any]:
+    return _guard(lambda: O.merge(_ws(root), oid))
+
+
+def option_discard(root: str, oid: str) -> Dict[str, Any]:
+    return _guard(lambda: O.discard(_ws(root), oid))
+
+
+def option_undo_merge(root: str, oid: str) -> Dict[str, Any]:
+    return _guard(lambda: O.undo_merge(_ws(root), oid))

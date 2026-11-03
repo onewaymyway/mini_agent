@@ -11,6 +11,7 @@
   world           add    target: 列表名, value: 条目
   cast            add    value: 角色卡(需 name)     set  target: 角色 id, value: 部分字段
   plot            set    value: {acts?, twists?, endings?}（替换给出的键）
+  options         add    value: {name, module: premise|plot, content?, notes?}（只新建备选，不合并）
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ from novel_writer.fsutil import atomic_write_json, read_json
 PROPOSALS_FILE = "_studio/proposals.json"
 ALLOWED_OPS = {
     "brief": {"set"}, "premise": {"set"}, "ideas": {"add", "set"}, "open_questions": {"add", "set"},
-    "world": {"add"}, "cast": {"add", "set"}, "plot": {"set"},
+    "world": {"add"}, "cast": {"add", "set"}, "plot": {"set"}, "options": {"add"},
 }
 
 
@@ -50,6 +51,11 @@ def create(ws: BrainstormWorkspace, module: str, op: str, value: Any, *, target:
         raise BrainstormError(f"提议的模块不合法：{module}")
     if op not in ALLOWED_OPS[module]:
         raise BrainstormError(f"模块 {module} 不支持操作 {op}")
+    if module == "options":
+        if not isinstance(value, dict) or not str(value.get("name", "")).strip():
+            raise BrainstormError("备选提议需要 name")
+        if value.get("module") not in ("premise", "plot"):
+            raise BrainstormError("备选提议的 module 只能是 premise 或 plot")
     if op == "set" and module in ("ideas", "open_questions", "cast") and not target:
         raise BrainstormError(f"{module} 的修改需要指明目标 id")
     if module == "world" and target not in C.WORLD_LISTS:
@@ -152,6 +158,17 @@ def accept(ws: BrainstormWorkspace, pid: str, edited_value: Any = None) -> Dict[
     if item["status"] != "pending":
         raise BrainstormError(f"该提议已{ {'accepted': '采纳', 'rejected': '拒绝'}[item['status']] }")
     value = item["value"] if edited_value is None else edited_value
+    if item["module"] == "options":
+        from novel_writer.brainstorm import options as O
+        try:
+            O.create(ws, value["name"], value["module"], value.get("content"), value.get("notes", ""))
+        except (BrainstormError, KeyError, TypeError) as exc:
+            item["error"] = str(exc)
+            _save(ws, items)
+            raise BrainstormError(str(exc)) from exc
+        item.update(status="accepted", error="", value=value, decided_at=_now())
+        _save(ws, items)
+        return item
     try:
         current = C.get_module(ws, item["module"])
         new = apply_to(current, item["module"], item["op"], item["target"], value)

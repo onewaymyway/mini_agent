@@ -58,3 +58,70 @@ def remove_cast(ws: BrainstormWorkspace, cid: str) -> None:
         raise BrainstormError(f"找不到角色：{cid}")
     del cast[cid]
     C.put_module(ws, "cast", cast)
+
+
+# ── 剧情骨架（B4） ──
+
+def _plot(ws: BrainstormWorkspace) -> Dict[str, Any]:
+    return C.get_module(ws, "plot")
+
+
+def add_act(ws: BrainstormWorkspace, title: str) -> int:
+    title = (title or "").strip()
+    if not title:
+        raise BrainstormError("幕标题不能为空")
+    plot = _plot(ws)
+    plot["acts"].append({"title": title, "beats": []})
+    C.put_module(ws, "plot", plot)
+    return len(plot["acts"]) - 1
+
+
+def remove_act(ws: BrainstormWorkspace, act: int) -> None:
+    plot = _plot(ws)
+    if not (0 <= act < len(plot["acts"])):
+        raise BrainstormError("幕不存在")
+    del plot["acts"][act]
+    C.put_module(ws, "plot", plot)
+
+
+def add_beat(ws: BrainstormWorkspace, act: int, text: str) -> None:
+    text = (text or "").strip()
+    if not text:
+        raise BrainstormError("转折点不能为空")
+    plot = _plot(ws)
+    if not (0 <= act < len(plot["acts"])):
+        raise BrainstormError("幕不存在")
+    plot["acts"][act]["beats"].append(text)
+    C.put_module(ws, "plot", plot)
+
+
+def remove_beat(ws: BrainstormWorkspace, act: int, beat: int) -> None:
+    plot = _plot(ws)
+    if not (0 <= act < len(plot["acts"])) or not (0 <= beat < len(plot["acts"][act]["beats"])):
+        raise BrainstormError("转折点不存在")
+    del plot["acts"][act]["beats"][beat]
+    C.put_module(ws, "plot", plot)
+
+
+PLOT_LISTS = ("twists", "endings")
+
+
+def add_plot_item(ws: BrainstormWorkspace, key: str, text: str) -> None:
+    if key not in PLOT_LISTS:
+        raise BrainstormError(f"未知的剧情分类：{key}")
+    text = (text or "").strip()
+    if not text:
+        raise BrainstormError("内容不能为空")
+    plot = _plot(ws)
+    plot[key].append(text)
+    C.put_module(ws, "plot", plot)
+
+
+def remove_plot_item(ws: BrainstormWorkspace, key: str, index: int) -> None:
+    if key not in PLOT_LISTS:
+        raise BrainstormError(f"未知的剧情分类：{key}")
+    plot = _plot(ws)
+    if not (0 <= index < len(plot[key])):
+        raise BrainstormError("条目不存在")
+    del plot[key][index]
+    C.put_module(ws, "plot", plot)
