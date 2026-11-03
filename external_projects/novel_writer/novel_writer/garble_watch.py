@@ -246,7 +246,7 @@ def report_step(ws: Workspace, step_id: str, before: Dict[str, str],
             if reasons:
                 hits.append({"file": rel, "reasons": reasons})
         if mode == "rerun":
-            st.log_line(ws, "  乱码检测：rerun 模式的自动重跑尚未启用（G2/G3），本次按 report 记录")
+            st.log_line(ws, "  乱码检测：rerun 模式的步骤后统一守卫（G3）尚未启用，本次仅记录")
         for hit in hits:
             st.log_line(ws, f"  ⚠ 乱码检测：{hit['file']} 疑似乱码（{'；'.join(hit['reasons'])}）")
         if hits:
@@ -261,3 +261,46 @@ def _write_inbox(ws: Workspace, step_id: str, hits: List[Dict[str, Any]]) -> Pat
     path = ws.studio / "inbox" / f"{INBOX_PREFIX}{safe}.json"
     atomic_write_json(path, {"step": step_id, "mode": "report", "garbled": hits})
     return path
+
+
+# ── G2：步骤内重试环（A 层，仅 rerun 模式） ────────────────────────────────────
+
+def inline_problems(ws: Workspace, step_id: str, before: Dict[str, str],
+                    settings: Optional[Dict[str, Any]], extra_files: Iterable[str] = ()) -> List[str]:
+    """skill 步骤每次尝试通过其它校验后调用：返回要让同一步骤 agent 修正的问题清单。
+
+    只检查本步骤改动过的文件（含声明产出）；命中的原文件先备份到
+    `_studio/backup/garbled/<步骤>_<时间>/`，不删除。非 rerun 模式直接返回空列表。
+    """
+    if mode_of(settings) != "rerun":
+        return []
+    import shutil
+    from datetime import datetime
+
+    from novel_writer import state as st
+
+    changed = sorted(set(changed_since(ws, before, settings)) | set(extra_files))
+    hits: List[tuple] = []
+    for rel in changed:
+        path = ws.root / rel
+        if not path.is_file() or _excluded(rel):
+            continue
+        reasons = check_file(path)
+        if reasons:
+            hits.append((rel, reasons))
+    if not hits:
+        return []
+    safe = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in step_id)
+    backup_dir = ws.studio / "backup" / "garbled" / f"{safe}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    problems: List[str] = []
+    for rel, reasons in hits:
+        src = ws.root / rel
+        try:
+            shutil.copy2(src, backup_dir / src.name)
+        except OSError as exc:
+            st.log_line(ws, f"⚠ {step_id}：乱码文件备份失败（{exc}）：{rel}")
+        st.log_line(ws, f"⚠ {step_id}：{rel} 疑似乱码（{'；'.join(reasons)}），要求 agent 覆盖重写")
+        problems.append(f"`{rel}` 疑似乱码（{'；'.join(reasons)}）。请重新完整撰写该文件并覆盖写入同一路径，"
+                        "文件名保持不变，不要保留乱码内容。")
+    return problems

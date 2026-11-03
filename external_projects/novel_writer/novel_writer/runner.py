@@ -264,6 +264,9 @@ def _run_skill_step_inner(
     guard_before = SG.snapshot(ws, protected_rels)
     guard_saved = SG.backup(ws, protected_rels)
     auto_restore = bool(settings.get("step_guard_auto_restore", True))
+    # 乱码检测 A 层（rerun 模式）：基线 + 本步骤声明产出；off/report 模式下两者为空，行为不变
+    garble_before = GW.snapshot(ws, settings)
+    garble_declared = [str(p.relative_to(ws.root)) for p in st.expand_inputs(ws, step.outputs)]
     for attempt in range(MAX_RECEIPT_ATTEMPTS):
         remaining = STO.remaining_sec()
         if remaining is not None and remaining <= 0:   # 补写回执/产出的多轮尝试也算在步骤总时限内
@@ -317,6 +320,8 @@ def _run_skill_step_inner(
             problems = V.content_problems(ws, step)   # 产出存在但内容不合格（如择优报告 winner 非法）
             if problems:
                 st.log_line(ws, f"⚠ {step.id} 产出内容不合格（第 {attempt + 1} 次），要求 agent 修正：" + "；".join(problems))
+        if not problems:
+            problems = GW.inline_problems(ws, step.id, garble_before, settings, garble_declared)
         if out_of_scope:
             problems = [
                 f"越界修改了不属于本步骤的文件：{'、'.join(out_of_scope[:10])}。"

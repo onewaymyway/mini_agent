@@ -179,3 +179,74 @@ def test_rerun_mode_is_reported_honestly_until_g3(book):
     run_step(book, step, invoker=None, settings=book.settings(), handlers=handlers)
     log = book.path("studio_log").read_text(encoding="utf-8")
     assert "尚未启用" in log
+
+
+# ── G2：skill 步骤内重试环（A 层） ───────────────────────────────────────────
+
+from novel_writer.runner import InvokeResult, StepFailed, run_skill_step  # noqa: E402
+
+SUMMARY = "章节总结/第01章_总结.md"
+
+
+def _skill_step():
+    return S.StepDef(id="test.summary_skill", title="测试总结", stage="p0", category=S.CAT_CHAPTER_REVIEW,
+                     executor=S.EXECUTOR_SKILL, skill="chapter-writer", outputs=(SUMMARY,))
+
+
+def _scripted_invoker(contents):
+    """每次调用依次写出 contents 中的一个版本（用尽后沿用最后一个），并写回执。"""
+    calls = []
+
+    def invoke(*, skill, prompt, export_dir, step_id, max_turns=None, timeout=None):
+        i = len(calls)
+        calls.append(prompt)
+        body = contents[min(i, len(contents) - 1)]
+        _write(Workspace(_ROOT[0]), SUMMARY, body)
+        export_dir.mkdir(parents=True, exist_ok=True)
+        (export_dir / "receipt.json").write_text(json.dumps({"status": "done", "summary": "ok"}, ensure_ascii=False),
+                                                 encoding="utf-8")
+        return InvokeResult(True)
+
+    invoke.calls = calls
+    return invoke
+
+
+_ROOT: list = []
+
+
+def test_rerun_mode_retries_same_step_until_output_is_clean(book):
+    _ROOT[:] = [str(book.root)]
+    _set_mode(book, "rerun")
+    invoker = _scripted_invoker([mojibake(NORMAL * 20), NORMAL * 20])
+    receipt = run_skill_step(book, _skill_step(), invoker=invoker, settings=book.settings(), run_no=1)
+    assert receipt["status"] == "done"
+    assert len(invoker.calls) == 2                       # 同一步骤重做了一次
+    assert "疑似乱码" in invoker.calls[1]                 # 问题清单进入了第二次提示
+    assert not GW.check_file(book.root / SUMMARY)
+    backups = list((book.studio / "backup" / "garbled").glob("test.summary_skill_*"))
+    assert backups and any(p.name == "第01章_总结.md" for p in backups[0].iterdir())
+
+
+def test_rerun_mode_gives_up_after_max_attempts(book):
+    _ROOT[:] = [str(book.root)]
+    _set_mode(book, "rerun")
+    invoker = _scripted_invoker([mojibake(NORMAL * 20)])
+    with pytest.raises(StepFailed):
+        run_skill_step(book, _skill_step(), invoker=invoker, settings=book.settings(), run_no=1)
+    assert len(invoker.calls) == 3                       # MAX_RECEIPT_ATTEMPTS
+
+
+def test_report_mode_does_not_retry_skill_step(book):
+    _ROOT[:] = [str(book.root)]
+    _set_mode(book, "report")
+    invoker = _scripted_invoker([mojibake(NORMAL * 20), NORMAL * 20])
+    run_skill_step(book, _skill_step(), invoker=invoker, settings=book.settings(), run_no=1)
+    assert len(invoker.calls) == 1                       # report 模式只记录，不让 agent 重做
+
+
+def test_off_mode_skill_step_unchanged(book):
+    _ROOT[:] = [str(book.root)]
+    invoker = _scripted_invoker([mojibake(NORMAL * 20), NORMAL * 20])
+    run_skill_step(book, _skill_step(), invoker=invoker, settings=book.settings(), run_no=1)
+    assert len(invoker.calls) == 1
+    assert not (book.studio / "backup" / "garbled").exists()

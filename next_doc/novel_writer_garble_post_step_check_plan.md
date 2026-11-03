@@ -1,6 +1,6 @@
 # novel_writer：步骤完成后关键文件乱码检测 + 自动定位并重跑
 
-> 状态：G1 已完成（2026-11-03）；G2 / G3 / G4 未开始。实现说明见 `external_projects/novel_writer/docs/garble_check.md`。
+> 状态：G1、G2 已完成；G3 / G4 未开始。实现说明见 `external_projects/novel_writer/docs/garble_check.md`。
 > 涉及：`external_projects/novel_writer/novel_writer/{garble.py, runner.py, chapter_ops.py, worker.py, state.py, settings.py, tool_api.py}` 与看板驾驶舱。
 
 ## 一、背景与缺口
@@ -154,3 +154,9 @@ A 层让绝大多数乱码在本步骤内就被修好；B 层兜底（A 层用�
 2. 关键文件范围：采用 3.1 的注册表，已包含规划文档；`watch_extra` 可追加；
 3. 上游乱码：G3 再实现，G1 只记录；
 4. 实施顺序：G1 → G2 → G3，本轮完成 G1。
+
+### G2（已完成）
+- `garble_watch.inline_problems()`：rerun 模式下 skill 步骤通过其它校验后，检查本步骤改动的关键文件；命中则备份到 `_studio/backup/garbled/`，问题清单进入同一步骤的重试 hint；
+- `runner._run_skill_step_inner` 接入（基线在进入重试循环前取，off/report 模式为空，行为不变）；
+- 测试 `tests/test_garble_check_g1.py` 新增 4 例（重做后通过 / 用尽失败 / report 不重做 / off 不变），共 17 例通过；novel_writer 全量 740 passed，仍是 3 个既有失败。
+- 文档 `docs/garble_check.md` 更新 rerun 模式章节。
