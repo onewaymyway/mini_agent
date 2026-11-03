@@ -289,3 +289,31 @@ def test_api_distill_start_and_state(tmp_path):
     st_ = _wait_run(BrainstormWorkspace(root), run_id)
     assert st_["status"] == "done"
     assert BA.distill_state(root, run_id)["ok"]
+
+
+def test_helper_generator_calls_llm_helper_directly(monkeypatch):
+    """整理默认走 LLMHelper.ask（单轮、无工具），而不是 Agent。"""
+    import sys
+    import types
+
+    from novel_writer import config
+    from novel_writer.brainstorm import spark
+
+    seen = {}
+
+    class FakeHelper:
+        @classmethod
+        def from_config(cls, cfg):
+            return cls()
+
+        def ask(self, prompt, **kw):
+            seen.update(prompt=prompt, **kw)
+            return '{"candidates": [], "minutes": "x"}'
+
+    fake = types.ModuleType("mini_agent.llm.service")
+    fake.LLMHelper = FakeHelper
+    monkeypatch.setitem(sys.modules, "mini_agent.llm.service", fake)
+    monkeypatch.setattr(config, "load_llm_cfg", lambda: object())
+    monkeypatch.setattr("novel_writer.runner._ensure_framework_on_path", lambda: None)
+    out = spark.helper_generator("提示词", system="S", timeout=10)
+    assert out.startswith("{") and seen["prompt"] == "提示词" and seen["system"] == "S"

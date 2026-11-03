@@ -28,6 +28,8 @@ DISTILLABLE = ("brief", "premise", "ideas", "open_questions", "world", "cast", "
 MODULE_LABEL = {"brief": "题材卡", "premise": "核心命题", "ideas": "灵感", "open_questions": "开放问题",
                 "world": "世界观", "cast": "角色", "plot": "剧情骨架", "options": "备选方案"}
 Generator = Callable[[str], str]
+SYSTEM_PROMPT = ("你是小说构思的整理员。只输出一个 JSON 对象，不要调用任何工具，不要写文件，"
+                 "不要使用代码块，不要在 JSON 之外输出任何文字。")
 
 
 def _now() -> str:
@@ -160,8 +162,9 @@ def run(ws: BrainstormWorkspace, *, modules: Optional[List[str]] = None, scope: 
     if not valid:
         raise BrainstormError("没有需要整理的对话")
     if generator is None:
-        from novel_writer.brainstorm.spark import default_generator
-        generator = default_generator
+        # 直接调用 LLMHelper（不经过 Agent）：Agent 路径下模型会去调 write_file 等工具，回复里没有 JSON
+        from novel_writer.brainstorm.spark import helper_generator
+        generator = lambda p: helper_generator(p, system=SYSTEM_PROMPT)  # noqa: E731
     prompt = build_prompt(ws, records, start, chosen)
     _emit(log, "info", f"提示词：{len(prompt)} 字（含当前卡片摘要与对话全文），开始调用模型")
     raw = generator(prompt)

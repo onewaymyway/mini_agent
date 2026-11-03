@@ -84,6 +84,23 @@ def default_generator(prompt: str) -> str:
     return str(agent.run_turn(prompt))
 
 
+def helper_generator(prompt: str, *, system: str = "", timeout: float = 300, max_retries: int = 2) -> str:
+    """直接调用框架的 LLMHelper：单轮、无工具、无 Agent 循环，返回模型的原始文本。
+
+    与 default_generator 的区别：不经过 Agent，所以模型不会去调工具、不会受轮次上限影响，
+    也不会因为工具调用把结果写进文件而让回复里没有内容。适合「要结构化文本结果」的整理类任务。
+    """
+    from novel_writer import config
+    from novel_writer.runner import _ensure_framework_on_path
+
+    _ensure_framework_on_path()
+    from mini_agent.llm.service import LLMHelper
+
+    helper = LLMHelper.from_config(config.load_llm_cfg())
+    return helper.ask(prompt, system=system, timeout=timeout, deadline=timeout * (max_retries + 1),
+                      max_retries=max_retries)
+
+
 def generate(ws: BrainstormWorkspace, direction: str = "", *, count: int = 6,
              generator: Optional[Generator] = None) -> Dict[str, Any]:
     count = max(1, min(int(count), MAX_COUNT))
