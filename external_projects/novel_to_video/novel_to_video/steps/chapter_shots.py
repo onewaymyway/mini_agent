@@ -355,8 +355,16 @@ def run_shots(project_dir: Path, no: int, text_llm: TextLLM, *, force: bool = Fa
         raise StepError("缺少剧本，请先执行 C-1/C-2")
     script = script_path.read_text(encoding="utf-8")
     limit = strategy_block_limit(project_dir, no)
-    # 缓存键包含口播块上限：策略切换后必然重新规划
-    script_hash = sha12(script, str(limit))
+    # C-3a 大场景划分（先于镜头规划；缓存于 big_scenes.yaml）。剧本没有场次标题时无法划分，记警告后按整章规划。
+    from . import chapter_scenes as CS
+    try:
+        plan = CS.plan_big_scenes(project_dir, no, script, text_llm, force=force)
+    except ValueError as exc:
+        plan = None
+        joblog.log(project_dir, "chapter", f"第 {no} 章 C-3a 无法划分大场景：{exc}", level="warn")
+    big_key = json.dumps([(g["from_scene"], g["to_scene"]) for g in (plan or {}).get("big_scenes") or []])
+    # 缓存键包含口播块上限与大场景划分：策略或划分变化后必然重新规划
+    script_hash = sha12(script, str(limit), big_key)
     existing = load_shots(project_dir, no)
     if not force and existing and existing.get("script_hash") == script_hash and existing.get("shots"):
         mark_stage(project_dir, no, "shots", "done")
@@ -375,7 +383,7 @@ def run_shots(project_dir: Path, no: int, text_llm: TextLLM, *, force: bool = Fa
     review_path = cdir / "shots_review.yaml"
     prompt = prompts.shots_prompt(script, characters, locations, props=props, looks_enabled=looks_on,
                                   max_chars_per_shot=per_shot, min_chars_per_shot=min_per_shot, expected_shots=expected,
-                                  spots_enabled=spots_on)
+                                  spots_enabled=spots_on, big_scenes=(plan or {}).get("big_scenes") or None)
     attempt = 0
     while True:
         label = (f"第 {no} 章 C-3 调用文本模型规划镜头"
@@ -417,6 +425,8 @@ def run_shots(project_dir: Path, no: int, text_llm: TextLLM, *, force: bool = Fa
                                           json.dumps(obj, ensure_ascii=False) if obj is not None else (raw or "")[:6000],
                                           issues, props=props, looks_enabled=looks_on, max_chars_per_shot=per_shot, min_chars_per_shot=min_per_shot,
                                           expected_shots=expected, spots_enabled=spots_on)
+    if plan:
+        CS.attach(built, plan, locations, characters)      # 大场景 → 镜头；共用素材汇总到大场景
     built["script_hash"] = script_hash
     built["block_limit"] = limit
     built["attempts"] = attempt + 1

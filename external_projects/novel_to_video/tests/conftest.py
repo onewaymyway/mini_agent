@@ -76,3 +76,27 @@ def build_export(root: Path, *, chapters=(1, 2, 3), gap_at=None, readme_notes=Tr
 @pytest.fixture
 def export_dir(tmp_path):
     return build_export(tmp_path)
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_big_scenes(request, monkeypatch):
+    """C-3a 大场景划分默认用确定性的地点归并（不调用模型），避免它消耗其它测试预设的模型输出。
+    真正测试大场景划分的用例标记 real_big_scenes，使用真实实现。"""
+    if request.node.get_closest_marker("real_big_scenes"):
+        return
+    from novel_to_video.steps import chapter_scenes as CS
+
+    def _fallback_plan(project_dir, no, script, text_llm, *, force=False):
+        scenes = CS.parse_script_scenes(script)
+        if not scenes:
+            raise ValueError("剧本中没有“### 场次 N｜…”场次标题，无法划分大场景")
+        groups = CS.fallback_groups(scenes)
+        for g in groups:
+            g["scene_nos"] = list(range(g["from_scene"], g["to_scene"] + 1))
+        return {"script_key": "test", "source": "fallback", "total_scenes": len(scenes), "big_scenes": groups}
+
+    monkeypatch.setattr(CS, "plan_big_scenes", _fallback_plan)
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "real_big_scenes: 使用真实的 C-3a 大场景划分（默认由夹具替换为确定性归并）")

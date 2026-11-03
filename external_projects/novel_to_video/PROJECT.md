@@ -190,3 +190,10 @@ novel_output/                       # 项目数据（默认位置，已加入 .g
 - 每个镜头的视频请求在 `joblog.task_label("第 N 章 C-8 镜头 sXX")` 下执行：skill 内部的排队、重试、失败、用时等信息自动加上镜头前缀，例如「第 1 章 C-8 镜头 s05：[POST 排队已满] 第 1 次，7s 后重试」。
 - 视频生成的“仍在进行”心跳标签为「第 N 章 C-8 镜头 sXX 视频生成」，每个镜头单独计时；章节级的 C-8 心跳已取消，避免出现不带镜头号的“仍在进行”。
 - 测试：`tests/test_shot_log_labels.py`。
+
+## 大场景分层（C-3a）
+
+- 一章 → 多个大场景（同一地点、连续的一段剧情）→ 每个大场景的镜头。设计见 `next_doc/novel_to_video_big_scene_plan.md`。
+- C-3a 由模型划分大场景并经代码校验（连续覆盖全部场次）；失败按地点自动归并兜底。结果保存在 `chapters/NNN/big_scenes.yaml`。
+- 镜头标注 `big_scene_no`，大场景汇总共用的地点、出镜角色、道具；章节页按大场景分块展示。
+- 代码：`steps/chapter_scenes.py`；测试：`tests/test_big_scenes.py`。

@@ -266,15 +266,38 @@ def _attach_sheets(locs: list, locations: list) -> str:
     return SHEET_RULE
 
 
+def big_scenes_prompt(info: dict, issues: list) -> str:
+    """C-3a 大场景划分：把连续、同地点的场次归并为大场景。"""
+    fix = ""
+    if issues:
+        fix = "上一次输出未通过校验，请修正：\n" + "\n".join(f"- {x}" for x in issues) + "\n"
+    return (
+        "TASK=big_scenes\n"
+        "把剧本的场次划分为大场景。大场景 = 同一地点、连续发生的一段剧情（一个地方、一段时间内发生的事）。\n"
+        "1. 相邻场次地点相同且时间连续（同一段时间、没有明显跳转）→ 归为同一大场景。\n"
+        "2. 出现以下情况时切分新的大场景：地点变化；时间跳转（换天、换时段、过了一段时间）；剧情主线明显转移到另一个地方。\n"
+        "3. 覆盖规则：从场次 1 开始，连续覆盖全部场次，不重复、不遗漏；每个大场景的 from_scene 等于上一个 to_scene + 1。\n"
+        f"4. 大场景数量应当合理（通常不超过 {info.get('max_hint', 8)} 个，除非剧情确有大量地点切换）；不要把整章合成一个，也不要每场一个。\n"
+        "5. title_zh 写大场景的一句话标题（如“林远公寓 · 清晨”）；place_zh 写地点；time_zh 写时间（不确定则留空，不得编造）；summary_zh 一句话概括该段剧情。\n"
+        + fix +
+        "只输出 JSON：{\"big_scenes\": [{\"from_scene\": int, \"to_scene\": int, \"title_zh\": str, \"place_zh\": str, \"time_zh\": str, \"summary_zh\": str}]}\n\n"
+        f"RULE_INPUT={json.dumps(info, ensure_ascii=False)}"
+    )
+
+
 def shots_prompt(script: str, characters: list, locations: list, *, props: list | None = None,
                  looks_enabled: bool = False,
                  max_chars_per_shot: int = 0, expected_shots: int = 0, min_chars_per_shot: int = 0,
-                 spots_enabled: bool = False) -> str:
+                 spots_enabled: bool = False, big_scenes: list | None = None) -> str:
     chars = [{"id": c["id"], "name": (c.get("names") or [""])[0], "gender": c.get("gender"),
               **({"looks": [l["label"] for l in c.get("looks") or []]} if looks_enabled else {})}
              for c in characters]
     locs = _spot_locs(locations) if spots_enabled else [{"id": l["id"], "name": l["name"]} for l in locations]
     sheet_rule = _attach_sheets(locs, locations)
+    big_rule = ""
+    if big_scenes:
+        big_rule = ("12. 镜头必须按大场景组织：big_scenes 列出本章的大场景及其场次范围（from_scene 至 to_scene）。"
+                    "每个镜头的 scene_no 必须落在某个大场景的范围内；同一大场景内的镜头连续排列，大场景之间的顺序与场次顺序一致。\\n")
     info = {"task": "shots", "characters": chars, "locations": locs,
             "props": [{"id": p["id"], "name": p.get("name")} for p in props or []]}
     return (
@@ -293,12 +316,12 @@ def shots_prompt(script: str, characters: list, locations: list, *, props: list 
         + "7. 同一场次内相邻镜头的 visual_hint 必须不同：景别（远景/中景/近景/特写）、机位或主体动作至少一项不同，"
           "且描述的是该镜头自己的口播内容，不要把整场戏的画面复述到每个镜头里；拆分出的镜头画面必须各不相同；\n"
           "8. character_ids 列出该镜头画面中出现的所有角色，包括画面里出现但没有台词的角色（例如旁白描写林远的动作，就要包含林远）；\n"
-          + PROP_RULE + (LOOK_RULE if looks_enabled else "") + sheet_rule +
+          + PROP_RULE + (LOOK_RULE if looks_enabled else "") + sheet_rule + big_rule +
           "10. 只输出 JSON：{\"shots\": [{\"scene_no\": int, \"location_id\": str, " + ("\"sheet_id\": str|null, " if sheet_rule else "")
         + (SPOT_FIELDS if spots_enabled else "") + "\"character_ids\": [..], \"prop_names\": [..], "
         "\"blocks\": [{\"type\": ..., \"text\": ..., \"speaker_id\": ..., \"speaker_name\": ...}], "
         "\"visual_hint_zh\": str, \"visual_hint_en\": str}]}\n\n"
-        f"剧本：\n{script}\n\nRULE_INPUT={json.dumps({**info, 'script': script}, ensure_ascii=False)}"
+        f"剧本：\n{script}\n\nRULE_INPUT={json.dumps({**info, 'script': script, **({'big_scenes': big_scenes} if big_scenes else {})}, ensure_ascii=False)}"
     )
 
 

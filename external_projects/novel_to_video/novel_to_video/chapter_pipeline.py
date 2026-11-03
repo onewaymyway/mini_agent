@@ -226,7 +226,7 @@ def chapter_view(project_dir: Path, no: int) -> Dict[str, Any]:
         cast = [lookup["chars"][cid] for cid in sh.get("character_ids") or [] if cid in lookup["chars"]]
         hint = sh.get("visual_hint_zh") or ""
         shots.append({
-            **{k: sh.get(k) for k in ("id", "scene_no", "location_id", "character_ids", "visual_hint_zh",
+            **{k: sh.get(k) for k in ("id", "scene_no", "big_scene_no", "location_id", "character_ids", "visual_hint_zh",
                                       "visual_hint_en", "duration_sec", "speech_sec", "error", "clip_error",
                                       "consistency", "prompt_en", "split_from", "split_part", "split_total")},
             "characters": cast,
@@ -257,6 +257,7 @@ def chapter_view(project_dir: Path, no: int) -> Dict[str, Any]:
         "shots_review": _read_yaml(cdir / "shots_review.yaml"),
         "speakers": _speakers(project_dir, cdir, shots_doc),
         "shots": shots,
+        "big_scenes": list(shots_doc.get("big_scenes") or []),     # 大场景（一章 → 多个大场景 → 多个镜头）
         # 新规划的镜头自带拆分记录；旧文件没有，则按“相邻镜头场次与画面描述完全相同”推断
         "plan_warnings": (shots_doc["plan_warnings"] if "plan_warnings" in shots_doc
                           else _derive_plan_warnings(shots_doc.get("shots") or [])),

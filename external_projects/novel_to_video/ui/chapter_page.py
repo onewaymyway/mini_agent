@@ -255,6 +255,39 @@ def _cast_row(pdir: str, sh: dict) -> None:
                    "，但出镜角色里没有：视频提示词不会带上他的外观与参考图。请在「编辑镜头内容」里补上出镜角色。")
 
 
+def _render_big_scenes(pdir: str, no: int, v: dict) -> None:
+    """一章 → 多个大场景 → 每个大场景的镜头。大场景块内显示场次范围、地点、共用的角色与道具。"""
+    big = v.get("big_scenes") or []
+    shots = v.get("shots") or []
+    if not big:                       # 旧数据或划分失败：沿用逐镜列表
+        for sh in shots:
+            _shot_card(pdir, no, sh, v.get("all_characters") or [])
+        return
+    names_c = {c["id"]: c["name"] for c in v.get("all_characters") or []}
+    names_l = {l["id"]: l["name"] for l in v.get("all_locations") or []}
+    st.caption(f"本章划分为 {len(big)} 个大场景，每个大场景包含若干镜头；同一大场景内的地点、角色、道具可以共用。")
+    known = {g["big_no"] for g in big}
+    for g in big:
+        mine = [sh for sh in shots if sh.get("big_scene_no") == g["big_no"]]
+        with st.container(border=True):
+            st.markdown(f"##### 大场景 {g['big_no']}：{g['title_zh']}")
+            loc = names_l.get(g.get("location_id")) or g.get("place_zh") or "-"
+            st.caption(f"场次 {g['from_scene']}–{g['to_scene']}　·　地点 {loc}　·　时间 {g.get('time_zh') or '未标注'}　·　镜头 {len(mine)} 个")
+            if g.get("summary_zh"):
+                st.write(g["summary_zh"])
+            chars = "、".join(names_c.get(cid, cid) for cid in g.get("character_ids") or []) or "无"
+            props = "、".join(g.get("prop_names") or []) or "无"
+            st.caption(f"共用素材：出镜角色 {chars}　｜　道具 {props}")
+            for sh in mine:
+                _shot_card(pdir, no, sh, v.get("all_characters") or [])
+    orphans = [sh for sh in shots if sh.get("big_scene_no") not in known]
+    if orphans:
+        with st.container(border=True):
+            st.markdown("##### 未归入大场景的镜头")
+            for sh in orphans:
+                _shot_card(pdir, no, sh, v.get("all_characters") or [])
+
+
 def _shot_card(pdir: str, no: int, sh: dict, all_chars: list) -> None:
     root = Path(pdir)
     with st.container(border=True):
@@ -393,7 +426,6 @@ def page_chapters() -> None:
     if v["shots"]:
         st.markdown("#### 小场景逐镜审核")
         _plan_warnings(pdir, no, v)
-        for sh in v["shots"]:
-            _shot_card(pdir, no, sh, v.get("all_characters") or [])
+        _render_big_scenes(pdir, no, v)
     else:
         st.caption("还没有镜头规划，先运行本章流水线。")
