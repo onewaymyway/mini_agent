@@ -228,3 +228,27 @@ def chat_start(root: str, text: str, mode: str = "追问", runner=None) -> Dict[
 
 def chat_run(root: str, turn_id: str) -> Dict[str, Any]:
     return _guard(lambda: CH.run_state(_ws(root), turn_id))
+
+
+# ── 整理对话（手动） ──
+from novel_writer.brainstorm import distill as DS  # noqa: E402
+
+
+def distill_run(root: str, modules=None, scope: str = "pending", recent_rounds: int = 0, generator=None) -> Dict[str, Any]:
+    return _guard(lambda: DS.run(_ws(root), modules=modules, scope=scope, recent_rounds=recent_rounds, generator=generator))
+
+
+def distill_conflict_prompt(root: str, pid: str) -> Dict[str, Any]:
+    return _guard(lambda: DS.conflict_prompt(_ws(root), pid))
+
+
+def distill_minutes(root: str) -> Dict[str, Any]:
+    return _guard(lambda: DS.list_minutes(_ws(root)))
+
+
+def distill_read_minutes(root: str, rel: str) -> Dict[str, Any]:
+    return _guard(lambda: DS.read_minutes(_ws(root), rel))
+
+
+def distill_pending_range(root: str) -> Dict[str, Any]:
+    return _guard(lambda: list(DS.select_range(_ws(root), "pending")))

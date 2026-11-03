@@ -203,3 +203,11 @@ B0 数据层 → B1 灵感池与发散 → B2 对话与提议 → B3 世界观/�
 - 测试 `tests/test_brainstorm_runlog.py` 11 例；
 - 不包含模型的推理过程（reasoning）；已在文档中说明。
 
+## 附：整理对话（追加需求）
+
+- `distill.py`：手动整理；范围（上次之后 / 最近 N 轮）、模块选择、检查点；输出为带批次与来源轮次的待确认提议；冲突标记，不自动覆盖；冲突通过 `conflict_prompt` 在对话里处理；Markdown 纪要写入 `output/纪要/`；
+- `proposals.py`：提议增加 batch、source_turns、conflict 字段；
+- 页面：对话区「整理对话」折叠面板、纪要查看、冲突的「与 AI 在对话里处理」按钮；
+- 测试 `tests/test_brainstorm_distill.py` 15 例；
+- 尚未用真实模型验证。
+

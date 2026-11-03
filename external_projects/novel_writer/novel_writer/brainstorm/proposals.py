@@ -45,7 +45,8 @@ def _save(ws: BrainstormWorkspace, items: List[Dict[str, Any]]) -> None:
 
 
 def create(ws: BrainstormWorkspace, module: str, op: str, value: Any, *, target: Optional[str] = None,
-           reason: str = "") -> Dict[str, Any]:
+           reason: str = "", batch: Optional[str] = None, source_turns: Optional[List[int]] = None,
+           conflict: str = "") -> Dict[str, Any]:
     """登记一条待确认的提议。这里只做结构检查，真正的校验在采纳时进行。"""
     if module not in ALLOWED_OPS:
         raise BrainstormError(f"提议的模块不合法：{module}")
@@ -62,7 +63,8 @@ def create(ws: BrainstormWorkspace, module: str, op: str, value: Any, *, target:
         raise BrainstormError("世界观的提议需要指明列表名（rules/locations/factions/timeline/taboos）")
     items = _load(ws)
     item = {"pid": "p" + uuid.uuid4().hex[:8], "module": module, "op": op, "target": target,
-            "value": value, "reason": (reason or "").strip(), "status": "pending", "created_at": _now(), "error": ""}
+            "value": value, "reason": (reason or "").strip(), "status": "pending", "created_at": _now(), "error": "",
+            "batch": batch, "source_turns": list(source_turns or []), "conflict": conflict}
     items.append(item)
     _save(ws, items)
     return item

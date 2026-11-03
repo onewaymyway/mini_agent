@@ -172,6 +172,53 @@ def _finished_log(root: str, turn_id: str) -> None:
         _render_events(events, key_prefix=f"done_{turn_id}")
 
 
+def _distill_box(root: str) -> None:
+    from novel_writer.brainstorm import distill as DS
+
+    with st.expander("📝 整理对话（手动）：把对话提取成待确认的修改与 Markdown 纪要"):
+        st.caption("只有点击「整理」才会运行。提取结果进入下方的待确认列表，不会直接写入卡片。"
+                   "与现有内容冲突的条目会标出，可以交给对话处理。")
+        scope = st.radio("范围", ["上次整理之后的全部对话", "最近几轮"], horizontal=True, key="bs_dist_scope")
+        rounds = 0
+        if scope == "最近几轮":
+            rounds = st.slider("轮数（一轮 = 作者一句 + 助手一句）", 1, 20, 5, key="bs_dist_rounds")
+        labels = {m: DS.MODULE_LABEL[m] for m in DS.DISTILLABLE}
+        modules = st.multiselect("只整理这些模块", list(DS.DISTILLABLE), default=list(DS.DISTILLABLE),
+                                 format_func=lambda m: labels[m], key="bs_dist_modules")
+        if st.button("▶ 整理", key="bs_dist_go", disabled=not modules):
+            with st.spinner("正在整理对话……"):
+                r = BA.distill_run(root, modules=modules,
+                                   scope="recent" if rounds else "pending", recent_rounds=rounds)
+            if r["ok"]:
+                d = r["data"]
+                st.success(f"整理出 {len(d['proposals'])} 条待确认修改，"
+                           f"其中 {sum(1 for x in d['proposals'] if x['conflict'])} 条与现有内容冲突。")
+                for note in d["skipped"][:8]:
+                    st.caption("跳过：" + note)
+                st.session_state["bs_minutes_last"] = d["minutes"]
+            else:
+                show_error(r)
+        _minutes_box(root)
+
+
+def _minutes_box(root: str) -> None:
+    res = BA.distill_minutes(root)
+    if not res["ok"] or not res["data"]:
+        if res["ok"]:
+            st.caption("还没有纪要。")
+        return
+    names = res["data"]
+    last = st.session_state.get("bs_minutes_last")
+    idx = names.index(last) if last in names else 0
+    chosen = st.selectbox("纪要", names, index=idx, format_func=lambda n: n.rsplit("/", 1)[-1], key="bs_min_pick")
+    body = BA.distill_read_minutes(root, chosen)
+    if body["ok"]:
+        with st.container(border=True):
+            st.markdown(body["data"])
+    else:
+        show_error(body)
+
+
 def _dialogue_tab(root: str) -> None:
     hist = BA.chat_history(root, limit=60)
     if not hist["ok"]:
@@ -193,6 +240,7 @@ def _dialogue_tab(root: str) -> None:
     if active:
         with st.chat_message("assistant"):
             _live_turn(root, active)
+    _distill_box(root)
     text = st.chat_input("说点什么……（例如：我想写一个会吞噬记忆的港口）", key="bs_chat_input",
                          disabled=bool(active))
     if text:
@@ -219,6 +267,18 @@ def _dialogue_tab(root: str) -> None:
                 st.caption("理由：" + item["reason"])
             if item.get("error"):
                 st.warning("上次采纳失败：" + item["error"])
+            if item.get("conflict"):
+                st.warning("⚠ 与现有内容冲突：" + item["conflict"])
+                if st.button("与 AI 在对话里处理这个冲突", key=f"bs_conf_{item['pid']}", disabled=bool(active)):
+                    pr = BA.distill_conflict_prompt(root, item["pid"])
+                    if pr["ok"]:
+                        r = BA.chat_start(root, pr["data"], st.session_state.get("bs_chat_mode", "追问"))
+                        if r["ok"]:
+                            st.session_state["bs_turn"] = r["data"]["turn"]
+                            st.rerun()
+                        show_error(r)
+                    else:
+                        show_error(pr)
             c1, c2 = st.columns(2)
             if c1.button("采纳", key=f"bs_acc_{item['pid']}"):
                 r = BA.accept_proposal(root, item["pid"])
