@@ -263,3 +263,25 @@ def distill_start(root: str, modules=None, scope: str = "pending", recent_rounds
 
 def distill_state(root: str, run_id: str) -> Dict[str, Any]:
     return _guard(lambda: DS.run_state(_ws(root), run_id))
+
+
+# ── 设定文档（对话 → 世界观与设定 Markdown）──
+
+def lore_start(root: str, scope: str = "all", recent_rounds: int = 0, generator=None) -> Dict[str, Any]:
+    from novel_writer.brainstorm import lore as LO
+    return _guard(lambda: {"run": LO.start_run(_ws(root), scope=scope, recent_rounds=recent_rounds, generator=generator)})
+
+
+def lore_state(root: str, run_id: str) -> Dict[str, Any]:
+    from novel_writer.brainstorm import lore as LO
+    return _guard(lambda: LO.run_state(_ws(root), run_id))
+
+
+def lore_list(root: str) -> Dict[str, Any]:
+    from novel_writer.brainstorm import lore as LO
+    return _guard(lambda: LO.list_docs(_ws(root)))
+
+
+def lore_read(root: str, rel: str) -> Dict[str, Any]:
+    from novel_writer.brainstorm import lore as LO
+    return _guard(lambda: LO.read_doc(_ws(root), rel))

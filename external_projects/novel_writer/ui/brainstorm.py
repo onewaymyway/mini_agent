@@ -232,6 +232,78 @@ def _distill_box(root: str) -> None:
         _minutes_box(root)
 
 
+@st.fragment(run_every=1)
+def _live_lore(root: str, run_id: str) -> None:
+    res = BA.lore_state(root, run_id)
+    if not res["ok"]:
+        show_error(res)
+        return
+    data = res["data"]
+    running = data["status"] == "running"
+    st.markdown("**生成过程**" + ("（进行中……）" if running else "（已完成）"))
+    _render_events(data["events"], key_prefix=f"lore_{run_id}")
+    if not running:
+        st.session_state["bs_lore_last"] = run_id
+        st.session_state.pop("bs_lore_run", None)
+        st.rerun(scope="app")
+
+
+def _finished_lore(root: str, run_id: str) -> None:
+    res = BA.lore_state(root, run_id)
+    if not res["ok"]:
+        return
+    data = res["data"]
+    with st.expander(f"上一次生成的过程（{len(data['events'])} 条）", expanded=False):
+        _render_events(data["events"], key_prefix=f"lore_done_{run_id}")
+    if data["status"] == "done":
+        st.session_state["bs_lore_doc"] = data["result"]["path"]
+        st.success(f"设定文档已生成（{data['result']['chars']} 字）。")
+    elif data["status"] == "error":
+        st.error("生成失败：" + str(data.get("error", "")))
+
+
+def _lore_box(root: str) -> None:
+    with st.expander("📖 生成设定文档：把对话整理成小说的世界观与设定文档"):
+        st.caption("只有点击「生成设定文档」才会运行。素材只用对话；每次生成一份新文件，不覆盖旧的；"
+                   "不会修改卡片，也不进待确认列表。")
+        scope = st.radio("范围", ["全部对话", "最近几轮"], horizontal=True, key="bs_lore_scope")
+        rounds = 0
+        if scope == "最近几轮":
+            rounds = st.slider("轮数（一轮 = 作者一句 + 助手一句）", 1, 40, 10, key="bs_lore_rounds")
+        running = st.session_state.get("bs_lore_run")
+        if st.button("▶ 生成设定文档", key="bs_lore_go", disabled=bool(running)):
+            r = BA.lore_start(root, scope="recent" if rounds else "all", recent_rounds=rounds)
+            if r["ok"]:
+                st.session_state["bs_lore_run"] = r["data"]["run"]
+                st.rerun()
+            show_error(r)
+        if running:
+            _live_lore(root, running)
+        elif st.session_state.get("bs_lore_last"):
+            _finished_lore(root, st.session_state["bs_lore_last"])
+        _lore_docs(root)
+
+
+def _lore_docs(root: str) -> None:
+    res = BA.lore_list(root)
+    if not res["ok"] or not res["data"]:
+        if res["ok"]:
+            st.caption("还没有设定文档。")
+        return
+    names = res["data"]
+    last = st.session_state.get("bs_lore_doc")
+    idx = names.index(last) if last in names else 0
+    chosen = st.selectbox("设定文档", names, index=idx, format_func=lambda n: n.rsplit("/", 1)[-1], key="bs_lore_pick")
+    body = BA.lore_read(root, chosen)
+    if not body["ok"]:
+        show_error(body)
+        return
+    st.download_button("下载 Markdown", body["data"], file_name=chosen.rsplit("/", 1)[-1], mime="text/markdown",
+                       key="bs_lore_dl")
+    with st.container(border=True):
+        st.markdown(body["data"])
+
+
 def _minutes_box(root: str) -> None:
     res = BA.distill_minutes(root)
     if not res["ok"] or not res["data"]:
@@ -272,6 +344,7 @@ def _dialogue_tab(root: str) -> None:
         with st.chat_message("assistant"):
             _live_turn(root, active)
     _distill_box(root)
+    _lore_box(root)
     text = st.chat_input("说点什么……（例如：我想写一个会吞噬记忆的港口）", key="bs_chat_input",
                          disabled=bool(active))
     if text:
