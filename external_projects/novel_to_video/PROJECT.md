@@ -158,3 +158,4 @@ novel_output/                       # 项目数据（默认位置，已加入 .g
 - 镜头：`shots.yaml` 可带 `sheet_id`；C-7/C-8 使用所选设定图的锚点与参考图；缺图由 `missing_portraits` 拦截。
 - 代码：`steps/location_auto.py`（一键执行）、`steps/location_sheets.py`（设定图）、`steps/location_context.py`（上下文检索）。
 - 设计与限制见 `next_doc/novel_to_video_location_spots_plan.md` 第 11 节。
+- 全书素材页：地点按区域成块展示（区域 → 场景点 → 设定图），分组逻辑见 `novel_to_video/steps/location_groups.py`。

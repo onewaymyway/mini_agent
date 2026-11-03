@@ -150,35 +150,89 @@ def _presplit_panel(pdir: str) -> None:
             st.error(res["error"]["message"])
 
 
+def _sheet_strip(pdir: str, spot: dict) -> None:
+    """场景点的设定图：直接横排展示（不折叠），标注每张的视角与出现的标志物。"""
+    sheets = spot.get("sheets") or []
+    basis = {"novel_text": "依据正文", "inferred": "依据推断"}.get(spot.get("sheets_basis"), "未标注依据")
+    if not sheets:
+        st.caption("尚未生成设定图（可用「只为已有场景点补全设定图」）。")
+        return
+    st.caption(f"设定图 {len(sheets)} 张（{basis}）")
+    for m in spot.get("markers") or []:
+        st.caption(f"标志物「{m['name']}」：{m.get('description_zh') or m.get('visual_anchor_en') or ''}")
+    cols = st.columns(min(4, len(sheets)))
+    for i, sh in enumerate(sheets):
+        with cols[i % len(cols)]:
+            path = Path(pdir) / sh["asset_path"] if sh.get("asset_path") else None
+            if path and path.is_file():
+                st.image(str(path), caption=sh.get("label", ""), width="stretch")
+            else:
+                st.caption(f"{sh.get('label', '')}（尚未生成）")
+            marks = sh.get("marker_names") or []
+            if marks:
+                st.caption("含标志物：" + "、".join(marks))
+
+
+def _area_block(pdir: str, area: dict, spots: list, row_by_id: dict, has_file) -> None:
+    """一个区域的内容块：区域本身 → 各场景点（每个场景点下是它的设定图）。同一区域的内容都在这一块里。"""
+    from novel_to_video.steps.location_groups import sheet_counts
+    done_total = total_total = 0
+    for sp in spots:
+        d, t = sheet_counts(sp, has_file)
+        done_total += d
+        total_total += t
+    with st.container(border=True):
+        st.markdown(f"### 区域「{area['name']}」（{area['id']}）")
+        note = f"场景点 {len(spots)} 个　设定图 {done_total}/{total_total} 张已生成"
+        if not spots:
+            note += "　· 尚未细化"
+        st.caption(note)
+        if area.get("id") in row_by_id:
+            entity_card(pdir, row_by_id[area["id"]])
+        for sp in spots:
+            kind = {"interior": "内景", "exterior": "外景"}.get(sp.get("spot_kind") or "", "未标注")
+            with st.container(border=True):
+                st.markdown(f"**场景点「{sp['name']}」**（{sp['id']}，{kind}）")
+                _sheet_strip(pdir, sp)
+                if sp["id"] in row_by_id:
+                    entity_card(pdir, row_by_id[sp["id"]])
+
+
 def _gallery(pdir: str, status: dict) -> None:
-    """逐条审核。地点细化开启并存在场景点时：场景点按所属区域分组，并提示同区域内名字相近的场景点。"""
+    """逐条审核。地点按区域成块展示：区域 → 场景点 → 设定图（全景/内景/房间/标志物）。"""
     from pathlib import Path as _Path
     from novel_to_video.project_store import read_json as _read_json
     from novel_to_video.steps.location_spots import near_name_pairs
+    from novel_to_video.steps.location_groups import group_locations
     st.markdown("#### 逐条审核")
     try:
         locs = _read_json(_Path(pdir) / "global" / "locations.json").get("locations", [])
     except (OSError, ValueError):
         locs = []
-    by_id = {l["id"]: l for l in locs}
     if any(l.get("level") == "spot" for l in locs):
         for pair in near_name_pairs(locs):
             st.info(f"同一区域内名字相近：「{pair['a_name']}」与「{pair['b_name']}」。"
                     "如果是同一个场所，请合并（或在全书素材页把其中一个的名称改为别名），避免重复生成定妆图。")
-    last_group = object()
-    for r in status["rows"]:
-        loc = by_id.get(r.get("id")) if r.get("kind") == "location" else None
-        if loc is not None:
-            if loc.get("level") == "spot":
-                area = by_id.get(loc.get("parent_id")) or {}
-                group = f"区域「{area.get('name', '未指定')}」的场景点"
-            else:
-                group = "区域地点"
-            if group != last_group:
-                st.markdown(f"**{group}**")
-                last_group = group
-        entity_card(pdir, r)
-
+    rows = status["rows"]
+    row_by_id = {r["id"]: r for r in rows if r.get("kind") == "location"}
+    has_file = lambda rel: (_Path(pdir) / rel).is_file()
+    grouped = group_locations(locs, row_by_id.keys())
+    rendered_locations = False
+    for r in rows:
+        if r.get("kind") != "location":
+            entity_card(pdir, r)
+            continue
+        if rendered_locations:
+            continue
+        rendered_locations = True
+        for g in grouped["groups"]:
+            _area_block(pdir, g["area"], g["spots"], row_by_id, has_file)
+        if grouped["orphans"]:
+            with st.container(border=True):
+                st.markdown("### 未归属区域的场景点")
+                for sp in grouped["orphans"]:
+                    _sheet_strip(pdir, sp)
+                    entity_card(pdir, row_by_id[sp["id"]])
 
 def entity_card(pdir: str, r: dict, *, with_generate: bool = False, allow_merge: bool = False) -> None:
     """单个角色/地点的审核卡片：定妆图、设定编辑、通过/驳回按钮。章节页与补建审核页复用。
@@ -282,20 +336,6 @@ def _entity_detail(pdir: str, r: dict) -> None:
                if ent.get(f"{k}_source")}
         if src:
             st.caption("来源：" + "，".join(f"{k}={v}" for k, v in src.items()))
-        if r["kind"] == "location" and ent.get("sheets"):      # 场景设定图（L5）
-            basis = {"novel_text": "依据正文", "inferred": "依据推断"}.get(ent.get("sheets_basis"), "未标注依据")
-            st.caption(f"场景设定图（{basis}）：" + "、".join(sh.get("label", "") for sh in ent["sheets"]))
-            for m in ent.get("markers") or []:
-                st.caption(f"标志物「{m['name']}」：{m.get('description_zh') or m.get('visual_anchor_en') or ''}")
-            cols = st.columns(min(4, len(ent["sheets"])))
-            for i, sh in enumerate(ent["sheets"]):
-                with cols[i % len(cols)]:
-                    st.caption(sh.get("label", ""))
-                    path = Path(pdir) / sh["asset_path"] if sh.get("asset_path") else None
-                    if path and path.is_file():
-                        st.image(str(path), use_container_width=True)
-                    else:
-                        st.caption("（尚未生成）")
         if st.button("保存修改", key=f"save_{r['key']}"):
             clean = {k: v for k, v in fields.items() if v is not None and ent.get(k) != v}
             # 模型起草/推断的性别不算确认：值相同也要写入，使来源变为 user（否则「通过设定」永远点不了）
