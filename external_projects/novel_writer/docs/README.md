@@ -322,3 +322,5 @@ python -m pytest tests/test_m6.py -q        # M6 测试（15 个）
 ## 数据修复引擎
 
 数据文件校验失败时的 LLM 修复默认走受限引擎（不挂 skill、只开放文件/目录内置工具），可用 `settings.repair_engine` 切回旧方式，见 `docs/repair_engine.md`。
+
+- 关键文件乱码检测（章节总结/索引/人物/伏笔/蓝图等，步骤结束后检测与只读体检）：见 `garble_check.md`（G1 已完成，G2/G3 规划中）。

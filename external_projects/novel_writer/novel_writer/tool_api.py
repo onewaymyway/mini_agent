@@ -884,3 +884,15 @@ def patrol_set_status(workspace: str, finding_id: str, status: str) -> Dict[str,
         except (KeyError, ValueError) as exc:
             return _err("validation_error", str(exc))
     return _guard(run)
+
+
+# ── 关键文件乱码体检（garble_check，G1）────────────────────────────────────────
+
+
+def scan_garble(workspace: str) -> Dict[str, Any]:
+    """关键文件乱码体检（只读）：返回命中文件、原因与归因（最后写入者、能否自动重跑）。"""
+    def run() -> Dict[str, Any]:
+        from novel_writer import garble_watch as GW
+        ws = _workspace_or_raise(workspace)
+        return _ok(GW.scan_garble(ws))
+    return _guard(run)

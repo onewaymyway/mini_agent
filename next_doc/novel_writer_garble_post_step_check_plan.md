@@ -1,6 +1,6 @@
 # novel_writer：步骤完成后关键文件乱码检测 + 自动定位并重跑
 
-> 状态：**仅方案，未改代码**，等待确认后分阶段实施。
+> 状态：G1 已完成（2026-11-03）；G2 / G3 / G4 未开始。实现说明见 `external_projects/novel_writer/docs/garble_check.md`。
 > 涉及：`external_projects/novel_writer/novel_writer/{garble.py, runner.py, chapter_ops.py, worker.py, state.py, settings.py, tool_api.py}` 与看板驾驶舱。
 
 ## 一、背景与缺口
@@ -139,3 +139,18 @@ A 层让绝大多数乱码在本步骤内就被修好；B 层兜底（A 层用�
 2. **关键文件范围**：3.1 的注册表是否合适？是否要加/减（例如规划文档类是否纳入）？
 3. **上游乱码的处理**：3.4 中「上游步骤被重置并重跑」是否接受自动执行，还是只在 `rerun` 下对「本步骤产出的乱码」自动重跑、上游情况只提示？
 4. **实施顺序**：G1→G2→G3；若想先解决第 13 章现状，只做 G1 即可（体检 + 手动重跑）。
+
+## 八、实施记录
+
+### G1（已完成）
+- 新增 `novel_writer/garble_watch.py`：`WATCH_GLOBS` 注册表、`watched_files()`、只读 `scan_garble()`（归因：`attribute()`）、report 模式 `snapshot()` / `changed_since()` / `report_step()`；
+- `settings.py` 新增 `garble_check`（`mode` 默认 `off`，`max_reruns` 默认 2，`watch_extra`），含校验；
+- `runner.run_step` 接入 report 模式（仅 `mode != off` 时执行，不改变步骤状态）；`rerun` 暂按 report 处理并在日志注明；
+- `tool_api.scan_garble()`；驾驶舱审校页新增「🧪 乱码体检」（体检、模式切换、重跑产出者按钮）；
+- 测试 `tests/test_garble_check_g1.py`（13 例）通过；novel_writer 全量 736 passed，另有 3 个失败（`test_character_repair`、`test_step_selfcheck`、`test_write_history`）在改动前的 runner.py 上同样失败，与本次改动无关。
+
+### 对「七、待确认」的处理（按方案默认值执行，如需调整请告知）
+1. 默认模式：`off`，先开 `report` 观察；
+2. 关键文件范围：采用 3.1 的注册表，已包含规划文档；`watch_extra` 可追加；
+3. 上游乱码：G3 再实现，G1 只记录；
+4. 实施顺序：G1 → G2 → G3，本轮完成 G1。

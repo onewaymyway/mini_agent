@@ -8,12 +8,14 @@ from novel_writer import tool_api
 from ui.components import STATUS_LABEL, show_error
 from ui.writing import _pick_chapter
 from ui.patrol import render_patrol
+from ui.garble import render_garble_scan
 
 DECISIONS = ["重新核查（我已手动修改）", "接受风险继续"]
 
 
 def render_review(ws: str) -> None:
     render_patrol(ws)
+    render_garble_scan(ws)
     n = _pick_chapter(ws, "rv_chapter")
     if n is None:
         return

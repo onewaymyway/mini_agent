@@ -30,6 +30,8 @@ QUALITIES: Dict[str, str] = {
 }
 # 步骤闸门取值
 GATES = ("manual", "review", "auto", "skip")
+# 乱码检测模式（garble_check.mode）
+GARBLE_MODES = ("off", "report", "rerun")
 
 SCHEMA_VERSION = 1
 
@@ -91,6 +93,12 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     # inject_style 注入风格提示与机器校验提示（不阻断）；to_inbox 把蓝图待办/回改建议放进收件箱（不阻塞流水线）。
     "patrol_feedback": {"extract": True, "auto_adopt": True, "inject_forward": True, "inject_style": True,
                         "to_inbox": True},
+    # 步骤完成后的关键文件乱码检测（默认关闭，opt-in）：
+    #   "off"    不检测（与旧行为逐字节一致）；
+    #   "report" 只检测并写运行日志 + _studio/inbox 记录，不改任何状态、不重跑；
+    #   "rerun"  自动定位产出者并重跑（G2/G3 实现前按 report 处理）。
+    # max_reruns：同一「步骤+文件」自动重跑上限；watch_extra：额外守卫的路径或 glob（相对工作目录）。
+    "garble_check": {"mode": "off", "max_reruns": 2, "watch_extra": []},
 }
 
 
@@ -158,6 +166,16 @@ def validate_settings(data: Dict[str, Any]) -> Dict[str, Any]:
         raise SettingsError("step_timeout.minutes 必须是非负数（分钟）或 null（不限时）")
     if not isinstance(stt["overrides"], dict) or any(not _minutes(v) for v in stt["overrides"].values()):
         raise SettingsError("step_timeout.overrides 必须是 {步骤id或类别: 非负分钟数}")
+    gc = merged["garble_check"]
+    if not isinstance(gc, dict) or any(k not in DEFAULT_SETTINGS["garble_check"] for k in gc):
+        raise SettingsError("garble_check 必须是对象，且只能包含 mode / max_reruns / watch_extra")
+    if gc["mode"] not in GARBLE_MODES:
+        raise SettingsError(f"garble_check.mode 必须是 {'/'.join(GARBLE_MODES)} 之一，当前 {gc['mode']!r}")
+    mr = gc["max_reruns"]
+    if not isinstance(mr, int) or isinstance(mr, bool) or mr < 0:
+        raise SettingsError("garble_check.max_reruns 必须是非负整数")
+    if not isinstance(gc["watch_extra"], list) or any(not isinstance(x, str) or not x.strip() for x in gc["watch_extra"]):
+        raise SettingsError("garble_check.watch_extra 必须是非空字符串列表")
     if not isinstance(merged["step_guard_auto_restore"], bool):
         raise SettingsError("step_guard_auto_restore 必须是 true/false")
     if not isinstance(merged["autopilot_auto_refresh"], bool):

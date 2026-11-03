@@ -24,6 +24,7 @@ from novel_writer.textio import read_text_utf8
 from novel_writer import config
 from novel_writer import outlog
 from novel_writer import gates as G
+from novel_writer import garble_watch as GW
 from novel_writer import repair as RP
 from novel_writer import state as st
 from novel_writer import step_timeout as STO
@@ -622,6 +623,7 @@ def run_step(
     handlers = DEFAULT_PY_HANDLERS if handlers is None else handlers
     attempts = int(st.get_step_state(ws, step.id).get("attempts", 0)) + 1
     started = time.monotonic()
+    garble_before = GW.snapshot(ws, settings)     # garble_check 关闭时为空，零开销
     st.update_step(ws, step.id, status=st.ST_RUNNING, attempts=attempts, started_at=st.now_iso(),
                    error=None, finished_at=None, needs_user=None, timed_out=None, no_retry=None, repair=None)
     started_iso = st.now_iso()
@@ -665,6 +667,10 @@ def run_step(
         final["input_hash"] = st.input_hash(ws, step)
         final["input_digests"] = st.input_digests(ws, step)
         st.record_writers(ws, step)
+        if GW.mode_of(settings) != "off":
+            # 乱码检测（G1 = report）：只记录，不改变 status；失败已在 report_step 内吞掉
+            declared = [str(p.relative_to(ws.root)) for p in st.expand_inputs(ws, step.outputs)]
+            GW.report_step(ws, step.id, garble_before, settings, extra_files=declared)
     st.update_step(ws, step.id, **final)
     st.append_usage(ws, {
         "step": step.id, "attempt": attempts, "executor": step.executor, "skill": step.skill or None,
