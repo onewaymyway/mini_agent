@@ -127,25 +127,80 @@ _KIND_LABEL = {"brief": "题材", "premise": "命题", "ideas": "灵感", "open_
 _OP_LABEL = {"add": "新增", "set": "修改"}
 
 
+_EVENT_ICON = {"tool_call": "🔧", "tool_result": "📤", "tool_error": "❌", "info": "ℹ️", "warning": "⚠️",
+               "error": "❌", "success": "✅", "stats": "📊", "markdown": "📝", "debug": "🐞",
+               "skill_loaded": "🧩", "retry_banner": "🔁", "assistant_prefix": "🤖"}
+
+
+def _render_events(events: list, *, key_prefix: str) -> None:
+    """按时间顺序显示过程日志。工具结果用代码块完整显示，便于核对。"""
+    for i, ev in enumerate(events):
+        icon = _EVENT_ICON.get(ev.get("kind", ""), "•")
+        text = ev.get("text", "")
+        if ev.get("kind") in ("tool_result", "debug", "markdown") and "\n" in text or len(text) > 160:
+            head, _, body = text.partition("\n")
+            st.markdown(f"{icon} `{ev.get('t', '')[-8:]}` **{ev.get('kind', '')}** {head[:120]}")
+            if body.strip():
+                st.code(body, language="text")
+        else:
+            st.markdown(f"{icon} `{ev.get('t', '')[-8:]}` {text}")
+
+
+@st.fragment(run_every=1)
+def _live_turn(root: str, turn_id: str) -> None:
+    res = BA.chat_run(root, turn_id)
+    if not res["ok"]:
+        show_error(res)
+        return
+    data = res["data"]
+    running = data["status"] == "running"
+    st.markdown("**本轮过程**" + ("（进行中……）" if running else "（已完成）"))
+    _render_events(data["events"], key_prefix=f"live_{turn_id}")
+    if not running:
+        st.session_state.pop("bs_turn", None)
+        st.rerun(scope="app")
+
+
+def _finished_log(root: str, turn_id: str) -> None:
+    res = BA.chat_run(root, turn_id)
+    if not res["ok"]:
+        return
+    events = res["data"]["events"]
+    with st.expander(f"本轮全部过程（{len(events)} 条）"):
+        if not events:
+            st.caption("（没有过程输出）")
+        _render_events(events, key_prefix=f"done_{turn_id}")
+
+
 def _dialogue_tab(root: str) -> None:
-    hist = BA.chat_history(root, limit=40)
+    hist = BA.chat_history(root, limit=60)
     if not hist["ok"]:
         show_error(hist)
         return
     top = st.columns([3, 1])
     mode = top[0].radio("模式", list(CH.MODES), horizontal=True, key="bs_chat_mode")
-    if top[1].button("新开对话", key="bs_chat_new", help="丢弃续接的会话，之后不再记得之前的内容（记录保留）"):
+    if top[1].button("新开对话", key="bs_chat_new", help="丢弃续接的会话，之后不再记得之前的内容（记录保留）",
+                     disabled=bool(st.session_state.get("bs_turn"))):
         BA.chat_new(root)
         st.rerun()
     for rec in hist["data"]:
         role = "user" if rec["role"] == "user" else "assistant"
         with st.chat_message(role):
             st.write(rec["text"])
-    text = st.chat_input("说点什么……（例如：我想写一个会吞噬记忆的港口）", key="bs_chat_input")
+            if rec.get("turn") and role == "assistant" and rec["turn"] != st.session_state.get("bs_turn"):
+                _finished_log(root, rec["turn"])
+    active = st.session_state.get("bs_turn")
+    if active:
+        with st.chat_message("assistant"):
+            _live_turn(root, active)
+    text = st.chat_input("说点什么……（例如：我想写一个会吞噬记忆的港口）", key="bs_chat_input",
+                         disabled=bool(active))
     if text:
-        with st.spinner("思考中……"):
-            r = BA.chat_send(root, text, mode)
-        show_error(r) if not r["ok"] else st.rerun()
+        r = BA.chat_start(root, text, mode)
+        if r["ok"]:
+            st.session_state["bs_turn"] = r["data"]["turn"]
+            st.rerun()
+        show_error(r)
     pending = BA.list_proposals(root, "pending")
     if not pending["ok"]:
         show_error(pending)

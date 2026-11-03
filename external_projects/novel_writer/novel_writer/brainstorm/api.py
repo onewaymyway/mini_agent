@@ -219,3 +219,12 @@ def linked_novels(root: str) -> Dict[str, Any]:
 
 def snapshot_version(root: str, note: str = "") -> Dict[str, Any]:
     return _guard(lambda: {"version": C.snapshot(_ws(root), note)})
+
+
+# ── 对话过程日志 ──
+def chat_start(root: str, text: str, mode: str = "追问", runner=None) -> Dict[str, Any]:
+    return _guard(lambda: {"turn": CH.start_turn(_ws(root), text, mode, runner=runner)})
+
+
+def chat_run(root: str, turn_id: str) -> Dict[str, Any]:
+    return _guard(lambda: CH.run_state(_ws(root), turn_id))

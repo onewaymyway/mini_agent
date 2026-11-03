@@ -142,20 +142,23 @@ def parse_reply(reply: str) -> Tuple[str, List[Dict[str, Any]], int]:
 
 # ── 发送 ──
 
-def send(ws: BrainstormWorkspace, text: str, mode: str = "追问", runner: Optional[Runner] = None) -> Dict[str, Any]:
+def send(ws: BrainstormWorkspace, text: str, mode: str = "追问", runner: Optional[Runner] = None, *,
+         turn_id: Optional[str] = None, record_user: bool = True) -> Dict[str, Any]:
     text = (text or "").strip()
     if not text:
         raise BrainstormError("请输入内容")
     if mode not in MODES:
         raise BrainstormError(f"未知模式：{mode}")
     ws.meta()
+    extra = {"turn": turn_id} if turn_id else {}
+    if record_user:
+        append_turn(ws, "user", text, mode=mode, **extra)
     prompt = build_prompt(ws, text, mode)
     state = _agent_state(ws)
     reply, new_sid = (runner or default_runner)(prompt, state.get("session_id"))
     if new_sid:
         atomic_write_json(ws.root / AGENT_STATE, {"session_id": new_sid, "updated_at": _now()})
     body, items, invalid = parse_reply(reply)
-    append_turn(ws, "user", text, mode=mode)
     made = []
     for item in items:
         try:
@@ -163,9 +166,80 @@ def send(ws: BrainstormWorkspace, text: str, mode: str = "追问", runner: Optio
                                  target=item.get("target"), reason=item.get("reason", "")))
         except BrainstormError:
             invalid += 1
-    append_turn(ws, "assistant", body or "（无回复）", proposals=[p["pid"] for p in made], invalid=invalid)
+    append_turn(ws, "assistant", body or "（无回复）", proposals=[p["pid"] for p in made], invalid=invalid, **extra)
     ws.touch()
     return {"reply": body, "proposals": made, "invalid": invalid}
+
+
+# ── 后台运行与过程日志（显示 agent 的全部输出） ──
+
+RUNS_DIR = "_studio/chat_runs"
+
+
+def _run_paths(ws: BrainstormWorkspace, turn_id: str):
+    base = ws.root / RUNS_DIR
+    return base / f"{turn_id}.json", base / f"{turn_id}.jsonl"
+
+
+def start_turn(ws: BrainstormWorkspace, text: str, mode: str = "追问", runner: Optional[Runner] = None) -> str:
+    """开始一轮对话：立即记录作者的话，在后台线程里运行 agent，过程输出逐条写入日志文件。返回 turn id。"""
+    import threading
+    import uuid
+
+    text = (text or "").strip()
+    if not text:
+        raise BrainstormError("请输入内容")
+    if mode not in MODES:
+        raise BrainstormError(f"未知模式：{mode}")
+    ws.meta()
+    turn_id = "t" + uuid.uuid4().hex[:8]
+    status_path, log_path = _run_paths(ws, turn_id)
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(status_path, {"turn": turn_id, "status": "running", "started_at": _now()})
+    log_path.write_text("", encoding="utf-8")
+    append_turn(ws, "user", text, mode=mode, turn=turn_id)
+    threading.Thread(target=_run_turn_job, args=(str(ws.root), turn_id, text, mode, runner),
+                     daemon=True, name=f"brainstorm-{turn_id}").start()
+    return turn_id
+
+
+def _run_turn_job(root: str, turn_id: str, text: str, mode: str, runner: Optional[Runner]) -> None:
+    from novel_writer.brainstorm.runlog import Capture
+
+    ws = BrainstormWorkspace(root)
+    status_path, log_path = _run_paths(ws, turn_id)
+
+    def sink(event: Dict[str, str]) -> None:
+        line = {"t": _now(), **event}
+        with log_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(line, ensure_ascii=False) + "\n")
+
+    try:
+        with Capture(sink):
+            out = send(ws, text, mode, runner=runner, turn_id=turn_id, record_user=False)
+        atomic_write_json(status_path, {"turn": turn_id, "status": "done", "finished_at": _now(),
+                                        "proposals": len(out["proposals"]), "invalid": out["invalid"]})
+    except Exception as exc:  # noqa: BLE001 - 错误要记到日志与记录里，界面才能显示
+        sink({"kind": "error", "text": f"{type(exc).__name__}: {exc}"})
+        append_turn(ws, "assistant", f"（出错：{exc}）", turn=turn_id, error=True)
+        atomic_write_json(status_path, {"turn": turn_id, "status": "error", "finished_at": _now(),
+                                        "error": str(exc)})
+
+
+def run_state(ws: BrainstormWorkspace, turn_id: str) -> Dict[str, Any]:
+    """一轮对话的状态与全部过程日志（按时间顺序）。"""
+    status_path, log_path = _run_paths(ws, turn_id)
+    status = read_json(status_path, default=None)
+    if not isinstance(status, dict):
+        raise BrainstormError(f"找不到对话轮次：{turn_id}")
+    events = []
+    if log_path.is_file():
+        for line in log_path.read_text(encoding="utf-8").splitlines():
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return {**status, "events": events}
 
 
 def default_runner(prompt: str, session_id: Optional[str]) -> Tuple[str, Optional[str]]:
