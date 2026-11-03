@@ -158,3 +158,32 @@ def test_page_shows_full_log_of_finished_turn(tmp_path, monkeypatch):
     at.run()
     assert not at.exception, at.exception
     assert any("本轮全部过程（4 条）" in e.label for e in at.expander)
+
+
+# ── 模块级调用也要被捕获（tool_executor / turn_loop 用的是 `import mini_agent.ui.renderer as R`）──
+
+def test_capture_also_wraps_module_level_functions():
+    events = []
+    orig = renderer.print_tool_call
+    with Capture(events.append):
+        renderer.print_tool_call("write_file", {"path": "a.json"})
+        renderer.print_info("模块级 info")
+    assert [e["kind"] for e in events] == ["tool_call", "info"]
+    assert renderer.print_tool_call is orig       # 退出后恢复原函数
+
+
+def test_empty_allowed_tools_gives_empty_registry():
+    """allowed_tools=[] 必须是真正的无工具，而不是框架里 filtered(names=[]) 的「全部工具」。"""
+    from novel_writer import config
+    from novel_writer.runner import _build_restricted_agent
+
+    try:
+        cfg = config.load_llm_cfg()
+    except Exception:  # noqa: BLE001 - 本机没有配置 LLM 时跳过
+        pytest.skip("无法加载 LLM 配置")
+    agent = _build_restricted_agent(cfg, allowed_tools=[], max_turns=1, timeout=10)
+    registry = getattr(agent, "registry", None) or getattr(agent, "_registry", None)
+    if registry is None:
+        pytest.skip("找不到 agent 的工具注册表属性")
+    names = registry.names() if hasattr(registry, "names") else list(registry)
+    assert not names

@@ -527,7 +527,7 @@ def _build_restricted_agent(cfg: Any, *, allowed_tools: list, max_turns: int, ti
 
     - skill_loader=None：框架只在 skill_loader 非空时才注册 skill_list/skill_activate/capability_call 等工具，
       所以模型根本没有激活别的 skill 的手段；
-    - registry=默认注册表按名字过滤：只保留 allowed_tools；
+    - registry=默认注册表按名字过滤：只保留 allowed_tools；allowed_tools 为空则是真正的空 registry（无任何工具）；
     - extra_tools_enabled=False：不注册 run_slash_command / proxy_* / MCP / 自省（agent_status、笔记本等）工具；
     - max_turns_on_limit="stop"：不继承全局 compact_continue（否则压缩后自动「继续」，约束会丢）。
     """
@@ -550,7 +550,10 @@ def _build_restricted_agent(cfg: Any, *, allowed_tools: list, max_turns: int, ti
         pass
     if timeout:
         cfg.request_timeout = timeout
-    registry = get_default_registry().filtered(names=list(allowed_tools))
+    base = get_default_registry()
+    # 注意：filtered(names=[]) 在框架里等价于「全部工具」，所以空白名单必须显式用 empty()，
+    # 否则「无工具」的 Agent（对话/发散/整理）会拿到 write_file、record_artifact 等全部工具。
+    registry = base.filtered(names=list(allowed_tools)) if allowed_tools else base.empty()
     guard = PermissionGuard(auto_approve=True, sandbox=getattr(cfg, "sandbox", False),
                             project_root=getattr(cfg, "project_root", config.PROJECT_ROOT))
     return Agent(cfg=cfg, guard=guard, registry=registry, skill_loader=None, extra_tools_enabled=False)

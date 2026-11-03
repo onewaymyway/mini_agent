@@ -3,6 +3,10 @@
 框架的 agent 通过 `mini_agent.ui.renderer.R.print_*` 输出过程信息。`Capture` 在上下文内临时包装这些方法：
 记录事件后仍调用原函数，因此终端输出不变。退出上下文时恢复原状。
 
+框架里有两种调用方式：`R.print_xxx`（R 是命名空间对象）和 `import mini_agent.ui.renderer as R` 后的
+`R.print_xxx`（此时 R 是模块本身，tool_executor / turn_loop 就是这样）。所以两处都要包装，否则工具调用与
+工具结果在界面上看不到，只在终端出现。
+
 注意：包装是进程级的，同一时间只允许一个 Capture（用锁保证）。捕获期间进程内其它线程的 agent 输出也会被记录。
 """
 
@@ -47,7 +51,9 @@ class Capture:
     def __init__(self, sink: Callable[[Dict[str, str]], None]):
         self._sink = sink
         self._saved: Dict[str, Any] = {}
+        self._saved_module: Dict[str, Any] = {}
         self._target = None
+        self._module = None
 
     def __enter__(self) -> "Capture":
         from mini_agent.ui import renderer as RD
@@ -55,12 +61,17 @@ class Capture:
         _LOCK.acquire()
         try:
             self._target = RD.R
+            self._module = RD
             for name in CAPTURED:
                 orig = getattr(self._target, name, None)
-                if orig is None:
-                    continue
-                self._saved[name] = self._target.__dict__.get(name, _MISSING)
-                setattr(self._target, name, self._wrap(name, orig))
+                if orig is not None:
+                    self._saved[name] = self._target.__dict__.get(name, _MISSING)
+                    setattr(self._target, name, self._wrap(name, orig))
+                # 模块级函数：框架里多数调用方是 `import mini_agent.ui.renderer as R`，走的是这里
+                mod_orig = getattr(RD, name, None)
+                if mod_orig is not None:
+                    self._saved_module[name] = mod_orig
+                    setattr(RD, name, self._wrap(name, mod_orig))
         except BaseException:
             self.__exit__(None, None, None)
             raise
@@ -88,7 +99,10 @@ class Capture:
                         pass
                 else:
                     setattr(self._target, name, prev)
+            for name, prev in self._saved_module.items():
+                setattr(self._module, name, prev)
             self._saved.clear()
+            self._saved_module.clear()
         finally:
             if _LOCK.locked():
                 _LOCK.release()

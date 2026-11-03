@@ -166,7 +166,12 @@ def run(ws: BrainstormWorkspace, *, modules: Optional[List[str]] = None, scope: 
     _emit(log, "info", f"提示词：{len(prompt)} 字（含当前卡片摘要与对话全文），开始调用模型")
     raw = generator(prompt)
     _emit(log, "info", f"模型返回 {len(str(raw))} 字，解析结构化结果")
-    out = parse_output(raw)
+    try:
+        out = parse_output(raw)
+    except BrainstormError:
+        # 解析失败时把模型回复的开头写进过程日志，界面上才能看出模型到底返回了什么
+        _emit(log, "warning", f"模型回复开头（前 300 字）：{str(raw)[:300]!r}")
+        raise
     _emit(log, "info", f"解析得到 {len(out['candidates'])} 条候选，纪要 {len(out['minutes'])} 字")
 
     batch = "b" + uuid.uuid4().hex[:8]
