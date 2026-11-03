@@ -209,7 +209,8 @@ def _distill_box(root: str) -> None:
     with st.expander("📝 整理对话（手动）：把对话提取成待确认的修改与 Markdown 纪要"):
         st.caption("只有点击「整理」才会运行。整理过程的每一步都会显示在下方。"
                    "提取结果进入待确认列表，不会直接写入卡片。")
-        scope = st.radio("范围", ["上次整理之后的全部对话", "最近几轮"], horizontal=True, key="bs_dist_scope")
+        scope = st.radio("范围", ["上次整理之后的全部对话", "最近几轮", "全部对话（从头整理）"], horizontal=True,
+                         key="bs_dist_scope")
         rounds = 0
         if scope == "最近几轮":
             rounds = st.slider("轮数（一轮 = 作者一句 + 助手一句）", 1, 20, 5, key="bs_dist_rounds")
@@ -218,7 +219,8 @@ def _distill_box(root: str) -> None:
                                  format_func=lambda m: labels[m], key="bs_dist_modules")
         running = st.session_state.get("bs_distill_run")
         if st.button("▶ 整理", key="bs_dist_go", disabled=not modules or bool(running)):
-            r = BA.distill_start(root, modules=modules, scope="recent" if rounds else "pending", recent_rounds=rounds)
+            scope_key = "all" if scope.startswith("全部") else ("recent" if rounds else "pending")
+            r = BA.distill_start(root, modules=modules, scope=scope_key, recent_rounds=rounds)
             if r["ok"]:
                 st.session_state["bs_distill_run"] = r["data"]["run"]
                 st.rerun()

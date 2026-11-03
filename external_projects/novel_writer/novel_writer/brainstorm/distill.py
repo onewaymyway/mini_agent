@@ -67,7 +67,7 @@ def _set_checkpoint(ws: BrainstormWorkspace, nxt: int) -> None:
 
 
 def select_range(ws: BrainstormWorkspace, scope: str = "pending", recent_rounds: int = 0) -> Tuple[int, int]:
-    """返回 [start, end) 的对话记录下标。scope: pending（上次之后的全部）或 recent（最近若干轮）。"""
+    """返回 [start, end) 的对话记录下标。scope: pending（上次之后的全部）、recent（最近若干轮）或 all（全部对话，不看检查点）。"""
     from novel_writer.brainstorm import chat as CH
 
     total = len(CH.history(ws))
@@ -75,6 +75,8 @@ def select_range(ws: BrainstormWorkspace, scope: str = "pending", recent_rounds:
         if recent_rounds < 1:
             raise BrainstormError("最近轮数至少为 1")
         return max(0, total - recent_rounds * 2), total
+    if scope == "all":                          # 全部对话：从头开始，不看检查点
+        return 0, total
     if scope != "pending":
         raise BrainstormError(f"未知的范围：{scope}")
     return min(_checkpoint(ws), total), total

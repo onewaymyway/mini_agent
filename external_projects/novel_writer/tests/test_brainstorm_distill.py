@@ -347,3 +347,12 @@ def test_unfixable_candidate_is_skipped_not_listed(ws):
     payload = {"candidates": [{"module": "cast", "op": "add", "value": "只有一段文字", "source_turns": [0]}], "minutes": "x"}
     out = DS.run(ws, generator=_gen(payload))
     assert out["proposals"] == [] and any("无效条目" in s for s in out["skipped"])
+
+
+def test_all_scope_ignores_checkpoint(ws):
+    _talk(ws, rounds=3)
+    DS.run(ws, generator=_gen({"candidates": [], "minutes": "x"}))          # 检查点推进到末尾
+    assert DS.select_range(ws, "pending") == (6, 6)
+    assert DS.select_range(ws, "all") == (0, 6)
+    out = DS.run(ws, scope="all", generator=_gen({"candidates": [], "minutes": "x"}))
+    assert out["range"] == [0, 6]
