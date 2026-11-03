@@ -287,7 +287,8 @@ def collect_shot_issues(raw_shots: List[Dict[str, Any]], script: str,
     每条 message 都写明：位置、出错的原文、剧本里对应的原句与说话人、以及具体怎么改。"""
     issues: List[Dict[str, str]] = []
     if not raw_shots:
-        return [{"message": "没有返回任何镜头（shots 为空）"}]
+        # 空结果也要指出缺哪些场次，否则修正时模型只知道“什么都没有”，不知道该补哪一场
+        return [{"message": "没有返回任何镜头（shots 为空）"}] + _scene_coverage_issues([], script)
     script_norm = norm(script)
     try:
         script_lines = [{"speaker": ln["speaker"], "text": ln["text"]}
@@ -371,6 +372,112 @@ def _norm_hint(text: Any) -> str:
     return re.sub(r"\s", "", str(text or "")).lower()
 
 
+def _segment_script(script: str, lo: int, hi: int) -> str:
+    """只保留场次 lo..hi 的剧本文本（含各场的标题行）。"""
+    from .chapter_scenes import _HEADER
+    out, keep = [], False
+    for line in script.splitlines():
+        m = _HEADER.match(line.strip())
+        if m:
+            keep = lo <= int(m.group(1)) <= hi
+        if keep:
+            out.append(line)
+    return "\n".join(out) + "\n"
+
+
+def _segments(script: str, plan: Optional[Dict[str, Any]]):
+    """分段方案：[(段落名, 段剧本, 段内大场景列表, 段预计镜头数)]。没有大场景时整章一段。"""
+    if not plan or not plan.get("big_scenes"):
+        return [("整章", script, None, max(1, math.ceil(spoken_chars(script) / int(SHOT_PLAN_SEC * CHARS_PER_SEC))))]
+    segs = []
+    for g in plan["big_scenes"]:
+        seg_script = _segment_script(script, g["from_scene"], g["to_scene"])
+        label = f"大场景 {g['big_no']}「{g['title_zh']}」（场次 {g['from_scene']}–{g['to_scene']}）"
+        expected = max(1, math.ceil(spoken_chars(seg_script) / int(SHOT_PLAN_SEC * CHARS_PER_SEC)))
+        segs.append((label, seg_script, [g], expected))
+    return segs
+
+
+def _merge_parts(parts: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """合并各段的规划结果：镜头重新编号（s01…），拆分记录的 id 引用同步改写；其它列表去重合并。"""
+    if len(parts) == 1:
+        return parts[0]
+    out = copy.deepcopy(parts[0])
+    shots: List[Dict[str, Any]] = []
+    for part in parts:
+        id_map = {}
+        for sh in part.get("shots") or []:
+            id_map[sh["id"]] = f"s{len(shots) + 1:02d}"
+            shots.append(sh)
+        for sh in part.get("shots") or []:
+            sh["id"] = id_map[sh["id"]]
+            if sh.get("split_from") in id_map:
+                sh["split_from"] = id_map[sh["split_from"]]
+    out["shots"] = shots
+    for key in ("scenes", "new_speakers", "new_locations", "new_props", "new_looks", "plan_warnings",
+                "new_location_specs"):
+        seen, merged = set(), []
+        for part in parts:
+            for item in part.get(key) or []:
+                k = json.dumps(item, ensure_ascii=False, sort_keys=True) if not isinstance(item, str) else item
+                if k not in seen:
+                    seen.add(k)
+                    merged.append(item)
+        if key in parts[0] or merged:
+            out[key] = merged
+    return out
+
+
+def _plan_segment(project_dir: Path, no: int, text_llm: TextLLM, script: str, prompt: str, *,
+                   seg_label: str, characters, locations, props, looks_on: bool, spots_on: bool,
+                   limit: int, retries: int, per_shot: int, min_per_shot: int, expected: int,
+                   review_path: Path):
+    """规划一段剧本（一个大场景，或整章）的镜头：调用模型，校验，失败则把问题反馈修正。
+    返回 (built, attempts)；修正次数用尽仍不通过时抛出 StepError（消息带上大场景名）。"""
+    attempt = 0
+    while True:
+        label = (f"第 {no} 章 C-3 {seg_label}：调用文本模型规划镜头"
+                 + (f"（第 {attempt} 次修正）" if attempt else f"（剧本 {len(script)} 字）"))
+        with joblog.timed(project_dir, "chapter", label):
+            raw = llm_trace.ask_traced(project_dir, text_llm, prompt, system=prompts.SYSTEM_VISUAL,
+                                       scope="chapter", label=label, step="C-3", chapter=no)
+        built, obj, issues = None, None, []
+        try:
+            obj = parse_json_object(raw)
+            issues = collect_shot_issues(obj.get("shots") or [], script, characters)
+            if not issues:
+                built = validate_and_build(obj.get("shots") or [], script, locations, characters, no, block_limit=limit,
+                                           props=props, looks_enabled=looks_on, spots_enabled=spots_on)
+                if spots_on:
+                    # 新场景识别：标题写到具体场所、镜头却挂在对不上的已有地点上 → 先反馈给模型修正；
+                    # 自动修正次数用尽则只记为警告，不让整章失败
+                    spot_issues = LS.granularity_issues(built["shots"], script, locations)
+                    if spot_issues and attempt < retries:
+                        issues, built = spot_issues, None
+                    elif spot_issues:
+                        built["plan_warnings"].extend({"kind": "location_not_specific", "message": i["message"]}
+                                                      for i in spot_issues)
+        except StepError as exc:
+            issues = issues or [{"message": str(exc)}]
+        if built is not None:
+            break
+        write_yaml_atomic(review_path, {"status": "fail", "attempts": attempt + 1, "issues": issues})
+        if attempt >= retries:
+            more = f"（共 {len(issues)} 个问题）" if len(issues) > 1 else ""
+            raise StepError(f"{seg_label}：镜头规划校验未通过{more}"
+                            + (f"，已自动修正 {attempt} 次仍未解决" if attempt else "")
+                            + "：" + issues[0]["message"])
+        attempt += 1
+        joblog.log(project_dir, "chapter",
+                   f"第 {no} 章 C-3 校验未通过（{len(issues)} 个问题），自动把问题反馈给模型修正（第 {attempt}/{retries} 次）：\n"
+                   + "\n".join(f"- {i['message']}" for i in issues), level="warn")
+        prompt = prompts.shots_fix_prompt(script, characters, locations,
+                                          json.dumps(obj, ensure_ascii=False) if obj is not None else (raw or "")[:6000],
+                                          issues, props=props, looks_enabled=looks_on, max_chars_per_shot=per_shot, min_chars_per_shot=min_per_shot,
+                                          expected_shots=expected, spots_enabled=spots_on)
+    return built, attempt + 1
+
+
 def run_shots(project_dir: Path, no: int, text_llm: TextLLM, *, force: bool = False) -> Dict[str, Any]:
     """C-3/C-4。校验失败时把全部问题反馈给模型自动修正，最多 shots_max_retries 次（默认 2，写 0 则直接失败）。"""
     cdir = chapter_dir(project_dir, no)
@@ -405,50 +512,23 @@ def run_shots(project_dir: Path, no: int, text_llm: TextLLM, *, force: bool = Fa
     expected = max(1, math.ceil(spoken_chars(script) / int(SHOT_PLAN_SEC * CHARS_PER_SEC)))
     retries = auto_fix_retries(project_dir, "shots_max_retries")
     review_path = cdir / "shots_review.yaml"
-    prompt = prompts.shots_prompt(script, characters, locations, props=props, looks_enabled=looks_on,
-                                  max_chars_per_shot=per_shot, min_chars_per_shot=min_per_shot, expected_shots=expected,
-                                  spots_enabled=spots_on, big_scenes=(plan or {}).get("big_scenes") or None)
-    attempt = 0
-    while True:
-        label = (f"第 {no} 章 C-3 调用文本模型规划镜头"
-                 + (f"（第 {attempt} 次修正）" if attempt else f"（剧本 {len(script)} 字）"))
-        with joblog.timed(project_dir, "chapter", label):
-            raw = llm_trace.ask_traced(project_dir, text_llm, prompt, system=prompts.SYSTEM_VISUAL,
-                                       scope="chapter", label=label, step="C-3", chapter=no)
-        built, obj, issues = None, None, []
-        try:
-            obj = parse_json_object(raw)
-            issues = collect_shot_issues(obj.get("shots") or [], script, characters)
-            if not issues:
-                built = validate_and_build(obj.get("shots") or [], script, locations, characters, no, block_limit=limit,
-                                           props=props, looks_enabled=looks_on, spots_enabled=spots_on)
-                if spots_on:
-                    # 新场景识别：标题写到具体场所、镜头却挂在对不上的已有地点上 → 先反馈给模型修正；
-                    # 自动修正次数用尽则只记为警告，不让整章失败
-                    spot_issues = LS.granularity_issues(built["shots"], script, locations)
-                    if spot_issues and attempt < retries:
-                        issues, built = spot_issues, None
-                    elif spot_issues:
-                        built["plan_warnings"].extend({"kind": "location_not_specific", "message": i["message"]}
-                                                      for i in spot_issues)
-        except StepError as exc:
-            issues = issues or [{"message": str(exc)}]
-        if built is not None:
-            break
-        write_yaml_atomic(review_path, {"status": "fail", "attempts": attempt + 1, "issues": issues})
-        if attempt >= retries:
-            more = f"（共 {len(issues)} 个问题）" if len(issues) > 1 else ""
-            raise StepError(f"镜头规划校验未通过{more}"
-                            + (f"，已自动修正 {attempt} 次仍未解决" if attempt else "")
-                            + "：" + issues[0]["message"])
-        attempt += 1
-        joblog.log(project_dir, "chapter",
-                   f"第 {no} 章 C-3 校验未通过（{len(issues)} 个问题），自动把问题反馈给模型修正（第 {attempt}/{retries} 次）：\n"
-                   + "\n".join(f"- {i['message']}" for i in issues), level="warn")
-        prompt = prompts.shots_fix_prompt(script, characters, locations,
-                                          json.dumps(obj, ensure_ascii=False) if obj is not None else (raw or "")[:6000],
-                                          issues, props=props, looks_enabled=looks_on, max_chars_per_shot=per_shot, min_chars_per_shot=min_per_shot,
-                                          expected_shots=expected, spots_enabled=spots_on)
+    # C-3b：按大场景分段规划（每段只含该大场景的剧本，覆盖检查与修正都针对这一段）。没有大场景时整章一段。
+    segments = _segments(script, plan)
+    parts = []
+    total_attempts = 0
+    for seg_label, seg_script, seg_groups, seg_expected in segments:
+        seg_prompt = prompts.shots_prompt(seg_script, characters, locations, props=props, looks_enabled=looks_on,
+                                          max_chars_per_shot=per_shot, min_chars_per_shot=min_per_shot,
+                                          expected_shots=seg_expected, spots_enabled=spots_on,
+                                          big_scenes=seg_groups or None)
+        built_seg, attempts = _plan_segment(
+            project_dir, no, text_llm, seg_script, seg_prompt, seg_label=seg_label, characters=characters,
+            locations=locations, props=props, looks_on=looks_on, spots_on=spots_on, limit=limit, retries=retries,
+            per_shot=per_shot, min_per_shot=min_per_shot, expected=seg_expected, review_path=review_path)
+        parts.append(built_seg)
+        total_attempts += attempts
+    built = _merge_parts(parts)
+    attempt = total_attempts - 1
     if plan:
         CS.attach(built, plan, locations, characters)      # 大场景 → 镜头；共用素材汇总到大场景
     built["script_hash"] = script_hash

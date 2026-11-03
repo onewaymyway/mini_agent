@@ -143,7 +143,7 @@ def test_pipeline_continues_past_c3_after_autofix(proj):
                        video=StubVideoProvider(), tts=SilenceTTS())
     assert r["status"] == "waiting_assets", r                           # 越过 C-3，停在补建角色确认
     msgs = [x["message"] for x in joblog.tail(proj, scopes=["chapter"])]
-    assert any("C-3 校验未通过" in m for m in msgs) and any("C-3 调用文本模型规划镜头（第 1 次修正）" in m for m in msgs)
+    assert any("C-3 校验未通过" in m for m in msgs) and any("调用文本模型规划镜头（第 1 次修正）" in m for m in msgs)
 
 
 # ---------------------------------------------------------------- 问题收集
@@ -158,7 +158,9 @@ def test_collect_all_issues_not_just_first(proj):
     assert "最接近的原句是“林远：我们走。”" in issues[0]
     assert "最接近" not in issues[1]                                                  # 完全无关则不乱给建议
     assert "缺少说话人" in issues[2] and "非法" in issues[3]
-    assert collect_shot_issues([], SCRIPT, []) == [{"message": "没有返回任何镜头（shots 为空）"}]
+    issues = collect_shot_issues([], SCRIPT, [])
+    assert issues[0] == {"message": "没有返回任何镜头（shots 为空）"}
+    assert any("没有任何镜头" in i["message"] for i in issues[1:])     # 同时指出缺哪一场
     assert collect_shot_issues(json.loads(GOOD)["shots"], SCRIPT, _chars(proj)) == []
 
 

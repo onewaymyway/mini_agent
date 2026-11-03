@@ -4,7 +4,10 @@ from pathlib import Path
 
 import pytest
 
+from test_shots_autofix import proj  # noqa: F401  (夹具)
+
 from novel_to_video.steps import chapter_scenes as CS
+from novel_to_video import chapter_io as cio
 from novel_to_video.chapter_io import chapter_dir
 
 pytestmark = pytest.mark.real_big_scenes
@@ -131,3 +134,65 @@ def test_unknown_scene_number_is_reported():
     from novel_to_video.steps import chapter_shots as cs
     issues = cs._scene_coverage_issues([{"scene_no": 9, "blocks": []}], SCRIPT)
     assert any("第 9 个" in i["message"] or "第 9 场" in i["message"] for i in issues)
+
+
+# ---------------------------------------------------------------- 分段规划：每个大场景单独调用模型
+
+MULTI = """### 场次 1｜铁城街道·清晨（外景）
+旁白：铁城的清晨很安静。
+### 场次 2｜公寓·清晨（内景）
+旁白：林远醒来。
+### 场次 3｜工作间·黄昏（内景）
+旁白：林远沉默地回到工位。
+"""
+
+
+class SegLLM:
+    """按段回答：每段返回该段每场一个旁白镜头；第一次遇到场次 3 时故意漏掉它，用来验证只修正那一段。"""
+    name = "fake"
+
+    def __init__(self):
+        self.shot_prompts = []
+        self.omitted_once = False
+
+    def ask(self, prompt, system=""):
+        if "TASK=shots" not in prompt:
+            return json.dumps({"shots": []})
+        self.shot_prompts.append(prompt)
+        seg = prompt.split("剧本：\n", 1)[1].split("\n\nRULE_INPUT=", 1)[0]
+        import re
+        scenes = re.findall(r"^### 场次 (\d+)｜(.*)$", seg, re.M)
+        shots = []
+        for n, header in scenes:
+            n = int(n)
+            if n == 3 and not self.omitted_once and "没有任何镜头" not in prompt:
+                self.omitted_once = True
+                continue
+            shots.append({"scene_no": n, "location_id": "loc_01", "character_ids": [], "prop_names": [],
+                          "blocks": [{"type": "narration", "text": f"第 {n} 场的旁白。"}],
+                          "visual_hint_zh": f"中景：第{n}场", "visual_hint_en": f"medium shot of scene {n}"})
+        return json.dumps({"shots": shots}, ensure_ascii=False)
+
+
+def test_each_big_scene_is_planned_separately_and_only_the_missing_one_is_fixed(proj):
+    cdir = cio.chapter_dir(proj, 1)
+    cdir.mkdir(parents=True, exist_ok=True)
+    (cdir / "script.md").write_text(MULTI, encoding="utf-8")
+    # 本测试只关心分段与修正：关闭“场所粒度”检查，避免它与场次覆盖检查互相干扰
+    from novel_to_video.project_store import read_json, write_json_atomic
+    pj = read_json(proj / "project.json")
+    pj["location_spots_enabled"] = False
+    write_json_atomic(proj / "project.json", pj)
+    llm = SegLLM()
+    from novel_to_video.steps.chapter_shots import run_shots as _run
+    _run(proj, 1, llm, force=True)
+    doc = cio.load_shots(proj, 1)
+    assert [s["id"] for s in doc["shots"]] == ["s01", "s02", "s03"]        # 合并后重新编号
+    assert [s["scene_no"] for s in doc["shots"]] == [1, 2, 3]
+    assert [s["big_scene_no"] for s in doc["shots"]] == [1, 2, 3]
+    # 每个大场景各调用一次模型；只有第 3 场那一段因漏场被修正（共 4 次调用）
+    assert len(llm.shot_prompts) == 4
+    fix = [p for p in llm.shot_prompts if "没有任何镜头" in p]
+    assert len(fix) == 1
+    assert "第 3 场的旁白" in fix[0] or "工作间" in fix[0]
+    assert "铁城街道" not in fix[0] and "公寓" not in fix[0]               # 修正只带本段剧本

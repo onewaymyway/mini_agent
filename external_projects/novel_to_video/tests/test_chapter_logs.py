@@ -61,7 +61,7 @@ def test_chapter_run_writes_every_stage(proj):
     assert st["state"] == "done", st
     msgs = [x["message"] for x in joblog.tail(proj, scopes=["chapter", "queue"])]
     assert any("C-1 调用文本模型生成剧本" in m for m in msgs), msgs
-    assert any("C-3 调用文本模型规划镜头" in m for m in msgs), msgs
+    assert any("调用文本模型规划镜头" in m for m in msgs), msgs
     assert any("C-6 配音 s01/" in m for m in msgs), msgs
     assert any("C-8 镜头 s01：提交视频生成" in m for m in msgs), msgs
     assert any("C-8 镜头 s01 完成" in m for m in msgs), msgs
