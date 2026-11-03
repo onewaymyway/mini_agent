@@ -31,6 +31,7 @@ _player = components.declare_component("novel_listen_player", path=str(_COMPONEN
 _SEL = "listen_start"          # 选择框的 session key（表示当前所在/起始章节）
 _NONCE = "listen_nonce"        # 用户主动改选择框时递增，让播放器重新挂载（从所选章节开头开始）
 _LAST_REPORT = "listen_last_report"
+_LOCAL_KEY = "listen_local_only_toggle"
 _PENDING = "listen_pending_sync"   # 待应用到选择框的章节（播放器切章后记下）
 _PAYLOAD = "listen_payload_cache"  # 播放载荷缓存：{"ws","sig","payload"}，章节有变化时才重建
 _FALLBACK = "listen_sel_is_fallback"   # 选择框当前值是回退值（保存的章节暂时不可听）
@@ -52,6 +53,11 @@ def _on_pick(ws: str) -> None:
     st.session_state[_FALLBACK] = False
     st.session_state[_NONCE] = st.session_state.get(_NONCE, 0) + 1
     st.session_state[_LAST_REPORT] = None
+
+
+def _on_local_toggle(ws: str) -> None:
+    """切换「仅本地音色」：只保存设置。播放器不重新挂载，由播放器在前端即时生效。"""
+    reading_state.update(ws, listen_local_only=bool(st.session_state.get(_LOCAL_KEY)))
 
 
 def _signature(readable: list) -> list:
@@ -123,10 +129,19 @@ def render_listen(ws: str, rows: list) -> None:
             st.warning(f"上次收听的第 {state.get('last_listen_chapter')} 章暂时无法读取（可能正在重写）。"
                        f"已在第 {start_ch} 章开头待命，保存的位置没有被改动；该章恢复后会自动回到原位置。")
 
+        st.toggle(
+            "仅本地音色（不经网络，不受代理影响）",
+            value=bool(state.get("listen_local_only", False)),
+            key=_LOCAL_KEY,
+            on_change=_on_local_toggle,
+            args=(ws,),
+            help="开启后只列出浏览器的本地中文音色（如 Windows 自带的 Huihui、Yaoyao）。在线音色需要联网，会走系统代理。",
+        )
         report = _player(
             payload=payload,
             rate=state.get("listen_rate", 1.0),
             voice=state.get("listen_voice", ""),
+            local_only=bool(state.get("listen_local_only", False)),
             resume_ch=start_ch,
             resume_seg=start_seg,
             resume_anchor=None if is_fallback else (state.get("listen_anchor") or None),

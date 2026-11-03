@@ -21,6 +21,7 @@ DEFAULTS: Dict[str, Any] = {
     "listen_anchor": None,    # 该段落开头的一小段文字：章节被改写、段落下标漂移后，用它重新定位
     "listen_rate": 1.0,
     "listen_voice": "",
+    "listen_local_only": False,   # 仅使用本地音色（不经网络，不受代理影响）
 }
 
 

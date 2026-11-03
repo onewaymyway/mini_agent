@@ -88,6 +88,8 @@
   // 队列下标 → 全书段落下标的偏移。章节载荷在线更新时，已交给浏览器队列的段落保持不动，只改这个映射。
   let off = 0;
   let lastPayloadKey = "";
+  // 仅本地音色：开启后只使用 localService 为真的音色（不经网络，不受系统代理影响）
+  let localOnly = false;
 
   // ---- Streamlit 组件协议 ----
   function send(type, data) {
@@ -171,15 +173,22 @@
     fitHeight();
   }
   function zhVoices() {
-    return synth.getVoices().filter(v => (v.lang || "").toLowerCase().startsWith("zh"))
+    return synth.getVoices().filter(v => (v.lang || "").toLowerCase().startsWith("zh") && (!localOnly || v.localService))
       .sort((a, b) => (/Natural/i.test(b.name) - /Natural/i.test(a.name)) || a.name.localeCompare(b.name));
+  }
+  // 仅本地音色开启时，当前所选音色必须是本地音色，否则不朗读（避免浏览器静默改用在线音色）
+  function localVoiceSelected() {
+    if (!localOnly) return true;
+    const name = $("voice").value;
+    const v = synth.getVoices().find(x => x.name === name);
+    return !!(v && v.localService);
   }
   function fillVoices() {
     const sel = $("voice"), prev = sel.value || pendingVoice;
     sel.innerHTML = "";
     const list = zhVoices();
     if (!list.length) {
-      const o = document.createElement("option"); o.value = ""; o.textContent = "浏览器默认（未找到中文语音）";
+      const o = document.createElement("option"); o.value = ""; o.textContent = localOnly ? "没有可用的本地中文音色" : "浏览器默认（未找到中文语音）";
       sel.appendChild(o);
     }
     list.forEach(v => {
@@ -270,6 +279,13 @@
 
   // 从第 i 段开始（新的代次）。retry 为 true 时保留重试计数。
   function startQueue(i, retry) {
+    if (!localVoiceSelected()) {
+      gen++; synth.cancel(); state = "idle"; retryPending = false;
+      setStatus("⚠ 已开启「仅本地音色」，但当前音色不是本地中文音色。请在音色下拉中选择本地音色；" +
+                "若列表为空，需要在系统中安装中文语音包。");
+      render(); report();
+      return;
+    }
     gen++;
     const g = gen;
     synth.cancel();
@@ -455,7 +471,15 @@
     applyPayload(p);
   }
 
+  // 切换「仅本地音色」：音色列表立即刷新；朗读中则按新列表重排队（所选音色不合格时停止并提示）
+  function setLocalOnly(v) {
+    localOnly = v;
+    fillVoices();
+    if (state === "playing") startQueue(idx, true);
+  }
+
   function init(args) {
+    localOnly = !!args.local_only;
     DATA = args.payload || { segments: [], chapters: [] };
     lastPayloadKey = JSON.stringify(DATA);
     rate = RATES.indexOf(Number(args.rate)) >= 0 ? Number(args.rate) : 1;
@@ -513,6 +537,10 @@
       started = true;
       init(d.args || {});
       return;
+    }
+    // 之后的重渲染：仅本地音色开关即时生效（不重新挂载，不改变位置）
+    if (d.args && typeof d.args.local_only === "boolean" && d.args.local_only !== localOnly) {
+      setLocalOnly(d.args.local_only);
     }
     // 之后的重渲染：只把最新章节载荷接入当前播放；起始位置等参数不再用于定位
     if (d.args && d.args.payload) onPayload(d.args.payload);

@@ -49,3 +49,16 @@ def test_live_payload_update_keeps_position(tmp_path):
     script = Path(__file__).resolve().parent / "js" / "listen_live_update.js"
     r = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=60)
     assert r.returncode == 0 and "OK" in r.stdout, r.stdout + r.stderr
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="需要 node")
+def test_local_only_voice_filter(tmp_path):
+    """仅本地音色：只列出 localService 音色，且所选音色为在线音色时不允许朗读。"""
+    js = re.search(r"<script>(.*)</script>", HTML.read_text(encoding="utf-8"), re.S).group(1)
+    funcs = re.search(r"  function zhVoices\(\) \{.*?\n  \}\n  // 仅本地.*?\n  function localVoiceSelected\(\) \{.*?\n  \}\n", js, re.S)
+    assert funcs, "页面里找不到 zhVoices / localVoiceSelected"
+    case = Path(__file__).resolve().parent / "js" / "listen_local_only.js"
+    script = tmp_path / "t.js"
+    script.write_text(case.read_text(encoding="utf-8").replace("__FUNCS__", funcs.group(0)), encoding="utf-8")
+    r = subprocess.run(["node", str(script)], capture_output=True, text=True)
+    assert r.returncode == 0 and "OK" in r.stdout, r.stdout + r.stderr

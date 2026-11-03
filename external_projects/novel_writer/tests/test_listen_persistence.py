@@ -230,3 +230,13 @@ def test_program_sync_echo_is_not_a_user_pick(monkeypatch):
     L._on_pick("/nonexistent")
     assert len(calls) == 1 and calls[0][1]["last_listen_chapter"] == 2
     assert fake.session_state[L._NONCE] == 1
+
+
+def test_local_only_toggle_persists_across_refresh(isolated):
+    ws = _book(isolated)
+    at = _app(ws)
+    at.toggle(key="listen_local_only_toggle").set_value(True).run()
+    assert not at.exception, at.exception
+    assert reading_state.load(ws.root)["listen_local_only"] is True
+    refreshed = _app(ws)                       # 刷新：新会话，开关从文件恢复
+    assert refreshed.toggle(key="listen_local_only_toggle").value is True
