@@ -1,6 +1,6 @@
 # novel_writer：步骤完成后关键文件乱码检测 + 自动定位并重跑
 
-> 状态：G1、G2、G3 已完成；G4 未开始。实现说明见 `external_projects/novel_writer/docs/garble_check.md`。
+> 状态：G1–G4 全部完成。实现说明见 `external_projects/novel_writer/docs/garble_check.md`。
 > 涉及：`external_projects/novel_writer/novel_writer/{garble.py, runner.py, chapter_ops.py, worker.py, state.py, settings.py, tool_api.py}` 与看板驾驶舱。
 
 ## 一、背景与缺口
@@ -171,3 +171,13 @@ A 层让绝大多数乱码在本步骤内就被修好；B 层兜底（A 层用�
 ### 与原方案的偏差
 - 挂起决定的答复沿用步骤级 `answers` 文件，不新增交互入口；
 - 每次收尾只处理第一条自动命中，其余下一轮处理（原方案未规定，取保守值）。
+
+### G4（已完成）
+- `garble_watch.guard_status()`：只读汇总守卫状态（计数、挂起、已接受），`scan_garble` 返回值附带；审校页乱码体检面板展示；
+- 挂起沿用步骤已有的 needs_user 机制，总控台无需新增界面；
+- 端到端测试：rerun 下乱码章节总结被自动重做并完成流水线；off 下与旧行为一致；
+- novel_writer 全量 749 passed，仍是 3 个既有失败；
+- 文档 `docs/garble_check.md` 补充驾驶舱/端到端与 garble_guard 关系说明。
+
+## 全部阶段结论
+G1（配置/注册表/体检/report）→ G2（skill 步骤内重做）→ G3（统一守卫）→ G4（展示与回归）均已完成。默认仍为 `off`，建议先在真实项目以 `report` 观察误报，再切换 `rerun`。

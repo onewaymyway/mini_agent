@@ -40,6 +40,28 @@ def _render_mode(ws: str) -> None:
             show_error(r)
 
 
+def _render_guard_status(status: dict, max_reruns: int) -> None:
+    """统一守卫运行状态：自动重做计数、挂起中的步骤、已接受风险的文件。"""
+    counts = status.get("counts") or []
+    waiting = status.get("waiting") or []
+    accepted = status.get("accepted") or []
+    if not (counts or waiting or accepted):
+        st.caption("统一守卫：暂无自动重做、挂起或接受记录。")
+        return
+    st.markdown("**统一守卫状态**")
+    if counts:
+        st.dataframe(pd.DataFrame([{
+            "产出者": c["producer"], "文件": c["file"],
+            "已自动重做": f"{c['count']} / {max_reruns}",
+        } for c in counts]), use_container_width=True, hide_index=True)
+    if waiting:
+        st.warning("以下步骤因乱码反复出现已挂起，请到总控台对该步骤作出决定（再重新生成 / 手动修改后重新核查 / 接受风险）：")
+        for w in waiting:
+            st.write(f"- 步骤 `{w['step']}`（{w['status']}），文件 `{w['file']}`，产出者 `{w['producer']}`")
+    if accepted:
+        st.caption("作者已接受风险（指纹不变时不再检测）：" + "、".join(accepted))
+
+
 def render_garble_scan(ws: str) -> None:
     with st.expander("🧪 乱码体检（关键文件）", expanded=False):
         _render_mode(ws)
@@ -54,8 +76,10 @@ def render_garble_scan(ws: str) -> None:
         data = res["data"]
         if data["garbled_count"] == 0:
             st.success(f"已检查 {data['files_checked']} 个关键文件，未发现乱码。")
+            _render_guard_status(data.get("reruns") or {}, data.get("max_reruns", 0))
             return
         st.warning(f"已检查 {data['files_checked']} 个关键文件，{data['garbled_count']} 个疑似乱码。")
+        _render_guard_status(data.get("reruns") or {}, data.get("max_reruns", 0))
         rows = [{
             "文件": item["file"],
             "原因": "；".join(item["reasons"]),

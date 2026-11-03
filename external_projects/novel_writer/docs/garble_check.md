@@ -1,7 +1,7 @@
 # 关键文件乱码检测（garble_check）
 
 > 对应方案：`next_doc/novel_writer_garble_post_step_check_plan.md`
-> 当前进度：**G1、G2、G3 已完成**。G1：配置 + 注册表 + 只读体检 + 驾驶舱入口 + report 模式记录；G2：skill 步骤内重试环；G3：所有步骤的统一守卫（归因、上游重置、计数、挂起问作者）。
+> 当前进度：**G1–G4 全部完成**。G1：配置 + 注册表 + 只读体检 + 驾驶舱入口 + report 模式记录；G2：skill 步骤内重试环；G3：所有步骤的统一守卫（归因、上游重置、计数、挂起问作者）；G4：驾驶舱状态展示与端到端回归。
 
 ## 1. 为什么需要
 
@@ -93,7 +93,19 @@ skill 步骤的重试环（`runner._run_skill_step_inner`）在回执、产出�
 
 状态存放在 `_studio/pipeline_state.json` 的 `garble_reruns`、`garble_accepted`、`garble_pending` 三个键中。
 
-## 8. 已知限制
+## 8. 驾驶舱与端到端（G4）
+
+- **体检结果附带守卫状态**：`scan_garble` 返回 `reruns`（每个「产出者 + 文件」已自动重做次数 / 上限）、`waiting`（挂起的步骤及其状态）与 `accepted`（作者已接受风险的文件）。审校页「🧪 乱码体检」展示这些内容。
+- **挂起决定的入口**：挂起的步骤在总控台以 `waiting_user` 显示，选项就是守卫写入的 `needs_user`，与其它 needs_user 的处理方式相同（选择后该步骤下次开始时生效）。
+- **端到端回归**（`tests/test_garble_check_g1.py`，完整流水线 + 桩执行器）：
+  - rerun 模式下，第 1 章总结第一次写成乱码，agent 重写后，流水线自动完成，最终文件干净；
+  - 默认 off 模式下，乱码总结不会被重做，与旧行为一致。
+
+## 9. 与 garble_guard 的关系
+
+`chapter_ops` 中的 `chNN.garble_guard`（正文守卫）保持原样不动。rerun 模式下：正文通常已在 skill 步骤内（G2）修好，`garble_guard` 成为第二道保险；off/report 模式下，行为与之前完全一致。两者的挂起选项文字相同，但各自记录在不同的步骤状态中，互不干扰。
+
+## 10. 已知限制
 
 - 统一守卫依赖步骤的 `outputs` 声明：python 步骤若不声明产出，重复写出完全相同的乱码内容无法被识别为本步骤产出；
 - 归因依赖 `file_writers` 记录，历史上未登记写入者的文件只会被提示，不会自动重跑；
@@ -102,8 +114,3 @@ skill 步骤的重试环（`runner._run_skill_step_inner`）在回执、产出�
 - 收件箱记录目前只落盘为 JSON，尚未接入收件箱页面的汇总展示；
 - 本机制不解决乱码产生的根因（例如 Windows 下的写入编码），需另行排查。
 
-## 9. 后续阶段
-
-| 阶段 | 内容 |
-|---|---|
-| G4 | 驾驶舱展示计数与挂起状态；端到端回归（真实流水线 + 桩执行器）；与 `garble_guard` 的关系说明 |

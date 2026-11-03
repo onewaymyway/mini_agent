@@ -358,3 +358,49 @@ def test_guard_off_in_report_mode_never_changes_status(book):
     status = run_step(book, _py_step("test.py_report_only"), invoker=None, settings=book.settings(),
                       handlers={"w": handler})
     assert status in (st.ST_PASSED, st.ST_WAITING_REVIEW)
+
+
+# ── G4：驾驶舱状态与端到端（完整流水线 + 桩执行器） ─────────────────────────────
+
+from fakes import FakeInvoker, drive_to_completion, STUB_HANDLERS  # noqa: E402
+
+
+def test_scan_exposes_guard_status_for_cockpit(book):
+    _set_mode(book, "rerun", max_reruns=2)
+    _write(book, SUMMARY, mojibake(NORMAL * 20))
+    step = _py_step("test.py_status", outputs=(SUMMARY,))
+    run_step(book, step, invoker=None, settings=book.settings(),
+             handlers={"w": _python_writer(SUMMARY, [mojibake(NORMAL * 20)])})
+    data = tool_api.scan_garble(str(book.root))["data"]
+    assert data["max_reruns"] == 2
+    assert data["reruns"]["counts"] and data["reruns"]["counts"][0]["file"] == SUMMARY
+
+
+def test_e2e_rerun_mode_regenerates_garbled_chapter_summary_and_completes(book):
+    _set_mode(book, "rerun")
+    calls = {"n": 0}
+
+    def archive_writer(ws):
+        # 第一次写出乱码总结，之后写出正常内容（模拟 agent 第二次重写成功）
+        calls["n"] += 1
+        body = mojibake(NORMAL * 20) if calls["n"] == 1 else NORMAL * 20
+        _write(ws, SUMMARY, body)
+
+    inv = FakeInvoker(book.root, writers={"ch01.archive": archive_writer})
+    drive_to_completion(book, inv, handlers=STUB_HANDLERS)
+    assert calls["n"] >= 2                                    # 同一步骤被重做
+    assert not GW.check_file(book.root / SUMMARY)              # 最终文件干净
+    assert "疑似乱码" in book.path("studio_log").read_text(encoding="utf-8")
+
+
+def test_e2e_off_mode_keeps_garbled_summary_as_before(book):
+    calls = {"n": 0}
+
+    def archive_writer(ws):
+        calls["n"] += 1
+        _write(ws, SUMMARY, mojibake(NORMAL * 20) if calls["n"] == 1 else NORMAL * 20)
+
+    inv = FakeInvoker(book.root, writers={"ch01.archive": archive_writer})
+    drive_to_completion(book, inv, handlers=STUB_HANDLERS)
+    assert calls["n"] == 1                                    # 默认关闭：不重做，与旧行为一致
+    assert GW.check_file(book.root / SUMMARY)

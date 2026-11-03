@@ -197,10 +197,30 @@ def scan_garble(ws: Workspace) -> Dict[str, Any]:
         hits.append(item)
     return {
         "mode": mode_of(settings),
+        "max_reruns": int(config_of(settings)["max_reruns"]),
         "files_checked": len(files),
         "garbled_count": len(hits),
         "garbled": hits,
+        "reruns": guard_status(ws),
     }
+
+
+def guard_status(ws: Workspace) -> Dict[str, Any]:
+    """统一守卫的运行状态（只读）：已自动重做次数、挂起中的步骤、作者已接受的文件。"""
+    from novel_writer import state as st
+
+    pending = _state_get(ws, "garble_pending")
+    counters = _state_get(ws, "garble_reruns")
+    accepted = _state_get(ws, "garble_accepted")
+    rows = []
+    for key, n in sorted(counters.items()):
+        producer, _, rel = key.partition("|")
+        rows.append({"producer": producer, "file": rel, "count": int(n)})
+    waiting = []
+    for sid, info in sorted(pending.items()):
+        status = st.get_step_state(ws, sid).get("status")
+        waiting.append({"step": sid, "file": info.get("file"), "producer": info.get("writer"), "status": status})
+    return {"counts": rows, "waiting": waiting, "accepted": sorted(accepted)}
 
 
 # ── report 模式：步骤前后快照 ─────────────────────────────────────────────────
