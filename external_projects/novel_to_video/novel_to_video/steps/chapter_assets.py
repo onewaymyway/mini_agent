@@ -380,8 +380,14 @@ def missing_portraits(project_dir: Path, no: int) -> List[str]:
             if not ent or not ent.get("asset_path") or not (project_dir / ent["asset_path"]).is_file():
                 missing.append(f"角色 {cid}")
         ent = locs.get(sh.get("location_id"))
-        if ent and (not ent.get("asset_path") or not (project_dir / ent["asset_path"]).is_file()):
-            missing.append(f"地点 {ent['id']}")
+        if ent:
+            from . import location_sheets     # 场景设定图（L5）：检查镜头实际使用的那张图
+            sheet = location_sheets.sheet_for_shot(ent, sh)
+            if sheet is not None:
+                if not location_sheets._file_ok(project_dir, sheet.get("asset_path")):
+                    missing.append(f"地点 {ent['id']}（设定图 {sheet['id']}）")
+            elif not ent.get("asset_path") or not (project_dir / ent["asset_path"]).is_file():
+                missing.append(f"地点 {ent['id']}")
         for pid in sh.get("prop_ids") or []:
             ent = props.get(pid)
             if ent and (not ent.get("asset_path") or not (project_dir / ent["asset_path"]).is_file()):

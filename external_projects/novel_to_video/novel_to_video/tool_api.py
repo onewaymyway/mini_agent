@@ -623,6 +623,17 @@ def start_portraits_background(project_dir: str, *, ids: Optional[List[str]] = N
                       fn=lambda: _unwrap(run_portraits(project_dir, ids=ids, regenerate=regenerate)))
 
 
+def start_presplit_all_background(project_dir: str, *, do_areas: bool = True, do_sheets: bool = True) -> Dict[str, Any]:
+    """L5：一键依次执行区域预拆解（区域 → 场景点 → 设定图）。do_areas=False 时只为已有场景点补全设定图。"""
+    def fn() -> Dict[str, Any]:
+        from .steps import location_auto as la
+        pdir = Path(project_dir)
+        p = _providers_for(pdir)
+        return la.run_all(pdir, p["text"], p["image"], do_areas=do_areas, do_sheets=do_sheets)
+    label = "区域预拆解：依次细化区域、场景点与设定图" if do_areas else "补全场景点设定图"
+    return _start_job(project_dir, name="presplit_all", label=label, scope="assets", fn=fn)
+
+
 def start_cover_background(project_dir: str) -> Dict[str, Any]:
     return _start_job(project_dir, name="cover", label="封面生成", scope="final",
                       fn=lambda: _unwrap(render_cover(project_dir)))

@@ -181,6 +181,11 @@ def validate_and_build(raw_shots: List[Dict[str, Any]], script: str, locations: 
         for cid in rs.get("character_ids") or []:
             if cid in char_by_id and cid not in cast:
                 cast.append(cid)
+        sheet_id = None                      # 场景设定图（L5）：只接受所选地点确实有的 sheet_id
+        loc_obj = next((l for l in locations if l.get("id") == loc), None) if loc else None
+        want_sheet = str(rs.get("sheet_id") or "").strip()
+        if loc_obj and want_sheet and any(x.get("id") == want_sheet for x in loc_obj.get("sheets") or []):
+            sheet_id = want_sheet
         base = {"scene_no": scene_no, "location_id": loc, "location_name": loc_name if loc is None else None,
                 "character_ids": cast, "prop_ids": shot_prop_ids, "prop_names": shot_prop_names,
                 "visual_hint_zh": str(rs.get("visual_hint_zh") or "").strip(),
@@ -188,6 +193,8 @@ def validate_and_build(raw_shots: List[Dict[str, Any]], script: str, locations: 
         for cid in list(shot_look_ids) + list(shot_look_labels):    # 指定了形象的角色一定出镜
             if cid not in cast:
                 base["character_ids"].append(cid)
+        if sheet_id:
+            base["sheet_id"] = sheet_id
         if shot_look_ids:
             base["look_ids"] = shot_look_ids
         if shot_look_labels:

@@ -249,6 +249,23 @@ def _spot_locs(locations: list) -> list:
     return out
 
 
+SHEET_RULE = ("11. 所选地点若在 locations 中带有 sheets（设定图列表），且镜头的画面明确落在其中某个视角或房间里，"
+              "sheet_id 填该设定图的 id（如 interior、exterior、room_01）；否则 sheet_id 置 null。"
+              "绝大多数镜头用默认视角即可，不要为了凑字段而指定；sheet_id 只能从该地点的 sheets 中选。\n")
+
+
+def _attach_sheets(locs: list, locations: list) -> str:
+    """把设定图列表挂到 locs 对应的地点上；库中没有任何设定图时返回空串（提示词与之前逐字相同）。"""
+    if not any(l.get("sheets") for l in locations):
+        return ""
+    by_id = {l["id"]: l for l in locations}
+    for e in locs:
+        src = by_id.get(e.get("id")) or {}
+        if src.get("sheets"):
+            e["sheets"] = [{"id": x["id"], "kind": x.get("kind"), "label": x.get("label")} for x in src["sheets"]]
+    return SHEET_RULE
+
+
 def shots_prompt(script: str, characters: list, locations: list, *, props: list | None = None,
                  looks_enabled: bool = False,
                  max_chars_per_shot: int = 0, expected_shots: int = 0, min_chars_per_shot: int = 0,
@@ -257,6 +274,7 @@ def shots_prompt(script: str, characters: list, locations: list, *, props: list 
               **({"looks": [l["label"] for l in c.get("looks") or []]} if looks_enabled else {})}
              for c in characters]
     locs = _spot_locs(locations) if spots_enabled else [{"id": l["id"], "name": l["name"]} for l in locations]
+    sheet_rule = _attach_sheets(locs, locations)
     info = {"task": "shots", "characters": chars, "locations": locs,
             "props": [{"id": p["id"], "name": p.get("name")} for p in props or []]}
     return (
@@ -275,8 +293,8 @@ def shots_prompt(script: str, characters: list, locations: list, *, props: list 
         + "7. 同一场次内相邻镜头的 visual_hint 必须不同：景别（远景/中景/近景/特写）、机位或主体动作至少一项不同，"
           "且描述的是该镜头自己的口播内容，不要把整场戏的画面复述到每个镜头里；拆分出的镜头画面必须各不相同；\n"
           "8. character_ids 列出该镜头画面中出现的所有角色，包括画面里出现但没有台词的角色（例如旁白描写林远的动作，就要包含林远）；\n"
-          + PROP_RULE + (LOOK_RULE if looks_enabled else "") +
-          "10. 只输出 JSON：{\"shots\": [{\"scene_no\": int, \"location_id\": str, "
+          + PROP_RULE + (LOOK_RULE if looks_enabled else "") + sheet_rule +
+          "10. 只输出 JSON：{\"shots\": [{\"scene_no\": int, \"location_id\": str, " + ("\"sheet_id\": str|null, " if sheet_rule else "")
         + (SPOT_FIELDS if spots_enabled else "") + "\"character_ids\": [..], \"prop_names\": [..], "
         "\"blocks\": [{\"type\": ..., \"text\": ..., \"speaker_id\": ..., \"speaker_name\": ...}], "
         "\"visual_hint_zh\": str, \"visual_hint_en\": str}]}\n\n"

@@ -231,6 +231,12 @@ def portrait_pass(project_dir: Path, image: ImageProvider, *, only_missing: bool
                 summary["skipped"].append(eid)
                 joblog.log(project_dir, "assets", f"跳过 {name}：尚未补全视觉设定", level="warn")
                 continue
+            if kind == "location" and ent.get("sheets"):      # 场景点的设定图（L5）：逐张生成
+                _spot_sheets_pass(project_dir, data, ent, kind, key, name, image, style, summary,
+                                  only_missing=only_missing, regenerate=regenerate)
+                if summary.get("stopped"):
+                    return summary
+                continue
             asset_exists = bool(ent.get("asset_path")) and (project_dir / ent["asset_path"]).is_file()
             if only_missing and not regenerate and asset_exists and item.get("portrait_status") in (
                     "pending", "approved"):
@@ -274,6 +280,46 @@ def portrait_pass(project_dir: Path, image: ImageProvider, *, only_missing: bool
     character_looks.portrait_pass_looks(project_dir, image, summary, only_missing=only_missing,
                                         ids=ids, regenerate=regenerate)
     return summary
+
+
+def _spot_sheets_pass(project_dir: Path, data: Dict[str, Any], ent: Dict[str, Any], kind: str, key: str, name: str,
+                      image: ImageProvider, style: str, summary: Dict[str, Any], *,
+                      only_missing: bool, regenerate: bool) -> None:
+    """有设定图的场景点：只生成缺失的设定图（或全部重生成），整组通过/驳回按同一个定妆审核项处理。"""
+    from . import location_sheets as LS
+    review = load_review(project_dir)
+    item = get_item(review, key)
+    files_ok = all(LS._file_ok(project_dir, sh.get("asset_path")) for sh in ent["sheets"])
+    if only_missing and not regenerate and files_ok and item.get("portrait_status") in ("pending", "approved"):
+        summary["skipped"].append(ent["id"])
+        joblog.log(project_dir, "assets", f"跳过 {name}（设定图已齐全）")
+        return
+    version = int(item.get("portrait_version") or 0)
+    if regenerate or item.get("portrait_status") == "stale" or not files_ok:
+        version += 1
+    joblog.log(project_dir, "assets", f"G-3 设定图生成：{name}（{len(ent['sheets'])} 张）")
+    res = LS.generate_spot_sheets(project_dir, ent, image, style, version=version,
+                                  ratio=video_format.load(project_dir).aspect_ratio,
+                                  only_missing=only_missing and not regenerate)
+    _save_entities(project_dir, kind, data)          # 已生成的设定图路径先落盘，失败的下次只补缺失的
+    review = load_review(project_dir)
+    item = get_item(review, key)
+    if all(LS._file_ok(project_dir, sh.get("asset_path")) for sh in ent["sheets"]):
+        exterior = next((sh for sh in ent["sheets"] if sh.get("kind") == "exterior"), ent["sheets"][0])
+        ent["asset_path"] = exterior.get("asset_path")
+        _save_entities(project_dir, kind, data)
+        item.update(portrait_status="approved" if autogate.is_auto(project_dir, "asset_portrait") else "pending",
+                    portrait_version=version, last_error=None)
+        summary["done"].append(ent["id"])
+        joblog.log(project_dir, "assets", f"G-3 设定图完成：{name}", level="ok")
+    else:
+        err = res["failed"][0]["error"] if res.get("failed") else (res.get("stopped") or "未知错误")
+        item.update(portrait_status="failed", last_error=f"G-3 设定图失败：{err}")
+        summary["failed"].append({"id": ent["id"], "error": err})
+        joblog.log(project_dir, "assets", f"G-3 设定图失败：{name}：{err}", level="error")
+        if res.get("stopped"):
+            summary["stopped"] = res["stopped"]
+    save_review(project_dir, review)
 
 
 # ---------------------------------------------------------------- 审核与人工编辑

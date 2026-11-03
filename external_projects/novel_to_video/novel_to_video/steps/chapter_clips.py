@@ -20,6 +20,7 @@ from ..project_store import read_json
 from ..providers.video import VideoProvider
 from . import character_looks
 from .chapter_assets import missing_portraits
+from . import location_sheets
 from .global_visual import DEFAULT_ART_STYLE
 
 
@@ -34,7 +35,11 @@ def build_prompt(art_style: str, shot: Dict[str, Any], chars: Dict[str, Dict], l
             if anchor:
                 char_anchors.append(anchor)
     loc = locs.get(shot.get("location_id")) or {}
-    loc_anchor = loc.get("visual_anchor_en") or ""
+    sheet = location_sheets.sheet_for_shot(loc, shot) if loc else None      # 场景设定图（L5）：镜头选用的视角
+    loc_anchor = (sheet or {}).get("visual_anchor_en") or loc.get("visual_anchor_en") or ""
+    marks = location_sheets.markers_for(loc, sheet) if sheet else []
+    if marks:
+        loc_anchor = loc_anchor + ". Key objects: " + "; ".join(m.get("visual_anchor_en") or m["name"] for m in marks)
     prop_anchors = []
     for pid in shot.get("prop_ids") or []:
         pr = (props or {}).get(pid)
@@ -87,8 +92,11 @@ def _reference_images(project_dir: Path, sh: Dict[str, Any], chars: Dict[str, Di
         if asset:
             refs.append(project_dir / asset)
     loc = locs.get(sh.get("location_id"))
-    if loc and loc.get("asset_path"):
-        refs.append(project_dir / loc["asset_path"])
+    if loc:
+        sheet = location_sheets.sheet_for_shot(loc, sh)
+        asset = (sheet or {}).get("asset_path") or loc.get("asset_path")
+        if asset:
+            refs.append(project_dir / asset)
     # 视频接口最多 3 张参考图：角色与地点优先，有余量时才带道具（道具外观始终写在提示词里）
     for pid in sh.get("prop_ids") or []:
         pr = (props or {}).get(pid)

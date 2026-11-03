@@ -17,6 +17,7 @@ from ..providers.text import TextLLM
 from ..review import entity_key, get_item, load_review, save_review
 from .global_visual import StepError, parse_json_object
 from .chapter_assets import _next_loc_id
+from . import location_context
 
 MAX_CANDIDATES = 8
 MAX_CONTEXT_LINES = 40
@@ -34,17 +35,14 @@ def _locations(project_dir: Path) -> Dict[str, Any]:
     return read_json(project_dir / "global" / "locations.json")
 
 
-def _area_context(project_dir: Path, area: Dict[str, Any]) -> List[str]:
-    """已有剧本中，场次标题或台词里出现该区域名的行（最多 MAX_CONTEXT_LINES 行）。"""
-    names = [area["name"]] + list(area.get("aliases") or [])
-    out: List[str] = []
-    for script in sorted((project_dir / "chapters").glob("*/script.md")):
-        for line in script.read_text(encoding="utf-8").splitlines():
-            if line.strip() and any(n and n in line for n in names):
-                out.append(line.strip())
-                if len(out) >= MAX_CONTEXT_LINES:
-                    return out
-    return out
+def _area_context(project_dir: Path, area: Dict[str, Any]) -> Dict[str, Any]:
+    """区域预拆解的上下文：原始正文中提到该区域的段落（首选）+ 已有剧本中提到该区域的行（补充）。"""
+    names = location_context.names_of(area)
+    return {
+        "novel_paragraphs": location_context.novel_paragraphs(
+            project_dir, names, max_paras=location_context.PRESPLIT_PARAS, max_chars=location_context.PRESPLIT_CHARS),
+        "script_lines": location_context.script_lines(project_dir, names),
+    }
 
 
 def propose_spots(project_dir: Path, area_id: str, text_llm: TextLLM) -> List[Dict[str, Any]]:
@@ -60,10 +58,11 @@ def propose_spots(project_dir: Path, area_id: str, text_llm: TextLLM) -> List[Di
     existing = {n for l in locs for n in [l.get("name")] + list(l.get("aliases") or []) if n}
     context = _area_context(project_dir, area)
     info = {"task": "presplit", "area": area["name"], "description_zh": (area.get("description_zh") or "")[:800],
-            "existing": sorted(existing), "max": MAX_CANDIDATES, "context": context}
+            "existing": sorted(existing), "max": MAX_CANDIDATES,
+            "novel_paragraphs": context["novel_paragraphs"], "script_lines": context["script_lines"]}
     prompt = (
         f"TASK=presplit\n为区域「{area['name']}」列出短剧里常用的具体场景点候选（办公室、街道、住所、仓库……），"
-        f"最多 {MAX_CANDIDATES} 个。只列在剧本上下文中实际出现或明显需要的场所，不要列无关紧要的地方；"
+        f"最多 {MAX_CANDIDATES} 个。只列在原文段落（novel_paragraphs，首选依据）或剧本行（script_lines）中实际出现或明显需要的场所，不要列无关紧要的地方；"
         "不要与 existing 中已有的名称重复；每个给出 spot_kind（interior 室内 / exterior 室外）和一句理由。\n"
         "只输出 JSON：{\"spots\": [{\"name\": str, \"spot_kind\": \"interior|exterior\", \"reason\": str}]}\n\n"
         f"RULE_INPUT={json.dumps(info, ensure_ascii=False)}"

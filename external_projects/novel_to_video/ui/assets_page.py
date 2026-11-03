@@ -98,6 +98,16 @@ def _presplit_panel(pdir: str) -> None:
     if not on:
         st.info("区域预拆解已关闭。")
         return
+    st.markdown("**一键依次执行（推荐）**")
+    st.caption("按区域顺序：提议场景点 → 直接写入 → 为每个场景点生成设定图（外观全景、内部总览、主要房间；"
+               "特殊标志物画入对应设定图）。提议以原始正文中提到该区域/场所的段落为首选依据。"
+               "全程后台运行，日志见下方「素材生成日志」，可随时立即停止。已处理过的区域会跳过。")
+    c1, c2 = st.columns(2)
+    if c1.button("一键依次细化全部区域", key="presplit_all", type="primary"):
+        _start_result(tool_api.start_presplit_all_background(pdir))
+    if c2.button("只为已有场景点补全设定图", key="presplit_sheets_only"):
+        _start_result(tool_api.start_presplit_all_background(pdir, do_areas=False))
+    st.markdown("**逐个区域手动提议（勾选后确认写入）**")
     try:
         locs = _read_json(Path(pdir) / "global" / "locations.json").get("locations", [])
     except (OSError, ValueError):
@@ -272,6 +282,20 @@ def _entity_detail(pdir: str, r: dict) -> None:
                if ent.get(f"{k}_source")}
         if src:
             st.caption("来源：" + "，".join(f"{k}={v}" for k, v in src.items()))
+        if r["kind"] == "location" and ent.get("sheets"):      # 场景设定图（L5）
+            basis = {"novel_text": "依据正文", "inferred": "依据推断"}.get(ent.get("sheets_basis"), "未标注依据")
+            st.caption(f"场景设定图（{basis}）：" + "、".join(sh.get("label", "") for sh in ent["sheets"]))
+            for m in ent.get("markers") or []:
+                st.caption(f"标志物「{m['name']}」：{m.get('description_zh') or m.get('visual_anchor_en') or ''}")
+            cols = st.columns(min(4, len(ent["sheets"])))
+            for i, sh in enumerate(ent["sheets"]):
+                with cols[i % len(cols)]:
+                    st.caption(sh.get("label", ""))
+                    path = Path(pdir) / sh["asset_path"] if sh.get("asset_path") else None
+                    if path and path.is_file():
+                        st.image(str(path), use_container_width=True)
+                    else:
+                        st.caption("（尚未生成）")
         if st.button("保存修改", key=f"save_{r['key']}"):
             clean = {k: v for k, v in fields.items() if v is not None and ent.get(k) != v}
             # 模型起草/推断的性别不算确认：值相同也要写入，使来源变为 user（否则「通过设定」永远点不了）

@@ -149,3 +149,12 @@ novel_output/                       # 项目数据（默认位置，已加入 .g
     ├── exports/                    # video.mp4 全书成片；confirm.json 人工确认记录；stale.json 表示需重新合成
     └── logs/                       # api_calls.jsonl 外部调用留痕；llm_trace.jsonl 文本模型完整输入输出；job.jsonl 实时日志；batch_runs.json 累计耗时
 ```
+
+## 地点细化 L5（2026-11-03）
+
+- 区域预拆解：一键依次执行（区域 → 场景点 → 设定图），后台任务，`presplit_status` 记录已处理区域。
+- 提议依据：原始正文段落（`steps/location_context.py`）优先，剧本行补充。
+- 场景设定图：`global/locations.json` 中场景点新增 `sheets`（exterior / interior / room_NN）、`markers`、`sheets_basis`；图片位于 `global/assets/sheets/`。
+- 镜头：`shots.yaml` 可带 `sheet_id`；C-7/C-8 使用所选设定图的锚点与参考图；缺图由 `missing_portraits` 拦截。
+- 代码：`steps/location_auto.py`（一键执行）、`steps/location_sheets.py`（设定图）、`steps/location_context.py`（上下文检索）。
+- 设计与限制见 `next_doc/novel_to_video_location_spots_plan.md` 第 11 节。
