@@ -177,4 +177,4 @@ def test_page_renders_new_tabs_with_project(tmp_path, monkeypatch):
     at.run()
     assert not at.exception, at.exception
     labels = [t.label for t in at.tabs]
-    assert labels == ["对话", "题材卡", "灵感池", "发散", "世界观", "角色", "剧情", "质检"]
+    assert labels == ["对话", "题材卡", "灵感池", "发散", "世界观", "角色", "剧情", "质检", "交接"]

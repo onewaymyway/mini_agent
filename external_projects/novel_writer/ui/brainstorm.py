@@ -370,6 +370,46 @@ def _options_section(root: str) -> None:
                     show_error(r) if not r["ok"] else st.rerun()
 
 
+def _handoff_tab(root: str) -> None:
+    res = BA.get_project(root)
+    if not res["ok"]:
+        show_error(res)
+        return
+    meta, versions = res["data"]["meta"], res["data"]["versions"]
+    st.caption("把一个定版版本交接成新小说：题材卡进入向导意图，整包构思作为种子参考。交接后两者不再自动同步。")
+    if not versions:
+        st.info("还没有定版版本。先在下方定版，再交接。")
+        _snapshot_box(root)
+        return
+    labels = {v["n"]: f"v{v['n']}　{v.get('note') or '（无备注）'}　{v['created_at']}" for v in versions}
+    nums = [v["n"] for v in versions]
+    chosen = st.selectbox("交接的版本", nums, index=len(nums) - 1, format_func=lambda n: labels[n], key="bs_ho_ver")
+    title = st.text_input("新小说的书名", value=meta.get("title", ""), key="bs_ho_title")
+    if st.button("▶ 创建小说", key="bs_ho_go", disabled=not title.strip()):
+        r = BA.handoff_to_novel(root, version=chosen, title=title.strip())
+        if r["ok"]:
+            st.session_state["bs_ho_last"] = r["data"]["novel_root"]
+            st.success(f"已创建小说「{r['data']['title']}」（来自 v{r['data']['version']}）。")
+        else:
+            show_error(r)
+    if st.session_state.get("bs_ho_last"):
+        st.caption("新小说的工作目录：`" + st.session_state["bs_ho_last"] + "`（在书架中可以找到）")
+    linked = BA.linked_novels(root)
+    if linked["ok"] and linked["data"]:
+        st.markdown("**已交接的小说**")
+        for item in linked["data"]:
+            st.write(f"• {item['title']}（v{item['version']}，{item['at']}）")
+    _snapshot_box(root)
+
+
+def _snapshot_box(root: str) -> None:
+    with st.expander("📌 定版当前草稿"):
+        note = st.text_input("版本备注", key="bs_snap_note")
+        if st.button("定版", key="bs_snap_go"):
+            r = BA.snapshot_version(root, note)
+            show_error(r) if not r["ok"] else st.rerun()
+
+
 def page_brainstorm() -> None:
     st.header("💡 灵感构思工作室")
     st.caption("独立于小说项目：先把灵感、题材、世界观与剧情打磨成构思包，之后再据此创建小说。")
@@ -377,7 +417,7 @@ def page_brainstorm() -> None:
     root = _current_root()
     if not root:
         return
-    tabs = st.tabs(["对话", "题材卡", "灵感池", "发散", "世界观", "角色", "剧情", "质检"])
+    tabs = st.tabs(["对话", "题材卡", "灵感池", "发散", "世界观", "角色", "剧情", "质检", "交接"])
     with tabs[0]:
         _dialogue_tab(root)
     with tabs[1]:
@@ -394,3 +434,5 @@ def page_brainstorm() -> None:
         _plot_tab(root)
     with tabs[7]:
         _check_tab(root)
+    with tabs[8]:
+        _handoff_tab(root)

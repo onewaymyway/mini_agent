@@ -190,4 +190,4 @@ def test_page_has_plot_tab(tmp_path, monkeypatch):
     at.session_state["bs_root"] = root
     at.run()
     assert not at.exception, at.exception
-    assert [t.label for t in at.tabs] == ["对话", "题材卡", "灵感池", "发散", "世界观", "角色", "剧情", "质检"]
+    assert [t.label for t in at.tabs] == ["对话", "题材卡", "灵感池", "发散", "世界观", "角色", "剧情", "质检", "交接"]

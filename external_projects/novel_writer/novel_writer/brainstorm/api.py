@@ -201,3 +201,21 @@ def option_discard(root: str, oid: str) -> Dict[str, Any]:
 
 def option_undo_merge(root: str, oid: str) -> Dict[str, Any]:
     return _guard(lambda: O.undo_merge(_ws(root), oid))
+
+
+# ── B5：交接到小说 ──
+from novel_writer.brainstorm import handoff as H  # noqa: E402
+
+
+def handoff_to_novel(root: str, version: Optional[int] = None, title: Optional[str] = None,
+                     novels_dir: Optional[str] = None, index_file: Optional[str] = None) -> Dict[str, Any]:
+    return _guard(lambda: H.handoff(_ws(root), version=version, title=title,
+                                    novels_dir=novels_dir, index_file=index_file))
+
+
+def linked_novels(root: str) -> Dict[str, Any]:
+    return _guard(lambda: H.linked_novels(_ws(root)))
+
+
+def snapshot_version(root: str, note: str = "") -> Dict[str, Any]:
+    return _guard(lambda: {"version": C.snapshot(_ws(root), note)})

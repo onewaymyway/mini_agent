@@ -154,6 +154,7 @@ PATHS: Dict[str, str] = {
     "studio_inbox": f"{STUDIO_DIR}/inbox",
     "studio_requests": f"{STUDIO_DIR}/requests",
     "intake_note": f"{STUDIO_DIR}/intake_note.md",
+    "brainstorm_seed_note": f"{STUDIO_DIR}/seed/brainstorm_seed.md",
 }
 
 # 项目恢复/体检时检查的关键文件：(路径键, 说明, 是否在规划完成后才需要)

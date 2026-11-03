@@ -142,6 +142,18 @@ def _selfcheck_block(ws: Workspace, step: S.StepDef) -> str:
         "只有在确实无法执行命令时才可以跳过这一步。\n")
 
 
+def _intake_block(ws: Workspace) -> str:
+    """注入 prompt 的作者意图：新建向导的意图 + 构思种子（若由灵感构思工作室交接而来）。"""
+    parts = []
+    note = _read_text(ws.path("intake_note")).strip()
+    if note:
+        parts.append(note)
+    seed = _read_text(ws.path("brainstorm_seed_note")).strip()
+    if seed:
+        parts.append("【构思种子（来自灵感构思工作室；仅供参考，与蓝图冲突时以蓝图为准）】\n" + seed)
+    return "\n\n".join(parts) or "（无）"
+
+
 def build_prompt(ws: Workspace, step: S.StepDef, *, hint: str = "", protected: str = "") -> str:
     note = _read_text(_note_file(ws, "author_notes", step.id))
     answers_raw = read_json(_answers_file(ws, step.id), default=None)
@@ -153,7 +165,7 @@ def build_prompt(ws: Workspace, step: S.StepDef, *, hint: str = "", protected: s
         title=step.title,
         instructions=step.instructions or "（按 skill 说明执行）",
         inputs=_input_listing(ws, step),
-        intake=_read_text(ws.path("intake_note")) or "（无）",
+        intake=_intake_block(ws),
         author_notes=note or "（无）",
         answers=answers,
         hint=hint_block,
