@@ -137,50 +137,149 @@ def _is_duplicate(ws: BrainstormWorkspace, module: str, op: str, value: Any) -> 
     return any(item["text"].strip() == text for item in existing)
 
 
+def _emit(log: Optional[Callable[[str, str], None]], kind: str, text: str) -> None:
+    if log is not None:
+        log(kind, text)
+
+
 def run(ws: BrainstormWorkspace, *, modules: Optional[List[str]] = None, scope: str = "pending",
-        recent_rounds: int = 0, generator: Optional[Generator] = None) -> Dict[str, Any]:
+        recent_rounds: int = 0, generator: Optional[Generator] = None,
+        log: Optional[Callable[[str, str], None]] = None) -> Dict[str, Any]:
+    """整理对话。log(kind, text) 逐步接收过程信息（范围、提示词、模型调用、每条候选的处理结果……）。"""
     from novel_writer.brainstorm import chat as CH
 
     chosen = list(modules) if modules else list(DISTILLABLE)
     bad = [m for m in chosen if m not in DISTILLABLE]
     if bad:
         raise BrainstormError(f"不能整理的模块：{', '.join(bad)}")
+    _emit(log, "info", "模块：" + "、".join(MODULE_LABEL[m] for m in chosen))
     start, end = select_range(ws, scope, recent_rounds)
     records = CH.history(ws)[start:end]
-    if not any(not r.get("error") for r in records):
+    valid = [r for r in records if not r.get("error")]
+    _emit(log, "info", f"对话范围：第 {start} 至 {max(start, end - 1)} 条记录，共 {len(records)} 条，其中有效 {len(valid)} 条")
+    if not valid:
         raise BrainstormError("没有需要整理的对话")
     if generator is None:
         from novel_writer.brainstorm.spark import default_generator
         generator = default_generator
-    out = parse_output(generator(build_prompt(ws, records, start, chosen)))
+    prompt = build_prompt(ws, records, start, chosen)
+    _emit(log, "info", f"提示词：{len(prompt)} 字（含当前卡片摘要与对话全文），开始调用模型")
+    raw = generator(prompt)
+    _emit(log, "info", f"模型返回 {len(str(raw))} 字，解析结构化结果")
+    out = parse_output(raw)
+    _emit(log, "info", f"解析得到 {len(out['candidates'])} 条候选，纪要 {len(out['minutes'])} 字")
 
     batch = "b" + uuid.uuid4().hex[:8]
     created, skipped = [], []
-    for cand in out["candidates"]:
+    for i, cand in enumerate(out["candidates"], 1):
+        tag = f"候选 #{i}"
         if not isinstance(cand, dict):
             skipped.append("格式不对的条目")
+            _emit(log, "warning", f"{tag}：格式不对，跳过")
             continue
         module, op = cand.get("module"), cand.get("op")
         if module not in chosen:
             skipped.append(f"模块不在所选范围内：{module}")
+            _emit(log, "warning", f"{tag}：模块 {module} 不在所选范围内，跳过")
             continue
         turns = [t for t in (cand.get("source_turns") or []) if isinstance(t, int) and start <= t < end]
         value = cand.get("value")
         target = cand.get("target") or None
         if _is_duplicate(ws, module, op, value):
             skipped.append(f"已存在，跳过：{module}")
+            _emit(log, "info", f"{tag}：{MODULE_LABEL[module]} 与已有内容相同，跳过")
             continue
         try:
             conflict = detect_conflict(ws, module, op, target, value)
             created.append(P.create(ws, module, op, value, target=target, reason=cand.get("reason", ""),
                                     batch=batch, source_turns=turns, conflict=conflict))
+            if conflict:
+                _emit(log, "warning", f"{tag}：{MODULE_LABEL[module]}（{op}）与现有内容冲突 → 待确认，标为冲突")
+            else:
+                _emit(log, "success", f"{tag}：{MODULE_LABEL[module]}（{op}）→ 待确认，来源 {turns or '—'}")
         except BrainstormError as exc:
             skipped.append(f"无效条目（{module}）：{exc}")
+            _emit(log, "warning", f"{tag}：无效（{exc}），跳过")
 
     minutes_path = _write_minutes(ws, batch, start, end, chosen, out["minutes"], created)
+    rel = str(minutes_path.relative_to(ws.root)).replace("\\", "/")
+    _emit(log, "info", f"纪要已写入：{rel}")
     _set_checkpoint(ws, end)
-    return {"batch": batch, "range": [start, end], "proposals": created, "skipped": skipped,
-            "minutes": str(minutes_path.relative_to(ws.root)).replace("\\", "/")}
+    _emit(log, "info", f"检查点推进到第 {end} 条")
+    conflicts = sum(1 for p in created if p["conflict"])
+    _emit(log, "success", f"完成：待确认 {len(created)} 条，其中冲突 {conflicts} 条，跳过 {len(skipped)} 条")
+    return {"batch": batch, "range": [start, end], "proposals": created, "skipped": skipped, "minutes": rel}
+
+
+# ── 后台运行与过程日志 ──
+
+RUNS_DIR = "_studio/distill_runs"
+
+
+def _run_files(ws: BrainstormWorkspace, run_id: str):
+    base = ws.root / RUNS_DIR
+    return base / f"{run_id}.json", base / f"{run_id}.jsonl"
+
+
+def start_run(ws: BrainstormWorkspace, *, modules: Optional[List[str]] = None, scope: str = "pending",
+              recent_rounds: int = 0, generator: Optional[Generator] = None) -> str:
+    """在后台整理对话，过程日志逐条写入文件。返回运行编号。"""
+    import threading
+
+    ws.meta()
+    run_id = "d" + uuid.uuid4().hex[:8]
+    status_path, log_path = _run_files(ws, run_id)
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text("", encoding="utf-8")
+    atomic_write_json(status_path, {"run": run_id, "status": "running", "started_at": _now()})
+    threading.Thread(target=_run_job, args=(str(ws.root), run_id, list(modules) if modules else None, scope,
+                                             recent_rounds, generator),
+                     daemon=True, name=f"distill-{run_id}").start()
+    return run_id
+
+
+def _run_job(root: str, run_id: str, modules, scope, recent_rounds, generator) -> None:
+    from novel_writer.brainstorm.runlog import Capture
+
+    ws = BrainstormWorkspace(root)
+    status_path, log_path = _run_files(ws, run_id)
+
+    def write(kind: str, text: str) -> None:
+        line = {"t": _now(), "kind": kind, "text": text}
+        with log_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(line, ensure_ascii=False) + "\n")
+
+    def sink(event: Dict[str, str]) -> None:
+        write(event.get("kind", "info"), event.get("text", ""))
+
+    try:
+        with Capture(sink):                     # 模型调用过程中 agent 的工具调用等也一并记录
+            result = run(ws, modules=modules, scope=scope, recent_rounds=recent_rounds,
+                         generator=generator, log=write)
+        atomic_write_json(status_path, {"run": run_id, "status": "done", "finished_at": _now(), "result": {
+            "batch": result["batch"], "range": result["range"], "minutes": result["minutes"],
+            "proposals": len(result["proposals"]),
+            "conflicts": sum(1 for p in result["proposals"] if p["conflict"]),
+            "skipped": len(result["skipped"]),
+        }})
+    except Exception as exc:  # noqa: BLE001 - 失败要写进日志与状态，界面才能显示
+        write("error", f"{type(exc).__name__}：{exc}")
+        atomic_write_json(status_path, {"run": run_id, "status": "error", "finished_at": _now(), "error": str(exc)})
+
+
+def run_state(ws: BrainstormWorkspace, run_id: str) -> Dict[str, Any]:
+    status_path, log_path = _run_files(ws, run_id)
+    status = read_json(status_path, default=None)
+    if not isinstance(status, dict):
+        raise BrainstormError(f"找不到整理任务：{run_id}")
+    events = []
+    if log_path.is_file():
+        for line in log_path.read_text(encoding="utf-8").splitlines():
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return {**status, "events": events}
 
 
 def _write_minutes(ws, batch, start, end, modules, body, created) -> Any:

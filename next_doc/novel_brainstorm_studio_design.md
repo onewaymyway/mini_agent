@@ -211,3 +211,10 @@ B0 数据层 → B1 灵感池与发散 → B2 对话与提议 → B3 世界观/�
 - 测试 `tests/test_brainstorm_distill.py` 15 例；
 - 尚未用真实模型验证。
 
+## 附：整理过程的实时日志（追加需求）
+
+- `distill.run` 接受 `log` 回调，逐步输出范围、提示词、模型调用、每条候选的结果、纪要、检查点与汇总；
+- `distill.start_run` / `run_state`：后台运行，过程写入 `_studio/distill_runs/`，并通过 `runlog.Capture` 记录模型调用中 agent 的过程输出；
+- 页面：整理面板实时显示过程，结束后可展开查看上一次整理的日志；
+- 测试 `tests/test_brainstorm_distill.py` 增加 5 例（共 22 例）。
+

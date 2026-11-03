@@ -172,12 +172,43 @@ def _finished_log(root: str, turn_id: str) -> None:
         _render_events(events, key_prefix=f"done_{turn_id}")
 
 
+@st.fragment(run_every=1)
+def _live_distill(root: str, run_id: str) -> None:
+    res = BA.distill_state(root, run_id)
+    if not res["ok"]:
+        show_error(res)
+        return
+    data = res["data"]
+    running = data["status"] == "running"
+    st.markdown("**整理过程**" + ("（进行中……）" if running else "（已完成）"))
+    _render_events(data["events"], key_prefix=f"dist_{run_id}")
+    if not running:
+        st.session_state["bs_distill_last"] = run_id
+        st.session_state.pop("bs_distill_run", None)
+        st.rerun(scope="app")
+
+
+def _finished_distill(root: str, run_id: str) -> None:
+    res = BA.distill_state(root, run_id)
+    if not res["ok"]:
+        return
+    data = res["data"]
+    with st.expander(f"上一次整理的过程（{len(data['events'])} 条）", expanded=False):
+        _render_events(data["events"], key_prefix=f"dist_done_{run_id}")
+    if data["status"] == "done":
+        r = data["result"]
+        st.session_state["bs_minutes_last"] = r["minutes"]
+        st.success(f"整理完成：待确认 {r['proposals']} 条，其中冲突 {r['conflicts']} 条，跳过 {r['skipped']} 条。")
+    elif data["status"] == "error":
+        st.error("整理失败：" + str(data.get("error", "")))
+
+
 def _distill_box(root: str) -> None:
     from novel_writer.brainstorm import distill as DS
 
     with st.expander("📝 整理对话（手动）：把对话提取成待确认的修改与 Markdown 纪要"):
-        st.caption("只有点击「整理」才会运行。提取结果进入下方的待确认列表，不会直接写入卡片。"
-                   "与现有内容冲突的条目会标出，可以交给对话处理。")
+        st.caption("只有点击「整理」才会运行。整理过程的每一步都会显示在下方。"
+                   "提取结果进入待确认列表，不会直接写入卡片。")
         scope = st.radio("范围", ["上次整理之后的全部对话", "最近几轮"], horizontal=True, key="bs_dist_scope")
         rounds = 0
         if scope == "最近几轮":
@@ -185,19 +216,17 @@ def _distill_box(root: str) -> None:
         labels = {m: DS.MODULE_LABEL[m] for m in DS.DISTILLABLE}
         modules = st.multiselect("只整理这些模块", list(DS.DISTILLABLE), default=list(DS.DISTILLABLE),
                                  format_func=lambda m: labels[m], key="bs_dist_modules")
-        if st.button("▶ 整理", key="bs_dist_go", disabled=not modules):
-            with st.spinner("正在整理对话……"):
-                r = BA.distill_run(root, modules=modules,
-                                   scope="recent" if rounds else "pending", recent_rounds=rounds)
+        running = st.session_state.get("bs_distill_run")
+        if st.button("▶ 整理", key="bs_dist_go", disabled=not modules or bool(running)):
+            r = BA.distill_start(root, modules=modules, scope="recent" if rounds else "pending", recent_rounds=rounds)
             if r["ok"]:
-                d = r["data"]
-                st.success(f"整理出 {len(d['proposals'])} 条待确认修改，"
-                           f"其中 {sum(1 for x in d['proposals'] if x['conflict'])} 条与现有内容冲突。")
-                for note in d["skipped"][:8]:
-                    st.caption("跳过：" + note)
-                st.session_state["bs_minutes_last"] = d["minutes"]
-            else:
-                show_error(r)
+                st.session_state["bs_distill_run"] = r["data"]["run"]
+                st.rerun()
+            show_error(r)
+        if running:
+            _live_distill(root, running)
+        elif st.session_state.get("bs_distill_last"):
+            _finished_distill(root, st.session_state["bs_distill_last"])
         _minutes_box(root)
 
 

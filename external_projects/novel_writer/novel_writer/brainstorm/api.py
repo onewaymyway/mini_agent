@@ -254,3 +254,12 @@ def distill_read_minutes(root: str, rel: str) -> Dict[str, Any]:
 
 def distill_pending_range(root: str) -> Dict[str, Any]:
     return _guard(lambda: list(DS.select_range(_ws(root), "pending")))
+
+
+def distill_start(root: str, modules=None, scope: str = "pending", recent_rounds: int = 0, generator=None) -> Dict[str, Any]:
+    return _guard(lambda: {"run": DS.start_run(_ws(root), modules=modules, scope=scope,
+                                               recent_rounds=recent_rounds, generator=generator)})
+
+
+def distill_state(root: str, run_id: str) -> Dict[str, Any]:
+    return _guard(lambda: DS.run_state(_ws(root), run_id))

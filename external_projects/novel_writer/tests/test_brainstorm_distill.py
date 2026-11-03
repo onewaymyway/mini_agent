@@ -219,3 +219,73 @@ def test_show_error_accepts_both_shapes(monkeypatch):
     components.show_error({"ok": False, "error": "乙"})
     components.show_error({"ok": False})
     assert shown == ["甲", "乙", "未知错误"]
+
+
+# ── 整理过程的实时日志 ──
+
+import time  # noqa: E402
+
+
+def _wait_run(ws, run_id, timeout=10.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        st_ = DS.run_state(ws, run_id)
+        if st_["status"] != "running":
+            return st_
+        time.sleep(0.02)
+    raise AssertionError("整理任务未在时限内结束")
+
+
+def test_run_emits_step_by_step_log(ws):
+    _talk(ws, 3)
+    lines = []
+    DS.run(ws, generator=_gen(BASE), log=lambda k, t: lines.append((k, t)))
+    texts = [t for _, t in lines]
+    assert texts[0].startswith("模块：")
+    assert any(t.startswith("对话范围：第 0 至 5") for t in texts)
+    assert any(t.startswith("提示词：") for t in texts)
+    assert any("开始调用模型" in t for t in texts)
+    assert any(t.startswith("解析得到 3 条候选") for t in texts)
+    assert any("与现有内容冲突" in t for t in texts)                      # 冲突的候选有说明
+    assert any(t.startswith("纪要已写入") for t in texts)
+    assert texts[-1].startswith("完成：待确认")
+    assert any(k == "warning" for k, _ in lines) and any(k == "success" for k, _ in lines)
+
+
+def test_background_run_records_agent_output_and_result(ws):
+    from mini_agent.ui import renderer as RD
+
+    _talk(ws, 2)
+
+    def agent_like(prompt):
+        RD.R.print_tool_call("read_file", {"path": "working/premise.md"})
+        return json.dumps(BASE, ensure_ascii=False)
+    run_id = DS.start_run(ws, generator=agent_like)
+    st_ = _wait_run(ws, run_id)
+    assert st_["status"] == "done"
+    kinds = [e["kind"] for e in st_["events"]]
+    assert "tool_call" in kinds                                             # 模型调用过程也记录了
+    assert st_["events"][-1]["kind"] == "success"
+    assert st_["result"]["proposals"] == 3 and st_["result"]["conflicts"] >= 1
+
+
+def test_background_run_failure_is_logged(ws):
+    _talk(ws, 2)
+    run_id = DS.start_run(ws, generator=lambda p: "没有 JSON")
+    st_ = _wait_run(ws, run_id)
+    assert st_["status"] == "error" and st_["events"][-1]["kind"] == "error"
+    assert DS._checkpoint(ws) == 0                                          # 失败不推进检查点
+
+
+def test_unknown_run_id_is_an_error(ws):
+    with pytest.raises(BrainstormError):
+        DS.run_state(ws, "d_missing")
+
+
+def test_api_distill_start_and_state(tmp_path):
+    root = BA.create_project("海峡", base=str(tmp_path))["data"]["root"]
+    _talk(BrainstormWorkspace(root), 2)
+    run_id = BA.distill_start(root, modules=["cast"], generator=_gen(BASE))["data"]["run"]
+    st_ = _wait_run(BrainstormWorkspace(root), run_id)
+    assert st_["status"] == "done"
+    assert BA.distill_state(root, run_id)["ok"]
