@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 from .. import autogate
 from .. import joblog
@@ -44,7 +44,35 @@ def _speaker_context(script: str, name: str) -> List[str]:
     return out
 
 
-def _draft_entity(project_dir: Path, text_llm: TextLLM, name: str, context: List[str], chapter_no: int, eid: str) -> Dict[str, Any]:
+def _chapter_text(project_dir: Path, no: int) -> str:
+    try:
+        return source_text(project_dir, no)
+    except (OSError, KeyError, ValueError):
+        return ""
+
+
+def _infer_gender(project_dir: Path, text_llm: TextLLM, name: str, context: List[str], chapter_no: int,
+                  chapter_text: str) -> Tuple[Optional[str], Optional[str]]:
+    """补建角色的性别自动确定：把正文中提到该角色的段落交给模型二选一（male / female），不需要用户手动选。
+    非人类实体（gender_evidence.is_non_human）不判定，返回 (None, None)。"""
+    from .. import gender_evidence as ge
+    if ge.is_non_human([name]):
+        return None, None
+    lines = [p.strip() for p in chapter_text.splitlines() if name in p and p.strip()]
+    excerpt = "\n".join(lines) if lines else chapter_text
+    label = f"第 {chapter_no} 章 C-5 推断补建角色「{name}」性别"
+    with joblog.timed(project_dir, "chapter", label):
+        raw = llm_trace.ask_traced(project_dir, text_llm, prompts.gender_infer_prompt(name, context, excerpt),
+                                   system=prompts.SYSTEM_VISUAL, scope="chapter", label=label,
+                                   step="C-5", chapter=chapter_no)
+    g = str(parse_json_object(raw).get("gender") or "").strip().lower()
+    if g in ("male", "female"):
+        return g, "模型依据正文推断"
+    return None, None
+
+
+def _draft_entity(project_dir: Path, text_llm: TextLLM, name: str, context: List[str], chapter_no: int, eid: str,
+                  chapter_text: str = "") -> Dict[str, Any]:
     label = f"第 {chapter_no} 章 C-5 起草补建角色「{name}」设定"
     with joblog.timed(project_dir, "chapter", label):
         raw = llm_trace.ask_traced(project_dir, text_llm, prompts.entity_draft_prompt(name, context),
@@ -56,11 +84,16 @@ def _draft_entity(project_dir: Path, text_llm: TextLLM, name: str, context: List
     if not anchor or not voice:
         raise StepError(f"补建角色“{name}”的设定缺少 visual_anchor_en 或 voice_profile")
     gender = str(obj.get("gender") or "unknown").lower()
+    basis = "模型起草"
+    if gender not in ("male", "female"):                     # 起草没给出性别：自动补定，不让用户去选
+        gender, basis = _infer_gender(project_dir, text_llm, name, context, chapter_no, chapter_text)
     age = str(obj.get("age_range") or "unknown").lower()
     return {
         "id": eid, "names": [name], "role": "auto_added", "age": None,
         "age_range": age if age in AGE_VALUES and age != "unknown" else None,
-        "gender": gender if gender in GENDER_VALUES and gender != "unknown" else None,
+        "gender": gender if gender in ("male", "female") else None,
+        "gender_source": "auto" if gender in ("male", "female") else None,
+        "gender_basis": basis if gender in ("male", "female") else None,
         "description_zh": str(obj.get("description_zh") or "").strip(),
         "speech_pattern": None, "first_appear": chapter_no, "relations": [],
         "visual_anchor_en": anchor, "visual_anchor_source": text_llm.name,
@@ -97,7 +130,8 @@ def run_assets(project_dir: Path, no: int, text_llm: TextLLM, image: ImageProvid
         if name in by_name:
             continue
         eid = _next_char_id(chars)
-        ent = _draft_entity(project_dir, text_llm, name, _speaker_context(script, name), no, eid)
+        ent = _draft_entity(project_dir, text_llm, name, _speaker_context(script, name), no, eid,
+                            _chapter_text(project_dir, no))
         chars.append(ent)
         by_name[name] = eid
         get_item(review, entity_key("character", eid)).update(
@@ -141,6 +175,19 @@ def run_assets(project_dir: Path, no: int, text_llm: TextLLM, image: ImageProvid
         changed = True
     if changed:
         save_shots(project_dir, no, shots)
+
+    # 2b) 本章已起草但性别仍为空的补建角色：自动补定（不需要用户手动选）
+    from ..gender_review import CONFIRMED_SOURCES
+    fill = [c for c in chars if c.get("auto_added_chapter") == no and not c.get("gender")
+            and c.get("gender_source") not in CONFIRMED_SOURCES]
+    if fill:
+        chapter_text = _chapter_text(project_dir, no)
+        for c in fill:
+            g, basis = _infer_gender(project_dir, text_llm, c["names"][0], _speaker_context(script, c["names"][0]),
+                                     no, chapter_text)
+            if g:
+                c["gender"], c["gender_source"], c["gender_basis"] = g, "auto", basis
+        save_entities_ids(project_dir, chars_doc)
 
     # 3) 本章补建角色：等待文本设定通过 → 生成定妆图 → 等待定妆图通过
     review = load_review(project_dir)

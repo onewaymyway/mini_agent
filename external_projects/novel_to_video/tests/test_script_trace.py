@@ -311,15 +311,12 @@ def test_chapter_page_guides_unknown_speakers_then_confirms_in_place(proj):
     ok_text = next(k for k in keys if k.startswith("ok_t_"))
     assert any(k.startswith("ok_p_") for k in keys) and any(k.startswith("save_") for k in keys)
 
-    # 3) 模型起草的性别不算确认：「通过设定」是灰的，页面必须说明原因和做法
-    assert at.button(key=ok_text).disabled
+    # 3) 性别由系统自动推断（模型起草或正文二选一），「通过设定」直接可点，不需要用户手动选性别
+    assert not at.button(key=ok_text).disabled
     warn = " ".join(w.value for w in at.warning)
-    assert "通过设定」暂时点不了" in warn and "gender" in warn and "保存修改" in warn
+    assert "性别" not in warn or "待人工确认" not in warn
 
-    # 4) 在本页选性别并保存 → 「通过设定」可点 → 点击生效 → 出现「生成定妆图」，全程无需跳页
-    next(sb for sb in at.selectbox if sb.label == "性别").set_value("male").run()
-    at.button(key=next(k for k in keys if k.startswith("save_"))).click().run()
-    assert not at.exception, at.exception
+    # 4) 点击「通过设定」生效，随后出现「生成定妆图」，全程无需跳页
     at.button(key=ok_text).click().run()
     assert not at.exception, at.exception
     item = tool_api.auto_added_queue(str(proj))["data"][0]

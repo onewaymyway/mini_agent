@@ -395,7 +395,8 @@ def visual_status(project_dir: Path) -> Dict[str, Any]:
             if kind == "character":
                 if not ent.get("voice_profile"):
                     missing.append("voice_profile")
-                if ent.get("gender_source") not in ("user", "persona") or not ent.get("gender"):
+                from ..gender_review import CONFIRMED_SOURCES as _GENDER_OK
+                if ent.get("gender_source") not in _GENDER_OK or not ent.get("gender"):
                     missing.append("gender（待人工确认）")
             rows.append({
                 "key": key, "kind": kind, "id": ent["id"],

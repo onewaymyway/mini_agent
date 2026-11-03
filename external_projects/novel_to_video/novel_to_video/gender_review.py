@@ -20,7 +20,8 @@ from .name_normalize import decode_name
 from . import joblog
 
 SUGGEST_FILE = "global/gender_suggestions.json"
-CONFIRMED_SOURCES = ("user", "persona")
+# user：人工确认；persona：人设卡明确写明；auto：补建角色由 C-5 自动推断（证据或 LLM 二选一），可随时人工覆盖
+CONFIRMED_SOURCES = ("user", "persona", "auto")
 CHOICES = ("male", "female", "unknown")
 
 

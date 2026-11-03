@@ -332,6 +332,17 @@ def shots_fix_prompt(script: str, characters: list, locations: list, prev_output
     )
 
 
+def gender_infer_prompt(name: str, context_lines: list, excerpt: str) -> str:
+    """补建角色性别：必须二选一。依据称呼、人称、语气与剧情推断，不允许 unknown。"""
+    info = {"task": "gender", "name": name, "context": context_lines[:12], "excerpt": excerpt[:2000]}
+    return (
+        f"TASK=gender\n为剧本中的角色“{name}”判断性别。必须二选一（male 或 female），"
+        "依据台词中的称呼、人称代词、语气与剧情推断最可能的性别；不得输出 unknown，也不得臆造身份。\n"
+        "只输出 JSON：{\"gender\": \"male|female\", \"basis_zh\": str（一句话说明依据）}\n\n"
+        f"RULE_INPUT={json.dumps(info, ensure_ascii=False)}"
+    )
+
+
 def entity_draft_prompt(name: str, context_lines: list, kind_hint: str = "character") -> str:
     info = {"task": "entity", "name": name, "context": context_lines[:6]}
     return (

@@ -166,3 +166,11 @@ novel_output/                       # 项目数据（默认位置，已加入 .g
 - 章节页在流水线处于 `waiting_assets` 时显示流水线报告的真实等待项，不再同时显示“没有需要确认”。
 - 日志面板的“最近一次”只显示本面板作用域内的任务，避免把其它任务（如 G-3 定妆图）当作重新合成的记录。
 - 测试：`tests/test_waiting_assets_queue.py`。
+
+## 补建角色：性别自动确定
+
+- C-5 起草补建角色时，性别由系统自动确定，不再要求用户在页面上选择：模型起草给出 male/female 则直接采用；否则把正文中提到该角色的段落交给模型二选一（`prompts.gender_infer_prompt`，不允许 unknown）。非人类实体（如盖亚）不判定。
+- 章节已起草但性别仍为空的补建角色，下一次 C-5 自动补定。
+- 自动推断的性别 `gender_source = "auto"`，视为已确定，可以通过设定；用户仍可在性别确认或角色卡片中人工覆盖（覆盖后为 `user`）。
+- 门禁：`gender_review.CONFIRMED_SOURCES` 为 user / persona / auto。
+- 测试：`tests/test_auto_gender.py`；`tests/test_script_trace.py` 中的补建流程已改为新行为。
