@@ -317,3 +317,33 @@ def test_helper_generator_calls_llm_helper_directly(monkeypatch):
     monkeypatch.setattr("novel_writer.runner._ensure_framework_on_path", lambda: None)
     out = spark.helper_generator("提示词", system="S", timeout=10)
     assert out.startswith("{") and seen["prompt"] == "提示词" and seen["system"] == "S"
+
+
+def test_loose_model_values_are_normalized_into_valid_proposals(ws):
+    """模型常把 value 写成纯文字：整理时要规整成各模块要求的结构，界面上才不会出现 JSON 解析错误。"""
+    _talk(ws)
+    payload = {"candidates": [
+        {"module": "brief", "op": "set", "target": "protagonist", "value": "林昼，ID 昼行", "source_turns": [0]},
+        {"module": "world", "op": "add", "target": "rules", "value": "能力保留机制", "source_turns": [1]},
+        {"module": "world", "op": "add", "target": "timeline", "value": "降临事件（全球同步）", "source_turns": [1]},
+        {"module": "cast", "op": "add", "value": {"name": "小满", "flaw": ["社牛", "怕冷场"], "relations": "林昼的朋友"}, "source_turns": [2]},
+        {"module": "open_questions", "op": "add", "value": "1. 第一幕场景？2. 结局走向？3. 模仿者表现？", "source_turns": [2]},
+    ], "minutes": "x"}
+    out = DS.run(ws, generator=_gen(payload))
+    assert len(out["proposals"]) == 7 and not out["skipped"]       # 开放问题拆成 3 条
+    by = {}
+    for p in out["proposals"]:
+        by.setdefault(p["module"], []).append(p)
+    assert by["brief"][0]["value"] == {"protagonist": "林昼，ID 昼行"} and by["brief"][0]["target"] is None
+    assert by["world"][0]["value"] == {"text": "能力保留机制"} and by["world"][1]["value"] == "降临事件（全球同步）"
+    assert by["cast"][0]["value"]["flaw"] == "社牛；怕冷场" and by["cast"][0]["value"]["relations"] == ["林昼的朋友"]
+    assert [p["value"]["text"] for p in by["open_questions"]] == ["第一幕场景？", "结局走向？", "模仿者表现？"]
+    for p in out["proposals"]:                                       # 都能真正采纳
+        P.accept(ws, p["pid"])
+
+
+def test_unfixable_candidate_is_skipped_not_listed(ws):
+    _talk(ws)
+    payload = {"candidates": [{"module": "cast", "op": "add", "value": "只有一段文字", "source_turns": [0]}], "minutes": "x"}
+    out = DS.run(ws, generator=_gen(payload))
+    assert out["proposals"] == [] and any("无效条目" in s for s in out["skipped"])

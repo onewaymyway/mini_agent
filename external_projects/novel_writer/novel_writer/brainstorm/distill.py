@@ -32,6 +32,27 @@ SYSTEM_PROMPT = ("你是小说构思的整理员。只输出一个 JSON 对象�
                  "不要使用代码块，不要在 JSON 之外输出任何文字。")
 
 
+def _brief_keys() -> str:
+    from novel_writer.intake import INTAKE_FIELDS
+    return "、".join(f"{k}（{label}）" for k, label, _ in INTAKE_FIELDS)
+
+
+VALUE_SPEC = (
+    "每条候选的 value 必须严格按模块给出（一条候选只表达一件事，不要把多项合并成一条文字）：\n"
+    f"- brief：op=set，value 是对象，键只能取：{_brief_keys()}，值为文字；例 {{\"protagonist\": \"……\"}}。target 留空。\n"
+    "- premise：op=set，value 是一段文字。\n"
+    '- ideas：op=add，value={"text": "一条灵感", "tags": ["标签"]}。\n'
+    '- open_questions：op=add，value={"text": "一个问题"}；每个问题单独一条候选。\n'
+    '- world：op=add，target 为列表名 rules/locations/factions/timeline/taboos，value={"text": "一条设定"}（可再加 name 等字段）；'
+    "一个设定一条候选，不要把整个列表塞进一条。\n"
+    '- cast：op=add，value={"name": "名字", "role": "", "want": "", "need": "", "flaw": "", "lie": "", "arc": "", "relations": ["文字"]}，'
+    "各字段都是文字（relations 是文字列表）；一个角色一条候选。\n"
+    '- plot：op=set，value={"acts": [{"title": "幕名", "beats": ["转折点"]}], "twists": ["文字"], "endings": ["文字"]}，只写要替换的键。\n'
+    '- options：op=add，value={"name": "备选名", "module": "premise 或 plot", "content": 可选, "notes": "优缺点"}。\n'
+    "value 里的字符串必须是合法 JSON 字符串（换行写成 \\n，引号转义）。"
+)
+
+
 def _now() -> str:
     return _dt.datetime.now().isoformat(timespec="seconds")
 
@@ -84,6 +105,7 @@ def build_prompt(ws: BrainstormWorkspace, records: List[Dict[str, Any]], start: 
         '{"candidates": [{"module": "模块名", "op": "add 或 set", "target": "set 时的目标 id（world 时为列表名）", '
         '"value": {...或文字}, "reason": "依据与说明", "source_turns": [对话编号]}], "minutes": "Markdown 纪要"}\n'
         "纪要包含四节：讨论要点、已形成的决定、被否定的方向、仍待定的问题。每条引用对话编号，如 [12]。\n\n"
+        + VALUE_SPEC + "\n\n"
         f"【当前卡片（参考，用于判断冲突）】\n{summary}\n\n"
         f"【对话（编号 {start} 起）】\n{_transcript_text(records, start)}"
     )
@@ -105,6 +127,83 @@ def parse_output(reply: str) -> Dict[str, Any]:
     if not isinstance(cands, list):
         raise BrainstormError("candidates 必须是列表")
     return {"candidates": cands, "minutes": str(data.get("minutes", "")).strip()}
+
+
+_CAST_TEXT_FIELDS = ("role", "want", "need", "flaw", "lie", "arc")
+
+
+def _as_text(v: Any) -> str:
+    """把模型给的列表 / 对象 / 数字压成一段文字。"""
+    if isinstance(v, str):
+        return v.strip()
+    if isinstance(v, (list, tuple)):
+        return "；".join(_as_text(x) for x in v if x not in (None, ""))
+    if isinstance(v, dict):
+        return "；".join(f"{k}：{_as_text(x)}" for k, x in v.items() if x not in (None, ""))
+    return "" if v is None else str(v)
+
+
+_NUMBERED = re.compile(r"(?<![\d.])(?:\d+[.、)）](?!\d)|[①②③④⑤⑥⑦⑧⑨⑩])\s*")
+
+
+def normalize_candidate(module: str, op: str, target: Optional[str], value: Any) -> List[Tuple[str, Optional[str], Any]]:
+    """把模型常见的格式偏差规整成各模块要求的结构，返回 [(op, target, value)]（可能拆成多条）。
+
+    只做格式规整，不改变内容；无法规整的原样返回，由后面的试应用校验把它挡下来。
+    """
+    from novel_writer.intake import INTAKE_KEYS
+
+    if module == "brief":
+        if isinstance(value, str) and target in INTAKE_KEYS:
+            return [(op, None, {target: value})]
+        if isinstance(value, dict):
+            return [(op, None, {k: _as_text(v) for k, v in value.items() if k in INTAKE_KEYS})]
+    elif module == "premise":
+        if isinstance(value, dict):
+            value = value.get("text") or value.get("premise") or _as_text(value)
+        return [(op, target, _as_text(value))]
+    elif module in ("ideas", "open_questions") and op == "add":
+        if isinstance(value, str):
+            parts = [x.strip() for x in _NUMBERED.split(value) if x.strip()] if module == "open_questions" else [value.strip()]
+            return [(op, target, {"text": x}) for x in (parts or [value.strip()])]
+        if isinstance(value, list):
+            return [(op, target, {"text": _as_text(x)}) for x in value if _as_text(x)]
+    elif module == "world":
+        if isinstance(value, list):
+            return [(op, target, _norm_world_item(target, x)) for x in value if _as_text(x)]
+        return [(op, target, _norm_world_item(target, value))]
+    elif module == "cast" and isinstance(value, dict):
+        card = dict(value)
+        for f in _CAST_TEXT_FIELDS:
+            if f in card and not isinstance(card[f], str):
+                card[f] = _as_text(card[f])
+        rel = card.get("relations", [])
+        if not isinstance(rel, list):
+            rel = [rel]
+        card["relations"] = [_as_text(r) for r in rel if _as_text(r)]
+        return [(op, target, card)]
+    return [(op, target, value)]
+
+
+def _norm_world_item(target: Optional[str], value: Any) -> Any:
+    if target in ("timeline", "taboos"):
+        return value if isinstance(value, str) else _as_text(value.get("text") if isinstance(value, dict) and value.get("text") else value)
+    if isinstance(value, str):
+        return {"text": value.strip()}
+    if isinstance(value, dict):
+        item = dict(value)
+        if not str(item.get("text", "")).strip():
+            item["text"] = _as_text({k: v for k, v in item.items() if k != "text"})
+        return item
+    return {"text": _as_text(value)}
+
+
+def _dry_run(ws: BrainstormWorkspace, module: str, op: str, target: Optional[str], value: Any) -> None:
+    """试应用：在卡片副本上执行并校验，失败抛 BrainstormError。不落盘。"""
+    if module == "options":
+        return
+    new = P.apply_to(C.get_module(ws, module), module, op, target, value)
+    C.validate_module(module, new)
 
 
 def detect_conflict(ws: BrainstormWorkspace, module: str, op: str, target: Optional[str], value: Any) -> str:
@@ -191,23 +290,33 @@ def run(ws: BrainstormWorkspace, *, modules: Optional[List[str]] = None, scope: 
             _emit(log, "warning", f"{tag}：模块 {module} 不在所选范围内，跳过")
             continue
         turns = [t for t in (cand.get("source_turns") or []) if isinstance(t, int) and start <= t < end]
-        value = cand.get("value")
         target = cand.get("target") or None
-        if _is_duplicate(ws, module, op, value):
-            skipped.append(f"已存在，跳过：{module}")
-            _emit(log, "info", f"{tag}：{MODULE_LABEL[module]} 与已有内容相同，跳过")
-            continue
         try:
-            conflict = detect_conflict(ws, module, op, target, value)
-            created.append(P.create(ws, module, op, value, target=target, reason=cand.get("reason", ""),
-                                    batch=batch, source_turns=turns, conflict=conflict))
-            if conflict:
-                _emit(log, "warning", f"{tag}：{MODULE_LABEL[module]}（{op}）与现有内容冲突 → 待确认，标为冲突")
-            else:
-                _emit(log, "success", f"{tag}：{MODULE_LABEL[module]}（{op}）→ 待确认，来源 {turns or '—'}")
-        except BrainstormError as exc:
-            skipped.append(f"无效条目（{module}）：{exc}")
-            _emit(log, "warning", f"{tag}：无效（{exc}），跳过")
+            variants = normalize_candidate(module, op, target, cand.get("value"))
+        except Exception as exc:  # noqa: BLE001 - 规整失败只跳过这一条
+            skipped.append(f"无法规整（{module}）：{exc}")
+            _emit(log, "warning", f"{tag}：无法规整（{exc}），跳过")
+            continue
+        if len(variants) != 1 or variants[0][2] != cand.get("value") or variants[0][1] != target:
+            _emit(log, "info", f"{tag}：{MODULE_LABEL[module]} 的 value 格式已规整" + (f"，拆成 {len(variants)} 条" if len(variants) > 1 else ""))
+        for n, (op_n, target_n, value) in enumerate(variants, 1):
+            sub = tag if len(variants) == 1 else f"{tag}-{n}"
+            if _is_duplicate(ws, module, op_n, value):
+                skipped.append(f"已存在，跳过：{module}")
+                _emit(log, "info", f"{sub}：{MODULE_LABEL[module]} 与已有内容相同，跳过")
+                continue
+            try:
+                _dry_run(ws, module, op_n, target_n, value)
+                conflict = detect_conflict(ws, module, op_n, target_n, value)
+                created.append(P.create(ws, module, op_n, value, target=target_n, reason=cand.get("reason", ""),
+                                        batch=batch, source_turns=turns, conflict=conflict))
+                if conflict:
+                    _emit(log, "warning", f"{sub}：{MODULE_LABEL[module]}（{op_n}）与现有内容冲突 → 待确认，标为冲突")
+                else:
+                    _emit(log, "success", f"{sub}：{MODULE_LABEL[module]}（{op_n}）→ 待确认，来源 {turns or '—'}")
+            except BrainstormError as exc:
+                skipped.append(f"无效条目（{module}）：{exc}")
+                _emit(log, "warning", f"{sub}：无效（{exc}），跳过；内容仍在纪要里")
 
     minutes_path = _write_minutes(ws, batch, start, end, chosen, out["minutes"], created)
     rel = str(minutes_path.relative_to(ws.root)).replace("\\", "/")
