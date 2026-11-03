@@ -37,3 +37,12 @@ def test_refs_follow_c8_selection_and_dedupe(tmp_path):
 def test_big_scene_without_shots_has_no_refs(tmp_path):
     out = cp.big_scene_refs(tmp_path, [], [{"big_no": 1, "title_zh": "空"}], {})
     assert out[0]["refs"] == []
+
+
+def test_shot_ref_image_matches_big_scene_rule(tmp_path):
+    interior = _img(tmp_path, "global/assets/sheets/loc_02_interior.png")
+    raw_locs = {"loc_02": {"id": "loc_02", "name": "工作间", "asset_path": None,
+                           "sheets": [{"id": "interior", "kind": "interior", "label": "内部总览", "asset_path": interior}]}}
+    r = cp.shot_ref_image(tmp_path, {"id": "s01", "location_id": "loc_02"}, raw_locs)
+    assert r == {"label": "工作间·内部总览", "path": interior, "exists": True}
+    assert cp.shot_ref_image(tmp_path, {"id": "s02", "location_id": "nope"}, raw_locs) is None

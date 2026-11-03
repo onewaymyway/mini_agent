@@ -221,3 +221,7 @@ novel_output/                       # 项目数据（默认位置，已加入 .g
 - 章节视图的每个大场景带 `refs`：该大场景镜头实际使用的场景参考图（与 C-8 选图规则一致：镜头所选设定图，否则地点定妆图），去重，并标注是否已生成。
 - 小场景逐镜审核中，大场景块在“共用素材”下方显示这些参考图；未生成的显示占位文字。
 - 代码：`chapter_pipeline.big_scene_refs`；界面：`ui/chapter_page._render_big_scenes`；测试：`tests/test_scene_refs.py`。
+
+## 镜头卡片显示场景参考图
+
+- 每个镜头的视图数据带 `ref_image`（`chapter_pipeline.shot_ref_image`，与 C-8 选图规则一致），小场景逐镜卡片左侧在视频下方显示该镜头使用的参考图；未生成时显示占位文字。

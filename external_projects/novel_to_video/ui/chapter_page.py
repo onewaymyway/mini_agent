@@ -314,6 +314,13 @@ def _shot_card(pdir: str, no: int, sh: dict, all_chars: list) -> None:
                 st.caption("暂无视频")
             if sh.get("audio") and (root / sh["audio"]).is_file():
                 st.audio(str(root / sh["audio"]))
+            ref = sh.get("ref_image")
+            if ref and ref.get("exists") and ref.get("path"):
+                st.image(str(root / ref["path"]), caption=f"参考图：{ref['label']}", width="stretch")
+            elif ref:
+                st.caption(f"参考图：{ref['label']}（尚未生成）")
+            else:
+                st.caption("参考图：无（镜头没有地点）")
         with right:
             dur = sh.get("duration_sec")
             st.markdown(f"**{sh['id']}**　场次 {sh['scene_no']}　地点 {sh.get('location_name') or sh.get('location_id') or '-'}"

@@ -200,28 +200,34 @@ def _derive_plan_warnings(shots: list) -> list:
     return out
 
 
+def shot_ref_image(project_dir: Path, sh: Dict[str, Any], raw_locs: Dict[str, Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """镜头生成视频时使用的场景参考图（与 C-8 选图规则相同：镜头所选设定图，否则地点定妆图）。
+    返回 {label, path, exists}；地点不存在或没有任何图时返回 None。"""
+    from .steps import location_sheets as LS
+    loc = raw_locs.get(sh.get("location_id"))
+    if not loc:
+        return None
+    sheet = LS.sheet_for_shot(loc, sh)
+    rel = (sheet or {}).get("asset_path") or loc.get("asset_path")
+    label = (sheet or {}).get("label") or "地点定妆图"
+    return {"label": f"{loc.get('name') or sh.get('location_id')}·{label}", "path": rel,
+            "exists": bool(rel) and (Path(project_dir) / rel).is_file()}
+
+
 def big_scene_refs(project_dir: Path, shots: List[Dict[str, Any]], big_scenes: List[Dict[str, Any]],
                    raw_locs: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """每个大场景实际使用的场景参考图：与 C-8 选图规则相同（镜头所选设定图，否则地点定妆图），去重。"""
-    from .steps import location_sheets as LS
+    """每个大场景实际使用的场景参考图（各镜头的参考图去重）。"""
     out = []
     for g in big_scenes or []:
         refs, seen = [], set()
         for sh in shots or []:
             if sh.get("big_scene_no") != g.get("big_no"):
                 continue
-            loc = raw_locs.get(sh.get("location_id"))
-            if not loc:
+            r = shot_ref_image(project_dir, sh, raw_locs)
+            if r is None or r["label"] in seen:
                 continue
-            sheet = LS.sheet_for_shot(loc, sh)
-            rel = (sheet or {}).get("asset_path") or loc.get("asset_path")
-            label = (sheet or {}).get("label") or "地点定妆图"
-            key = (sh.get("location_id"), rel or label)
-            if key in seen:
-                continue
-            seen.add(key)
-            refs.append({"label": f"{loc.get('name') or sh.get('location_id')}·{label}", "path": rel,
-                         "exists": bool(rel) and (Path(project_dir) / rel).is_file()})
+            seen.add(r["label"])
+            refs.append(r)
         out.append({**g, "refs": refs})
     return out
 
@@ -255,6 +261,7 @@ def chapter_view(project_dir: Path, no: int) -> Dict[str, Any]:
     cdir = cio.chapter_dir(project_dir, no)
     shots = []
     lookup = _entity_lookup(project_dir)
+    raw_locs = _raw_locations(project_dir)
     for sh in shots_doc.get("shots", []):
         cast = [lookup["chars"][cid] for cid in sh.get("character_ids") or [] if cid in lookup["chars"]]
         hint = sh.get("visual_hint_zh") or ""
@@ -268,6 +275,7 @@ def chapter_view(project_dir: Path, no: int) -> Dict[str, Any]:
             "look_ids": dict(sh.get("look_ids") or {}),          # {角色id: 形象id}（阶段 4）
             "look_labels": dict(sh.get("look_labels") or {}),    # 库里没有的形象标签（待补建）
             "location_name": (lookup["locs"].get(sh.get("location_id")) or {}).get("name"),
+            "ref_image": shot_ref_image(project_dir, sh, raw_locs),       # 本镜头生成视频使用的场景参考图
             # 画面描述里提到了某个角色，但出镜角色里没有：视频提示词不会带上他的外观，审核时要留意
             "missing_mentions": [c["name"] for cid, c in lookup["chars"].items()
                                  if cid not in (sh.get("character_ids") or [])
