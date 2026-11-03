@@ -174,3 +174,13 @@ novel_output/                       # 项目数据（默认位置，已加入 .g
 - 自动推断的性别 `gender_source = "auto"`，视为已确定，可以通过设定；用户仍可在性别确认或角色卡片中人工覆盖（覆盖后为 `user`）。
 - 门禁：`gender_review.CONFIRMED_SOURCES` 为 user / persona / auto。
 - 测试：`tests/test_auto_gender.py`；`tests/test_script_trace.py` 中的补建流程已改为新行为。
+
+## 补建素材一键确认与一键生成定妆图
+
+章节页「补建角色」区和全书补建素材页都有三个批量按钮，按顺序使用：
+
+1. **一键通过设定**：通过本章（或全部）所有待确认的设定。缺字段的项跳过并说明原因，不会误通过。
+2. **一键生成定妆图**：后台为设定已通过、还没有可用定妆图的补建素材生成定妆图（角色、地点、道具、角色形象）。设定未通过的项不生成。
+3. **一键通过定妆图**：通过所有已生成的定妆图。尚无图片的项跳过并说明原因。
+
+后端：`tool_api.batch_review`、`tool_api.chapter_portrait_ids`、`tool_api.start_chapter_portraits_background`。界面：`ui/auto_added_page.render_batch_bar`。测试：`tests/test_batch_review.py`（4 项）。

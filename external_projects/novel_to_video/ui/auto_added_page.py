@@ -19,6 +19,43 @@ STEPS_HELP = ("如果这个角色其实已经存在，展开卡片里的「这�
               "→ ② 点「通过设定」→ ③ 点「生成定妆图」→ ④ 看图后点「通过定妆图」→ ⑤ 回到「章节生产」页重新运行本章。")
 
 
+def render_batch_bar(pdir: str, chapter: Optional[int] = None, *, key_prefix: str = "batch") -> None:
+    """一键确认补建素材：通过设定 → 一键生成定妆图 → 通过定妆图。只作用于 chapter 对应的草稿（None 为全部）。"""
+    from ui.assets_page import _start_result
+    st.caption("批量处理顺序：① 一键通过设定 → ② 一键生成定妆图（后台）→ ③ 看过图后一键通过定妆图。"
+               "缺字段、没有定妆图的项会被跳过并说明原因，不会误通过。")
+    c1, c2, c3 = st.columns(3)
+    if c1.button("一键通过设定", key=f"{key_prefix}_text", type="primary"):
+        r = tool_api.batch_review(pdir, "text", chapter)
+        _report_batch(r, "设定")
+        st.rerun()
+    if c2.button("一键生成定妆图", key=f"{key_prefix}_gen"):
+        r = tool_api.start_chapter_portraits_background(pdir, chapter)
+        if r.get("ok") and not (r.get("data") or {}).get("started", True):
+            st.info(r["data"]["message"])
+        else:
+            _start_result(r)
+    if c3.button("一键通过定妆图", key=f"{key_prefix}_portrait"):
+        r = tool_api.batch_review(pdir, "portrait", chapter)
+        _report_batch(r, "定妆图")
+        st.rerun()
+
+
+def _report_batch(r: dict, label: str) -> None:
+    if not r.get("ok"):
+        st.error(r["error"]["message"])
+        return
+    data = r["data"]
+    if data["approved"]:
+        st.success(f"已通过 {len(data['approved'])} 项{label}：" + "、".join(data["approved"]))
+    else:
+        st.info(f"没有可通过的{label}。")
+    if data["skipped"]:
+        with st.expander(f"跳过 {len(data['skipped'])} 项", expanded=False):
+            for s in data["skipped"]:
+                st.write(f"· {s['name']}：{s['reason']}")
+
+
 def render_auto_added(pdir: str, chapter: Optional[int] = None, *, key_prefix: str = "aa",
                       only_open: bool = False) -> int:
     """渲染补建角色卡片（chapter 不为空时只显示该章），返回其中还没完全通过的数量。
@@ -53,6 +90,7 @@ def page_auto_added() -> None:
     if not pdir:
         return
     from ui.joblog_panel import render_job_panel
+    render_batch_bar(pdir, chapter=None, key_prefix="batch_all")
     n = render_auto_added(pdir)
     if not tool_api.auto_added_queue(pdir)["data"]:
         st.info("当前没有待审核的补建角色。剧本中出现库里没有的说话人时，运行章节流水线到 C-5 会自动起草。")

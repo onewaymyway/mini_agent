@@ -117,6 +117,8 @@ def _auto_added_section(pdir: str, no: int, v: dict) -> None:
                      width='stretch', hide_index=True)
         st.info(f"剧本本身没有问题，无需修改。点击上方「运行第 {no} 章流水线」，会在 C-5 自动起草设定，起草完成后在这里确认。")
     if mine_open:
+        from ui.auto_added_page import render_batch_bar
+        render_batch_bar(pdir, chapter=no, key_prefix=f"batch_ch{no}")
         open_n = render_auto_added(pdir, chapter=no, key_prefix=f"aa_ch{no}", only_open=True)
         if open_n == 0:
             st.success("本章的补建角色已全部确认，可以重新运行本章继续。")

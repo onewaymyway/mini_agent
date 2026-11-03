@@ -633,6 +633,80 @@ def start_visual_text_background(project_dir: str, *, ids: Optional[List[str]] =
                       fn=lambda: _unwrap(run_visual_text(project_dir, ids=ids, only_missing=only_missing)))
 
 
+def _chapter_rows(project_dir: str, chapter: Optional[int]) -> Dict[str, Any]:
+    """补建队列里属于某章（或全部）的行，附带素材状态（缺字段、定妆图路径）。"""
+    q = auto_added_queue(project_dir)
+    if not q["ok"]:
+        return q
+    status = {r["key"]: r for r in gv.visual_status(Path(project_dir))["rows"]}
+    rows = []
+    for r in q["data"]:
+        if chapter is not None and r["chapter"] != chapter:
+            continue
+        s = status.get(r["key"], {})
+        rows.append({**r, "missing_fields": s.get("missing_fields") or [], "asset_path": s.get("asset_path")})
+    return _ok(rows)
+
+
+def batch_review(project_dir: str, what: str, chapter: Optional[int] = None) -> Dict[str, Any]:
+    """一键确认补建素材。what=text：通过所有待确认的设定（缺字段的跳过并说明）；
+    what=portrait：通过所有已生成、待确认的定妆图（尚无图片的跳过并说明）。逐项判断，不改变未选中的项。"""
+    pdir = Path(project_dir)
+    rows = _chapter_rows(project_dir, chapter)
+    if not rows["ok"]:
+        return rows
+    approved, skipped = [], []
+    for r in rows["data"]:
+        if what == "text":
+            if r["text_status"] == "approved":
+                continue
+            if r["missing_fields"]:
+                skipped.append({"name": r["name"], "reason": "缺少字段：" + "、".join(r["missing_fields"])})
+                continue
+            gv.approve(pdir, r["kind"], r["id"], "text")
+            approved.append(r["name"])
+        elif what == "portrait":
+            if r["portrait_status"] == "approved":
+                continue
+            if not r.get("asset_path") or not (pdir / r["asset_path"]).is_file():
+                skipped.append({"name": r["name"], "reason": "还没有定妆图，请先一键生成"})
+                continue
+            gv.approve(pdir, r["kind"], r["id"], "portrait")
+            approved.append(r["name"])
+        else:
+            return _fail(f"未知的一键确认类型：{what}")
+    return _ok({"approved": approved, "skipped": skipped})
+
+
+def chapter_portrait_ids(project_dir: str, chapter: Optional[int] = None) -> Dict[str, Any]:
+    """一键生成定妆图的对象：设定已通过、且还没有可用定妆图的补建素材（角色/地点/道具/形象）。"""
+    rows = _chapter_rows(project_dir, chapter)
+    if not rows["ok"]:
+        return rows
+    ids = []
+    for r in rows["data"]:
+        if r["text_status"] != "approved" or r["missing_fields"]:
+            continue
+        has = bool(r.get("asset_path")) and (Path(project_dir) / r["asset_path"]).is_file()
+        if has and r["portrait_status"] in ("pending", "approved"):
+            continue
+        ids.append(r["id"])
+    return _ok(ids)
+
+
+def start_chapter_portraits_background(project_dir: str, chapter: Optional[int] = None) -> Dict[str, Any]:
+    ids = chapter_portrait_ids(project_dir, chapter)
+    if not ids["ok"]:
+        return ids
+    if not ids["data"]:
+        return _ok({"started": False, "message": "没有需要生成定妆图的补建素材（设定未通过的项需要先通过设定）。"})
+    res = _start_job(project_dir, name="assets_portrait", label=f"补建素材定妆图（{len(ids['data'])} 项）",
+                     scope="assets", fn=lambda: _unwrap(run_portraits(project_dir, ids=ids["data"])))
+    if res.get("ok"):
+        res["data"] = {**(res.get("data") or {}), "started": True, "count": len(ids["data"])}
+    return res
+
+
 def start_portraits_background(project_dir: str, *, ids: Optional[List[str]] = None,
                                regenerate: bool = False) -> Dict[str, Any]:
     label = "G-3 重新生成定妆图" if regenerate else "G-3 生成定妆图"
