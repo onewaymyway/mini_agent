@@ -356,3 +356,49 @@ def test_all_scope_ignores_checkpoint(ws):
     assert DS.select_range(ws, "all") == (0, 6)
     out = DS.run(ws, scope="all", generator=_gen({"candidates": [], "minutes": "x"}))
     assert out["range"] == [0, 6]
+
+
+# ── JSON 修复与原始输出显示 ──
+
+BAD_QUOTE = ('```json\n{"candidates": [{"module": "premise", "op": "set", "value": "他说"你好"然后离开", '
+             '"reason": "r", "source_turns": [1]}], "minutes": "## 要点\\n- a"}\n```')
+
+
+def test_parse_output_repairs_unescaped_quotes():
+    pytest.importorskip("json_repair")
+    repaired = []
+    out = DS.parse_output(BAD_QUOTE, repaired=repaired)
+    assert out["candidates"][0]["module"] == "premise" and repaired
+
+
+def test_parse_output_repairs_truncated_output():
+    pytest.importorskip("json_repair")
+    out = DS.parse_output('{"candidates": [{"module": "premise", "op": "set", "value": "x", "source_turns": [1]}], "minutes": "纪要')
+    assert out["candidates"] and out["minutes"].startswith("纪要")
+
+
+def test_parse_output_strict_json_is_not_marked_repaired():
+    repaired = []
+    DS.parse_output('{"candidates": [], "minutes": "x"}', repaired=repaired)
+    assert repaired == []
+
+
+def test_unrepairable_output_is_shown_in_full_and_saved(ws):
+    _talk(ws)
+    logs = []
+    garbage = "抱歉，我无法完成。" * 80
+    with pytest.raises(BrainstormError):
+        DS.run(ws, generator=lambda p: garbage, log=lambda k, t: logs.append((k, t)))
+    shown = [t for k, t in logs if k == "error"]
+    assert shown and garbage in shown[0]
+    saved = list((ws.root / "_studio/distill").glob("raw_*.txt"))
+    assert saved and saved[0].read_text(encoding="utf-8") == garbage
+
+
+def test_repaired_run_creates_proposals_and_logs_raw(ws):
+    pytest.importorskip("json_repair")
+    _talk(ws)
+    logs = []
+    out = DS.run(ws, generator=lambda p: BAD_QUOTE, log=lambda k, t: logs.append((k, t)))
+    assert len(out["proposals"]) == 1
+    assert any(k == "warning" and "json_repair" in t and "你好" in t for k, t in logs)

@@ -113,22 +113,57 @@ def build_prompt(ws: BrainstormWorkspace, records: List[Dict[str, Any]], start: 
     )
 
 
-def parse_output(reply: str) -> Dict[str, Any]:
+def parse_output(reply: str, *, repaired: Optional[List[str]] = None) -> Dict[str, Any]:
+    """解析模型回复。先严格解析；不合法时用 json_repair 修复（修复时把原始错误追加到 repaired 列表）。"""
     text = (reply or "").strip()
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text).strip()
     first, last = text.find("{"), text.rfind("}")
-    if first < 0 or last <= first:
+    if first < 0:
         raise BrainstormError("整理结果没有 JSON 对象")
-    try:
-        data = json.loads(text[first:last + 1])
-    except json.JSONDecodeError as exc:
-        raise BrainstormError(f"整理结果不是合法 JSON：{exc}") from exc
+    data: Any = None
+    if last > first:
+        try:
+            data = json.loads(text[first:last + 1])
+        except json.JSONDecodeError as exc:
+            strict_error = exc
+        else:
+            strict_error = None
+    else:
+        strict_error = ValueError("缺少结尾的 }（输出可能被截断）")
+    if strict_error is not None:
+        data = _repair_json(text[first:])           # 从第一个 { 到末尾：输出被截断时也能补全
+        if not isinstance(data, dict) or "candidates" not in data:
+            raise BrainstormError(f"整理结果不是合法 JSON：{strict_error}（json_repair 也无法修复）")
+        if repaired is not None:
+            repaired.append(str(strict_error))
     if not isinstance(data, dict):
         raise BrainstormError("整理结果格式不对")
     cands = data.get("candidates", [])
     if not isinstance(cands, list):
         raise BrainstormError("candidates 必须是列表")
     return {"candidates": cands, "minutes": str(data.get("minutes", "")).strip()}
+
+
+def _repair_json(text: str) -> Any:
+    """用 json_repair 修复常见的 JSON 错误（缺逗号、字符串里没转义的引号、被截断等）；失败返回 None。"""
+    try:
+        import json_repair
+    except ImportError:
+        return None
+    try:
+        return json_repair.repair_json(text, return_objects=True)
+    except Exception:  # noqa: BLE001 - 修复失败按原错误报告
+        return None
+
+
+RAW_DIR = "_studio/distill"
+
+
+def _save_raw(ws: BrainstormWorkspace, raw: Any) -> str:
+    """把模型原始输出完整存档，返回相对路径。"""
+    rel = f"{RAW_DIR}/raw_{_dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    atomic_write_text(ws.root / rel, str(raw))
+    return rel
 
 
 _CAST_TEXT_FIELDS = ("role", "want", "need", "flaw", "lie", "arc")
@@ -270,12 +305,18 @@ def run(ws: BrainstormWorkspace, *, modules: Optional[List[str]] = None, scope: 
     _emit(log, "info", f"提示词：{len(prompt)} 字（含当前卡片摘要与对话全文），开始调用模型")
     raw = generator(prompt)
     _emit(log, "info", f"模型返回 {len(str(raw))} 字，解析结构化结果")
+    repaired: List[str] = []
     try:
-        out = parse_output(raw)
+        out = parse_output(raw, repaired=repaired)
     except BrainstormError:
-        # 解析失败时把模型回复的开头写进过程日志，界面上才能看出模型到底返回了什么
-        _emit(log, "warning", f"模型回复开头（前 300 字）：{str(raw)[:300]!r}")
+        # 解析失败：把模型原始输出完整显示在过程日志里，并存档，便于定位问题
+        rel_raw = _save_raw(ws, raw)
+        _emit(log, "error", f"模型原始输出（完整，{len(str(raw))} 字，已存档 {rel_raw}）：\n{raw}")
         raise
+    if repaired:
+        rel_raw = _save_raw(ws, raw)
+        _emit(log, "warning", f"模型输出不是严格合法的 JSON（{repaired[0]}），已用 json_repair 修复；"
+                              f"原始输出已存档 {rel_raw}，完整内容：\n{raw}")
     _emit(log, "info", f"解析得到 {len(out['candidates'])} 条候选，纪要 {len(out['minutes'])} 字")
 
     batch = "b" + uuid.uuid4().hex[:8]
