@@ -15,6 +15,7 @@ if str(_ROOT) not in sys.path:
 
 import streamlit as st  # noqa: E402
 
+from ui.brainstorm import page_brainstorm  # noqa: E402
 from ui.cockpit import page_cockpit  # noqa: E402
 from ui.shelf import page_shelf  # noqa: E402
 from ui.skills_page import page_skills  # noqa: E402
@@ -24,6 +25,7 @@ from ui.wizard import page_wizard  # noqa: E402
 PAGES = {
     "📚 书架": page_shelf,
     "➕ 新建小说": page_wizard,
+    "💡 灵感构思": page_brainstorm,
     "🧭 驾驶舱": page_cockpit,
     "🧩 Skill 库": page_skills,
     "⚙ 后台任务": page_tasks,

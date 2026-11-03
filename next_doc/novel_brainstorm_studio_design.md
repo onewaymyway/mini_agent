@@ -1,6 +1,6 @@
 # 小说灵感构思工作室：设计方案（草案，待确认）
 
-> 状态：已确认，按阶段实施。**B0 已完成**（2026-11-03）；B1–B5 未开始。
+> 状态：已确认，按阶段实施。**B0、B1 已完成**；B2–B5 未开始。
 > 实现说明见 `external_projects/novel_writer/docs/brainstorm_studio.md`。
 >
 > 已确认：会话续接由 mini_agent 的 Agent 提供（`run_turn` / `save_session` / `load_session`）；独立入口；允许 AI 主动提议（需确认）；其余按本文。
@@ -156,3 +156,9 @@ external_projects/novel_writer/
 - `novel_writer/brainstorm/`：workspace.py（目录与元信息、列表）、cards.py（校验、读写、定版、回退、哈希）；
 - 测试 `tests/test_brainstorm_b0.py` 16 例通过；novel_writer 全量见交付说明；
 - 文档 `docs/brainstorm_studio.md`。
+
+### B1（已完成）
+- `novel_writer/brainstorm/ideas.py`（灵感池增删改、状态）、`spark.py`（发散：提示词、解析、候选保存、采纳）、`api.py`（统一返回结构的接口）；
+- 页面 `ui/brainstorm.py` 与 `app.py` 导航「💡 灵感构思」；
+- 发散的候选不直接入池，需要作者采纳；默认生成器未经真实模型验证；
+- 测试 `tests/test_brainstorm_b1.py` 15 例（含页面 AppTest 冒烟），与 B0 合计 31 例通过。
