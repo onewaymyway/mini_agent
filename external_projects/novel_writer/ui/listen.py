@@ -38,8 +38,15 @@ _EXPECT = "listen_sel_expected"        # 我们最后一次有意设定/同步�
 
 
 def _on_pick(ws: str) -> None:
-    """用户主动选择起始章节：保存为新位置（章首），并让播放器重新挂载。"""
+    """用户主动选择起始章节：保存为新位置（章首），并让播放器重新挂载。
+
+    只响应真正的改动：如果回调的值与我们最后一次程序性同步的值（_EXPECT）相同，说明这是播放器切章后
+    同步选择框时回传的回调，不是用户操作。若把它当作用户改选，会重新挂载播放器并从章节开头重新播放，
+    表现为「章节结束后停下来、回到章节开头、不再播放下一章」。
+    """
     chosen = st.session_state[_SEL]
+    if chosen == st.session_state.get(_EXPECT):
+        return
     reading_state.update(ws, last_listen_chapter=chosen, listen_segment=0, listen_anchor="")
     st.session_state[_EXPECT] = chosen
     st.session_state[_FALLBACK] = False

@@ -210,3 +210,23 @@ def test_user_pick_is_not_mistaken_for_a_reset(isolated):
     assert (saved["last_listen_chapter"], saved["listen_segment"]) == (2, 0)
     args, _ = _listen_args(at)
     assert (args["resume_ch"], args["resume_seg"]) == (2, 0)
+
+
+def test_program_sync_echo_is_not_a_user_pick(monkeypatch):
+    """播放器切章后程序性同步选择框，前端回传的 on_change 不得被当作用户改选（否则重挂载、从章首重播）。"""
+    import types
+
+    import ui.listen as L
+
+    fake = types.SimpleNamespace(session_state={L._SEL: 3, L._EXPECT: 3, L._NONCE: 0})
+    monkeypatch.setattr(L, "st", fake)
+    calls = []
+    monkeypatch.setattr(L.reading_state, "update", lambda *a, **k: calls.append((a, k)))
+    L._on_pick("/nonexistent")
+    assert calls == []                                     # 回传的是同步值：什么都不做
+    assert fake.session_state[L._NONCE] == 0               # 播放器不重挂载
+
+    fake.session_state[L._SEL] = 2                         # 真正的用户改选
+    L._on_pick("/nonexistent")
+    assert len(calls) == 1 and calls[0][1]["last_listen_chapter"] == 2
+    assert fake.session_state[L._NONCE] == 1
