@@ -318,3 +318,7 @@ python -m pytest tests/test_m6.py -q        # M6 测试（15 个）
 重跑次数目前是固定的 3 次，不在界面里配置。
 
 - 构思修订（按新思路整体调整主题、世界观、角色等）：见 `concept_revision.md`。
+
+## 数据修复引擎
+
+数据文件校验失败时的 LLM 修复默认走受限引擎（不挂 skill、只开放文件/目录内置工具），可用 `settings.repair_engine` 切回旧方式，见 `docs/repair_engine.md`。

@@ -184,7 +184,9 @@ def test_worker_branch_repairs_then_reruns_step(ws):
         f.write_text(good.replace("首次激活", "首次「激活」"), encoding="utf-8")
         return FakeResult()
 
-    status = W._repair_and_rerun(ws, step, invoker=invoker, settings={}, handlers=handlers, budget=Budget())
+    # 旧引擎（repair_engine="agent"）：激活 data-repair skill
+    status = W._repair_and_rerun(ws, step, invoker=invoker, settings={"repair_engine": "agent"},
+                                 handlers=handlers, budget=Budget())
     assert status == st.ST_PASSED
     assert calls == [RP.REPAIR_SKILL]
 

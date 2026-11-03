@@ -349,10 +349,13 @@ class FrameworkInvoker:
         self._cfg = cfg
 
     def __call__(
-        self, *, skill: str, prompt: str, export_dir: Path, step_id: str,
+        self, *, skill: Optional[str], prompt: str, export_dir: Path, step_id: str,
         max_turns: Optional[int] = None, timeout: Optional[int] = None,
+        allowed_tools: Optional[list] = None,
     ) -> InvokeResult:
-        """一律放进子进程执行：输出经管道由 LinePump 写 agent.log 并镜像进 run.log。
+        """allowed_tools 非空 = 受限模式：不挂任何 skill，只开放这些内置工具（见 repair.py）。
+
+        一律放进子进程执行：输出经管道由 LinePump 写 agent.log 并镜像进 run.log。
 
         有步骤时限（step_timeout）时超时整树强杀；没有时限时不设截止时刻（单次调用仍受 timeout 约束）。
         以前「无时限」会在 worker 进程内直接运行，agent 的输出只进 worker.stdout.log，run.log 里看不到过程；
@@ -361,13 +364,15 @@ class FrameworkInvoker:
         remaining = STO.remaining_sec()
         if self._cfg is not None:
             return self._invoke_inprocess(skill=skill, prompt=prompt, export_dir=export_dir, step_id=step_id,
-                                          max_turns=max_turns, timeout=timeout)
+                                          max_turns=max_turns, timeout=timeout, allowed_tools=allowed_tools)
         return self._invoke_subprocess(skill=skill, prompt=prompt, export_dir=export_dir, step_id=step_id,
-                                       max_turns=max_turns, remaining=remaining, timeout=timeout)
+                                       max_turns=max_turns, remaining=remaining, timeout=timeout,
+                                       allowed_tools=allowed_tools)
 
     def _invoke_subprocess(
-        self, *, skill: str, prompt: str, export_dir: Path, step_id: str,
+        self, *, skill: Optional[str], prompt: str, export_dir: Path, step_id: str,
         max_turns: Optional[int], remaining: Optional[float], timeout: Optional[int] = None,
+        allowed_tools: Optional[list] = None,
     ) -> InvokeResult:
         import json as _json
         import os as _os
@@ -386,6 +391,7 @@ class FrameworkInvoker:
         payload_file.write_text(_json.dumps({
             "skill": skill, "prompt": prompt, "export_dir": str(export_dir), "step_id": step_id,
             "max_turns": max_turns,
+            "allowed_tools": list(allowed_tools) if allowed_tools else None,
             # 框架自身的超时放宽一点，让「父进程强杀」成为唯一的超时出口，避免框架超时后留下仍在后台跑的线程
             "timeout": (int(remaining) if remaining is not None else int(timeout or DEFAULT_TIMEOUT_SEC)) + 30,
             "parent_pid": _os.getpid(),
@@ -431,9 +437,13 @@ class FrameworkInvoker:
         return InvokeResult(bool(data.get("ok")), str(data.get("error") or ""), **_out())
 
     def _invoke_inprocess(
-        self, *, skill: str, prompt: str, export_dir: Path, step_id: str,
+        self, *, skill: Optional[str], prompt: str, export_dir: Path, step_id: str,
         max_turns: Optional[int] = None, timeout: Optional[int] = None,
+        allowed_tools: Optional[list] = None,
     ) -> InvokeResult:
+        if allowed_tools:
+            return self._invoke_restricted(prompt=prompt, export_dir=export_dir, max_turns=max_turns,
+                                           timeout=timeout, allowed_tools=allowed_tools)
         _ensure_framework_on_path()
         try:
             from mini_agent.workflow.runner import WorkflowRunner
@@ -471,6 +481,61 @@ class FrameworkInvoker:
         errors = [str(getattr(sr, "error", "") or "") for sr in (result.step_results or [])]
         detail = result.error or "; ".join(e for e in errors if e) or result.status
         return InvokeResult(False, str(detail))
+
+    def _invoke_restricted(
+        self, *, prompt: str, export_dir: Path, max_turns: Optional[int], timeout: Optional[int],
+        allowed_tools: list,
+    ) -> InvokeResult:
+        """受限模式：不经 WorkflowRunner，直接构造无 skill、白名单工具的 Agent 跑一轮。"""
+        _ensure_framework_on_path()
+        try:
+            cfg = self._cfg or config.load_llm_cfg()
+            export_dir.mkdir(parents=True, exist_ok=True)
+            agent = _build_restricted_agent(cfg, allowed_tools=allowed_tools,
+                                            max_turns=int(max_turns or 20), timeout=timeout)
+        except ImportError as exc:
+            return InvokeResult(False, f"未检测到 mini_agent 框架（{exc}），无法执行受限修复")
+        except Exception as exc:  # noqa: BLE001 - 构造失败也要作为失败结果返回，而不是让 worker 崩溃
+            return InvokeResult(False, f"构造受限修复 Agent 失败：{type(exc).__name__}: {exc}")
+        try:
+            agent.run_turn(prompt)
+        except Exception as exc:  # noqa: BLE001
+            return InvokeResult(False, f"受限修复 Agent 执行失败：{type(exc).__name__}: {exc}")
+        return InvokeResult(True)
+
+
+def _build_restricted_agent(cfg: Any, *, allowed_tools: list, max_turns: int, timeout: Optional[int]) -> Any:
+    """构造受限 Agent（用于数据修复）：没有 skill、只有白名单内置工具、到达轮次上限即停止。
+
+    - skill_loader=None：框架只在 skill_loader 非空时才注册 skill_list/skill_activate/capability_call 等工具，
+      所以模型根本没有激活别的 skill 的手段；
+    - registry=默认注册表按名字过滤：只保留 allowed_tools；
+    - extra_tools_enabled=False：不注册 run_slash_command / proxy_* / MCP / 自省（agent_status、笔记本等）工具；
+    - max_turns_on_limit="stop"：不继承全局 compact_continue（否则压缩后自动「继续」，约束会丢）。
+    """
+    import copy as _copy
+
+    from mini_agent.agent import Agent
+    from mini_agent.permissions import PermissionGuard
+    from mini_agent.tools import get_default_registry
+    import mini_agent.tools.builtin  # noqa: F401 - 内置工具在导入时才注册到默认注册表，必须先于 filtered()
+
+    cfg = _copy.copy(cfg)
+    cfg.verbose = True
+    cfg.stream = False
+    cfg.max_turns = int(max_turns)
+    cfg.max_turns_on_limit = "stop"
+    cfg.max_turns_hard_limit = int(max_turns)
+    try:
+        cfg.turn_judge.enabled = False
+    except AttributeError:
+        pass
+    if timeout:
+        cfg.request_timeout = timeout
+    registry = get_default_registry().filtered(names=list(allowed_tools))
+    guard = PermissionGuard(auto_approve=True, sandbox=getattr(cfg, "sandbox", False),
+                            project_root=getattr(cfg, "project_root", config.PROJECT_ROOT))
+    return Agent(cfg=cfg, guard=guard, registry=registry, skill_loader=None, extra_tools_enabled=False)
 
 
 def _ensure_framework_on_path() -> None:

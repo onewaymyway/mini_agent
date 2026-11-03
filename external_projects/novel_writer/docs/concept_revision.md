@@ -92,7 +92,7 @@
 构思审核清单要读取全部角色文件。某个角色文件格式损坏（典型：字符串里夹了英文双引号，如 `psychology` 字段不是合法 JSON）时：
 
 1. 先做确定性修复（`character_store.repair_dir`：BOM、缺 `---`、整份 JSON、多行值等），run.log 记「🔧 构思审核：已确定性修复…」。
-2. 仍不合格则抛**可修复错误**（`RepairableDataError`，校验器 `characters`，点名出问题的文件），worker 把问题与文件交给 `data-repair` skill 修复后重跑（`settings.auto_repair`，默认开，最多 `repair_max_attempts` 次，见 `repair.py`）。
+2. 仍不合格则抛**可修复错误**（`RepairableDataError`，校验器 `characters`，点名出问题的文件），worker 把问题与文件交给 LLM 修复后重跑（`settings.auto_repair`，默认开，最多 `repair_max_attempts` 次，见 `repair.py`；默认用受限引擎：不挂 skill、只开放文件/目录内置工具，`settings.repair_engine="agent"` 可切回旧的 `data-repair` skill 方式，详见 `docs/repair_engine.md`）。
 3. 修复次数用尽后停下等人处理，不再无限重试。
 
 以前这里直接抛不可修复的 `CharacterStoreError`，自动重跑和「不停机」重置只会反复报同一个错（日志里 ideation_review 连续失败十几次）。测试：`tests/test_ideation_review.py` 最后两例。

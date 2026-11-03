@@ -67,6 +67,11 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     # 原文件一律备份不删除；register_plot 步骤结束时也会自动隔离 agent 手写进「伏笔/」的不合规文件。
     # 设为 false 则只报错并给出修复指引（不改动任何文件）。
     "ledger_auto_repair": True,
+    # 数据文件校验失败时的 LLM 修复引擎：
+    #   "restricted"（默认）受限 Agent——不挂任何 skill（不会去激活别的 skill 做别的步骤），只开放读/写/改文件与目录浏览工具，
+    #                        到轮次上限即停止；
+    #   "agent"              旧方式——激活 data-repair skill，使用完整主 Agent。
+    "repair_engine": "restricted",
     # 逐幕滚动规划（默认开启）：蓝图缺少某幕的章节条目时，在进入该幕前自动插入 plan_act:N（LLM 逐章规划，
     # 读取上一幕的幕末报告）与 blueprint_extend:N（确定性并入）。设为 false 则不插入，缺条目时第 N 章会报明确错误。
     "plan_act_auto": True,
@@ -117,6 +122,8 @@ def validate_settings(data: Dict[str, Any]) -> Dict[str, Any]:
     for _k in ("ledger_auto_repair", "plan_act_auto", "notes_strict"):
         if not isinstance(merged[_k], bool):
             raise SettingsError(f"{_k} 必须是 true/false")
+    if merged["repair_engine"] not in ("restricted", "agent"):
+        raise SettingsError(f"repair_engine 必须是 \"restricted\" 或 \"agent\"，当前 {merged['repair_engine']!r}")
     if not isinstance(merged["banned_words"], list):
         raise SettingsError("banned_words 必须是列表")
     pf = merged["patrol_feedback"]

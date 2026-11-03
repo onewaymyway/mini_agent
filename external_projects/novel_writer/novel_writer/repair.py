@@ -16,7 +16,13 @@
 4. 修复次数有上限（settings.repair_max_attempts，默认 3，按步骤累计，通过后清零）。用尽后不再修复、
    也不再「不停机」式地重置，直接停下来等人处理，并在运行日志里写明原因。
 
-settings 开关：auto_repair（默认 True）。
+settings 开关：auto_repair（默认 True）；repair_engine（默认 "restricted"）。
+
+修复执行引擎（settings.repair_engine）：
+- "restricted"（默认）：受限 Agent。**不挂载任何 skill**（模型没有 skill_activate，不可能去激活别的 skill 做别的步骤），
+  只开放 REPAIR_ALLOWED_TOOLS 这组内置文件/目录工具；达到轮次上限直接停止（不继承全局 compact_continue）；
+  data-repair 的规则直接写进提示词，文件路径一律给绝对路径。
+- "agent"：旧方式，经 skill_step 工作流激活 data-repair skill，使用完整主 Agent。
 """
 
 from __future__ import annotations
@@ -34,6 +40,16 @@ MAX_REPAIR_ATTEMPTS = 3
 REPAIR_SKILL = "data-repair"
 REPAIR_MAX_TURNS = 20
 REPAIR_TIMEOUT_SEC = 900
+
+ENGINE_RESTRICTED = "restricted"
+ENGINE_AGENT = "agent"
+ENGINES = (ENGINE_RESTRICTED, ENGINE_AGENT)
+# 受限修复 Agent 可用的内置工具（白名单）：读/写/改文件 + 目录浏览与搜索。
+# 刻意不含 bash、delete_file、web_search、笔记本/记忆/skill 管理类工具。
+REPAIR_ALLOWED_TOOLS = (
+    "read_file", "write_file", "create_file", "patch_file", "patch_file_simple",
+    "list_dir", "tree_summary", "glob", "grep",
+)
 
 # 校验器：名字 → 函数(ws) -> 问题列表（空列表 = 通过）
 VALIDATORS: Dict[str, Callable[[Workspace], List[str]]] = {}
@@ -75,6 +91,12 @@ def enabled(settings: Dict[str, Any]) -> bool:
     return bool((settings or {}).get("auto_repair", True))
 
 
+def engine(settings: Dict[str, Any]) -> str:
+    """修复执行引擎；取值非法时退回默认的受限引擎。"""
+    value = (settings or {}).get("repair_engine", ENGINE_RESTRICTED)
+    return value if value in ENGINES else ENGINE_RESTRICTED
+
+
 def max_attempts(settings: Dict[str, Any]) -> int:
     try:
         return max(0, int((settings or {}).get("repair_max_attempts", MAX_REPAIR_ATTEMPTS)))
@@ -89,7 +111,12 @@ def exhausted(ws: Workspace, step_id: str, settings: Dict[str, Any]) -> bool:
 
 # ── 修复 ────────────────────────────────────────────────────────────────────
 
-def _build_prompt(step_id: str, request: Dict[str, Any], texts: Dict[str, str], problems: List[str]) -> str:
+def _build_prompt(step_id: str, request: Dict[str, Any], texts: Dict[str, str], problems: List[str],
+                  *, root: Optional[Path] = None) -> str:
+    """root 给出时（受限引擎）：文件一律用绝对路径，并内联 data-repair skill 的全部规则。"""
+    def show(rel: str) -> str:
+        return str((Path(root) / rel)) if root is not None else rel
+
     lines = [
         "下面的数据文件无法被程序读取。请只修复这些文件中的格式错误，使它们能通过读取校验。",
         "",
@@ -97,16 +124,25 @@ def _build_prompt(step_id: str, request: Dict[str, Any], texts: Dict[str, str], 
         *[f"- {p}" for p in problems],
         "",
         "## 修复规则",
-        f"- 只能修改以下文件（路径相对工作区）：{'、'.join(request['files'])}。不得修改、创建或删除任何其他文件。",
+        f"- 只能修改以下文件{'（绝对路径）' if root is not None else '（路径相对工作区）'}："
+        f"{'、'.join(show(f) for f in request['files'])}。不得修改、创建或删除任何其他文件。",
         "- 保持原意与内容，不得删减、合并或编造信息；只修正格式（引号、转义、类型、缺失的字段名等）。",
         "- 字符串值必须写在同一行；字符串内需要的引号用中文「」或『』，不要用英文双引号。",
         "- 文件头的 id 必须与文件名一致；同一章的记录只能出现一次。",
-        "- 直接保存修改后的文件，不需要输出额外说明。",
-        "",
-        "## 当前文件内容",
+        "- 信息确实缺失时，用合法的空值（如 []、null、\"\"）补齐，不得编造。",
     ]
+    if root is not None:
+        lines += [
+            "- 你只有读写文件和浏览目录的工具，没有其他能力。这是一次独立的数据修复任务：不要做写作、审核、规划等任何别的事，"
+            "也不要检查或处理其他步骤。",
+            "- 上面的文件已给出绝对路径，直接用该路径读写，不需要再搜索。",
+            "- 修改完成并确认文件已保存后，直接以一句话结束（例如「已修复」），不要继续做任何其他工作。",
+        ]
+    else:
+        lines.append("- 直接保存修改后的文件，不需要输出额外说明。")
+    lines += ["", "## 当前文件内容"]
     for rel, text in texts.items():
-        lines += [f"### {rel}", "```", text.rstrip(), "```", ""]
+        lines += [f"### {show(rel)}", "```", text.rstrip(), "```", ""]
     return "\n".join(lines)
 
 
@@ -152,11 +188,20 @@ def repair_attempt(ws: Workspace, step, *, invoker, settings: Dict[str, Any],
                     f"{'；'.join(before[:3])[:160]}")
     export_dir = ws.step_dir(f"{step.id}.repair", used)
     export_dir.mkdir(parents=True, exist_ok=True)
-    result = invoker(
-        skill=REPAIR_SKILL, prompt=_build_prompt(step.id, request, texts, before),
-        export_dir=export_dir, step_id=f"{step.id}.repair",
-        max_turns=REPAIR_MAX_TURNS, timeout=REPAIR_TIMEOUT_SEC,
-    )
+    if engine(settings) == ENGINE_RESTRICTED:
+        # 受限 Agent：不挂 skill（skill=None），只开白名单工具；规则内联进提示词
+        result = invoker(
+            skill=None, prompt=_build_prompt(step.id, request, texts, before, root=ws.root),
+            export_dir=export_dir, step_id=f"{step.id}.repair",
+            max_turns=REPAIR_MAX_TURNS, timeout=REPAIR_TIMEOUT_SEC,
+            allowed_tools=list(REPAIR_ALLOWED_TOOLS),
+        )
+    else:
+        result = invoker(
+            skill=REPAIR_SKILL, prompt=_build_prompt(step.id, request, texts, before),
+            export_dir=export_dir, step_id=f"{step.id}.repair",
+            max_turns=REPAIR_MAX_TURNS, timeout=REPAIR_TIMEOUT_SEC,
+        )
     R._log_agent_output(ws, f"{step.id}.repair", result)
     if not getattr(result, "ok", False):
         st.log_line(ws, f"⚠ {step.id}：修复调用未成功：{getattr(result, 'error', '') or '未知原因'}")
@@ -173,6 +218,9 @@ def repair_attempt(ws: Workspace, step, *, invoker, settings: Dict[str, Any],
         for p, data in snapshot.items():
             if p.is_file() and p.read_bytes() != data:
                 p.write_bytes(data)
+        for p in list(_snapshot(ws).keys()):   # 修复期间新建的文件（受限引擎开放了写文件工具）一并删除
+            if p not in snapshot:
+                p.unlink(missing_ok=True)
         rolled_back = True
         after = validator(ws)
         why = "范围外文件被改动" if out_of_scope else f"问题由 {len(before)} 条增至 {after_count} 条"

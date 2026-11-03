@@ -69,8 +69,9 @@ def main(argv: list) -> int:
     _install_full_result_hook()
 
     result = FrameworkInvoker()._invoke_inprocess(
-        skill=payload["skill"], prompt=payload["prompt"], export_dir=Path(payload["export_dir"]),
+        skill=payload.get("skill"), prompt=payload["prompt"], export_dir=Path(payload["export_dir"]),
         step_id=payload["step_id"], max_turns=payload.get("max_turns"), timeout=payload.get("timeout"),
+        allowed_tools=payload.get("allowed_tools"),   # 非空 = 受限模式（无 skill，仅白名单工具）
     )
     result_file.write_text(json.dumps({"ok": result.ok, "error": result.error}, ensure_ascii=False), encoding="utf-8")
     _drain_terminal()
