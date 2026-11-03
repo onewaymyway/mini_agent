@@ -38,6 +38,10 @@ class Cancelled(BaseException):
 
 _LOCK = threading.Lock()
 _EVENTS: Dict[str, threading.Event] = {}
+# 本进程内为该项目开过的所有信号对象（最近若干个）。运行线程绑定的可能是较早的那个：
+# 只置位“最新”的信号会让仍在运行的旧线程收不到停止（这正是“终止子进程 0 个、仍在轮询”的原因）。
+_ALL: Dict[str, List[threading.Event]] = {}
+_KEEP = 20
 _PROCS: Dict[str, List[subprocess.Popen]] = {}
 _TLS = threading.local()
 
@@ -47,12 +51,17 @@ def _key(project_dir: Any) -> str:
 
 
 def begin(project_dir: Any) -> threading.Event:
-    """新一轮运行开始：换一个新的信号对象（旧对象保持原状态，旧线程不会“复活”）。"""
+    """新一轮运行开始：换一个新的信号对象（旧对象保持原状态，旧线程不会“复活”）。
+    子进程登记保留：仍在运行的旧线程登记的子进程，停止时依然能被终止。"""
     k = _key(project_dir)
     with _LOCK:
         ev = threading.Event()
         _EVENTS[k] = ev
-        _PROCS[k] = []
+        lst = _ALL.setdefault(k, [])
+        lst.append(ev)
+        del lst[:-_KEEP]
+        _PROCS.setdefault(k, [])
+        _PROCS[k] = [p for p in _PROCS[k] if p.poll() is None]
     return ev
 
 
@@ -73,9 +82,10 @@ def request(project_dir: Any) -> int:
     """立即请求停止：置位信号并终止登记的子进程。返回被终止的子进程数。"""
     k = _key(project_dir)
     with _LOCK:
-        ev = _EVENTS.setdefault(k, threading.Event())
+        evs = list(_ALL.get(k, [])) + [_EVENTS.setdefault(k, threading.Event())]
         procs = list(_PROCS.get(k, []))
-    ev.set()
+    for ev in evs:          # 所有仍可能在运行的线程都要看到停止
+        ev.set()
     killed = 0
     for proc in procs:
         if proc.poll() is None:
