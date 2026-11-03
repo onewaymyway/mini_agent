@@ -306,7 +306,7 @@ def test_chapter_page_guides_unknown_speakers_then_confirms_in_place(proj):
                        video=StubVideoProvider(), tts=SilenceTTS())
     assert r["status"] == "waiting_assets", r
     at = _open_chapter_page(proj)
-    assert any("等待补建角色确认" in w.value for w in at.warning)
+    assert any("等待补建素材确认" in w.value for w in at.warning)
     keys = [b.key for b in at.button if b.key]
     ok_text = next(k for k in keys if k.startswith("ok_t_"))
     assert any(k.startswith("ok_p_") for k in keys) and any(k.startswith("save_") for k in keys)
@@ -393,5 +393,5 @@ def test_chapter_page_says_mapped_speaker_needs_no_review(proj):
     rows = [r for df in at.dataframe for r in df.value.to_dict("records")]
     row = next(r for r in rows if r.get("说话人") == "新人")
     assert "已归入已有角色" in row["处理结果"] and chars[0]["names"][0] in row["处理结果"]
-    assert any("没有需要确认的补建角色" in s.value for s in at.success)
+    assert any("没有需要确认的补建素材" in s.value for s in at.success)
     assert not any("运行第 1 章流水线" in i.value and "自动起草" in i.value for i in at.info)

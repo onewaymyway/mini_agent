@@ -105,8 +105,11 @@ def _auto_added_section(pdir: str, no: int, v: dict) -> None:
     if not all_speakers and not mine_open:
         return
     st.markdown("#### 补建角色（需要你确认）")
-    if v.get("status") == "waiting_assets":
-        st.warning("本章正在等待补建角色确认：请在下面完成设定与定妆图的确认，然后点上方「运行第 {0} 章流水线」继续。".format(no))
+    waiting = v.get("status") == "waiting_assets"
+    if waiting:
+        st.warning("本章正在等待补建素材确认：请在下面完成角色、地点、道具的设定与定妆图确认，然后点上方「运行第 {0} 章流水线」继续。".format(no))
+        if v.get("message"):
+            st.caption("流水线报告的等待项：" + v["message"])
     if open_speakers:
         st.caption("以下说话人不在角色库中，且镜头规划后仍需要人确认：")
         st.dataframe([{"说话人": s["name"], "台词句数": s["lines"],
@@ -117,8 +120,8 @@ def _auto_added_section(pdir: str, no: int, v: dict) -> None:
         open_n = render_auto_added(pdir, chapter=no, key_prefix=f"aa_ch{no}", only_open=True)
         if open_n == 0:
             st.success("本章的补建角色已全部确认，可以重新运行本章继续。")
-    elif not open_speakers:
-        st.success("本章没有需要确认的补建角色。")
+    elif not open_speakers and not waiting:
+        st.success("本章没有需要确认的补建素材。")
     if handled:
         # 已经处理完的说话人收进折叠区，只作为说明，不占用待确认区域
         with st.expander(f"已自动归入已有角色（{len(handled)}）", expanded=False):

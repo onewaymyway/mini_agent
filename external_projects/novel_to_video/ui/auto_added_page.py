@@ -28,20 +28,20 @@ def render_auto_added(pdir: str, chapter: Optional[int] = None, *, key_prefix: s
     if not q["ok"]:
         st.error(q["error"]["message"])
         return 0
-    ids = [r["id"] for r in q["data"] if chapter is None or r["chapter"] == chapter]
-    if not ids:
+    keys = {r["key"] for r in q["data"] if chapter is None or r["chapter"] == chapter}
+    if not keys:
         return 0
     status = tool_api.get_visual_status(pdir)
     if not status["ok"]:
         st.error(status["error"]["message"])
         return 0
-    rows = [r for r in status["data"]["rows"] if r["kind"] == "character" and r["id"] in ids]
+    rows = [r for r in status["data"]["rows"] if r["key"] in keys]
     open_n = sum(1 for r in rows if not (r["text_status"] == "approved" and r["portrait_status"] == "approved"))
     if only_open:
         rows = [r for r in rows if not (r["text_status"] == "approved" and r["portrait_status"] == "approved")]
     st.caption(STEPS_HELP)
     for r in rows:
-        entity_card(pdir, r, with_generate=True, allow_merge=True)
+        entity_card(pdir, r, with_generate=True, allow_merge=r["kind"] == "character")
     return open_n
 
 

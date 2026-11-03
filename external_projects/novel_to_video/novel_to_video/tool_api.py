@@ -431,22 +431,39 @@ def final_status(project_dir: str) -> Dict[str, Any]:
 
 
 def auto_added_queue(project_dir: str) -> Dict[str, Any]:
-    """补建审核页数据：所有 source=auto_added 的角色及其审核状态。"""
+    """补建审核数据：本次流水线可能等待确认的全部草稿实体（角色、地点、道具、形象），
+    与章节流水线 C-5 的 waiting 列表使用同一套归属（auto_added_chapter）。
+    每行带 chapter / kind / key，界面按 key 对齐素材状态。"""
+    from .chapter_io import load_entities
+    from .steps import character_looks as _cl
     pdir = Path(project_dir)
     try:
-        chars = ps.read_json(pdir / "global" / "characters.json")["characters"]
-        review = ps.read_json(pdir / "global" / "review.json") if (pdir / "global" / "review.json").is_file() else {"items": {}}
+        ents = load_entities(pdir)
+        chars = ents["characters"]["characters"]
+        status = gv.visual_status(pdir)
     except Exception as exc:
         return _fail(str(exc))
-    rows = []
+    chapter_of: Dict[str, Any] = {}
     for c in chars:
-        if c.get("source") != "auto_added":
+        if c.get("source") == "auto_added":
+            chapter_of[gv.entity_key("character", c["id"])] = c.get("auto_added_chapter")
+        for lk in c.get("looks") or []:
+            if lk.get("auto_added_chapter") is not None:
+                chapter_of[gv.entity_key("look", _cl.look_key(c["id"], lk["id"]))] = lk["auto_added_chapter"]
+    for kind, lst in (("location", ents["locations"]["locations"]), ("prop", ents["props"]["props"])):
+        for e in lst:
+            if e.get("auto_added_chapter") is not None:
+                chapter_of[gv.entity_key(kind, e["id"])] = e["auto_added_chapter"]
+    rows = []
+    for r in status["rows"]:
+        ch = chapter_of.get(r["key"])
+        if ch is None:                       # 非章节草稿（如全局预拆解的场景点）不进入补建队列
             continue
-        item = review.get("items", {}).get(f"character:{c['id']}", {})
-        rows.append({"id": c["id"], "name": (c.get("names") or [""])[0], "chapter": c.get("auto_added_chapter"),
-                     "description_zh": c.get("description_zh"), "visual_anchor_en": c.get("visual_anchor_en"),
-                     "voice_profile": c.get("voice_profile"), "text_status": item.get("text_status", "missing"),
-                     "portrait_status": item.get("portrait_status", "missing")})
+        rows.append({"key": r["key"], "kind": r["kind"], "id": r["id"], "name": r.get("name") or "",
+                     "chapter": ch, "description_zh": r.get("description_zh"),
+                     "visual_anchor_en": r.get("visual_anchor_en"),
+                     "text_status": r.get("text_status", "missing"),
+                     "portrait_status": r.get("portrait_status", "missing")})
     return _ok(rows)
 
 

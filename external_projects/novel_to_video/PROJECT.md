@@ -159,3 +159,10 @@ novel_output/                       # 项目数据（默认位置，已加入 .g
 - 代码：`steps/location_auto.py`（一键执行）、`steps/location_sheets.py`（设定图）、`steps/location_context.py`（上下文检索）。
 - 设计与限制见 `next_doc/novel_to_video_location_spots_plan.md` 第 11 节。
 - 全书素材页：地点按区域成块展示（区域 → 场景点 → 设定图），分组逻辑见 `novel_to_video/steps/location_groups.py`。
+
+## 章节状态一致性（补建素材）
+
+- 补建审核队列（`tool_api.auto_added_queue`）覆盖 C-5 草拟的全部实体：角色、地点、道具、角色形象，每行带 `chapter`、`kind`、`key`。
+- 章节页在流水线处于 `waiting_assets` 时显示流水线报告的真实等待项，不再同时显示“没有需要确认”。
+- 日志面板的“最近一次”只显示本面板作用域内的任务，避免把其它任务（如 G-3 定妆图）当作重新合成的记录。
+- 测试：`tests/test_waiting_assets_queue.py`。

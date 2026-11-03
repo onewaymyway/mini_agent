@@ -74,7 +74,9 @@ def _panel(pdir: str, scopes, title: str, height: int, limit: int) -> None:
         state_text = f"🟢 运行中 · {js.get('label') or '后台任务'}"
         detail = ""
     else:
-        state_text = f"⚪ 空闲 · 最近一次：{js.get('label') or '—'}（{JOB_LABEL.get(js.get('state'), js.get('state', '空闲'))}）"
+        same_scope = not scopes or js.get("scope") in scopes     # 只显示本面板作用域内的最近一次任务
+        last = js.get("label") if same_scope and js.get("label") else "—"
+        state_text = f"⚪ 空闲 · 最近一次：{last}（{JOB_LABEL.get(js.get('state'), js.get('state', '空闲')) if same_scope else '无'}）"
         detail = ""
     st.markdown(f"**{title}**　·　{state_text}")
     if detail:
