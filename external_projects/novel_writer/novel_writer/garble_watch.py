@@ -245,8 +245,6 @@ def report_step(ws: Workspace, step_id: str, before: Dict[str, str],
             reasons = check_file(path)
             if reasons:
                 hits.append({"file": rel, "reasons": reasons})
-        if mode == "rerun":
-            st.log_line(ws, "  乱码检测：rerun 模式的步骤后统一守卫（G3）尚未启用，本次仅记录")
         for hit in hits:
             st.log_line(ws, f"  ⚠ 乱码检测：{hit['file']} 疑似乱码（{'；'.join(hit['reasons'])}）")
         if hits:
@@ -304,3 +302,182 @@ def inline_problems(ws: Workspace, step_id: str, before: Dict[str, str],
         problems.append(f"`{rel}` 疑似乱码（{'；'.join(reasons)}）。请重新完整撰写该文件并覆盖写入同一路径，"
                         "文件名保持不变，不要保留乱码内容。")
     return problems
+
+
+# ── G3：统一守卫（B 层，rerun 模式，所有步骤含 python 步骤） ──────────────────────
+#
+# 检测范围 = 本步骤改动的关键文件 ∪ 本步骤声明产出 ∪ 本步骤读取的关键文件（下游发现上游乱码）。
+# 归因：改动/产出归本步骤；读取的文件按「最后写入者」归因，可能是上游步骤。
+# 动作（每次只处理第一条可自动处理的命中）：
+#   * 写入者是本步骤  → 本步骤标为失败（错误信息即重试提示），交给 worker 自动重跑；
+#   * 写入者是上游 X → 重置 X 与本步骤为待执行，调度器按顺序先跑 X；
+#   * 作者手改 / 查不到 → 只记入收件箱，不动流水线；
+#   * 「步骤 × 文件」次数用尽（garble_check.max_reruns）→ 挂起 waiting_user，选项见 DECISION_OPTIONS。
+# 状态存放于 pipeline_state.json 的 garble_reruns / garble_accepted / garble_pending 三个键。
+
+DECISION_OPTIONS = ["再重新生成（再试一轮）", "我手动修改后重新核查", "接受当前内容（风险自负）"]
+_DECISION_ID = "decision"
+
+
+def _state_get(ws: Workspace, key: str) -> Dict[str, Any]:
+    from novel_writer import state as st
+
+    return dict(st.load_state(ws).get(key) or {})
+
+
+def _state_put(ws: Workspace, updates: Dict[str, Any]) -> None:
+    from novel_writer import state as st
+    from novel_writer.fsutil import atomic_write_json as _write
+
+    with st._LOCK:
+        data = st.load_state(ws)
+        data.update(updates)
+        _write(ws.path("studio_state"), data)
+
+
+def collect_hits(ws: Workspace, step_id: str, before: Dict[str, str], settings: Optional[Dict[str, Any]],
+                 declared: Iterable[str], inputs: Iterable[str]) -> tuple:
+    """返回 (命中列表, 本次检查过的文件列表)。已被作者「接受」且指纹未变的文件不算命中。"""
+    watched = set(watched_files(ws, settings))
+    changed = set(changed_since(ws, before, settings))
+    own = changed | set(declared)
+    read_watched = {rel for rel in inputs if rel in watched}
+    checked = sorted(own | read_watched)
+    accepted = _state_get(ws, "garble_accepted")
+    known = _known_step_ids(ws)
+    hits: List[Dict[str, Any]] = []
+    for rel in checked:
+        path = ws.root / rel
+        if not path.is_file() or _excluded(rel):
+            continue
+        reasons = check_file(path)
+        if not reasons or accepted.get(rel) == _digest(path):
+            continue
+        item: Dict[str, Any] = {"file": rel, "reasons": reasons}
+        if rel in own:
+            # 本步骤改动或声明的产出：归本步骤（python 步骤的写入记录要到收尾才登记）
+            item.update({"writer": step_id, "writer_kind": "agent", "auto_rerunnable": True,
+                         "note": f"由本步骤 {step_id} 产生"})
+        else:
+            item.update(attribute(ws, rel, known))
+        hits.append(item)
+    return hits, checked
+
+
+def _decision_fields(file: str, reasons: List[str], summary: str) -> Dict[str, Any]:
+    return {
+        "summary": summary,
+        "needs_user": [{
+            "id": _DECISION_ID,
+            "question": f"`{file}` 疑似乱码（{'；'.join(reasons)}）。已自动重做多次仍未通过，请选择：",
+            "options": list(DECISION_OPTIONS),
+        }],
+    }
+
+
+def guard_after_step(ws: Workspace, step_id: str, status: str, fields: Dict[str, Any], *,
+                     before: Dict[str, str], settings: Optional[Dict[str, Any]],
+                     declared: Iterable[str], inputs: Iterable[str]) -> tuple:
+    """步骤将要结束时调用（仅 rerun 模式）。返回可能被改写的 (status, fields)。失败路径保持宽松。"""
+    from novel_writer import state as st
+
+    if mode_of(settings) != "rerun" or status not in (st.ST_PASSED, st.ST_WAITING_REVIEW):
+        return status, fields
+    try:
+        max_reruns = int(config_of(settings)["max_reruns"])
+        hits, checked = collect_hits(ws, step_id, before, settings, declared, inputs)
+        counters = _state_get(ws, "garble_reruns")
+        if not hits:
+            cleared = {k: v for k, v in counters.items() if k.split("|", 1)[-1] not in checked}
+            if len(cleared) != len(counters):
+                _state_put(ws, {"garble_reruns": cleared})
+            return status, fields
+        manual = [h for h in hits if not h["auto_rerunnable"]]
+        if manual:
+            for h in manual:
+                st.log_line(ws, f"⚠ 乱码检测：{h['file']} 疑似乱码，{h['note']}")
+            _write_inbox(ws, step_id, manual)
+        auto = [h for h in hits if h["auto_rerunnable"]]
+        if not auto:
+            return status, fields
+        h = auto[0]
+        writer, rel = h["writer"], h["file"]
+        key = f"{writer}|{rel}"
+        n = int(counters.get(key, 0))
+        if n >= max_reruns:
+            pending = _state_get(ws, "garble_pending")
+            pending[step_id] = {"key": key, "writer": writer, "file": rel}
+            _state_put(ws, {"garble_pending": pending})
+            st.log_line(ws, f"⏸ 乱码检测：{rel} 由 {writer} 产出，已自动重做 {n} 次仍为乱码，挂起等待作者决定")
+            return st.ST_WAITING_USER, _decision_fields(rel, h["reasons"], f"{rel} 多次重做仍疑似乱码，已暂停")
+        counters[key] = n + 1
+        _state_put(ws, {"garble_reruns": counters})
+        if writer == step_id:
+            st.log_line(ws, f"↻ 乱码检测：{rel} 疑似乱码（{'；'.join(h['reasons'])}），本步骤自动重做（第 {n + 1}/{max_reruns} 次）")
+            return st.ST_FAILED, {"error": f"乱码检测：{rel} 疑似乱码（{'；'.join(h['reasons'])}）。"
+                                           "请重新完整撰写并覆盖写入同一文件，不要保留乱码内容。"}
+        st.log_line(ws, f"↻ 乱码检测：{rel} 由上游 {writer} 产出且疑似乱码，重置 {writer} 与 {step_id}（第 {n + 1}/{max_reruns} 次）")
+        st.reset_step(ws, writer)
+        st.reset_step(ws, step_id)
+        return st.ST_PENDING, {"summary": f"上游 {writer} 产出乱码，已重置"}
+    except Exception as exc:  # noqa: BLE001 - 守卫失败不能影响步骤结果
+        st.log_line(ws, f"⚠ 乱码守卫异常（已忽略，步骤结果不变）：{type(exc).__name__}: {exc}")
+        return status, fields
+
+
+def handle_pending(ws: Workspace, step_id: str, settings: Optional[Dict[str, Any]]) -> Optional[tuple]:
+    """步骤开始执行前调用：若该步骤正挂起等待乱码决定，且作者已答复，则按答复处理。
+
+    返回 (status, fields) 表示本次不执行步骤、直接给出结果；返回 None 表示照常执行。
+    """
+    from novel_writer import state as st
+    from novel_writer.fsutil import read_json
+    from novel_writer.runner import _answers_file
+
+    if mode_of(settings) != "rerun":
+        return None
+    pending_all = _state_get(ws, "garble_pending")
+    pending = pending_all.get(step_id)
+    if not pending:
+        return None
+    answers_path = _answers_file(ws, step_id)
+    answers = (read_json(answers_path, default=None) or {}).get("answers") or {}
+    decision = str(answers.get(_DECISION_ID) or "")
+    if answers_path.exists():
+        answers_path.unlink()
+    pending_all.pop(step_id, None)
+    _state_put(ws, {"garble_pending": pending_all})
+    if not decision:
+        return None                                   # 没有答复：照常执行，由守卫重新判断
+
+    key, writer, rel = pending["key"], pending["writer"], pending["file"]
+    counters = _state_get(ws, "garble_reruns")
+    accepted = _state_get(ws, "garble_accepted")
+    path = ws.root / rel
+    if decision.startswith("接受"):
+        accepted[rel] = _digest(path)
+        counters.pop(key, None)
+        _state_put(ws, {"garble_accepted": accepted, "garble_reruns": counters})
+        st.log_line(ws, f"乱码检测：作者接受 {rel} 的风险，继续推进")
+        return st.ST_PASSED, {"summary": f"作者接受 {rel} 的乱码风险"}
+    if decision.startswith("我手动修改"):
+        counters[key] = 0
+        _state_put(ws, {"garble_reruns": counters})
+        reasons = check_file(path)
+        if not reasons:
+            st.log_line(ws, f"乱码检测：作者手动修改后 {rel} 已通过检测")
+            return st.ST_PASSED, {"summary": f"{rel} 手动修改后通过乱码检测"}
+        pending_all = _state_get(ws, "garble_pending")
+        pending_all[step_id] = pending
+        _state_put(ws, {"garble_pending": pending_all})
+        return st.ST_WAITING_USER, _decision_fields(rel, reasons, f"{rel} 仍疑似乱码")
+    # 再重新生成
+    counters[key] = 0
+    _state_put(ws, {"garble_reruns": counters})
+    if writer == step_id:
+        st.log_line(ws, f"乱码检测：作者选择重新生成，本步骤重跑")
+        return None
+    st.reset_step(ws, writer)
+    st.reset_step(ws, step_id)
+    st.log_line(ws, f"乱码检测：作者选择重新生成，重置上游 {writer} 与本步骤")
+    return st.ST_PENDING, {"summary": f"作者选择重新生成 {writer}"}

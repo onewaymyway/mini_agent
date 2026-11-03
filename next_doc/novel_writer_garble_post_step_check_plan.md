@@ -1,6 +1,6 @@
 # novel_writer：步骤完成后关键文件乱码检测 + 自动定位并重跑
 
-> 状态：G1、G2 已完成；G3 / G4 未开始。实现说明见 `external_projects/novel_writer/docs/garble_check.md`。
+> 状态：G1、G2、G3 已完成；G4 未开始。实现说明见 `external_projects/novel_writer/docs/garble_check.md`。
 > 涉及：`external_projects/novel_writer/novel_writer/{garble.py, runner.py, chapter_ops.py, worker.py, state.py, settings.py, tool_api.py}` 与看板驾驶舱。
 
 ## 一、背景与缺口
@@ -160,3 +160,14 @@ A 层让绝大多数乱码在本步骤内就被修好；B 层兜底（A 层用�
 - `runner._run_skill_step_inner` 接入（基线在进入重试循环前取，off/report 模式为空，行为不变）；
 - 测试 `tests/test_garble_check_g1.py` 新增 4 例（重做后通过 / 用尽失败 / report 不重做 / off 不变），共 17 例通过；novel_writer 全量 740 passed，仍是 3 个既有失败。
 - 文档 `docs/garble_check.md` 更新 rerun 模式章节。
+
+### G3（已完成）
+- `garble_watch.guard_after_step()`（B 层，所有步骤含 python，rerun 模式，在写入者记录之前执行）：检测范围 = 改动 ∪ 声明产出 ∪ 读取的关键文件；归因到本步骤 → 本步骤失败重试；归因到上游 → 重置上游与本步骤；作者/未知 → 仅收件箱；`garble_reruns` 按「产出者|文件」计数，用尽挂起 `waiting_user`；
+- `garble_watch.handle_pending()`：挂起后的作者答复（再重新生成 / 手动修改后重新核查 / 接受）在步骤下次开始时处理；`garble_accepted` 记录指纹；
+- `runner.run_step` 接入：开始前处理答复、结束时调用守卫；report 模式仍走 G1 的 `report_step`；
+- 测试 `tests/test_garble_check_g1.py` 共 23 例通过（G3 新增 6 例：自检重试后挂起、接受风险、选择重新生成、下游读取上游乱码重置上游、作者手改仅提示、干净运行清零计数，另加 report 模式不改状态）；novel_writer 全量 746 passed，仍是 3 个既有失败；
+- 文档 `docs/garble_check.md` 新增统一守卫章节。
+
+### 与原方案的偏差
+- 挂起决定的答复沿用步骤级 `answers` 文件，不新增交互入口；
+- 每次收尾只处理第一条自动命中，其余下一轮处理（原方案未规定，取保守值）。

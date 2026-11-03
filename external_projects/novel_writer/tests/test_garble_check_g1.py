@@ -173,14 +173,6 @@ def test_report_mode_clean_output_writes_nothing(book):
     assert not (book.studio / "inbox" / "garble_test.write_summary.json").exists()
 
 
-def test_rerun_mode_is_reported_honestly_until_g3(book):
-    _set_mode(book, "rerun")
-    step, handlers = _writer_step("章节总结/第01章_总结.md", mojibake(NORMAL * 20))
-    run_step(book, step, invoker=None, settings=book.settings(), handlers=handlers)
-    log = book.path("studio_log").read_text(encoding="utf-8")
-    assert "尚未启用" in log
-
-
 # ── G2：skill 步骤内重试环（A 层） ───────────────────────────────────────────
 
 from novel_writer.runner import InvokeResult, StepFailed, run_skill_step  # noqa: E402
@@ -250,3 +242,119 @@ def test_off_mode_skill_step_unchanged(book):
     run_skill_step(book, _skill_step(), invoker=invoker, settings=book.settings(), run_no=1)
     assert len(invoker.calls) == 1
     assert not (book.studio / "backup" / "garbled").exists()
+
+
+# ── G3：统一守卫（B 层）与挂起决定 ─────────────────────────────────────────
+
+from novel_writer import runner as R  # noqa: E402
+
+
+def _python_writer(rel: str, contents):
+    """python 步骤桩：每次执行依次写出 contents 中的一个版本（用尽后沿用最后一个）。"""
+    calls = []
+
+    def handler(ws, step, settings, invoker=None):
+        calls.append(step.id)
+        _write(ws, rel, contents[min(len(calls) - 1, len(contents) - 1)])
+        return {"summary": "写入"}
+
+    handler.calls = calls
+    return handler
+
+
+def _py_step(step_id: str, *, inputs=(), outputs=()):
+    return S.StepDef(id=step_id, title=step_id, stage="p0", category=S.CAT_CHAPTER_REVIEW,
+                     executor=S.EXECUTOR_PYTHON, handler="w", inputs=tuple(inputs), outputs=tuple(outputs))
+
+
+def test_self_written_garble_fails_then_parks_for_author(book):
+    _set_mode(book, "rerun", max_reruns=2)
+    rel = SUMMARY
+    handler = _python_writer(rel, [mojibake(NORMAL * 20)])
+    step = _py_step("test.py_self", outputs=(rel,))     # 声明产出：重复写出相同内容也能被检出
+    handlers = {"w": handler}
+    statuses = [run_step(book, step, invoker=None, settings=book.settings(), handlers=handlers)]
+    statuses.append(run_step(book, step, invoker=None, settings=book.settings(), handlers=handlers))
+    assert statuses == [st.ST_FAILED, st.ST_FAILED]
+    assert "疑似乱码" in st.get_step_state(book, step.id)["error"]
+    statuses.append(run_step(book, step, invoker=None, settings=book.settings(), handlers=handlers))
+    assert statuses[2] == st.ST_WAITING_USER
+    assert st.get_step_state(book, step.id)["needs_user"][0]["options"] == GW.DECISION_OPTIONS
+
+
+def test_author_accepts_risk_and_step_passes_without_rerun(book):
+    _set_mode(book, "rerun", max_reruns=0)
+    rel = SUMMARY
+    handler = _python_writer(rel, [mojibake(NORMAL * 20)])
+    step = _py_step("test.py_accept")
+    handlers = {"w": handler}
+    assert run_step(book, step, invoker=None, settings=book.settings(), handlers=handlers) == st.ST_WAITING_USER
+    answers = R._answers_file(book, step.id)
+    answers.parent.mkdir(parents=True, exist_ok=True)
+    answers.write_text(json.dumps({"answers": {"decision": "接受当前内容（风险自负）"}}, ensure_ascii=False),
+                       encoding="utf-8")
+    n_calls = len(handler.calls)
+    assert run_step(book, step, invoker=None, settings=book.settings(), handlers=handlers) == st.ST_PASSED
+    assert len(handler.calls) == n_calls                      # 接受后不再执行
+    assert run_step(book, step, invoker=None, settings=book.settings(), handlers=handlers) in (st.ST_PASSED, st.ST_FAILED)
+
+
+def test_author_regenerate_decision_reruns_self(book):
+    _set_mode(book, "rerun", max_reruns=0)
+    rel = SUMMARY
+    handler = _python_writer(rel, [mojibake(NORMAL * 20), NORMAL * 20])
+    step = _py_step("test.py_regen")
+    handlers = {"w": handler}
+    assert run_step(book, step, invoker=None, settings=book.settings(), handlers=handlers) == st.ST_WAITING_USER
+    answers = R._answers_file(book, step.id)
+    answers.parent.mkdir(parents=True, exist_ok=True)
+    answers.write_text(json.dumps({"answers": {"decision": "再重新生成（再试一轮）"}}, ensure_ascii=False),
+                       encoding="utf-8")
+    assert run_step(book, step, invoker=None, settings=book.settings(), handlers=handlers) == st.ST_PASSED
+    assert len(handler.calls) == 2                            # 选择重新生成后确实重跑了一次
+
+
+def test_downstream_reading_upstream_garble_resets_upstream(book):
+    _set_mode(book, "rerun")
+    rel = SUMMARY
+    upstream = P.build_plan(book)[0].id
+    _write(book, rel, mojibake(NORMAL * 20))
+    st.record_writer_paths(book, [rel], upstream, kind="declared")
+    st.update_step(book, upstream, status=st.ST_PASSED)
+    handler = _python_writer("正文/_other.md", [NORMAL * 5])
+    step = _py_step("test.py_downstream", inputs=(rel,))
+    status = run_step(book, step, invoker=None, settings=book.settings(), handlers={"w": handler})
+    assert status == st.ST_PENDING
+    assert st.get_step_state(book, upstream)["status"] == st.ST_PENDING
+    assert st.get_step_state(book, step.id)["status"] == st.ST_PENDING
+
+
+def test_author_edited_garble_is_only_reported(book):
+    _set_mode(book, "rerun")
+    rel = SUMMARY
+    _write(book, rel, mojibake(NORMAL * 20))
+    st.record_writer_paths(book, [rel], "author", kind="author")
+    step = _py_step("test.py_author", inputs=(rel,))
+    status = run_step(book, step, invoker=None, settings=book.settings(),
+                      handlers={"w": _python_writer("正文/_other.md", [NORMAL * 5])})
+    assert status in (st.ST_PASSED, st.ST_WAITING_REVIEW)
+    assert (book.studio / "inbox" / "garble_test.py_author.json").exists()
+
+
+def test_clean_run_clears_counter(book):
+    _set_mode(book, "rerun", max_reruns=2)
+    rel = SUMMARY
+    handler = _python_writer(rel, [mojibake(NORMAL * 20), NORMAL * 20])
+    step = _py_step("test.py_clear")
+    handlers = {"w": handler}
+    assert run_step(book, step, invoker=None, settings=book.settings(), handlers=handlers) == st.ST_FAILED
+    assert run_step(book, step, invoker=None, settings=book.settings(), handlers=handlers) in (st.ST_PASSED, st.ST_WAITING_REVIEW)
+    assert not any(k.endswith(rel) for k in GW._state_get(book, "garble_reruns"))
+
+
+def test_guard_off_in_report_mode_never_changes_status(book):
+    _set_mode(book, "report")
+    handler = _python_writer(SUMMARY, [mojibake(NORMAL * 20)])
+    status = run_step(book, _py_step("test.py_report_only"), invoker=None, settings=book.settings(),
+                      handlers={"w": handler})
+    assert status in (st.ST_PASSED, st.ST_WAITING_REVIEW)

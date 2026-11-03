@@ -626,9 +626,19 @@ def run_step(
 ) -> str:
     """执行一个步骤并写回状态，返回最终状态。"""
     handlers = DEFAULT_PY_HANDLERS if handlers is None else handlers
+    # 乱码守卫挂起后，作者的答复在这里处理（rerun 模式；其它情况返回 None，照常执行）
+    answered = GW.handle_pending(ws, step.id, settings)
+    if answered is not None:
+        resolved_status, resolved_fields = answered
+        st.update_step(ws, step.id, status=resolved_status, error=None, **resolved_fields)
+        st.log_line(ws, f"{step.id} 依据作者的乱码决定 → {resolved_status}")
+        return resolved_status
     attempts = int(st.get_step_state(ws, step.id).get("attempts", 0)) + 1
     started = time.monotonic()
     garble_before = GW.snapshot(ws, settings)     # garble_check 关闭时为空，零开销
+    garble_declared = [str(p.relative_to(ws.root)) for p in st.expand_inputs(ws, step.outputs)]
+    garble_inputs = [str(p.relative_to(ws.root)) for p in st.expand_inputs(ws, step.inputs)] \
+        if GW.mode_of(settings) == "rerun" else []
     st.update_step(ws, step.id, status=st.ST_RUNNING, attempts=attempts, started_at=st.now_iso(),
                    error=None, finished_at=None, needs_user=None, timed_out=None, no_retry=None, repair=None)
     started_iso = st.now_iso()
@@ -662,6 +672,10 @@ def run_step(
         if getattr(exc, "no_retry", False):
             fields["no_retry"] = True     # 确定性错误：worker 不再自动重跑
 
+    if GW.mode_of(settings) == "rerun":
+        # 乱码守卫 B 层：可能把通过改写为失败 / 待执行 / 挂起，必须在记录写入者之前完成归因
+        status, fields = GW.guard_after_step(ws, step.id, status, fields, before=garble_before, settings=settings,
+                                             declared=garble_declared, inputs=garble_inputs)
     duration = round(time.monotonic() - started, 2)
     final = {"status": status, "finished_at": st.now_iso(), "duration_sec": duration, **fields}
     shown = fields.get("summary") or fields.get("error") or ""
@@ -672,10 +686,9 @@ def run_step(
         final["input_hash"] = st.input_hash(ws, step)
         final["input_digests"] = st.input_digests(ws, step)
         st.record_writers(ws, step)
-        if GW.mode_of(settings) != "off":
-            # 乱码检测（G1 = report）：只记录，不改变 status；失败已在 report_step 内吞掉
-            declared = [str(p.relative_to(ws.root)) for p in st.expand_inputs(ws, step.outputs)]
-            GW.report_step(ws, step.id, garble_before, settings, extra_files=declared)
+        if GW.mode_of(settings) == "report":
+            # 乱码检测（report）：只记录，不改变 status；失败已在 report_step 内吞掉
+            GW.report_step(ws, step.id, garble_before, settings, extra_files=garble_declared)
     st.update_step(ws, step.id, **final)
     st.append_usage(ws, {
         "step": step.id, "attempt": attempts, "executor": step.executor, "skill": step.skill or None,
