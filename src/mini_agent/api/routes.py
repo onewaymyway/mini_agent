@@ -5357,6 +5357,38 @@ async def get_self_status(request: Request):
     return result
 
 
+import threading as _threading_for_portrait  # noqa: E402  (避免改动文件顶部 import 区)
+
+_PORTRAIT_TTL_SECONDS = 60.0        # 画像结果缓存时长
+_PORTRAIT_WAIT_SECONDS = 3.0        # 请求最多等待后台计算的时间，超过则返回缓存/占位结果
+_LINEAGE_TTL_SECONDS = 300.0        # 谱系视图 = 多次 git 子进程，单独缓存更久
+_portrait_lock = _threading_for_portrait.Lock()
+_portrait_cache: dict = {"at": 0.0, "result": None}
+_portrait_inflight = None           # 当前正在后台计算的 Future
+_lineage_cache: dict = {"at": 0.0, "value": None}
+_portrait_executor = None
+
+
+def _get_portrait_executor():
+    global _portrait_executor
+    if _portrait_executor is None:
+        from concurrent.futures import ThreadPoolExecutor
+        _portrait_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="self-portrait")
+    return _portrait_executor
+
+
+def _cached_lineage(compute):
+    """谱系视图按 _LINEAGE_TTL_SECONDS 缓存；命中时不再起 git 子进程。"""
+    now = time.time()
+    with _portrait_lock:
+        if _lineage_cache["value"] is not None and now - _lineage_cache["at"] < _LINEAGE_TTL_SECONDS:
+            return _lineage_cache["value"]
+    value = compute()
+    with _portrait_lock:
+        _lineage_cache.update(at=time.time(), value=value)
+    return value
+
+
 def _collect_self_portrait(http_server) -> dict:
     """同步收集自我画像（文件 IO + 计算），由 get_self_portrait 放到线程池执行。
 
@@ -5379,6 +5411,8 @@ def _collect_self_portrait(http_server) -> dict:
     }
 
     self_agent = http_server.bridge.agent
+    _timings: dict = {}
+    _collect_started = time.monotonic()
 
     try:
         from mini_agent.storage.paths import AgentPaths
@@ -5396,7 +5430,9 @@ def _collect_self_portrait(http_server) -> dict:
 
             try:
                 from mini_agent.evolution.consolidation import build_capability_map
+                _t = time.monotonic()
                 entries = build_capability_map(paths, None)
+                _timings["capability_map"] = int((time.monotonic() - _t) * 1000)
                 result["capability_map"] = [e.to_dict() for e in entries]
             except Exception as _mini_agent_exc:
                 from mini_agent.errors import log_exception
@@ -5476,11 +5512,15 @@ def _collect_self_portrait(http_server) -> dict:
     try:
         from mini_agent.evolution.lineage_view import compute_lineage_view
 
-        result["lineage"] = compute_lineage_view(paths).to_dict()
+        _t = time.monotonic()
+        result["lineage"] = _cached_lineage(lambda: compute_lineage_view(paths).to_dict())
+        _timings["lineage"] = int((time.monotonic() - _t) * 1000)
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_portrait.lineage')
 
+    _timings["total"] = int((time.monotonic() - _collect_started) * 1000)
+    result["timings_ms"] = _timings
     return result
 
 
@@ -5492,8 +5532,45 @@ async def get_self_portrait(request: Request):
     _require_owner(request)
 
     import asyncio
-    # 同步聚合放到线程池：避免阻塞事件循环（见 _collect_self_portrait）
-    return await asyncio.to_thread(_collect_self_portrait, http_server)
+    global _portrait_inflight
+
+    now = time.time()
+    with _portrait_lock:
+        cached = _portrait_cache["result"]
+        cached_at = _portrait_cache["at"]
+    if cached is not None and now - cached_at < _PORTRAIT_TTL_SECONDS:
+        return {**cached, "stale": False, "cached_at": cached_at, "refreshing": False}
+
+    # 计算放到后台线程；计算耗时取决于数据量，不能决定接口的响应时间。
+    with _portrait_lock:
+        if _portrait_inflight is None or _portrait_inflight.done():
+            def _work():
+                computed = _collect_self_portrait(http_server)
+                with _portrait_lock:
+                    _portrait_cache.update(at=time.time(), result=computed)
+                return computed
+            _portrait_inflight = _get_portrait_executor().submit(_work)
+        fut = _portrait_inflight
+
+    # asyncio.wait 不会取消 future：超时后后台计算会继续，结果写入缓存供下次使用
+    done, _pending = await asyncio.wait(
+        {asyncio.wrap_future(fut)}, timeout=_PORTRAIT_WAIT_SECONDS,
+    )
+    if done and fut.exception() is None:
+        with _portrait_lock:
+            ts = _portrait_cache["at"]
+        return {**fut.result(), "stale": False, "cached_at": ts, "refreshing": False}
+
+    if cached is not None:
+        return {**cached, "stale": True, "cached_at": cached_at, "refreshing": True}
+    # 从未算成功过：返回与完整结构同形的占位结果（字段为空），前端可直接渲染
+    placeholder = {
+        "identity": None, "self_assessment": None, "operating_state": None,
+        "capability_map": [], "capability_trend": [], "skills": [],
+        "agent_value_profile": [], "body_inventory": {}, "self_narrative": None,
+        "drift_signals": [], "lineage": {},
+    }
+    return {**placeholder, "stale": False, "cached_at": None, "refreshing": True, "pending": True}
 
 
 @router.get("/self/error_log_stats")
