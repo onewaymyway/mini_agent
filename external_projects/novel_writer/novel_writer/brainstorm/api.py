@@ -120,6 +120,12 @@ def context_budget(root: str) -> Dict[str, Any]:
     return _guard(lambda: CH.context_budget(_ws(root)))
 
 
+def proposal_preview(root: str, pid: str) -> Dict[str, Any]:
+    """replace 提议的改前/改后差异。"""
+    from novel_writer.brainstorm import proposals as PR
+    return _guard(lambda: {"diff": PR.preview(_ws(root), pid)})
+
+
 def scope_set(root: str, scope: str) -> Dict[str, Any]:
     """设置项目级的上下文范围。未实现的范围会被拒绝。"""
     return _guard(lambda: {"scope": CH.set_scope(_ws(root), scope)})

@@ -24,12 +24,17 @@
                   delete target: act:i；act:i:beat:j；twists:k；endings:k
   options         add    value: {name, module: premise|plot, content?, notes?}（只新建备选）
                   delete target: 备选 id（放弃该备选，不合并）
+  任意卡片模块     replace 整体替换整个模块（相当于整文件替换）。value 为该模块完整的新数据。
+                  只在「文件」上下文范围下由 send 接受。采纳时若模块已在提议之后被改过，则拒绝（冲突检测）。
 序号从 0 开始。
 """
 
 from __future__ import annotations
 
 import datetime as _dt
+import difflib
+import hashlib
+import json
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -44,6 +49,9 @@ ALLOWED_OPS = {
     "world": {"add", "set", "delete"}, "cast": {"add", "set", "delete"},
     "plot": {"set", "add", "delete"}, "options": {"add", "delete"},
 }
+for _m in ("brief", "premise", "ideas", "open_questions", "world", "cast", "plot"):
+    ALLOWED_OPS[_m] = ALLOWED_OPS[_m] | {"replace"}
+
 _INDEXED_OPS = {"set", "delete"}       # 这些操作需要明确的目标
 _NEEDS_TARGET = {
     "ideas": _INDEXED_OPS, "open_questions": _INDEXED_OPS, "cast": _INDEXED_OPS, "options": {"delete"},
@@ -96,6 +104,12 @@ def _check_target(module: str, op: str, target: Optional[str]) -> None:
         raise BrainstormError(f"{module} 的{op}操作需要指明目标 id")
 
 
+def digest(ws: BrainstormWorkspace, module: str) -> str:
+    """模块当前内容的指纹，用于 replace 提议的冲突检测。"""
+    data = C.get_module(ws, module)
+    return hashlib.sha256(json.dumps(data, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+
 def create(ws: BrainstormWorkspace, module: str, op: str, value: Any, *, target: Optional[str] = None,
            reason: str = "", batch: Optional[str] = None, source_turns: Optional[List[int]] = None,
            conflict: str = "") -> Dict[str, Any]:
@@ -106,6 +120,10 @@ def create(ws: BrainstormWorkspace, module: str, op: str, value: Any, *, target:
         raise BrainstormError(f"模块 {module} 不支持操作 {op}")
     if op != "delete" and value is None:
         raise BrainstormError("该提议需要 value")
+    base = None
+    if op == "replace":
+        C.validate_module(module, value)          # 登记时就确认新内容合法
+        base = digest(ws, module)
     if module == "options" and op == "add":
         if not isinstance(value, dict) or not str(value.get("name", "")).strip():
             raise BrainstormError("备选提议需要 name")
@@ -115,7 +133,7 @@ def create(ws: BrainstormWorkspace, module: str, op: str, value: Any, *, target:
     items = _load(ws)
     item = {"pid": "p" + uuid.uuid4().hex[:8], "module": module, "op": op, "target": target,
             "value": value, "reason": (reason or "").strip(), "status": "pending", "created_at": _now(), "error": "",
-            "batch": batch, "source_turns": list(source_turns or []), "conflict": conflict}
+            "batch": batch, "source_turns": list(source_turns or []), "conflict": conflict, "base": base}
     items.append(item)
     _save(ws, items)
     return item
@@ -241,6 +259,8 @@ def _text(value: Any) -> str:
 
 def apply_to(module_data: Any, module: str, op: str, target: Optional[str], value: Any) -> Any:
     """在模块数据的副本上执行一条提议，返回新数据（不落盘）。结果会再经过 cards.validate_module。"""
+    if op == "replace":
+        return C.validate_module(module, value)
     if module == "premise":
         if not isinstance(value, str):
             raise BrainstormError("核心命题的提议需要文字")
@@ -317,6 +337,8 @@ def accept(ws: BrainstormWorkspace, pid: str, edited_value: Any = None) -> Dict[
         _save(ws, items)
         return item
     try:
+        if item["op"] == "replace" and digest(ws, item["module"]) != item.get("base"):
+            raise BrainstormError("该模块在提议之后已被修改，这条替换已过期，请重新生成提议")
         current = C.get_module(ws, item["module"])
         new = apply_to(current, item["module"], item["op"], item["target"], value)
         C.put_module(ws, item["module"], new)
@@ -327,6 +349,16 @@ def accept(ws: BrainstormWorkspace, pid: str, edited_value: Any = None) -> Dict[
     item.update(status="accepted", error="", value=value, decided_at=_now())
     _save(ws, items)
     return item
+
+
+def preview(ws: BrainstormWorkspace, pid: str) -> str:
+    """replace 提议的改前/改后差异（统一格式）。其它操作返回空字符串。"""
+    _, item = _find(ws, pid)
+    if item["op"] != "replace":
+        return ""
+    before = json.dumps(C.get_module(ws, item["module"]), ensure_ascii=False, indent=1, sort_keys=True).splitlines()
+    after = json.dumps(item["value"], ensure_ascii=False, indent=1, sort_keys=True).splitlines()
+    return "\n".join(difflib.unified_diff(before, after, "当前", "提议", lineterm="")) or "（内容无变化）"
 
 
 def reject(ws: BrainstormWorkspace, pid: str) -> Dict[str, Any]:

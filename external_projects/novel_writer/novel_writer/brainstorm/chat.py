@@ -44,7 +44,7 @@ MODES = {
 # full 完整、files 文件 为后续阶段，尚未实现，不能选择。
 SETTINGS_FILE = "_studio/settings.json"
 SCOPES = {"summary": "摘要", "full": "完整", "files": "文件", "read": "读取文件"}
-IMPLEMENTED_SCOPES = {"summary", "read", "full"}
+IMPLEMENTED_SCOPES = {"summary", "read", "full", "files"}
 FULL_LIMIT = 20000                      # 完整模式的字数上限（字符数）
 Runner = Callable[[str, Optional[str]], Tuple[str, Optional[str]]]
 _BLOCK = re.compile(r"```proposals\s*(.*?)```", re.S)
@@ -349,7 +349,7 @@ def context_summary(ws: BrainstormWorkspace) -> str:
 
 def _scope_context(ws: BrainstormWorkspace) -> str:
     """按上下文范围决定卡片部分：完整模式附全文，其它模式附摘要。"""
-    if get_scope(ws) == "full":
+    if get_scope(ws) in ("full", "files"):
         body, omitted = full_context(ws)
         note = f"（因字数上限，以下未附：{'、'.join(omitted)}）\n" if omitted else ""
         return "【当前构思全部产出（完整）】\n" + note + body
@@ -392,7 +392,10 @@ def build_prompt(ws: BrainstormWorkspace, text: str, mode: str, conv: Optional[s
         "- options：add，value 为 {\"name\": 备选名, \"module\": \"premise 或 plot\", \"content\": 可选, \"notes\": 优缺点}；"
         "delete 的 target 为备选 id（放弃该备选）。\n"
         "delete 不需要 value。\n"
-        "注意：你的建议只是提议，作者确认后才会生效。\n\n"
+        + ("文件模式：可以用 op 为 replace 整体替换一个模块（module 为 brief、premise、ideas、open_questions、world、cast、plot 之一），"
+           "value 为该模块完整的新数据，格式与上面【当前构思全部产出】中的一致，未修改的部分也要原样保留。"
+           "replace 的 target 留空。options 的内容不能用 replace 修改。\n" if get_scope(ws) == "files" else "")
+        + "注意：你的建议只是提议，作者确认后才会生效。\n\n"
         f"作者说：{text}"
     )
 
@@ -451,8 +454,11 @@ def send(ws: BrainstormWorkspace, text: str, mode: str = "追问", runner: Optio
         _save_agent_state(ws, cid, new_sid)
     body, items, invalid = parse_reply(reply)
     made = []
+    scope = get_scope(ws)
     for item in items:
         try:
+            if item["op"] == "replace" and scope != "files":
+                raise BrainstormError("整体替换只在「文件」上下文范围下可用")
             made.append(P.create(ws, item["module"], item["op"], item.get("value"),
                                  target=item.get("target"), reason=item.get("reason", "")))
         except BrainstormError:

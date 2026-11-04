@@ -124,7 +124,7 @@ def _spark_tab(root: str) -> None:
 
 _KIND_LABEL = {"brief": "题材", "premise": "命题", "ideas": "灵感", "open_questions": "开放问题",
                "world": "世界观", "cast": "角色", "plot": "剧情"}
-_OP_LABEL = {"add": "新增", "set": "修改", "delete": "删除"}
+_OP_LABEL = {"add": "新增", "set": "修改", "delete": "删除", "replace": "整体替换"}
 
 
 _EVENT_ICON = {"tool_call": "🔧", "tool_result": "📤", "tool_error": "❌", "info": "ℹ️", "warning": "⚠️",
@@ -365,7 +365,7 @@ def _scope_picker(root: str, busy: bool) -> None:
     if chosen != current:
         r = BA.scope_set(root, chosen)
         show_error(r) if not r["ok"] else st.rerun()
-    elif current == "full":
+    elif current in ("full", "files"):
         b = BA.context_budget(root)
         if b["ok"]:
             d = b["data"]
@@ -451,7 +451,11 @@ def _dialogue_tab(root: str) -> None:
             if item.get("target"):
                 label += f"（{item['target']}）"
             st.markdown(f"**{label}**")
-            if item["value"] is not None:
+            if item["op"] == "replace":
+                pv = BA.proposal_preview(root, item["pid"])
+                if pv["ok"]:
+                    st.code(pv["data"]["diff"], language="diff")
+            elif item["value"] is not None:
                 st.json(item["value"], expanded=False)
             if item.get("reason"):
                 st.caption("理由：" + item["reason"])
