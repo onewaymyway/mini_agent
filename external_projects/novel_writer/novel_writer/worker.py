@@ -289,6 +289,16 @@ def _generic_repair_and_rerun(ws: Workspace, target: S.StepDef, *, invoker, sett
     return status
 
 
+def _repair_before_reset(ws: Workspace, target: S.StepDef, *, invoker, settings: Dict[str, Any],
+                         handlers, budget) -> Optional[str]:
+    """不停机模式下，步骤已失败时先尝试修复（结构化修复优先，其次通用修复）。返回重跑后的状态；无可用修复时返回 None。"""
+    repaired = _repair_and_rerun(ws, target, invoker=invoker, settings=settings, handlers=handlers, budget=budget)
+    if repaired is None:
+        repaired = _generic_repair_and_rerun(ws, target, invoker=invoker, settings=settings, handlers=handlers,
+                                             budget=budget)
+    return repaired
+
+
 def _loop(
     ws: Workspace, *, mode: str, invoker: Optional[R.Invoker], handlers: Optional[Dict[str, R.PyHandler]],
     budget: Budget, executed: List[Dict[str, Any]], stale_all: List[str], max_steps: Optional[int],
@@ -350,8 +360,13 @@ def _loop(
                 continue
             return status
         if relentless and status == st.ST_FAILED:
-            if RP.request_of(ws, target.id) and RP.exhausted(ws, target.id, settings):
-                # 数据文件坏了、LLM 修复也已用尽：重置只会重复同样的失败，停下来等人处理
+            # 先修复、后重置：失败步骤若还有修复机会，立即交给 LLM 修复并重跑，不等待重置间隔
+            repaired = _repair_before_reset(ws, target, invoker=invoker, settings=settings, handlers=handlers,
+                                            budget=budget)
+            if repaired is not None:
+                continue                  # 修复已重跑：下一轮按新的状态继续（仍失败则再修复，直到用尽）
+            if RP.enabled(settings) and RP.exhausted(ws, target.id, settings):
+                # 修复次数已用尽：重置只会重复同样的失败，停下来等人处理
                 st.log_line(ws, f"⏸ {target.id}：数据修复已用尽仍未通过，已停下，不再自动重置。请检查相关数据文件")
                 return status
             # 不停机挡：自动重跑用尽后仍失败 → 重置并继续；等待期间可被暂停/停止打断

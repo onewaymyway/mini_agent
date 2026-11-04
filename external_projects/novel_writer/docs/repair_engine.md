@@ -110,3 +110,11 @@ Windows 上 `str(Path)` 使用 `\` 分隔，而请求里记录的文件路径使
 现在每次运行开始时（`run_worker`），失败步骤的修复次数会清零，并在运行日志中写明上一轮用了多少次。这样作者每次重新运行，都能再得到完整的修复机会。运行中的上限不变：同一次运行内用尽 `repair_max_attempts` 次后仍会停下来等人处理。
 
 测试：`tests/test_repair_feedback.py::test_new_run_resets_exhausted_repair_budget_for_failed_steps`。
+
+## 不停机模式：先修复，再重置（2026-11-04）
+
+之前不停机（G5）模式下，步骤已经失败时，主循环会直接进入"等待 300 秒后重置"，修复只在步骤自己的重试循环里才会执行，所以在两次运行之间失败的步骤永远不会先被修复。
+
+现在失败步骤在重置之前先尝试修复（结构化修复优先，其次通用修复），修复后立即重跑；只有修复不可用或次数已用尽，才走原来的重置等待。修复次数用尽后停下来等人处理（与之前相同）。
+
+测试：`tests/test_repair_feedback.py` 中的 `test_relentless_repairs_a_failed_step_before_resetting` 与 `test_relentless_stops_only_after_repairs_are_used_up`。

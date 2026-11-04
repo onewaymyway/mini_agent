@@ -11,6 +11,11 @@ class FakeResult:
         self.ok, self.error, self.timed_out = ok, error, False
 
 
+class FakeBudget:
+    def record(self, step):
+        pass
+
+
 @pytest.fixture
 def ws(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "NOVELS_DIR", tmp_path / "novels")
@@ -152,3 +157,37 @@ def test_new_run_resets_exhausted_repair_budget_for_failed_steps(ws):
     assert not RP.exhausted(ws, "t.failed", {})                        # 新一轮可以再修复
     assert int(st.get_step_state(ws, "t.passed").get("repair_attempts") or 0) == 2   # 其它步骤不动
     assert "数据修复次数重新计算" in ws.path("studio_log").read_text(encoding="utf-8")
+
+
+def test_relentless_repairs_a_failed_step_before_resetting(ws, toy, monkeypatch):
+    """不停机模式：步骤已失败且带修复请求时，应先交给 LLM 修复并重跑，而不是直接等待重置间隔。"""
+    from novel_writer import runner as R
+    from novel_writer import worker as W
+
+    st.update_step(ws, "t.fb", status=st.ST_FAILED, error="RepairableDataError: 坏了",
+                   repair={"validator": "toy2", "files": ["数据/a.md", "数据/b.md"], "problems": [], "scope": "数据"})
+    reruns = []
+
+    def fake_run_step(ws_, step, **kw):
+        reruns.append(step.id)
+        return st.ST_PASSED
+
+    monkeypatch.setattr(R, "run_step", fake_run_step)
+
+    def invoker(**kw):
+        (toy / "a.md").write_text("ok\n", encoding="utf-8")                # LLM 修好了
+        return FakeResult()
+
+    status = W._repair_before_reset(ws, _step(), invoker=invoker, settings={}, handlers=None, budget=FakeBudget())
+    assert status == st.ST_PASSED and reruns == ["t.fb"]
+    assert (toy / "a.md").read_text(encoding="utf-8") == "ok\n"
+
+
+def test_relentless_stops_only_after_repairs_are_used_up(ws, toy, monkeypatch):
+    from novel_writer import worker as W
+
+    st.update_step(ws, "t.fb", status=st.ST_FAILED, error="坏了",
+                   repair={"validator": "toy2", "files": ["数据/a.md"], "problems": [], "scope": "数据"},
+                   repair_attempts=RP.MAX_REPAIR_ATTEMPTS)
+    assert W._repair_before_reset(ws, _step(), invoker=lambda **kw: FakeResult(), settings={},
+                                  handlers=None, budget=FakeBudget()) is None
