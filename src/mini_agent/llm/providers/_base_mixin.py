@@ -25,7 +25,7 @@ import time
 from typing import Callable, Optional
 
 from ..base import LLMClient, LLMResponse, LLMUsage, ToolSchema, StreamCallback
-from ..base import LLMProviderError, LLMContextWindowError, LLMTimeoutError
+from ..base import LLMProviderError, LLMContextWindowError, LLMTimeoutError, LLMError, mask_api_key
 from .. import deadline as _deadline
 from mini_agent.orchestrator.concurrency import get_llm_sem
 from ..debug_logger import get_debug_logger
@@ -355,8 +355,34 @@ class ProviderMixin:
         """
         if isinstance(exc, LLMProviderError) and not isinstance(exc, LLMContextWindowError):
             if _is_context_window_error(str(exc)):
-                return LLMContextWindowError(str(exc))
-        return exc
+                exc = LLMContextWindowError(str(exc))
+        return self._attach_masked_key(exc)
+
+    def _attach_masked_key(self, exc: Exception) -> Exception:
+        """在 LLM 层异常消息末尾追加"本次请求所用 key（脱敏）"，便于排查
+        403 封号 / 额度耗尽 / 多 key 轮转时到底是哪把 key 出的问题。
+
+        - 只处理 LLMError 及子类（LLMConfigError 除外：它说的是"缺 key"）；
+        - 保持原异常类型不变（重试 / fallback 靠类型名判断）；
+        - 已追加过则不重复追加；
+        - 任何失败都静默回退为原异常，绝不因此掩盖真实错误。
+        """
+        try:
+            from ..base import LLMConfigError
+            if not isinstance(exc, LLMError) or isinstance(exc, LLMConfigError):
+                return exc
+            key = getattr(self.config, "api_key", "") or ""
+            if not key:
+                return exc  # ollama 等无 key 的本地 provider 不追加
+            msg = str(exc)
+            if "[api_key=" in msg:
+                return exc
+            new_exc = type(exc)(f"{msg} [api_key={mask_api_key(key)}]")
+            new_exc.__cause__ = exc.__cause__
+            new_exc.__context__ = exc.__context__
+            return new_exc
+        except Exception:
+            return exc
 
     # ── 内部辅助 ──────────────────────────────────────────────────────────────
 

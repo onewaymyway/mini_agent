@@ -333,6 +333,27 @@ def resolve_trust_env(cfg: Any) -> bool:
     return bool(getattr(block, "trust_env", True))
 
 
+# ── API key 脱敏 ──────────────────────────────────────────────────────────────
+
+def mask_api_key(key: str) -> str:
+    """把 API key 脱敏成可安全打印到日志/终端的形式，永不返回完整 key。
+
+    规则：
+      - 空串           → "<empty>"
+      - 长度 >= 16     → 前 4 位 + "..." + 后 4 位（如 sk-a...x9Zq）
+      - 长度 8~15      → 仅保留后 3 位（如 ***abc）
+      - 长度 < 8       → "***"（太短，任何片段都可能泄露过多）
+    """
+    if not key:
+        return "<empty>"
+    n = len(key)
+    if n >= 16:
+        return f"{key[:4]}...{key[-4:]}"
+    if n >= 8:
+        return f"***{key[-3:]}"
+    return "***"
+
+
 # ── 异常 ──────────────────────────────────────────────────────────────────────
 
 class LLMError(RuntimeError):
