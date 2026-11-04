@@ -471,6 +471,10 @@ class AgnesVideoClient:
         账号受限（key_restricted）时换下一把 key 整条重新提交，最多尝试 key 数量次；全部受限则返回 key_restricted。
         """
         switches = 0
+        if self.key_pool is not None:
+            print(f"    [KEY] {self.key_pool.config_summary()}")
+            for line in self.key_pool.status_lines():
+                print(f"      · {line}")
         print(f"    [KEY] 本镜头使用 key {self._describe(self.api_key)}")
         while True:
             try:

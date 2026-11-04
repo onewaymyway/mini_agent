@@ -237,3 +237,9 @@ novel_output/                       # 项目数据（默认位置，已加入 .g
 - 每个镜头开始时打印本镜头使用的 key（编号 + 脱敏，如 `#1 sk-a…2222`）。
 - 账号受限切换时打印：失败的 key → 切换到的 key（同样脱敏，只显示前 4 位和后 4 位，完整 key 不进入日志）。
 - 整条镜头重新提交时打印当前使用的 key；全部受限时列出每把 key 的状态（可用 / 冷却剩余分钟数）。
+
+## key 配置来源与每把 key 的状态（日志）
+
+- key 解析顺序：环境变量 `AGNES_API_KEYS` → `AGNES_PROVIDERS_JSON` 指定的 providers.json（绝对路径，推荐）→ 从 skill 目录向上查找的 providers.json → 环境变量 `AGNES_API_KEY`。
+- 每个镜头开始时打印：配置来源（含 providers.json 的路径）、key 总数、每把 key 的编号、脱敏值（前 4 位 + 后 4 位）和状态（可用 / 冷却剩余分钟）。完整 key 不进入日志。
+- 之前的问题：skill 只从自己的目录向上找 providers.json，项目里的配置文件如果不在其祖先目录中就找不到，会退回到单个 AGNES_API_KEY，只用了 1 把 key。现在可以用 `AGNES_PROVIDERS_JSON` 明确指定文件，并且日志会显示实际读到的来源。

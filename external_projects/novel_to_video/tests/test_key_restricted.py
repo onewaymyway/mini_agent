@@ -95,3 +95,41 @@ def test_restriction_during_polling_resubmits_the_shot(mods, monkeypatch):
     out = c.generate_video(prompt="p")
     assert out == {"success": True, "video_url": "u"}
     assert len(calls) == 2                                              # 整条镜头重新提交一次
+
+
+K3 = "sk-eeee5555ffff6666"
+
+
+def test_three_keys_from_explicit_providers_json_are_all_loaded(mods, tmp_path, monkeypatch):
+    import json as _json
+    cfg = tmp_path / "providers.json"
+    cfg.write_text(_json.dumps({"providers": {"agnes": {"api_keys": [K1, K2, K3]}}}), encoding="utf-8")
+    monkeypatch.setenv("AGNES_PROVIDERS_JSON", str(cfg))
+    monkeypatch.delenv("AGNES_API_KEYS", raising=False)
+    monkeypatch.delenv("AGNES_API_KEY", raising=False)
+    kp = sys.modules["agnes_key_pool"]
+    pool = kp.build_key_pool(str(tmp_path))
+    assert len(pool) == 3
+    summary = pool.config_summary()
+    assert "共 3 把" in summary and str(cfg) in summary and "AGNES_PROVIDERS_JSON" in summary
+    lines = pool.status_lines()
+    assert len(lines) == 3 and all(f"#{i + 1}" in ln for i, ln in enumerate(lines))
+    for k in (K1, K2, K3):
+        assert k not in summary and all(k not in ln for ln in lines)
+
+
+def test_video_shot_logs_all_keys_with_status_masked(mods, tmp_path, monkeypatch, capsys):
+    import json as _json
+    cfg = tmp_path / "providers.json"
+    cfg.write_text(_json.dumps({"providers": {"agnes": {"api_keys": [K1, K2, K3]}}}), encoding="utf-8")
+    monkeypatch.setenv("AGNES_PROVIDERS_JSON", str(cfg))
+    monkeypatch.delenv("AGNES_API_KEYS", raising=False)
+    monkeypatch.delenv("AGNES_API_KEY", raising=False)
+    pool = sys.modules["agnes_key_pool"].build_key_pool(str(tmp_path))
+    c = mods.AgnesVideoClient(key_pool=pool, max_retries=1)
+    monkeypatch.setattr(c, "_generate_video_impl", lambda *a, **k: {"success": True})
+    c.generate_video(prompt="p")
+    log = capsys.readouterr().out
+    assert "共 3 把" in log and "#1" in log and "#2" in log and "#3" in log
+    assert "本镜头使用 key #1" in log
+    assert K1 not in log and K2 not in log and K3 not in log

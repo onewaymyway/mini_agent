@@ -144,12 +144,14 @@ def load_agnes_config(script_dir: Optional[str] = None) -> dict:
     if multi.strip():
         keys = [k.strip() for k in multi.split(",") if k.strip()]
         if keys:
-            return {"keys": keys, "rotation": rotation, "cooldown": cooldown}
+            return {"keys": keys, "rotation": rotation, "cooldown": cooldown,
+                    "source": "环境变量 AGNES_API_KEYS", "path": None}
 
-    # 2. providers.json
+    # 2. providers.json：AGNES_PROVIDERS_JSON 指定的文件优先；否则从 script_dir 向上查找
+    explicit = os.environ.get("AGNES_PROVIDERS_JSON", "").strip()
     start = Path(script_dir) if script_dir else Path(__file__).parent
-    providers_path = _find_providers_json(start)
-    if providers_path:
+    providers_path = Path(explicit).expanduser() if explicit else _find_providers_json(start)
+    if providers_path and providers_path.is_file():
         try:
             data = json.loads(providers_path.read_text(encoding="utf-8"))
             agnes_block = _extract_agnes_block(data)
@@ -158,13 +160,16 @@ def load_agnes_config(script_dir: Optional[str] = None) -> dict:
                     "keys": agnes_block["api_keys"],
                     "rotation": agnes_block.get("key_rotation") or rotation,
                     "cooldown": float(agnes_block.get("key_cooldown") or cooldown),
+                    "source": "AGNES_PROVIDERS_JSON 指定的 providers.json" if explicit else "providers.json",
+                    "path": str(providers_path),
                 }
         except Exception:
             pass  # providers.json 格式异常时不影响后续兜底
 
     # 3. 单个 AGNES_API_KEY（向后兼容）
     single = os.environ.get("AGNES_API_KEY")
-    return {"keys": [single] if single else [], "rotation": rotation, "cooldown": cooldown}
+    return {"keys": [single] if single else [], "rotation": rotation, "cooldown": cooldown,
+            "source": "环境变量 AGNES_API_KEY" if single else "未找到", "path": None}
 
 
 def mask_key(key: Optional[str]) -> str:
@@ -218,6 +223,13 @@ class AgnesKeyPool:
         """该 key 还需冷却多少秒（0 表示可用）。"""
         return max(0.0, self._cooldown_until.get(key, 0.0) - time.monotonic())
 
+    def config_summary(self) -> str:
+        """配置来源与 key 数量（不含完整 key），例如：providers.json（/path/providers.json），共 3 把。"""
+        src = getattr(self, "source", "未知")
+        path = getattr(self, "source_path", None)
+        where = f"{src}（{path}）" if path else src
+        return f"key 配置来源：{where}，共 {len(self._keys)} 把"
+
     def status_lines(self) -> List[str]:
         """全部 key 的状态（脱敏），用于全部受限时的提示。"""
         out = []
@@ -268,4 +280,7 @@ def build_key_pool(script_dir: Optional[str] = None) -> Optional["AgnesKeyPool"]
     cfg = load_agnes_config(script_dir)
     if not cfg["keys"]:
         return None
-    return AgnesKeyPool(keys=cfg["keys"], rotation=cfg["rotation"], cooldown=cfg["cooldown"])
+    pool = AgnesKeyPool(keys=cfg["keys"], rotation=cfg["rotation"], cooldown=cfg["cooldown"])
+    pool.source = cfg.get("source") or "未知"
+    pool.source_path = cfg.get("path")
+    return pool
