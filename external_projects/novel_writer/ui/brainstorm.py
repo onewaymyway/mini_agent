@@ -455,16 +455,12 @@ def _dialogue_tab(root: str) -> None:
 _WORLD_LABEL = {"rules": "规则", "locations": "地点", "factions": "势力", "timeline": "时间线", "taboos": "禁忌"}
 
 
-def _world_tab(root: str) -> None:
-    res = BA.get_project(root)
-    if not res["ok"]:
-        show_error(res)
-        return
-    world = res["data"]["cards"]["world"]
-    st.caption("世界观条目直接编辑，立即生效。规则请写明代价，之后的冲突会更好写。")
-    key = st.selectbox("分类", list(_WORLD_LABEL), format_func=lambda k: _WORLD_LABEL[k], key="bs_world_kind")
+def _world_section(root: str, world: dict, key: str) -> None:
+    """世界观的一个分类：标题、该类全部条目、新增表单。各分类互不影响。"""
+    label = _WORLD_LABEL[key]
+    st.subheader(f"{label}（{len(world[key])}）")
     with st.form(f"bs_world_add_{key}", clear_on_submit=True):
-        text = st.text_area(f"新增{_WORLD_LABEL[key]}", key=f"bs_world_text_{key}", height=70)
+        text = st.text_area(f"新增{label}", key=f"bs_world_text_{key}", height=70)
         cost = st.text_input("代价（仅规则需要）", key=f"bs_world_cost_{key}") if key == "rules" else ""
         if st.form_submit_button("添加") and text.strip():
             item = {"text": text.strip(), "cost": cost.strip()} if key == "rules" else text.strip()
@@ -484,6 +480,18 @@ def _world_tab(root: str) -> None:
             if st.button("删除", key=f"bs_world_del_{key}_{idx}"):
                 r = BA.world_remove(root, key, idx)
                 show_error(r) if not r["ok"] else st.rerun()
+
+
+def _world_tab(root: str) -> None:
+    res = BA.get_project(root)
+    if not res["ok"]:
+        show_error(res)
+        return
+    world = res["data"]["cards"]["world"]
+    st.caption("世界观条目直接编辑，立即生效。规则请写明代价，之后的冲突会更好写。")
+    for key in _WORLD_LABEL:                       # 所有分类同时显示，按分区排列
+        _world_section(root, world, key)
+        st.divider()
 
 
 def _cast_tab(root: str) -> None:

@@ -357,3 +357,9 @@
 代码：`novel_writer/brainstorm/proposals.py`（重写：`ALLOWED_OPS`、`_check_target`、`apply_to` 的各模块分支）；`chat.py`（解析与提示词）；`ui/brainstorm.py`（操作标签「删除」）。`distill.py` 调用的 `apply_to` 签名未变。
 
 测试：`tests/test_brainstorm_b6c.py`（删除、世界观序号、剧情幕/转折点/反转/结局、越界与格式错误、备选删除、解析与提示词、对话提议确认前不落卡）。`tests/test_brainstorm_b4.py` 的一处断言随提示词调整。
+
+## 世界观页面：分区同时显示（2026-10-20）
+
+世界观标签不再用「分类」选择框切换，规则、地点、势力、时间线、禁忌五类同时显示，各占一个分区（标题带条数），每个分区有自己的新增表单和删除按钮。规则分区的新增表单含「代价」字段。
+
+测试：`tests/test_brainstorm_b3_world_sections.py`。
