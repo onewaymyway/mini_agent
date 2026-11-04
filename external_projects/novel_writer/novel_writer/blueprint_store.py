@@ -49,8 +49,9 @@ LAYOUT_RULES = """【蓝图文件格式（必须严格遵守）】
 
 
 class BlueprintStoreError(Exception):
-    def __init__(self, problems: List[str]) -> None:
+    def __init__(self, problems: List[str], files: Optional[List[str]] = None) -> None:
         self.problems = list(problems)
+        self.files = list(files or [])        # 出问题的文件名（蓝图目录内），供数据修复定位
         super().__init__("；".join(self.problems))
 
 
@@ -177,6 +178,7 @@ def read_store(base: Path) -> Dict[str, Any]:
     base = Path(base)
     problems: List[str] = []
     meta: Dict[str, Any] = {}
+    bad: List[str] = []
     meta_path = base / META_FILE
     if not meta_path.is_file():
         raise BlueprintStoreError([f"蓝图缺少 {META_FILE}"])
@@ -184,6 +186,7 @@ def read_store(base: Path) -> Dict[str, Any]:
         meta = KV.decode(meta_path.read_text(encoding="utf-8"), META_FILE)
     except KV.KVFormatError as exc:
         problems.extend(exc.problems)
+        bad.append(META_FILE)
     chapters: List[Dict[str, Any]] = []
     seen: Dict[int, str] = {}
     for f in _files(base):
@@ -192,19 +195,22 @@ def read_store(base: Path) -> Dict[str, Any]:
             ch = KV.decode(f.read_text(encoding="utf-8"), f.name)
         except KV.KVFormatError as exc:
             problems.extend(exc.problems)
+            bad.append(f.name)
             continue
         if ch.get("id") != no:
             problems.append(f"{f.name}：文件头 id={ch.get('id')!r} 与文件名章号 {no} 不一致")
+            bad.append(f.name)
             continue
         if no in seen:
             problems.append(f"章号 {no} 重复（{seen[no]} 与 {f.name}）")
+            bad.append(f.name)
             continue
         seen[no] = f.name
         chapters.append(ch)
     if not chapters:
         problems.append("蓝图没有任何章节文件")
     if problems:
-        raise BlueprintStoreError(problems)
+        raise BlueprintStoreError(problems, files=bad)
     return {**meta, "chapters": chapters}
 
 

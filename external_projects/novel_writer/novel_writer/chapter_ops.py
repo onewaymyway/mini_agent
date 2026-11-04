@@ -640,11 +640,18 @@ def h_characters_refresh(ws: Workspace, step: S.StepDef, settings: Dict[str, Any
 # ── 蓝图（第五阶段：每章一个文件；plan_blueprint 产出草稿，blueprint_split 拆分）──────
 
 def _blueprint_strict(ws: Workspace) -> Optional[Dict[str, Any]]:
+    """读取整本蓝图。文件格式坏了 → 抛 RepairableDataError，交给 LLM 修复后自动重跑（见 repair.py）。"""
     from novel_writer import blueprint_store as BS
     try:
         return BS.load_for_ws(ws, strict=True)
     except BS.BlueprintStoreError as exc:
-        raise ChapterOpError("蓝图读取失败：" + "；".join(exc.problems))
+        message = "蓝图读取失败：" + "；".join(exc.problems)
+        if exc.files:
+            base = ws.path("blueprint_dir")
+            files = [(base / name).relative_to(ws.root).as_posix() for name in exc.files]
+            raise RP.RepairableDataError(message, validator="blueprint", files=files, problems=exc.problems,
+                                         scope=base.relative_to(ws.root).as_posix())
+        raise ChapterOpError(message)
 
 
 def h_blueprint_split(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:

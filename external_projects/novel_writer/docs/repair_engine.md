@@ -37,3 +37,18 @@ Agent 会自行推断「下一步写第 N 章」，在修复调用里直接写�
 
 `tests/test_repair_restricted.py`：引擎默认值与切换、白名单内容、受限调用不带 skill 且路径为绝对路径、旧引擎调用形态不变、
 回滚删除新建文件，以及用真实框架构造受限 Agent，断言工具集恰好等于白名单、无 skill 工具、策略为 stop。
+
+## 接入蓝图（整本蓝图的文件格式错误）
+
+**问题**：`ch31.word_quota` 等步骤在读取蓝图时，若某个章节文件格式坏了（例如 `ends_with` 字符串里混入英文双引号），原先会抛出普通的 `ChapterOpError`。普通错误不会记录修复请求，于是步骤只是按「自动重跑」反复失败，错误信息每次一样，永远不会好转。
+
+**修复**：蓝图读取改为可修复的错误，走与人物档案相同的数据修复流程。
+
+1. `blueprint_store.read_store` 在报错时记下出问题的文件名（`BlueprintStoreError.files`），包括 `_meta` 文件与各章文件。
+2. `chapter_ops._blueprint_strict` 有文件出错时抛出 `RepairableDataError`，`validator="blueprint"`，`files` 为出问题的文件（相对工作区），`scope` 为蓝图目录。没有具体文件的错误（例如蓝图目录里一个章节文件都没有）仍是普通错误，不交给 LLM。
+3. `repair.py` 注册了 `blueprint` 校验器，修复后用它确认问题是否消失。
+4. runner 把修复请求记入步骤状态；worker 在自动重跑之前调用 LLM 修复（受限引擎，只允许修改列出的文件，范围外的改动一律还原），修复后重跑该步骤。修复次数仍按 `repair_max_attempts`（默认 3）计算，用尽后停下来等人处理，不再无限重置。
+
+**效果**：蓝图文件格式错误会先由 LLM 修复，再自动重试，而不是原地重复失败。
+
+测试：`tests/test_blueprint_repair.py`（错误携带文件与范围、校验器前后变化、LLM 修复后重跑成功、没有章节文件时仍为普通错误）。

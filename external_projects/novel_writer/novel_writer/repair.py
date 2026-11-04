@@ -80,6 +80,17 @@ def _characters(ws: Workspace) -> List[str]:
     return CS.problems_for_dir(ws.path("characters_dir"))
 
 
+@register_validator("blueprint")
+def _blueprint(ws: Workspace) -> List[str]:
+    """整本蓝图（每章一个文件）的格式校验。修复后用它确认问题是否消失。"""
+    from novel_writer import blueprint_store as BS
+    try:
+        BS.load_for_ws(ws, strict=True)
+    except BS.BlueprintStoreError as exc:
+        return list(exc.problems) or ["蓝图读取失败"]
+    return []
+
+
 # ── 状态与开关 ──────────────────────────────────────────────────────────────
 
 def request_of(ws: Workspace, step_id: str) -> Optional[Dict[str, Any]]:
