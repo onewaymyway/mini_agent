@@ -44,7 +44,8 @@ MODES = {
 # full 完整、files 文件 为后续阶段，尚未实现，不能选择。
 SETTINGS_FILE = "_studio/settings.json"
 SCOPES = {"summary": "摘要", "full": "完整", "files": "文件", "read": "读取文件"}
-IMPLEMENTED_SCOPES = {"summary", "read"}
+IMPLEMENTED_SCOPES = {"summary", "read", "full"}
+FULL_LIMIT = 20000                      # 完整模式的字数上限（字符数）
 Runner = Callable[[str, Optional[str]], Tuple[str, Optional[str]]]
 _BLOCK = re.compile(r"```proposals\s*(.*?)```", re.S)
 
@@ -182,6 +183,61 @@ def set_scope(ws: BrainstormWorkspace, scope: str) -> str:
     return scope
 
 
+def full_context(ws: BrainstormWorkspace) -> Tuple[str, List[str]]:
+    """完整模式：当前项目全部产出的完整内容，总长不超过 FULL_LIMIT。
+
+    按优先级依次放入：题材、命题、角色、剧情、世界观、灵感、开放问题、备选。
+    某一段放不下时截断放入剩余部分；之后的段落整段省略。返回 (文本, 被省略或截断的段落名)。
+    """
+    from novel_writer.brainstorm import options as O
+
+    cards = C.all_modules(ws)
+    brief = "\n".join(f"{k}：{v}" for k, v in cards["brief"].items() if v)
+    ideas = "\n".join(f"- [{i['status']}] {i['text']}" for i in cards["ideas"]
+                      if i["status"] in ("keep", "used", "park"))
+    open_q = "\n".join(f"- {q['text']}" for q in cards["open_questions"] if not q["closed"])
+    opts = []
+    for o in O.list_options(ws):
+        if o.get("status") != "open":
+            continue
+        body = json.dumps(O.content(ws, o["oid"]), ensure_ascii=False, indent=1)
+        opts.append(f"- {o.get('name', '')}（{o.get('module', '')}）{'：' + o['notes'] if o.get('notes') else ''}\n{body}")
+    sections = [
+        ("题材卡", brief),
+        ("核心命题", cards["premise"]),
+        ("角色", json.dumps(cards["cast"], ensure_ascii=False, indent=1) if cards["cast"] else ""),
+        ("剧情骨架", json.dumps(cards["plot"], ensure_ascii=False, indent=1)),
+        ("世界观", json.dumps(cards["world"], ensure_ascii=False, indent=1)),
+        ("灵感（保留/已采用/搁置）", ideas),
+        ("开放问题（未关闭）", open_q),
+        ("备选方案", "\n".join(opts)),
+    ]
+    remaining = FULL_LIMIT
+    parts: List[str] = []
+    omitted: List[str] = []
+    for label, body in sections:
+        if not body or not body.strip():
+            continue
+        text = f"【{label}】\n{body}"
+        if len(text) + 2 <= remaining:
+            parts.append(text)
+            remaining -= len(text) + 2
+        elif remaining > 200:
+            cut = text[: remaining - 20] + "\n…（本段超出字数上限，已截断）"
+            parts.append(cut)
+            omitted.append(f"{label}（部分）")
+            remaining = 0
+        else:
+            omitted.append(label)
+    return "\n\n".join(parts), omitted
+
+
+def context_budget(ws: BrainstormWorkspace) -> Dict[str, Any]:
+    """完整模式下每轮会附上多少字，以及哪些内容因上限被省略（供界面显示）。"""
+    text, omitted = full_context(ws)
+    return {"chars": len(text), "limit": FULL_LIMIT, "omitted": omitted}
+
+
 def file_index(ws: BrainstormWorkspace) -> List[str]:
     """项目内所有文件的路径与大小（不含内容）。供「读取文件」模式告诉模型有哪些文件可读。"""
     base = ws.root.resolve()
@@ -291,6 +347,15 @@ def context_summary(ws: BrainstormWorkspace) -> str:
     return "\n".join(lines)
 
 
+def _scope_context(ws: BrainstormWorkspace) -> str:
+    """按上下文范围决定卡片部分：完整模式附全文，其它模式附摘要。"""
+    if get_scope(ws) == "full":
+        body, omitted = full_context(ws)
+        note = f"（因字数上限，以下未附：{'、'.join(omitted)}）\n" if omitted else ""
+        return "【当前构思全部产出（完整）】\n" + note + body
+    return context_summary(ws)
+
+
 def build_prompt(ws: BrainstormWorkspace, text: str, mode: str, conv: Optional[str] = None,
                  focus: Optional[str] = None) -> str:
     from novel_writer.brainstorm import outline as OL
@@ -306,7 +371,7 @@ def build_prompt(ws: BrainstormWorkspace, text: str, mode: str, conv: Optional[s
     return (
         "你是小说构思的合作者，用中文交流，语气平等，不替作者做决定。\n"
         f"当前模式：{mode}。{MODES.get(mode, MODES['追问'])}\n\n"
-        f"{context_summary(ws)}\n\n"
+        f"{_scope_context(ws)}\n\n"
         f"{focus_text}"
         f"{read_text}"
         f"【最近对话】\n{recent_text}\n\n"

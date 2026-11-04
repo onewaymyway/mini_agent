@@ -35,9 +35,7 @@ def test_default_scope_is_summary_and_choice_persists(ws):
 
 def test_unimplemented_or_unknown_scopes_are_rejected(ws):
     with pytest.raises(BrainstormError):
-        CH.set_scope(ws, "full")                  # 完整模式尚未实现
-    with pytest.raises(BrainstormError):
-        CH.set_scope(ws, "files")
+        CH.set_scope(ws, "files")                 # 文件模式尚未实现（完整模式见 B8）
     with pytest.raises(BrainstormError):
         CH.set_scope(ws, "magic")
     assert CH.get_scope(ws) == "summary"

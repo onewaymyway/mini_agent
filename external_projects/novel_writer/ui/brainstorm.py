@@ -365,6 +365,14 @@ def _scope_picker(root: str, busy: bool) -> None:
     if chosen != current:
         r = BA.scope_set(root, chosen)
         show_error(r) if not r["ok"] else st.rerun()
+    elif current == "full":
+        b = BA.context_budget(root)
+        if b["ok"]:
+            d = b["data"]
+            msg = f"每轮附上全部产出：约 {d['chars']} / {d['limit']} 字。"
+            if d["omitted"]:
+                msg += "因字数上限已省略：" + "、".join(d["omitted"]) + "。"
+            st.caption(msg)
 
 
 def _outputs_panel(root: str, busy: bool) -> None:

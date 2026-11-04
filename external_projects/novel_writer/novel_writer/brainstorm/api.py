@@ -115,6 +115,11 @@ def scope_get(root: str) -> Dict[str, Any]:
                            "implemented": sorted(CH.IMPLEMENTED_SCOPES)})
 
 
+def context_budget(root: str) -> Dict[str, Any]:
+    """完整模式下每轮附上的字数与被省略的段落。"""
+    return _guard(lambda: CH.context_budget(_ws(root)))
+
+
 def scope_set(root: str, scope: str) -> Dict[str, Any]:
     """设置项目级的上下文范围。未实现的范围会被拒绝。"""
     return _guard(lambda: {"scope": CH.set_scope(_ws(root), scope)})
