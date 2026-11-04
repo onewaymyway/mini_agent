@@ -96,3 +96,9 @@ Agent 会自行推断「下一步写第 N 章」，在修复调用里直接写�
 **蓝图的修复范围是整个蓝图目录**（元数据、索引和全部章节文件）。修一章时，LLM 常常需要同步修改索引或元数据；之前这些文件不在范围内，改动会被撤销。
 
 测试：`tests/test_repair_feedback.py`（默认次数、范围外新文件删除、范围内修复保留、问题增加时全部撤销、反馈记录与进入下一次提示词、修好后清空、通用修复不受影响）。`tests/test_repair.py`、`tests/test_repair_restricted.py`、`tests/test_generic_repair.py` 中原来断言「范围外改动即全部回滚」的用例已按新规则更新。
+
+### 修复：Windows 路径分隔符误判为范围外（2026-11-04）
+
+Windows 上 `str(Path)` 使用 `\` 分隔，而请求里记录的文件路径使用 `/`。两者直接做字符串比较时，范围内的文件被误判为范围外，于是正确的修复被撤销（日志会显示「修复改动了范围外的文件，已撤销：大纲规划\蓝图\第031章.md」这样的文件，而它们本来就在范围内）。
+
+现在所有相对路径在比较前统一为 `/` 分隔（`repair._norm`），范围判断与撤销都基于统一写法。测试：`tests/test_repair_feedback.py::test_windows_style_paths_do_not_make_in_scope_files_out_of_scope`。

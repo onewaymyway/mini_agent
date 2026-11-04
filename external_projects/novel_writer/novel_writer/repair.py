@@ -138,7 +138,7 @@ def generic_request(ws: Workspace, step) -> Optional[Dict[str, Any]]:
         size = len(read_text_utf8(p))
         if size > MAX_GENERIC_TEXT_CHARS or total + size > MAX_GENERIC_TEXT_CHARS or len(files) >= MAX_GENERIC_FILES:
             continue                             # 太大的文件不送给 LLM，避免提示词失控
-        files.append(str(p.relative_to(ws.root)))
+        files.append(_norm(p.relative_to(ws.root)))
         total += size
     if not files:
         return None
@@ -210,6 +210,11 @@ def _build_prompt(step_id: str, request: Dict[str, Any], texts: Dict[str, str], 
 _TEXT_SUFFIXES = {".md", ".json", ".txt", ".yaml", ".yml", ".csv"}
 
 
+def _norm(rel: Any) -> str:
+    """统一为 / 分隔的相对路径。Windows 上 str(Path) 用 \\，与请求里记录的写法不一致，直接比较会误判为范围外。"""
+    return str(rel).replace("\\", "/").strip("/")
+
+
 def _snapshot(ws: Workspace) -> Dict[Path, bytes]:
     skip = [ws.studio.resolve(), ws.path("export_dir").resolve()]
     out: Dict[Path, bytes] = {}
@@ -242,6 +247,7 @@ def repair_attempt(ws: Workspace, step, *, invoker, settings: Dict[str, Any],
         st.log_line(ws, f"🔧 {step.id}：校验已通过，无需 LLM 修复")
         return {"fixed": True, "problems": [], "changed": [], "rolled_back": False}
 
+    request = {**request, "files": [_norm(f) for f in request["files"]]}   # 之后所有比较都用统一写法
     files = [ws.root / rel for rel in request["files"]]
     # 快照整个工作区的文本文件（排除运行日志与导出目录）：LLM 可能改动任何地方，越界改动必须能被还原
     snapshot = _snapshot(ws)
@@ -271,9 +277,9 @@ def repair_attempt(ws: Workspace, step, *, invoker, settings: Dict[str, Any],
         st.log_line(ws, f"⚠ {step.id}：修复调用未成功：{getattr(result, 'error', '') or '未知原因'}")
 
     after = check(ws)
-    changed = [str(p.relative_to(ws.root)) for p, data in snapshot.items()
+    changed = [_norm(p.relative_to(ws.root)) for p, data in snapshot.items()
                if p.is_file() and p.read_bytes() != data]
-    changed += [str(p.relative_to(ws.root)) for p in _snapshot(ws).keys() if p not in snapshot]   # 新建的文件也算越界
+    changed += [_norm(p.relative_to(ws.root)) for p in _snapshot(ws).keys() if p not in snapshot]   # 新建的文件也算越界
     out_of_scope = [rel for rel in changed if rel not in request["files"]]
     rolled_back = False
     if out_of_scope:

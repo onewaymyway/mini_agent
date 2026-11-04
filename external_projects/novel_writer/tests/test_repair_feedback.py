@@ -123,3 +123,21 @@ def test_generic_repair_is_not_affected_by_feedback_logic(ws):
 
     out = RP.repair_attempt(ws, step, invoker=invoker, settings={}, request=req)
     assert out["fixed"] is False and "ValueError: 失败" in seen[0]     # 通用修复的结论交给重跑，不因此回滚
+
+
+def test_windows_style_paths_do_not_make_in_scope_files_out_of_scope(ws, toy):
+    """Windows 上请求里的路径可能是 数据\\a.md 这种写法：范围内的正确修复不能被误判为范围外而撤销。"""
+    req = {"validator": "toy2", "files": ["数据\\a.md", "数据\\b.md"], "problems": [], "scope": "数据"}
+
+    def invoker(**kw):
+        (toy / "a.md").write_text("ok\n", encoding="utf-8")                 # 范围内的正确修复
+        return FakeResult()
+
+    out = RP.repair_attempt(ws, _step(), invoker=invoker, settings={}, request=req)
+    assert out["fixed"] and out["rolled_back"] is False
+    assert (toy / "a.md").read_text(encoding="utf-8") == "ok\n"
+
+
+def test_norm_unifies_separators():
+    assert RP._norm("大纲规划\\蓝图\\第031章.md") == "大纲规划/蓝图/第031章.md"
+    assert RP._norm("大纲规划/蓝图/第031章.md") == "大纲规划/蓝图/第031章.md"
