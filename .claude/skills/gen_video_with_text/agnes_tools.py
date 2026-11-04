@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import base64
+import json
 import mimetypes
+import re
 import time
 from pathlib import Path
 from typing import Optional, List
 
 import requests
 
-from agnes_key_pool import AgnesKeyPool, is_key_restricted_error, is_rate_limit_error, is_non_retryable_error
+from agnes_key_pool import AgnesKeyPool, is_key_restricted_error, is_rate_limit_error, is_non_retryable_error, mask_key
 
 
 class ClientCancelled(BaseException):
@@ -120,6 +122,25 @@ class AgnesVideoClient:
         from agnes_key_pool import mask_key
         return mask_key(key)
 
+    def _mask(self, text: str) -> str:
+        """日志中的脱敏：池中的完整 key 与形如 sk-… 的密钥全部替换为脱敏形式。"""
+        out = str(text)
+        keys = set(self.key_pool._keys) if self.key_pool is not None else set()
+        if self.api_key:
+            keys.add(self.api_key)
+        for k in sorted(keys, key=len, reverse=True):
+            if k and len(k) >= 8:
+                out = out.replace(k, mask_key(k))
+        return re.sub(r"sk-[A-Za-z0-9_\-]{6,}", lambda m: mask_key(m.group(0)), out)
+
+    def _raw_snippet(self, obj, limit: int = 800) -> str:
+        """服务端原始返回内容（用于失败时的日志）：压缩空白、脱敏、截断到 limit 字符。"""
+        text = obj if isinstance(obj, str) else json.dumps(obj, ensure_ascii=False, default=str)
+        text = self._mask(" ".join(str(text).split()))
+        if len(text) > limit:
+            text = text[:limit] + f"…（共 {len(text)} 字符，已截断）"
+        return text
+
     def _log_switch(self, where: str, failed_key, next_key, reason: str) -> None:
         print(f"    [KEY 切换·{where}] {reason}：失败的 key {self._describe(failed_key)} → "
               f"切换到 key {self._describe(next_key)}（失败的 key 冷却中，之后不会再选它）")
@@ -224,7 +245,7 @@ class AgnesVideoClient:
                         # 重试都不会改变结果，立即停止重试并原样返回，交给
                         # 调用方打印结构化错误、终止脚本，让 Agent 去修配置。
                         print(f"    [POST 不可重试错误] status_code={resp.status_code}，"
-                              f"判定为参数/鉴权/内容类错误，立即停止重试: {resp.text[:200]}")
+                              f"判定为参数/鉴权/内容类错误，立即停止重试: {self._raw_snippet(resp.text)}")
                         return {"success": False, "error": last_err, "non_retryable": True}
 
                     if self._is_queue_busy(resp.status_code, resp.text):
@@ -232,10 +253,13 @@ class AgnesVideoClient:
                         queue_round += 1
                         delay = min(5 + 2 * queue_round, 30)
                         if queue_waited >= self.queue_wait_seconds:
-                            print(f"    [POST 排队超时] 已因排队满等待 {int(queue_waited)}s，放弃: {resp.text[:200]}")
+                            print(f"    [POST 排队超时] 已因排队满等待 {int(queue_waited)}s，放弃: {self._raw_snippet(resp.text)}")
                             return {"success": False, "error": last_err}
                         print(f"    [POST 排队已满] 第 {queue_round} 次，{delay}s 后重试"
                               f"（不计入重试次数，已等待 {int(queue_waited)}s/{self.queue_wait_seconds}s）")
+                        if queue_round == 1 or queue_round % 20 == 0:
+                            print(f"    [POST 排队已满·服务端原始返回] status_code={resp.status_code}: "
+                                  f"{self._raw_snippet(resp.text)}")
                         self._sleep(delay)
                         queue_waited += delay
                         continue
@@ -244,7 +268,7 @@ class AgnesVideoClient:
                     # [LOG-FIX] 之前这里重试/异常完全没有输出，外部看起来像卡死。
                     print(f"    [POST 失败] status_code={resp.status_code}，"
                           f"第 {attempt}/{self.max_retries} 次重试，"
-                          f"{1.5 * attempt:.1f}s 后重试: {resp.text[:200]}")
+                          f"{1.5 * attempt:.1f}s 后重试: {self._raw_snippet(resp.text)}")
                     self._sleep(1.5 * attempt)
                     continue
 
@@ -317,7 +341,7 @@ class AgnesVideoClient:
 
                     if is_non_retryable_error(resp.status_code, resp.text):
                         print(f"    [GET 不可重试错误] status_code={resp.status_code}，"
-                              f"判定为参数/鉴权/内容类错误，立即停止重试: {resp.text[:200]}")
+                              f"判定为参数/鉴权/内容类错误，立即停止重试: {self._raw_snippet(resp.text)}")
                         return {"success": False, "error": last_err, "non_retryable": True}
 
                     attempt += 1
@@ -325,7 +349,7 @@ class AgnesVideoClient:
                     # 还是生成任务本身卡住了。
                     print(f"    [GET 失败] status_code={resp.status_code}，"
                           f"第 {attempt}/{self.max_retries} 次重试，"
-                          f"{1.5 * attempt:.1f}s 后重试: {resp.text[:200]}")
+                          f"{1.5 * attempt:.1f}s 后重试: {self._raw_snippet(resp.text)}")
                     self._sleep(1.5 * attempt)
                     continue
 
@@ -527,6 +551,7 @@ class AgnesVideoClient:
         )
 
         if not video_id:
+            print(f"    [创建任务失败·服务端原始返回]: {self._raw_snippet(create_result)}")
             return {
                 "success": False,
                 "error": create_result,
@@ -583,6 +608,7 @@ class AgnesVideoClient:
                 }
 
             if status == "failed":
+                print(f"    [任务失败·服务端原始返回] video_id={video_id}: {self._raw_snippet(query_result)}")
                 return {
                     "success": False,
                     "video_id": video_id,
@@ -592,6 +618,8 @@ class AgnesVideoClient:
             self._sleep(poll_interval)
             elapsed += poll_interval
 
+        print(f"    [轮询超时·最后一次服务端返回] video_id={video_id}: "
+              f"{self._raw_snippet(last_query_result) if last_query_result is not None else '（无）'}")
         return {
             "success": False,
             "video_id": video_id,

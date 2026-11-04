@@ -133,3 +133,25 @@ def test_video_shot_logs_all_keys_with_status_masked(mods, tmp_path, monkeypatch
     assert "共 3 把" in log and "#1" in log and "#2" in log and "#3" in log
     assert "本镜头使用 key #1" in log
     assert K1 not in log and K2 not in log and K3 not in log
+
+
+def test_failure_logs_show_masked_raw_server_body(mods, capsys, monkeypatch):
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    pool = sys.modules["agnes_key_pool"].AgnesKeyPool([K1, K2])
+    c = mods.AgnesVideoClient(api_key=K1, key_pool=pool, max_retries=1)
+    raw = '{"error":{"message":"bad request for key ' + K1 + ' and sk-zzzz9999yyyy","code":"x"}}'
+    c.session = _Session([_Resp(400, raw)])
+    c._post("http://x/videos", {})
+    log = capsys.readouterr().out
+    assert "bad request for key" in log                  # 原始内容确实打印了
+    assert K1 not in log and "sk-zzzz9999yyyy" not in log    # 密钥全部脱敏
+
+
+def test_queue_full_prints_raw_body_on_first_round(mods, capsys, monkeypatch):
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    c = mods.AgnesVideoClient(api_key=K1, max_retries=1, queue_wait_seconds=10)
+    body = '{"error":{"message":"video_queue_full, please retry later"}}'
+    c.session = _Session([_Resp(429, body), _Resp(200, body={"video_id": "v1"})])
+    c._post("http://x/videos", {})
+    log = capsys.readouterr().out
+    assert "排队已满·服务端原始返回" in log and "video_queue_full" in log
