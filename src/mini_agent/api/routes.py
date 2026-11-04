@@ -5357,71 +5357,13 @@ async def get_self_status(request: Request):
     return result
 
 
-@router.get("/self/portrait")
-async def get_self_portrait(request: Request):
-    """GET /v1/self/portrait — 自我画像 + 能力地图聚合视图
-    （streamlit_self_cognition_dashboard_plan.md）。
+def _collect_self_portrait(http_server) -> dict:
+    """同步收集自我画像（文件 IO + 计算），由 get_self_portrait 放到线程池执行。
 
-    把散落在多处的"自我认知"相关数据一次性拉平，供看板"🪞 自我认知"
-    区块使用，避免看板自己拼装多个端点：
-
-      identity            — perception/global_knowledge.py::SelfIdentity
-                             （purpose、创建时间），来自 self_profile.json
-      self_assessment     — SelfAssessment：跨 session 历史强项/弱项/
-                             confidence_by_domain（global scope）
-      operating_state      — OperatingState：autonomy_level、
-                             总运行 session 数、涉足项目数、活跃项目
-      capability_map       — 当前 workdir 实测能力地图（evolution/
-                             consolidation.py::build_capability_map），
-                             workdir scope，与 self_assessment 的 global
-                             scope 互补，不是同一份数据
-      capability_trend     — self_model_snapshot.py 落盘的历史快照序列
-                             （最近 30 条，仅 at + weak_domain_count，
-                             用于画"弱项数量走势"，不返回完整
-                             capability_snapshot 避免响应过大）
-      skills               — SkillLoader.get_catalog()：已发现技能目录
-                             （name/description/active），程序化列出
-                             "现在有哪些能力可用"，与 capability_map的
-                             "实测结果"互补（一个是声明，一个是实测）
-      agent_value_profile   — [self_awareness_identity_evolution_plan.md
-                             §2.1] evolution/agent_value_profile_builder.py
-                             产出的 AgentValuePattern 列表：agent 自己的
-                             历史选择行为（当前仅接入 StateRepo 风险分级
-                             commit）归纳出的偏好倾向，与 self_assessment
-                             （能力自评）是两个维度，互不覆盖
-      body_inventory       — [self_awareness_identity_evolution_plan.md
-                             §2.5]"身体清单"：把 LLM provider 池/技能目录/
-                             子 agent 编排能力这几类已存在的行动接口，
-                             重新组织为一份"我现在有哪些身体"的视图。
-                             纯展示层面重新组织，数据全部来自本端点内
-                             已经在计算的 llm_pool 状态和 skills 目录，
-                             不新增采集逻辑。
-      self_narrative        — [self_awareness_identity_evolution_plan.md
-                             §2.2] evolution/self_narrative.py 产出的最新
-                             一条第一人称自我叙事（追加式存档，这里只取
-                             最新一条只读展示，完整历史用
-                             `/self_narrative history` 命令查看）。
-      drift_signals         — [self_awareness_identity_evolution_plan.md
-                             §2.6] evolution/self_model_drift.py 只读比较
-                             历史信念（self_assessment.confidence_by_domain）
-                             与当前 workdir 实测（capability_map）算出的
-                             落差列表，不做任何写入。
-      lineage                — [self_awareness_identity_evolution_plan.md
-                             §2.3]"谱系"视图：evolution/lineage_view.py
-                             把 evolve 分支重新表述为"变体候选自己"，只读
-                             聚合当前尝试中的分支（active_variants）与已
-                             合并保留的分支（merged_variants）；被淘汰的
-                             分支目前无法从 git 历史可靠还原，
-                             `discarded_note` 字段如实说明这个数据缺口，
-                             不做启发式猜测。
-
-    全部只读聚合，不触发任何计算/写入；单用户模式下也可用。
+    放在线程里是为了不阻塞 daemon 的事件循环：这些读取（能力地图、历史快照、
+    价值画像、叙事、漂移、谱系）都是同步 IO，直接在 async 处理函数里跑会让
+    同进程的所有 HTTP 请求一起超时。
     """
-    http_server = getattr(request.app.state, "http_server", None)
-    if http_server is None:
-        raise HTTPException(status_code=503, detail="HttpServer not available")
-    _require_owner(request)
-
     result: dict = {
         "identity": None,
         "self_assessment": None,
@@ -5540,6 +5482,18 @@ async def get_self_portrait(request: Request):
         log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_portrait.lineage')
 
     return result
+
+
+@router.get("/self/portrait")
+async def get_self_portrait(request: Request):
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    import asyncio
+    # 同步聚合放到线程池：避免阻塞事件循环（见 _collect_self_portrait）
+    return await asyncio.to_thread(_collect_self_portrait, http_server)
 
 
 @router.get("/self/error_log_stats")
