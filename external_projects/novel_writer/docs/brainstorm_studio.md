@@ -331,3 +331,29 @@
 测试：`tests/test_brainstorm_b6b.py`（总览的每个模块、丢弃项不显示、只读、修改对象进入提示词、只出提议不落卡、页面展示）。
 
 仍未做（B6-3）：提议目前只支持部分操作，世界观条目的修改与删除、角色删除、剧情条目修改等需要补齐，见设计文档。
+
+## B6-3：对话可修改全部产物（2026-10-20）
+
+提议的操作补齐到每个模块，全部仍需作者采纳，采纳前卡片不变：
+
+| 模块 | 操作 | 目标写法 |
+|---|---|---|
+| 题材卡 brief | set | 无（部分字段） |
+| 核心命题 premise | set | 无（整段文字） |
+| 灵感 ideas | add / set / delete | 灵感 id |
+| 开放问题 open_questions | add / set / delete | 问题 id |
+| 世界观 world | add / set / delete | add：列表名；set/delete：`列表名:序号` |
+| 角色 cast | add / set / delete | 角色 id |
+| 剧情 plot | set / add / delete | 见下 |
+| 备选 options | add / delete | delete：备选 id（放弃，不合并） |
+
+剧情的目标：`act:i`（幕；set 改标题或转折点列表，add 追加转折点，delete 删整幕）、`act:i:beat:j`（某个转折点）、`twists:k`、`endings:k`。剧情的 set 不带目标时，保持 B2 的整体替换行为。序号从 0 开始。
+
+- **删除不需要 value**；其它操作缺 value 会被拒绝。
+- **目标在登记时检查格式**（例如世界观的 set 必须写 `列表名:序号`）；目标是否存在、序号是否越界，在采纳时检查。校验失败时提议保持待确认，并显示错误，卡片不变。
+- **提示词**列出了完整的操作表，模型据此提议。
+- **修复**：删除类提议之前会因缺少 `value` 导致对话出错，现已修正。
+
+代码：`novel_writer/brainstorm/proposals.py`（重写：`ALLOWED_OPS`、`_check_target`、`apply_to` 的各模块分支）；`chat.py`（解析与提示词）；`ui/brainstorm.py`（操作标签「删除」）。`distill.py` 调用的 `apply_to` 签名未变。
+
+测试：`tests/test_brainstorm_b6c.py`（删除、世界观序号、剧情幕/转折点/反转/结局、越界与格式错误、备选删除、解析与提示词、对话提议确认前不落卡）。`tests/test_brainstorm_b4.py` 的一处断言随提示词调整。

@@ -124,7 +124,7 @@ def _spark_tab(root: str) -> None:
 
 _KIND_LABEL = {"brief": "题材", "premise": "命题", "ideas": "灵感", "open_questions": "开放问题",
                "world": "世界观", "cast": "角色", "plot": "剧情"}
-_OP_LABEL = {"add": "新增", "set": "修改"}
+_OP_LABEL = {"add": "新增", "set": "修改", "delete": "删除"}
 
 
 _EVENT_ICON = {"tool_call": "🔧", "tool_result": "📤", "tool_error": "❌", "info": "ℹ️", "warning": "⚠️",
@@ -425,7 +425,8 @@ def _dialogue_tab(root: str) -> None:
             if item.get("target"):
                 label += f"（{item['target']}）"
             st.markdown(f"**{label}**")
-            st.json(item["value"], expanded=False)
+            if item["value"] is not None:
+                st.json(item["value"], expanded=False)
             if item.get("reason"):
                 st.caption("理由：" + item["reason"])
             if item.get("error"):

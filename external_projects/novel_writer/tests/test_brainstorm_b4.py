@@ -161,7 +161,7 @@ def test_converge_mode_is_available_and_prompted(ws):
     out = CH.send(ws, "帮我收敛", "收敛", runner=R())
     assert out["reply"] == "收敛回复"
     assert "收束成 2–3 个备选方向" in seen["p"]
-    assert "options 的格式" in seen["p"]
+    assert "options：add" in seen["p"]          # B6-3：操作表中仍说明 options 的格式
 
 
 # ── 接口与页面 ──

@@ -273,11 +273,21 @@ def build_prompt(ws: BrainstormWorkspace, text: str, mode: str, conv: Optional[s
         f"【最近对话】\n{recent_text}\n\n"
         "如果你认为应当修改构思卡片，在回复最后附一个代码块（只在确有必要时附）：\n"
         "```proposals\n"
-        '[{"module": "ideas|premise|brief|open_questions|world|cast|plot|options", "op": "add|set", '
-        '"target": "（set 时需要：目标 id；world 时为列表名 rules/locations/factions/timeline/taboos）", '
-        '"value": {...或文字}, "reason": "为什么建议这样改"}]\n'
+        '[{"module": "模块名", "op": "add|set|delete", "target": "目标", "value": {...或文字}, '
+        '"reason": "为什么建议这样改"}]\n'
         "```\n"
-        "options 的格式：op 为 add，value 为 {\"name\": 备选名, \"module\": \"premise 或 plot\", \"content\": 可选的完整内容, \"notes\": 优缺点}。\n"
+        "各模块可用的操作与目标：\n"
+        "- brief：set，value 为部分题材字段。premise：set，value 为文字。\n"
+        "- ideas / open_questions：add（value 为 {text}）；set 或 delete 需要 target 为条目 id。\n"
+        "- world：add，target 为列表名（rules/locations/factions/timeline/taboos），value 为条目；"
+        "set 或 delete 的 target 为 列表名:序号（序号从 0 开始），set 的 value 为新条目。\n"
+        "- cast：add（value 需要 name）；set 或 delete 的 target 为角色 id。\n"
+        "- plot：set（无 target，value 为 {acts?, twists?, endings?}，替换给出的键）；"
+        "set / add / delete 的 target 可以是 act:i（幕，value 为 {title?, beats?}；add 追加转折点文字；delete 删除整幕）、"
+        "act:i:beat:j（某个转折点）、twists:k、endings:k。序号从 0 开始。\n"
+        "- options：add，value 为 {\"name\": 备选名, \"module\": \"premise 或 plot\", \"content\": 可选, \"notes\": 优缺点}；"
+        "delete 的 target 为备选 id（放弃该备选）。\n"
+        "delete 不需要 value。\n"
         "注意：你的建议只是提议，作者确认后才会生效。\n\n"
         f"作者说：{text}"
     )
@@ -300,7 +310,8 @@ def parse_reply(reply: str) -> Tuple[str, List[Dict[str, Any]], int]:
             invalid += 1
         if isinstance(data, list):
             for item in data:
-                if isinstance(item, dict) and item.get("module") and item.get("op") and "value" in item:
+                if isinstance(item, dict) and item.get("module") and item.get("op") and (
+                        "value" in item or item.get("op") == "delete"):
                     proposals.append(item)
                 else:
                     invalid += 1
@@ -336,7 +347,7 @@ def send(ws: BrainstormWorkspace, text: str, mode: str = "追问", runner: Optio
     made = []
     for item in items:
         try:
-            made.append(P.create(ws, item["module"], item["op"], item["value"],
+            made.append(P.create(ws, item["module"], item["op"], item.get("value"),
                                  target=item.get("target"), reason=item.get("reason", "")))
         except BrainstormError:
             invalid += 1
