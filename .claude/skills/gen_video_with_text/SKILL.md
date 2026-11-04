@@ -210,3 +210,11 @@ AGNES_API_KEY="sk-your-api-key-here" python .claude/skills/gen_video_with_text/g
 8. **Windows 环境**：使用 `$env:VAR_NAME="value"` 设置环境变量，或在命令前直接 `VAR=value`（通过 bash）
 9. **验证 API 密钥**：如果生成失败，先确认 API Key 是否有效且未过期
 10. **超时**：默认最长等待 1800 秒，超时会返回 `success: False` 及最后一次查询结果
+
+## 账号受限（403 访问受限）时换 key
+
+- 服务端返回 403 且提示“账号异常 / 访问受限”（unusual activity / temporarily restricted）时，判定为这一把 key 所在账号被限制，不是参数错误。
+- 该 key 进入长冷却（`RESTRICTED_COOLDOWN_SEC`，默认 1 小时），切换到下一把可用 key。
+- 提交阶段受限：换 key 后立即重试同一请求。轮询阶段受限：远端任务属于原 key，整条镜头换 key 重新提交（最多切换 key 数量次）。
+- 全部 key 都受限时停止，并给出明确提示。只配了一把 key 时，受限直接停止（不做无意义的重试）。
+- 图像 skill 的 key 池与视频 skill 完全相同，但图像客户端的请求处理暂未启用此逻辑（仍按不可重试处理）。

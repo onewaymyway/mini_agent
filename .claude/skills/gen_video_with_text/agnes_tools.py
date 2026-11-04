@@ -8,7 +8,7 @@ from typing import Optional, List
 
 import requests
 
-from agnes_key_pool import AgnesKeyPool, is_rate_limit_error, is_non_retryable_error
+from agnes_key_pool import AgnesKeyPool, is_key_restricted_error, is_rate_limit_error, is_non_retryable_error
 
 
 class ClientCancelled(BaseException):
@@ -186,6 +186,16 @@ class AgnesVideoClient:
                         "error": resp.text,
                     }
 
+                    if is_key_restricted_error(resp.status_code, resp.text):
+                        # 账号受限：长冷却这把 key，换下一把立即重试（任务尚未创建，可安全重提）；无 key 池时直接停止
+                        next_key = self.key_pool.report_restricted(self.api_key) if self.key_pool else None
+                        if next_key:
+                            print("    [KEY 受限] 当前 key 所在账号异常/访问受限，已切换到下一把 key 重试")
+                            self.api_key = next_key
+                            continue
+                        print("    [KEY 受限] 所有 key 都已受限，停止")
+                        return {"success": False, "error": last_err, "non_retryable": True, "key_restricted": True}
+
                     if self.key_pool and is_rate_limit_error(resp.status_code, resp.text):
                         next_key = self.key_pool.report_rate_limit(self.api_key)
                         if next_key:
@@ -272,6 +282,13 @@ class AgnesVideoClient:
                         "status_code": resp.status_code,
                         "error": resp.text,
                     }
+
+                    if is_key_restricted_error(resp.status_code, resp.text):
+                        # 轮询时账号受限：远端任务属于原 key，换 key 查询往往查不到，交给外层整条重新提交
+                        if self.key_pool:
+                            self.key_pool.report_restricted(self.api_key)
+                        print("    [GET KEY 受限] 账号异常/访问受限，本次任务需换 key 重新提交")
+                        return {"success": False, "error": last_err, "non_retryable": True, "key_restricted": True}
 
                     if self.key_pool and is_rate_limit_error(resp.status_code, resp.text):
                         next_key = self.key_pool.report_rate_limit(self.api_key)
@@ -430,11 +447,20 @@ class AgnesVideoClient:
     # high-level API (agent friendly)
     # =========================
     def generate_video(self, *args, **kwargs) -> dict:
-        """创建任务并轮询直到完成/失败，可选保存视频。用户请求停止时返回 {success: False, cancelled: True}。"""
-        try:
-            return self._generate_video_impl(*args, **kwargs)
-        except ClientCancelled:
-            return self._cancel_result()
+        """创建任务并轮询直到完成/失败，可选保存视频。用户请求停止时返回 {success: False, cancelled: True}。
+
+        账号受限（key_restricted）时换下一把 key 整条重新提交，最多尝试 key 数量次；全部受限则返回 key_restricted。
+        """
+        switches = 0
+        while True:
+            try:
+                result = self._generate_video_impl(*args, **kwargs)
+            except ClientCancelled:
+                return self._cancel_result()
+            if not (result.get("key_restricted") and self.key_pool and switches < len(self.key_pool)):
+                return result
+            switches += 1
+            print(f"    [KEY 受限] 本镜头的远端任务所在账号受限，换 key 重新提交（第 {switches} 次切换）")
 
     def _generate_video_impl(
         self,
@@ -494,7 +520,7 @@ class AgnesVideoClient:
             self._check_cancel()
             query_result = self.query_video(video_id)
             last_query_result = query_result
-            if query_result.get("cancelled"):
+            if query_result.get("cancelled") or query_result.get("key_restricted"):
                 return query_result
             poll_count += 1
 

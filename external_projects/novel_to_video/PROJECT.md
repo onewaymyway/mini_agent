@@ -225,3 +225,9 @@ novel_output/                       # 项目数据（默认位置，已加入 .g
 ## 镜头卡片显示场景参考图
 
 - 每个镜头的视图数据带 `ref_image`（`chapter_pipeline.shot_ref_image`，与 C-8 选图规则一致），小场景逐镜卡片左侧在视频下方显示该镜头使用的参考图；未生成时显示占位文字。
+
+## 视频接口：账号受限（403）时换 key 重试
+
+- 视频 skill 识别“账号异常 / 访问受限”类 403：该 key 长冷却并切换到下一把，提交阶段直接换 key 重试，轮询阶段整条镜头换 key 重新提交。
+- 全部 key 受限时报告“所有 API key 所在账号都已受限”，不再无意义重试。
+- 修改：`.claude/skills/gen_video_with_text/agnes_tools.py`、`agnes_key_pool.py`（与图像 skill 的 key 池保持一致）；`novel_to_video/providers/skill_providers.py`（错误文本）。

@@ -53,14 +53,35 @@ def is_rate_limit_error(status_code: Optional[int], text: str = "") -> bool:
 # 陪着走满 max_retries。
 _NON_RETRYABLE_STATUS_CODES = (400, 401, 403, 404, 422)
 
+# 账号级限制：服务端返回 403 并提示“账号异常 / 访问受限”。这不是参数或配置错误，
+# 而是这一把 key（这个账号）被限制，换一把 key 通常可以继续。
+_KEY_RESTRICTED_KEYWORDS = (
+    "unusual activity",
+    "temporarily restricted",
+    "access has been temporarily restricted",
+    "账号异常",
+    "访问受限",
+    "账户异常",
+)
+# 受限的 key 冷却时间（秒）。受限通常持续较久，冷却期内不会再被选中。
+RESTRICTED_COOLDOWN_SEC = 3600.0
+
+
+def is_key_restricted_error(status_code: Optional[int], text: str = "") -> bool:
+    """判断一次失败是否属于“这把 key 所在账号被限制”（应切换 key 重试）。"""
+    if status_code not in (403, None):
+        return False
+    lowered = (text or "").lower()
+    return any(kw in lowered for kw in _KEY_RESTRICTED_KEYWORDS)
+
 
 def is_non_retryable_error(status_code: Optional[int], text: str = "") -> bool:
     """判断一次请求失败是否属于"重试无意义，需要先修配置"的错误。
 
     注意：先排除限流错误（限流也可能带 429 之外的状态码文案，但限流本身
-    应该走换 key 重试，不应该被这里误判为不可重试）。
+    应该走换 key 重试，不应该被这里误判为不可重试）；账号受限同理，应换 key。
     """
-    if is_rate_limit_error(status_code, text):
+    if is_rate_limit_error(status_code, text) or is_key_restricted_error(status_code, text):
         return False
     return status_code in _NON_RETRYABLE_STATUS_CODES
 
@@ -172,6 +193,15 @@ class AgnesKeyPool:
         全部 key 都在冷却中则返回 None（调用方应停止切换，走原有失败逻辑）。"""
         if key in self._cooldown_until:
             self._cooldown_until[key] = time.monotonic() + self._cooldown
+        return self._find_next_available()
+
+    def __len__(self) -> int:
+        return len(self._keys)
+
+    def report_restricted(self, key: str) -> Optional[str]:
+        """报告 key 所在账号受限：长冷却该 key 并切换到下一把可用 key（没有则返回 None）。"""
+        if key in self._cooldown_until:
+            self._cooldown_until[key] = time.monotonic() + RESTRICTED_COOLDOWN_SEC
         return self._find_next_available()
 
     def report_success(self, key: str) -> None:

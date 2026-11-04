@@ -29,6 +29,9 @@ def _failure(result: dict) -> tuple:
     err = result.get("error")
     non_retryable = bool(result.get("non_retryable")) or (isinstance(err, dict) and bool(err.get("non_retryable")))
     text = err if isinstance(err, str) else str(err)[:300] if err is not None else "未知错误"
+    if result.get("key_restricted"):
+        text = ("所有 API key 所在账号都已受限（账号异常 / 访问受限），无法继续生成。"
+                "请检查账号状态（如联系平台支持），或在 AGNES_API_KEYS 中补充可用的 key 后重新运行。原始信息：" + text[:200])
     return text, non_retryable
 
 
