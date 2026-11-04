@@ -364,7 +364,7 @@ API key 等敏感配置存放在独立的 **`providers.json`** 中（已加入 `
       "api_key": "sk-openai-backup"
     }
   ],
-  "llm_fallback_on": ["LLMRateLimitError", "LLMTimeoutError", "LLMProviderError"]
+  "llm_fallback_on": ["LLMRateLimitError", "LLMTimeoutError", "LLMProviderError", "LLMPermanentError"]
 }
 ```
 
@@ -374,6 +374,12 @@ AppConfig 新增字段：
 |------|------|--------|------|
 | `llm_fallback_chain` | list | `[]` | 配置链，空时退化为单条主配置 |
 | `llm_fallback_on` | list\|null | `null`（使用内置默认值） | 触发 fallback 的错误类名称集合 |
+
+> 内置默认值包含 `LLMPermanentError`（401/403）。**显式配置 `llm_fallback_on` 会覆盖默认值**，请保留 `LLMPermanentError` 或其父类 `LLMProviderError`，否则账号级 403 不会切换到备用配置。
+>
+> 配置链中同一 provider/model/base_url/key 的重复条目会被自动忽略；同 provider/model 只换 key 的条目会打警告，因为账号级限制换 key 无效，应加入不同 provider 的备用条目。
+>
+> fallback 覆盖主对话、后台摘要/画像/回填/压缩、cron 与 Objective 子 Agent、以及 `override_*` 调用。详见 [覆盖范围与后台调用](llm-failover-guide.md#覆盖范围与后台调用)。
 
 CLI 参数：
 

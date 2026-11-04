@@ -4,7 +4,7 @@
 
 mini-agent 里"发起一次 LLM 请求"分两大类场景：
 
-1. **主对话循环**：`agent/turn_loop.py` 及其直接协作模块（`compaction.py`、`lifecycle.py`、`reflection.py`、`profile.py`、`role_judge.py`、`snapshot.py`、`history_manager.py` 等），统一走 `self._llm.chat_with_retry(...)`，天然复用 `LLMClientPool` 的多 key 轮转 + 多配置 fallback，并跟随 `/model` 实时切换。
+1. **主对话循环**：`agent/turn_loop.py` 及其直接协作模块（`compaction.py`、`lifecycle.py`、`reflection.py`、`profile.py`、`role_judge.py`、`snapshot.py`、`history_manager.py` 等），统一走 `self._llm.chat_with_retry(...)`，天然复用 `LLMClientPool` 的多 key 轮转 + 多配置 fallback，并跟随 `/model` 实时切换。pool 托管的 client 上 `chat_with_retry` 会自动转发给 pool，因此后台任务（摘要、画像、回填、压缩等）同样具备 fallback。
 2. **主对话循环之外**：judge 评审、ensemble 候选生成、目标自动拆解、路由判定、记忆摘要重写、`generative-capability` skill 引擎的第二级检索裁决/探索子agent 决策循环……这类"旁路"调用**统一通过 `LLMHelper`**（`src/mini_agent/llm/service.py`），不再各自裸调 `client.chat()` 或各自 `LLMConfig.from_app_config(cfg)` 重新拼一份配置。
 
 > 背景与迁移过程详见 `next_doc/llm_helper_unification_plan.md`（改造计划，状态：已收尾）。本文档面向"如何使用"和"以后新增旁路调用该怎么接入"。
@@ -68,7 +68,7 @@ resp = helper.chat(
 
 ### override 参数：显式"逃生舱"
 
-`override_model` / `override_provider` / `override_temperature` 三者任一被传入时，`chat()` 不再走 `client_pool.call_with_pool`（即不占用/切换主 pool 状态、不触发 fallback chain 的其它 entry），而是**一次性**基于 `LLMConfig.from_app_config(cfg)` 覆盖对应字段、`create_client()` 构造一个临时 client，仍然套用同一个 `RetryPolicy` 调用。
+`override_model` / `override_provider` / `override_temperature` 三者任一被传入时，`chat()` 先基于 `LLMConfig.from_app_config(cfg)` 覆盖对应字段、`create_client()` 构造一个临时 client，套用同一个 `RetryPolicy` 调用。若临时 client 失败且错误属于 fallback 类型（如 403、限流、超时），会**回落到默认 `call_with_pool` 链**，不会直接抛出。
 
 这是给"确实需要用不同模型/温度问一次"的场景用的（例如 judge 想固定用某个更强的模型评审、`make_llm_call` 想要更高的采样温度），逻辑只写一次，替掉了历史上三处几乎逐字重复的 client 构造代码。
 
@@ -113,13 +113,13 @@ text = ask_background(llm_helper, prompt)   # 套用 retry.background_call_* 预
 
 这里**没有**改用 `LLMHelper`，原因是它只持有 `client`（单个 `LLMClient` 实例），没有 `client_pool` 可传给 `LLMHelper`。改造方式是直接调用 `LLMClient` 已有的 `chat_with_retry(max_retries=3)`，风险更小，且保留了原有的"失败静默降级（分类规则兜底/朴素摘要）"语义。
 
-**结论**：不是所有旁路调用都必须字面意义上"用 LLMHelper 类"，核心诉求是"统一重试 + 跟随当前 provider/model + 签名正确"，如果调用点手上只有 `client` 而非 `client_pool`，用 `LLMClient.chat_with_retry()` 同样满足这三点。
+**结论**：不是所有旁路调用都必须字面意义上"用 LLMHelper 类"，核心诉求是"统一重试 + 跟随当前 provider/model + 签名正确"，如果调用点手上只有 `client` 而非 `client_pool`，用 `LLMClient.chat_with_retry()` 同样满足这三点。若该 client 由 `LLMClientPool` 托管（如主 Agent 的 `_llm`），`chat_with_retry` 会自动转发给 pool，因此同样具备 fallback。
 
 ---
 
 ## 例外：`orchestrator/sub_agent.py` 不接入 LLMHelper
 
-Sub agent 的"自建 client"是**有意为之**的设计：要在独立线程里跑一个完全隔离的对话（独立历史、独立统计）。它把独立 client 传给内层完整的 `Agent(...)`，内层 Agent 自带单链 `LLMClientPool` + `chat_with_retry`；`SubAgent._run_with_capture()` 外面还套了一层针对 5xx/超时的重试（`_RETRY_MAX_ATTEMPTS=8`）。已经满足"补一层重试"的诉求，**不迁移、不改动 client 构造逻辑**。
+Sub agent 的"自建 client"是**有意为之**的设计：要在独立线程里跑一个完全隔离的对话（独立历史、独立统计）。它把独立 client 传给内层完整的 `Agent(...)`，内层 Agent 构造后会通过 `attach_fallback_pool(agent, cfg, llm_cfg)` 把 pool 替换为带 `llm_fallback_chain` 的 pool（首选仍是 `llm_cfg`，失败切换到链上备选）；`SubAgent._run_with_capture()` 外面还套了一层针对 5xx/超时的重试（`_RETRY_MAX_ATTEMPTS=8`）。这些已经满足"补一层重试"和"跨 provider 降级"的诉求，**不迁移到 LLMHelper**，只替换 pool。
 
 ## 例外：`agent/llm_control.py` 的 `/model` 探测调用
 

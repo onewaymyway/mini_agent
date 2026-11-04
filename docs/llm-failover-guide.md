@@ -7,7 +7,9 @@ mini-agent 提供两层互补的容错机制，解决 LLM 调用的可靠性问�
 | 机制 | 解决的问题 | 触发时机 |
 |------|-----------|---------|
 | **ApiKeyPool** 多 key 轮转 | 单 provider 的 API key 频率限制 | 遇到 `RateLimitError`，立即切换，无等待 |
-| **LLMClientPool** 配置 fallback | provider 完全不可用、跨 provider 降级 | 当前配置所有重试用完仍失败 |
+| **LLMClientPool** 配置 fallback | provider 完全不可用、跨 provider 降级；账号级 403 | 当前配置所有重试用完仍失败；或遇到 `LLMPermanentError`（401/403） |
+
+两层机制覆盖的调用范围见 [覆盖范围与后台调用](#覆盖范围与后台调用)：主对话、后台摘要/画像/记忆回填/压缩、cron 与 Objective 子 Agent、以及 `override_*` 调用，都会经过同一条 fallback 链。
 
 两层机制独立配置，可单独或组合使用。
 
@@ -199,6 +201,9 @@ CLI 参数  >  agent_config.json  >  providers.json chain[0]  >  环境变量  >
 > **注意**：`LLMPermanentError`（HTTP 401/403：key 失效、账号被限制/封禁）无论 `key_switch_on`
 > 怎么写都会触发换 key —— 同一把 key 重试不会成功，池里有其它 key 时应立即换 key；
 > 所有 key 都被冷却后才会 fallback 到下一个 provider，且不会在失效 key 上做退避重试。
+> 但如果 403 是**账号级**的（如 `We've detected unusual activity on your account`），
+> 同一账号下的所有 key 都会被拒绝，换 key 无效，必须切换到**不同 provider** 的条目，
+> 参见 [同一 provider 多条目与账号级 403](#同一-provider-多条目与账号级-403)。
 > `llm_fallback_on` / `key_switch_on` 按类名匹配且**包含父类**：写 `LLMProviderError`
 > 同样会命中其子类（如 `LLMPermanentError`）；`LLMContextWindowError` 除外（需触发 compact，不切换）。
 
@@ -266,6 +271,10 @@ CLI 参数  >  agent_config.json  >  providers.json chain[0]  >  环境变量  >
 }
 ```
 
+未在 `providers.json` 中配置 `llm_fallback_on` 时，内置默认值为 `LLMRateLimitError`、`LLMTimeoutError`、`LLMProviderError`、`LLMPermanentError`（403 等永久错误也会切换）。
+
+> ⚠️ **显式配置会覆盖默认值**。如果你写了 `llm_fallback_on`，请确保包含 `LLMPermanentError`，或至少包含它的父类 `LLMProviderError`（按父类名匹配，会命中子类），否则 403 不会切换到下一条配置。推荐直接写明：`["LLMRateLimitError", "LLMTimeoutError", "LLMProviderError", "LLMPermanentError"]`。
+
 `LLMConfigError`（认证失败）默认**不**触发 fallback，因为换一套配置通常无法解决认证问题（除非两套配置使用不同 provider）。若需要，可显式加入：
 
 ```json
@@ -273,6 +282,73 @@ CLI 参数  >  agent_config.json  >  providers.json chain[0]  >  环境变量  >
   "llm_fallback_on": ["LLMRateLimitError", "LLMTimeoutError", "LLMProviderError", "LLMConfigError"]
 }
 ```
+
+---
+
+## 覆盖范围与后台调用
+
+fallback 链只有在调用真正经过 `LLMClientPool` 时才有效。下面是各类调用的覆盖情况（修复后）：
+
+| 调用方 | 入口 | 是否走 fallback 链 |
+|--------|------|-------------------|
+| 主对话循环 | `agent._llm.chat_with_retry` / `_call_llm` → `call_with_pool` | ✅ |
+| 会话摘要、用户画像、记忆回填、压缩、反思、主动推荐等后台任务 | 持有 pool 托管 client 的 `chat_with_retry(...)` | ✅（基类转发给 pool） |
+| LLMHelper 旁路调用（judge、ensemble、目标拆解、路由判定…） | `LLMHelper.chat/ask` → `call_with_pool` | ✅ |
+| `override_model` / `override_provider` 调用 | 先用临时 client；失败后回落到默认链 | ✅（失败时回落） |
+| cron 任务子 Agent | `cron_agent_bridge` → `attach_fallback_pool` | ✅（修复前为单条链） |
+| Objective 子 Agent | `objective_agent_bridge` → `attach_fallback_pool` | ✅（修复前为单条链） |
+| SubAgent（orchestrator） | `sub_agent` → `attach_fallback_pool` | ✅（修复前为单条链） |
+
+### 实现要点
+
+- **基类转发**：`LLMClient.chat_with_retry()`（`llm/base.py`）发现 client 被 pool 托管（`client._fallback_pool` 已设置）时，直接转发给 `LLMClientPool.chat_with_retry()`，由 pool 执行重试与 fallback。调用方不需要知道 pool 的存在。
+- **不会递归**：pool 内部调用的是 `client.chat()`，不会再回到 `chat_with_retry`。
+- **子 Agent 的首选配置不变**：`attach_fallback_pool(agent, cfg, llm_cfg)` 把 `llm_cfg`（任务指定的 model 等覆盖项）作为首选，再把 `llm_fallback_chain` 中其余条目接在后面，因此不会改变任务原本使用的模型。
+- **旧的单链行为**：只有在 `llm_fallback_chain` 为空时，才退化为只含主配置的单条链。
+
+> 如果你在新代码里仍然看到 `LLMConfig.from_app_config(cfg)` + `create_client()` 直接发起调用，那是绕过 fallback 的信号，应改用 `LLMHelper` 或 `attach_fallback_pool`。
+
+---
+
+## 同一 provider 多条目与账号级 403
+
+同一 provider 下只换 key 的多个条目，**不能**解决账号级限制：
+
+```json
+{
+  "llm_fallback_chain": [
+    { "provider": "agnes", "model": "agnes-2.5-flash", "api_key": "key-1" },
+    { "provider": "agnes", "model": "agnes-2.5-flash", "api_key": "key-2" }
+  ]
+}
+```
+
+如果 `key-1` 和 `key-2` 属于同一个账号，403 `unusual activity` 会同时拒绝两把 key。修复前，这种配置会让日志出现 `agnes/agnes-2.5-flash → agnes/agnes-2.5-flash` 的假切换，请求仍然失败。
+
+**正确做法**：至少在链上加入一个**不同 provider**（或不同账号）的备用条目：
+
+```json
+{
+  "llm_fallback_chain": [
+    { "provider": "agnes", "model": "agnes-2.5-flash", "api_key": "key-1" },
+    { "provider": "anthropic", "model": "claude-haiku-4-5", "api_key": "sk-ant-..." }
+  ],
+  "llm_fallback_on": ["LLMRateLimitError", "LLMTimeoutError", "LLMProviderError", "LLMPermanentError"]
+}
+```
+
+加载时的自动检查（`LLMClientPool.from_config`）：
+
+| 情况 | 行为 |
+|------|------|
+| provider、model、base_url、key **完全相同**的重复条目 | 自动忽略，并打印 `忽略重复条目` 警告 |
+| 同 provider、同 model、同 base_url，只有 key 不同 | 保留（多 key 可以应对限流），但打印警告：账号级 403 换 key 无效，应加入不同 provider 的条目 |
+
+---
+
+## 重复条目与日志 label
+
+`ProviderEntry.label` 现在带上 key 后缀，格式为 `provider/model#末 4 位 key`，例如 `agnes/agnes-2.5-flash#9f3c`。这样同 model、不同 key 的条目在日志里可以区分，不会再出现看似没有切换的 `a/m → a/m`。没有 key 的条目（如本地模型）不带后缀。
 
 ---
 
@@ -331,8 +407,10 @@ CLI 参数  >  agent_config.json  >  providers.json chain[0]  >  环境变量  >
 发生配置 fallback 时：
 
 ```
-⚠ [llm-fallback] anthropic/claude-opus-4-7 → openai/gpt-4o (LLMRateLimitError: 429 Too Many Requests)
+⚠ [llm-fallback] anthropic/claude-opus-4-7#k2b9 → openai/gpt-4o#7a1d (LLMRateLimitError: 429 Too Many Requests)
 ```
+
+label 中的 `#xxxx` 是 key 的末 4 位，用于区分同一 provider/model 下的不同 key。
 
 ---
 
@@ -350,6 +428,10 @@ _call_llm()
         └── entry[1]: openai/gpt-4o              ← llm_fallback_chain 切换
               ApiKeyPool: [key-X]
                 └── 尝试 key-X → 成功 ✓
+
+后台任务（摘要 / 画像 / 回填 / cron 子 Agent 等）
+  └── client.chat_with_retry()  （pool 托管的 client 会转发给 pool）
+        └── LLMClientPool.chat_with_retry() → call_with_pool()   同上流程
 ```
 
 ---
@@ -544,10 +626,26 @@ storage()` 一致，但聚合语义不同（健康度快照是"取当天最新�
 |------|------|
 | `providers.json` | **敏感配置**（API key），加入 .gitignore，不提交 |
 | `providers.json.example` | 配置模板，可提交到 git 供团队参考 |
-| `src/mini_agent/llm/client_pool.py` | ApiKeyPool、ProviderEntry、LLMClientPool 实现 |
+| `src/mini_agent/llm/client_pool.py` | ApiKeyPool、ProviderEntry、LLMClientPool 实现；`build_pool_with_primary`、`attach_fallback_pool` |
 | `src/mini_agent/config.py` | `_load_providers_config`、`_merge_providers_into_chain`、`load_config` |
-| `src/mini_agent/agent.py` | `_call_llm` 通过 `LLMClientPool` 调用 |
+| `src/mini_agent/agent/llm_control.py` | `_call_llm` 通过 `LLMClientPool.call_with_pool` 调用，并同步 `cfg.model` / `cfg.llm_provider` |
+| `src/mini_agent/llm/base.py` | `LLMClient.chat_with_retry`：pool 托管时转发给 pool |
+| `src/mini_agent/llm/service.py` | `LLMHelper`；`_chat_override` 失败时回落到默认链 |
+| `src/mini_agent/evolution/cron_agent_bridge.py` / `objective_agent_bridge.py` / `orchestrator/sub_agent.py` | 子 Agent 构造后调用 `attach_fallback_pool` 接入 fallback 链 |
 | `docs/retry-backoff-guide.md` | 重试退避策略（与本机制配合使用） |
 | `src/mini_agent/perception/sentinel.py` | `read_llm_pool_snapshot()`：把 `snapshot()` 转成 `GET /v1/self/llm_pool_status` 的响应结构 |
 | `src/mini_agent/llm/call_stats.py` | 轻量调用计数（方向 B.2）：攒批写入 + 按天聚合 + 降采样压缩 |
 | `next_doc/kanban_perception_gaps_improvement_plan.md` | 方向 B.1（故障转移状态暴露）/ B.2（调用计数）设计与排查记录 |
+
+---
+
+## 变更记录
+
+**2026-11：修复 fallback 未生效的几处路径**
+
+- 后台调用（摘要、画像、记忆回填、压缩等）原先直接持有 provider client 调用 `chat_with_retry`，403/限流时既不换 key 也不换 provider。现在由基类转发给 pool。
+- cron 与 Objective 子 Agent、SubAgent 原先只用单个 client，整条 `llm_fallback_chain` 被忽略。现在通过 `attach_fallback_pool` 接入。
+- `override_*` 调用失败后原先直接抛出，现在回落到默认链。
+- `from_config` 忽略完全相同的重复条目；同 provider/model 只换 key 的条目会打警告。
+- `ProviderEntry.label` 增加 key 后缀，日志可区分同 model 的不同 key。
+- 文档修正：显式写 `llm_fallback_on` 时需包含 `LLMPermanentError`，否则 403 不会切换。
