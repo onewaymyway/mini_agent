@@ -141,3 +141,14 @@ def test_windows_style_paths_do_not_make_in_scope_files_out_of_scope(ws, toy):
 def test_norm_unifies_separators():
     assert RP._norm("大纲规划\\蓝图\\第031章.md") == "大纲规划/蓝图/第031章.md"
     assert RP._norm("大纲规划/蓝图/第031章.md") == "大纲规划/蓝图/第031章.md"
+
+
+def test_new_run_resets_exhausted_repair_budget_for_failed_steps(ws):
+    from novel_writer import worker as W
+    st.update_step(ws, "t.failed", status=st.ST_FAILED, repair_attempts=RP.MAX_REPAIR_ATTEMPTS)
+    st.update_step(ws, "t.passed", status=st.ST_PASSED, repair_attempts=2)
+    assert RP.exhausted(ws, "t.failed", {})
+    W._reset_repair_budgets(ws)
+    assert not RP.exhausted(ws, "t.failed", {})                        # 新一轮可以再修复
+    assert int(st.get_step_state(ws, "t.passed").get("repair_attempts") or 0) == 2   # 其它步骤不动
+    assert "数据修复次数重新计算" in ws.path("studio_log").read_text(encoding="utf-8")

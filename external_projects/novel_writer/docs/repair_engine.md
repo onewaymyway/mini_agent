@@ -102,3 +102,11 @@ Agent 会自行推断「下一步写第 N 章」，在修复调用里直接写�
 Windows 上 `str(Path)` 使用 `\` 分隔，而请求里记录的文件路径使用 `/`。两者直接做字符串比较时，范围内的文件被误判为范围外，于是正确的修复被撤销（日志会显示「修复改动了范围外的文件，已撤销：大纲规划\蓝图\第031章.md」这样的文件，而它们本来就在范围内）。
 
 现在所有相对路径在比较前统一为 `/` 分隔（`repair._norm`），范围判断与撤销都基于统一写法。测试：`tests/test_repair_feedback.py::test_windows_style_paths_do_not_make_in_scope_files_out_of_scope`。
+
+## 新一轮运行重置修复次数（2026-11-04）
+
+修复次数只在「连续失败」期间累计，通过后清零。问题是：如果上一轮用尽了次数，之后每次新的运行都会因为"已用尽"直接跳过修复（日志只显示「数据修复已用尽，已停下」，没有任何修复调用）。
+
+现在每次运行开始时（`run_worker`），失败步骤的修复次数会清零，并在运行日志中写明上一轮用了多少次。这样作者每次重新运行，都能再得到完整的修复机会。运行中的上限不变：同一次运行内用尽 `repair_max_attempts` 次后仍会停下来等人处理。
+
+测试：`tests/test_repair_feedback.py::test_new_run_resets_exhausted_repair_budget_for_failed_steps`。

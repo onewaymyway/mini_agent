@@ -130,6 +130,19 @@ class _Heartbeat:
         self._thread.join(timeout=2)
 
 
+def _reset_repair_budgets(ws: Workspace) -> None:
+    """新一轮运行开始时，把失败步骤的数据修复次数清零。
+
+    修复次数只在「连续失败」期间累计。若上一轮用尽了次数，之后每次新运行都会因为"已用尽"而直接跳过修复，
+    只剩下反复失败。新运行是作者的新一次操作，应当重新给出修复机会。
+    """
+    for sid, entry in st.load_state(ws)["steps"].items():
+        used = int(entry.get("repair_attempts") or 0)
+        if entry.get("status") == st.ST_FAILED and used > 0:
+            st.update_step(ws, sid, repair_attempts=0)
+            st.log_line(ws, f"🔁 {sid}：新一轮运行，数据修复次数重新计算（上一轮已用 {used} 次）")
+
+
 def run_worker(
     ws: Workspace,
     *,
@@ -155,6 +168,7 @@ def run_worker(
     stale_all: List[str] = []
     started_at = st.now_iso()
     st.log_line(ws, f"═══ 运行开始（模式 {mode}）═══")
+    _reset_repair_budgets(ws)
     orphans: List[str] = []
     reason = "completed"
     error: Optional[str] = None
