@@ -257,9 +257,8 @@ class AgnesVideoClient:
                             return {"success": False, "error": last_err}
                         print(f"    [POST 排队已满] 第 {queue_round} 次，{delay}s 后重试"
                               f"（不计入重试次数，已等待 {int(queue_waited)}s/{self.queue_wait_seconds}s）")
-                        if queue_round == 1 or queue_round % 20 == 0:
-                            print(f"    [POST 排队已满·服务端原始返回] status_code={resp.status_code}: "
-                                  f"{self._raw_snippet(resp.text)}")
+                        print(f"    [POST 排队已满·服务端原始返回] status_code={resp.status_code}: "
+                              f"{self._raw_snippet(resp.text)}")          # 每次失败都打印原始内容
                         self._sleep(delay)
                         queue_waited += delay
                         continue

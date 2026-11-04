@@ -155,3 +155,13 @@ def test_queue_full_prints_raw_body_on_first_round(mods, capsys, monkeypatch):
     c._post("http://x/videos", {})
     log = capsys.readouterr().out
     assert "排队已满·服务端原始返回" in log and "video_queue_full" in log
+
+
+def test_every_queue_full_round_prints_raw_body(mods, capsys, monkeypatch):
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    c = mods.AgnesVideoClient(api_key=K1, max_retries=1, queue_wait_seconds=10000)
+    body = '{"code":"video_queue_full","message":"video queue is full, please retry later"}'
+    c.session = _Session([_Resp(503, body)] * 3 + [_Resp(200, body={"video_id": "v1"})])
+    c._post("http://x/videos", {})
+    log = capsys.readouterr().out
+    assert log.count("排队已满·服务端原始返回") == 3          # 每一次失败都打印，不抽样
