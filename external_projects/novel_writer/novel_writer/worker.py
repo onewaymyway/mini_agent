@@ -248,6 +248,33 @@ def _repair_and_rerun(ws: Workspace, target: S.StepDef, *, invoker, settings: Di
     return status
 
 
+def _generic_repair_and_rerun(ws: Workspace, target: S.StepDef, *, invoker, settings: Dict[str, Any],
+                              handlers, budget) -> Optional[str]:
+    """通用修复：步骤多次自动重跑仍失败时，把失败原因和步骤的输入文件交给 LLM 修复，然后重跑该步骤。
+
+    不适用（没有 invoker、修复未开启、已用尽修复次数、步骤标记为不可重试、没有可修的输入文件）时返回 None。
+    """
+    if invoker is None or not RP.enabled(settings) or RP.exhausted(ws, target.id, settings):
+        return None
+    state = st.get_step_state(ws, target.id)
+    if state.get("no_retry"):
+        return None
+    if state.get("timed_out"):
+        return None                       # 超时是耗时问题，改输入文件解决不了
+    req = RP.generic_request(ws, target)
+    if req is None:
+        return None
+    req["problems"] = [str(state.get("error") or "步骤失败")[:800]]
+    try:
+        RP.repair_attempt(ws, target, invoker=invoker, settings=settings, request=req)
+    except Exception as exc:  # noqa: BLE001 - 修复本身出错不能拖垮 worker，按普通失败处理
+        st.log_line(ws, f"⚠ {target.id}：通用修复出错，按普通失败处理：{type(exc).__name__}: {exc}")
+        return None
+    status = R.run_step(ws, target, invoker=invoker, settings=settings, handlers=handlers)
+    budget.record(target)
+    return status
+
+
 def _loop(
     ws: Workspace, *, mode: str, invoker: Optional[R.Invoker], handlers: Optional[Dict[str, R.PyHandler]],
     budget: Budget, executed: List[Dict[str, Any]], stale_all: List[str], max_steps: Optional[int],
@@ -376,6 +403,12 @@ def _loop(
                 time.sleep(delay)
             status_after = R.run_step(ws, target, invoker=invoker, settings=settings, handlers=handlers)
             budget.record(target)
+        if status_after == st.ST_FAILED and retries >= max_retries:
+            # 自动重跑已用尽：把失败原因交给 LLM 修复，再重跑（通用修复，见 _generic_repair_and_rerun）
+            generic = _generic_repair_and_rerun(ws, target, invoker=invoker, settings=settings,
+                                                handlers=handlers, budget=budget)
+            if generic is not None:
+                status_after = generic
         if retries or st.get_step_state(ws, target.id).get("retry_hint"):
             st.update_step(ws, target.id, retry_hint=None)
         after = st.get_step_state(ws, target.id)

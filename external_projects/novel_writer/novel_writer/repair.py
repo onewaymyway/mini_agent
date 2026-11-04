@@ -122,26 +122,72 @@ def exhausted(ws: Workspace, step_id: str, settings: Dict[str, Any]) -> bool:
 
 # ── 修复 ────────────────────────────────────────────────────────────────────
 
+GENERIC_KIND = "step_failure"          # 通用修复请求：步骤多次自动重跑仍失败，把失败原因交给 LLM
+MAX_GENERIC_FILES = 20
+MAX_GENERIC_TEXT_CHARS = 120_000       # 通用修复一次送给 LLM 的文件内容总字数上限
+
+
+def generic_request(ws: Workspace, step) -> Optional[Dict[str, Any]]:
+    """通用修复的范围：步骤的输入文本文件（只读它们的输入，不碰输出之外的东西）。没有可修的输入时返回 None。"""
+    files: List[str] = []
+    total = 0
+    for p in st.expand_inputs(ws, step.inputs):
+        p = Path(p)
+        if not p.is_file() or p.suffix.lower() not in _TEXT_SUFFIXES:
+            continue
+        size = len(read_text_utf8(p))
+        if size > MAX_GENERIC_TEXT_CHARS or total + size > MAX_GENERIC_TEXT_CHARS or len(files) >= MAX_GENERIC_FILES:
+            continue                             # 太大的文件不送给 LLM，避免提示词失控
+        files.append(str(p.relative_to(ws.root)))
+        total += size
+    if not files:
+        return None
+    return {"kind": GENERIC_KIND, "validator": None, "files": files, "problems": [], "scope": None}
+
+
+def _checker(request: Dict[str, Any]):
+    """修复后的检查函数：有校验器就用校验器；通用修复没有可重复的校验，就沿用失败原因（由重跑步骤给出结论）。"""
+    if request.get("kind") == GENERIC_KIND:
+        problems = list(request.get("problems") or ["步骤失败"])
+        return lambda ws: list(problems)
+    return VALIDATORS[request["validator"]]
+
+
 def _build_prompt(step_id: str, request: Dict[str, Any], texts: Dict[str, str], problems: List[str],
                   *, root: Optional[Path] = None) -> str:
     """root 给出时（受限引擎）：文件一律用绝对路径，并内联 data-repair skill 的全部规则。"""
     def show(rel: str) -> str:
         return str((Path(root) / rel)) if root is not None else rel
 
-    lines = [
-        "下面的数据文件无法被程序读取。请只修复这些文件中的格式错误，使它们能通过读取校验。",
-        "",
-        "## 必须修复的问题（逐条，行号以文件为准）",
-        *[f"- {p}" for p in problems],
-        "",
-        "## 修复规则",
-        f"- 只能修改以下文件{'（绝对路径）' if root is not None else '（路径相对工作区）'}："
-        f"{'、'.join(show(f) for f in request['files'])}。不得修改、创建或删除任何其他文件。",
-        "- 保持原意与内容，不得删减、合并或编造信息；只修正格式（引号、转义、类型、缺失的字段名等）。",
-        "- 字符串值必须写在同一行；字符串内需要的引号用中文「」或『』，不要用英文双引号。",
-        "- 文件头的 id 必须与文件名一致；同一章的记录只能出现一次。",
-        "- 信息确实缺失时，用合法的空值（如 []、null、\"\"）补齐，不得编造。",
-    ]
+    if request.get("kind") == GENERIC_KIND:
+        lines = [
+            f"步骤「{step_id}」已经自动重跑多次仍然失败。下面是失败原因，以及该步骤读取的文件内容。",
+            "请判断失败是否由这些文件的内容或格式引起；若是，只修改这些文件把问题修正，使步骤能够通过。",
+            "",
+            "## 失败原因",
+            *[f"- {p}" for p in problems],
+            "",
+            "## 修复规则",
+            f"- 只能修改以下文件{'（绝对路径）' if root is not None else '（路径相对工作区）'}："
+            f"{'、'.join(show(f) for f in request['files'])}。不得修改、创建或删除任何其他文件。",
+            "- 如果失败原因与这些文件无关（例如外部服务、网络、权限），不要修改任何文件，直接说明原因。",
+            "- 保持原意与内容，不得删减或编造信息；只修正确实有问题的部分。",
+        ]
+    else:
+        lines = [
+            "下面的数据文件无法被程序读取。请只修复这些文件中的格式错误，使它们能通过读取校验。",
+            "",
+            "## 必须修复的问题（逐条，行号以文件为准）",
+            *[f"- {p}" for p in problems],
+            "",
+            "## 修复规则",
+            f"- 只能修改以下文件{'（绝对路径）' if root is not None else '（路径相对工作区）'}："
+            f"{'、'.join(show(f) for f in request['files'])}。不得修改、创建或删除任何其他文件。",
+            "- 保持原意与内容，不得删减、合并或编造信息；只修正格式（引号、转义、类型、缺失的字段名等）。",
+            "- 字符串值必须写在同一行；字符串内需要的引号用中文「」或『』，不要用英文双引号。",
+            "- 文件头的 id 必须与文件名一致；同一章的记录只能出现一次。",
+            "- 信息确实缺失时，用合法的空值（如 []、null、\"\"）补齐，不得编造。",
+        ]
     if root is not None:
         lines += [
             "- 你只有读写文件和浏览目录的工具，没有其他能力。这是一次独立的数据修复任务：不要做写作、审核、规划等任何别的事，"
@@ -181,11 +227,12 @@ def repair_attempt(ws: Workspace, step, *, invoker, settings: Dict[str, Any],
     """
     from novel_writer import runner as R  # 避免循环导入
 
-    validator = VALIDATORS[request["validator"]]
+    check = _checker(request)
+    generic = request.get("kind") == GENERIC_KIND
     # 先计数再判断：即使问题已经自行消失也算一次尝试，否则「校验通过→步骤仍失败」会无限循环
     used = int(st.get_step_state(ws, step.id).get("repair_attempts") or 0) + 1
     st.update_step(ws, step.id, repair_attempts=used)
-    before = validator(ws)
+    before = check(ws)
     if not before:
         st.log_line(ws, f"🔧 {step.id}：校验已通过，无需 LLM 修复")
         return {"fixed": True, "problems": [], "changed": [], "rolled_back": False}
@@ -195,7 +242,8 @@ def repair_attempt(ws: Workspace, step, *, invoker, settings: Dict[str, Any],
     snapshot = _snapshot(ws)
     texts = {rel: read_text_utf8(ws.root / rel) for rel in request["files"] if (ws.root / rel).is_file()}
 
-    st.log_line(ws, f"🔧 {step.id}：数据校验失败，交给 LLM 修复（第 {used}/{max_attempts(settings)} 次）："
+    what = "步骤多次重试失败，把失败原因交给 LLM 修复" if generic else "数据校验失败，交给 LLM 修复"
+    st.log_line(ws, f"🔧 {step.id}：{what}（第 {used}/{max_attempts(settings)} 次）："
                     f"{'；'.join(before[:3])[:160]}")
     export_dir = ws.step_dir(f"{step.id}.repair", used)
     export_dir.mkdir(parents=True, exist_ok=True)
@@ -217,7 +265,7 @@ def repair_attempt(ws: Workspace, step, *, invoker, settings: Dict[str, Any],
     if not getattr(result, "ok", False):
         st.log_line(ws, f"⚠ {step.id}：修复调用未成功：{getattr(result, 'error', '') or '未知原因'}")
 
-    after = validator(ws)
+    after = check(ws)
     changed = [str(p.relative_to(ws.root)) for p, data in snapshot.items()
                if p.is_file() and p.read_bytes() != data]
     changed += [str(p.relative_to(ws.root)) for p in _snapshot(ws).keys() if p not in snapshot]   # 新建的文件也算越界
@@ -233,10 +281,10 @@ def repair_attempt(ws: Workspace, step, *, invoker, settings: Dict[str, Any],
             if p not in snapshot:
                 p.unlink(missing_ok=True)
         rolled_back = True
-        after = validator(ws)
+        after = check(ws)
         why = "范围外文件被改动" if out_of_scope else f"问题由 {len(before)} 条增至 {after_count} 条"
         st.log_line(ws, f"↩ {step.id}：修复结果不可接受（{why}），已还原")
         changed = []
-    else:
+    elif not generic:
         st.log_line(ws, f"🔧 {step.id}：修复后剩余问题 {len(after)} 条（修复前 {len(before)} 条）")
     return {"fixed": not after, "problems": after, "changed": changed, "rolled_back": rolled_back}
