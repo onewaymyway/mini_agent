@@ -1897,14 +1897,22 @@ async def get_self_llm_call_stats(request: Request, days: int = Query(7, ge=1, l
 
     try:
         from mini_agent.storage.paths import AgentPaths
-        from mini_agent.llm.call_stats import call_stats_series
+        from mini_agent.llm.call_stats import call_stats_series, call_stats_breakdown
 
         self_agent = http_server.bridge.agent
         project_root = getattr(self_agent.cfg, "project_root", None) if self_agent else None
         if project_root is None:
-            return {"series": []}
+            return {"series": [], "breakdown": {"by_source": {}, "by_origin": {}}}
         paths = AgentPaths(project_root)
-        return {"series": call_stats_series(paths, days=days)}
+        series = call_stats_series(paths, days=days)
+        # breakdown 是新增字段：按来源 / 按项目拆分。旧数据归入 legacy 桶，不影响 series。
+        try:
+            breakdown = call_stats_breakdown(paths, days=days)
+        except Exception as _bd_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_bd_exc, where='mini_agent.api.routes.get_self_llm_call_stats.breakdown')
+            breakdown = {"by_source": {}, "by_origin": {}}
+        return {"series": series, "breakdown": breakdown}
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_llm_call_stats')

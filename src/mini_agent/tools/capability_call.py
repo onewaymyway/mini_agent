@@ -87,6 +87,25 @@ def _find_unwired_tools(skill_dir) -> list[str]:
     return [name for name in allowed_tools if name not in dispatch_table]
 
 
+def _with_skill_source(fn):
+    """包装 skill 入口：其中发出的 LLM 调用计数来源标记为 ``skill``。
+
+    使用 functools.wraps 保留原函数的名称、文档和签名，工具注册时生成的
+    schema 不变。调用计数的 contextvar 不会跨线程传播，因此 skill 内部
+    另起线程运行的子 Agent 会使用它们自己 pool 的默认来源（subagent 等）。
+    """
+    import functools
+
+    @functools.wraps(fn)
+    def _wrapped(*args, **kwargs):
+        from mini_agent.llm.call_stats import call_source_if_unset
+
+        with call_source_if_unset("skill"):
+            return fn(*args, **kwargs)
+
+    return _wrapped
+
+
 def register_capability_tools(registry: ToolRegistry, skill_loader: "SkillLoader") -> None:
     """
     将 capability_call 工具注册到指定 registry。
@@ -319,7 +338,7 @@ def register_capability_tools(registry: ToolRegistry, skill_loader: "SkillLoader
         return json.dumps(payload, ensure_ascii=False, indent=2)
 
     registry.register_fn(
-        fn=capability_call,
+        fn=_with_skill_source(capability_call),
         name="capability_call",
         description=(
             "Call a `generative-capability` skill — a domain capability pack whose member "

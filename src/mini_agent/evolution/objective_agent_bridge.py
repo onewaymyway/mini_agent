@@ -227,7 +227,7 @@ def build_objective_agent(
     )
     # 替换为带 llm_fallback_chain 的 pool：首选仍是 llm_cfg，失败后切换到链上备选
     from mini_agent.llm.client_pool import attach_fallback_pool
-    return attach_fallback_pool(_agent, cfg, llm_cfg)
+    return attach_fallback_pool(_agent, cfg, llm_cfg, source="objective")
 
 
 class ObjectiveIsolatedRunner:

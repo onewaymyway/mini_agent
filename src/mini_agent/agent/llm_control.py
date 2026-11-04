@@ -326,14 +326,12 @@ class LLMControlMixin:
                 f"[key-switch] ...{old_suffix} → ...{new_suffix} "
                 f"({type(exc).__name__})"
             )
-            self._record_llm_call_stat(outcome="key_switch")
 
         def _on_switch_config(old_label: str, new_label: str, exc: Exception) -> None:
             R.print_warning(
                 f"[llm-fallback] {old_label} → {new_label} "
                 f"({type(exc).__name__}: {str(exc)[:80]})"
             )
-            self._record_llm_call_stat(outcome="config_switch")
             self._llm = self._client_pool.current_client
             # [BUGFIX] 自动 fallback 切换 provider/model 后，之前只更新了
             # self._llm，没有同步 self.cfg.model / self.cfg.llm_provider——
@@ -348,23 +346,13 @@ class LLMControlMixin:
             self.cfg.model = _entry.config.model
             self.cfg.llm_provider = _entry.config.provider
 
-        _call_started_at = time.time()
-        try:
-            response = self._client_pool.call_with_pool(
-                call_fn=_do_single_call,
-                retry_policy=self._retry_policy,
-                on_switch_key=_on_switch_key,
-                on_switch_config=_on_switch_config,
-            )
-        except Exception:
-            self._record_llm_call_stat(
-                outcome="error", duration_ms=int((time.time() - _call_started_at) * 1000),
-            )
-            raise
-        self._record_llm_call_stat(
-            outcome="success",
-            duration_ms=int((time.time() - _call_started_at) * 1000),
-            usage=response.usage,
+        # 调用计数已统一由 LLMClientPool.call_with_pool() 记录（成功 / 失败 /
+        # key 切换 / 配置切换），这里不再重复记录，避免同一次调用被计两次。
+        response = self._client_pool.call_with_pool(
+            call_fn=_do_single_call,
+            retry_policy=self._retry_policy,
+            on_switch_key=_on_switch_key,
+            on_switch_config=_on_switch_config,
         )
         self._llm = self._client_pool.current_client
 

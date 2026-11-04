@@ -325,6 +325,11 @@ class LLMClientPool:
         self._max_rounds = max(1, max_rounds)
         self._round_wait = max(0.0, round_wait)
         self._lock = threading.Lock()
+        # 调用计数（llm/call_stats.py）：默认不记录，由 configure_stats() 显式开启。
+        # 不配置时（测试、嵌入场景）pool 行为与之前完全一致。
+        self._stats_root: Optional[str] = None
+        self._stats_kind: str = "agent"
+        self._stats_origin: str = "main"
 
     # ── 对外主接口 ────────────────────────────────────────────────────────────
 
@@ -394,7 +399,112 @@ class LLMClientPool:
                 self._current_idx = new_idx
             return new_idx
 
+    def configure_stats(
+        self,
+        root: Optional[str],
+        *,
+        kind: Optional[str] = None,
+        origin: Optional[str] = None,
+    ) -> None:
+        """开启调用计数。
+
+        root:   计数写入的项目根目录（主项目根）；None = 不记录。
+        kind:   pool 的默认来源（调用点没有通过 call_source 标记时使用），如 agent / cron。
+        origin: 调用来源项目，main 或 external:<项目名>。
+        """
+        self._stats_root = str(root) if root else None
+        if kind:
+            self._stats_kind = kind
+        if origin:
+            self._stats_origin = origin
+
+    def _record_stat(
+        self,
+        outcome: str,
+        *,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+        duration_ms: int = 0,
+        usage: Any = None,
+    ) -> None:
+        """记录一条调用计数。失败一律静默忽略——计数绝不能影响真正的 LLM 调用。"""
+        root = self._stats_root
+        if not root:
+            return
+        try:
+            from mini_agent.storage.paths import AgentPaths
+            from mini_agent.llm import call_stats
+
+            if provider is None or model is None:
+                entry = self.current_entry
+                if provider is None:
+                    provider = entry.config.provider
+                if model is None:
+                    model = entry.config.model
+            call_stats.record_call(
+                AgentPaths(root),
+                provider=provider or "",
+                model=model or "",
+                input_tokens=getattr(usage, "input_tokens", 0) if usage else 0,
+                output_tokens=getattr(usage, "output_tokens", 0) if usage else 0,
+                duration_ms=duration_ms,
+                outcome=outcome,
+                source=call_stats.current_source(self._stats_kind),
+                origin=self._stats_origin,
+            )
+        except Exception:
+            pass
+
+    def record_stat(
+        self,
+        outcome: str,
+        *,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+        duration_ms: int = 0,
+        usage: Any = None,
+    ) -> None:
+        """公开入口：供 pool 之外、但需要按同一口径计数的调用点使用（如 override 临时 client）。"""
+        self._record_stat(
+            outcome, provider=provider, model=model, duration_ms=duration_ms, usage=usage,
+        )
+
     def call_with_pool(
+        self,
+        call_fn: Callable[[LLMClient], LLMResponse],
+        retry_policy: "RetryPolicy",
+        on_switch_key: Optional[Callable[[str, str, Exception], None]] = None,
+        on_switch_config: Optional[Callable[[str, str, Exception], None]] = None,
+        max_rounds: Optional[int] = None,
+        on_retry: Optional[Callable[[int, str], None]] = None,
+    ) -> LLMResponse:
+        """执行 call_fn 并统一记录调用计数（成功 / 最终失败）。
+
+        所有 LLM 调用（主对话、LLMHelper、后台任务、子 Agent）最终都经过这里，
+        因此计数只在这一处记录，不会重复计数。key 切换与配置切换的计数在
+        ``_call_entry`` / ``_call_with_pool_impl`` 中就地记录。
+        """
+        started = time.monotonic()
+        try:
+            response = self._call_with_pool_impl(
+                call_fn=call_fn,
+                retry_policy=retry_policy,
+                on_switch_key=on_switch_key,
+                on_switch_config=on_switch_config,
+                max_rounds=max_rounds,
+                on_retry=on_retry,
+            )
+        except Exception:
+            self._record_stat("error", duration_ms=int((time.monotonic() - started) * 1000))
+            raise
+        self._record_stat(
+            "success",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            usage=response.usage,
+        )
+        return response
+
+    def _call_with_pool_impl(
         self,
         call_fn: Callable[[LLMClient], LLMResponse],
         retry_policy: "RetryPolicy",
@@ -478,6 +588,10 @@ class LLMClientPool:
                             "LLMClientPool: [%s] failed (%s: %s), falling back to [%s]",
                             entry.label, type(exc).__name__, exc, next_entry.label,
                         )
+                        self._record_stat(
+                            "config_switch",
+                            provider=entry.config.provider, model=entry.config.model,
+                        )
                         if on_switch_config:
                             on_switch_config(entry.label, next_entry.label, exc)
                     elif round_num < rounds:
@@ -490,6 +604,10 @@ class LLMClientPool:
                             "等待 %.1fs 后从头开始第 %d 轮重试",
                             round_num, rounds, entry.label, type(exc).__name__, exc,
                             self._round_wait, round_num + 1,
+                        )
+                        self._record_stat(
+                            "config_switch",
+                            provider=entry.config.provider, model=entry.config.model,
                         )
                         if on_switch_config:
                             on_switch_config(entry.label, first_entry.label, exc)
@@ -526,12 +644,16 @@ class LLMClientPool:
             retry_delay=retry_delay,
             retry_on_exception=True,
         )
+        from mini_agent.llm import call_stats
+
         tools_list = tools or []
-        return self.call_with_pool(
-            call_fn=lambda client: client.chat(messages, system, tools_list),
-            retry_policy=policy,
-            on_retry=on_retry,
-        )
+        # 未显式标记来源的 chat_with_retry 调用（摘要、画像、回填、压缩……）归为 background
+        with call_stats.call_source_if_unset("background"):
+            return self.call_with_pool(
+                call_fn=lambda client: client.chat(messages, system, tools_list),
+                retry_policy=policy,
+                on_retry=on_retry,
+            )
 
     def snapshot(self) -> dict:
         """返回当前状态快照（供状态栏/日志使用）。"""
@@ -551,6 +673,13 @@ class LLMClientPool:
 
     @classmethod
     def from_config(cls, cfg: "AppConfig") -> "LLMClientPool":
+        """从 AppConfig 构建 pool，并按 cfg 所属项目配置调用计数（见 configure_pool_stats）。"""
+        pool = cls._from_config_impl(cfg)
+        configure_pool_stats(pool, cfg)
+        return pool
+
+    @classmethod
+    def _from_config_impl(cls, cfg: "AppConfig") -> "LLMClientPool":
         """
         从 AppConfig 构建 LLMClientPool。
 
@@ -692,6 +821,10 @@ class LLMClientPool:
                     logger.info(
                         "ApiKeyPool: key %s → %s (%s)",
                         mask_api_key(old_key), mask_api_key(new_key), type(exc).__name__,
+                    )
+                    self._record_stat(
+                        "key_switch",
+                        provider=entry.config.provider, model=entry.config.model,
                     )
                     if on_switch_key:
                         on_switch_key(old_key[-8:], new_key[-8:], exc)
@@ -857,16 +990,61 @@ def build_pool_with_primary(cfg: "AppConfig", primary: LLMConfig) -> "LLMClientP
         e for e in base._entries
         if (e.config.provider, e.config.model, e.config.base_url, e.config.api_key) != primary_identity
     ]
-    return LLMClientPool(
+    pool = LLMClientPool(
         entries=[primary_entry] + rest,
         fallback_on=base._fallback_on,
         max_rounds=base._max_rounds,
         round_wait=base._round_wait,
     )
+    configure_pool_stats(pool, cfg)
+    return pool
 
 
-def attach_fallback_pool(agent, cfg: "AppConfig", primary: LLMConfig):
-    """把子 Agent 的单链 pool 替换为带 fallback 链的 pool，并同步 ``_llm``。"""
-    agent._client_pool = build_pool_with_primary(cfg, primary)
-    agent._llm = agent._client_pool.current_client
+def attach_fallback_pool(agent, cfg: "AppConfig", primary: LLMConfig, *, source: Optional[str] = None):
+    """把子 Agent 的单链 pool 替换为带 fallback 链的 pool，并同步 ``_llm``。
+
+    source: 调用计数里的来源标记（如 cron / objective / subagent），用于看板按来源拆分。
+    """
+    pool = build_pool_with_primary(cfg, primary)
+    if source:
+        configure_pool_stats(pool, cfg, kind=source)
+    agent._client_pool = pool
+    agent._llm = pool.current_client
     return agent
+
+
+def _resolve_stats_scope(cfg: "AppConfig") -> tuple[Optional[str], str]:
+    """决定调用计数写到哪个项目、标记为哪个来源项目。
+
+    - 主项目：写入自己的根目录，origin = main。
+    - 外部项目（存在 project.yaml）：优先写入主项目根目录（看板读的就是主项目），
+      origin = external:<项目目录名>；主项目根解析不到时退回写入外部项目自己的目录，
+      保证不丢数据（只是不会出现在主看板里）。
+    """
+    from pathlib import Path
+
+    root = getattr(cfg, "project_root", None)
+    if not root:
+        return None, "main"
+    root_path = Path(root)
+    try:
+        if (root_path / "project.yaml").exists():
+            origin = f"external:{root_path.name}"
+            from mini_agent.config.loader import _resolve_main_project_root
+
+            main_root = _resolve_main_project_root(root_path)
+            if main_root is not None:
+                return str(main_root), origin
+            return str(root_path), origin
+    except Exception:
+        pass
+    return str(root_path), "main"
+
+
+def configure_pool_stats(pool: "LLMClientPool", cfg: "AppConfig", *, kind: Optional[str] = None) -> None:
+    """按 cfg 为 pool 配置调用计数。任何异常都静默忽略——计数不能影响 pool 构造。"""
+    try:
+        root, origin = _resolve_stats_scope(cfg)
+        pool.configure_stats(root, kind=kind, origin=origin)
+    except Exception:
+        pass

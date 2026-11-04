@@ -173,7 +173,15 @@ class LLMHelper:
 
     # ── 完整入口 ──────────────────────────────────────────────────────────────
 
-    def chat(
+    def chat(self, *args: Any, **kwargs: Any) -> LLMResponse:
+        """完整入口。调用计数的来源统一标记为 ``helper``（外层已标记时保持外层的值，
+        例如 skill 入口会标记为 ``skill``）。"""
+        from mini_agent.llm import call_stats
+
+        with call_stats.call_source_if_unset("helper"):
+            return self._chat_dispatch(*args, **kwargs)
+
+    def _chat_dispatch(
         self,
         messages: list[dict],
         system: str = "",
@@ -232,19 +240,11 @@ class LLMHelper:
                 override_temperature=override_temperature,
             )
 
-        _call_started_at = self._now()
-        try:
-            response = self._pool.call_with_pool(
-                call_fn=lambda client: client.chat(messages, system, tools),
-                retry_policy=policy,
-            )
-        except Exception:
-            self._record_call_stat(outcome="error", duration_ms=self._elapsed_ms(_call_started_at))
-            raise
-        self._record_call_stat(
-            outcome="success", duration_ms=self._elapsed_ms(_call_started_at), usage=response.usage,
+        # 调用计数已统一由 LLMClientPool.call_with_pool() 记录，这里不再重复记录。
+        return self._pool.call_with_pool(
+            call_fn=lambda client: client.chat(messages, system, tools),
+            retry_policy=policy,
         )
-        return response
 
     # ── override 分支：临时构造独立 client，不经过 fallback chain ─────────────
 
@@ -276,24 +276,38 @@ class LLMHelper:
             trust_env=base_cfg.trust_env,
         )
         client = create_client(llm_cfg)
+        import time as _time
+
+        _started = _time.monotonic()
         try:
-            return policy.call_with_retry(
+            resp = policy.call_with_retry(
                 call_fn=lambda: client.chat(messages, system, tools),
             )
         except Exception as exc:
             # override 指定的 provider/model 失败（如 403 账号受限、限流、超时）时，
-            # 不能直接抛出——原实来这里完全绕过了 fallback 链。改为回落到默认链
+            # 不能直接抛出——原实现完全绕过了 fallback 链。改为回落到默认链
             # （LLMClientPool），与普通调用的故障转移行为一致。
             if not self._pool._should_fallback(exc):
+                self._pool.record_stat(
+                    "error", provider=llm_cfg.provider, model=llm_cfg.model,
+                    duration_ms=int((_time.monotonic() - _started) * 1000),
+                )
                 raise
+            self._pool.record_stat("config_switch", provider=llm_cfg.provider, model=llm_cfg.model)
             logger.warning(
                 "[override] %s/%s 失败（%s: %s），回落到默认 fallback 链",
                 llm_cfg.provider, llm_cfg.model, type(exc).__name__, str(exc)[:120],
             )
+            # 回落后的成功 / 失败由 call_with_pool 自行计数
             return self._pool.call_with_pool(
                 call_fn=lambda c: c.chat(messages, system, tools),
                 retry_policy=policy,
             )
+        self._pool.record_stat(
+            "success", provider=llm_cfg.provider, model=llm_cfg.model,
+            duration_ms=int((_time.monotonic() - _started) * 1000), usage=resp.usage,
+        )
+        return resp
 
 
 def ask_background(llm_helper: Any, prompt: str, **kwargs: Any) -> str:

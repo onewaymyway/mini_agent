@@ -30,9 +30,11 @@ from __future__ import annotations
 import json
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Iterator, Optional
 
 if TYPE_CHECKING:
     from mini_agent.storage.paths import AgentPaths
@@ -47,6 +49,42 @@ OUTCOME_ERROR = "error"
 OUTCOME_KEY_SWITCH = "key_switch"
 OUTCOME_CONFIG_SWITCH = "config_switch"
 
+# 旧版本写入的记录没有 source / origin 字段，以及按天压缩后的汇总行也没有，
+# 统一归入这个桶。读取侧一律用 .get() 兜底，因此旧数据不会导致报错。
+LEGACY_BUCKET = "legacy"
+ORIGIN_MAIN = "main"
+
+# ── 调用来源（谁发起的调用）────────────────────────────────────────────────────
+# 调用点（LLMHelper / 后台任务 / skill 入口）通过 contextvar 标记来源，
+# LLMClientPool 记录时读取它。contextvar 不会跨线程传播，线程内未标记的调用
+# 会退回到 pool 自身的默认来源（见 LLMClientPool.configure_stats）。
+_call_source_var: "ContextVar[Optional[str]]" = ContextVar("mini_agent_llm_call_source", default=None)
+
+
+@contextmanager
+def call_source(kind: str) -> Iterator[None]:
+    """强制把这段代码里发出的调用标记为 ``kind``（覆盖外层设置）。"""
+    token = _call_source_var.set(kind)
+    try:
+        yield
+    finally:
+        _call_source_var.reset(token)
+
+
+@contextmanager
+def call_source_if_unset(kind: str) -> Iterator[None]:
+    """外层已经标记过来源时保持外层的值，否则标记为 ``kind``。"""
+    if _call_source_var.get() is not None:
+        yield
+        return
+    with call_source(kind):
+        yield
+
+
+def current_source(default: str) -> str:
+    """当前线程上下文的来源；没有标记时返回 ``default``。"""
+    return _call_source_var.get() or default
+
 
 @dataclass
 class CallStatsRecord:
@@ -57,6 +95,9 @@ class CallStatsRecord:
     output_tokens: int = 0
     duration_ms: int = 0
     outcome: str = OUTCOME_SUCCESS
+    # 新增字段（有默认值，旧代码/旧数据不受影响）
+    source: str = LEGACY_BUCKET     # 调用来源：agent / helper / skill / background / cron / ...
+    origin: str = ORIGIN_MAIN       # 调用来源项目：main 或 external:<项目名>
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -149,6 +190,8 @@ def record_call(
     output_tokens: int = 0,
     duration_ms: int = 0,
     outcome: str = OUTCOME_SUCCESS,
+    source: str = LEGACY_BUCKET,
+    origin: str = ORIGIN_MAIN,
 ) -> None:
     """记一条调用计数记录（攒批写入，见模块头部说明）。失败（比如磁盘
     只读）静默忽略——调用计数是锦上添花的可观测性增强，不能因为这个
@@ -158,6 +201,7 @@ def record_call(
             ts=time.time(), provider=provider, model=model,
             input_tokens=input_tokens, output_tokens=output_tokens,
             duration_ms=duration_ms, outcome=outcome,
+            source=source or LEGACY_BUCKET, origin=origin or ORIGIN_MAIN,
         ).to_dict()
         key = str(paths.project_root)
         _get_buffer(key).add(paths.llm_call_stats_path, row)
@@ -303,3 +347,81 @@ def call_stats_series(paths: "AgentPaths", *, days: int = _DEFAULT_QUERY_DAYS) -
             "avg_duration_ms": avg_duration_ms,
         })
     return out
+
+
+# ── 按来源 / 按项目拆分（兼容旧数据）──────────────────────────────────────────
+
+def _empty_agg() -> dict:
+    return {
+        "call_count": 0, "success_count": 0, "error_count": 0,
+        "key_switch_count": 0, "config_switch_count": 0,
+        "total_input_tokens": 0, "total_output_tokens": 0,
+        "total_duration_ms": 0,
+    }
+
+
+def _merge_raw_row(agg: dict, r: dict) -> None:
+    agg["call_count"] += 1
+    outcome = r.get("outcome", OUTCOME_SUCCESS)
+    if outcome == OUTCOME_SUCCESS:
+        agg["success_count"] += 1
+    elif outcome == OUTCOME_ERROR:
+        agg["error_count"] += 1
+    elif outcome == OUTCOME_KEY_SWITCH:
+        agg["key_switch_count"] += 1
+    elif outcome == OUTCOME_CONFIG_SWITCH:
+        agg["config_switch_count"] += 1
+    agg["total_input_tokens"] += int(r.get("input_tokens") or 0)
+    agg["total_output_tokens"] += int(r.get("output_tokens") or 0)
+    agg["total_duration_ms"] += int(r.get("duration_ms") or 0)
+
+
+def _merge_aggregate_row(agg: dict, pa: dict) -> None:
+    """合并已压缩的每日汇总行（它的 call_count 等字段已经是求和结果）。"""
+    for key in ("call_count", "success_count", "error_count", "key_switch_count",
+                "config_switch_count", "total_input_tokens", "total_output_tokens",
+                "total_duration_ms"):
+        agg[key] += int(pa.get(key) or 0)
+
+
+def _finalize_agg(agg: dict) -> dict:
+    out = dict(agg)
+    out["avg_duration_ms"] = (
+        round(agg["total_duration_ms"] / agg["call_count"], 1) if agg["call_count"] else 0.0
+    )
+    return out
+
+
+def call_stats_breakdown(paths: "AgentPaths", *, days: int = _DEFAULT_QUERY_DAYS) -> dict:
+    """返回最近 ``days`` 天内按来源（``by_source``）和按项目（``by_origin``）拆分的汇总。
+
+    兼容说明：
+      - 旧版本记录没有 source / origin 字段 → 归入 ``legacy`` 桶；
+      - 已被压缩成每日汇总的行没有来源信息 → 同样归入 ``legacy`` 桶；
+      - 文件不存在或为空 → 两个字段都是 ``{}``，不抛异常。
+    """
+    empty = {"by_source": {}, "by_origin": {}}
+    rows = _read_jsonl(paths.llm_call_stats_path)
+    if not rows:
+        return empty
+    cutoff = time.time() - max(1, days) * 86400
+    recent = [r for r in rows if isinstance(r, dict) and r.get("ts", 0) >= cutoff]
+    if not recent:
+        return empty
+
+    by_source: dict[str, dict] = {}
+    by_origin: dict[str, dict] = {}
+    for r in recent:
+        if r.get("is_daily_aggregate"):
+            _merge_aggregate_row(by_source.setdefault(LEGACY_BUCKET, _empty_agg()), r)
+            _merge_aggregate_row(by_origin.setdefault(LEGACY_BUCKET, _empty_agg()), r)
+            continue
+        src = str(r.get("source") or LEGACY_BUCKET)
+        org = str(r.get("origin") or LEGACY_BUCKET)
+        _merge_raw_row(by_source.setdefault(src, _empty_agg()), r)
+        _merge_raw_row(by_origin.setdefault(org, _empty_agg()), r)
+
+    return {
+        "by_source": {k: _finalize_agg(v) for k, v in by_source.items()},
+        "by_origin": {k: _finalize_agg(v) for k, v in by_origin.items()},
+    }

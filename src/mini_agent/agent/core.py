@@ -263,6 +263,8 @@ class Agent(
                 key_pool=None,
             )
             self._client_pool = LLMClientPool(entries=[_entry])
+            from mini_agent.llm.client_pool import configure_pool_stats
+            configure_pool_stats(self._client_pool, cfg)
         else:
             self._client_pool = LLMClientPool.from_config(cfg)
             # 保持 self._llm 与 pool 主 client 同步

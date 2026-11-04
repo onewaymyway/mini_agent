@@ -9440,6 +9440,33 @@ def _render_llm_pool_status(client: AgentClient) -> None:
             c3.metric("今日输入 token", latest.get("total_input_tokens", 0))
             c4.metric("今日输出 token", latest.get("total_output_tokens", 0))
 
+            # 按来源 / 按项目拆分（近 7 天）。旧版本后端不返回 breakdown 时整块跳过。
+            breakdown = (stats_resp or {}).get("breakdown") or {}
+
+            def _breakdown_table(title: str, data: dict, key_label: str):
+                if not data:
+                    return
+                rows = [
+                    {
+                        key_label: k,
+                        "调用": v.get("call_count", 0),
+                        "失败": v.get("error_count", 0),
+                        "切key": v.get("key_switch_count", 0),
+                        "切配置": v.get("config_switch_count", 0),
+                        "输入 token": v.get("total_input_tokens", 0),
+                        "输出 token": v.get("total_output_tokens", 0),
+                        "平均耗时(ms)": v.get("avg_duration_ms", 0),
+                    }
+                    for k, v in sorted(data.items(), key=lambda kv: -int(kv[1].get("call_count", 0)))
+                ]
+                st.caption(title)
+                st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+            _breakdown_table("按来源（skill / helper / background / agent / cron …；legacy = 历史数据无来源）",
+                             breakdown.get("by_source") or {}, "来源")
+            _breakdown_table("按项目（main = 主项目；external:* = 外部项目调用）",
+                             breakdown.get("by_origin") or {}, "项目")
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # Tab: 📥 主动建议（next_doc/initiative_systems_unification_plan.md 阶段一）

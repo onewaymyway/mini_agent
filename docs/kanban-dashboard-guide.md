@@ -678,7 +678,7 @@ key 级的 `fail_count`/`cooldown_remaining` 从未被任何端点返回过，da
 
 紧接着的"📊 LLM 调用统计"区块（`GET /v1/self/llm_call_stats`，方向
 B.2）展示近 7 天按天聚合的调用次数/失败数柱状图，以及当日调用数/失败数/
-输入输出 token 数四个指标——默认开启、只统计数字，不含请求/响应正文，
+输入输出 token 数四个指标；其下方按来源（`source`）与按项目（`origin`）拆分的两张表，用于区分 skill / helper / background / cron 等调用，以及主项目与外部项目的调用。旧数据归入 `legacy`。默认开启、只统计数字，不含请求/响应正文，
 跟需要手动开启的 `LLM_DEBUG=1` 完整调试日志是两套独立的东西，详见
 `docs/llm-failover-guide.md`。
 

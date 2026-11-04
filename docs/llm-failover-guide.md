@@ -589,11 +589,11 @@ debug_logger.py` 需要手动设置 `LLM_DEBUG=1` 才会记录，且落盘的是
 
 新增 `llm/call_stats.py`，跟调试日志是两套独立的东西：**默认开启**，
 每次调用只记数字（provider/model/输入输出 token 数/耗时/结果分类：
-成功/失败/key 切换/配置切换），不含任何请求/响应正文。挂载点是
-`agent/llm_control.py::_call_llm()`（主对话循环）和 `llm/service.py::
-LLMHelper.chat()`（judge/ensemble/目标拆解等场景），这是仅有的两处
-`LLMClientPool.call_with_pool()` 调用点，覆盖了系统里发生的所有 LLM
-调用。
+成功/失败/key 切换/配置切换），不含任何请求/响应正文。
+
+**挂载点（已统一）**：计数只在 `LLMClientPool.call_with_pool()` 一处记录，
+所有 LLM 调用（主对话、LLMHelper、后台任务、子 Agent、外部项目、skill）都经过它，
+因此不会重复计数。旧版本的两处挂载点（`_call_llm` 与 `LLMHelper.chat`）已移除记录逻辑。
 
 写入策略是"攒批"，不是每次调用都落盘：内存缓冲区攒够 10 条或超过 30
 秒未落盘才真正写一次文件，降低密集工具循环场景下的 I/O 开销。记录失败
@@ -617,6 +617,42 @@ storage()` 一致，但聚合语义不同（健康度快照是"取当天最新�
 新增只读端点 `GET /v1/self/llm_call_stats?days=7`，返回按天聚合的
 序列。看板"🧠 自我状态"Tab 新增"📊 LLM 调用统计"区块（调用次数/失败数
 柱状图 + 当日汇总指标）。
+
+---
+
+### 调用来源与项目拆分
+
+每条记录带两个标签，看板可以按它们拆分：
+
+| 字段 | 取值 | 含义 |
+|------|------|------|
+| `source` | `agent` / `helper` / `skill` / `background` / `cron` / `objective` / `subagent` | 谁发起的调用 |
+| `origin` | `main` / `external:<项目目录名>` | 调用发生在哪个项目 |
+
+来源的确定规则（优先级从高到低）：
+
+1. 调用点用 `call_stats.call_source("skill")` 显式标记的来源（外层标记优先，`call_source_if_unset` 不覆盖外层）。
+   - `capability_call` 工具（skill 入口）会把其中所有 LLM 调用标记为 `skill`；
+   - `LLMHelper.chat()` 默认标记为 `helper`（judge、ensemble、目标拆解、路由判定等）；
+   - `LLMClientPool.chat_with_retry()` 默认标记为 `background`（摘要、画像、记忆回填、压缩、反思等）。
+2. 没有标记时，使用 pool 的默认来源：主 Agent 为 `agent`，cron / Objective / SubAgent 子 Agent 分别为 `cron` / `objective` / `subagent`（由 `attach_fallback_pool(..., source=...)` 设置）。
+
+`origin` 由 cfg 所属项目决定：
+
+- 主项目：`main`，写入主项目 `.agent/llm_call_stats.jsonl`；
+- 外部项目（存在 `project.yaml`）：`external:<项目目录名>`，**写入主项目的计数文件**（通过 `MINI_AGENT_MAIN_PROJECT_ROOT` 或外部项目注册表解析主项目根），因此主看板可以看到外部项目的调用。主项目根解析不到时，退回写入外部项目自己的 `.agent/`，数据不丢，但主看板看不到。
+
+已知限制：
+
+- contextvar 不跨线程传播。skill 内部另起线程运行的子 Agent，其调用会使用它自己 pool 的默认来源（`subagent`），而不是 `skill`。
+- 每日压缩（超过 7 天）后的汇总行没有来源信息，在 `by_source` / `by_origin` 中归入 `legacy`。
+
+### 兼容性
+
+- 旧版本写入的记录没有 `source` / `origin` 字段，读取时归入 `legacy`，不报错、不丢统计。
+- `GET /v1/self/llm_call_stats` 的 `series` 字段口径不变；新增的 `breakdown` 字段（`by_source` / `by_origin`）是纯新增，旧前端忽略即可。
+- 外部项目在旧版本下写入各自 `.agent/llm_call_stats.jsonl` 的历史数据**不会被迁移**到主项目，仍留在原位置。
+- 看板在后端不返回 `breakdown` 时整块跳过，不报错。
 
 ---
 
@@ -649,3 +685,11 @@ storage()` 一致，但聚合语义不同（健康度快照是"取当天最新�
 - `from_config` 忽略完全相同的重复条目；同 provider/model 只换 key 的条目会打警告。
 - `ProviderEntry.label` 增加 key 后缀，日志可区分同 model 的不同 key。
 - 文档修正：显式写 `llm_fallback_on` 时需包含 `LLMPermanentError`，否则 403 不会切换。
+
+**2026-11：调用计数按来源 / 项目拆分**
+
+- 计数统一挂在 `LLMClientPool.call_with_pool()`，移除了 `_call_llm` 与 `LLMHelper.chat` 中的重复记录。
+- 新增 `source` / `origin` 字段与 `breakdown` 返回值，旧数据兼容（归入 `legacy`）。
+- override 临时 client 的调用也会计数（修复前不计入）。
+- 外部项目的调用写入主项目计数文件，origin 标记为 `external:<项目名>`。
+- skill 入口（`capability_call`）标记为 `skill`；后台摘要、画像、回填等标记为 `background`；子 Agent 标记为 `cron` / `objective` / `subagent`。
