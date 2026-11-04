@@ -114,6 +114,22 @@ class AgnesVideoClient:
     # =========================
     # headers
     # =========================
+    def _describe(self, key) -> str:
+        if self.key_pool is not None:
+            return self.key_pool.describe(key)
+        from agnes_key_pool import mask_key
+        return mask_key(key)
+
+    def _log_switch(self, where: str, failed_key, next_key, reason: str) -> None:
+        print(f"    [KEY 切换·{where}] {reason}：失败的 key {self._describe(failed_key)} → "
+              f"切换到 key {self._describe(next_key)}（失败的 key 冷却中，之后不会再选它）")
+
+    def _log_all_restricted(self, where: str, failed_key) -> None:
+        print(f"    [KEY 受限·{where}] 失败的 key {self._describe(failed_key)} 账号受限，且没有可切换的 key，停止。")
+        if self.key_pool is not None:
+            for line in self.key_pool.status_lines():
+                print(f"      · {line}")
+
     @property
     def headers(self):
         return {
@@ -188,12 +204,13 @@ class AgnesVideoClient:
 
                     if is_key_restricted_error(resp.status_code, resp.text):
                         # 账号受限：长冷却这把 key，换下一把立即重试（任务尚未创建，可安全重提）；无 key 池时直接停止
-                        next_key = self.key_pool.report_restricted(self.api_key) if self.key_pool else None
+                        failed_key = self.api_key
+                        next_key = self.key_pool.report_restricted(failed_key) if self.key_pool else None
                         if next_key:
-                            print("    [KEY 受限] 当前 key 所在账号异常/访问受限，已切换到下一把 key 重试")
+                            self._log_switch("POST", failed_key, next_key, "账号异常/访问受限")
                             self.api_key = next_key
                             continue
-                        print("    [KEY 受限] 所有 key 都已受限，停止")
+                        self._log_all_restricted("POST", failed_key)
                         return {"success": False, "error": last_err, "non_retryable": True, "key_restricted": True}
 
                     if self.key_pool and is_rate_limit_error(resp.status_code, resp.text):
@@ -285,9 +302,11 @@ class AgnesVideoClient:
 
                     if is_key_restricted_error(resp.status_code, resp.text):
                         # 轮询时账号受限：远端任务属于原 key，换 key 查询往往查不到，交给外层整条重新提交
+                        failed_key = self.api_key
                         if self.key_pool:
-                            self.key_pool.report_restricted(self.api_key)
-                        print("    [GET KEY 受限] 账号异常/访问受限，本次任务需换 key 重新提交")
+                            self.key_pool.report_restricted(failed_key)
+                        print(f"    [GET KEY 受限] 失败的 key {self._describe(failed_key)} 账号异常/访问受限，"
+                              f"本镜头的远端任务属于该 key，将整条重新提交换 key")
                         return {"success": False, "error": last_err, "non_retryable": True, "key_restricted": True}
 
                     if self.key_pool and is_rate_limit_error(resp.status_code, resp.text):
@@ -452,6 +471,7 @@ class AgnesVideoClient:
         账号受限（key_restricted）时换下一把 key 整条重新提交，最多尝试 key 数量次；全部受限则返回 key_restricted。
         """
         switches = 0
+        print(f"    [KEY] 本镜头使用 key {self._describe(self.api_key)}")
         while True:
             try:
                 result = self._generate_video_impl(*args, **kwargs)
@@ -460,7 +480,7 @@ class AgnesVideoClient:
             if not (result.get("key_restricted") and self.key_pool and switches < len(self.key_pool)):
                 return result
             switches += 1
-            print(f"    [KEY 受限] 本镜头的远端任务所在账号受限，换 key 重新提交（第 {switches} 次切换）")
+            print(f"    [KEY 重提] 第 {switches} 次整条重新提交，当前使用 key {self._describe(self.api_key)}")
 
     def _generate_video_impl(
         self,

@@ -231,3 +231,9 @@ novel_output/                       # 项目数据（默认位置，已加入 .g
 - 视频 skill 识别“账号异常 / 访问受限”类 403：该 key 长冷却并切换到下一把，提交阶段直接换 key 重试，轮询阶段整条镜头换 key 重新提交。
 - 全部 key 受限时报告“所有 API key 所在账号都已受限”，不再无意义重试。
 - 修改：`.claude/skills/gen_video_with_text/agnes_tools.py`、`agnes_key_pool.py`（与图像 skill 的 key 池保持一致）；`novel_to_video/providers/skill_providers.py`（错误文本）。
+
+## 换 key 的日志
+
+- 每个镜头开始时打印本镜头使用的 key（编号 + 脱敏，如 `#1 sk-a…2222`）。
+- 账号受限切换时打印：失败的 key → 切换到的 key（同样脱敏，只显示前 4 位和后 4 位，完整 key 不进入日志）。
+- 整条镜头重新提交时打印当前使用的 key；全部受限时列出每把 key 的状态（可用 / 冷却剩余分钟数）。

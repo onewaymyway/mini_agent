@@ -167,6 +167,13 @@ def load_agnes_config(script_dir: Optional[str] = None) -> dict:
     return {"keys": [single] if single else [], "rotation": rotation, "cooldown": cooldown}
 
 
+def mask_key(key: Optional[str]) -> str:
+    """日志用的脱敏 key：只保留前 4 位和后 4 位，例如 sk-a…9f2c。完整 key 不进入日志。"""
+    if not key:
+        return "-"
+    return key if len(key) <= 10 else f"{key[:4]}…{key[-4:]}"
+
+
 class AgnesKeyPool:
     """极简多 Key 池：passive（遇限流才切换）/ round_robin（每次请求轮询）。"""
 
@@ -197,6 +204,28 @@ class AgnesKeyPool:
 
     def __len__(self) -> int:
         return len(self._keys)
+
+    def index_of(self, key: Optional[str]) -> Optional[int]:
+        """key 在池中的编号（从 1 开始），仅用于日志。"""
+        return self._keys.index(key) + 1 if key in self._keys else None
+
+    def describe(self, key: Optional[str]) -> str:
+        """日志用描述：编号 + 脱敏 key，例如 #2 sk-a…9f2c。"""
+        idx = self.index_of(key)
+        return f"#{idx} {mask_key(key)}" if idx else mask_key(key)
+
+    def cooldown_left(self, key: str) -> float:
+        """该 key 还需冷却多少秒（0 表示可用）。"""
+        return max(0.0, self._cooldown_until.get(key, 0.0) - time.monotonic())
+
+    def status_lines(self) -> List[str]:
+        """全部 key 的状态（脱敏），用于全部受限时的提示。"""
+        out = []
+        for k in self._keys:
+            left = self.cooldown_left(k)
+            state = f"冷却中，约 {int(left // 60)} 分钟后可用" if left > 0 else "可用"
+            out.append(f"{self.describe(k)} {state}")
+        return out
 
     def report_restricted(self, key: str) -> Optional[str]:
         """报告 key 所在账号受限：长冷却该 key 并切换到下一把可用 key（没有则返回 None）。"""
