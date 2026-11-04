@@ -568,12 +568,15 @@ class SubAgent:
             if registry is None:
                 registry = get_default_registry().filtered()
 
-        return Agent(
+        _agent = Agent(
             cfg=cfg, guard=guard, llm_client=create_client(llm_cfg),
             registry=registry, skill_loader=skill_loader,
             tool_cache=self._shared_tool_cache,
             is_subagent=True,
         )
+        # 替换为带 llm_fallback_chain 的 pool：首选仍是 llm_cfg，失败后切换到链上备选
+        from mini_agent.llm.client_pool import attach_fallback_pool
+        return attach_fallback_pool(_agent, cfg, llm_cfg)
 
     def _write_result_json(self, output: str, agent) -> None:
         """任务完成时将结果写入 result.json。"""

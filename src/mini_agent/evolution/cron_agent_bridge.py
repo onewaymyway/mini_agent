@@ -117,6 +117,9 @@ def build_cron_agent(
         tool_cache=None,
         is_subagent=True,
     )
+    # 替换为带 llm_fallback_chain 的 pool：首选仍是 llm_cfg，失败后切换到链上备选
+    from mini_agent.llm.client_pool import attach_fallback_pool
+    attach_fallback_pool(agent, cfg, llm_cfg)
 
     # [SYS-PROFILE] 为 cron agent 初始化用户画像管理器
     # build_cron_agent() 构造的是独立 Agent 实例，其 _profile_mgr 默认

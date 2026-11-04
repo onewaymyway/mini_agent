@@ -207,6 +207,16 @@ class LLMClient(ABC):
         Returns:
             最终的 LLMResponse。
         """
+        # 由 LLMClientPool 托管的 client：转发给 pool，走完整 fallback 链（换 key / 换 provider）。
+        # 池内调用使用的是 pool 的 call_with_pool → client.chat，不会回到这里，无递归。
+        _owner = getattr(self, "_fallback_pool", None)
+        if _owner is not None:
+            return _owner.chat_with_retry(
+                messages, system, tools,
+                max_retries=max_retries, retry_delay=retry_delay,
+                retry_policy=retry_policy, on_retry=on_retry,
+            )
+
         from .retry import RetryPolicy, EmptyOutputCondition
 
         policy = retry_policy or RetryPolicy(

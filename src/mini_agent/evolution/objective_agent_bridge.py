@@ -216,7 +216,7 @@ def build_objective_agent(
 
     # registry 留空 → Agent.__init__ 回退到 get_default_registry()，
     # 即全量继承主 Agent 可用的工具集合，与 cron 任务同一模式。
-    return Agent(
+    _agent = Agent(
         cfg=cfg,
         guard=guard,
         llm_client=create_client(llm_cfg),
@@ -225,6 +225,9 @@ def build_objective_agent(
         tool_cache=None,
         is_subagent=True,
     )
+    # 替换为带 llm_fallback_chain 的 pool：首选仍是 llm_cfg，失败后切换到链上备选
+    from mini_agent.llm.client_pool import attach_fallback_pool
+    return attach_fallback_pool(_agent, cfg, llm_cfg)
 
 
 class ObjectiveIsolatedRunner:

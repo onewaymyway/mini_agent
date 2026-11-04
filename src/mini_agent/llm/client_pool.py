@@ -243,11 +243,16 @@ class ProviderEntry:
 
     @property
     def label(self) -> str:
-        return f"{self.config.provider}/{self.config.model}"
+        # 带上 key 后缀：同 provider/model、不同 key 的条目在日志里必须可区分，
+        # 否则 fallback 切换会显示成 "a/m → a/m" 这种看似没切换的假象。
+        base = f"{self.config.provider}/{self.config.model}"
+        key = self.config.api_key or ""
+        return f"{base}#{key[-4:]}" if key else base
 
     def rebuild_client_with_key(self, key: str) -> None:
         """切换到新 key 后重建 LLM client（用新 key 构造 SDK 客户端）。"""
         from .factory import create_client
+        _owner = getattr(self.client, "_fallback_pool", None)
         new_cfg = LLMConfig(
             provider=self.config.provider,
             model=self.config.model,
@@ -264,6 +269,8 @@ class ProviderEntry:
         )
         self.config = new_cfg
         self.client = create_client(new_cfg)
+        if _owner is not None:
+            self.client._fallback_pool = _owner
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -311,6 +318,8 @@ class LLMClientPool:
         if not entries:
             raise ValueError("LLMClientPool requires at least one entry")
         self._entries = entries
+        for _e in self._entries:
+            _e.client._fallback_pool = self
         self._current_idx = 0
         self._fallback_on: set[str] = fallback_on or self.DEFAULT_FALLBACK_ON
         self._max_rounds = max(1, max_rounds)
@@ -377,6 +386,7 @@ class LLMClientPool:
         Returns:
             新条目的索引。
         """
+        entry.client._fallback_pool = self
         with self._lock:
             self._entries.append(entry)
             new_idx = len(self._entries) - 1
@@ -391,6 +401,7 @@ class LLMClientPool:
         on_switch_key: Optional[Callable[[str, str, Exception], None]] = None,
         on_switch_config: Optional[Callable[[str, str, Exception], None]] = None,
         max_rounds: Optional[int] = None,
+        on_retry: Optional[Callable[[int, str], None]] = None,
     ) -> LLMResponse:
         """
         执行 call_fn，自动处理 key 切换和配置 fallback。
@@ -443,6 +454,7 @@ class LLMClientPool:
                         call_fn=call_fn,
                         retry_policy=retry_policy,
                         on_switch_key=on_switch_key,
+                        on_retry=on_retry,
                     )
                     # 成功：记录当前 idx 并返回
                     with self._lock:
@@ -487,6 +499,39 @@ class LLMClientPool:
                     # 内层 for 结束、外层 for 也结束，落到函数末尾统一抛出
 
         raise last_exc  # 所有轮次、所有配置都已尝试失败
+
+    def chat_with_retry(
+        self,
+        messages: list[dict],
+        system: str,
+        tools: Optional[list] = None,
+        *,
+        max_retries: int = 2,
+        retry_delay: float = 5.0,
+        retry_policy: "Optional[RetryPolicy]" = None,
+        on_retry: Optional[Callable[[int, str], None]] = None,
+    ) -> LLMResponse:
+        """与 ``LLMClient.chat_with_retry`` 同签名的池化版本。
+
+        后台摘要、画像、记忆回填、压缩等调用原先直接持有某个 provider client 调用
+        ``chat_with_retry``，403/限流时既不切换 key 也不切换 provider。现在统一走
+        这里：先按 retry_policy 在当前 entry 内重试，失败则按 fallback_on 切到链上
+        下一条（含换 key），与主对话的 ``LLMHelper.chat`` 行为一致。
+        """
+        from .retry import RetryPolicy, EmptyOutputCondition
+
+        policy = retry_policy or RetryPolicy(
+            max_retries=max_retries,
+            conditions=[EmptyOutputCondition()],
+            retry_delay=retry_delay,
+            retry_on_exception=True,
+        )
+        tools_list = tools or []
+        return self.call_with_pool(
+            call_fn=lambda client: client.chat(messages, system, tools_list),
+            retry_policy=policy,
+            on_retry=on_retry,
+        )
 
     def snapshot(self) -> dict:
         """返回当前状态快照（供状态栏/日志使用）。"""
@@ -541,8 +586,30 @@ class LLMClientPool:
             )
 
         entries: list[ProviderEntry] = []
+        seen_identity: set[tuple] = set()
+        seen_model: dict[tuple, str] = {}
         for item in chain_cfg:
             llm_cfg = cls._build_llm_config(item, cfg)
+            # 完全相同（provider/model/base_url/key）的条目是配置笔误，直接去掉，
+            # 避免 fallback 时"切换"到一个和当前完全一样的连接。
+            identity = (llm_cfg.provider, llm_cfg.model, llm_cfg.base_url, llm_cfg.api_key)
+            if identity in seen_identity:
+                logger.warning(
+                    "llm_fallback_chain: 忽略重复条目 %s/%s（provider/model/base_url/key 完全相同）",
+                    llm_cfg.provider, llm_cfg.model,
+                )
+                continue
+            seen_identity.add(identity)
+            # 同 provider/model 只换 key 的条目：账号级 403 / 封禁换 key 无效，给出提示。
+            model_key = (llm_cfg.provider, llm_cfg.model, llm_cfg.base_url)
+            if model_key in seen_model:
+                logger.warning(
+                    "llm_fallback_chain: %s/%s 出现多条（key 不同）。若失败原因是账号级限制"
+                    "（如 403 unusual activity），换 key 无效，应改用不同 provider 的备用条目。",
+                    llm_cfg.provider, llm_cfg.model,
+                )
+            else:
+                seen_model[model_key] = llm_cfg.api_key or ""
             client = create_client(llm_cfg)
 
             # 构建 key pool（若配置了多个 key）
@@ -580,6 +647,7 @@ class LLMClientPool:
         call_fn: Callable[[LLMClient], LLMResponse],
         retry_policy: "RetryPolicy",
         on_switch_key: Optional[Callable[[str, str, Exception], None]],
+        on_retry: Optional[Callable[[int, str], None]] = None,
     ) -> LLMResponse:
         """
         在单个 ProviderEntry 内执行调用，处理 key 轮转和重试。
@@ -633,7 +701,7 @@ class LLMClientPool:
                     # 下一把 key（不算入 retry_policy 的退避等待）
                     continue
 
-        return retry_policy.call_with_retry(call_fn=_single_call)
+        return retry_policy.call_with_retry(call_fn=_single_call, on_retry=on_retry)
 
     def _should_fallback(self, exc: Exception) -> bool:
         return _exc_matches(exc, self._fallback_on)
@@ -771,3 +839,34 @@ def inject_env_from_providers(providers_cfg: dict) -> None:
     for provider_name, settings in providers_cfg.get("providers", {}).items():
         if isinstance(settings, dict):
             _inject(provider_name, _all_keys(settings))
+
+def build_pool_with_primary(cfg: "AppConfig", primary: LLMConfig) -> "LLMClientPool":
+    """构造一个“首选 = primary，其后接 llm_fallback_chain 其余条目”的 pool。
+
+    cron / Objective / SubAgent 这些独立 Agent 原先只用 ``create_client(primary)``
+    造单个 client，整条 ``llm_fallback_chain`` 被忽略——一旦主 provider 返回 403 /
+    限流，任务直接失败，没有任何切换机会。这里保持 primary 不变（保留任务指定的
+    model 等覆盖项），再把链上其余 provider 追加为备选。
+    """
+    from .factory import create_client
+
+    base = LLMClientPool.from_config(cfg)
+    primary_identity = (primary.provider, primary.model, primary.base_url, primary.api_key)
+    primary_entry = ProviderEntry(config=primary, client=create_client(primary), key_pool=None)
+    rest = [
+        e for e in base._entries
+        if (e.config.provider, e.config.model, e.config.base_url, e.config.api_key) != primary_identity
+    ]
+    return LLMClientPool(
+        entries=[primary_entry] + rest,
+        fallback_on=base._fallback_on,
+        max_rounds=base._max_rounds,
+        round_wait=base._round_wait,
+    )
+
+
+def attach_fallback_pool(agent, cfg: "AppConfig", primary: LLMConfig):
+    """把子 Agent 的单链 pool 替换为带 fallback 链的 pool，并同步 ``_llm``。"""
+    agent._client_pool = build_pool_with_primary(cfg, primary)
+    agent._llm = agent._client_pool.current_client
+    return agent

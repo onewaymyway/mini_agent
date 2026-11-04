@@ -28,6 +28,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Optional
 
 from .base import LLMConfig, LLMResponse, ToolSchema
+
+import logging
+
+logger = logging.getLogger(__name__)
 from . import deadline as _deadline
 from .retry import EmptyOutputCondition, RetryPolicy
 
@@ -272,9 +276,24 @@ class LLMHelper:
             trust_env=base_cfg.trust_env,
         )
         client = create_client(llm_cfg)
-        return policy.call_with_retry(
-            call_fn=lambda: client.chat(messages, system, tools),
-        )
+        try:
+            return policy.call_with_retry(
+                call_fn=lambda: client.chat(messages, system, tools),
+            )
+        except Exception as exc:
+            # override 指定的 provider/model 失败（如 403 账号受限、限流、超时）时，
+            # 不能直接抛出——原实来这里完全绕过了 fallback 链。改为回落到默认链
+            # （LLMClientPool），与普通调用的故障转移行为一致。
+            if not self._pool._should_fallback(exc):
+                raise
+            logger.warning(
+                "[override] %s/%s 失败（%s: %s），回落到默认 fallback 链",
+                llm_cfg.provider, llm_cfg.model, type(exc).__name__, str(exc)[:120],
+            )
+            return self._pool.call_with_pool(
+                call_fn=lambda c: c.chat(messages, system, tools),
+                retry_policy=policy,
+            )
 
 
 def ask_background(llm_helper: Any, prompt: str, **kwargs: Any) -> str:
