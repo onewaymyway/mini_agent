@@ -13,7 +13,7 @@
    - 问题数量变多 → 回滚所有改动（包括范围外的文件）；
    - 超出范围的文件被改动 → 一律还原；
    - 问题全部消失 → 步骤重新执行；
-4. 修复次数有上限（settings.repair_max_attempts，默认 3，按步骤累计，通过后清零）。用尽后不再修复、
+4. 修复次数有上限（settings.repair_max_attempts，默认 6，按步骤累计，通过后清零）。用尽后不再修复、
    也不再「不停机」式地重置，直接停下来等人处理，并在运行日志里写明原因。
 
 settings 开关：auto_repair（默认 True）；repair_engine（默认 "restricted"）。
@@ -36,7 +36,7 @@ from novel_writer.fsutil import atomic_write_text
 from novel_writer.textio import read_text_utf8
 from novel_writer.workspace import Workspace
 
-MAX_REPAIR_ATTEMPTS = 3
+MAX_REPAIR_ATTEMPTS = 6
 REPAIR_SKILL = "data-repair"
 REPAIR_MAX_TURNS = 20
 REPAIR_TIMEOUT_SEC = 900
@@ -154,10 +154,13 @@ def _checker(request: Dict[str, Any]):
 
 
 def _build_prompt(step_id: str, request: Dict[str, Any], texts: Dict[str, str], problems: List[str],
-                  *, root: Optional[Path] = None) -> str:
-    """root 给出时（受限引擎）：文件一律用绝对路径，并内联 data-repair skill 的全部规则。"""
+                  *, root: Optional[Path] = None, feedback: Optional[str] = None) -> str:
+    """root 给出时（受限引擎）：文件一律用绝对路径，并内联 data-repair skill 的全部规则。
+    feedback：上一次修复的结果（为什么被撤销、还剩什么问题），让本次修复有针对性地纠正。"""
     def show(rel: str) -> str:
         return str((Path(root) / rel)) if root is not None else rel
+
+    feedback_lines = ["", "## 上一次修复的结果", feedback, "请避开上面的问题再修复。"] if feedback else []
 
     if request.get("kind") == GENERIC_KIND:
         lines = [
@@ -179,6 +182,7 @@ def _build_prompt(step_id: str, request: Dict[str, Any], texts: Dict[str, str], 
             "",
             "## 必须修复的问题（逐条，行号以文件为准）",
             *[f"- {p}" for p in problems],
+            *feedback_lines,
             "",
             "## 修复规则",
             f"- 只能修改以下文件{'（绝对路径）' if root is not None else '（路径相对工作区）'}："
@@ -229,6 +233,7 @@ def repair_attempt(ws: Workspace, step, *, invoker, settings: Dict[str, Any],
 
     check = _checker(request)
     generic = request.get("kind") == GENERIC_KIND
+    feedback = st.get_step_state(ws, step.id).get("repair_feedback") or None
     # 先计数再判断：即使问题已经自行消失也算一次尝试，否则「校验通过→步骤仍失败」会无限循环
     used = int(st.get_step_state(ws, step.id).get("repair_attempts") or 0) + 1
     st.update_step(ws, step.id, repair_attempts=used)
@@ -250,14 +255,14 @@ def repair_attempt(ws: Workspace, step, *, invoker, settings: Dict[str, Any],
     if engine(settings) == ENGINE_RESTRICTED:
         # 受限 Agent：不挂 skill（skill=None），只开白名单工具；规则内联进提示词
         result = invoker(
-            skill=None, prompt=_build_prompt(step.id, request, texts, before, root=ws.root),
+            skill=None, prompt=_build_prompt(step.id, request, texts, before, root=ws.root, feedback=feedback),
             export_dir=export_dir, step_id=f"{step.id}.repair",
             max_turns=REPAIR_MAX_TURNS, timeout=REPAIR_TIMEOUT_SEC,
             allowed_tools=list(REPAIR_ALLOWED_TOOLS),
         )
     else:
         result = invoker(
-            skill=REPAIR_SKILL, prompt=_build_prompt(step.id, request, texts, before),
+            skill=REPAIR_SKILL, prompt=_build_prompt(step.id, request, texts, before, feedback=feedback),
             export_dir=export_dir, step_id=f"{step.id}.repair",
             max_turns=REPAIR_MAX_TURNS, timeout=REPAIR_TIMEOUT_SEC,
         )
@@ -271,20 +276,46 @@ def repair_attempt(ws: Workspace, step, *, invoker, settings: Dict[str, Any],
     changed += [str(p.relative_to(ws.root)) for p in _snapshot(ws).keys() if p not in snapshot]   # 新建的文件也算越界
     out_of_scope = [rel for rel in changed if rel not in request["files"]]
     rolled_back = False
-    if len(after) > len(before) or out_of_scope:
-        # 改坏了，或者动了范围外的文件：全部还原
-        after_count = len(after)
-        for p, data in snapshot.items():
-            if p.is_file() and p.read_bytes() != data:
-                p.write_bytes(data)
-        for p in list(_snapshot(ws).keys()):   # 修复期间新建的文件（受限引擎开放了写文件工具）一并删除
-            if p not in snapshot:
-                p.unlink(missing_ok=True)
-        rolled_back = True
+    if out_of_scope:
+        # 只撤销范围外的改动（包括新建的文件）；范围内的正确修复保留，不因此全部作废
+        _restore(ws, snapshot, out_of_scope)
         after = check(ws)
-        why = "范围外文件被改动" if out_of_scope else f"问题由 {len(before)} 条增至 {after_count} 条"
-        st.log_line(ws, f"↩ {step.id}：修复结果不可接受（{why}），已还原")
+        st.log_line(ws, f"↩ {step.id}：修复改动了范围外的文件，已撤销：{'、'.join(out_of_scope[:6])}")
+        rolled_back = True
+        changed = [rel for rel in changed if rel not in out_of_scope]
+    if len(after) > len(before):
+        # 范围内的改动让问题变多：范围内的改动也全部撤销
+        after_count = len(after)
+        in_scope = [rel for rel in changed]
+        _restore(ws, snapshot, in_scope)
+        after = check(ws)
+        rolled_back = True
         changed = []
-    elif not generic:
+        st.log_line(ws, f"↩ {step.id}：修复后问题由 {len(before)} 条增至 {after_count} 条，已全部撤销")
+        _save_feedback(ws, step.id, f"上一次修复后问题增加（{len(before)} 条增至 {after_count} 条），改动已全部撤销。"
+                                    f"当时的新问题：{'；'.join(after[:3])[:300]}")
+    elif out_of_scope:
+        _save_feedback(ws, step.id, f"上一次修复改动了不允许的文件：{'、'.join(out_of_scope[:6])}，这些改动已撤销。"
+                                    f"范围内的修复已保留。本次只能修改：{'、'.join(request['files'])}。")
+    elif after:
+        _save_feedback(ws, step.id, f"上一次修复后仍有问题：{'；'.join(after[:3])[:300]}")
+    if not after:
+        st.update_step(ws, step.id, repair_feedback=None)
+    elif not generic and not rolled_back:
         st.log_line(ws, f"🔧 {step.id}：修复后剩余问题 {len(after)} 条（修复前 {len(before)} 条）")
     return {"fixed": not after, "problems": after, "changed": changed, "rolled_back": rolled_back}
+
+
+def _restore(ws: Workspace, snapshot: Dict[Path, bytes], rels: List[str]) -> None:
+    """把给定的相对路径还原为快照内容；快照里没有的（修复期间新建的）删除。"""
+    for rel in rels:
+        p = ws.root / rel
+        if p in snapshot:
+            if p.is_file() and p.read_bytes() != snapshot[p]:
+                p.write_bytes(snapshot[p])
+        elif p.is_file():
+            p.unlink(missing_ok=True)
+
+
+def _save_feedback(ws: Workspace, step_id: str, text: str) -> None:
+    st.update_step(ws, step_id, repair_feedback=text[:800])

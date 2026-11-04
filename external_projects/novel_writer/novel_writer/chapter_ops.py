@@ -648,7 +648,9 @@ def _blueprint_strict(ws: Workspace) -> Optional[Dict[str, Any]]:
         message = "蓝图读取失败：" + "；".join(exc.problems)
         if exc.files:
             base = ws.path("blueprint_dir")
-            files = [(base / name).relative_to(ws.root).as_posix() for name in exc.files]
+            # 修复范围：整个蓝图目录（包括索引与元数据文件）。LLM 修一章时常需要同步动到索引或元数据
+            names = sorted({p.name for p in base.iterdir() if p.is_file()} | set(exc.files)) if base.is_dir() else exc.files
+            files = [(base / name).relative_to(ws.root).as_posix() for name in names]
             raise RP.RepairableDataError(message, validator="blueprint", files=files, problems=exc.problems,
                                          scope=base.relative_to(ws.root).as_posix())
         raise ChapterOpError(message)

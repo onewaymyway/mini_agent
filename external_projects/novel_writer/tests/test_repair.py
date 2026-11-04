@@ -81,20 +81,20 @@ def test_worse_result_is_rolled_back(ws, toy):
     assert len(out["problems"]) == 1
 
 
-def test_out_of_scope_edit_is_rolled_back_even_if_problem_fixed(ws, toy):
+def test_out_of_scope_edit_is_reverted_but_in_scope_fix_is_kept(ws, toy):
     (ws.root / "其他").mkdir()
     other = ws.root / "其他" / "keep.md"
     other.write_text("原样\n", encoding="utf-8")
 
     def invoker(**kw):
-        (toy / "a.md").write_text("ok\n", encoding="utf-8")       # 修好了
-        other.write_text("被改了\n", encoding="utf-8")            # 但动了范围外的文件
+        (toy / "a.md").write_text("ok\n", encoding="utf-8")       # 修好了（范围内，保留）
+        other.write_text("被改了\n", encoding="utf-8")            # 动了范围外的文件（撤销）
         return FakeResult()
 
     out = RP.repair_attempt(ws, _step(), invoker=invoker, settings={}, request=_request())
-    assert out["rolled_back"] and not out["fixed"]
+    assert out["rolled_back"] and out["fixed"]
     assert other.read_text(encoding="utf-8") == "原样\n"
-    assert "BAD" in (toy / "a.md").read_text(encoding="utf-8")
+    assert (toy / "a.md").read_text(encoding="utf-8") == "ok\n"
 
 
 def test_already_passing_validator_does_not_call_llm_but_still_counts(ws, toy):

@@ -69,19 +69,19 @@ def test_generic_repair_changes_only_the_inputs_and_counts_attempt(ws):
     assert st.get_step_state(ws, step.id)["repair_attempts"] == 1
 
 
-def test_out_of_scope_edit_rolls_everything_back(ws):
+def test_out_of_scope_edit_is_reverted_and_in_scope_edit_kept(ws):
     step = _step()
     req = RP.generic_request(ws, step)
     req["problems"] = ["失败"]
 
     def invoker(**kw):
-        (ws.root / "数据" / "a.md").write_text("改了\n", encoding="utf-8")
-        (ws.root / "别处.md").write_text("越界新建\n", encoding="utf-8")
+        (ws.root / "数据" / "a.md").write_text("改了\n", encoding="utf-8")     # 范围内：保留
+        (ws.root / "别处.md").write_text("越界新建\n", encoding="utf-8")      # 范围外：撤销
         return FakeResult()
 
     out = RP.repair_attempt(ws, step, invoker=invoker, settings={}, request=req)
     assert out["rolled_back"] is True
-    assert (ws.root / "数据" / "a.md").read_text(encoding="utf-8") == "坏的内容\n"
+    assert (ws.root / "数据" / "a.md").read_text(encoding="utf-8") == "改了\n"
     assert not (ws.root / "别处.md").exists()
 
 

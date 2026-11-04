@@ -99,8 +99,9 @@ def test_rollback_deletes_newly_created_files(ws, toy):
         return FakeResult()
 
     out = RP.repair_attempt(ws, _step(), invoker=invoker, settings={}, request=REQ)
-    assert out["rolled_back"] and not stray.exists()
-    assert (toy / "a.md").read_bytes() == before
+    assert out["rolled_back"] and not stray.exists()                  # 越界的新文件被删除
+    assert (toy / "a.md").read_bytes() == b"ok\nfixed\n"              # 范围内的修复保留
+    assert before != (toy / "a.md").read_bytes()
 
 
 def test_restricted_agent_really_has_only_whitelisted_tools_and_no_skills(tmp_path):
