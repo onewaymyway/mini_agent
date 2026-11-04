@@ -297,3 +297,21 @@
 - **失败时**：过程日志完整显示模型原始输出，并存档到 `_studio/distill/raw_<时间>.txt`。
 
 整理对话的相关改动（直调 LLMHelper、json_repair 修复、格式规整、全部范围）见 `brainstorm/distill.py` 的模块说明。
+
+## B6-1：历史对话列表与切换（2026-10-20）
+
+一个构思项目可以有多段对话。对话区顶部是「历史对话（仅本项目）」选择框，可切换到之前的任一段继续聊，也可点「新对话」开始一段新的。
+
+- **只含当前构思项目的对话**：索引与记录都在项目目录内，不会跨项目出现。
+- **存储**：`_studio/conversations.json`（索引：`active` 当前对话 id，`items` 每段的元信息与文件路径）；每段的记录在 `_studio/conversations/<id>/session.jsonl`，框架会话 id 在同目录的 `agent_session.json`。
+- **旧数据兼容**：旧版单段对话（`_studio/session.jsonl`）第一次访问时自动登记为一段（标题取其第一句话），文件原地不动。索引缺失或损坏时会从磁盘重建，不丢对话。
+- **新对话**：切换到空白对话并续接它自己的框架会话，不会带入其它段的上下文。若当前对话还没有任何内容，直接沿用，不堆积空对话。
+- **后台轮次绑定开始时的对话**：发出一句话后即使切换了对话，回复仍写回原来那一段。运行中（有轮次进行时）禁止切换，避免界面与记录错位。
+- **列表排序**：最近更新的在前；显示标题（首句前 18 个字）、条数与更新时间。
+- **与其它功能的关系**：「整理对话」与「生成设定文档」读取的是**当前对话**的记录。
+
+接口：`api.chat_list(root)`、`api.chat_switch(root, cid)`、`api.chat_new(root)`；底层 `chat.list_conversations / switch_chat / new_chat / current_conversation`。
+
+行为变化：原先「新开对话」会丢弃框架会话但保留同一份记录；现在会真正开一段新对话，旧的记录保留在列表里。
+
+测试：`tests/test_brainstorm_b6a.py`（迁移、索引重建、新开/切换/续接隔离、跨项目隔离、后台轮次绑定、接口与页面）；`tests/test_brainstorm_b2.py::test_new_chat_starts_fresh_session_and_keeps_old_conversation` 随之更新。

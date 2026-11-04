@@ -205,13 +205,15 @@ def test_prompt_carries_cards_and_recent_turns_even_without_session(ws):
     assert "```proposals" in prompt                                    # 告诉模型提议的格式
 
 
-def test_new_chat_forgets_session_but_keeps_transcript(ws):
+def test_new_chat_starts_fresh_session_and_keeps_old_conversation(ws):
     CH.send(ws, "a", runner=FakeRunner([_reply("b")], session_id="sess-B"))
-    CH.new_chat(ws)
+    old = CH.current_conversation(ws)
+    CH.new_chat(ws)                                  # B6-1：新开一段对话，旧的保留在列表里
     runner = FakeRunner([_reply("c")])
     CH.send(ws, "d", runner=runner)
-    assert runner.calls[0][1] is None
-    assert len(CH.history(ws)) == 4
+    assert runner.calls[0][1] is None                # 新对话不续接旧会话
+    assert [h["text"] for h in CH.history(ws)] == ["d", "c"]
+    assert [h["text"] for h in CH.history(ws, conv=old)] == ["a", "b"]
 
 
 def test_empty_message_and_bad_mode_rejected(ws):

@@ -322,17 +322,43 @@ def _minutes_box(root: str) -> None:
         show_error(body)
 
 
+def _conversation_bar(root: str, busy: bool) -> None:
+    """历史对话列表（只含当前构思项目的对话）：选择后切换继续对话，或新开一段。"""
+    res = BA.chat_list(root)
+    if not res["ok"]:
+        show_error(res)
+        return
+    items, current = res["data"]["items"], res["data"]["current"]
+    with st.container(border=True):
+        cols = st.columns([4, 1])
+        if items:
+            ids = [i["id"] for i in items]
+            labels = {i["id"]: f"{i['title']}（{i['turns']} 条 · {i['updated_at'][5:16].replace('T', ' ')}）"
+                      for i in items}
+            # key 带上当前对话 id：切换后组件按新的 index 重建，避免显示旧选项
+            chosen = cols[0].selectbox("历史对话（仅本项目）", ids, index=ids.index(current) if current in ids else 0,
+                                       format_func=lambda c: labels[c], key=f"bs_conv_pick_{current}",
+                                       disabled=busy)
+            if chosen != current and not busy:
+                r = BA.chat_switch(root, chosen)
+                show_error(r) if not r["ok"] else st.rerun()
+        else:
+            cols[0].caption("还没有对话。在下方发一句话，就会开始第一段对话。")
+        if cols[1].button("新对话", key="bs_conv_new", disabled=busy,
+                          help="切换到一段新的空白对话；之前的对话保留在列表里，可随时切回"):
+            r = BA.chat_new(root)
+            show_error(r) if not r["ok"] else st.rerun()
+
+
 def _dialogue_tab(root: str) -> None:
     hist = BA.chat_history(root, limit=60)
     if not hist["ok"]:
         show_error(hist)
         return
+    _conversation_bar(root, busy=bool(st.session_state.get("bs_turn")))
     top = st.columns([3, 1])
     mode = top[0].radio("模式", list(CH.MODES), horizontal=True, key="bs_chat_mode")
-    if top[1].button("新开对话", key="bs_chat_new", help="丢弃续接的会话，之后不再记得之前的内容（记录保留）",
-                     disabled=bool(st.session_state.get("bs_turn"))):
-        BA.chat_new(root)
-        st.rerun()
+    top[1].caption("当前对话已保存，可在上方切换")
     for rec in hist["data"]:
         role = "user" if rec["role"] == "user" else "assistant"
         with st.chat_message(role):

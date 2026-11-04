@@ -105,7 +105,18 @@ def chat_history(root: str, limit: Optional[int] = None) -> Dict[str, Any]:
 
 
 def chat_new(root: str) -> Dict[str, Any]:
+    """新开一段对话并切换过去（当前对话没有内容时直接沿用）。"""
     return _guard(lambda: CH.new_chat(_ws(root)))
+
+
+def chat_list(root: str) -> Dict[str, Any]:
+    """本项目的历史对话（最近更新在前）与当前对话 id。"""
+    return _guard(lambda: CH.list_conversations(_ws(root)))
+
+
+def chat_switch(root: str, cid: str) -> Dict[str, Any]:
+    """切换到本项目的另一段对话。"""
+    return _guard(lambda: CH.switch_chat(_ws(root), cid))
 
 
 def list_proposals(root: str, status: Optional[str] = "pending") -> Dict[str, Any]:
