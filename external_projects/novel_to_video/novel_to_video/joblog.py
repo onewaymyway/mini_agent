@@ -91,6 +91,14 @@ def current_ctx():
 
 
 def infer_level(message: str) -> str:
+    # key 相关提示：切换 key、账号受限的服务端返回是“已处理的告警”；全部 key 受限才是真正的错误；
+    # key 状态横幅只是信息。先于下面按关键字的通用判断，避免文案里含“失败”被误标为错误。
+    if "KEY 受限" in message:
+        return "error"
+    if "KEY 切换" in message or "账号受限·服务端原始返回" in message or "限流·服务端原始返回" in message:
+        return "warn"
+    if "[KEY]" in message or "[KEY 重提]" in message:
+        return "info"
     if "不可重试" in message:
         return "warn"
     if any(k in message for k in ("失败", "异常", "错误", "error", "Error")):

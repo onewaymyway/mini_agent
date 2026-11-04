@@ -238,6 +238,22 @@ novel_output/                       # 项目数据（默认位置，已加入 .g
 - 账号受限切换时打印：失败的 key → 切换到的 key（同样脱敏，只显示前 4 位和后 4 位，完整 key 不进入日志）。
 - 整条镜头重新提交时打印当前使用的 key；全部受限时列出每把 key 的状态（可用 / 冷却剩余分钟数）。
 
+## 图像接口（G-3 定妆图）：账号受限（403）时换 key 重试
+
+- 现象：配置了多把 key，某把 key 返回 403 “unusual activity / 访问受限”后，G-3 直接失败，不换 key。
+- 原因：`agnes_key_pool.py` 早已具备账号受限识别（`is_key_restricted_error` / `report_restricted`），
+  但图像 skill 的 `agnes_tools.py::_post` 没有调用，只有视频 skill 接入了。
+- 修复：`.claude/skills/gen_image_with_text/agnes_tools.py` 的 `_post` 与视频版对齐：
+  - 账号受限 → 该 key 长冷却，立即换下一把重试（不计入 max_retries）；全部受限 → 返回 `key_restricted` 并停止，不空等；
+  - 限流（429）同样换 key，并打印切换日志；
+  - 每次失败都打印服务端原始返回（key 脱敏）；一次生成开始时打印 key 配置来源、每把 key 状态、本次所用 key；
+  - `generate_image` / `edit_image` 失败时把 `key_restricted` / `non_retryable` 带到返回结果顶层。
+- `providers/skill_providers.py::_failure` 新增 `_readable_error`：把嵌套 dict 错误整理成 `HTTP 403：<服务端 message>`，
+  不再显示 `{'success': False, 'error': {...}}`；全部 key 受限时给出明确提示。
+- `joblog.infer_level`：换 key / 账号受限原文为 warn，全部 key 受限为 error，key 状态横幅为 info
+  （此前文案含“失败”会被误标成红色错误）。
+- 测试：`tests/test_image_key_restricted.py`。
+
 ## key 配置来源与每把 key 的状态（日志）
 
 - key 解析顺序：环境变量 `AGNES_API_KEYS` → `AGNES_PROVIDERS_JSON` 指定的 providers.json（绝对路径，推荐）→ 从 skill 目录向上查找的 providers.json → 环境变量 `AGNES_API_KEY`。

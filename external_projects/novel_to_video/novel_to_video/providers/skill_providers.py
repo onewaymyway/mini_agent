@@ -25,11 +25,40 @@ def _image_tier(size: str) -> str:
     return size if size in IMAGE_TIERS else "1K"
 
 
+def _readable_error(err) -> str:
+    """把 skill 返回的嵌套错误整理成可读文本。
+
+    skill 失败时的结构形如 {"success": False, "error": {"status_code": 403, "error": "<服务端原文 JSON>"}}，
+    直接 str() 会得到一长串带花括号的 repr，真正的原因（服务端 message）淹没其中。
+    这里逐层解开，输出 “HTTP 403：<服务端 message>”；解析不了就退回截断后的原文。
+    """
+    import json as _json
+    status = None
+    depth = 0
+    while isinstance(err, dict) and depth < 4:
+        status = err.get("status_code", status)
+        if "error" not in err:
+            break
+        err, depth = err["error"], depth + 1
+    msg = err
+    if isinstance(err, str):
+        try:
+            body = _json.loads(err)
+            inner = body.get("error", body) if isinstance(body, dict) else body
+            msg = (inner.get("message") or inner.get("error") or err) if isinstance(inner, dict) else err
+        except ValueError:
+            msg = err
+    text = " ".join(str(msg if msg is not None else "未知错误").split())
+    if len(text) > 300:
+        text = text[:300] + "…"
+    return f"HTTP {status}：{text}" if status else text
+
+
 def _failure(result: dict) -> tuple:
     err = result.get("error")
     non_retryable = bool(result.get("non_retryable")) or (isinstance(err, dict) and bool(err.get("non_retryable")))
-    text = err if isinstance(err, str) else str(err)[:300] if err is not None else "未知错误"
-    if result.get("key_restricted"):
+    text = _readable_error(err) if err is not None else "未知错误"
+    if result.get("key_restricted") or (isinstance(err, dict) and err.get("key_restricted")):
         text = ("所有 API key 所在账号都已受限（账号异常 / 访问受限），无法继续生成。"
                 "请检查账号状态（如联系平台支持），或在 AGNES_API_KEYS 中补充可用的 key 后重新运行。原始信息：" + text[:200])
     return text, non_retryable

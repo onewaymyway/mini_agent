@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import base64
+import json
 import mimetypes
+import re
 import time
 from pathlib import Path
 from typing import List, Optional, Union
 
 import requests
 
-from agnes_key_pool import AgnesKeyPool, is_rate_limit_error, is_non_retryable_error
+from agnes_key_pool import (AgnesKeyPool, is_key_restricted_error, is_rate_limit_error,
+                            is_non_retryable_error, mask_key)
 
 # 支持的档位式 size 与 ratio（Agnes Image 2.5 Flash 文档）。仍然兼容
 # "1024x768" 这类历史精确尺寸写法，但不受原生支持的精确尺寸可能会被
@@ -59,6 +62,74 @@ class AgnesImageClient:
         self.session.trust_env = self.use_system_proxy
 
     # =========================
+    # 日志辅助（key 脱敏、服务端原始返回）
+    # =========================
+    def _describe(self, key) -> str:
+        """日志用的 key 描述：池内编号 + 脱敏 key（如 #2 sk-a…9f2c）。完整 key 不进入日志。"""
+        if self.key_pool is not None:
+            return self.key_pool.describe(key)
+        return mask_key(key)
+
+    def _mask(self, text: str) -> str:
+        """日志中的脱敏：池中的完整 key 与形如 sk-… 的密钥全部替换为脱敏形式。"""
+        out = str(text)
+        keys = set(self.key_pool._keys) if self.key_pool is not None else set()
+        if self.api_key:
+            keys.add(self.api_key)
+        for k in sorted(keys, key=len, reverse=True):
+            if k and len(k) >= 8:
+                out = out.replace(k, mask_key(k))
+        return re.sub(r"sk-[A-Za-z0-9_\-]{6,}", lambda m: mask_key(m.group(0)), out)
+
+    def _raw_snippet(self, obj, limit: int = 800) -> str:
+        """服务端原始返回内容（用于失败时的日志）：压缩空白、脱敏、截断到 limit 字符。"""
+        text = obj if isinstance(obj, str) else json.dumps(obj, ensure_ascii=False, default=str)
+        text = self._mask(" ".join(str(text).split()))
+        if len(text) > limit:
+            text = text[:limit] + f"…（共 {len(text)} 字符，已截断）"
+        return text
+
+    def _exc_text(self, e: BaseException, resp=None) -> str:
+        """异常的日志文本：脱敏；若有 HTTP 响应，附上服务端原始返回。"""
+        text = self._mask(str(e))
+        resp = resp if resp is not None else getattr(e, "response", None)
+        body = getattr(resp, "text", None)
+        if body:
+            text += (f" | 服务端原始返回 status_code={getattr(resp, 'status_code', None)}: "
+                     f"{self._raw_snippet(body)}")
+        return text
+
+    def _log_switch(self, where: str, failed_key, next_key, reason: str) -> None:
+        print(f"    [KEY 切换·{where}] {reason}：失败的 key {self._describe(failed_key)} → "
+              f"切换到 key {self._describe(next_key)}（失败的 key 冷却中，之后不会再选它）")
+
+    def _log_all_restricted(self, where: str, failed_key) -> None:
+        print(f"    [KEY 受限·{where}] 失败的 key {self._describe(failed_key)} 账号受限，且没有可切换的 key，停止。")
+        if self.key_pool is not None:
+            for line in self.key_pool.status_lines():
+                print(f"      · {line}")
+
+    def _log_key_banner(self) -> None:
+        """一次生成开始时打印：key 配置来源与数量、每把 key 的状态（均已脱敏）、本次使用的 key。"""
+        if self.key_pool is not None:
+            print(f"    [KEY] {self.key_pool.config_summary()}")
+            for line in self.key_pool.status_lines():
+                print(f"      · {line}")
+        print(f"    [KEY] 本次使用 key {self._describe(self.api_key)}")
+
+    @staticmethod
+    def _failure_result(result: dict) -> dict:
+        """把 _post 的失败结果包装成统一返回，并把 key_restricted / non_retryable 标志带到顶层，
+        调用方（如 novel_to_video 的 _failure）据此给出明确提示。"""
+        out = {"success": False, "error": result}
+        if isinstance(result, dict):
+            if result.get("key_restricted"):
+                out["key_restricted"] = True
+            if result.get("non_retryable"):
+                out["non_retryable"] = True
+        return out
+
+    # =========================
     # headers
     # =========================
     @property
@@ -73,10 +144,13 @@ class AgnesImageClient:
     # =========================
     def _post(self, payload: dict) -> dict:
         """
-        带重试的 POST。若构造时传了 key_pool，遇到限流（HTTP 429 或响应体
-        包含限流关键字）会立即切换到下一把可用 key 重试，不消耗 max_retries
-        次数；只有非限流错误，或所有 key 都已耗尽/冷却时才走原来的
-        sleep-and-retry 逻辑，最终仍然遵守 max_retries 上限。
+        带重试的 POST。若构造时传了 key_pool：
+          * 账号受限（403 unusual activity / 访问受限）：长冷却这把 key，立即换下一把重试
+            （生图请求是单次同步提交，可安全重提），不计入 max_retries；所有 key 都受限时
+            返回 key_restricted=True 并停止，不再无意义重试；
+          * 限流（HTTP 429 或限流关键字）：冷却该 key，立即换 key 重试，不计入 max_retries；
+          * 其它非限流错误走原来的 sleep-and-retry 逻辑，最终仍遵守 max_retries 上限。
+        每次失败都会打印服务端原始返回（key 已脱敏）与 key 切换信息，便于排查。
         """
         last_err = None
         attempt = 0
@@ -85,6 +159,7 @@ class AgnesImageClient:
             if self.key_pool:
                 self.api_key = self.key_pool.acquire()
 
+            resp = None
             try:
                 resp = self.session.post(
                     self.ENDPOINT,
@@ -100,9 +175,26 @@ class AgnesImageClient:
                         "error": resp.text,
                     }
 
-                    if self.key_pool and is_rate_limit_error(resp.status_code, resp.text):
-                        next_key = self.key_pool.report_rate_limit(self.api_key)
+                    if is_key_restricted_error(resp.status_code, resp.text):
+                        failed_key = self.api_key
+                        print(f"    [账号受限·服务端原始返回] status_code={resp.status_code}: "
+                              f"{self._raw_snippet(resp.text)}")
+                        next_key = self.key_pool.report_restricted(failed_key) if self.key_pool else None
                         if next_key:
+                            self._log_switch("POST", failed_key, next_key, "账号异常/访问受限")
+                            self.api_key = next_key
+                            continue  # 换 key 立即重试，不计入 attempt
+                        self._log_all_restricted("POST", failed_key)
+                        return {"success": False, "error": last_err,
+                                "non_retryable": True, "key_restricted": True}
+
+                    if self.key_pool and is_rate_limit_error(resp.status_code, resp.text):
+                        print(f"    [限流·服务端原始返回] status_code={resp.status_code}: "
+                              f"{self._raw_snippet(resp.text)}")
+                        failed_key = self.api_key
+                        next_key = self.key_pool.report_rate_limit(failed_key)
+                        if next_key:
+                            self._log_switch("POST", failed_key, next_key, "触发限流")
                             self.api_key = next_key
                             continue  # 换 key 立即重试，不计入 attempt
 
@@ -111,10 +203,13 @@ class AgnesImageClient:
                         # 重试都不会改变结果，立即停止重试并原样返回，交给
                         # 调用方打印结构化错误、终止脚本，让 Agent 去修配置。
                         print(f"    [POST 不可重试错误] status_code={resp.status_code}，"
-                              f"判定为参数/鉴权/内容类错误，立即停止重试: {resp.text[:200]}")
+                              f"判定为参数/鉴权/内容类错误，立即停止重试: {self._raw_snippet(resp.text)}")
                         return {"success": False, "error": last_err, "non_retryable": True}
 
                     attempt += 1
+                    print(f"    [POST 失败] status_code={resp.status_code}，"
+                          f"第 {attempt}/{self.max_retries} 次重试，"
+                          f"{1.5 * attempt:.1f}s 后重试: {self._raw_snippet(resp.text)}")
                     time.sleep(1.5 * attempt)
                     continue
 
@@ -124,8 +219,10 @@ class AgnesImageClient:
                 return resp.json()
 
             except Exception as e:
-                last_err = str(e)
+                last_err = self._mask(str(e))
                 attempt += 1
+                print(f"    [POST 异常] {self._exc_text(e, resp)}，第 {attempt}/{self.max_retries} 次重试，"
+                      f"{1.5 * attempt:.1f}s 后重试")
                 time.sleep(1.5 * attempt)
 
         return {
@@ -360,6 +457,7 @@ class AgnesImageClient:
         save_path: Optional[str] = None,
     ) -> dict:
 
+        self._log_key_banner()
         result = self.text_to_image(
             prompt=prompt,
             size=size,
@@ -369,10 +467,7 @@ class AgnesImageClient:
         )
 
         if not result.get("data"):
-            return {
-                "success": False,
-                "error": result,
-            }
+            return self._failure_result(result)
 
         return {
             "success": True,
@@ -391,6 +486,7 @@ class AgnesImageClient:
         """基于一张或多张参考图片进行编辑/合成。`image_url` 传列表即为
         多图合成（例如把第一张图当主角色、第二张图当产品参考）。"""
 
+        self._log_key_banner()
         result = self.image_to_image(
             image=image_url,
             prompt=prompt,
@@ -401,10 +497,7 @@ class AgnesImageClient:
         )
 
         if not result.get("data"):
-            return {
-                "success": False,
-                "error": result,
-            }
+            return self._failure_result(result)
 
         return {
             "success": True,

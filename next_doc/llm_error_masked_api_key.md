@@ -39,3 +39,8 @@
     `LLMContextWindowError` 例外，仍原样抛出以触发 compact；
   - ApiKeyPool 的换 key 日志改用 `mask_api_key()`（原先打印 key 末 8 位）。
 - 行为：403 → 立即换下一把 key（不等待）→ 4 把全部冷却后 → 立即 fallback 下一个 provider。
+
+## 追加：G-3 定妆图（图像 skill）同样需要换 key（2026-11-04）
+G-3 走的不是 LLM 链路，而是 `gen_image_with_text` skill。该 skill 的 `_post` 未接入 key 池里已有的
+“账号受限 → 换 key”能力（视频 skill 已接入），因此一把 key 被 403 就整体失败。
+已对齐视频版实现，并补充脱敏的运行日志与可读的错误信息，详见 `external_projects/novel_to_video/PROJECT.md`。
