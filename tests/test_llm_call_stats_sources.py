@@ -310,5 +310,142 @@ class TestHelperAndExternalScope(unittest.TestCase):
         self.assertEqual(bd["by_origin"]["external:novel_writer"]["call_count"], 1)
 
 
+class TestBoundedReadAndCompaction(unittest.TestCase):
+    """接口超时修复：窗口读取、单次读取、压缩保持文件有界。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.paths = AgentPaths(project_root=Path(self._tmp.name))
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _write_sorted(self, n, span_seconds, *, seed=1):
+        import random
+        rnd = random.Random(seed)
+        now = time.time()
+        ts_list = sorted(now - rnd.random() * span_seconds for _ in range(n))
+        lines = []
+        for i, ts in enumerate(ts_list):
+            lines.append(
+                '{"ts": %f, "outcome": "success", "source": "agent", "origin": "main", '
+                '"duration_ms": %d, "input_tokens": %d}' % (ts, i % 997, i % 13)
+            )
+            if i % 500 == 0:
+                lines.append("garbage{{")
+        self.paths.llm_call_stats_path.parent.mkdir(parents=True, exist_ok=True)
+        self.paths.llm_call_stats_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return now
+
+    def test_window_reader_matches_naive_filter(self):
+        self._write_sorted(5000, 30 * 86400)
+        for days in (1, 7, 30):
+            cutoff = time.time() - days * 86400
+            naive = [
+                r for r in call_stats._read_jsonl(self.paths.llm_call_stats_path)
+                if r.get("ts", 0) >= cutoff
+            ]
+            fast = call_stats._read_window(self.paths.llm_call_stats_path, cutoff)
+            self.assertEqual(
+                sorted(r["ts"] for r in naive), sorted(r["ts"] for r in fast), msg=f"days={days}",
+            )
+
+    def test_window_reader_handles_chunk_boundaries(self):
+        # 行长远大于读取块大小，确保跨块拼接正确
+        big = "x" * (call_stats._TAIL_READ_CHUNK + 123)
+        now = time.time()
+        rows = [
+            '{"ts": %f, "outcome": "success", "note": "%s"}' % (now - 5, big),
+            '{"ts": %f, "outcome": "success", "note": "%s"}' % (now - 3, big),
+            '{"ts": %f, "outcome": "error"}' % (now - 1),
+        ]
+        self.paths.llm_call_stats_path.parent.mkdir(parents=True, exist_ok=True)
+        self.paths.llm_call_stats_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+        got = call_stats._read_window(self.paths.llm_call_stats_path, now - 10)
+        self.assertEqual(len(got), 3)
+        self.assertEqual(got[-1]["outcome"], "error")
+
+    def test_summary_reads_once_and_matches_separate_functions(self):
+        self._write_sorted(2000, 10 * 86400)
+        summary = call_stats.call_stats_summary(self.paths, days=7)
+        self.assertEqual(summary["series"], call_stats.call_stats_series(self.paths, days=7))
+        self.assertEqual(summary["breakdown"], call_stats.call_stats_breakdown(self.paths, days=7))
+
+    def test_compaction_bounds_file_and_keeps_recent_rows(self):
+        now = time.time()
+        old = [
+            {"ts": now - 30 * 86400 - i, "outcome": "success", "source": "agent", "origin": "main",
+             "duration_ms": 10, "input_tokens": 1}
+            for i in range(3000)
+        ]
+        recent = [
+            {"ts": now - i, "outcome": "success", "source": "skill", "origin": "main",
+             "duration_ms": 10, "input_tokens": 1}
+            for i in range(50)
+        ]
+        call_stats._write_jsonl(self.paths.llm_call_stats_path, old + recent)
+        before = self.paths.llm_call_stats_path.stat().st_size
+        removed = call_stats.compact_call_stats_storage(self.paths, now=now)
+        self.assertEqual(removed, 3000)
+        self.assertLess(self.paths.llm_call_stats_path.stat().st_size, before)
+        rows = call_stats._read_jsonl(self.paths.llm_call_stats_path)
+        raw_recent = [r for r in rows if not r.get("is_daily_aggregate")]
+        self.assertEqual(len(raw_recent), 50)
+        # 近期的来源信息保留；旧数据压缩为汇总行（归入 legacy）
+        bd = call_stats.call_stats_breakdown(self.paths, days=90)
+        self.assertEqual(bd["by_source"]["skill"]["call_count"], 50)
+        self.assertEqual(bd["by_source"][call_stats.LEGACY_BUCKET]["call_count"], 3000)
+        # 幂等：再次压缩不改变结果
+        self.assertEqual(call_stats.compact_call_stats_storage(self.paths, now=now), 0)
+
+    def test_append_triggers_background_compaction(self):
+        old_threshold = call_stats._COMPACT_EVERY_ROWS
+        call_stats._COMPACT_EVERY_ROWS = 5
+        try:
+            now = time.time()
+            # 预先写入一批旧数据，触发后台压缩时它们会被汇总
+            call_stats._write_jsonl(self.paths.llm_call_stats_path, [
+                {"ts": now - 40 * 86400 - i, "outcome": "success"} for i in range(20)
+            ])
+            for _ in range(5):
+                call_stats.record_call(self.paths, provider="p", model="m", outcome="success")
+            call_stats.flush_now(self.paths)
+            # 后台线程是异步的，等它完成
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                rows = call_stats._read_jsonl(self.paths.llm_call_stats_path)
+                if any(r.get("is_daily_aggregate") for r in rows):
+                    break
+                time.sleep(0.05)
+            self.assertTrue(any(r.get("is_daily_aggregate") for r in rows))
+        finally:
+            call_stats._COMPACT_EVERY_ROWS = old_threshold
+
+    def test_concurrent_appends_survive_compaction(self):
+        import threading
+        now = time.time()
+        call_stats._write_jsonl(self.paths.llm_call_stats_path, [
+            {"ts": now - 40 * 86400 - i, "outcome": "success"} for i in range(2000)
+        ])
+        stop = threading.Event()
+
+        def writer():
+            i = 0
+            while not stop.is_set() and i < 300:
+                call_stats._append_jsonl_batch(self.paths.llm_call_stats_path, [
+                    {"ts": time.time(), "outcome": "success", "source": "agent", "origin": "main"}
+                ])
+                i += 1
+
+        t = threading.Thread(target=writer)
+        t.start()
+        for _ in range(5):
+            call_stats._compact_file(self.paths.llm_call_stats_path, now)
+        t.join()
+        rows = call_stats._read_jsonl(self.paths.llm_call_stats_path)
+        appended = [r for r in rows if r.get("source") == "agent"]
+        self.assertEqual(len(appended), 300)  # 压缩期间的追加一条都不能丢
+
+
 if __name__ == "__main__":
     unittest.main()

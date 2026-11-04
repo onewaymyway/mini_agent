@@ -1896,27 +1896,24 @@ async def get_self_llm_call_stats(request: Request, days: int = Query(7, ge=1, l
     _require_owner(request)
 
     try:
+        import asyncio
         from mini_agent.storage.paths import AgentPaths
-        from mini_agent.llm.call_stats import call_stats_series, call_stats_breakdown
+        from mini_agent.llm.call_stats import call_stats_summary
 
         self_agent = http_server.bridge.agent
         project_root = getattr(self_agent.cfg, "project_root", None) if self_agent else None
         if project_root is None:
             return {"series": [], "breakdown": {"by_source": {}, "by_origin": {}}}
         paths = AgentPaths(project_root)
-        series = call_stats_series(paths, days=days)
-        # breakdown 是新增字段：按来源 / 按项目拆分。旧数据归入 legacy 桶，不影响 series。
-        try:
-            breakdown = call_stats_breakdown(paths, days=days)
-        except Exception as _bd_exc:
-            from mini_agent.errors import log_exception
-            log_exception(_bd_exc, where='mini_agent.api.routes.get_self_llm_call_stats.breakdown')
-            breakdown = {"by_source": {}, "by_origin": {}}
-        return {"series": series, "breakdown": breakdown}
+        # 文件读取与聚合是同步 IO：放到线程池执行，避免阻塞 daemon 的事件循环
+        # （否则慢请求会让同一进程里的其它 HTTP 请求一起超时）。
+        # 一次读取同时产出 series 与 breakdown，不再读两遍文件。
+        summary = await asyncio.to_thread(call_stats_summary, paths, days=days)
+        return {"series": summary["series"], "breakdown": summary["breakdown"]}
     except Exception as _mini_agent_exc:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.api.routes.get_self_llm_call_stats')
-        return {"series": []}
+        return {"series": [], "breakdown": {"by_source": {}, "by_origin": {}}}
 
 
 # ── wiki 隔离区积压（方向 E）─────────────────────────────────────────────────

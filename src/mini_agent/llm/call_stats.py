@@ -43,6 +43,15 @@ _BATCH_SIZE = 10
 _FLUSH_INTERVAL_SECONDS = 30.0
 _RAW_WINDOW_DAYS = 7          # 超过这个天数的原始记录会被压缩成每日汇总
 _DEFAULT_QUERY_DAYS = 7
+# 追加写入累计多少条后触发一次压缩，让文件大小保持有界（原实现从未调用压缩，文件会无限增长）
+_COMPACT_EVERY_ROWS = 5000
+# 倒序读取时允许的时间乱序余量（秒）：批量刷盘可能让同一批内 ts 略有错位
+_TAIL_READ_MARGIN_SECONDS = 3600
+_TAIL_READ_CHUNK = 64 * 1024
+
+# 追加与压缩互斥：压缩是"读全文件 → 重写"，期间若有追加会被覆盖丢失
+_FILE_LOCK = threading.Lock()
+_appends_since_compact = 0
 
 OUTCOME_SUCCESS = "success"
 OUTCOME_ERROR = "error"
@@ -131,9 +140,35 @@ def _append_jsonl_batch(path: Path, rows: list[dict]) -> None:
     if not rows:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
-        for row in rows:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    with _FILE_LOCK:
+        with path.open("a", encoding="utf-8") as f:
+            for row in rows:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    _note_appended(path, len(rows))
+
+
+def _note_appended(path: Path, n: int) -> None:
+    """累计追加条数，达到阈值时就地压缩一次（锁外调用，避免与 _FILE_LOCK 嵌套）。
+    压缩失败静默忽略——它只影响文件大小，不影响数据正确性。"""
+    global _appends_since_compact
+    with _FILE_LOCK:
+        _appends_since_compact += n
+        due = _appends_since_compact >= _COMPACT_EVERY_ROWS
+        if due:
+            _appends_since_compact = 0
+    if due:
+        # 放到后台线程：压缩要读全文件，不能拖慢触发它的那次 LLM 调用
+        threading.Thread(
+            target=_compact_in_background, args=(path,), name="llm-call-stats-compact", daemon=True,
+        ).start()
+
+
+def _compact_in_background(path: Path) -> None:
+    try:
+        _compact_file(path, time.time())
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where="mini_agent.llm.call_stats._compact_in_background")
 
 
 # ── 攒批写入缓冲区 ────────────────────────────────────────────────────────────
@@ -256,13 +291,22 @@ def _aggregate_rows(rows: list[dict]) -> dict:
 
 
 def compact_call_stats_storage(paths: "AgentPaths", *, now: Optional[float] = None) -> int:
+    """公开入口（签名不变）：见 ``_compact_file``。"""
+    return _compact_file(paths.llm_call_stats_path, now if now is not None else time.time())
+
+
+def _compact_file(path: Path, now: float) -> int:
     """把 `_RAW_WINDOW_DAYS` 天之前的原始逐条记录压缩成每日汇总行
     （`is_daily_aggregate: true`），返回被压缩掉的原始行数（0 表示本次
     没有可压缩的旧数据）。幂等操作，可以随时安全重复调用——已经是汇总行
     的记录会原样保留、不会被二次聚合（用 `is_daily_aggregate` 标记区分）。
     """
-    now = now if now is not None else time.time()
-    rows = _read_jsonl(paths.llm_call_stats_path)
+    with _FILE_LOCK:
+        return _compact_file_locked(path, now)
+
+
+def _compact_file_locked(path: Path, now: float) -> int:
+    rows = _read_jsonl(path)
     if not rows:
         return 0
     cutoff = now - _RAW_WINDOW_DAYS * 86400
@@ -290,8 +334,71 @@ def compact_call_stats_storage(paths: "AgentPaths", *, now: Optional[float] = No
 
     out = already_aggregated + new_aggregates + recent_raw
     out.sort(key=lambda r: r.get("ts", 0))
-    _write_jsonl(paths.llm_call_stats_path, out)
+    # 先写临时文件再原子替换，避免压缩中途异常导致原文件被截断
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    _write_jsonl(tmp, out)
+    tmp.replace(path)
     return len(old_raw)
+
+
+def _parse_line(raw: bytes) -> Optional[dict]:
+    raw = raw.strip()
+    if not raw:
+        return None
+    try:
+        row = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return row if isinstance(row, dict) else None
+
+
+def _read_window(path: Path, cutoff: float) -> list[dict]:
+    """从文件末尾倒序读取 ``ts >= cutoff`` 的行，返回文件顺序的列表。
+
+    成本只与窗口大小有关，与文件总大小（历史总量）无关——这是接口超时的修复点：
+    原实现每次全量读取整个文件，历史越长越慢。读到比 cutoff 早出一个余量的行即停止。
+    """
+    if not path.exists():
+        return []
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return []
+    out_rev: list[dict] = []
+    stop_at = cutoff - _TAIL_READ_MARGIN_SECONDS
+    try:
+        with path.open("rb") as f:
+            pos = size
+            carry = b""          # 上一块末尾不完整的行（它的开头在更早的块里）
+            while pos > 0:
+                step = min(_TAIL_READ_CHUNK, pos)
+                pos -= step
+                f.seek(pos)
+                chunk = f.read(step)
+                lines = (chunk + carry).split(b"\n")
+                carry = lines[0]
+                done = False
+                for raw in reversed(lines[1:]):
+                    row = _parse_line(raw)
+                    if row is None:
+                        continue
+                    ts = row.get("ts", 0) or 0
+                    if ts < stop_at:
+                        done = True
+                        break
+                    if ts >= cutoff:
+                        out_rev.append(row)
+                if done:
+                    carry = b""
+                    break
+            if carry and pos == 0:
+                row = _parse_line(carry)
+                if row is not None and (row.get("ts", 0) or 0) >= cutoff:
+                    out_rev.append(row)
+    except OSError:
+        return []
+    out_rev.reverse()
+    return out_rev
 
 
 def call_stats_series(paths: "AgentPaths", *, days: int = _DEFAULT_QUERY_DAYS) -> list[dict]:
@@ -303,11 +410,12 @@ def call_stats_series(paths: "AgentPaths", *, days: int = _DEFAULT_QUERY_DAYS) -
     key_switch_count, config_switch_count, total_input_tokens,
     total_output_tokens, avg_duration_ms}
     """
-    rows = _read_jsonl(paths.llm_call_stats_path)
-    if not rows:
-        return []
     cutoff = time.time() - max(1, days) * 86400
-    recent = [r for r in rows if r.get("ts", 0) >= cutoff]
+    recent = _read_window(paths.llm_call_stats_path, cutoff)
+    return _series_from_rows(recent, days)
+
+
+def _series_from_rows(recent: list[dict], days: int) -> list[dict]:
     if not recent:
         return []
 
@@ -401,13 +509,28 @@ def call_stats_breakdown(paths: "AgentPaths", *, days: int = _DEFAULT_QUERY_DAYS
       - 文件不存在或为空 → 两个字段都是 ``{}``，不抛异常。
     """
     empty = {"by_source": {}, "by_origin": {}}
-    rows = _read_jsonl(paths.llm_call_stats_path)
-    if not rows:
-        return empty
     cutoff = time.time() - max(1, days) * 86400
-    recent = [r for r in rows if isinstance(r, dict) and r.get("ts", 0) >= cutoff]
+    recent = _read_window(paths.llm_call_stats_path, cutoff)
     if not recent:
         return empty
+    return _breakdown_from_rows(recent)
+
+
+def call_stats_summary(paths: "AgentPaths", *, days: int = _DEFAULT_QUERY_DAYS) -> dict:
+    """一次读取窗口内的记录，同时返回 series 与 breakdown。
+
+    接口层应使用它而不是分别调用两个函数：两次调用意味着读两遍文件。
+    """
+    cutoff = time.time() - max(1, days) * 86400
+    rows = _read_window(paths.llm_call_stats_path, cutoff)
+    return {
+        "series": _series_from_rows(rows, days),
+        "breakdown": _breakdown_from_rows(rows) if rows else {"by_source": {}, "by_origin": {}},
+    }
+
+
+def _breakdown_from_rows(recent: list[dict]) -> dict:
+    """按来源 / 项目拆分（输入为已经限定在窗口内的行）。"""
 
     by_source: dict[str, dict] = {}
     by_origin: dict[str, dict] = {}
