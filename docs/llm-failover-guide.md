@@ -196,6 +196,12 @@ CLI 参数  >  agent_config.json  >  providers.json chain[0]  >  环境变量  >
 }
 ```
 
+> **注意**：`LLMPermanentError`（HTTP 401/403：key 失效、账号被限制/封禁）无论 `key_switch_on`
+> 怎么写都会触发换 key —— 同一把 key 重试不会成功，池里有其它 key 时应立即换 key；
+> 所有 key 都被冷却后才会 fallback 到下一个 provider，且不会在失效 key 上做退避重试。
+> `llm_fallback_on` / `key_switch_on` 按类名匹配且**包含父类**：写 `LLMProviderError`
+> 同样会命中其子类（如 `LLMPermanentError`）；`LLMContextWindowError` 除外（需触发 compact，不切换）。
+
 支持的错误类名：
 - `LLMRateLimitError` — API 频率超限（默认包含）
 - `LLMConfigError` — 认证失败（如 key 无效或已吊销）

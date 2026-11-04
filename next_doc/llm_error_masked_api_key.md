@@ -20,3 +20,22 @@
 
 ## 效果示例
 `LLM retry 1/3 (wait 10.0s, fixed(10.0s)) — [Exception] LLMProviderError: OpenAI API error: Error code: 403 - {...} [api_key=sk-a...1234]`
+
+## 追加：403 时先换 key，再 fallback（2026-11-04）
+现象：配置了 4 个 agnes key，某把 key 被 403（账号被限制）后，同一把 key 重试 3 次（共等 30s），
+随后直接 fallback 到其它 provider，其余 3 把 key 完全没被尝试。
+
+根因：
+1. `OpenAIProvider._wrap_error` 把 401/403 当普通 `LLMProviderError`（仅 nvidia 归为
+   `LLMPermanentError`），因此被当成可重试错误；
+2. `from_config` 里 `key_switch_on` 默认只有 `LLMRateLimitError`，403 不触发换 key；
+3. `_should_fallback` 只比较精确类名，不认父类。
+
+修复：
+- `providers/openai.py`：status 401/403 → `LLMPermanentError`（agnes/openrouter/deepseek 等继承者同样生效）。
+- `client_pool.py`：
+  - 建 `ApiKeyPool` 时 `switch_on` 始终并入 `LLMPermanentError`；
+  - 新增 `_exc_matches()`，`key_switch_on` / `fallback_on` 按类名（含父类）匹配，
+    `LLMContextWindowError` 例外，仍原样抛出以触发 compact；
+  - ApiKeyPool 的换 key 日志改用 `mask_api_key()`（原先打印 key 末 8 位）。
+- 行为：403 → 立即换下一把 key（不等待）→ 4 把全部冷却后 → 立即 fallback 下一个 provider。

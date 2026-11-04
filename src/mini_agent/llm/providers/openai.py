@@ -11,7 +11,7 @@ import json
 from ..base import (
     LLMClient, LLMConfig, LLMResponse, LLMUsage,
     ToolCall, ToolSchema, StreamCallback,
-    LLMProviderError, LLMTimeoutError, LLMRateLimitError,
+    LLMProviderError, LLMTimeoutError, LLMRateLimitError, LLMPermanentError,
 )
 from ._base_mixin import ProviderMixin
 from ._http import build_sdk_http_client
@@ -241,6 +241,14 @@ class OpenAIProvider(ProviderMixin, LLMClient):
     def _wrap_error(self, exc: Exception) -> LLMProviderError:
         try:
             from openai import RateLimitError, APITimeoutError, APIError
+            # 401 / 403：key 无效、账号被限制/封禁、无权访问该模型等持久性错误。
+            # 同一把 key 短时间内重试必然得到同样结果，归为 LLMPermanentError：
+            #   - RetryPolicy 不再在该 key 上白等重试；
+            #   - ApiKeyPool 会立即换下一把 key；所有 key 用尽后才 fallback 到下一个 provider。
+            # 与 NvidiaProvider 的处理保持一致。
+            _status = getattr(exc, "status_code", None)
+            if _status in (401, 403):
+                return LLMPermanentError(f"OpenAI API error: {exc}")
             if isinstance(exc, RateLimitError):
                 return LLMRateLimitError(f"OpenAI rate limit: {exc}")
             if isinstance(exc, APITimeoutError):

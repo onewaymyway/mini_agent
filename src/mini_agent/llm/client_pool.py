@@ -51,7 +51,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, TYPE_CHECKING
 
-from .base import LLMClient, LLMConfig, LLMResponse, LLMRateLimitError, LLMError, resolve_trust_env
+from .base import LLMClient, LLMConfig, LLMResponse, LLMRateLimitError, LLMError, resolve_trust_env, mask_api_key
 from . import deadline as _deadline
 
 if TYPE_CHECKING:
@@ -59,6 +59,20 @@ if TYPE_CHECKING:
     from .retry import RetryPolicy
 
 logger = logging.getLogger(__name__)
+
+
+def _exc_matches(exc: Exception, names: "set[str]") -> bool:
+    """异常类名（含其所有父类名）是否命中 names。
+
+    原先只比较 type(exc).__name__，子类异常（如 LLMPermanentError）不会命中
+    配置里写的父类名（如 "LLMProviderError"），导致 fallback / 换 key 被静默跳过。
+    """
+    from .base import LLMContextWindowError
+    if isinstance(exc, LLMContextWindowError):
+        # 上下文超限是确定性错误，必须原样抛给上层触发 compact，
+        # 不能因为它继承自 LLMProviderError 就被 fallback / 换 key 吞掉。
+        return type(exc).__name__ in names
+    return any(cls.__name__ in names for cls in type(exc).__mro__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -143,15 +157,15 @@ class ApiKeyPool:
                 if state.key == key:
                     state.cool_down(self._cooldown)
                     logger.warning(
-                        "ApiKeyPool: key ...%s cooled down for %.0fs (%s: %s)",
-                        key[-8:], self._cooldown, type(exc).__name__, exc,
+                        "ApiKeyPool: key %s cooled down for %.0fs (%s: %s)",
+                        mask_api_key(key), self._cooldown, type(exc).__name__, exc,
                     )
                     break
 
             # 切换到下一个可用 key
             next_key = self._find_available()
             if next_key is not None:
-                logger.info("ApiKeyPool: switched to key ...%s", next_key[-8:])
+                logger.info("ApiKeyPool: switched to key %s", mask_api_key(next_key))
             return next_key
 
     def on_success(self, key: str) -> None:
@@ -191,7 +205,7 @@ class ApiKeyPool:
     # ── 内部辅助 ─────────────────────────────────────────────────────────────
 
     def _should_switch(self, exc: Exception) -> bool:
-        return type(exc).__name__ in self._switch_on
+        return _exc_matches(exc, self._switch_on)
 
     def _advance(self) -> None:
         """round_robin：推进到下一个可用 key（已持锁时调用）。"""
@@ -536,10 +550,13 @@ class LLMClientPool:
             api_keys = item.get("api_keys") or []
             if api_keys and len(api_keys) > 1:
                 switch_on_raw = item.get("key_switch_on", ["LLMRateLimitError"])
+                # LLMPermanentError（401/403：key 失效 / 账号被限制）无论配置如何都应换 key：
+                # 同一把 key 重试不会成功，而池里还有别的 key 可用时，直接换 key 才是正解。
+                switch_on_set = set(switch_on_raw) | {"LLMPermanentError"}
                 key_pool = ApiKeyPool(
                     keys=api_keys,
                     rotation=item.get("key_rotation", "passive"),
-                    switch_on=set(switch_on_raw),
+                    switch_on=switch_on_set,
                     cooldown=float(item.get("key_cooldown", 60.0)),
                 )
             elif api_keys and len(api_keys) == 1:
@@ -605,8 +622,8 @@ class LLMClientPool:
                         raise   # 错误不触发切换，或已无可用 key —— 真正抛出，交给上层 fallback
 
                     logger.info(
-                        "ApiKeyPool: key ...%s → ...%s (%s)",
-                        old_key[-8:], new_key[-8:], type(exc).__name__,
+                        "ApiKeyPool: key %s → %s (%s)",
+                        mask_api_key(old_key), mask_api_key(new_key), type(exc).__name__,
                     )
                     if on_switch_key:
                         on_switch_key(old_key[-8:], new_key[-8:], exc)
@@ -619,7 +636,7 @@ class LLMClientPool:
         return retry_policy.call_with_retry(call_fn=_single_call)
 
     def _should_fallback(self, exc: Exception) -> bool:
-        return type(exc).__name__ in self._fallback_on
+        return _exc_matches(exc, self._fallback_on)
 
     @staticmethod
     def _build_llm_config(item: dict, cfg: "AppConfig") -> LLMConfig:
