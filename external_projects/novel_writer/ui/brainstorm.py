@@ -350,6 +350,23 @@ def _conversation_bar(root: str, busy: bool) -> None:
             show_error(r) if not r["ok"] else st.rerun()
 
 
+def _scope_picker(root: str, busy: bool) -> None:
+    """上下文范围：每轮提示词里附带什么。项目级设置，对本项目所有对话生效。"""
+    res = BA.scope_get(root)
+    if not res["ok"]:
+        show_error(res)
+        return
+    current, options = res["data"]["scope"], res["data"]["options"]
+    keys = list(options)
+    labels = {k: (v if k in res["data"]["implemented"] else f"{v}（待实现）") for k, v in options.items()}
+    chosen = st.selectbox("上下文范围", keys, index=keys.index(current), format_func=lambda k: labels[k],
+                          key=f"bs_scope_{current}", disabled=busy,
+                          help="摘要：只附概要。读取文件：模型用只读工具自己读取项目文件（不限次数与大小）。")
+    if chosen != current:
+        r = BA.scope_set(root, chosen)
+        show_error(r) if not r["ok"] else st.rerun()
+
+
 def _outputs_panel(root: str, busy: bool) -> None:
     """对话区上方：当前构思的全部成果（只读）。每一组可以点「让AI修改」，把它设为下一句话的修改对象。"""
     res = BA.outputs(root)
@@ -379,6 +396,7 @@ def _dialogue_tab(root: str) -> None:
         return
     busy = bool(st.session_state.get("bs_turn"))
     _conversation_bar(root, busy=busy)
+    _scope_picker(root, busy=busy)
     _outputs_panel(root, busy=busy)
     top = st.columns([3, 1])
     mode = top[0].radio("模式", list(CH.MODES), horizontal=True, key="bs_chat_mode")

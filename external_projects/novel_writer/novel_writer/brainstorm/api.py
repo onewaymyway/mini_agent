@@ -109,6 +109,17 @@ def chat_new(root: str) -> Dict[str, Any]:
     return _guard(lambda: CH.new_chat(_ws(root)))
 
 
+def scope_get(root: str) -> Dict[str, Any]:
+    """当前上下文范围（摘要 / 读取文件 / …）与可选项。"""
+    return _guard(lambda: {"scope": CH.get_scope(_ws(root)), "options": CH.SCOPES,
+                           "implemented": sorted(CH.IMPLEMENTED_SCOPES)})
+
+
+def scope_set(root: str, scope: str) -> Dict[str, Any]:
+    """设置项目级的上下文范围。未实现的范围会被拒绝。"""
+    return _guard(lambda: {"scope": CH.set_scope(_ws(root), scope)})
+
+
 def chat_list(root: str) -> Dict[str, Any]:
     """本项目的历史对话（最近更新在前）与当前对话 id。"""
     return _guard(lambda: CH.list_conversations(_ws(root)))

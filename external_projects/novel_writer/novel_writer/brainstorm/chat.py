@@ -39,6 +39,12 @@ MODES = {
     "收敛": "帮作者把已有的想法收束成 2–3 个备选方向（如两种结局、两种主线走向），逐项说明优缺点，"
             "给出你的推荐但不替作者决定。若作者需要，可以用 options 提议把某个方向登记为备选。",
 }
+# 上下文范围（B7）：项目级设置，决定每轮提示词里附带什么。
+# summary 摘要（默认）；read 读取文件（模型用只读工具自己去项目目录读）。
+# full 完整、files 文件 为后续阶段，尚未实现，不能选择。
+SETTINGS_FILE = "_studio/settings.json"
+SCOPES = {"summary": "摘要", "full": "完整", "files": "文件", "read": "读取文件"}
+IMPLEMENTED_SCOPES = {"summary", "read"}
 Runner = Callable[[str, Optional[str]], Tuple[str, Optional[str]]]
 _BLOCK = re.compile(r"```proposals\s*(.*?)```", re.S)
 
@@ -161,6 +167,33 @@ def _public(ws: BrainstormWorkspace, entry: Dict[str, Any], active: Optional[str
             "current": entry["id"] == active}
 
 
+def get_scope(ws: BrainstormWorkspace) -> str:
+    data = read_json(ws.root / SETTINGS_FILE, default={})
+    scope = data.get("context_scope") if isinstance(data, dict) else None
+    return scope if scope in SCOPES else "summary"
+
+
+def set_scope(ws: BrainstormWorkspace, scope: str) -> str:
+    if scope not in SCOPES:
+        raise BrainstormError(f"未知的上下文范围：{scope}")
+    if scope not in IMPLEMENTED_SCOPES:
+        raise BrainstormError(f"「{SCOPES[scope]}」模式尚未实现")
+    atomic_write_json(ws.root / SETTINGS_FILE, {"context_scope": scope, "updated_at": _now()})
+    return scope
+
+
+def file_index(ws: BrainstormWorkspace) -> List[str]:
+    """项目内所有文件的路径与大小（不含内容）。供「读取文件」模式告诉模型有哪些文件可读。"""
+    base = ws.root.resolve()
+    out = []
+    for f in sorted(base.rglob("*")):
+        if not f.is_file():
+            continue
+        rel = f.relative_to(base)
+        out.append(f"{rel.as_posix()}（{f.stat().st_size} 字节）")
+    return out
+
+
 def list_conversations(ws: BrainstormWorkspace) -> Dict[str, Any]:
     """本项目的全部对话（最近更新在前）与当前对话 id。只读。"""
     idx = _resolve_index(ws, create=False)
@@ -265,11 +298,17 @@ def build_prompt(ws: BrainstormWorkspace, text: str, mode: str, conv: Optional[s
     recent = history(ws, limit=RECENT_TURNS * 2, conv=conv)
     recent_text = "\n".join(f"{'作者' if r['role'] == 'user' else '助手'}：{r['text']}" for r in recent) or "（无）"
     focus_text = OL.focus_block(ws, focus) + "\n\n" if focus else ""
+    read_text = ""
+    if get_scope(ws) == "read":
+        read_text = ("【项目文件索引（路径与大小，内容未附上）】\n" + "\n".join(file_index(ws))
+                     + "\n你可以用 studio_list 浏览目录、studio_read 读取文件内容、studio_grep 搜索文本。"
+                       "路径都相对于构思项目根目录。需要细节时先读取，不要凭摘要猜测。\n\n")
     return (
         "你是小说构思的合作者，用中文交流，语气平等，不替作者做决定。\n"
         f"当前模式：{mode}。{MODES.get(mode, MODES['追问'])}\n\n"
         f"{context_summary(ws)}\n\n"
         f"{focus_text}"
+        f"{read_text}"
         f"【最近对话】\n{recent_text}\n\n"
         "如果你认为应当修改构思卡片，在回复最后附一个代码块（只在确有必要时附）：\n"
         "```proposals\n"
@@ -340,7 +379,9 @@ def send(ws: BrainstormWorkspace, text: str, mode: str = "追问", runner: Optio
         append_turn(ws, "user", text, conv=cid, mode=mode, **extra)
     prompt = build_prompt(ws, text, mode, conv=cid, focus=focus)
     state = _agent_state(ws, cid)
-    reply, new_sid = (runner or default_runner)(prompt, state.get("session_id"))
+    if runner is None:
+        runner = _make_read_runner(ws) if get_scope(ws) == "read" else default_runner
+    reply, new_sid = runner(prompt, state.get("session_id"))
     if new_sid:
         _save_agent_state(ws, cid, new_sid)
     body, items, invalid = parse_reply(reply)
@@ -438,6 +479,19 @@ def run_state(ws: BrainstormWorkspace, turn_id: str) -> Dict[str, Any]:
     return {**status, "events": events}
 
 
+def _make_read_runner(ws: BrainstormWorkspace) -> Runner:
+    """「读取文件」模式的运行器：只挂载只读工具、绑定到本项目的 Agent；续接本段对话的框架会话。"""
+    def run(prompt: str, session_id: Optional[str]) -> Tuple[str, Optional[str]]:
+        from novel_writer.brainstorm import studio_tools as ST
+        agent = ST.build_read_agent(ws.root)
+        if session_id:
+            agent.load_session(session_id)          # 失败时返回 False，本轮新开会话，靠提示词接上
+        reply = str(agent.run_turn(prompt))
+        agent.save_session()
+        return reply, agent.session_id
+    return run
+
+
 def default_runner(prompt: str, session_id: Optional[str]) -> Tuple[str, Optional[str]]:
     """默认运行器：mini_agent 受限 Agent（无工具），尝试续接会话。"""
     from novel_writer import config
@@ -452,11 +506,5 @@ def default_runner(prompt: str, session_id: Optional[str]) -> Tuple[str, Optiona
         except Exception:  # noqa: BLE001 - 续接失败就新开，靠提示词里的摘要与最近记录接上
             pass
     reply = str(agent.run_turn(prompt))
-    new_sid = None
-    try:
-        agent.save_session()
-        sess = getattr(agent, "_session", None)
-        new_sid = getattr(sess, "id", None)
-    except Exception:  # noqa: BLE001
-        new_sid = None
-    return reply, new_sid
+    agent.save_session()
+    return reply, agent.session_id
