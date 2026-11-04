@@ -165,3 +165,89 @@ def test_every_queue_full_round_prints_raw_body(mods, capsys, monkeypatch):
     c._post("http://x/videos", {})
     log = capsys.readouterr().out
     assert log.count("排队已满·服务端原始返回") == 3          # 每一次失败都打印，不抽样
+
+
+# ---------------------------------------------------------------- 每一类失败都要打印服务端原始内容
+
+class _JsonBad(_Resp):
+    def json(self):
+        raise ValueError("Expecting value: line 1 column 1")
+
+
+class _Boom(Exception):
+    """模拟 requests 异常：异常信息里带着 key（应被脱敏）。"""
+
+
+class _Http(Exception):
+    def __init__(self, msg, resp):
+        super().__init__(msg)
+        self.response = resp
+
+
+def _run_post(mods, responses, pool=None, monkeypatch=None):
+    if monkeypatch is not None:
+        monkeypatch.setattr(time, "sleep", lambda s: None)
+    c = mods.AgnesVideoClient(api_key=K1, key_pool=pool, max_retries=1, queue_wait_seconds=10)
+    c.session = _Session(responses)
+    c._post("http://x/videos", {})
+    return c
+
+
+@pytest.mark.parametrize("name,responses,needs_pool", [
+    ("非重试错误(400)", [_Resp(400, "param invalid: prompt too long ABC123")], False),
+    ("普通失败(500)", [_Resp(500, "internal boom XYZ789")], False),
+    ("限流(429)", [_Resp(429, "rate limited QQQ111"), _Resp(200, body={"video_id": "v"})], True),
+    ("账号受限(403)", [_Resp(403, RESTRICTED), _Resp(200, body={"video_id": "v"})], True),
+    ("排队已满(503)", [_Resp(503, '{"code":"video_queue_full"}'), _Resp(200, body={"video_id": "v"})], False),
+    ("响应解析失败", [_JsonBad(200, "not-json-body WWW222")], False),
+    ("网络异常(带密钥)", [_Boom(f"connection reset while using {K1}")], False),
+])
+def test_every_post_failure_prints_server_body(mods, monkeypatch, capsys, name, responses, needs_pool):
+    pool = sys.modules["agnes_key_pool"].AgnesKeyPool([K1, K2]) if needs_pool else None
+    if name.startswith("网络异常"):
+        class _Raise:
+            def post(self, *a, **k):
+                raise responses[0]
+        monkeypatch.setattr(time, "sleep", lambda s: None)
+        c = mods.AgnesVideoClient(api_key=K1, key_pool=pool, max_retries=1)
+        c.session = _Raise()
+        c._post("http://x/videos", {})
+    else:
+        _run_post(mods, list(responses), pool=pool, monkeypatch=monkeypatch)
+    log = capsys.readouterr().out
+    assert K1 not in log and K2 not in log                       # 任何情况下都不泄露完整 key
+    if name.startswith("网络异常"):
+        assert "connection reset" in log and "sk-aaaa" not in log  # 异常文字保留，密钥已脱敏
+    elif name.startswith("响应解析失败"):
+        assert "WWW222" in log                                    # 解析失败时仍能看到服务端原文
+    else:
+        marker = {"非重试错误(400)": "ABC123", "普通失败(500)": "XYZ789", "限流(429)": "QQQ111",
+                  "账号受限(403)": "访问受限", "排队已满(503)": "video_queue_full"}[name]
+        assert marker in log, log
+
+
+def test_get_failures_print_server_body(mods, monkeypatch, capsys):
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    c = mods.AgnesVideoClient(api_key=K1, max_retries=1)
+    c.session = _Session([_Resp(500, "poll failed GGG333")])
+    c.session.get = c.session.post
+    c._get("http://x/videos/1", {})
+    assert "GGG333" in capsys.readouterr().out
+
+
+def test_download_failure_prints_http_response_body(mods, monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+
+    class _R:
+        status_code = 502
+        text = "bad gateway from cdn DDD444"
+
+        def raise_for_status(self):
+            raise _Http("502 Server Error", self)
+
+    c = mods.AgnesVideoClient(api_key=K1, max_retries=1)
+    c.session = type("S", (), {"get": lambda self, *a, **k: _R()})()
+    with pytest.raises(Exception):
+        c._save_video_from_url("http://cdn/x.mp4", str(tmp_path / "v.mp4"))
+    log = capsys.readouterr().out
+    assert "下载失败" in log and "DDD444" in log

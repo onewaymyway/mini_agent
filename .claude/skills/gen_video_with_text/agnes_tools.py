@@ -141,6 +141,15 @@ class AgnesVideoClient:
             text = text[:limit] + f"…（共 {len(text)} 字符，已截断）"
         return text
 
+    def _exc_text(self, e: BaseException, resp=None) -> str:
+        """异常的日志文本：脱敏；若有 HTTP 响应（本次请求的响应，或异常自带的 response），附上服务端原始返回。"""
+        text = self._mask(str(e))
+        resp = resp if resp is not None else getattr(e, "response", None)
+        body = getattr(resp, "text", None)
+        if body:
+            text += f" | 服务端原始返回 status_code={getattr(resp, 'status_code', None)}: {self._raw_snippet(body)}"
+        return text
+
     def _log_switch(self, where: str, failed_key, next_key, reason: str) -> None:
         print(f"    [KEY 切换·{where}] {reason}：失败的 key {self._describe(failed_key)} → "
               f"切换到 key {self._describe(next_key)}（失败的 key 冷却中，之后不会再选它）")
@@ -204,6 +213,7 @@ class AgnesVideoClient:
             if self.key_pool:
                 self.api_key = self.key_pool.acquire()
 
+            resp = None
             try:
                 # [TIMEOUT-FIX] 用 (connect_timeout, read_timeout) 元组代替单一数字，
                 # 避免"连不上"这种应该很快失败的情况也要等满 self.timeout（默认 30 分钟）。
@@ -226,6 +236,8 @@ class AgnesVideoClient:
                     if is_key_restricted_error(resp.status_code, resp.text):
                         # 账号受限：长冷却这把 key，换下一把立即重试（任务尚未创建，可安全重提）；无 key 池时直接停止
                         failed_key = self.api_key
+                        print(f"    [账号受限·服务端原始返回] status_code={resp.status_code}: "
+                              f"{self._raw_snippet(resp.text)}")
                         next_key = self.key_pool.report_restricted(failed_key) if self.key_pool else None
                         if next_key:
                             self._log_switch("POST", failed_key, next_key, "账号异常/访问受限")
@@ -235,6 +247,8 @@ class AgnesVideoClient:
                         return {"success": False, "error": last_err, "non_retryable": True, "key_restricted": True}
 
                     if self.key_pool and is_rate_limit_error(resp.status_code, resp.text):
+                        print(f"    [限流·服务端原始返回] status_code={resp.status_code}: "
+                              f"{self._raw_snippet(resp.text)}")
                         next_key = self.key_pool.report_rate_limit(self.api_key)
                         if next_key:
                             self.api_key = next_key
@@ -280,7 +294,7 @@ class AgnesVideoClient:
                 last_err = str(e)
                 attempt += 1
                 # [LOG-FIX] 网络异常（超时/连接失败等）原来是静默重试，加上日志方便判断是否是超时问题。
-                print(f"    [POST 异常] {e}，第 {attempt}/{self.max_retries} 次重试，"
+                print(f"    [POST 异常] {self._exc_text(e, resp)}，第 {attempt}/{self.max_retries} 次重试，"
                       f"{1.5 * attempt:.1f}s 后重试")
                 self._sleep(1.5 * attempt)
 
@@ -307,6 +321,7 @@ class AgnesVideoClient:
             if self.key_pool:
                 self.api_key = self.key_pool.acquire()
 
+            resp = None
             try:
                 # [TIMEOUT-FIX] 同样拆分 connect/read timeout，connect 阶段 10s 即可判定失败。
                 resp = self.session.get(
@@ -326,6 +341,8 @@ class AgnesVideoClient:
                     if is_key_restricted_error(resp.status_code, resp.text):
                         # 轮询时账号受限：远端任务属于原 key，换 key 查询往往查不到，交给外层整条重新提交
                         failed_key = self.api_key
+                        print(f"    [账号受限·服务端原始返回] status_code={resp.status_code}: "
+                              f"{self._raw_snippet(resp.text)}")
                         if self.key_pool:
                             self.key_pool.report_restricted(failed_key)
                         print(f"    [GET KEY 受限] 失败的 key {self._describe(failed_key)} 账号异常/访问受限，"
@@ -333,6 +350,8 @@ class AgnesVideoClient:
                         return {"success": False, "error": last_err, "non_retryable": True, "key_restricted": True}
 
                     if self.key_pool and is_rate_limit_error(resp.status_code, resp.text):
+                        print(f"    [限流·服务端原始返回] status_code={resp.status_code}: "
+                              f"{self._raw_snippet(resp.text)}")
                         next_key = self.key_pool.report_rate_limit(self.api_key)
                         if next_key:
                             self.api_key = next_key
@@ -360,7 +379,7 @@ class AgnesVideoClient:
             except Exception as e:
                 last_err = str(e)
                 attempt += 1
-                print(f"    [GET 异常] {e}，第 {attempt}/{self.max_retries} 次重试，"
+                print(f"    [GET 异常] {self._exc_text(e, resp)}，第 {attempt}/{self.max_retries} 次重试，"
                       f"{1.5 * attempt:.1f}s 后重试")
                 self._sleep(1.5 * attempt)
 
@@ -402,7 +421,7 @@ class AgnesVideoClient:
                 raise
             except Exception as e:
                 last_err = e
-                print(f"    [下载失败] {e}，第 {attempt}/{self.max_retries} 次重试，"
+                print(f"    [下载失败] {self._exc_text(e)}，第 {attempt}/{self.max_retries} 次重试，"
                       f"{1.5 * attempt:.1f}s 后重试")
                 # 清理下载到一半的残缺文件，避免留下看起来"存在但损坏"的产物。
                 try:
