@@ -235,8 +235,14 @@ def snapshot_version(root: str, note: str = "") -> Dict[str, Any]:
 
 
 # ── 对话过程日志 ──
-def chat_start(root: str, text: str, mode: str = "追问", runner=None) -> Dict[str, Any]:
-    return _guard(lambda: {"turn": CH.start_turn(_ws(root), text, mode, runner=runner)})
+def chat_start(root: str, text: str, mode: str = "追问", runner=None, focus=None) -> Dict[str, Any]:
+    return _guard(lambda: {"turn": CH.start_turn(_ws(root), text, mode, runner=runner, focus=focus)})
+
+
+def outputs(root: str) -> Dict[str, Any]:
+    """构思成果总览（只读）：每个模块的标签、条数与内容行。"""
+    from novel_writer.brainstorm import outline as OL
+    return _guard(lambda: OL.outputs(_ws(root)))
 
 
 def chat_run(root: str, turn_id: str) -> Dict[str, Any]:

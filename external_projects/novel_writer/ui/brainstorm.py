@@ -350,12 +350,36 @@ def _conversation_bar(root: str, busy: bool) -> None:
             show_error(r) if not r["ok"] else st.rerun()
 
 
+def _outputs_panel(root: str, busy: bool) -> None:
+    """对话区上方：当前构思的全部成果（只读）。每一组可以点「让AI修改」，把它设为下一句话的修改对象。"""
+    res = BA.outputs(root)
+    if not res["ok"]:
+        show_error(res)
+        return
+    secs = res["data"]
+    total = sum(s["count"] for s in secs)
+    with st.expander(f"📋 当前构思成果（{total} 项）", expanded=False):
+        for sec in secs:
+            c1, c2 = st.columns([5, 1])
+            c1.markdown(f"**{sec['label']}**（{sec['count']}）")
+            for line in sec["lines"]:
+                c1.markdown("· " + line)
+            if not sec["lines"]:
+                c1.caption("（暂无内容）")
+            if c2.button("让AI修改", key=f"bs_focus_{sec['key']}", disabled=busy,
+                         help="下一句话会针对这一项提出修改"):
+                st.session_state["bs_focus"] = sec["key"]
+        st.caption("修改请求只会生成待确认的提议，采纳后才写入。")
+
+
 def _dialogue_tab(root: str) -> None:
     hist = BA.chat_history(root, limit=60)
     if not hist["ok"]:
         show_error(hist)
         return
-    _conversation_bar(root, busy=bool(st.session_state.get("bs_turn")))
+    busy = bool(st.session_state.get("bs_turn"))
+    _conversation_bar(root, busy=busy)
+    _outputs_panel(root, busy=busy)
     top = st.columns([3, 1])
     mode = top[0].radio("模式", list(CH.MODES), horizontal=True, key="bs_chat_mode")
     top[1].caption("当前对话已保存，可在上方切换")
@@ -371,11 +395,20 @@ def _dialogue_tab(root: str) -> None:
             _live_turn(root, active)
     _distill_box(root)
     _lore_box(root)
+    focus = st.session_state.get("bs_focus")
+    if focus:
+        label = next((s["label"] for s in BA.outputs(root)["data"] if s["key"] == focus), focus)
+        fc1, fc2 = st.columns([5, 1])
+        fc1.info(f"本次修改对象：{label}。下一句话会针对它提出修改。")
+        if fc2.button("取消", key="bs_focus_clear"):
+            st.session_state.pop("bs_focus", None)
+            st.rerun()
     text = st.chat_input("说点什么……（例如：我想写一个会吞噬记忆的港口）", key="bs_chat_input",
                          disabled=bool(active))
     if text:
-        r = BA.chat_start(root, text, mode)
+        r = BA.chat_start(root, text, mode, focus=focus)
         if r["ok"]:
+            st.session_state.pop("bs_focus", None)
             st.session_state["bs_turn"] = r["data"]["turn"]
             st.rerun()
         show_error(r)

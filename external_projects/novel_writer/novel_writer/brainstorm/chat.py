@@ -258,13 +258,18 @@ def context_summary(ws: BrainstormWorkspace) -> str:
     return "\n".join(lines)
 
 
-def build_prompt(ws: BrainstormWorkspace, text: str, mode: str, conv: Optional[str] = None) -> str:
+def build_prompt(ws: BrainstormWorkspace, text: str, mode: str, conv: Optional[str] = None,
+                 focus: Optional[str] = None) -> str:
+    from novel_writer.brainstorm import outline as OL
+
     recent = history(ws, limit=RECENT_TURNS * 2, conv=conv)
     recent_text = "\n".join(f"{'作者' if r['role'] == 'user' else '助手'}：{r['text']}" for r in recent) or "（无）"
+    focus_text = OL.focus_block(ws, focus) + "\n\n" if focus else ""
     return (
         "你是小说构思的合作者，用中文交流，语气平等，不替作者做决定。\n"
         f"当前模式：{mode}。{MODES.get(mode, MODES['追问'])}\n\n"
         f"{context_summary(ws)}\n\n"
+        f"{focus_text}"
         f"【最近对话】\n{recent_text}\n\n"
         "如果你认为应当修改构思卡片，在回复最后附一个代码块（只在确有必要时附）：\n"
         "```proposals\n"
@@ -309,7 +314,7 @@ def parse_reply(reply: str) -> Tuple[str, List[Dict[str, Any]], int]:
 
 def send(ws: BrainstormWorkspace, text: str, mode: str = "追问", runner: Optional[Runner] = None, *,
          turn_id: Optional[str] = None, record_user: bool = True,
-         conv: Optional[str] = None) -> Dict[str, Any]:
+         conv: Optional[str] = None, focus: Optional[str] = None) -> Dict[str, Any]:
     text = (text or "").strip()
     if not text:
         raise BrainstormError("请输入内容")
@@ -318,9 +323,11 @@ def send(ws: BrainstormWorkspace, text: str, mode: str = "追问", runner: Optio
     ws.meta()
     cid = _conv_entry(ws, conv, create=True)["id"]
     extra = {"turn": turn_id} if turn_id else {}
+    if focus:
+        extra["focus"] = focus
     if record_user:
         append_turn(ws, "user", text, conv=cid, mode=mode, **extra)
-    prompt = build_prompt(ws, text, mode, conv=cid)
+    prompt = build_prompt(ws, text, mode, conv=cid, focus=focus)
     state = _agent_state(ws, cid)
     reply, new_sid = (runner or default_runner)(prompt, state.get("session_id"))
     if new_sid:
@@ -349,7 +356,8 @@ def _run_paths(ws: BrainstormWorkspace, turn_id: str):
     return base / f"{turn_id}.json", base / f"{turn_id}.jsonl"
 
 
-def start_turn(ws: BrainstormWorkspace, text: str, mode: str = "追问", runner: Optional[Runner] = None) -> str:
+def start_turn(ws: BrainstormWorkspace, text: str, mode: str = "追问", runner: Optional[Runner] = None,
+               focus: Optional[str] = None) -> str:
     """开始一轮对话：立即记录作者的话，在后台线程里运行 agent，过程输出逐条写入日志文件。返回 turn id。
 
     轮次绑定到开始时的当前对话：之后即使切换了对话，回复仍写回原来那一段。
@@ -368,13 +376,18 @@ def start_turn(ws: BrainstormWorkspace, text: str, mode: str = "追问", runner:
     status_path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_json(status_path, {"turn": turn_id, "status": "running", "started_at": _now(), "conversation": cid})
     log_path.write_text("", encoding="utf-8")
-    append_turn(ws, "user", text, conv=cid, mode=mode, turn=turn_id)
-    threading.Thread(target=_run_turn_job, args=(str(ws.root), turn_id, text, mode, runner, cid),
+    if focus:
+        from novel_writer.brainstorm import outline as OL
+        if focus not in OL.SECTIONS:
+            raise BrainstormError(f"未知的修改对象：{focus}")
+    append_turn(ws, "user", text, conv=cid, mode=mode, turn=turn_id, **({"focus": focus} if focus else {}))
+    threading.Thread(target=_run_turn_job, args=(str(ws.root), turn_id, text, mode, runner, cid, focus),
                      daemon=True, name=f"brainstorm-{turn_id}").start()
     return turn_id
 
 
-def _run_turn_job(root: str, turn_id: str, text: str, mode: str, runner: Optional[Runner], cid: str) -> None:
+def _run_turn_job(root: str, turn_id: str, text: str, mode: str, runner: Optional[Runner], cid: str,
+                  focus: Optional[str] = None) -> None:
     from novel_writer.brainstorm.runlog import Capture
 
     ws = BrainstormWorkspace(root)
@@ -387,7 +400,7 @@ def _run_turn_job(root: str, turn_id: str, text: str, mode: str, runner: Optiona
 
     try:
         with Capture(sink):
-            out = send(ws, text, mode, runner=runner, turn_id=turn_id, record_user=False, conv=cid)
+            out = send(ws, text, mode, runner=runner, turn_id=turn_id, record_user=False, conv=cid, focus=focus)
         atomic_write_json(status_path, {"turn": turn_id, "status": "done", "finished_at": _now(),
                                         "proposals": len(out["proposals"]), "invalid": out["invalid"],
                                         "conversation": cid})
