@@ -209,3 +209,76 @@ class TestRealStartStop(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── 停止 / 重启 ─────────────────────────────────────────────────────────
+
+import os as _os  # noqa: E402
+
+
+@unittest.skipUnless(_os.path.isdir("/proc"), "依赖 Linux /proc")
+class TestFindListeningPid(unittest.TestCase):
+    def test_finds_the_pid_listening_on_the_port(self):
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        sock.listen(1)
+        try:
+            self.assertEqual(wa.find_listening_pid(sock.getsockname()[1]), _os.getpid())
+        finally:
+            sock.close()
+
+    def test_returns_none_when_nothing_listens(self):
+        self.assertIsNone(wa.find_listening_pid(_free_port()))
+
+
+class TestStopExternalSafety(unittest.TestCase):
+    def test_refuses_to_kill_a_non_streamlit_process(self):
+        """端口上的进程不是 Streamlit（这里是测试进程本身）：必须拒绝，且不能结束它。"""
+        server = http.server.HTTPServer(("127.0.0.1", 0), _OkHandler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            spec = WebAppSpec(port=server.server_address[1])
+            ok, msg = wa.stop_external("demo", Path(tempfile.mkdtemp()), spec)
+            self.assertFalse(ok)
+            self.assertIn("不是 Streamlit", msg)
+            self.assertTrue(wa.port_listening("127.0.0.1", spec.port))   # 没有被结束
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_no_listener_means_nothing_to_stop(self):
+        ok, msg = wa.stop_external("demo", Path(tempfile.mkdtemp()), WebAppSpec(port=_free_port()))
+        self.assertFalse(ok)
+
+    def test_remote_is_refused(self):
+        self.assertFalse(wa.restart("demo", Path(tempfile.mkdtemp()), WebAppSpec(port=8503, host="10.0.0.5"))[0])
+
+
+@unittest.skipUnless(importlib.util.find_spec("streamlit"), "需要本机安装 streamlit")
+class TestRestart(unittest.TestCase):
+    def test_restart_from_stopped_starts_it(self):
+        root = Path(tempfile.mkdtemp())
+        (root / "app.py").write_text("import streamlit as st\nst.write('hi')\n", encoding="utf-8")
+        spec = WebAppSpec(port=_free_port())
+        try:
+            ok, msg = wa.restart("demo", root, spec)
+            self.assertTrue(ok, msg)
+            self.assertEqual(wa.get_status("demo", root, spec).state, wa.STATE_RUNNING)
+        finally:
+            wa.stop("demo", root, spec)
+
+    def test_restart_running_instance_changes_pid(self):
+        root = Path(tempfile.mkdtemp())
+        (root / "app.py").write_text("import streamlit as st\nst.write('hi')\n", encoding="utf-8")
+        spec = WebAppSpec(port=_free_port())
+        try:
+            self.assertTrue(wa.start("demo", root, spec)[0])
+            self.assertEqual(wa.wait_until_ready("demo", root, spec, timeout=60).state, wa.STATE_RUNNING)
+            old_pid = wa.read_pid_record(root)["pid"]
+            ok, msg = wa.restart("demo", root, spec)
+            self.assertTrue(ok, msg)
+            new = wa.get_status("demo", root, spec)
+            self.assertEqual(new.state, wa.STATE_RUNNING, new.message)
+            self.assertNotEqual(wa.read_pid_record(root)["pid"], old_pid)
+        finally:
+            wa.stop("demo", root, spec)

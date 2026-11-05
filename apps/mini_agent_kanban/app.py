@@ -13019,11 +13019,18 @@ def _render_web_app_row(name: str, entry) -> None:
 
     spec = entry.spec
     status = wa.get_status(name, entry.root, spec)
-    c1, c2, c3 = st.columns([3, 1, 1])
+    c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
     where = f" · 主机 {spec.host}（远程）" if spec.is_remote else ""
     c1.markdown(f"🌐 Streamlit：{status.label} · 端口 {spec.port}{where}")
     if status.is_up:
         c2.link_button("🌐 打开", status.url)
+
+    # 外部启动的实例：结束它需要用户勾选确认（看板只结束「监听该端口且命令行含 streamlit」的进程）
+    confirm_external = False
+    if (status.can_force_stop or (status.state == wa.STATE_RUNNING_EXTERNAL)) and not spec.is_remote:
+        confirm_external = st.checkbox(
+            "我确认结束这个外部启动的 Streamlit 进程", key=f"webapp_ext_confirm_{name}",
+            help="只会结束监听本端口、且命令行含 streamlit 的进程；其它进程一律拒绝。")
 
     if status.can_start and c3.button("▶️ 启动", key=f"webapp_start_{name}"):
         ok, msg = wa.start(name, entry.root, spec)
@@ -13035,15 +13042,28 @@ def _render_web_app_row(name: str, entry) -> None:
         else:
             st.session_state[f"webapp_flash_{name}"] = f"❌ {msg}"
         st.rerun()
+
     if status.can_stop and c3.button("⏹ 停止", key=f"webapp_stop_{name}"):
         ok, msg = wa.stop(name, entry.root, spec)
+        st.session_state[f"webapp_flash_{name}"] = ("✅ " if ok else "❌ ") + msg
+        st.rerun()
+    if status.can_force_stop and c3.button("⏹ 结束", key=f"webapp_force_stop_{name}",
+                                           disabled=not confirm_external):
+        ok, msg = wa.stop_external(name, entry.root, spec)
+        st.session_state[f"webapp_flash_{name}"] = ("✅ " if ok else "❌ ") + msg
+        st.rerun()
+
+    if status.can_restart and c4.button("🔄 重启", key=f"webapp_restart_{name}",
+                                        disabled=status.can_force_stop and not confirm_external):
+        with st.spinner("正在重启 Streamlit…"):
+            ok, msg = wa.restart(name, entry.root, spec)
         st.session_state[f"webapp_flash_{name}"] = ("✅ " if ok else "❌ ") + msg
         st.rerun()
 
     if flash:
         st.caption(flash)
     if status.state == wa.STATE_RUNNING_EXTERNAL:
-        st.caption("该实例不是由看板启动，只能打开，不能由看板停止。")
+        st.caption("该实例不是由看板启动。勾选上方确认后，可由看板结束或重启；否则只能打开。")
     if status.state == wa.STATE_PORT_BUSY:
         st.warning(status.message)
     if spec.is_remote:

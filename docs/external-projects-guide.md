@@ -325,6 +325,14 @@ job 也会恢复成启用**。这是"删除旧任务再注册新任务"的直接
 Streamlit，不经过 daemon，daemon 没有运行也能用。实现位于
 `src/mini_agent/external_projects/web_app.py`。
 
+看板可以对这个界面做以下操作：
+
+- **启动**：未运行时，启动后等待就绪（最多 30 秒）。
+- **停止**：仅限看板启动的实例（以 `.run/streamlit.pid` 记录的 PID 判断归属）。
+- **结束外部实例**：对手动启动的实例，需要勾选确认。看板通过端口找到监听进程，
+  只有命令行含 `streamlit` 才结束，否则拒绝。
+- **重启**：先停止（或结束）当前实例，等端口释放后再启动。远程项目不支持。
+
 当前约定端口：world_simulator 8502、stock_watch 8503、novel_writer 8504、
 novel_to_video 8505。
 

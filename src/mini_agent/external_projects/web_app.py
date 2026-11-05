@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import signal
 import socket
 import subprocess
@@ -92,7 +93,17 @@ class WebAppStatus:
 
     @property
     def can_stop(self) -> bool:
+        """由看板启动（或正在启动）的实例，看板可直接停止。"""
         return self.state in (STATE_RUNNING, STATE_STARTING)
+
+    @property
+    def can_force_stop(self) -> bool:
+        """外部启动的 Streamlit 实例：看板可结束它，但必须用户确认（见 stop_external）。"""
+        return self.state == STATE_RUNNING_EXTERNAL
+
+    @property
+    def can_restart(self) -> bool:
+        return self.state in (STATE_RUNNING, STATE_RUNNING_EXTERNAL, STATE_STARTING)
 
     @property
     def label(self) -> str:
@@ -345,6 +356,152 @@ def stop(name: str, root: Path, spec: WebAppSpec) -> Tuple[bool, str]:
     _reap(pid)
     _remove_pid_record(root)
     return True, f"已停止 PID {pid}"
+
+
+def process_cmdline(pid: int) -> str:
+    """进程的完整命令行（取不到时返回空串）。用于确认端口上的进程确实是 Streamlit。"""
+    if _WINDOWS:
+        try:
+            out = win_subprocess.check_output(
+                ["powershell", "-NoProfile", "-Command",
+                 f"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine"],
+                text=True, timeout=15,
+            )
+            return out.strip()
+        except Exception:
+            return ""
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+        return raw.replace(b"\0", b" ").decode("utf-8", errors="replace").strip()
+    except OSError:
+        pass
+    try:
+        out = subprocess.check_output(["ps", "-o", "args=", "-p", str(pid)], text=True, timeout=10)
+        return out.strip()
+    except Exception:
+        return ""
+
+
+def find_listening_pid(port: int) -> Optional[int]:
+    """找出监听本机指定端口的进程 PID；找不到或无法判断时返回 None。"""
+    if _WINDOWS:
+        try:
+            out = win_subprocess.check_output(["netstat", "-ano", "-p", "TCP"], text=True, timeout=15)
+        except Exception:
+            return None
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 5 and parts[3].upper() == "LISTENING" and parts[1].endswith(f":{port}"):
+                try:
+                    return int(parts[4])
+                except ValueError:
+                    return None
+        return None
+
+    # Linux：/proc/net/tcp* 里找 LISTEN 状态（0A）的 inode，再到 /proc/<pid>/fd 里找对应 socket
+    inodes = set()
+    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            lines = Path(table).read_text().splitlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            fields = line.split()
+            if len(fields) < 10 or fields[3] != "0A":
+                continue
+            local_port = int(fields[1].rsplit(":", 1)[1], 16)
+            if local_port == port:
+                inodes.add(fields[9])
+    if inodes:
+        for proc in Path("/proc").iterdir():
+            if not proc.name.isdigit():
+                continue
+            fd_dir = proc / "fd"
+            try:
+                for fd in fd_dir.iterdir():
+                    try:
+                        target = os.readlink(fd)
+                    except OSError:
+                        continue
+                    if target.startswith("socket:[") and target[8:-1] in inodes:
+                        return int(proc.name)
+            except OSError:
+                continue
+        return None
+
+    # 其他平台（如 macOS）：lsof
+    lsof = shutil.which("lsof")
+    if lsof:
+        try:
+            out = subprocess.check_output([lsof, "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
+                                          text=True, timeout=15)
+            first = out.split()
+            return int(first[0]) if first else None
+        except Exception:
+            return None
+    return None
+
+
+def _wait_port_free(host: str, port: int, timeout: float = STOP_GRACE_SEC) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not port_listening(host, port):
+            return True
+        time.sleep(0.2)
+    return not port_listening(host, port)
+
+
+def stop_external(name: str, root: Path, spec: WebAppSpec) -> Tuple[bool, str]:
+    """结束外部启动的 Streamlit 实例（不是看板启动的）。调用方必须先经过用户确认。
+
+    安全约束：只结束「监听该端口」且「命令行里含 streamlit」的进程；否则拒绝，不做任何操作。
+    """
+    if spec.is_remote:
+        return False, "远程项目不能由看板结束。"
+    pid = find_listening_pid(spec.port)
+    if pid is None:
+        return False, f"没有找到监听端口 {spec.port} 的本机进程（或当前平台无法识别）。"
+    cmd = process_cmdline(pid)
+    if "streamlit" not in cmd.lower():
+        return False, (f"端口 {spec.port} 上的进程（PID {pid}）不是 Streamlit，已拒绝结束。"
+                       f"命令行：{cmd[:160] or '（无法读取）'}")
+    _terminate(pid)
+    if not _wait_port_free("127.0.0.1", spec.port):
+        _kill(pid)
+        _wait_port_free("127.0.0.1", spec.port, timeout=3.0)
+    _reap(pid)
+    if port_listening("127.0.0.1", spec.port):
+        return False, f"已发送结束信号，但端口 {spec.port} 仍被占用（PID {pid}）。"
+    return True, f"已结束外部启动的 Streamlit（PID {pid}）"
+
+
+def restart(name: str, root: Path, spec: WebAppSpec) -> Tuple[bool, str]:
+    """重启：先结束当前实例（看板启动的直接停；外部启动的需要调用方已确认），再拉起并等待就绪。
+
+    远程项目不支持。返回 (是否就绪, 说明)。
+    """
+    if spec.is_remote:
+        return False, "远程项目不能由看板重启。"
+    status = get_status(name, root, spec)
+    if status.state == STATE_RUNNING:
+        ok, msg = stop(name, root, spec)
+        if not ok:
+            return False, f"停止失败：{msg}"
+    elif status.state == STATE_RUNNING_EXTERNAL:
+        ok, msg = stop_external(name, root, spec)
+        if not ok:
+            return False, f"结束外部进程失败：{msg}"
+    elif status.state == STATE_STARTING:
+        stop(name, root, spec)
+    if not _wait_port_free("127.0.0.1", spec.port):
+        return False, f"端口 {spec.port} 释放超时，无法重启。"
+    ok, msg = start(name, root, spec)
+    if not ok:
+        return False, msg
+    ready = wait_until_ready(name, root, spec)
+    if ready.is_up:
+        return True, f"已重启，{msg.split('，')[0]}，已就绪"
+    return False, f"已拉起但未在超时内就绪，请查看日志。{msg}"
 
 
 def _terminate(pid: int) -> None:
