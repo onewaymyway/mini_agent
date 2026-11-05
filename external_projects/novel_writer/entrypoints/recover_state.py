@@ -26,58 +26,23 @@
 from __future__ import annotations
 
 import argparse
-import datetime as _dt
-import json
-import shutil
 import sys
-from pathlib import Path
 
 import _common  # noqa: F401
 
-from novel_writer import pipeline as P
-from novel_writer import state as st
-from novel_writer import tool_api
+from novel_writer import recovery as REC
 from novel_writer.workspace import Workspace
 
-_UPSTREAM = st._UPSTREAM_NOTE
 
-
-def _backup(ws: Workspace) -> Path:
-    stamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    dest = ws.studio / f"recovery_backup_{stamp}"
-    dest.mkdir(parents=True, exist_ok=True)
-    for key in ("studio_state", "studio_worker", "studio_control"):
-        try:
-            src = ws.path(key)
-        except KeyError:
-            continue
-        if src.exists():
-            shutil.copy2(src, dest / src.name)
-    return dest
-
-
-def _stale_rows(ws: Workspace):
-    rows = []
-    for sid, entry in st.load_state(ws)["steps"].items():
-        if entry.get("status") == st.ST_STALE:
-            rows.append((sid, str(entry.get("note") or ""), entry.get("updated_at") or ""))
-    return rows
-
-
-def _report(ws: Workspace) -> None:
-    ctl = st.read_control(ws)
-    print(f"修改自动重跑标记: {ctl.get('revision_autorun')} (章 {ctl.get('revision_autorun_chapter')})")
-    worker = st.read_worker(ws)
-    print(f"worker: state={worker.get('state')} alive={st.worker_alive(ws)}")
-    rows = _stale_rows(ws)
-    print(f"需重跑步骤: {len(rows)} 个")
-    for sid, note, ts in rows[:40]:
-        print(f"  - {sid:32s} {ts}  {note[:60]}")
-    if len(rows) > 40:
-        print(f"  … 另有 {len(rows) - 40} 个")
-    nxt = tool_api.next_step(str(ws.root))
-    data = nxt.get("data") or {}
-    print(f"下一步: {data.get('step')}  {data.get('title') or ''}  → action={data.get('action')}")
+def _show(info: dict) -> None:
+    print(f"修改自动重跑标记: {info['revision_autorun']} (章 {info['revision_autorun_chapter']})")
+    print(f"worker: state={info['worker_state']} alive={info['worker_alive']}")
+    print(f"需重跑步骤: {len(info['stale'])} 个")
+    for row in info["stale"][:40]:
+        print(f"  - {row['id']:32s} {row['updated_at']}  {row['note'][:60]}")
+    if len(info["stale"]) > 40:
+        print(f"  … 另有 {len(info['stale']) - 40} 个")
+    print(f"下一步: {info['next_step']}  {info['next_title'] or ''}  → action={info['next_action']}")
 
 
 def main() -> int:
@@ -89,38 +54,24 @@ def main() -> int:
     args = parser.parse_args()
 
     ws = Workspace(args.workspace)
-    if st.worker_alive(ws):
-        print("✖ worker 仍在运行（心跳正常）。请先在界面点「停止」，等它结束后再运行本脚本。")
-        return 1
-
     print("── 现状 ──")
-    _report(ws)
-
+    _show(REC.preview(ws))
     if not args.apply:
         print("\n（预览模式，未修改任何内容。确认后加 --apply 执行。）")
         return 0
-
-    backup = _backup(ws)
-    print(f"\n已备份到 {backup}")
-
-    st.write_control(ws, revision_autorun=False, revision_autorun_chapter=None)
+    try:
+        res = REC.apply(ws, accept_stale=args.accept_stale)
+    except REC.RecoveryError as exc:
+        print(f"✖ {exc}")
+        return 1
+    print(f"\n已备份到 {res['backup']}")
     print("✔ 已清除修改自动重跑标记")
-
-    info = st.read_worker(ws)
-    if info.get("state") == "running":
-        res = tool_api.clear_stale_worker(str(ws.root))
-        print("✔ 已清除残留运行状态" if res.get("ok") else f"✖ 清除失败: {res.get('error')}")
-
+    if res["cleared_worker"]:
+        print("✔ 已清除残留运行状态")
     if args.accept_stale:
-        res = tool_api.rebaseline_stale(str(ws.root))
-        done = (res.get("data") or {}).get("rebaselined") or []
-        print(f"✔ 已重新基线 {len(done)} 个需重跑步骤（产物以当前文件为准）")
-        remaining = [sid for sid, note, _ in _stale_rows(ws) if not note.startswith(_UPSTREAM)]
-        if remaining:
-            print(f"  仍有 {len(remaining)} 个需重跑步骤不是「上游产物已变化」类型，需要在界面逐个处理")
-
+        print(f"✔ 已重新基线 {len(res['rebaselined'])} 个需重跑步骤")
     print("\n── 结果 ──")
-    _report(ws)
+    _show(REC.preview(ws))
     return 0
 
 

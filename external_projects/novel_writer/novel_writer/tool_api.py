@@ -304,6 +304,28 @@ def rebaseline_stale(workspace: str) -> Dict[str, Any]:
     return _guard(run)
 
 
+def recovery_preview(workspace: str) -> Dict[str, Any]:
+    """状态恢复：现状（只读）。见 novel_writer/recovery.py。"""
+
+    def run() -> Dict[str, Any]:
+        from novel_writer import recovery as _rec
+
+        return _ok(_rec.preview(_workspace_or_raise(workspace)))
+
+    return _guard(run)
+
+
+def recovery_apply(workspace: str, *, accept_stale: bool) -> Dict[str, Any]:
+    """状态恢复：备份后清除误判标记；accept_stale 时重新基线「上游产物已变化」的需重跑步骤。不运行任何步骤。"""
+
+    def run() -> Dict[str, Any]:
+        from novel_writer import recovery as _rec
+
+        return _ok(_rec.apply(_workspace_or_raise(workspace), accept_stale=bool(accept_stale)))
+
+    return _guard(run)
+
+
 def write_history(workspace: str, *, path: Optional[str] = None, writer: Optional[str] = None,
                   kind: Optional[str] = None, chapter: Optional[int] = None, limit: int = 200) -> Dict[str, Any]:
     """写入历史（最新在前）：谁在什么时候改写了哪个文件，前后指纹各是什么。跨分段读取。"""

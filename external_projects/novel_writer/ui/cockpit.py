@@ -75,15 +75,7 @@ def render_control(ws: str) -> None:
     _render_feedback_cycle(ws, data["steps"])
     _render_write_history(ws)
 
-    stale_up = [x for x in data["steps"] if x["status"] == "stale" and str(x.get("note") or "").startswith("上游产物已变化")]
-    if stale_up:
-        with st.expander(f"🩹 {len(stale_up)} 个步骤因「上游产物已变化」需重跑（若核对后确认无误，可清除标记）", expanded=True):
-            st.caption("这些步骤的标记可能是误判（比如归档 agent 顺手改了蓝图）。"
-                       "确认产物无误后，清除标记；若确有问题，请直接运行对应步骤。")
-            st.write("、".join(x["title"] for x in stale_up[:12]) + (" 等" if len(stale_up) > 12 else ""))
-            confirmed = st.checkbox("我已核对：这些步骤的产物无误", key="cp_rebase_confirm")
-            if st.button("清除这些需重跑标记", key="cp_rebase_go", disabled=not confirmed):
-                _report_ok(tool_api.rebaseline_stale(ws))
+    _render_recovery(ws)
 
     st.subheader("流水线")
     rows = []
@@ -374,6 +366,62 @@ def _render_answer_form(ws: str, step: dict) -> None:
                         st.success("已提交答复，本步骤已开始重跑。进度见下方后台任务。")
                     else:
                         show_error(run)
+
+
+def _render_recovery(ws: str) -> None:
+    """🛟 状态恢复：清除误判的需重跑 / 修改自动重跑标记，回到正确的位置。
+
+    只清除标记，不运行任何步骤，不改写产物文件；每次操作前先备份 pipeline_state.json 等状态文件。
+    逻辑见 novel_writer/recovery.py（与 entrypoints/recover_state.py 共用）。
+    """
+    res = tool_api.recovery_preview(ws)
+    if not res["ok"]:
+        show_error(res)
+        return
+    info = res["data"]
+    has_issue = bool(info["revision_autorun"] or info["stale"])
+    label = (f"🛟 状态恢复（{info['stale_upstream_count']} 个步骤因上游变化标为需重跑）"
+             if has_issue else "🛟 状态恢复")
+    with st.expander(label, expanded=has_issue):
+        st.caption("误判的「需重跑」标记会让流水线从前面的步骤重新开始。这里只清除标记，"
+                   "不会运行任何步骤，也不会改写产物文件。每次操作前都会先备份状态文件。")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("修改自动重跑", "开启" if info["revision_autorun"] else "关闭",
+                  help=(f"范围：第 {info['revision_autorun_chapter']} 章"
+                        if info["revision_autorun_chapter"] else None))
+        c2.metric("需重跑步骤", len(info["stale"]))
+        c3.metric("下一步", info["next_title"] or "—")
+
+        if info["worker_alive"]:
+            st.warning("后台 worker 正在运行。请先点「停止」，等它结束后再进行恢复操作。")
+        if info["stale"]:
+            df = pd.DataFrame([{
+                "步骤": r["id"],
+                "原因": "上游产物已变化" if r["upstream"] else r["note"][:40],
+                "标记时间": r["updated_at"][:19].replace("T", " "),
+            } for r in info["stale"]])
+            show_df(df, width="stretch", hide_index=True)
+
+        busy = info["worker_alive"]
+        if info["revision_autorun"] and st.button("仅清除修改自动重跑标记", key="rec_flags", disabled=busy):
+            _report_recovery(tool_api.recovery_apply(ws, accept_stale=False))
+
+        if info["stale"]:
+            st.markdown("**确认产物无误后，重新基线这些需重跑步骤**（之后它们视为已通过，不会自动重跑）。"
+                        "若其中某些产物确实有问题，请不要勾选，直接在下方步骤表中运行对应步骤。")
+            confirmed = st.checkbox("我已核对：这些步骤的产物内容无误", key="rec_confirm", disabled=busy)
+            if st.button("备份并清除误判标记", key="rec_accept", disabled=busy or not confirmed):
+                _report_recovery(tool_api.recovery_apply(ws, accept_stale=True))
+
+
+def _report_recovery(res: dict) -> None:
+    if not res["ok"]:
+        show_error(res)
+        return
+    data = res["data"]
+    st.success(f"已完成。备份位置：{data['backup']}。点「刷新」查看最新状态。")
+    if data.get("rebaselined"):
+        st.caption(f"已重新基线 {len(data['rebaselined'])} 个需重跑步骤。")
 
 
 def _report_ok(res: dict) -> None:
