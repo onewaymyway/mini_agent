@@ -185,7 +185,7 @@ def run_worker(
         error = f"{type(exc).__name__}: {exc}"
         st.append_usage(ws, {"worker_error": error, "traceback": traceback.format_exc()[-2000:]})
     finally:
-        st.write_control(ws, revision_autorun=False)    # 修改自动重跑只在本次运行内有效
+        st.write_control(ws, revision_autorun=False, revision_autorun_chapter=None)    # 修改自动重跑只在本次运行内有效
         st.release_worker(ws, reason)
         st.log_line(ws, f"═══ 运行结束：{reason}（本次执行 {len(executed)} 步）═══")
         st.write_last_run(ws, {
@@ -299,6 +299,22 @@ def _repair_before_reset(ws: Workspace, target: S.StepDef, *, invoker, settings:
     return repaired
 
 
+def revision_autorun_covers(control: Dict[str, Any], target: S.StepDef) -> bool:
+    """修改意见产生的需重跑，托管挡是否直接自动重跑 target（不再逐个确认）。
+
+    - 未置位：不自动重跑。
+    - 章节修改（置位时带了章号）：只自动重跑该章的步骤。全书设定、蓝图、其它章节的
+      需重跑步骤仍需作者确认——否则一章的修改会把整本书的前序步骤连带重跑。
+    - 全书/蓝图级修订（章号为 None）：保持原有行为，影响范围内的步骤全部自动重跑。
+    """
+    if not control.get("revision_autorun"):
+        return False
+    scope = control.get("revision_autorun_chapter")
+    if scope is None:
+        return True
+    return int(getattr(target, "chapter", 0) or 0) == int(scope)
+
+
 def _loop(
     ws: Workspace, *, mode: str, invoker: Optional[R.Invoker], handlers: Optional[Dict[str, R.PyHandler]],
     budget: Budget, executed: List[Dict[str, Any]], stale_all: List[str], max_steps: Optional[int],
@@ -329,9 +345,8 @@ def _loop(
 
         # 修改意见产生的需重跑：没有剩余的需重跑步骤时，清除标记
         if control.get("revision_autorun") and not any(s == st.ST_STALE for s in statuses.values()):
-            st.write_control(ws, revision_autorun=False)
+            st.write_control(ws, revision_autorun=False, revision_autorun_chapter=None)
             control = st.read_control(ws)
-        revision_auto = bool(control.get("revision_autorun"))
 
         requested = control.get("run_step")
         target: Optional[S.StepDef] = None
@@ -375,7 +390,7 @@ def _loop(
                 continue
             return "stopped" if st.read_control(ws).get("command") == "stop" else "paused"
         if autopilot and status == st.ST_STALE and not requested == target.id and not ideation_auto \
-                and not revision_auto:
+                and not revision_autorun_covers(control, target):
             # 因上游变化而需重跑：派生/报告类步骤自动重跑（只覆盖自身产物）；正文与全书设定类仍需作者确认。
             if AP.stale_decision(target, settings) == "refresh":
                 st.log_line(ws, f"🤖 托管：{target.id} 因上游产物变化，自动重跑（派生/报告类，只覆盖自身产物）")

@@ -15,8 +15,10 @@ from __future__ import annotations
 import datetime as _dt
 import hashlib
 import json
+import os
 import re
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -45,7 +47,85 @@ STATUSES = (
     ST_SKIPPED, ST_STALE, ST_INTERRUPTED, ST_BLOCKED,
 )
 
-_LOCK = threading.RLock()
+class _StateLock:
+    """pipeline_state.json 读-改-写的互斥锁：进程内 RLock + 跨进程文件锁。
+
+    看板、批量入口（advance_all_auto）、worker 是不同进程，都会改写同一个
+    pipeline_state.json。只靠线程锁时，两个进程的「读-改-写」会互相覆盖，
+    一方写回的快照会抹掉另一方刚写入的步骤状态（丢失更新）——表现为已经通过的
+    前序步骤突然变回待执行，流水线从第一步重新跑。这里用一把跨进程的文件锁
+    把整段临界区串行化；可重入（同一线程嵌套获取时只在最外层加文件锁）。
+    """
+
+    def __init__(self) -> None:
+        self._thread_lock = threading.RLock()
+        self._depth = 0
+        self._fh = None
+
+    @staticmethod
+    def _lock_path() -> Path:
+        from novel_writer import config
+
+        path = Path(config.DATA_DIR) / "locks" / "pipeline_state.lock"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def __enter__(self) -> "_StateLock":
+        self._thread_lock.acquire()
+        try:
+            if self._depth == 0:
+                fh = open(self._lock_path(), "a+b")
+                _acquire_file_lock(fh)
+                self._fh = fh
+            self._depth += 1
+        except BaseException:
+            self._thread_lock.release()
+            raise
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self._depth -= 1
+        try:
+            if self._depth == 0 and self._fh is not None:
+                try:
+                    _release_file_lock(self._fh)
+                finally:
+                    self._fh.close()
+                    self._fh = None
+        finally:
+            self._thread_lock.release()
+
+
+def _acquire_file_lock(fh) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        while True:  # Windows 的 locking 不阻塞，轮询直到拿到
+            try:
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                return
+            except OSError:
+                time.sleep(0.02)
+    else:
+        import fcntl
+
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+
+
+def _release_file_lock(fh) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        fh.seek(0)
+        msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+_LOCK = _StateLock()
 
 
 def now_iso() -> str:
@@ -671,12 +751,17 @@ def read_last_run(ws: Workspace) -> Optional[Dict[str, Any]]:
 # revision_autorun：根据修改意见（修订、撤销、章节修改循环、蓝图确认）改动之后置位。
 # 托管挡下，由这些改动产生的「需重跑」步骤直接重跑，不再逐个确认；没有需重跑的步骤时清除，运行结束也会清除。
 CONTROL_DEFAULT: Dict[str, Any] = {"command": "none", "mode": "until_gate", "run_step": None,
-                                   "ideation_autorun": False, "revision_autorun": False}
+                                   "ideation_autorun": False, "revision_autorun": False,
+                                   "revision_autorun_chapter": None}
 
 
-def arm_revision_autorun(ws: Workspace) -> None:
-    """修改意见已经产生了改动：让托管挡自动重跑由此产生的需重跑步骤。"""
-    write_control(ws, revision_autorun=True)
+def arm_revision_autorun(ws: Workspace, chapter: Optional[int] = None) -> None:
+    """修改意见已经产生了改动：让托管挡自动重跑由此产生的需重跑步骤。
+
+    chapter：章节修改（修改循环 / 章节修订）传入章号，自动重跑范围仅限该章的步骤；
+    其它步骤即使已标为需重跑，仍按原有规则停下来等作者确认。None = 全书/蓝图级修订（不限范围）。
+    """
+    write_control(ws, revision_autorun=True, revision_autorun_chapter=chapter)
 
 
 def read_control(ws: Workspace) -> Dict[str, Any]:

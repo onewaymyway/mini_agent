@@ -221,7 +221,7 @@ def h_revision(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker
 
     stale = st.mark_stale(ws, build_plan(ws))
     if stale:
-        st.arm_revision_autorun(ws)     # 根据修改意见产生的需重跑：托管挡自动重跑
+        st.arm_revision_autorun(ws, chapter=int(req.get("chapter") or 0) or None)  # 章节修订：自动重跑范围限定本章
     req["result"] = {"outcome": "修订完成", "stale": stale}
     save_request(ws, req)
     C._log(ws, n, f"修订 {level}（{instruction[:30]}）完成；标为需重跑的步骤 {len(stale)} 个")
@@ -243,7 +243,7 @@ def _revision_cycle(ws: Workspace, step: S.StepDef, req: Dict[str, Any], setting
                             id_prefix=step.id, feedback=feedback)
     stale = st.mark_stale(ws, build_plan(ws)) if result["rounds"] else []
     if stale:
-        st.arm_revision_autorun(ws)     # 修改循环产生的需重跑：托管挡自动重跑
+        st.arm_revision_autorun(ws, chapter=n)  # 修改循环产生的需重跑：托管挡自动重跑（范围限定本章）
     if result["clean"]:
         outcome = f"修改核查完成（{result['rounds']} 轮清零）"
     else:
