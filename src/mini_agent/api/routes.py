@@ -5361,6 +5361,7 @@ import threading as _threading_for_portrait  # noqa: E402  (避免改动文件�
 
 _PORTRAIT_TTL_SECONDS = 60.0        # 画像结果缓存时长
 _PORTRAIT_WAIT_SECONDS = 3.0        # 请求最多等待后台计算的时间，超过则返回缓存/占位结果
+_PORTRAIT_COLD_WAIT_SECONDS = 30.0  # 冷启动（从未算成功过、无缓存可回退）时的等待上限：首次计算要读历史快照/谱系等，3 秒远不够，会导致首开返回空占位
 _LINEAGE_TTL_SECONDS = 300.0        # 谱系视图 = 多次 git 子进程，单独缓存更久
 _portrait_lock = _threading_for_portrait.Lock()
 _portrait_cache: dict = {"at": 0.0, "result": None}
@@ -5553,8 +5554,9 @@ async def get_self_portrait(request: Request):
         fut = _portrait_inflight
 
     # asyncio.wait 不会取消 future：超时后后台计算会继续，结果写入缓存供下次使用
+    wait_seconds = _PORTRAIT_WAIT_SECONDS if cached is not None else _PORTRAIT_COLD_WAIT_SECONDS
     done, _pending = await asyncio.wait(
-        {asyncio.wrap_future(fut)}, timeout=_PORTRAIT_WAIT_SECONDS,
+        {asyncio.wrap_future(fut)}, timeout=wait_seconds,
     )
     if done and fut.exception() is None:
         with _portrait_lock:

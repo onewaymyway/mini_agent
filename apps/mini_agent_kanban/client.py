@@ -617,10 +617,13 @@ class AgentClient:
     def self_status(self):
         return self._get("/self/status")
 
-    def self_portrait(self):
+    def self_portrait(self, timeout: int = 35):
         """[streamlit_self_cognition_dashboard_plan.md] 自我画像 + 能力地图
-        聚合视图，供"🪞 自我认知"区块使用。"""
-        return self._get("/self/portrait")
+        聚合视图，供"🪞 自我认知"区块使用。
+
+        超时要大于服务端冷启动等待上限（routes._PORTRAIT_COLD_WAIT_SECONDS=30s），
+        否则首次打开时客户端先超时，拿到的是错误而不是计算结果。"""
+        return self._get("/self/portrait", timeout=timeout)
 
     def autonomous_status(self):
         return self._get("/autonomous/status")

@@ -100,7 +100,9 @@ def _call(collect, *, wait=None):
         with mock.patch.object(routes, "_collect_self_portrait", collect), \
              mock.patch.object(routes, "_require_owner", lambda _r: None):
             if wait is not None:
-                with mock.patch.object(routes, "_PORTRAIT_WAIT_SECONDS", wait):
+                # 冷启动（无缓存）走 _PORTRAIT_COLD_WAIT_SECONDS，热路径走 _PORTRAIT_WAIT_SECONDS，两者都要压小
+                with mock.patch.object(routes, "_PORTRAIT_WAIT_SECONDS", wait), \
+                     mock.patch.object(routes, "_PORTRAIT_COLD_WAIT_SECONDS", wait):
                     return await routes.get_self_portrait(_make_req())
             return await routes.get_self_portrait(_make_req())
     t = time.time()

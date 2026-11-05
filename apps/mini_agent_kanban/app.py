@@ -9285,6 +9285,19 @@ def _render_self_portrait(client: AgentClient) -> None:
     if "_error" in data:
         st.caption(f"读取失败：{data['_error']}")
         return
+    if data.get("pending"):
+        # 服务端仍在首次计算（返回的是空占位，不能当成真实数据渲染）。
+        # 自动短间隔重跑，最多 10 次，算完后下一次就是完整数据。
+        tries = st.session_state.get("_self_portrait_pending_tries", 0)
+        if tries < 10:
+            st.session_state["_self_portrait_pending_tries"] = tries + 1
+            st.info("⏳ 正在首次计算自我画像，请稍候…")
+            time.sleep(2)
+            st.rerun()
+        st.session_state["_self_portrait_pending_tries"] = 0
+        st.warning("自我画像仍在计算中，请稍后手动刷新页面。")
+        return
+    st.session_state["_self_portrait_pending_tries"] = 0
 
     identity = data.get("identity") or {}
     assessment = data.get("self_assessment") or {}
