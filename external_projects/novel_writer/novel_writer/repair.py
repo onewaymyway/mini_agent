@@ -29,11 +29,11 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from novel_writer import state as st
 from novel_writer.fsutil import atomic_write_text
-from novel_writer.textio import read_text_utf8
+from novel_writer.textio import TextEncodingError, read_text_lenient, read_text_utf8
 from novel_writer.workspace import Workspace
 
 MAX_REPAIR_ATTEMPTS = 6
@@ -72,6 +72,41 @@ def register_validator(name: str):
         VALIDATORS[name] = fn
         return fn
     return deco
+
+
+# 文本编码损坏（`text_encoding`）：校验由 _checker 按请求中的文件逐个进行（见 _encoding_problems）。
+# 这里登记名字，使 request_of() 能识别这类修复请求。
+@register_validator("text_encoding")
+def _text_encoding(ws: Workspace) -> List[str]:
+    return []
+
+
+def _encoding_problems(ws: Workspace, files: List[str]) -> List[str]:
+    """逐个检查文件能否被读取为文本（先尝试自动检测/转存，与正常读取一致）。"""
+    from novel_writer.textio import TextEncodingError, read_text_utf8
+
+    out: List[str] = []
+    for rel in files:
+        path = ws.root / rel
+        if not path.is_file():
+            out.append(f"{rel} 不存在")
+            continue
+        try:
+            read_text_utf8(path)
+        except TextEncodingError as exc:
+            detail = next((line.strip() for line in str(exc).splitlines() if "UTF-8 读取失败" in line), "")
+            out.append(f"{rel} 无法读取为文本（{detail or '编码无法识别'}）")
+    return out
+
+
+def _read_for_prompt(path: Path) -> Tuple[str, bool]:
+    """给 LLM 看的文件内容：能正常读取则用正常结果；否则宽松读取（非法字节显示为 U+FFFD）。返回 (文本, 是否正常)。"""
+    from novel_writer.textio import TextEncodingError, read_text_lenient, read_text_utf8
+
+    try:
+        return read_text_utf8(path), True
+    except TextEncodingError:
+        return read_text_lenient(path)[0], False
 
 
 @register_validator("characters")
@@ -135,7 +170,10 @@ def generic_request(ws: Workspace, step) -> Optional[Dict[str, Any]]:
         p = Path(p)
         if not p.is_file() or p.suffix.lower() not in _TEXT_SUFFIXES:
             continue
-        size = len(read_text_utf8(p))
+        try:
+            size = len(read_text_utf8(p))
+        except TextEncodingError:             # 读不出来的文件正是要修的文件：照样纳入范围，按宽松读取计数
+            size = len(read_text_lenient(p)[0])
         if size > MAX_GENERIC_TEXT_CHARS or total + size > MAX_GENERIC_TEXT_CHARS or len(files) >= MAX_GENERIC_FILES:
             continue                             # 太大的文件不送给 LLM，避免提示词失控
         files.append(_norm(p.relative_to(ws.root)))
@@ -147,6 +185,9 @@ def generic_request(ws: Workspace, step) -> Optional[Dict[str, Any]]:
 
 def _checker(request: Dict[str, Any]):
     """修复后的检查函数：有校验器就用校验器；通用修复没有可重复的校验，就沿用失败原因（由重跑步骤给出结论）。"""
+    if request.get("validator") == "text_encoding":
+        files = list(request.get("files") or [])
+        return lambda ws: _encoding_problems(ws, files)
     if request.get("kind") == GENERIC_KIND:
         problems = list(request.get("problems") or ["步骤失败"])
         return lambda ws: list(problems)
@@ -154,7 +195,8 @@ def _checker(request: Dict[str, Any]):
 
 
 def _build_prompt(step_id: str, request: Dict[str, Any], texts: Dict[str, str], problems: List[str],
-                  *, root: Optional[Path] = None, feedback: Optional[str] = None) -> str:
+                  *, root: Optional[Path] = None, feedback: Optional[str] = None,
+                  extra_rules: Sequence[str] = ()) -> str:
     """root 给出时（受限引擎）：文件一律用绝对路径，并内联 data-repair skill 的全部规则。
     feedback：上一次修复的结果（为什么被撤销、还剩什么问题），让本次修复有针对性地纠正。"""
     def show(rel: str) -> str:
@@ -192,6 +234,7 @@ def _build_prompt(step_id: str, request: Dict[str, Any], texts: Dict[str, str], 
             "- 文件头的 id 必须与文件名一致；同一章的记录只能出现一次。",
             "- 信息确实缺失时，用合法的空值（如 []、null、\"\"）补齐，不得编造。",
         ]
+    lines += list(extra_rules)
     if root is not None:
         lines += [
             "- 你只有读写文件和浏览目录的工具，没有其他能力。这是一次独立的数据修复任务：不要做写作、审核、规划等任何别的事，"
@@ -251,7 +294,16 @@ def repair_attempt(ws: Workspace, step, *, invoker, settings: Dict[str, Any],
     files = [ws.root / rel for rel in request["files"]]
     # 快照整个工作区的文本文件（排除运行日志与导出目录）：LLM 可能改动任何地方，越界改动必须能被还原
     snapshot = _snapshot(ws)
-    texts = {rel: read_text_utf8(ws.root / rel) for rel in request["files"] if (ws.root / rel).is_file()}
+    texts: Dict[str, str] = {}
+    unreadable = False
+    for rel in request["files"]:
+        if (ws.root / rel).is_file():
+            texts[rel], ok = _read_for_prompt(ws.root / rel)
+            unreadable = unreadable or not ok
+    extra_rules = [
+        "- 文件中的「�」是原文件里无法识别的字节。请根据上下文恢复成正确的文字或标点（例如句号「。」），"
+        "并把整个文件保存为 UTF-8 编码。"
+    ] if unreadable else []
 
     what = "步骤多次重试失败，把失败原因交给 LLM 修复" if generic else "数据校验失败，交给 LLM 修复"
     st.log_line(ws, f"🔧 {step.id}：{what}（第 {used}/{max_attempts(settings)} 次）："
@@ -261,14 +313,16 @@ def repair_attempt(ws: Workspace, step, *, invoker, settings: Dict[str, Any],
     if engine(settings) == ENGINE_RESTRICTED:
         # 受限 Agent：不挂 skill（skill=None），只开白名单工具；规则内联进提示词
         result = invoker(
-            skill=None, prompt=_build_prompt(step.id, request, texts, before, root=ws.root, feedback=feedback),
+            skill=None, prompt=_build_prompt(step.id, request, texts, before, root=ws.root, feedback=feedback,
+                                             extra_rules=extra_rules),
             export_dir=export_dir, step_id=f"{step.id}.repair",
             max_turns=REPAIR_MAX_TURNS, timeout=REPAIR_TIMEOUT_SEC,
             allowed_tools=list(REPAIR_ALLOWED_TOOLS),
         )
     else:
         result = invoker(
-            skill=REPAIR_SKILL, prompt=_build_prompt(step.id, request, texts, before, feedback=feedback),
+            skill=REPAIR_SKILL, prompt=_build_prompt(step.id, request, texts, before, feedback=feedback,
+                                                 extra_rules=extra_rules),
             export_dir=export_dir, step_id=f"{step.id}.repair",
             max_turns=REPAIR_MAX_TURNS, timeout=REPAIR_TIMEOUT_SEC,
         )

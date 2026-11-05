@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from novel_writer.textio import read_text_utf8
+from novel_writer.textio import TextEncodingError, read_text_utf8
 from novel_writer import config
 from novel_writer import outlog
 from novel_writer import gates as G
@@ -682,6 +682,11 @@ def run_step(
         fields = {"error": f"{type(exc).__name__}: {exc}",
                   "repair": {"validator": exc.validator, "files": exc.files,
                              "problems": exc.problems, "scope": exc.scope}}
+    except TextEncodingError as exc:        # 文件编码损坏读不出来：收集错误信息，交给修复流程（不盲目重跑）
+        status, fields = st.ST_FAILED, {"error": str(exc)}
+        repair = _encoding_repair_request(ws, exc)
+        if repair is not None:
+            fields["repair"] = repair
     except Exception as exc:  # noqa: BLE001 - 单步异常不能拖垮 worker，记入状态
         status, fields = st.ST_FAILED, {"error": f"{type(exc).__name__}: {exc}"}
         if getattr(exc, "no_retry", False):
@@ -710,6 +715,19 @@ def run_step(
         "status": status, "duration_sec": duration, "error": fields.get("error"),
     })
     return status
+
+
+def _encoding_repair_request(ws: Workspace, exc: TextEncodingError) -> Optional[Dict[str, Any]]:
+    """把文本编码错误转成修复请求（校验器 text_encoding，文件为出错的那个文件）。无法定位文件时返回 None。"""
+    if exc.path is None:
+        return None
+    try:
+        rel = Path(exc.path).relative_to(ws.root).as_posix()
+    except ValueError:
+        return None
+    detail = next((line.strip() for line in str(exc).splitlines() if "UTF-8 读取失败" in line), "编码无法识别")
+    return {"validator": "text_encoding", "files": [rel],
+            "problems": [f"{rel} 无法读取为文本（{detail}）"], "scope": None}
 
 
 def _run_python(

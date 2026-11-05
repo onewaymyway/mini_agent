@@ -106,6 +106,8 @@ novel_writer/
 
 ## 变更记录
 
+- 2026-11-05：文本编码损坏改走修复流程，Python 步骤也支持修复。原因：`第37章_检查报告.md` 含非法字节（中文标点 E3 80 xx 的末字节被替换为 `?`），`revise_loop`（Python 步骤）读取时抛 `TextEncodingError`，自动重跑 3 次（同一代码、同一文件）必然失败，通用修复又因为要先读输入文件而同样失败。修改：`textio.TextEncodingError` 携带 `path`，新增 `read_text_lenient`；`runner.run_step` 把编码错误转成修复请求（校验器 `text_encoding`，文件为出错文件），所有步骤类型通用；`repair.py` 新增 `text_encoding` 校验（逐文件检查能否读取），修复提示词中以 U+FFFD 展示损坏字节并说明如何恢复，通用修复的输入范围也不再因为坏文件而抛错。测试：`tests/test_encoding_repair.py`（6 例）。全量 1022 通过，4 个既有失败与本次无关。
+  未做：G5 对「修复也修不好」的同一错误仍会无限次重置（退避封顶 300 秒）；「同一错误连续出现则暂停并通知作者」尚未实施。
 - 2026-11-05：章节修改后「整本书从头重跑」的修复与状态恢复（多项）。
   - **跨进程丢失更新**：`pipeline_state.json` 的读-改-写原先只有进程内线程锁，看板、`advance_all_auto`、worker 三个进程互相覆盖（实验：4 进程各写 40 条，旧锁只保存下 39/160）。现改为 `state._StateLock`：进程内 RLock + 跨进程文件锁（Linux `flock`，Windows `msvcrt.locking`），可重入。回归测试：`tests/test_autorun_scope_and_state_lock.py`。
   - **修改自动重跑范围**：章节修改（修改循环、章节修订）置位的 `revision_autorun` 原先对所有需重跑步骤生效，包括第 0 章的全书前序步骤。现在 `arm_revision_autorun(ws, chapter=)` 记录章号，`worker.revision_autorun_covers()` 只自动重跑该章的步骤；全书级修订保持原行为。

@@ -32,7 +32,26 @@ _lock = threading.Lock()
 
 
 class TextEncodingError(ValueError):
-    """文本文件无法按 UTF-8 读取，且自动检测/转存失败。消息已含完整诊断信息。"""
+    """文本文件无法按 UTF-8 读取，且自动检测/转存失败。消息已含完整诊断信息。
+
+    path：出问题的文件路径，供修复流程定位文件（RepairableDataError 需要相对工作区的路径）。
+    """
+
+    def __init__(self, message: str = "", *, path: Optional[Path] = None) -> None:
+        super().__init__(message)
+        self.path = Path(path) if path is not None else None
+
+
+def read_text_lenient(path: Path) -> Tuple[str, bool]:
+    """宽松读取：不转存、不抛错。返回 (文本, 是否为合法 UTF-8)；非法字节以 U+FFFD 替换。
+
+    只给修复流程把损坏文件交给 LLM 用，不用于正常读取。
+    """
+    data = Path(path).read_bytes()
+    try:
+        return data.decode("utf-8"), True
+    except UnicodeDecodeError:
+        return data.decode("utf-8", errors="replace"), False
 
 
 def drain_repairs() -> List[Dict[str, Any]]:
@@ -116,7 +135,7 @@ def _fail(path: Path, data: bytes, utf8_err: str, attempts: List[str], extra: st
         lines.append(f"  {extra}")
     lines.append("  处理建议：用编辑器（如 VS Code 右下角编码 → 通过编码重新打开 → 保存为 UTF-8）转存该文件后重跑；"
                  "若文件由 PowerShell 的 `>` 重定向生成，请改用 `Out-File -Encoding utf8` 或 `Set-Content -Encoding utf8`。")
-    return TextEncodingError("\n".join(lines))
+    return TextEncodingError("\n".join(lines), path=path)
 
 
 def read_text_utf8(path: Path, *, repair: bool = True) -> str:
