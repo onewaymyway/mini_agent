@@ -312,6 +312,22 @@ schedule；本功能是"先删后建"，重建出来的是全新 job——**累�
 job 也会恢复成启用**。这是"删除旧任务再注册新任务"的直接后果，看板
 按钮的悬停提示里已写明。
 
+### 6.4 Streamlit 界面（`web_app`）
+
+很多外部项目自带 Streamlit 页面。`project.yaml` 里声明 `web_app` 之后，
+看板「🗂️ 外部项目」Tab 的每张项目卡片会多出一行，可以检测是否运行、
+一键启动/停止、点击「🌐 打开」在浏览器中访问。字段与校验规则见
+[reference/project_yaml_schema.md](../.claude/skills/external-project-manager/reference/project_yaml_schema.md)
+的 `web_app` 节。
+
+与 6.3 的 HTTP 端点不同，这一块**完全由看板本地完成**：看板直接读取
+本机注册表与各项目的 `project.yaml`，直接探测端口、直接 `Popen` 启动
+Streamlit，不经过 daemon，daemon 没有运行也能用。实现位于
+`src/mini_agent/external_projects/web_app.py`。
+
+当前约定端口：world_simulator 8502、stock_watch 8503、novel_writer 8504、
+novel_to_video 8505。
+
 ## 7. daemon 侧调度器（可选）
 
 `mini_agent.external_projects.scheduler.run_due_entrypoints(registry)`

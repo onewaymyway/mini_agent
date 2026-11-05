@@ -181,6 +181,30 @@ class KanbanViewSpec:
     change_state: Optional[KanbanChangeStateSpec] = None
 
 
+_LOCAL_HOST_NAMES = frozenset({"localhost", "127.0.0.1"})
+
+
+@dataclass
+class WebAppSpec:
+    """`project.yaml` 里 `web_app` 块：项目自带的 Streamlit 界面。
+
+    由看板（而不是 daemon）负责探测/启动/停止/打开，见
+    `external_projects/web_app.py` 与 next_doc/external_projects_web_app_plan.md。
+    """
+
+    port: int
+    entry: str = "app.py"                  # 相对项目根目录的 Streamlit 入口文件
+    python: Optional[str] = None           # 项目自己的解释器；缺省 = 启动看板的解释器
+    command: Optional[str] = None          # 完整启动命令覆盖；缺省 = streamlit run <entry> ...
+    host: Optional[str] = None             # 缺省 = 同一台机器；填写则视为远程，看板只探测/打开，不启停
+    health_path: str = "/_stcore/health"   # Streamlit 健康检查路径
+
+    @property
+    def is_remote(self) -> bool:
+        """填了非本机 host 即视为远程：看板只探测与打开，不负责启停。"""
+        return self.host is not None and self.host not in _LOCAL_HOST_NAMES
+
+
 @dataclass
 class ProjectManifest:
     """一份已校验通过的 `project.yaml` 内容。"""
@@ -191,6 +215,7 @@ class ProjectManifest:
     resources: ResourceSpec = field(default_factory=ResourceSpec)
     review: ReviewSpec = field(default_factory=ReviewSpec)
     kanban_view: Optional[KanbanViewSpec] = None
+    web_app: Optional[WebAppSpec] = None
     # manifest 所在目录，即该外部项目的 Workspace root。不是 project.yaml
     # 文件本身声明的字段，而是 load_manifest() 加载时按来源路径回填，方便
     # 调用方（registry/scheduler）不用另外再传一份 root。
@@ -507,6 +532,45 @@ def _parse_kanban_view(
     )
 
 
+_WEB_APP_PORT_MIN = 1024
+_WEB_APP_PORT_MAX = 65535
+
+
+def _parse_web_app(raw: Any) -> Optional[WebAppSpec]:
+    """解析顶层 `web_app` 块（见 WebAppSpec 与 project_yaml_schema.md）。"""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ProjectManifestError("web_app: 必须是一个映射（port/entry/python/command/host/health_path）")
+
+    port = raw.get("port")
+    if isinstance(port, bool) or not isinstance(port, int):
+        raise ProjectManifestError("web_app.port: 必须是整数")
+    if not (_WEB_APP_PORT_MIN <= port <= _WEB_APP_PORT_MAX):
+        raise ProjectManifestError(
+            f"web_app.port: {port} 超出范围（{_WEB_APP_PORT_MIN}-{_WEB_APP_PORT_MAX}）"
+        )
+
+    def _opt_str(key: str, default: Optional[str]) -> Optional[str]:
+        value = raw.get(key, default)
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value.strip():
+            raise ProjectManifestError(f"web_app.{key}: 必须是非空字符串")
+        return value.strip()
+
+    entry = _opt_str("entry", "app.py")
+    health_path = _opt_str("health_path", "/_stcore/health")
+    return WebAppSpec(
+        port=port,
+        entry=entry,
+        python=_opt_str("python", None),
+        command=_opt_str("command", None),
+        host=_opt_str("host", None),
+        health_path=health_path,
+    )
+
+
 def parse_manifest(text: str, *, source_dir: Optional[Path] = None) -> ProjectManifest:
     """从 `project.yaml` 的文本内容解析出 `ProjectManifest`，做结构校验。"""
     try:
@@ -535,6 +599,7 @@ def parse_manifest(text: str, *, source_dir: Optional[Path] = None) -> ProjectMa
     kanban_view = _parse_kanban_view(
         (dashboard or {}).get("kanban_view"), entrypoints=entrypoints
     )
+    web_app = _parse_web_app(data.get("web_app"))
 
     return ProjectManifest(
         name=name,
@@ -543,6 +608,7 @@ def parse_manifest(text: str, *, source_dir: Optional[Path] = None) -> ProjectMa
         resources=resources,
         review=review,
         kanban_view=kanban_view,
+        web_app=web_app,
         source_dir=Path(source_dir).expanduser().resolve() if source_dir else None,
     )
 

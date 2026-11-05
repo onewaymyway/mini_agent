@@ -426,7 +426,7 @@ cd external_projects/stock_watch
 nohup streamlit run app.py --server.port 8503 > streamlit.log 2>&1 &
 ```
 
-Windows 下直接前台运行即可，或用 `start cmd /k "cd /d external_projects\stock_watch && streamlit run app.py --server.port 8501"`。
+Windows 下直接前台运行即可，或用 `start cmd /k "cd /d external_projects\stock_watch && streamlit run app.py --server.port 8503"`。
 
 数据刷新方式：
 - 手动刷新页面（Ctrl+R 或点击刷新按钮）

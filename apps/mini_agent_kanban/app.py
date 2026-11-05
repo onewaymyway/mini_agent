@@ -12981,6 +12981,80 @@ def _render_entrypoint_refresh_result(res: dict) -> None:
         st.caption("未声明 schedule（仅可手动触发）：" + "、".join(f"`{k}`" for k in unscheduled))
 
 
+# [external_projects_web_app_plan.md] 外部项目 Streamlit 界面：探测 / 启动 /
+# 停止 / 打开。由看板直接调用 `mini_agent.external_projects.web_app`，不经过
+# daemon；启动的是独立新进程，看板或 daemon 重启不影响它。
+def _load_web_app_entries() -> dict:
+    try:
+        from mini_agent.external_projects import web_app as _wa
+        return {e.name: e for e in _wa.list_web_app_entries()}
+    except Exception as exc:  # 注册表读取失败不应拖垮整个 tab
+        st.caption(f"Streamlit 应用信息读取失败：{exc}")
+        return {}
+
+
+def _tail_text(path, lines: int = 40) -> str:
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, 2)
+            size = fh.tell()
+            fh.seek(max(0, size - 64 * 1024))
+            data = fh.read().decode("utf-8", errors="replace")
+        return "\n".join(data.splitlines()[-lines:])
+    except OSError:
+        return ""
+
+
+def _render_web_app_row(name: str, entry) -> None:
+    flash = st.session_state.pop(f"webapp_flash_{name}", None)
+    if entry is None:
+        if flash:
+            st.caption(flash)
+        return
+    if entry.error:
+        st.warning(f"Streamlit 应用配置错误：{entry.error}")
+        return
+
+    from mini_agent.external_projects import web_app as wa
+
+    spec = entry.spec
+    status = wa.get_status(name, entry.root, spec)
+    c1, c2, c3 = st.columns([3, 1, 1])
+    where = f" · 主机 {spec.host}（远程）" if spec.is_remote else ""
+    c1.markdown(f"🌐 Streamlit：{status.label} · 端口 {spec.port}{where}")
+    if status.is_up:
+        c2.link_button("🌐 打开", status.url)
+
+    if status.can_start and c3.button("▶️ 启动", key=f"webapp_start_{name}"):
+        ok, msg = wa.start(name, entry.root, spec)
+        if ok:
+            with st.spinner("等待 Streamlit 就绪…"):
+                status = wa.wait_until_ready(name, entry.root, spec)
+            ready = "已就绪" if status.is_up else "未在超时内就绪，请查看日志"
+            st.session_state[f"webapp_flash_{name}"] = f"{msg} → {ready}"
+        else:
+            st.session_state[f"webapp_flash_{name}"] = f"❌ {msg}"
+        st.rerun()
+    if status.can_stop and c3.button("⏹ 停止", key=f"webapp_stop_{name}"):
+        ok, msg = wa.stop(name, entry.root, spec)
+        st.session_state[f"webapp_flash_{name}"] = ("✅ " if ok else "❌ ") + msg
+        st.rerun()
+
+    if flash:
+        st.caption(flash)
+    if status.state == wa.STATE_RUNNING_EXTERNAL:
+        st.caption("该实例不是由看板启动，只能打开，不能由看板停止。")
+    if status.state == wa.STATE_PORT_BUSY:
+        st.warning(status.message)
+    if spec.is_remote:
+        st.caption("远程项目：看板只探测与打开，不负责启停。")
+    if status.log_path and not spec.is_remote:
+        log_tail = _tail_text(status.log_path)
+        if log_tail:
+            with st.expander("Streamlit 日志（最近 40 行）"):
+                st.code(log_tail, language=None)
+
+
 def render_external_projects_tab(client: AgentClient):
     """[external_projects_kanban_integration_plan.md 第一期] 把此前只有
     `mini-agent projects ...` 命令行能访问的外部项目管理能力接入看板：
@@ -13032,6 +13106,7 @@ def render_external_projects_tab(client: AgentClient):
         st.info("当前没有已注册的外部项目。可以在上方「注册新项目」里添加一个。")
         return
 
+    web_entries = _load_web_app_entries()
     for proj in projects:
         name = proj.get("name", "")
         health = proj.get("health", "unknown")
@@ -13059,6 +13134,7 @@ def render_external_projects_tab(client: AgentClient):
                 else:
                     st.rerun()
             st.caption(f"路径：{proj.get('path', '')}")
+            _render_web_app_row(name, web_entries.get(name))
 
             # 更新 entrypoints：用户改了该项目的 project.yaml 之后点一次，
             # 后端先校验最新 manifest，通过后删除该项目名下旧的 ext:* cron

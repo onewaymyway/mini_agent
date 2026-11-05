@@ -69,3 +69,9 @@ review:
 #       id_param: "id"
 #       state_param: "state"
 #       note_param: "note"
+
+# Streamlit 界面（由看板的「外部项目」tab 探测 / 启动 / 打开；字段规范见
+# .claude/skills/external-project-manager/reference/project_yaml_schema.md 的 web_app 节）
+web_app:
+  entry: app.py
+  port: 8502

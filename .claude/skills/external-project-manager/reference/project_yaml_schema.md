@@ -15,6 +15,7 @@
 | `resources` | mapping | 否 | 见下，缺省 `allowed_domains: []`, `max_concurrency: 1` |
 | `review` | mapping | 否 | 见下，缺省 `cadence: weekly`, `enabled: false` |
 | `dashboard.kanban_view` | mapping | 否 | 见下，声明式看板状态视图 |
+| `web_app` | mapping | 否 | 见下，项目自带的 Streamlit 界面（看板探测/启动/打开） |
 
 ## `entrypoints.<key>`
 
@@ -106,3 +107,44 @@ true`，要么给每个可选参数都配 `default`，不要出现"中间某个�
 
 如果项目数据没有"状态流转"语义（纯跑批产出报告类项目），整个
 `dashboard` 块可以省略，看板会退化为通用的账本/日志视图。
+
+## `web_app`
+
+对应 `next_doc/external_projects_web_app_plan.md`。声明项目自带的
+Streamlit 界面。由**看板**（「🗂️ 外部项目」Tab）负责探测是否运行、启动、
+停止与打开链接，**不经过 daemon**，也不影响 daemon 的调度。未声明本块的
+项目，看板不显示 Streamlit 行。
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `port` | int | 是 | 监听端口，范围 1024–65535。同一台机器上多个项目不得重复（注册表里检测到冲突时，相关项目都会显示配置错误）。约定：world_simulator 8502、stock_watch 8503、novel_writer 8504、novel_to_video 8505，新项目请取未占用端口 |
+| `entry` | str | 否，缺省 `app.py` | Streamlit 入口文件，相对项目根目录 |
+| `python` | str | 否 | 该项目的解释器路径。相对路径按项目根解析（如 `.venv/Scripts/python.exe`）。**缺省 = 启动看板的解释器**（通常与 daemon 为同一个环境） |
+| `command` | str | 否 | 完整启动命令，覆盖缺省的 `python -m streamlit run ...`。可用占位符 `{python}`、`{entry}`、`{port}`。按 shell 规则切分，**不经过 shell 执行** |
+| `host` | str | 否 | **不填 = 同一台机器**（看板可启停）。填写非本机地址（如 `192.168.1.20`）= 远程部署：看板只探测与打开链接，不启停。`localhost` / `127.0.0.1` 视为本机 |
+| `health_path` | str | 否，缺省 `/_stcore/health` | Streamlit 健康检查路径；返回 200 且正文含 `ok` 才视为就绪 |
+
+示例：
+
+```yaml
+web_app:
+  entry: app.py
+  port: 8503
+  python: .venv/Scripts/python.exe   # 可选
+```
+
+**运行机制**
+
+- 缺省启动命令：`<python> -m streamlit run <entry> --server.port <port>
+  --server.address 127.0.0.1 --server.headless true
+  --browser.gatherUsageStats false`，工作目录为项目根。
+- 启动的是独立新进程，看板或 daemon 重启不会把它带走；重新打开看板后会通过
+  端口探测重新识别它。
+- 进程 PID 与日志分别记录在 `<项目根>/.run/streamlit.pid` 与
+  `<项目根>/.run/streamlit.log`（`.run/` 已加入仓库 `.gitignore`）。
+- 看板只能停止由看板启动的进程（以 PID 文件判断归属）。手动在终端启动的
+  实例会显示为「运行中（外部启动）」，只能打开，停止要到原终端里操作。
+- 状态：未运行 / 启动中 / 运行中（看板启动）/ 运行中（外部启动）/ 端口被
+  占用（非 Streamlit 程序）/ 远程可达 / 远程不可达。
+- 本块与 `entrypoints` 互不影响；不声明 `schedule`，也不进入 cron。
+

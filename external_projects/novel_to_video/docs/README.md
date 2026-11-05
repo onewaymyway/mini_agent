@@ -17,8 +17,10 @@ python entrypoints/health.py        # 输出 ok 即健康
 ### 界面
 
 ```bash
-streamlit run app.py
+streamlit run app.py --server.port 8505
 ```
+
+也可以在看板「🗂️ 外部项目」Tab 里用「▶️ 启动」「🌐 打开」管理（端口已在 `project.yaml` 的 `web_app` 块中声明为 8505）。
 
 1. 打开「导入导出目录」，填写导出目录路径；
 2. 填写书名（导出包不含书名）；

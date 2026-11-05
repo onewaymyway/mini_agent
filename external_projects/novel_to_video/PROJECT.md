@@ -32,7 +32,7 @@
 - `project_store.py`：项目目录 `<书名>_<时间戳>`，原子写入 JSON/YAML，章节范围解析（`all`、`1-10`、`20-`、`3,7,9-12`），PROGRESS.md 只追加。
 - `tool_api.py`：UI/CLI/daemon 统一接口，返回 `{ok, data, error}`。
 - 入口：`entrypoints/import_novel.py`、`list_projects.py`、`health.py`、`build_assets.py`、`run_chapter.py`、`run_queue.py`、`compose_book.py`。
-- 界面：`streamlit run app.py`，导入页（检查 → 确认报告 → 创建）、项目页（章节表、导出变更提示、进度日志）、全书素材页（G-2/G-3 执行、画廊审核、字段编辑）、章节生产页、设置与队列页、补建角色审核页。
+- 界面：`streamlit run app.py --server.port 8505`（看板可直接启停，端口见 `project.yaml` 的 `web_app` 块），导入页（检查 → 确认报告 → 创建）、项目页（章节表、导出变更提示、进度日志）、全书素材页（G-2/G-3 执行、画廊审核、字段编辑）、章节生产页、设置与队列页、补建角色审核页。
 - Phase 1 新增：
   - `providers/keypool.py`：多 key 池，遇 429 冷却并切 key，400/401/403/404/422 不重试；key 只从环境变量 `AGNES_API_KEYS` / `AGNES_API_KEY` 读取。
   - `providers/image.py`：Agnes 生图（b64 返回）与离线 `StubImageProvider`。

@@ -222,3 +222,4 @@ output/
 external_projects/novel_writer/.agent/
 .agent/output_registry/
 .agent/self_narrative_log.jsonl
+.run/

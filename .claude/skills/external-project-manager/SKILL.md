@@ -76,6 +76,8 @@ mini_agent/external_projects/*.py` 这类框架实现）、与外部项目机制
    注释掉的示例块）；具体字段含义和一个完整的真实案例见
    `external_projects/stock_watch/project.yaml` 的 `dashboard` 部分
    以及 `next_doc/external_projects_generic_kanban_view_refactor_plan.md`。
+   如果项目带 Streamlit 界面，再补 `web_app` 块（`port` 必填，取未被其他项目占用的端口，
+   见 `reference/project_yaml_schema.md` 的 `web_app` 节）；看板即可探测、启动、打开它。
    如果只是"跑批产出报告"，不需要这部分，删掉即可。
 
 6. **本地跑通**：在项目目录下 `python entrypoints/<key>.py`，确认
