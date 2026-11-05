@@ -326,6 +326,28 @@ def recovery_apply(workspace: str, *, accept_stale: bool) -> Dict[str, Any]:
     return _guard(run)
 
 
+def recovery_jump_preview(workspace: str) -> Dict[str, Any]:
+    """状态恢复：跳到最新进度的范围（只读）。"""
+
+    def run() -> Dict[str, Any]:
+        from novel_writer import recovery as _rec
+
+        return _ok(_rec.jump_preview(_workspace_or_raise(workspace)))
+
+    return _guard(run)
+
+
+def recovery_jump_apply(workspace: str) -> Dict[str, Any]:
+    """状态恢复：备份后把最新进度之前的未完成步骤标为已完成（不运行）。"""
+
+    def run() -> Dict[str, Any]:
+        from novel_writer import recovery as _rec
+
+        return _ok(_rec.jump_apply(_workspace_or_raise(workspace)))
+
+    return _guard(run)
+
+
 def write_history(workspace: str, *, path: Optional[str] = None, writer: Optional[str] = None,
                   kind: Optional[str] = None, chapter: Optional[int] = None, limit: int = 200) -> Dict[str, Any]:
     """写入历史（最新在前）：谁在什么时候改写了哪个文件，前后指纹各是什么。跨分段读取。"""

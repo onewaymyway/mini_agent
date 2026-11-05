@@ -102,3 +102,63 @@ def apply(ws: Workspace, *, accept_stale: bool) -> Dict[str, Any]:
         if result["rebaselined"]:
             st.log_line(ws, f"🩹 状态恢复：作者确认 {len(result['rebaselined'])} 个需重跑步骤的产物无误，已重新基线")
     return result
+
+
+# ── 跳到最新进度 ──────────────────────────────────────────────────────────
+
+JUMP_NOTE = "状态恢复：跳到最新进度，视为已完成（未运行）"
+_BLOCKING = (st.ST_WAITING_REVIEW, st.ST_WAITING_USER, st.ST_RUNNING)
+
+
+def jump_preview(ws: Workspace) -> Dict[str, Any]:
+    """计算「跳到最新进度」的范围（只读）。
+
+    最新进度 = 计划顺序中最后一个已完成的步骤；目标 = 它之后第一个未完成的步骤（即下一步要运行的）。
+    目标之前所有未完成的步骤（待运行、需重跑、失败、中断）都会被视为已完成，不会运行。
+    """
+    plan = P.build_plan(ws)
+    states = st.load_state(ws)["steps"]
+
+    def status_of(i: int) -> str:
+        return (states.get(plan[i].id) or {}).get("status", st.ST_PENDING)
+
+    finished = [i for i in range(len(plan)) if status_of(i) in st.FINISHED_STATUSES]
+    if not finished:
+        return {"target": None, "reason": "还没有任何已完成的步骤，无法判断最新进度。", "to_mark": [], "blockers": []}
+    last = max(finished)
+    target = next((i for i in range(last + 1, len(plan)) if status_of(i) not in st.FINISHED_STATUSES), None)
+    if target is None:
+        return {"target": None, "reason": "最新已完成步骤之后没有待运行的步骤。", "to_mark": [], "blockers": []}
+
+    blockers = [{"id": plan[i].id, "title": plan[i].title, "status": status_of(i)}
+                for i in range(target) if status_of(i) in _BLOCKING]
+    to_mark = [{"id": plan[i].id, "title": plan[i].title, "status": status_of(i)}
+               for i in range(target) if status_of(i) not in st.FINISHED_STATUSES and status_of(i) not in _BLOCKING]
+    return {
+        "target": plan[target].id,
+        "target_title": plan[target].title,
+        "last_finished": plan[last].id,
+        "last_finished_title": plan[last].title,
+        "to_mark": to_mark,
+        "blockers": blockers,
+        "reason": None,
+    }
+
+
+def jump_apply(ws: Workspace) -> Dict[str, Any]:
+    """备份后，把目标之前的未完成步骤标为已完成。不运行任何步骤，不改写产物文件。"""
+    if st.worker_alive(ws):
+        raise RecoveryError("worker 仍在运行（心跳正常）。请先点「停止」，等它结束后再操作。")
+    info = jump_preview(ws)
+    if info["target"] is None:
+        raise RecoveryError(info["reason"])
+    if info["blockers"]:
+        names = "、".join(b["title"] for b in info["blockers"][:5])
+        raise RecoveryError(f"目标之前还有等待你处理的步骤（{names}），请先在步骤表中处理它们。")
+
+    backup_dir = backup(ws)
+    for item in info["to_mark"]:
+        st.update_step(ws, item["id"], status=st.ST_PASSED, error=None, note=JUMP_NOTE)
+    st.write_control(ws, revision_autorun=False, revision_autorun_chapter=None)
+    st.log_line(ws, f"⏩ 状态恢复：跳到最新进度，{len(info['to_mark'])} 个步骤视为已完成，下一步 {info['target']}")
+    return {"backup": str(backup_dir), "marked": [i["id"] for i in info["to_mark"]], "target": info["target"]}

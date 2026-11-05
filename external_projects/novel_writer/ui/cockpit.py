@@ -384,7 +384,8 @@ def _render_recovery(ws: str) -> None:
              if has_issue else "🛟 状态恢复")
     with st.expander(label, expanded=has_issue):
         st.caption("误判的「需重跑」标记会让流水线从前面的步骤重新开始。这里只清除标记，"
-                   "不会运行任何步骤，也不会改写产物文件。每次操作前都会先备份状态文件。")
+                   "不会运行任何步骤，也不会改写产物文件。每次操作前都会先备份状态文件。"
+                   "G5 托管挡会自动清除这类标记并继续，无需在这里操作。")
         c1, c2, c3 = st.columns(3)
         c1.metric("修改自动重跑", "开启" if info["revision_autorun"] else "关闭",
                   help=(f"范围：第 {info['revision_autorun_chapter']} 章"
@@ -412,6 +413,38 @@ def _render_recovery(ws: str) -> None:
             confirmed = st.checkbox("我已核对：这些步骤的产物内容无误", key="rec_confirm", disabled=busy)
             if st.button("备份并清除误判标记", key="rec_accept", disabled=busy or not confirmed):
                 _report_recovery(tool_api.recovery_apply(ws, accept_stale=True))
+
+        st.divider()
+        _render_jump_to_latest(ws, busy)
+
+
+def _render_jump_to_latest(ws: str, busy: bool) -> None:
+    """⏩ 跳到最新进度：目标之前的未完成步骤视为已完成，前沿直接停在下一步。不运行任何步骤。"""
+    st.markdown("**⏩ 跳到最新进度**：最新已完成的步骤之后的第一个未完成步骤，就是下一步。"
+                "它之前还没完成的步骤会被视为已完成（不运行）。")
+    res = tool_api.recovery_jump_preview(ws)
+    if not res["ok"]:
+        show_error(res)
+        return
+    info = res["data"]
+    if not info["target"]:
+        st.caption(info["reason"])
+        return
+    st.caption(f"最新已完成：{info['last_finished_title']}　→　下一步：{info['target_title']}　"
+               f"（将视为已完成 {len(info['to_mark'])} 个步骤）")
+    if info["blockers"]:
+        names = "、".join(b["title"] for b in info["blockers"][:5])
+        st.error(f"目标之前还有等待你处理的步骤：{names}。请先在步骤表中处理它们。")
+    if info["to_mark"]:
+        with st.expander(f"查看将被视为已完成的 {len(info['to_mark'])} 个步骤"):
+            show_df(pd.DataFrame([{"步骤": r["id"], "标题": r["title"],
+                                   "当前状态": STATUS_LABEL.get(r["status"], r["status"])}
+                                  for r in info["to_mark"]]), width="stretch", hide_index=True)
+    blocked = busy or bool(info["blockers"])
+    jump_ok = st.checkbox("我已确认：这些步骤确实已完成或不需要运行（它们的产物可能不存在）",
+                          key="rec_jump_confirm", disabled=blocked)
+    if st.button("跳到最新进度", key="rec_jump_go", disabled=blocked or not jump_ok):
+        _report_recovery(tool_api.recovery_jump_apply(ws))
 
 
 def _report_recovery(res: dict) -> None:

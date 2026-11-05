@@ -59,14 +59,19 @@ def _prepare_stale_global_step(ws):
 
 
 def test_chapter_scoped_arming_does_not_rerun_global_steps(tmp_path):
-    """章节 36 的修改产生的需重跑，不能让第 0 章的全书步骤（节奏设计）自动重跑。"""
+    """章节 36 的修改产生的需重跑，不能让第 0 章的全书步骤（节奏设计）重跑。
+
+    G5 下标记会被自动清除并继续：步骤保持已通过、没有重跑。
+    """
     ws = _ws(tmp_path)
     _prepare_stale_global_step(ws)
     st.arm_revision_autorun(ws, chapter=36)
-    res = run_worker(ws, mode="until_gate", invoker=FakeInvoker(ws.root), handlers=DEFAULT_PY_HANDLERS,
-                     heartbeat_interval=0.01)
-    assert res["reason"] == "stale_confirm", res
-    assert st.get_step_state(ws, "design_pacing")["status"] == st.ST_STALE
+    fake = FakeInvoker(ws.root)
+    res = run_worker(ws, mode="until_gate", invoker=fake, handlers=DEFAULT_PY_HANDLERS, heartbeat_interval=0.01)
+    assert res["reason"] != "stale_confirm", res
+    entry = st.get_step_state(ws, "design_pacing")
+    assert entry["status"] == st.ST_PASSED and entry["note"] == st.AUTO_CLEAR_NOTE
+    assert not any(c.startswith("design_pacing") for c in fake.calls)
 
 
 def test_unscoped_arming_keeps_book_level_behavior(tmp_path):

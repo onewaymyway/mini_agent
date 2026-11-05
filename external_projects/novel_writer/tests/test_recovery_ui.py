@@ -81,3 +81,17 @@ def test_panel_blocks_when_worker_alive(tmp_path):
     assert not at.exception, at.exception
     assert any("worker 正在运行" in w.value for w in at.warning)
     assert next(b for b in at.button if b.key == "rec_flags").disabled
+
+
+def test_jump_to_latest_button_moves_frontier(tmp_path):
+    ws = _ws(tmp_path)
+    st.update_step(ws, "ch01.sync", status=st.ST_PASSED)  # 最新已完成的步骤
+    at = AppTest.from_string(SCRIPT % {"ws": str(ws.root)}).run()
+    assert not at.exception, at.exception
+    assert next(b for b in at.button if b.key == "rec_jump_go").disabled  # 未确认前不可点
+    at.checkbox(key="rec_jump_confirm").check().run()
+    next(b for b in at.button if b.key == "rec_jump_go").click().run()
+    assert not at.exception, at.exception
+    assert st.get_step_state(ws, "init_workspace")["status"] == st.ST_PASSED
+    nxt = tool_api.next_step(str(ws.root))["data"]
+    assert nxt["step"] == "ch01.word_quota" or nxt["step"].startswith("ch01.")

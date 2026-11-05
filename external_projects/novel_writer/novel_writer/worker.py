@@ -333,6 +333,9 @@ def _loop(
         settings = ws.settings()
         plan = P.build_plan(ws)
         stale_all.extend(st.mark_stale(ws, plan))
+        if settings.get("gear") == AP.RELENTLESS_GEAR:
+            # G5 托管：上游产物变化不再触发重跑，直接清除标记继续往下跑（作者可在「状态恢复」里查看记录）
+            st.auto_clear_upstream_stale(ws, plan)
         statuses = {sid: entry.get("status", st.ST_PENDING) for sid, entry in st.load_state(ws)["steps"].items()}
         index = P.plan_index(plan)
         positions = {s.id: i for i, s in enumerate(plan)}

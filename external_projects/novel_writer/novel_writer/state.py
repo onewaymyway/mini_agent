@@ -467,8 +467,12 @@ def mark_stale(ws: Workspace, plan: List[StepDef]) -> List[str]:
     return stale_ids
 
 
-def rebaseline_stale(ws: Workspace, plan: List[StepDef], step_ids: Iterable[str]) -> List[str]:
-    """作者确认这些需重跑步骤的产物无误：以当前文件状态重新基线，标为已通过（仅限「上游产物已变化」的标记）。"""
+def rebaseline_stale(ws: Workspace, plan: List[StepDef], step_ids: Iterable[str],
+                     *, note: str = "作者确认产物无误，已重新基线") -> List[str]:
+    """以当前文件状态重新基线这些需重跑步骤，标为已通过（仅限「上游产物已变化」的标记）。
+
+    note：作者手动确认用默认文案；G5 自动清除传入「托管自动清除」，便于事后追溯。
+    """
     done: List[str] = []
     by_id = {step.id: step for step in plan}
     with _LOCK:
@@ -480,14 +484,24 @@ def rebaseline_stale(ws: Workspace, plan: List[StepDef], step_ids: Iterable[str]
                 continue
             if not str(entry.get("note") or "").startswith(_UPSTREAM_NOTE):
                 continue
-            entry.update(status=ST_PASSED, note="作者确认产物无误，已重新基线", updated_at=now_iso(),
+            entry.update(status=ST_PASSED, note=note, updated_at=now_iso(),
                          input_hash=input_hash(ws, step), input_digests=input_digests(ws, step))
             done.append(sid)
         if done:
             atomic_write_json(ws.path("studio_state"), state)
     if done:
-        log_line(ws, f"🩹 作者确认 {len(done)} 个需重跑步骤的产物无误，已重新基线：{', '.join(done[:8])}")
+        log_line(ws, f"🩹 {note}：{len(done)} 个需重跑步骤，{', '.join(done[:8])}")
     return done
+
+
+AUTO_CLEAR_NOTE = "G5 托管：上游产物变化，已自动清除重跑标记并继续（未重跑）"
+
+
+def auto_clear_upstream_stale(ws: Workspace, plan: List[StepDef]) -> List[str]:
+    """G5 托管：把所有「上游产物已变化」的需重跑标记自动清除（以当前文件重新基线），不重跑。"""
+    ids = [sid for sid, entry in load_state(ws)["steps"].items()
+           if entry.get("status") == ST_STALE and str(entry.get("note") or "").startswith(_UPSTREAM_NOTE)]
+    return rebaseline_stale(ws, plan, ids, note=AUTO_CLEAR_NOTE) if ids else []
 
 
 # 迁移规则：旧版本的数据里，某个「锚点」步骤已通过，但它后来拆出的新步骤还没有记录。

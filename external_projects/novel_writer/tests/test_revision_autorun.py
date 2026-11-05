@@ -44,9 +44,10 @@ def _prepare_stale_pacing(ws):
     st.update_step(ws, S.IDEATION_REVIEW_ID, status=st.ST_STALE, note="测试")
 
 
-def test_stale_still_asks_for_confirmation_without_revision(tmp_path):
-    """没有修改意见时，托管挡下的需重跑仍然要求确认（原有保护不变）。"""
+def test_stale_still_asks_for_confirmation_on_g4(tmp_path):
+    """G4 托管挡：没有修改意见时，需重跑仍然要求确认（G5 已改为自动清除标记，见 test_autorun_scope_and_state_lock）。"""
     ws = _ws(tmp_path)
+    ws.save_settings({**ws.settings(), "gear": "G4"})
     _prepare_stale_pacing(ws)
     res = run_worker(ws, mode="until_gate", invoker=FakeInvoker(ws.root), handlers=DEFAULT_PY_HANDLERS,
                      heartbeat_interval=0.01)
