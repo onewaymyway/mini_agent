@@ -52,7 +52,7 @@
 - **幕末的风格幕间对比**：只调用 style-guardian，没有区分「有意调整」与「有害漂移」的结构化结果，结论以报告文本呈现。
 - **修订与灵感是按需步骤**：它们以可选手动步骤出现，只能从总控台或审校/灵感箱页运行，不会自动排队。
 - **章号位数**：仍固定两位（`rel()` 的 nn），超过 99 章需要在后续版本补充。
-- **并发限制**：UI/CLI 对 `pipeline_state.json` 的写入与 worker 同时进行时，同进程内有锁，跨进程靠 worker 每轮重新读盘收敛；极端情况下（worker 执行中同一步被人同时批准/重跑）以后写者为准。
+- **并发限制**：`pipeline_state.json` 的读-改-写由「进程内 RLock + 跨进程文件锁」（`DATA_DIR/locks/pipeline_state.lock`）串行化，看板、批量入口与 worker 不会互相覆盖（2026-11-05 修复前，跨进程写入会丢失步骤状态）。锁只保护单次读-改-写，worker 执行中同一步被人同时批准/重跑时，仍以后写者为准。
 - **章节号位数**：`rel()` 的 `nn` 固定两位；超过 99 章的书需要在 M3 引入 `chapter_number_width`（方案基线 40 章，暂不影响）。
 - **M2 界面未在真实浏览器里点过**：Streamlit AppTest 只能覆盖渲染与控件回调，请本机 `streamlit run app.py` 手动走一遍向导→总控台→规划。
 - **规划页只能改已有章节**：不能增删章节行（需要重新生成蓝图）；编辑会把受影响的已通过步骤标为 stale，由你决定何时重跑。
@@ -106,6 +106,14 @@ novel_writer/
 
 ## 变更记录
 
+- 2026-11-05：章节修改后「整本书从头重跑」的修复与状态恢复（多项）。
+  - **跨进程丢失更新**：`pipeline_state.json` 的读-改-写原先只有进程内线程锁，看板、`advance_all_auto`、worker 三个进程互相覆盖（实验：4 进程各写 40 条，旧锁只保存下 39/160）。现改为 `state._StateLock`：进程内 RLock + 跨进程文件锁（Linux `flock`，Windows `msvcrt.locking`），可重入。回归测试：`tests/test_autorun_scope_and_state_lock.py`。
+  - **修改自动重跑范围**：章节修改（修改循环、章节修订）置位的 `revision_autorun` 原先对所有需重跑步骤生效，包括第 0 章的全书前序步骤。现在 `arm_revision_autorun(ws, chapter=)` 记录章号，`worker.revision_autorun_covers()` 只自动重跑该章的步骤；全书级修订保持原行为。
+  - **状态恢复**：驾驶舱总控台新增「🛟 状态恢复」面板（`ui/cockpit._render_recovery`），逻辑在 `novel_writer/recovery.py`（预览 / 备份 / 清除标记 / 重新基线 / 跳到最新进度）。所有操作先备份 `pipeline_state.json`、`worker.json`、`control.json` 到 `_studio/recovery_backup_<时间>/`，不运行步骤、不改写产物。worker 存活时拒绝操作。`entrypoints/recover_state.py` 调用同一模块，供需要时使用。
+  - **跳到最新进度**：最新已完成步骤之后的第一个未完成步骤为目标；目标之前未完成的步骤（待运行、需重跑、失败、中断）视为已完成（备注 `状态恢复：跳到最新进度，视为已完成（未运行）`）。目标之前若有等待作者处理的步骤（waiting_review/waiting_user），拒绝执行。
+  - **G5 托管挡行为变更**：上游产物变化产生的需重跑标记改为自动清除（以当前文件重新基线，备注 `G5 托管：…已自动清除重跑标记并继续（未重跑）`），流水线继续，不再重跑。G4 及以下保持确认。代价：上游确实变化时下游不会重跑，可能不一致（见 `docs/concept_revision.md`）。`tests/test_revision_autorun.py` 的确认用例改为 G4。
+  - 测试：新增 `tests/test_autorun_scope_and_state_lock.py`、`tests/test_recovery_jump.py`、`tests/test_recovery_ui.py`（AppTest 点击按钮）。novel_writer 全量 1016 通过；4 个既有失败与本次无关（`test_character_repair`、`test_repair_restricted`、`test_step_selfcheck`、`test_write_history`）。`test_auto_retry::test_retry_backoff_grows_and_is_logged` 偶发失败（时序相关，未改动）。
+  - 未做：没有在真实书目上验证 G5 的长时间运行；Windows 下的文件锁只做了代码审查。
 - 2026-11-02：数据修复（data-repair）调用时 run.log 看不到 agent 实时过程。原因：修复调用直接走执行器、没登记 run.log 接收器，输出只进 agent.log。处理：`FrameworkInvoker` 在没有显式接收器时，按 `export_dir` 找到工作目录并镜像（`outlog.sink_for_export_dir`，修复与旧版迁移转换都受益）。`tests/test_outlog.py` 的单写者用例改用工作目录之外的目录，保持原意；`tests/test_log_visibility.py` 新增直接调用与 repair_attempt 两例。
 - 2026-11-02：修复构思审核（ideation_review）因角色文件损坏无限失败。现象：char_004.md 的 psychology 字段含英文双引号，不是合法 JSON，`ideation_review` 抛 `CharacterStoreError`，自动重跑与「不停机」重置反复报同一个错（第 14 次仍失败）。原因：该错误不可修复，不会触发 data-repair。修改：`ideation_review.build_summary` 先 `character_store.repair_dir` 确定性修复，再用 `chapter_ops._characters_or_raise` 读取，仍损坏则抛 `DataFileError`（可修复），由 worker 交给 data-repair 修复并重跑。新增 2 例于 `tests/test_ideation_review.py`（已做变异验证：改回旧读取方式则 2 例失败）；相关测试 49 通过；`test_character_repair` 里 1 例与改动前同样失败（既有）。未做：真实 LLM 下验证 data-repair 能修好这类引号问题；没有追查 char_004.md 最初是怎么被写坏的。
 - 2026-11-02：修复驾驶舱流水线表格「标题」列被长文本撑得特别宽。原因：`ui/step_table/index.html` 里只有「说明」列允许换行，其余列一律 `white-space: nowrap`。现在「标题」（最宽 22rem）、「步骤」id（最宽 16rem）、「说明」（最宽 28rem）都限宽并在列内折行（`overflow-wrap: anywhere`，无空格长串也能折），短列仍单行。只改前端样式，不改数据与接口；`tests/test_step_table.py` 新增 1 例检查组件样式（本环境缺 streamlit，该文件整体无法运行，改用静态检查验证）。未做：浏览器里的实际显示验证。
