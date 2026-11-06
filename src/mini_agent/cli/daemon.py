@@ -176,6 +176,51 @@ def _supervisor_pid_file(project_root: Path) -> Path:
     return project_root / ".agent" / "daemon_supervisor.pid"
 
 
+# ── 看板重启 daemon：启动参数记录 + 重启状态文件（daemon restart 子命令使用）──
+
+def _launch_config_file(project_root: Path) -> Path:
+    return project_root / ".agent" / "daemon_launch.json"
+
+
+def _restart_status_file(project_root: Path) -> Path:
+    return project_root / ".agent" / "daemon_restart_status.json"
+
+
+def _save_launch_config(project_root: Path, http_port: int, extra_argv: list) -> None:
+    """记录最近一次 `daemon start` 的参数，供 `daemon restart` 原样复现启动。
+    文件可能含 token 类参数，和 agent_api.key 一样只放在 .agent/ 下，并尽量收紧权限。"""
+    path = _launch_config_file(project_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"http_port": int(http_port), "extra_argv": list(extra_argv or [])},
+                               ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+def _load_launch_config(project_root: Path) -> Optional[dict]:
+    path = _launch_config_file(project_root)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return {"http_port": data.get("http_port"), "extra_argv": list(data.get("extra_argv") or [])}
+
+
+def _write_restart_status(project_root: Path, stage: str, message: str, **extra) -> None:
+    """重启进度：stage 为 stopping / waiting / starting / done / failed。看板读取此文件展示进度。"""
+    path = _restart_status_file(project_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"stage": stage, "message": message, "updated_at": time.time(), "pid": os.getpid()}
+    payload.update(extra)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+
+
 # ── 卡死判定：核心调度心跳磁盘旁路（daemon_dual_signal_hang_detection_plan.md 阶段B）──
 #
 # 写入方是 `evolution/scheduler_heartbeat.py::SchedulerHeartbeat._write_status_file()`
@@ -1250,6 +1295,11 @@ def cmd_daemon_start(
     ]
     if extra_argv:
         base_cmd.extend(extra_argv)
+    # 记录本次启动参数，供看板/命令行 `daemon restart` 原样复现（见 cmd_daemon_restart）
+    try:
+        _save_launch_config(project_root, http_port, extra_argv or [])
+    except OSError:
+        pass
 
     if not detach:
         # 前台运行：直接 exec
@@ -1716,13 +1766,94 @@ def _format_duration(seconds: float) -> str:
 
 # ── 主入口：处理 `mini-agent daemon` 子命令 ──────────────────────────────────
 
+_RESTART_IN_PROGRESS_STAGES = ("stopping", "waiting", "starting")
+
+
+def _restart_in_progress(project_root: Path, max_age_seconds: float = 600.0) -> bool:
+    """另一个 restart 进程是否还在进行中（防止看板连点或并发触发两次重启）。"""
+    path = _restart_status_file(project_root)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if data.get("stage") not in _RESTART_IN_PROGRESS_STAGES:
+        return False
+    if time.time() - float(data.get("updated_at") or 0) > max_age_seconds:
+        return False
+    pid = data.get("pid")
+    return bool(pid) and pid != os.getpid() and _is_process_alive(int(pid))
+
+
+def _daemon_fully_gone(project_root: Path) -> bool:
+    """daemon 与 supervisor 都已退出（PID 文件不再指向存活进程）。"""
+    if _read_daemon_info(project_root) is not None:
+        return False
+    sup = _supervisor_pid_file(project_root)
+    if sup.exists():
+        try:
+            sup_pid = int(sup.read_text().strip())
+        except (OSError, ValueError):
+            sup_pid = None
+        if sup_pid and _is_process_alive(sup_pid):
+            return False
+    return True
+
+
+def cmd_daemon_restart(project_root: Path, wait_timeout_seconds: float = 60.0) -> int:
+    """
+    `mini-agent daemon restart`（看板“重启 daemon”按钮调用，也可在命令行直接用）
+
+    整体流程：停止 daemon 连同 supervisor（复用 cmd_daemon_stop）→ 等待两者都退出 →
+    按 .agent/daemon_launch.json 记录的参数重新后台启动（复用 cmd_daemon_start）。
+    每一步写入 .agent/daemon_restart_status.json，看板据此展示进度。
+    """
+    if _restart_in_progress(project_root):
+        print("[daemon] 已有一次重启正在进行中，忽略本次请求。")
+        return 1
+
+    requested_by = os.environ.get("MINI_AGENT_RESTART_REQUESTED_BY", "")
+    prev = _read_daemon_info(project_root) or {}
+    cfg = _load_launch_config(project_root)
+    http_port = (cfg or {}).get("http_port") or prev.get("http_port") or 8765
+    extra_argv = list((cfg or {}).get("extra_argv") or [])
+    note = "" if cfg else "（未找到启动参数记录，按端口 {} 默认参数启动）".format(http_port)
+
+    _write_restart_status(project_root, "stopping", "正在停止 daemon 及 supervisor…",
+                          requested_by=requested_by, http_port=int(http_port))
+    cmd_daemon_stop(project_root)  # 没有运行中的 daemon 时返回 1，这里不视为错误
+
+    _write_restart_status(project_root, "waiting", "等待旧进程退出…",
+                          requested_by=requested_by, http_port=int(http_port))
+    deadline = time.time() + wait_timeout_seconds
+    while not _daemon_fully_gone(project_root):
+        if time.time() > deadline:
+            _write_restart_status(project_root, "failed",
+                                  f"等待旧 daemon 退出超时（{int(wait_timeout_seconds)}s），未执行启动。"
+                                  "请查看 .agent/daemon.log，必要时手动执行 daemon stop。",
+                                  requested_by=requested_by)
+            return 1
+        time.sleep(0.5)
+
+    _write_restart_status(project_root, "starting", "正在启动新的 daemon…" + note,
+                          requested_by=requested_by, http_port=int(http_port))
+    rc = cmd_daemon_start(project_root, http_port=int(http_port), detach=True, extra_argv=extra_argv)
+    if rc == 0:
+        _write_restart_status(project_root, "done", f"daemon 已重启（端口 {http_port}）。" + note,
+                              requested_by=requested_by, http_port=int(http_port))
+    else:
+        _write_restart_status(project_root, "failed",
+                              f"启动失败（退出码 {rc}），请查看 .agent/daemon.log。",
+                              requested_by=requested_by, http_port=int(http_port))
+    return rc
+
+
 def run_daemon_cli(argv: list[str], project_root: Path) -> int:
     """
     处理 `mini-agent daemon <subcommand>` 的入口。
     返回退出码。
     """
     if not argv:
-        print("Usage: mini-agent daemon <start|stop|status>")
+        print("Usage: mini-agent daemon <start|stop|restart|status>")
         return 1
 
     subcmd = argv[0]
@@ -1766,12 +1897,15 @@ def run_daemon_cli(argv: list[str], project_root: Path) -> int:
     elif subcmd == "stop":
         return cmd_daemon_stop(project_root)
 
+    elif subcmd == "restart":
+        return cmd_daemon_restart(project_root)
+
     elif subcmd == "status":
         return cmd_daemon_status(project_root)
 
     else:
         print(f"Unknown daemon subcommand: {subcmd!r}")
-        print("Usage: mini-agent daemon <start|stop|status>")
+        print("Usage: mini-agent daemon <start|stop|restart|status>")
         return 1
 
 

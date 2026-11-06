@@ -1190,6 +1190,49 @@ def _render_queue_panel(client: AgentClient, session_id: str = "") -> None:
         st.text(input_preview + ("…" if len(t.get("input") or "") > 120 else ""))
 
 
+def _render_daemon_restart_control() -> None:
+    """[看板“重启 daemon”功能] 仅管理员可见。整个 daemon 连同 supervisor 重启（同机）。
+
+    权限在这里做服务端校验（不只是隐藏按钮）：需开启 --require-login、已登录且为管理员。
+    实际执行与进度见 daemon_restart.py 与 `mini-agent daemon restart`。
+    """
+    import daemon_restart as dr
+    from auth import UserStore
+
+    cli = _parse_cli_args()
+    root = Path(cli.project_root).expanduser().resolve() if cli.project_root.strip() else Path.cwd().resolve()
+    users_file, _secret, _attempts, _sessions = _auth_paths(cli)
+    me = st.session_state.get("username", "") if cli.require_login else ""
+    is_admin = bool(me) and UserStore(users_file).is_admin(me)
+    if not dr.can_restart(cli.require_login, me, is_admin):
+        return  # 非管理员 / 未开启登录门禁：不显示该功能
+
+    status = dr.read_status(root)
+    busy = dr.is_busy(status)
+    with st.expander("🔁 重启 daemon（管理员）", expanded=busy):
+        st.caption("同机重启：停止 daemon 及 supervisor，再按启动时的参数重新后台启动。"
+                   "正在执行的任务会被中断，请先确认没有重要任务在跑。")
+        if status:
+            stage = status.get("stage", "")
+            msg = status.get("message", "")
+            when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(status.get("updated_at") or 0))
+            if busy:
+                st.info(f"⏳ 重启进行中（{stage}）：{msg}（{when}）")
+            elif stage == "done":
+                st.success(f"✅ {msg}（{when}）")
+            elif stage == "failed":
+                st.error(f"❌ {msg}（{when}）")
+        confirmed = st.checkbox("我确认要重启 daemon（会中断正在执行的任务）", key="daemon_restart_confirm",
+                                disabled=busy)
+        if st.button("🔁 重启 daemon", key="daemon_restart_btn", disabled=(busy or not confirmed),
+                     type="primary"):
+            ok, text = dr.launch_restart(root, me)
+            (st.success if ok else st.error)(text)
+            if ok:
+                time.sleep(1.0)
+                st.rerun()
+
+
 def _render_scheduling_pause_control(client: AgentClient, autostat: dict) -> None:
     """[看板"停止调度"功能] 顶栏常驻的全局调度暂停/恢复控件。
 
@@ -1699,6 +1742,8 @@ def _render_topbar_body(client: AgentClient, session_id: str = ""):
         st.caption(f"📁 session 目录: `{status['session_dir']}`")
 
     _render_scheduling_pause_control(client, autostat)
+
+    _render_daemon_restart_control()
 
     _render_daemon_current_tasks(client, autostat)
 
