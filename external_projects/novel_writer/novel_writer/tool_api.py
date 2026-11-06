@@ -460,6 +460,30 @@ def save_intake(workspace: str, intake: Dict[str, Any]) -> Dict[str, Any]:
     return _guard(run)
 
 
+SETTING_DOC_MAX_CHARS = 200_000  # 上限仅用于拒绝明显异常的粘贴；内容一律全文使用，不做截断或摘要
+
+
+def save_setting_doc(workspace: str, text: Optional[str]) -> Dict[str, Any]:
+    """保存新建时提供的设定文档（Markdown，全文）：写 `_studio/setting_doc.md`，供运行器注入每一步提示词，
+    标明“仅供参考”。文本为空则删除该文件。与灵感构思交接的种子互不影响。"""
+
+    def run() -> Dict[str, Any]:
+        ws = _workspace_or_raise(workspace)
+        body = (text or "").replace("\r\n", "\n").strip()
+        path = ws.path("setting_doc")
+        if not body:
+            if path.exists():
+                path.unlink()
+            return _ok({"chars": 0, "saved": False})
+        if len(body) > SETTING_DOC_MAX_CHARS:
+            return _err("validation_error",
+                        f"设定文档过长（{len(body)} 字），上限 {SETTING_DOC_MAX_CHARS} 字；请精简后再提交。")
+        _views.atomic_write_text(path, body + "\n")
+        return _ok({"chars": len(body), "saved": True})
+
+    return _guard(run)
+
+
 def get_intake(workspace: str) -> Dict[str, Any]:
     def run() -> Dict[str, Any]:
         ws = _workspace_or_raise(workspace)

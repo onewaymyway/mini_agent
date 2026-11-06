@@ -154,6 +154,7 @@ PATHS: Dict[str, str] = {
     "studio_inbox": f"{STUDIO_DIR}/inbox",
     "studio_requests": f"{STUDIO_DIR}/requests",
     "intake_note": f"{STUDIO_DIR}/intake_note.md",
+    "setting_doc": f"{STUDIO_DIR}/setting_doc.md",
     "brainstorm_seed_note": f"{STUDIO_DIR}/seed/brainstorm_seed.md",
 }
 

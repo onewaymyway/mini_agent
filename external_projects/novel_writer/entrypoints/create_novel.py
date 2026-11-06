@@ -27,6 +27,7 @@ def main() -> int:
     parser.add_argument("--gear", default="G0", choices=list(GEARS), help="控制挡位，默认 G0 手动挡")
     parser.add_argument("--quality", default="standard", choices=list(QUALITIES), help="质量档位，默认 standard")
     parser.add_argument("--total-chapters", type=int, default=0, help="计划章节数（可选，蓝图生成后会更新）")
+    parser.add_argument("--setting-doc", default=None, help="设定文档（Markdown 文件路径，可选，全文作为参考）")
     args = parser.parse_args()
 
     ensure_dirs()
@@ -41,6 +42,13 @@ def main() -> int:
         print(f"创建失败：{result['error']['message']}")
         return 1
     data = result["data"]
+    if args.setting_doc:
+        from pathlib import Path as _Path
+        doc_text = _Path(args.setting_doc).read_text(encoding="utf-8")
+        doc = tool_api.save_setting_doc(data["workspace"], doc_text)
+        if not doc["ok"]:
+            print(f"设定文档保存失败：{doc['error']['message']}")
+            return 1
     print(f"workspace={data['workspace']}")
     print(f"title={data['title']}")
     print("already_initialized=" + str(data["already_initialized"]).lower())

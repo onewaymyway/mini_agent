@@ -29,6 +29,11 @@ def page_wizard() -> None:
         quality = st.selectbox("质量档位", list(QUALITIES), format_func=lambda q: QUALITIES[q], index=1)
 
         st.subheader("创作意图")
+        setting_doc = st.text_area(
+            "设定文档（Markdown，可直接粘贴，可选）", height=260, key="w_setting_doc",
+            help="一篇设定文档可以代替下面的大部分字段。全文会作为“仅供参考”的设定提供给每一步；"
+                 "与蓝图冲突时以蓝图为准。",
+        )
         values = {}
         for key, label, multiline in I.INTAKE_FIELDS:
             if key == "ending":
@@ -55,5 +60,8 @@ def page_wizard() -> None:
     saved = tool_api.save_intake(path, values)
     if not saved["ok"]:
         st.warning(f"小说已创建，但意图保存失败：{saved['error']['message']}")
+    doc = tool_api.save_setting_doc(path, setting_doc)
+    if not doc["ok"]:
+        st.warning(f"小说已创建，但设定文档保存失败：{doc['error']['message']}")
     st.success(f"已创建：{path}")
     st.button("进入驾驶舱 →", key="wizard_enter", on_click=open_novel, args=(path,))

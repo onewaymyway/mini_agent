@@ -148,6 +148,9 @@ def _intake_block(ws: Workspace) -> str:
     note = _read_text(ws.path("intake_note")).strip()
     if note:
         parts.append(note)
+    setting = _read_text(ws.path("setting_doc")).strip()
+    if setting:
+        parts.append("【作者设定文档（仅供参考，与蓝图冲突时以蓝图为准）】\n" + setting)
     seed = _read_text(ws.path("brainstorm_seed_note")).strip()
     if seed:
         parts.append("【构思种子（来自灵感构思工作室；仅供参考，与蓝图冲突时以蓝图为准）】\n" + seed)
