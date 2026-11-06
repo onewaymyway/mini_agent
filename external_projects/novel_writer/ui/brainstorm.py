@@ -393,6 +393,28 @@ def _web_access_toggle(root: str, busy: bool) -> None:
         st.warning("已开启：模型可以自动执行命令、访问网络和浏览器。网页内容可能包含误导性指令，请留意对话与产物。")
 
 
+def _save_setting_doc_copy(root: str) -> None:
+    r = BA.setting_doc_save(root)
+    if not r["ok"]:
+        st.session_state["bs_export_error"] = r["error"]["message"]
+
+
+def _export_setting_doc_button(root: str) -> None:
+    """导出当前全部成果为 Markdown 设定文档：下载，同时在项目的 exports/ 目录留一份副本。"""
+    res = BA.setting_doc_markdown(root)
+    if not res["ok"]:
+        show_error(res)
+        return
+    d = res["data"]
+    st.download_button("📄 导出设定文档（Markdown）", data=d["markdown"].encode("utf-8"),
+                       file_name=d["filename"], mime="text/markdown", key="bs_export_setting_doc",
+                       on_click=_save_setting_doc_copy, args=(root,),
+                       help="把当前构思的全部成果（题材卡、命题、灵感池、世界观、角色、剧情骨架、备选方案、开放问题）导出为一份 Markdown 设定文档。")
+    err = st.session_state.pop("bs_export_error", None)
+    if err:
+        st.warning(f"设定文档已下载，但保存副本失败：{err}")
+
+
 def _outputs_panel(root: str, busy: bool) -> None:
     """对话区上方：当前构思的全部成果（只读）。每一组可以点「让AI修改」，把它设为下一句话的修改对象。"""
     res = BA.outputs(root)
@@ -413,6 +435,7 @@ def _outputs_panel(root: str, busy: bool) -> None:
                          help="下一句话会针对这一项提出修改"):
                 st.session_state["bs_focus"] = sec["key"]
         st.caption("修改请求只会生成待确认的提议，采纳后才写入。")
+        _export_setting_doc_button(root)
 
 
 def _dialogue_tab(root: str) -> None:

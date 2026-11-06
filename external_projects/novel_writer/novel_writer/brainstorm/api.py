@@ -277,6 +277,22 @@ def outputs(root: str) -> Dict[str, Any]:
     return _guard(lambda: OL.outputs(_ws(root)))
 
 
+def setting_doc_markdown(root: str) -> Dict[str, Any]:
+    """把当前构思草稿的全部成果导出为小说设定文档（Markdown 文本 + 建议文件名）。"""
+    from novel_writer.brainstorm import export as EX
+
+    def run() -> Dict[str, Any]:
+        ws = _ws(root)
+        return {"markdown": EX.build_markdown(ws), "filename": EX.export_filename(ws)}
+    return _guard(run)
+
+
+def setting_doc_save(root: str) -> Dict[str, Any]:
+    """保存一份导出副本到 <构思项目>/exports/。"""
+    from novel_writer.brainstorm import export as EX
+    return _guard(lambda: {"path": str(EX.save_export(_ws(root)))})
+
+
 def chat_run(root: str, turn_id: str) -> Dict[str, Any]:
     return _guard(lambda: CH.run_state(_ws(root), turn_id))
 
