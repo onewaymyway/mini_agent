@@ -1239,6 +1239,10 @@ def _collect_restart_gate() -> dict:
     }
 
 
+# 重启按钮诊断面板开关（排查完毕后关闭；需要时改为 True 即可重新显示）
+_DAEMON_RESTART_DIAGNOSTICS_ENABLED = False
+
+
 def _render_daemon_restart_diagnostics() -> None:
     """[重启按钮诊断] 始终可见的折叠面板：列出按钮是否显示的每一项判断依据。
     不论是否管理员都能看到（只含路径/用户名/布尔值，不含密钥），便于排查“为什么没有按钮”。"""
@@ -16883,7 +16887,8 @@ def main():
     client = render_sidebar()
 
     # 重启按钮不依赖 daemon 状态：daemon 卡死/不可达时顶栏会提前返回，按钮必须仍然可见
-    _render_daemon_restart_diagnostics()
+    if _DAEMON_RESTART_DIAGNOSTICS_ENABLED:
+        _render_daemon_restart_diagnostics()
     _render_daemon_restart_control()
 
     if not client.health():
