@@ -323,16 +323,16 @@ class AgnesVideoClient:
             return self._cancel_result()
 
     def _get_impl(self, url: str, params: dict) -> dict:
-        """带重试的 GET（任务轮询也可能被限流），限流自动切换 key：
-        遇到 429 / 限流关键字时，若 key_pool 里还有可用 key，立即换 key
-        重试且不计入 max_retries；非限流错误走原有 sleep-and-retry。"""
+        """带重试的 GET。轮询固定使用提交任务时的那把 key（远端任务只在该 key 下可查）：
+        遇到 429 / 限流关键字时，在同一把 key 上按排队重试间隔等待，不计入 max_retries，
+        总等待不超过 queue_wait_seconds；非限流错误走原有 sleep-and-retry。"""
         last_err = None
         attempt = 0
+        rate_limit_waited = 0.0
 
         while attempt < self.max_retries:
             self._check_cancel()
-            if self.key_pool:
-                self.api_key = self.key_pool.acquire()
+            # 不再 acquire：self.api_key 就是 POST 成功时使用的 key，轮询沿用它
 
             resp = None
             try:
@@ -362,13 +362,16 @@ class AgnesVideoClient:
                               f"本镜头的远端任务属于该 key，将整条重新提交换 key")
                         return {"success": False, "error": last_err, "non_retryable": True, "key_restricted": True}
 
-                    if self.key_pool and is_rate_limit_error(resp.status_code, resp.text):
-                        print(f"    [限流·服务端原始返回] status_code={resp.status_code}: "
-                              f"{self._raw_snippet(resp.text)}")
-                        next_key = self.key_pool.report_rate_limit(self.api_key)
-                        if next_key:
-                            self.api_key = next_key
-                            continue  # 换 key 立即重试，不计入 attempt
+                    if is_rate_limit_error(resp.status_code, resp.text):
+                        # 轮询限流：远端任务属于当前 key，不换 key，同一把 key 等待后重试
+                        if rate_limit_waited >= self.queue_wait_seconds:
+                            print(f"    [GET 限流超时] 已限流等待 {int(rate_limit_waited)}s，放弃: {self._raw_snippet(resp.text)}")
+                            return {"success": False, "error": last_err}
+                        print(f"    [GET 限流] status_code={resp.status_code}，沿用同一 key {self._describe(self.api_key)}，"
+                              f"{self.queue_retry_interval}s 后重试（不计入重试次数）: {self._raw_snippet(resp.text)}")
+                        self._sleep(self.queue_retry_interval)
+                        rate_limit_waited += self.queue_retry_interval
+                        continue
 
                     if is_non_retryable_error(resp.status_code, resp.text):
                         print(f"    [GET 不可重试错误] status_code={resp.status_code}，"

@@ -159,3 +159,31 @@ def test_queue_full_retries_keep_the_same_key_even_in_round_robin(client_cls, mo
     out = c._post("http://x/videos", {})
     assert out == {"video_id": "v"}
     assert len(set(sent_keys)) == 1, sent_keys        # 三次 POST 都用同一把 key
+
+
+def test_polling_is_pinned_to_the_submitting_key(client_cls, monkeypatch):
+    slept = []
+    monkeypatch.setattr(time, "sleep", lambda s: slept.append(s))
+    pool = _pool_cls()(["k1", "k2", "k3", "k4"], rotation="round_robin")
+    post_keys, get_keys = [], []
+
+    class _S:
+        def __init__(self):
+            self.gets = [_Resp(429, "rate limit exceeded"), _Resp(429, "rate limit exceeded"),
+                         _Resp(200, body={"status": "pending"}), _Resp(200, body={"status": "pending"})]
+
+        def post(self, url, headers=None, **k):
+            post_keys.append(headers["Authorization"].split()[-1])
+            return _Resp(200, body={"video_id": "v1"})
+
+        def get(self, url, headers=None, **k):
+            get_keys.append(headers["Authorization"].split()[-1])
+            return self.gets.pop(0)
+
+    c = client_cls(key_pool=pool, max_retries=2, queue_wait_seconds=3600)
+    c.session = _S()
+    assert c._post("http://x/videos", {}) == {"video_id": "v1"}
+    for _ in range(4):
+        c._get("http://x/query", {"video_id": "v1"})
+    assert set(get_keys) == {post_keys[0]}, (post_keys, get_keys)    # 轮询全部沿用提交任务的 key
+    assert slept.count(c.queue_retry_interval) >= 2                  # 限流时按间隔等待，而不是换 key
