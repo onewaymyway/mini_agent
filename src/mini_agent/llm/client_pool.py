@@ -162,8 +162,9 @@ class ApiKeyPool:
                     )
                     break
 
-            # 切换到下一个可用 key
-            next_key = self._find_available()
+            # 切换到下一个可用 key：从失败的 key 自己的位置往后找，而不是从共享指针往后找
+            # （指针可能已被其它调用推进，否则会跳过或选错 key）
+            next_key = self._find_available(after=key)
             if next_key is not None:
                 logger.info("ApiKeyPool: switched to key %s", mask_api_key(next_key))
             return next_key
@@ -217,11 +218,13 @@ class ApiKeyPool:
                 return
         # 全部冷却中，保持当前索引（等待）
 
-    def _find_available(self) -> Optional[str]:
-        """找到第一个可用 key 并更新 _idx（已持锁时调用）。"""
+    def _find_available(self, after: Optional[str] = None) -> Optional[str]:
+        """找到第一个可用 key 并更新 _idx（已持锁时调用）。
+        after 为失败的 key：从它的位置往后找；为 None 时从当前指针开始。"""
         n = len(self._states)
+        base = next((i for i, st in enumerate(self._states) if st.key == after), self._idx) if after is not None else self._idx
         for delta in range(1, n + 1):
-            nxt = (self._idx + delta) % n
+            nxt = (base + delta) % n
             if self._states[nxt].is_available:
                 self._idx = nxt
                 return self._states[nxt].key
