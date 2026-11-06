@@ -101,7 +101,7 @@ class SkillImageProvider(ImageProvider):
 # use_system_proxy 默认 False：视频创建、查询与下载都不读取系统代理（环境变量与 Windows 注册表）。
 # 系统代理若不允许访问视频下载域名，会出现 403；需要时在挡位页勾选“使用系统代理”。
 DEFAULT_VIDEO_CFG = {"max_wait_sec": 3600, "max_retries": 5, "queue_wait_sec": 3600,
-                     "poll_interval_sec": 5, "use_system_proxy": False}
+                     "queue_retry_interval_sec": 5, "poll_interval_sec": 5, "use_system_proxy": False}
 
 
 class SkillVideoProvider(VideoProvider):
@@ -117,6 +117,7 @@ class SkillVideoProvider(VideoProvider):
         self.use_system_proxy = bool(cfg.get("use_system_proxy", False))
         self.client = modules()["video"].AgnesVideoClient(
             key_pool=pool, max_retries=int(cfg["max_retries"]), queue_wait_seconds=int(cfg["queue_wait_sec"]),
+            queue_retry_interval=float(cfg["queue_retry_interval_sec"]),
             use_system_proxy=self.use_system_proxy)
 
     def generate(self, prompt: str, save_path: Path, *, seconds: int, reference_images: List[Path],

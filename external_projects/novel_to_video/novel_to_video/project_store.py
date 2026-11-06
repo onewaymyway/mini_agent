@@ -32,7 +32,8 @@ MAX_AUTO_FIX_RETRIES = 5       # 界面与接口允许设置的上限
 # 视频接口的等待与重试（可在挡位页调整）
 # use_system_proxy：视频创建/查询/下载是否使用系统代理。默认 False（直连）；
 # 代理不允许访问视频下载域名时会出现 403，因此不默认使用。
-DEFAULT_VIDEO_WAIT = {"max_wait_sec": 3600, "max_retries": 5, "queue_wait_sec": 3600, "use_system_proxy": False}
+DEFAULT_VIDEO_WAIT = {"max_wait_sec": 3600, "max_retries": 5, "queue_wait_sec": 3600,
+                     "queue_retry_interval_sec": 5, "use_system_proxy": False}
 # 视频输出格式与轮询（默认横屏 16:9、720P、24fps），见 video_format.py
 from .video_format import DEFAULT_FORMAT as _DEFAULT_FORMAT  # noqa: E402
 DEFAULT_VIDEO_SETTINGS = {**_DEFAULT_FORMAT, **DEFAULT_VIDEO_WAIT}

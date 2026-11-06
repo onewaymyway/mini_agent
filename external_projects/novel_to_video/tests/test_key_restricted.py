@@ -131,7 +131,7 @@ def test_video_shot_logs_all_keys_with_status_masked(mods, tmp_path, monkeypatch
     c.generate_video(prompt="p")
     log = capsys.readouterr().out
     assert "共 3 把" in log and "#1" in log and "#2" in log and "#3" in log
-    assert "本镜头使用 key #1" in log
+    assert "本镜头使用 key" not in log   # 启动时不再声称某把 key 已在使用，实际发送时才打印（见 test_post_logs_the_key_actually_sent）
     assert K1 not in log and K2 not in log and K3 not in log
 
 
@@ -251,3 +251,21 @@ def test_download_failure_prints_http_response_body(mods, monkeypatch, capsys, t
         c._save_video_from_url("http://cdn/x.mp4", str(tmp_path / "v.mp4"))
     log = capsys.readouterr().out
     assert "下载失败" in log and "DDD444" in log
+
+
+def test_post_logs_the_key_actually_sent(mods, tmp_path, monkeypatch, capsys):
+    import json as _json
+    cfg = tmp_path / "providers.json"
+    cfg.write_text(_json.dumps({"providers": {"agnes": {"api_keys": [K1, K2, K3]}}}), encoding="utf-8")
+    monkeypatch.setenv("AGNES_PROVIDERS_JSON", str(cfg))
+    monkeypatch.delenv("AGNES_API_KEYS", raising=False)
+    monkeypatch.delenv("AGNES_API_KEY", raising=False)
+    pool = sys.modules["agnes_key_pool"].build_key_pool(str(tmp_path))
+    pool.config_summary()
+    c = mods.AgnesVideoClient(key_pool=pool, max_retries=1)
+    c.session = type("S", (), {"post": lambda self, *a, **k: type("R", (), {
+        "ok": True, "status_code": 200, "text": "", "json": lambda self: {"video_id": "v"}})()})()
+    c._post("http://x/videos", {})
+    log = capsys.readouterr().out
+    sent = pool.describe(c.api_key)
+    assert f"本次 POST 使用 key {sent}" in log

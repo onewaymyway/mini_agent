@@ -859,26 +859,32 @@ def set_video_format(project_dir: str, orientation: str, resolution: str, fps: i
     return _ok({k: video[k] for k in ("orientation", "resolution", "fps", "poll_interval_sec")})
 
 
-def set_video_wait(project_dir: str, max_wait_sec: int, max_retries: int, queue_wait_sec: int) -> Dict[str, Any]:
+def set_video_wait(project_dir: str, max_wait_sec: int, max_retries: int, queue_wait_sec: int,
+                   queue_retry_interval_sec: int = 5) -> Dict[str, Any]:
     """视频接口的等待与重试设置。max_wait_sec：等待视频完成的上限；max_retries：普通错误的重试次数（0–10）；
-    queue_wait_sec：服务端排队已满（please retry later）时最多等待多久，期间不计入重试次数。"""
+    queue_wait_sec：服务端排队已满（please retry later）时最多等待多久，期间不计入重试次数；
+    queue_retry_interval_sec：排队已满时每次重试之间的固定间隔（1–60 秒，默认 5）。"""
     if not (60 <= int(max_wait_sec) <= 6 * 3600):
         return _fail("等待视频完成的上限应在 60–21600 秒之间")
     if not (0 <= int(max_retries) <= 10):
         return _fail("重试次数应在 0–10 之间")
     if not (0 <= int(queue_wait_sec) <= 6 * 3600):
         return _fail("排队等待上限应在 0–21600 秒之间")
+    if not (1 <= int(queue_retry_interval_sec) <= 60):
+        return _fail("排队重试间隔应在 1–60 秒之间")
     pdir = Path(project_dir)
     try:
         proj = ps.read_json(pdir / "project.json")
     except (OSError, ValueError) as exc:
         return _fail(str(exc))
     video = dict(proj.get("video") or {})
-    video.update(max_wait_sec=int(max_wait_sec), max_retries=int(max_retries), queue_wait_sec=int(queue_wait_sec))
+    video.update(max_wait_sec=int(max_wait_sec), max_retries=int(max_retries), queue_wait_sec=int(queue_wait_sec),
+                 queue_retry_interval_sec=int(queue_retry_interval_sec))
     proj["video"] = video
     ps.write_json_atomic(pdir / "project.json", proj)
-    ps.append_progress(pdir, f"视频等待设置：完成上限 {max_wait_sec}s，重试 {max_retries} 次，排队等待上限 {queue_wait_sec}s")
-    return _ok({k: video[k] for k in ("max_wait_sec", "max_retries", "queue_wait_sec")})
+    ps.append_progress(pdir, f"视频等待设置：完成上限 {max_wait_sec}s，重试 {max_retries} 次，排队等待上限 {queue_wait_sec}s，"
+                             f"排队重试间隔 {queue_retry_interval_sec}s")
+    return _ok({k: video[k] for k in ("max_wait_sec", "max_retries", "queue_wait_sec", "queue_retry_interval_sec")})
 
 
 def set_tts_proxy(project_dir: str, mode: Optional[str]) -> Dict[str, Any]:

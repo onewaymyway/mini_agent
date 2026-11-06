@@ -36,6 +36,7 @@ class AgnesVideoClient:
         max_retries: int = 5,
         verify_ssl: bool = False,
         queue_wait_seconds: int = 3600,
+        queue_retry_interval: float = 5.0,
         use_system_proxy: bool = False,
         cancel_event=None,
     ):
@@ -49,13 +50,17 @@ class AgnesVideoClient:
             raise ValueError("Either 'api_key' or 'key_pool' must be provided")
 
         self.key_pool = key_pool
-        self.api_key = key_pool.acquire() if key_pool else api_key
+        # 初始化只读取指针，不推进轮转：真正发送请求时（_post_impl / _get_impl）才 acquire，
+        # 这样日志里打印的 key 就是实际发出请求的那把。
+        self.api_key = key_pool.current_key() if key_pool else api_key
         self.timeout = timeout
         self.max_retries = max_retries
         self.verify_ssl = verify_ssl
         # 服务端返回 "please retry later"（如 video_queue_full）时，不计入 max_retries，
         # 一直等待排队，直到累计等待超过 queue_wait_seconds 才放弃。
         self.queue_wait_seconds = queue_wait_seconds
+        # 排队已满时每次重试之间的固定间隔（秒），不递增
+        self.queue_retry_interval = max(1.0, float(queue_retry_interval))
 
         # 网络方式：默认不使用系统代理（不读取 HTTP(S)_PROXY 环境变量，也不读取 Windows 注册表代理）。
         # 创建任务、查询状态、下载视频共用这一个 session，因此三者的代理行为保持一致。
@@ -207,11 +212,15 @@ class AgnesVideoClient:
         attempt = 0
         queue_waited = 0.0
         queue_round = 0
+        shown_key = None
 
         while attempt < self.max_retries:
             self._check_cancel()
             if self.key_pool:
                 self.api_key = self.key_pool.acquire()
+            if self.api_key != shown_key:
+                print(f"    [KEY] 本次 POST 使用 key {self._describe(self.api_key)}")
+                shown_key = self.api_key
 
             resp = None
             try:
@@ -265,7 +274,7 @@ class AgnesVideoClient:
                     if self._is_queue_busy(resp.status_code, resp.text):
                         # 排队已满：不计入 attempt，按退避等待，累计超过 queue_wait_seconds 才放弃
                         queue_round += 1
-                        delay = min(5 + 2 * queue_round, 30)
+                        delay = self.queue_retry_interval
                         if queue_waited >= self.queue_wait_seconds:
                             print(f"    [POST 排队超时] 已因排队满等待 {int(queue_waited)}s，放弃: {self._raw_snippet(resp.text)}")
                             return {"success": False, "error": last_err}
@@ -517,7 +526,6 @@ class AgnesVideoClient:
             print(f"    [KEY] {self.key_pool.config_summary()}")
             for line in self.key_pool.status_lines():
                 print(f"      · {line}")
-        print(f"    [KEY] 本镜头使用 key {self._describe(self.api_key)}")
         while True:
             try:
                 result = self._generate_video_impl(*args, **kwargs)

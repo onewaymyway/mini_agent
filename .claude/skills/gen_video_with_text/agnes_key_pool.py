@@ -194,6 +194,10 @@ class AgnesKeyPool:
     def _is_available(self, key: str) -> bool:
         return time.monotonic() >= self._cooldown_until[key]
 
+    def current_key(self) -> str:
+        """读取当前指针指向的 key，不推进轮转（仅用于初始化/展示，真正发请求前要用 acquire）。"""
+        return self._keys[self._idx]
+
     def acquire(self) -> str:
         """获取当前应使用的 key；round_robin 模式下每次调用前进一格（跳过冷却中的）。"""
         if self._rotation == "round_robin":
@@ -205,7 +209,7 @@ class AgnesKeyPool:
         全部 key 都在冷却中则返回 None（调用方应停止切换，走原有失败逻辑）。"""
         if key in self._cooldown_until:
             self._cooldown_until[key] = time.monotonic() + self._cooldown
-        return self._find_next_available()
+        return self._find_next_available(after=key)
 
     def __len__(self) -> int:
         return len(self._keys)
@@ -243,7 +247,7 @@ class AgnesKeyPool:
         """报告 key 所在账号受限：长冷却该 key 并切换到下一把可用 key（没有则返回 None）。"""
         if key in self._cooldown_until:
             self._cooldown_until[key] = time.monotonic() + RESTRICTED_COOLDOWN_SEC
-        return self._find_next_available()
+        return self._find_next_available(after=key)
 
     def report_success(self, key: str) -> None:
         """请求成功，解除该 key 的冷却状态（如果有）。"""
@@ -265,10 +269,13 @@ class AgnesKeyPool:
                 self._idx = nxt
                 return
 
-    def _find_next_available(self) -> Optional[str]:
+    def _find_next_available(self, after: Optional[str] = None) -> Optional[str]:
+        """从 after（失败的 key）所在位置往后找第一把可用 key；after 为 None 时从当前指针开始。
+        失败的 key 自己已经被冷却，所以不会被选回来。"""
         n = len(self._keys)
+        base = self._keys.index(after) if after in self._keys else self._idx
         for delta in range(1, n + 1):
-            nxt = (self._idx + delta) % n
+            nxt = (base + delta) % n
             if self._is_available(self._keys[nxt]):
                 self._idx = nxt
                 return self._keys[nxt]
