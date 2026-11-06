@@ -426,30 +426,109 @@ def build_prompt(ws: BrainstormWorkspace, text: str, mode: str, conv: Optional[s
 
 # ── 解析 ──
 
-def parse_reply(reply: str) -> Tuple[str, List[Dict[str, Any]], int]:
-    """返回 (去掉提议块后的正文, 提议列表, 无效提议数)。"""
+_OPEN_MARK = "```proposals"
+
+
+def parse_proposal_block(block: str) -> Tuple[Optional[List[Any]], Optional[str]]:
+    """严格解析 ```proposals 块。返回 (列表或 None, 错误说明或 None)。
+    不做自动修复：自动修复可能把内容悄悄改错，失败时由作者看到原文后手动修改。"""
+    try:
+        data = json.loads((block or "").strip())
+    except json.JSONDecodeError as exc:
+        return None, f"第 {exc.lineno} 行第 {exc.colno} 列：{exc.msg}"
+    if isinstance(data, dict):
+        data = [data]
+    if not isinstance(data, list):
+        return None, "应为 JSON 数组，形如 [ {...}, {...} ]"
+    return data, None
+
+
+def suggest_repair(block: str) -> Optional[str]:
+    """给作者审阅用的修复建议（美化后的 JSON 文本）。只用于填入编辑框，不会直接登记；可能不准确。"""
+    try:
+        import json_repair
+    except ImportError:
+        return None
+    try:
+        fixed = json_repair.repair_json((block or "").strip(), return_objects=True)
+    except Exception:  # noqa: BLE001
+        return None
+    if fixed in (None, "", [], {}):
+        return None
+    return json.dumps(fixed, ensure_ascii=False, indent=2)
+
+
+def _valid_proposal(item: Any) -> bool:
+    return isinstance(item, dict) and bool(item.get("module")) and bool(item.get("op")) and (
+        "value" in item or item.get("op") == "delete")
+
+
+def parse_reply_detail(reply: str) -> Dict[str, Any]:
+    """解析助手回复中的提议块。无法解析时保留整段原文（raw），供作者手动修改后重新登记。"""
     text = reply or ""
-    proposals: List[Dict[str, Any]] = []
-    invalid = 0
+    result: Dict[str, Any] = {"text": "", "proposals": [], "invalid": 0, "raw": None, "error": None}
     match = _BLOCK.search(text)
     if match:
         body = _BLOCK.sub("", text).strip()
+        raw = match.group(1).strip()
+    elif _OPEN_MARK in text:
+        # 模型没有写结束的 ```：从开始标记起的全部内容都当作提议原文，并提示缺少结束标记
+        body = text[:text.index(_OPEN_MARK)].strip()
+        raw = text[text.index(_OPEN_MARK) + len(_OPEN_MARK):].strip()
+        result["error"] = "缺少结束的 ``` 标记（回复可能被截断）"
+    else:
+        result["text"] = text.strip()
+        return result
+    items, error = parse_proposal_block(raw)
+    if items is None:
+        result["invalid"] = 1
+        result["raw"] = raw
+        result["error"] = error or result["error"]
+    else:
+        for item in items:
+            if _valid_proposal(item):
+                result["proposals"].append(item)
+            else:
+                result["invalid"] += 1
+        if result["invalid"]:
+            result["error"] = result["error"] or "部分条目缺少 module / op / value 字段"
+        if result["invalid"] or result["error"]:
+            result["raw"] = raw
+    result["text"] = body
+    return result
+
+
+def parse_reply(reply: str) -> Tuple[str, List[Dict[str, Any]], int]:
+    """返回 (去掉提议块后的正文, 提议列表, 无效提议数)。"""
+    d = parse_reply_detail(reply)
+    return d["text"], d["proposals"], d["invalid"]
+
+
+def _register_items(ws: BrainstormWorkspace, items: List[Dict[str, Any]], scope: str) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """把解析出的条目登记为待确认提议。返回 (成功的提议, 失败说明)。"""
+    made: List[Dict[str, Any]] = []
+    failures: List[str] = []
+    for i, item in enumerate(items, 1):
         try:
-            data = json.loads(match.group(1).strip())
-        except json.JSONDecodeError:
-            data = None
-            invalid += 1
-        if isinstance(data, list):
-            for item in data:
-                if isinstance(item, dict) and item.get("module") and item.get("op") and (
-                        "value" in item or item.get("op") == "delete"):
-                    proposals.append(item)
-                else:
-                    invalid += 1
-        elif data is not None:
-            invalid += 1
-        text = body
-    return text.strip(), proposals, invalid
+            if item["op"] == "replace" and scope != "files":
+                raise BrainstormError("整体替换只在「文件」上下文范围下可用")
+            made.append(P.create(ws, item["module"], item["op"], item.get("value"),
+                                 target=item.get("target"), reason=item.get("reason", "")))
+        except (BrainstormError, KeyError) as exc:
+            failures.append(f"第 {i} 条：{exc}")
+    return made, failures
+
+
+def register_proposal_block(ws: BrainstormWorkspace, raw: str) -> Dict[str, Any]:
+    """作者手动修改后的提议原文 → 严格解析 → 登记为待确认提议（仍需采纳才写入卡片）。"""
+    items, error = parse_proposal_block(raw)
+    if items is None:
+        raise BrainstormError(f"仍无法解析：{error}")
+    bad = [i for i, it in enumerate(items, 1) if not _valid_proposal(it)]
+    if bad:
+        raise BrainstormError(f"第 {bad} 条缺少 module / op / value 字段")
+    made, failures = _register_items(ws, items, get_scope(ws))
+    return {"proposals": made, "failures": failures}
 
 
 # ── 发送 ──
@@ -479,21 +558,19 @@ def send(ws: BrainstormWorkspace, text: str, mode: str = "追问", runner: Optio
     reply, new_sid = runner(prompt, state.get("session_id"))
     if new_sid:
         _save_agent_state(ws, cid, new_sid)
-    body, items, invalid = parse_reply(reply)
-    made = []
-    scope = get_scope(ws)
-    for item in items:
-        try:
-            if item["op"] == "replace" and scope != "files":
-                raise BrainstormError("整体替换只在「文件」上下文范围下可用")
-            made.append(P.create(ws, item["module"], item["op"], item.get("value"),
-                                 target=item.get("target"), reason=item.get("reason", "")))
-        except BrainstormError:
-            invalid += 1
+    detail = parse_reply_detail(reply)
+    body = detail["text"]
+    made, failures = _register_items(ws, detail["proposals"], get_scope(ws))
+    invalid = detail["invalid"] + len(failures)
+    # 无法解析或有失败条目时，保留原文，界面据此全文展示，供作者手动修改后重新登记
+    keep = {}
+    if detail["raw"] is not None or failures:
+        keep = {"raw_proposals": detail["raw"], "proposal_error": detail["error"] or "; ".join(failures)}
     append_turn(ws, "assistant", body or "（无回复）", conv=cid,
-                proposals=[p["pid"] for p in made], invalid=invalid, **extra)
+                proposals=[p["pid"] for p in made], invalid=invalid, **keep, **extra)
     ws.touch()
-    return {"reply": body, "proposals": made, "invalid": invalid, "conversation": cid}
+    return {"reply": body, "proposals": made, "invalid": invalid, "conversation": cid,
+            "raw_proposals": detail["raw"], "proposal_error": keep.get("proposal_error")}
 
 
 # ── 后台运行与过程日志（显示 agent 的全部输出） ──

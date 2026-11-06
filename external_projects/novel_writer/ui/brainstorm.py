@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any, Dict
+
 import streamlit as st
 
 from novel_writer.brainstorm import api as BA
@@ -393,6 +395,46 @@ def _web_access_toggle(root: str, busy: bool) -> None:
         st.warning("已开启：模型可以自动执行命令、访问网络和浏览器。网页内容可能包含误导性指令，请留意对话与产物。")
 
 
+def _raw_key(rec: Dict[str, Any], prefix: str) -> str:
+    return prefix + "".join(ch if ch.isalnum() else "_" for ch in (rec.get("at", "") + rec.get("text", "")[:40]))
+
+
+def _fill_repair_suggestion(root: str, key: str) -> None:
+    """回调：把自动修复建议填入编辑框（仅供审阅，不登记）。"""
+    r = BA.proposal_block_suggest_repair(st.session_state.get(key, ""))
+    if r["ok"] and r["data"]["suggestion"]:
+        st.session_state[key] = r["data"]["suggestion"]
+        st.session_state["bs_raw_msg"] = ("warning", "已填入自动修复的建议，请逐条核对后再登记（修复可能不准确）。")
+    else:
+        st.session_state["bs_raw_msg"] = ("error", "无法自动修复，请直接在文本框里手动修改。")
+
+
+def _raw_proposals_box(root: str, rec: Dict[str, Any]) -> None:
+    """解析失败的提议：全文展示模型输出的原文，允许手动修改后重新登记。"""
+    key = _raw_key(rec, "bs_raw_")
+    st.warning("这一轮的提议没能完整解析：" + (rec.get("proposal_error") or "未知错误")
+               + "。下面是模型输出的完整原文，可以直接修改，然后重新登记。已经正确的条目请删除，避免重复。")
+    st.text_area("提议原文（JSON 数组）", value=rec["raw_proposals"], height=280, key=key)
+    c1, c2 = st.columns(2)
+    if c1.button("按修改后的内容登记", key=key + "_reg", help="解析通过后登记为待确认提议，仍需采纳才会写入卡片。"):
+        r = BA.proposal_block_register(root, st.session_state.get(key, ""))
+        if r["ok"]:
+            d = r["data"]
+            msg = f"已登记 {len(d['proposals'])} 条待确认提议（采纳后才会写入卡片）。"
+            if d["failures"]:
+                msg += "未登记：" + "；".join(d["failures"])
+            st.session_state["bs_raw_msg"] = ("success", msg)
+            st.rerun()
+        else:
+            show_error(r)
+    c2.button("尝试自动修复（填入编辑框，需人工确认）", key=key + "_fix",
+              on_click=_fill_repair_suggestion, args=(root, key),
+              help="自动修复可能把内容改错，只会填入编辑框，不会直接登记。")
+    msg = st.session_state.pop("bs_raw_msg", None)
+    if msg:
+        getattr(st, msg[0])(msg[1])
+
+
 def _save_setting_doc_copy(root: str) -> None:
     r = BA.setting_doc_save(root)
     if not r["ok"]:
@@ -454,6 +496,8 @@ def _dialogue_tab(root: str) -> None:
         role = "user" if rec["role"] == "user" else "assistant"
         with st.chat_message(role):
             st.write(rec["text"])
+            if role == "assistant" and rec.get("raw_proposals"):
+                _raw_proposals_box(root, rec)
             if rec.get("turn") and role == "assistant" and rec["turn"] != st.session_state.get("bs_turn"):
                 _finished_log(root, rec["turn"])
     active = st.session_state.get("bs_turn")

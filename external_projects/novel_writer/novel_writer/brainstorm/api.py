@@ -277,6 +277,16 @@ def outputs(root: str) -> Dict[str, Any]:
     return _guard(lambda: OL.outputs(_ws(root)))
 
 
+def proposal_block_register(root: str, raw: str) -> Dict[str, Any]:
+    """作者手动修改后的提议原文：严格解析并登记为待确认提议。"""
+    return _guard(lambda: CH.register_proposal_block(_ws(root), raw))
+
+
+def proposal_block_suggest_repair(raw: str) -> Dict[str, Any]:
+    """自动修复建议（仅供审阅，不登记）。无法修复时 suggestion 为 None。"""
+    return _guard(lambda: {"suggestion": CH.suggest_repair(raw)})
+
+
 def setting_doc_markdown(root: str) -> Dict[str, Any]:
     """把当前构思草稿的全部成果导出为小说设定文档（Markdown 文本 + 建议文件名）。"""
     from novel_writer.brainstorm import export as EX
