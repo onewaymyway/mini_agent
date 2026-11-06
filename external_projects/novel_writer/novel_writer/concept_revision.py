@@ -41,7 +41,6 @@ SCOPE_LABELS: Dict[str, str] = {
     "characters": "主要角色（人设卡与角色档案）",
     "opening": "前三章开篇设计",
 }
-MAX_DIRECTION_CHARS = 1000
 
 NOTE_PREFIX = "【构思修订】作者希望围绕以下新思路整体调整本产出，这是本次修订的核心方向，优先级高于原有设定：\n"
 NOTE_RULES = ("\n要求：让本产出与该思路一致，并同步调整其中受影响的部分；与思路无关的内容尽量保持原样；"
@@ -56,8 +55,6 @@ def validate(direction: str, scopes: List[str]) -> Tuple[str, List[str]]:
     text = str(direction or "").strip()
     if not text:
         raise ConceptError("请写下新的思路（修订方向）")
-    if len(text) > MAX_DIRECTION_CHARS:
-        raise ConceptError(f"修订方向过长（最多 {MAX_DIRECTION_CHARS} 字）")
     chosen = [s for s in SCOPE_ORDER if s in set(scopes or [])]
     unknown = [s for s in (scopes or []) if s not in SCOPE_LABELS]
     if unknown:
