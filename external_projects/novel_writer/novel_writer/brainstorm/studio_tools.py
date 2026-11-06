@@ -105,6 +105,64 @@ def build_registry(root: Path) -> ToolRegistry:
     return reg
 
 
+def open_registry(root: Path) -> ToolRegistry:
+    """「联网与执行权限」模式的工具表：项目只读工具 + 框架的 web_search + bash。"""
+    import mini_agent.tools.builtin  # noqa: F401 - 内置工具在导入时才注册到默认注册表
+    from mini_agent.tools import get_default_registry
+
+    reg = build_registry(root)
+    base = get_default_registry()
+    for name in ("bash", "web_search"):
+        tool = base.get(name)
+        if tool is None:
+            raise BrainstormError(f"框架缺少内置工具：{name}")
+        reg.register(tool)
+    return reg
+
+
+def _open_skill_dirs(cfg: Any) -> list:
+    """框架的 skill 目录（主项目 .claude/skills，含浏览器 skill）+ 配置里额外指定的目录。"""
+    from novel_writer import config
+
+    dirs = []
+    main_root = config._detect_in_place_main_project_root() or getattr(cfg, "project_root", None)
+    if main_root:
+        d = Path(main_root) / ".claude" / "skills"
+        if d.is_dir():
+            dirs.append(d)
+    extra = getattr(cfg, "skills_dir", None)
+    if extra:
+        dirs.append(Path(extra))
+    return dirs
+
+
+def build_open_agent(root: Path) -> Any:
+    """「联网与执行权限」模式的 Agent：项目只读工具 + web_search + bash + framework skill（含浏览器 skill）。
+    自动批准所有工具调用（不弹确认），不开沙箱，并保留框架的扩展工具。仅在作者手动开启该开关后使用。"""
+    import copy as _copy
+
+    from mini_agent.agent import Agent
+    from mini_agent.permissions import PermissionGuard
+    from mini_agent.skills import SkillLoader
+
+    from novel_writer import config
+    from novel_writer.runner import _ensure_framework_on_path
+
+    _ensure_framework_on_path()
+    cfg = _copy.copy(config.load_llm_cfg())
+    cfg.stream = False
+    try:
+        cfg.turn_judge.enabled = False
+    except AttributeError:
+        pass
+    skill_dirs = _open_skill_dirs(cfg)
+    loader = SkillLoader(skill_dirs) if skill_dirs else None
+    guard = PermissionGuard(auto_approve=True, sandbox=False,
+                            project_root=getattr(cfg, "project_root", config.PROJECT_ROOT))
+    return Agent(cfg=cfg, guard=guard, registry=open_registry(root), skill_loader=loader,
+                 extra_tools_enabled=True)
+
+
 def build_read_agent(root: Path) -> Any:
     """「读取文件」模式的 Agent：只挂载上面三个只读工具，不设轮次上限。"""
     import copy as _copy

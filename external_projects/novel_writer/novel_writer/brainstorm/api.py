@@ -126,6 +126,16 @@ def proposal_preview(root: str, pid: str) -> Dict[str, Any]:
     return _guard(lambda: {"diff": PR.preview(_ws(root), pid)})
 
 
+def web_access_get(root: str) -> Dict[str, Any]:
+    """「联网与执行权限」开关（默认关闭）。"""
+    return _guard(lambda: {"enabled": CH.get_web_access(_ws(root))})
+
+
+def web_access_set(root: str, enabled: bool) -> Dict[str, Any]:
+    """开启后：网页搜索、浏览器 skill、bash 全部自动允许，不再逐条确认。"""
+    return _guard(lambda: {"enabled": CH.set_web_access(_ws(root), bool(enabled))})
+
+
 def scope_set(root: str, scope: str) -> Dict[str, Any]:
     """设置项目级的上下文范围。未实现的范围会被拒绝。"""
     return _guard(lambda: {"scope": CH.set_scope(_ws(root), scope)})

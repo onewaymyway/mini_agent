@@ -356,6 +356,7 @@ def _scope_picker(root: str, busy: bool) -> None:
     if not res["ok"]:
         show_error(res)
         return
+    _web_access_toggle(root, busy)
     current, options = res["data"]["scope"], res["data"]["options"]
     keys = list(options)
     labels = {k: (v if k in res["data"]["implemented"] else f"{v}（待实现）") for k, v in options.items()}
@@ -373,6 +374,23 @@ def _scope_picker(root: str, busy: bool) -> None:
             if d["omitted"]:
                 msg += "因字数上限已省略：" + "、".join(d["omitted"]) + "。"
             st.caption(msg)
+
+
+def _web_access_toggle(root: str, busy: bool) -> None:
+    """「联网与执行权限」总开关：默认关闭；开启后本项目对话可以联网搜索、用浏览器 skill、执行 bash，且全部自动允许。"""
+    res = BA.web_access_get(root)
+    if not res["ok"]:
+        show_error(res)
+        return
+    current = bool(res["data"]["enabled"])
+    checked = st.checkbox("联网与执行权限（开启后：网页搜索、浏览器 skill、bash 全部自动允许，不再逐条确认）",
+                          value=current, key="bs_web_access", disabled=busy,
+                          help="默认关闭。开启时本项目的对话忽略上面的上下文范围，使用联网模式。")
+    if checked != current:
+        r = BA.web_access_set(root, checked)
+        show_error(r) if not r["ok"] else st.rerun()
+    if current:
+        st.warning("已开启：模型可以自动执行命令、访问网络和浏览器。网页内容可能包含误导性指令，请留意对话与产物。")
 
 
 def _outputs_panel(root: str, busy: bool) -> None:
