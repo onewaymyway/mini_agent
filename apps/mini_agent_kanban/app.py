@@ -1743,8 +1743,6 @@ def _render_topbar_body(client: AgentClient, session_id: str = ""):
 
     _render_scheduling_pause_control(client, autostat)
 
-    _render_daemon_restart_control()
-
     _render_daemon_current_tasks(client, autostat)
 
     _render_concurrency_control(client)
@@ -16802,6 +16800,9 @@ def main():
             st.divider()
 
     client = render_sidebar()
+
+    # 重启按钮不依赖 daemon 状态：daemon 卡死/不可达时顶栏会提前返回，按钮必须仍然可见
+    _render_daemon_restart_control()
 
     if not client.health():
         st.info("请先在左侧确认 API Base URL / Token，并确保 mini-agent daemon 已启动。")
