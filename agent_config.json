@@ -196,7 +196,8 @@
     "fairness_aging_boost_max_days": 14.0,
     "fairness_time_slicing_enabled": false,
     "fairness_yield_after_steps": 3,
-    "fairness_yield_after_seconds": 900.0
+    "fairness_yield_after_seconds": 900.0,
+    "objective_step_stale_timeout_seconds": 1800
   },
   "scheduler": {
     "unified_arbitration_enabled": true,
