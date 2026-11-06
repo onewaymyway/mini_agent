@@ -62,7 +62,7 @@ if TYPE_CHECKING:
 MAX_CONCURRENT_OBJECTIVES = 2
 MAX_STEP_RETRIES = 2
 MAX_STEPS_PER_OBJECTIVE = 8
-DEFAULT_STEP_TIMEOUT_SECONDS = 600  # 10 分钟，超时算失败
+DEFAULT_STEP_TIMEOUT_SECONDS = 1800  # 30 分钟，超过这么久未收到执行结果判定为卡死/丢失
 
 # [看板与自主性改进方案 Track C] 声明不出具体路径时使用的哨兵路径。
 # 任何两个 step 只要都落在这个哨兵上，就视为冲突——即"保守退化为串行"：

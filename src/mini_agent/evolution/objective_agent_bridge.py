@@ -310,7 +310,7 @@ class ObjectiveIsolatedRunner:
 
     def _effective_timeout_seconds(self) -> float:
         autonomy_cfg = getattr(self._base_cfg, "autonomy", None)
-        default_timeout = 600
+        default_timeout = 1800
         try:
             from mini_agent.evolution.objective_executor import DEFAULT_STEP_TIMEOUT_SECONDS
             default_timeout = DEFAULT_STEP_TIMEOUT_SECONDS

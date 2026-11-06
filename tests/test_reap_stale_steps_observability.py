@@ -178,7 +178,7 @@ class TestAutonomousLoopStaleTimeoutConfig(unittest.TestCase):
 
     def test_none_falls_back_to_module_default_no_arg_forwarded(self):
         """未配置（None）时，向后兼容：不传 timeout_seconds 参数，让
-        ObjectiveExecutor 自己回退模块级默认值（行为与硬编码 600s 一致）。"""
+        ObjectiveExecutor 自己回退模块级默认值（行为与默认 1800s 一致）。"""
         loop, calls = self._make_loop({"objective_step_stale_timeout_seconds": None})
         loop._tick_maintenance()
         self.assertEqual(calls, [None])

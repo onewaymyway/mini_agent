@@ -1889,7 +1889,7 @@ class AutonomyConfig:
     # [daemon_task_hang_recovery_and_watchdog_hardening_plan.md 阶段三]
     # ObjectiveExecutor.reap_stale_steps() 判定"当前 step 已卡死"的超时
     # 阈值（秒）。None（默认）时回退模块级常量
-    # objective_executor.DEFAULT_STEP_TIMEOUT_SECONDS（=600），保持向后
+    # objective_executor.DEFAULT_STEP_TIMEOUT_SECONDS（=1800），保持向后
     # 兼容。有些任务本来就该跑更久（比如涉及大型代码库分析的 step），
     # 有些则应该更敏感地判定卡死，按项目调整这个值。
     objective_step_stale_timeout_seconds: Optional[int] = None
