@@ -128,6 +128,17 @@ def backup_scopes(ws: Workspace, rid: str, scopes: List[str]) -> Dict[str, Any]:
     return manifest
 
 
+def _revision_start_ids(ws: Workspace, scopes: List[str]) -> List[str]:
+    """修订范围对应的生成步骤 id：作为「修订影响」的起点（起点之后的全部流程都要重跑）。"""
+    ids: List[str] = []
+    for sc in scopes:
+        try:
+            ids += [s.id for s in _scope_steps(ws, sc, "", "")]
+        except ConceptError:
+            pass    # 例如角色范围在没有蓝图时无法展开：其余范围照常取得起点
+    return ids
+
+
 def restore(ws: Workspace, rid: str) -> Dict[str, Any]:
     """撤销一次构思修订：把备份恢复回去，修订前不存在的文件删除，并标记下游为需重跑。"""
     from novel_writer import state as st
@@ -161,7 +172,7 @@ def restore(ws: Workspace, rid: str) -> Dict[str, Any]:
     if restored_files:
         st.record_writer_paths(ws, restored_files, "author", kind="author")
     stale = st.mark_stale(ws, build_plan(ws))
-    st.mark_revision_stale(ws)   # 撤销修订：恢复后的下游必须重跑，G5 不得自动清除
+    st.mark_revision_stale(ws, build_plan(ws), _revision_start_ids(ws, list(manifest.get("scopes") or [])))  # 撤销修订：恢复后的下游全部重跑
     from novel_writer import ideation_review as IR
     st.arm_revision_autorun(ws)
     reopened = IR.reopen_after_revision(ws, note="已撤销修订，正在自动续跑到构思审核")
@@ -319,7 +330,7 @@ def h_concept(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=
     if changed_files:
         st.record_writer_paths(ws, changed_files, "author", kind="author")
     stale = st.mark_stale(ws, build_plan(ws))
-    st.mark_revision_stale(ws)          # 构思修订影响的下游必须重跑，G5 不得自动清除
+    st.mark_revision_stale(ws, build_plan(ws), _revision_start_ids(ws, scopes))   # 修订影响范围之后的全部流程重跑
     if changed_files:
         st.arm_revision_autorun(ws)     # 修改意见产生的需重跑：托管挡自动重跑
     # 构思审核开关开启时：修订后审核自动重新打开（修改循环）

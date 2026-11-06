@@ -501,20 +501,37 @@ AUTO_CLEAR_NOTE = "G5 托管：上游产物变化，已自动清除重跑标记�
 REVISION_NOTE = "构思修订影响，需要重跑"
 
 
-def mark_revision_stale(ws: Workspace) -> List[str]:
-    """修订（或撤销）之后调用：把当前所有需重跑步骤的备注改为「修订影响」，使其不会被 G5 自动清除。
-    只改备注，不改状态；返回被标注的步骤 id。"""
+def mark_revision_stale(ws: Workspace, plan: List[StepDef], start_step_ids: Iterable[str] = ()) -> List[str]:
+    """构思修订（或撤销修订）之后调用：整体调整意味着修订影响范围之后的全部流程都要重跑。
+
+    把 start_step_ids（修订范围对应的生成步骤）中排在计划最前的那一个之后、所有已通过的步骤标为需重跑，
+    备注为 REVISION_NOTE，使其不会被 G5 的「自动清除上游变化」吞掉。不做输入指纹判断：
+    判断依据是修订本身，而不是文件是否变化（规划步骤的写入在封存章节上会被忽略，这里不能依赖它）。
+    修订请求步骤（cpt.*）与构思审核步骤不在此列。返回被标记的步骤 id。
+    """
+    from novel_writer import steps as S
+
+    positions = {step.id: i for i, step in enumerate(plan)}
+    starts = [positions[sid] for sid in start_step_ids if sid in positions]
+    start = min(starts) if starts else -1
     done: List[str] = []
     with _LOCK:
         state = load_state(ws)
-        for sid, entry in state["steps"].items():
-            if entry.get("status") == ST_STALE and entry.get("note") != REVISION_NOTE:
-                entry["note"] = REVISION_NOTE
-                done.append(sid)
+        for i, step in enumerate(plan):
+            if i <= start or step.id.startswith("cpt.") or step.id == S.IDEATION_REVIEW_ID:
+                continue
+            entry = state["steps"].get(step.id)
+            if not entry or entry.get("status") not in (ST_PASSED, ST_STALE):
+                continue
+            if entry.get("status") == ST_STALE and entry.get("note") == REVISION_NOTE:
+                continue
+            entry.update(status=ST_STALE, note=REVISION_NOTE, updated_at=now_iso())
+            done.append(step.id)
         if done:
             atomic_write_json(ws.path("studio_state"), state)
     if done:
-        log_line(ws, f"🧭 构思修订：{len(done)} 个步骤需重跑（G5 不会自动清除），{', '.join(done[:8])}")
+        log_line(ws, f"🧭 构思修订：{len(done)} 个流程需重跑（修订影响范围之后的全部步骤，G5 不会自动清除）："
+                     f"{', '.join(done[:8])}{' …' if len(done) > 8 else ''}")
     return done
 
 
