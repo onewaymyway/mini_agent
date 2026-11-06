@@ -159,3 +159,22 @@ def test_page_shows_outputs_and_focus_target(tmp_path, monkeypatch):
     assert any(e.label.startswith("📋 当前构思成果") for e in at.expander)
     assert any(b.label == "让AI修改" for b in at.button)
     assert any("本次修改对象：题材卡" in i.value for i in at.info)
+
+
+def test_pending_premise_with_chinese_text_renders_without_json_error(tmp_path, monkeypatch):
+    """回归：核心命题是普通文字，卡片不能用 st.json 解析它（否则报 Json Parse Error）；应以可编辑文本框显示。"""
+    pytest.importorskip("streamlit")
+    from streamlit.testing.v1 import AppTest
+
+    root = BA.create_project("雾", base=str(tmp_path))["data"]["root"]
+    ws = BrainstormWorkspace(Path(root))
+    text = "光遇游戏机制突然全球范围降临到地球上之后的故事，包括烛火、爱心、红石与季节任务。"
+    PR.create(ws, "premise", "set", text, reason="整合核心命题")
+    monkeypatch.setenv("NOVEL_PROJECT", str(PROJECT))
+    monkeypatch.setattr("novel_writer.brainstorm.api.default_root", lambda: tmp_path / "none")
+    at = AppTest.from_file(str(PROJECT / "tests" / "apps" / "brainstorm_page_app.py"), default_timeout=30)
+    at.session_state["bs_root"] = root
+    at.run()
+    assert not at.exception, at.exception
+    assert not any("Json Parse" in (e.value or "") for e in at.error)
+    assert any(t.value == text for t in at.text_area), [t.value for t in at.text_area]

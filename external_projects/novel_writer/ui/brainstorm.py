@@ -395,6 +395,23 @@ def _web_access_toggle(root: str, busy: bool) -> None:
         st.warning("已开启：模型可以自动执行命令、访问网络和浏览器。网页内容可能包含误导性指令，请留意对话与产物。")
 
 
+def _render_proposal_value(item: Dict[str, Any]) -> None:
+    """提议内容的显示。文字用可编辑的文本框（不走 st.json：st.json 会把字符串当 JSON 解析，
+    中文文本会报 Json Parse Error）；对象/数组用 st.json；显示失败时把原始内容全文给作者。"""
+    val = item["value"]
+    try:
+        if isinstance(val, str):
+            if val.lstrip()[:1] in "[{":
+                st.caption("⚠ 这段内容看起来是 JSON，可能是模型输出的格式问题，请核对后再采纳。")
+            st.text_area("内容（可直接修改，采纳时以修改后的为准）", value=val,
+                         height=min(400, 80 + len(val) // 25), key=f"bs_pval_{item['pid']}")
+        else:
+            st.json(val, expanded=False)
+    except Exception as exc:  # noqa: BLE001 - 检测到显示问题：把原始内容全文展示出来
+        st.error(f"这条提议的内容无法在卡片上显示：{type(exc).__name__}: {exc}")
+        st.code(val if isinstance(val, str) else repr(val), language=None)
+
+
 def _raw_key(rec: Dict[str, Any], prefix: str) -> str:
     return prefix + "".join(ch if ch.isalnum() else "_" for ch in (rec.get("at", "") + rec.get("text", "")[:40]))
 
@@ -541,7 +558,7 @@ def _dialogue_tab(root: str) -> None:
                 if pv["ok"]:
                     st.code(pv["data"]["diff"], language="diff")
             elif item["value"] is not None:
-                st.json(item["value"], expanded=False)
+                _render_proposal_value(item)
             if item.get("reason"):
                 st.caption("理由：" + item["reason"])
             if item.get("error"):
@@ -560,7 +577,12 @@ def _dialogue_tab(root: str) -> None:
                         show_error(pr)
             c1, c2 = st.columns(2)
             if c1.button("采纳", key=f"bs_acc_{item['pid']}"):
-                r = BA.accept_proposal(root, item["pid"])
+                edited = None
+                if isinstance(item["value"], str):
+                    cur = st.session_state.get(f"bs_pval_{item['pid']}")
+                    if cur is not None and cur != item["value"]:
+                        edited = cur            # 作者在卡片里改过文字：采纳修改后的内容
+                r = BA.accept_proposal(root, item["pid"], edited)
                 show_error(r) if not r["ok"] else st.rerun()
             if c2.button("拒绝", key=f"bs_rej_{item['pid']}"):
                 r = BA.reject_proposal(root, item["pid"])
