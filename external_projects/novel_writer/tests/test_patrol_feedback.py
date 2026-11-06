@@ -217,7 +217,8 @@ def test_output_check_rejects_bad_sidecar(isolated):
 
 def test_inbox_shows_pending_items_unless_switched_off(isolated):
     ws = new_book(isolated)
-    _apply(ws, 10, _data(_f("retro"), _f("blueprint")))
+    # 整改项的章节必须在全书范围内（本书 3 章）；超出范围的整改项会被收件箱按规则自动归档
+    _apply(ws, 10, _data(_f("retro", chapters=[3], title="第3章节奏平板"), _f("blueprint")))
     _enable(ws, to_inbox=False)
     assert not any(i["kind"] == inbox.KIND_PATROL for i in inbox.collect(ws)["items"])
     _enable(ws, to_inbox=True)

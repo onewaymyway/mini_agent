@@ -177,6 +177,7 @@ def restore(ws: Workspace, rid: str) -> Dict[str, Any]:
     st.arm_revision_autorun(ws)
     reopened = IR.reopen_after_revision(ws, note="已撤销修订，正在自动续跑到构思审核")
     req["restored"] = True
+    req["finished_at"] = st.now_iso()
     req["result"] = {**(req.get("result") or {}),
                      "outcome": "已撤销，恢复为修订前的内容" + ("；将自动续跑到构思审核" if reopened else ""),
                      "stale": stale, "auto_rerun_to_review": reopened}
@@ -351,6 +352,7 @@ def h_concept(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=
                     + f"（{len(changed_files)} 个文件）；需重跑 {len(stale)} 步")
     else:
         st.log_line(ws, "  没有文件内容发生变化")
+    req["finished_at"] = st.now_iso()
     req["result"] = {"outcome": outcome, "changed": changed_scopes, "changed_files": changed_files,
                      "deferred": deferred, "stale": stale, "auto_rerun_to_review": reopened}
     save_request(ws, req)

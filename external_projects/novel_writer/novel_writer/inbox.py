@@ -47,11 +47,14 @@ def _now() -> str:
     return _dt.datetime.now().astimezone().isoformat(timespec="seconds")
 
 
-def _item(kind: str, severity: str, step: Dict[str, Any] | None, message: str, action: str) -> Dict[str, Any]:
+def _item(kind: str, severity: str, step: Dict[str, Any] | None, message: str, action: str,
+          key: str | None = None) -> Dict[str, Any]:
+    sid = (step or {}).get("id")
     return {
+        "key": key or (f"{kind}:{sid}" if sid else kind),   # 归档记录用的稳定标识
         "kind": kind,
         "severity": severity,
-        "step_id": (step or {}).get("id"),
+        "step_id": sid,
         "title": (step or {}).get("title") or "",
         "chapter": (step or {}).get("chapter") or None,
         "message": message,
@@ -60,7 +63,11 @@ def _item(kind: str, severity: str, step: Dict[str, Any] | None, message: str, a
 
 
 def collect(ws: Workspace) -> Dict[str, Any]:
-    """计算收件箱（只读，不写文件）。"""
+    """计算收件箱。先同步「过期项」自动归档（只写归档记录，不删除状态历史），再排除已归档的项。"""
+    from novel_writer import inbox_expiry as EXP
+
+    EXP.sync(ws)
+    archived = EXP.archived_keys(ws)
     settings = ws.settings()
     plan = P.build_plan(ws)
     states = st.load_state(ws)["steps"]
@@ -108,8 +115,11 @@ def collect(ws: Workspace) -> Dict[str, Any]:
             label = PF.SCOPE_LABEL.get(f.get("scope"), "")
             where = f"（第 {'、'.join(str(c) for c in f['chapters'][:6])} 章，建议 {f.get('level')}）" if f.get("scope") == PF.SCOPE_RETRO else ""
             items.append(_item(KIND_PATROL, SEVERITY_WARN if f.get("severity") == "严重" else SEVERITY_INFO, None,
-                               f"巡检整改项 {f['id']}［{label}］{f['title']}{where}", "patrol"))
+                               f"巡检整改项 {f['id']}［{label}］{f['title']}{where}", "patrol",
+                               key=f"patrol:{f['id']}"))
 
+    items = [it for it in items if it["key"] not in archived]
+    unknown = [sid for sid in states if sid not in rows and f"orphan:{sid}" not in archived]
     items.sort(key=lambda it: (_SEVERITY_ORDER.get(it["severity"], 9), it["kind"]))
     counts: Dict[str, int] = {}
     for it in items:
@@ -122,7 +132,8 @@ def collect(ws: Workspace) -> Dict[str, Any]:
         "blocking": sum(1 for it in items if it["severity"] == SEVERITY_BLOCK),
         "counts": counts,
         "items": items,
-        "unknown_steps": [sid for sid in states if sid not in rows],
+        "unknown_steps": unknown,
+        "archived": len(archived),
     }
 
 
