@@ -31,6 +31,14 @@ def _ws(tmp_path) -> Workspace:
                               pause_after_ideation=True)
     ws = Workspace(r["data"]["workspace"])
     ws.save_settings({**ws.settings(), "gear": "G5"})
+    # 真实的书一定有蓝图（init_word_count 等步骤依赖它）：补一个最小蓝图，3 章、一幕
+    from novel_writer import blueprint_store as BS
+    chapters = [{"id": n, "chapter": n, "title": f"第{n}章", "summary": "s", "beats": ["b"],
+                 "characters": [], "foreshadowing": []} for n in range(1, 4)]
+    bp = {"meta": {"title": "修改自动重跑", "target_length": 9000},
+          "structure": {"total_chapters": 3, "acts": [{"act": 1, "chapter_range": [1, 3]}]},
+          "chapters": chapters}
+    assert BS.save_for_ws(ws, bp)
     return ws
 
 

@@ -127,3 +127,38 @@ def test_theme_revision_makes_every_later_flow_rerun(tmp_path):
     assert later, "测试计划里应当存在主题之后的步骤"
     not_rerun = [sid for sid in later if steps[sid]["status"] != st.ST_STALE or steps[sid]["note"] != st.REVISION_NOTE]
     assert not not_rerun, f"这些后续流程没有被标为重跑：{not_rerun[:8]}"
+
+
+def test_blueprint_revision_keeps_init_and_plan_blueprint_and_reruns_downstream(tmp_path):
+    """回归（用户报告）：蓝图修订本身已写入蓝图，之后 init_workspace / plan_blueprint 不得重跑，
+    blueprint_split 及之后的流程才需要重跑。"""
+    from novel_writer import steps as S
+
+    ws = _ws(tmp_path)
+    plan = build_plan(ws)
+    ids = [s_.id for s_ in plan]
+    assert "init_workspace" in ids and "plan_blueprint" in ids and "blueprint_split" in ids
+    for s_ in plan:
+        if not s_.id.startswith("cpt.") and s_.id != S.IDEATION_REVIEW_ID:
+            st.update_step(ws, s_.id, status=st.ST_PASSED, note="")
+
+    start = CR._revision_start_ids(ws, ["blueprint"])
+    assert start == ["plan_blueprint"], start           # 必须是计划中的原始 id，不能是 cpt.* 副本
+    st.mark_revision_stale(ws, plan, start)
+
+    steps = st.load_state(ws)["steps"]
+    assert steps["init_workspace"]["status"] == st.ST_PASSED
+    assert steps["plan_blueprint"]["status"] == st.ST_PASSED
+    assert steps["blueprint_split"]["status"] == st.ST_STALE
+    later = ids[ids.index("blueprint_split") + 1:]
+    not_marked = [sid for sid in later if not sid.startswith("cpt.") and sid != S.IDEATION_REVIEW_ID
+                  and steps[sid]["status"] != st.ST_STALE]
+    assert not not_marked, f"蓝图之后的这些流程应当重跑：{not_marked[:8]}"
+
+
+def test_scope_revision_ids_are_original_plan_ids_for_every_scope(tmp_path):
+    ws = _ws(tmp_path)
+    plan_ids = {s_.id for s_ in build_plan(ws)}
+    for scope in ("blueprint", "theme", "pacing", "world", "opening"):
+        for sid in CR._revision_start_ids(ws, [scope]):
+            assert sid in plan_ids, f"{scope} 的起点 {sid} 不在计划中"

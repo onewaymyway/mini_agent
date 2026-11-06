@@ -129,11 +129,13 @@ def backup_scopes(ws: Workspace, rid: str, scopes: List[str]) -> Dict[str, Any]:
 
 
 def _revision_start_ids(ws: Workspace, scopes: List[str]) -> List[str]:
-    """修订范围对应的生成步骤 id：作为「修订影响」的起点（起点之后的全部流程都要重跑）。"""
+    """修订范围对应的计划步骤 id（原始 id，与计划一致）：作为「修订影响」的起点。
+    起点之后的已通过流程全部重跑；起点本身（修订刚写入的产物）保持通过，它之前的步骤不动。
+    注意：这里必须用原始 id。带修订编号的 cpt.* 步骤不在计划里，用它们会让起点丢失。"""
     ids: List[str] = []
     for sc in scopes:
         try:
-            ids += [s.id for s in _scope_steps(ws, sc, "", "")]
+            ids += [step.id for _, step in _base_steps(ws, sc)]
         except ConceptError:
             pass    # 例如角色范围在没有蓝图时无法展开：其余范围照常取得起点
     return ids
@@ -235,28 +237,33 @@ def _require_blueprint(ws: Workspace) -> Dict[str, Any]:
     return bp
 
 
-def _scope_steps(ws: Workspace, scope: str, direction: str, rid: str, hint: str = "") -> List[S.StepDef]:
-    """某个范围要运行的步骤（已注入新思路）。"""
+def _base_steps(ws: Workspace, scope: str) -> List[Tuple[str, S.StepDef]]:
+    """某个范围对应的生成步骤（原始定义，id 与计划中的一致）。返回 [(子键, 步骤)]。"""
     if scope == "blueprint":
         # 蓝图草稿由 plan_blueprint 产出（校验 output_check=blueprint）；拆分与下游步骤由作者之后运行
-        return [_direction_step(S.plan_blueprint_step(), direction, rid, scope, hint)]
+        return [(scope, S.plan_blueprint_step())]
     if scope == "theme":
-        return [_direction_step(S.design_theme_step(), direction, rid, scope, hint)]
+        return [(scope, S.design_theme_step())]
     if scope == "pacing":
-        return [_direction_step(S.design_pacing_step(), direction, rid, scope, hint)]
+        return [(scope, S.design_pacing_step())]
     if scope == "world":
-        return [_direction_step(S.build_world_step(), direction, rid, scope, hint)]
+        return [(scope, S.build_world_step())]
     if scope == "opening":
-        return [_direction_step(S.design_opening_step(), direction, rid, scope, hint)]
+        return [(scope, S.design_opening_step())]
     if scope == "characters":
         from novel_writer.pipeline import main_characters
         roles = main_characters(_require_blueprint(ws))
         if not roles:
             raise ConceptError("蓝图里没有主要角色，无法修订角色")
-        steps = [_direction_step(S.design_character_step(n), direction, rid, f"{scope}.{n}", hint) for n in roles]
-        steps.append(_direction_step(S.build_characters_step(roles), direction, rid, f"{scope}.build", hint))
-        return steps
+        out = [(f"{scope}.{n}", S.design_character_step(n)) for n in roles]
+        out.append((f"{scope}.build", S.build_characters_step(roles)))
+        return out
     raise ConceptError(f"未知范围 {scope!r}")
+
+
+def _scope_steps(ws: Workspace, scope: str, direction: str, rid: str, hint: str = "") -> List[S.StepDef]:
+    """某个范围要运行的步骤（已注入新思路，id 带修订编号）。"""
+    return [_direction_step(step, direction, rid, key, hint) for key, step in _base_steps(ws, scope)]
 
 
 # ---------------------------------------------------------------- 处理器
