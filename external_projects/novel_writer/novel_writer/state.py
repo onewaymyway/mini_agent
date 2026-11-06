@@ -496,6 +496,27 @@ def rebaseline_stale(ws: Workspace, plan: List[StepDef], step_ids: Iterable[str]
 
 AUTO_CLEAR_NOTE = "G5 托管：上游产物变化，已自动清除重跑标记并继续（未重跑）"
 
+# 构思修订（或撤销修订）直接导致的需重跑步骤。作者明确要求按新思路整体调整，这些步骤必须重跑；
+# 因此它们使用独立的备注，G5 的「自动清除上游变化」只处理 _UPSTREAM_NOTE，不会碰它们。
+REVISION_NOTE = "构思修订影响，需要重跑"
+
+
+def mark_revision_stale(ws: Workspace) -> List[str]:
+    """修订（或撤销）之后调用：把当前所有需重跑步骤的备注改为「修订影响」，使其不会被 G5 自动清除。
+    只改备注，不改状态；返回被标注的步骤 id。"""
+    done: List[str] = []
+    with _LOCK:
+        state = load_state(ws)
+        for sid, entry in state["steps"].items():
+            if entry.get("status") == ST_STALE and entry.get("note") != REVISION_NOTE:
+                entry["note"] = REVISION_NOTE
+                done.append(sid)
+        if done:
+            atomic_write_json(ws.path("studio_state"), state)
+    if done:
+        log_line(ws, f"🧭 构思修订：{len(done)} 个步骤需重跑（G5 不会自动清除），{', '.join(done[:8])}")
+    return done
+
 
 def auto_clear_upstream_stale(ws: Workspace, plan: List[StepDef]) -> List[str]:
     """G5 托管：把所有「上游产物已变化」的需重跑标记自动清除（以当前文件重新基线），不重跑。"""
