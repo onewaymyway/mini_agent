@@ -23,6 +23,7 @@ import html
 import json
 import logging
 import time
+import sys
 import traceback
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -1190,6 +1191,89 @@ def _render_queue_panel(client: AgentClient, session_id: str = "") -> None:
         st.text(input_preview + ("…" if len(t.get("input") or "") > 120 else ""))
 
 
+def _collect_restart_gate() -> dict:
+    """重启按钮的全部判断依据（供按钮和诊断面板共用，避免两处逻辑不一致）。
+    只包含路径、用户名、布尔值、用户名列表，不包含密码哈希、token 或 secret。"""
+    import daemon_restart as dr
+    from auth import UserStore
+
+    cli = _parse_cli_args()
+    root = Path(cli.project_root).expanduser().resolve() if cli.project_root.strip() else Path.cwd().resolve()
+    users_file, _secret, _attempts, sessions_file = _auth_paths(cli)
+    me = st.session_state.get("username", "") if cli.require_login else ""
+    store = UserStore(users_file)
+    try:
+        users = store.list_users_detailed()
+    except Exception:  # noqa: BLE001 - 诊断信息不能因为读取失败而让页面崩溃
+        users = []
+    is_admin = bool(me) and store.is_admin(me)
+    allowed = dr.can_restart(cli.require_login, me, is_admin)
+    if not cli.require_login:
+        reason = "未开启 --require-login（启动看板时必须带这个参数）"
+    elif not me:
+        reason = "当前会话没有登录用户名（session_state.username 为空）"
+    elif not is_admin:
+        reason = f"用户 {me} 不是管理员（在用户文件里 is_admin 不为 true）"
+    else:
+        reason = "满足条件，应显示按钮"
+    return {
+        "argv": list(sys.argv),
+        "cwd": str(Path.cwd()),
+        "require_login": bool(cli.require_login),
+        "project_root_arg": cli.project_root,
+        "root": str(root),
+        "users_file": str(users_file),
+        "users_file_exists": users_file.exists(),
+        "sessions_file": str(sessions_file),
+        "users": [{"username": u.get("username"), "is_admin": bool(u.get("is_admin"))} for u in users],
+        "admin_count": store.admin_count(),
+        "me": me,
+        "session_id_present": bool(st.session_state.get("session_id")),
+        "is_admin": is_admin,
+        "allowed": allowed,
+        "reason": reason,
+        "main_py_exists": (root / "main.py").is_file(),
+        "status_file": str(dr.status_path(root)),
+        "status": dr.read_status(root),
+        "python": sys.executable,
+    }
+
+
+def _render_daemon_restart_diagnostics() -> None:
+    """[重启按钮诊断] 始终可见的折叠面板：列出按钮是否显示的每一项判断依据。
+    不论是否管理员都能看到（只含路径/用户名/布尔值，不含密钥），便于排查“为什么没有按钮”。"""
+    try:
+        gate = _collect_restart_gate()
+    except Exception as exc:  # noqa: BLE001
+        with st.expander("🛠️ 重启按钮诊断", expanded=True):
+            st.error(f"诊断信息收集失败：{type(exc).__name__}: {exc}")
+            st.code(traceback.format_exc())
+        return
+    with st.expander("🛠️ 重启按钮诊断", expanded=not gate["allowed"]):
+        st.markdown(
+            f"**结论**：{'✅ 按钮应显示' if gate['allowed'] else '❌ 按钮隐藏'} —— {gate['reason']}"
+        )
+        st.table({
+            "检查项": [
+                "启动参数含 --require-login", "当前登录用户名", "是否为管理员",
+                "用户文件存在", "管理员数量", "项目根目录 main.py 存在", "会话 session_id 存在",
+            ],
+            "结果": [
+                str(gate["require_login"]), gate["me"] or "（空）", str(gate["is_admin"]),
+                str(gate["users_file_exists"]), str(gate["admin_count"]),
+                str(gate["main_py_exists"]), str(gate["session_id_present"]),
+            ],
+        })
+        st.caption("以下为路径与进程信息，用于判断看板读取的是不是同一个项目和用户文件。")
+        st.json({k: gate[k] for k in ("argv", "cwd", "project_root_arg", "root", "users_file",
+                                      "sessions_file", "status_file", "python")}, expanded=False)
+        st.caption("用户列表（只显示用户名和是否管理员）")
+        st.json(gate["users"], expanded=False)
+        if gate["status"]:
+            st.caption("最近一次重启状态")
+            st.json(gate["status"], expanded=False)
+
+
 def _render_daemon_restart_control() -> None:
     """[看板“重启 daemon”功能] 仅管理员可见。整个 daemon 连同 supervisor 重启（同机）。
 
@@ -1197,14 +1281,11 @@ def _render_daemon_restart_control() -> None:
     实际执行与进度见 daemon_restart.py 与 `mini-agent daemon restart`。
     """
     import daemon_restart as dr
-    from auth import UserStore
 
-    cli = _parse_cli_args()
-    root = Path(cli.project_root).expanduser().resolve() if cli.project_root.strip() else Path.cwd().resolve()
-    users_file, _secret, _attempts, _sessions = _auth_paths(cli)
-    me = st.session_state.get("username", "") if cli.require_login else ""
-    is_admin = bool(me) and UserStore(users_file).is_admin(me)
-    if not dr.can_restart(cli.require_login, me, is_admin):
+    gate = _collect_restart_gate()
+    root = Path(gate["root"])
+    me = gate["me"]
+    if not gate["allowed"]:
         return  # 非管理员 / 未开启登录门禁：不显示该功能
 
     status = dr.read_status(root)
@@ -16802,6 +16883,7 @@ def main():
     client = render_sidebar()
 
     # 重启按钮不依赖 daemon 状态：daemon 卡死/不可达时顶栏会提前返回，按钮必须仍然可见
+    _render_daemon_restart_diagnostics()
     _render_daemon_restart_control()
 
     if not client.health():
