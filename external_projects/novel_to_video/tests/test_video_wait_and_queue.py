@@ -139,3 +139,23 @@ def test_restricted_switch_starts_after_failed_key_not_shared_pointer(client_cls
     nxt = pool.report_restricted("k3")                        # 指针在 k1，但失败的是 k3
     assert nxt == "k4"                                        # 从 k3 的位置往后找，而不是从 k1 往后找到 k2
     assert pool.cooldown_left("k3") > 0 and pool.cooldown_left("k2") == 0
+
+
+def test_queue_full_retries_keep_the_same_key_even_in_round_robin(client_cls, monkeypatch):
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    pool = _pool_cls()(["k1", "k2", "k3", "k4"], rotation="round_robin")
+    sent_keys = []
+
+    class _RecordingSession:
+        def __init__(self):
+            self.responses = [_Resp(503, QUEUE_FULL), _Resp(503, QUEUE_FULL), _Resp(200, body={"video_id": "v"})]
+
+        def post(self, url, headers=None, **k):
+            sent_keys.append(headers["Authorization"].split()[-1])
+            return self.responses.pop(0)
+
+    c = client_cls(key_pool=pool, max_retries=2, queue_wait_seconds=3600)
+    c.session = _RecordingSession()
+    out = c._post("http://x/videos", {})
+    assert out == {"video_id": "v"}
+    assert len(set(sent_keys)) == 1, sent_keys        # 三次 POST 都用同一把 key

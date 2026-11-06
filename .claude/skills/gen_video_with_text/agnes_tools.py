@@ -213,11 +213,14 @@ class AgnesVideoClient:
         queue_waited = 0.0
         queue_round = 0
         shown_key = None
+        # 排队已满后的下一次重试沿用同一把 key：排队不是 key 的问题，不应该换 key
+        hold_key = False
 
         while attempt < self.max_retries:
             self._check_cancel()
-            if self.key_pool:
+            if self.key_pool and not hold_key:
                 self.api_key = self.key_pool.acquire()
+            hold_key = False
             if self.api_key != shown_key:
                 print(f"    [KEY] 本次 POST 使用 key {self._describe(self.api_key)}")
                 shown_key = self.api_key
@@ -274,6 +277,7 @@ class AgnesVideoClient:
                     if self._is_queue_busy(resp.status_code, resp.text):
                         # 排队已满：不计入 attempt，按退避等待，累计超过 queue_wait_seconds 才放弃
                         queue_round += 1
+                        hold_key = True
                         delay = self.queue_retry_interval
                         if queue_waited >= self.queue_wait_seconds:
                             print(f"    [POST 排队超时] 已因排队满等待 {int(queue_waited)}s，放弃: {self._raw_snippet(resp.text)}")
