@@ -107,7 +107,7 @@ Windows 上 `str(Path)` 使用 `\` 分隔，而请求里记录的文件路径使
 
 修复次数只在「连续失败」期间累计，通过后清零。问题是：如果上一轮用尽了次数，之后每次新的运行都会因为"已用尽"直接跳过修复（日志只显示「数据修复已用尽，已停下」，没有任何修复调用）。
 
-现在每次运行开始时（`run_worker`），失败步骤的修复次数会清零，并在运行日志中写明上一轮用了多少次。这样作者每次重新运行，都能再得到完整的修复机会。运行中的上限不变：同一次运行内用尽 `repair_max_attempts` 次后仍会停下来等人处理。
+现在每次运行开始时（`run_worker`），失败步骤的修复次数会清零，并在运行日志中写明上一轮用了多少次。这样作者每次重新运行，都能再得到完整的修复机会。运行中的上限不变：同一次运行内用尽 `repair_max_attempts` 次后，非 G5 挡仍会停下来等人处理；G5 挡不停（见下一节）。
 
 测试：`tests/test_repair_feedback.py::test_new_run_resets_exhausted_repair_budget_for_failed_steps`。
 
@@ -115,6 +115,8 @@ Windows 上 `str(Path)` 使用 `\` 分隔，而请求里记录的文件路径使
 
 之前不停机（G5）模式下，步骤已经失败时，主循环会直接进入"等待 300 秒后重置"，修复只在步骤自己的重试循环里才会执行，所以在两次运行之间失败的步骤永远不会先被修复。
 
-现在失败步骤在重置之前先尝试修复（结构化修复优先，其次通用修复），修复后立即重跑；只有修复不可用或次数已用尽，才走原来的重置等待。修复次数用尽后停下来等人处理（与之前相同）。
+现在失败步骤在重置之前先尝试修复（结构化修复优先，其次通用修复），修复后立即重跑；修复不可用或次数已用尽时，直接进入原来的重置等待。
 
-测试：`tests/test_repair_feedback.py` 中的 `test_relentless_repairs_a_failed_step_before_resetting` 与 `test_relentless_stops_only_after_repairs_are_used_up`。
+**2026-11-07 更新：G5 不因修复次数用尽而停下。** 之前 G5 在修复次数用尽后会停下（日志：「数据修复已用尽仍未通过，已停下」），导致连续失败的步骤（如 agent 提前结束、没有写出回执）在第一次用尽修复次数后就不再自动重跑。现在 G5 下修复次数用尽只跳过修复，继续重置重跑，不限次数，直到作者手动暂停或停止。非 G5 挡的行为不变。
+
+测试：`tests/test_repair_feedback.py` 中的 `test_relentless_repairs_a_failed_step_before_resetting`。原用例 `test_relentless_stops_only_after_repairs_are_used_up`（修复用尽则停下）已随 2026-11-07 的变更废弃，需要改写为「用尽后继续重置」。

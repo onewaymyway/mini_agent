@@ -383,10 +383,7 @@ def _loop(
                                             budget=budget)
             if repaired is not None:
                 continue                  # 修复已重跑：下一轮按新的状态继续（仍失败则再修复，直到用尽）
-            if RP.enabled(settings) and RP.exhausted(ws, target.id, settings):
-                # 修复次数已用尽：重置只会重复同样的失败，停下来等人处理
-                st.log_line(ws, f"⏸ {target.id}：数据修复已用尽仍未通过，已停下，不再自动重置。请检查相关数据文件")
-                return status
+            # 修复次数用尽也不停：G5 不限次数，继续重置重跑，直到作者手动暂停/停止
             # 不停机挡：自动重跑用尽后仍失败 → 重置并继续；等待期间可被暂停/停止打断
             delay = AP.reset_failed(ws, target)
             if _interruptible_sleep(ws, delay):
