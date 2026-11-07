@@ -224,3 +224,6 @@ external_projects/novel_writer/.agent/
 .agent/self_narrative_log.jsonl
 .run/
 .agent/daemon_launch.json
+.agent/daemon_restart_audit.log
+.agent/daemon_restart_status.json
+.agent/daemon_restart.log
