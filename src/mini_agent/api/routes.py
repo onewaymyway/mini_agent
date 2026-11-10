@@ -400,6 +400,8 @@ from .models import (
     SessionCleanupRequest, SessionCleanupResponse, SessionCleanupItem, OrphanCleanupItem,
     SessionCleanupProjectResult, SessionCleanupScopeInfo, SessionCleanupScopesResponse,
     WorkflowRunCleanupItem, RawOrphanCleanupItem,
+    CleanupCategoriesResponse, CleanupCategoryInfo, CleanupRunRequest,
+    CleanupRunResponse, CleanupCategoryResult, CleanupItemInfo,
     ProtectedFileEntry, ProtectedFilesStatusResponse,
     ProtectedFileAddRequest, ProtectedFileRemoveRequest,
     ProtectedFilesBackupRequest, ProtectedFilesBackupResponse,
@@ -12636,3 +12638,83 @@ async def get_growth_material_body(request: Request, material_id: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── 清理中心（next_doc/cleanup_center_plan.md）──────────────────────────────
+
+@router.get("/cleanup/categories", response_model=CleanupCategoriesResponse)
+async def cleanup_categories_endpoint(request: Request):
+    """清理中心的类别清单（owner only）。只读，不触碰磁盘。"""
+    _require_owner(request)
+    from mini_agent.evolution.cleanup_catalog import list_categories
+    return CleanupCategoriesResponse(
+        categories=[CleanupCategoryInfo(**c) for c in list_categories()])
+
+
+def _cleanup_center_root(request: Request, project: Optional[str]):
+    """返回 (项目根, 注册名)。注册名解析失败 → 404；主项目根缺失 → 500。"""
+    if project is not None:
+        name = project.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="project 不能为空")
+        from mini_agent.external_projects.registry import (
+            ExternalProjectRegistry, ExternalProjectRegistryError,
+        )
+        try:
+            rec = ExternalProjectRegistry().get(name)
+        except ExternalProjectRegistryError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        root = Path(rec.path).expanduser()
+        if not root.is_dir():
+            raise HTTPException(status_code=404, detail=f"外部项目 '{name}' 的目录不存在")
+        return root.resolve(), name
+    root = getattr(request.app.state, "project_root", None)
+    if root is None:
+        raise HTTPException(status_code=500, detail="项目根目录不可用")
+    return Path(root), None
+
+
+@router.post("/cleanup/run", response_model=CleanupRunResponse)
+async def cleanup_run_endpoint(request: Request, body: CleanupRunRequest):
+    """清理中心：对勾选的类别做预览（dry_run=True）或执行（dry_run=False）。owner only。
+
+    只接受类别 key 与天数，路径由服务端解析。未知 key / 非法天数 → 400。
+    每个类别独立处理，单类失败只体现在该类的 error 里，不影响其它类别。
+    """
+    _require_owner(request)
+    from mini_agent.evolution.cleanup_catalog import run_categories, validate_selection
+
+    root, project = _cleanup_center_root(request, body.project)
+    if not body.keys:
+        raise HTTPException(status_code=400, detail="请至少选择一个清理类别")
+    try:
+        validate_selection(body.keys, body.age_days)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    try:
+        results = await run_blocking(
+            run_categories, root, body.keys,
+            age_days=body.age_days, dry_run=body.dry_run,
+            where="cleanup_center_run", timeout=120.0,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    out = []
+    for r in results:
+        d = r.to_dict()
+        out.append(CleanupCategoryResult(
+            key=d["key"], label=d["label"], dry_run=d["dry_run"], error=d["error"],
+            items=[CleanupItemInfo(**i) for i in d["items"]],
+            total_bytes=d["total_bytes"], delete_count=d["delete_count"],
+            deleted_count=d["deleted_count"], failed_count=d["failed_count"],
+        ))
+    total_mb = sum(r.total_bytes for r in out) / 1024 / 1024
+    verb = "将释放" if body.dry_run else "已释放"
+    summary = (
+        f"清理中心{'（dry-run，不会实际删除）' if body.dry_run else ''}："
+        f"{len(out)} 个类别，{verb}约 {total_mb:.1f} MB，"
+        f"失败 {sum(r.failed_count for r in out)} 个条目。"
+    )
+    return CleanupRunResponse(dry_run=body.dry_run, project=project, summary=summary, results=out)
+

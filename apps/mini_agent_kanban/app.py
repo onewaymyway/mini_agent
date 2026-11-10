@@ -16913,6 +16913,136 @@ def render_notification_tab(client: AgentClient):
 # `get_tab_defs(cli_args)`（按 `cli_args.require_login` 决定要不要在末尾
 # 追加账户管理这一项），`render_tab_nav()`/`main()` 都改成调用
 # `get_tab_defs(cli_args)` 而不是直接读 `TAB_DEFS`。
+# ── 清理中心（next_doc/cleanup_center_plan.md）────────────────────────────
+
+_CC_RISK_LABEL = {"low": "🟢 低风险", "medium": "🟡 中风险", "high": "🔴 高风险"}
+
+
+def _cc_snapshot_key(keys, days, project) -> tuple:
+    return (tuple(sorted(keys)), tuple(sorted((k, float(v)) for k, v in days.items())), project)
+
+
+def _cc_render_result(res: dict) -> None:
+    if res.get("error"):
+        st.warning(res["error"])
+        return
+    items = res.get("items", [])
+    to_delete = [i for i in items if i.get("action") in ("delete", "deleted")]
+    failed = [i for i in items if i.get("action") == "failed"]
+    verb = "将释放" if res.get("dry_run") else "已释放"
+    st.markdown(
+        f"**{res['label']}** · {verb} {res.get('total_bytes', 0) / 1024 / 1024:.1f} MB"
+        f"（{len(to_delete)} 个条目，失败 {len(failed)} 个）"
+    )
+    if to_delete:
+        st.dataframe(
+            [{"name": i["name"],
+              "size_mb": round(i.get("size_bytes", 0) / 1024 / 1024, 2),
+              "last_activity": i.get("last_activity", ""),
+              "action": i["action"], "reason": i.get("reason", "")} for i in to_delete],
+            width='stretch', hide_index=True,
+        )
+    if failed:
+        st.dataframe([{"name": i["name"], "reason": i.get("reason", "")} for i in failed],
+                     width='stretch', hide_index=True)
+    kept = [i for i in items if i.get("action") == "keep"]
+    if kept:
+        st.caption(f"保留 {len(kept)} 个条目（未超过年龄阈值或为活动文件）")
+
+
+def render_cleanup_center_tab(client: AgentClient) -> None:
+    """🧽 清理中心：按数据类型勾选清理。两段式：预览（dry-run）→ 勾选确认 → 执行。"""
+    st.markdown("#### 🧽 清理中心")
+    st.caption(
+        "按数据类型分别清理非会话类数据（缓存、调试输出、adhoc 临时目录、报告、事件归档、"
+        "daemon 产出、已轮转日志等）。每个类别独立设置天数，先预览，确认后才会删除。"
+        "会话与工作流运行请使用「🗂️ 会话管理」中的批量清理。owner 权限。"
+    )
+
+    cats_res = client.cleanup_categories()
+    if not cats_res or "_error" in cats_res:
+        st.error((cats_res or {}).get("_error", "无法获取清理类别"))
+        return
+    categories = cats_res.get("categories", [])
+
+    scopes = client.session_cleanup_scopes()
+    project_names = [p["name"] for p in (scopes or {}).get("projects", [])] if scopes and "_error" not in scopes else []
+    scope_options = ["主 agent（当前项目）"] + [f"📁 外部项目：{n}" for n in project_names]
+    scope_idx = st.selectbox("清理范围", range(len(scope_options)),
+                             format_func=lambda i: scope_options[i], key="cc_scope")
+    project = project_names[scope_idx - 1] if scope_idx > 0 else None
+
+    prev_scope = st.session_state.get("_cc_scope_prev")
+    if prev_scope != project:
+        st.session_state["_cc_scope_prev"] = project
+        st.session_state.pop("cc_preview", None)
+        st.session_state.pop("cc_confirm", None)
+
+    st.markdown("**选择要清理的类别**")
+    keys, days = [], {}
+    for c in categories:
+        key = c["key"]
+        left, right = st.columns([4, 1])
+        on = left.checkbox(
+            f"{c['label']}　{_CC_RISK_LABEL.get(c['risk'], '')}",
+            value=c["default_checked"], key=f"cc_on_{key}",
+        )
+        d = right.number_input(
+            "天数", min_value=0, max_value=3650, value=int(c["default_age_days"]),
+            step=1, key=f"cc_days_{key}", label_visibility="collapsed",
+        )
+        left.caption(c["description"] + (f" ⚠️ {c['risk_note']}" if c.get("risk_note") else ""))
+        if on:
+            keys.append(key)
+            days[key] = float(d)
+
+    if not keys:
+        st.info("请至少勾选一个类别。")
+        return
+
+    bc1, bc2 = st.columns(2)
+    if bc1.button("🔍 预览（dry-run，不会真的删除）", width='stretch', key="cc_preview_btn"):
+        res = client.cleanup_run(keys, age_days=days, dry_run=True, project=project)
+        if res and "_error" not in res:
+            st.session_state["cc_preview"] = {"snapshot": _cc_snapshot_key(keys, days, project), "res": res}
+            st.session_state.pop("cc_confirm", None)
+        else:
+            st.session_state.pop("cc_preview", None)
+            st.error((res or {}).get("_error", "预览失败"))
+
+    preview = st.session_state.get("cc_preview")
+    if preview and preview["snapshot"] != _cc_snapshot_key(keys, days, project):
+        st.info("勾选或天数已改变，请重新预览。")
+        return
+    if preview:
+        res = preview["res"]
+        st.info(res.get("summary", ""))
+        for r in res.get("results", []):
+            with st.expander(f"{r['label']} · {r.get('delete_count', 0)} 个待删",
+                             expanded=bool(r.get("delete_count"))):
+                _cc_render_result(r)
+        any_delete = any(r.get("delete_count") for r in res.get("results", []))
+        high_selected = [r["label"] for r in res.get("results", [])
+                         if r.get("delete_count") and r["key"] in ("daemon_run_outputs",)]
+        if high_selected:
+            st.warning("⚠️ 所选类别含高风险数据：" + "、".join(high_selected)
+                       + "。删除后不可恢复，请确认已导出或不再需要。")
+        if any_delete:
+            confirm = bc2.checkbox("我已确认以上列表，执行删除", key="cc_confirm")
+            if st.button("⚠️ 确认执行清理（不可撤销）", disabled=not confirm,
+                         width='stretch', type="primary", key="cc_execute_btn"):
+                done = client.cleanup_run(keys, age_days=days, dry_run=False, project=project)
+                if done and "_error" not in done:
+                    st.success(done.get("summary", "清理完成"))
+                    st.session_state.pop("cc_preview", None)
+                    st.session_state.pop("cc_confirm", None)
+                    st.rerun()
+                else:
+                    st.error((done or {}).get("_error", "清理执行失败"))
+        else:
+            st.caption("所选类别没有可删除的条目。")
+
+
 _BASE_TAB_DEFS = [
     ("chat", "💬 对话", lambda client: render_chat_tab(client, get_active_session_id())),
     ("sessions", "🗂️ 会话管理", lambda client: render_sessions_tab(client)),
@@ -16934,6 +17064,7 @@ _BASE_TAB_DEFS = [
     ("external_input", "🔌 外部输入", lambda client: render_external_input_tab(client)),
     ("notification", "🔔 关注与通知", lambda client: render_notification_tab(client)),
     ("protected_files", "🛡️ 受保护文件", lambda client: render_protected_files_tab(client)),
+    ("cleanup_center", "🧽 清理中心", lambda client: render_cleanup_center_tab(client)),
     ("config", "⚙️ 配置", lambda client: render_config_tab(client)),
     ("diagnostics", "🔧 诊断", lambda client: render_diagnostics_tab(client)),
     ("slow_requests", "🐢 慢请求", lambda client: render_slow_requests_tab(client)),

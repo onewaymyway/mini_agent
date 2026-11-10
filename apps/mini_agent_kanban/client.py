@@ -598,6 +598,19 @@ class AgentClient:
         """清理范围下拉框的数据：已注册外部项目的轻量列表（不含健康检查）。"""
         return self._get("/sessions/cleanup/scopes")
 
+    def cleanup_categories(self):
+        """清理中心的类别清单（key/label/描述/默认勾选/默认天数/风险）。"""
+        return self._get("/cleanup/categories")
+
+    def cleanup_run(self, keys: list, *, age_days: dict = None, dry_run: bool = True,
+                    project: str = None):
+        """清理中心：对勾选类别预览（dry_run=True）或执行。只传类别 key 与天数，路径由服务端解析。"""
+        body = {"keys": list(keys), "age_days": dict(age_days or {}), "dry_run": dry_run}
+        if project:
+            body["project"] = project
+        timeout = 120 if not dry_run else 60
+        return self._post("/cleanup/run", json_body=body, timeout=timeout)
+
     # ── 受保护文件清单 ──────────────────────────────────────────────────
     def protected_files_status(self):
         return self._get("/protected-files/status")

@@ -434,6 +434,62 @@ class SessionCleanupScopesResponse(BaseModel):
     projects: list[SessionCleanupScopeInfo] = []
 
 
+# ── 清理中心（next_doc/cleanup_center_plan.md）────────────────────────────
+
+class CleanupCategoryInfo(BaseModel):
+    """GET /v1/cleanup/categories 中的一个清理类别。"""
+    key:              str
+    label:            str
+    description:      str
+    default_checked:  bool
+    default_age_days: float
+    risk:             str
+    risk_note:        str = ""
+
+
+class CleanupCategoriesResponse(BaseModel):
+    categories: list[CleanupCategoryInfo] = []
+
+
+class CleanupRunRequest(BaseModel):
+    """POST /v1/cleanup/run 请求体。dry_run 默认 True（预览）。
+
+    keys 只能是类别 key；age_days 按 key 给天数，缺省用类别默认值。
+    project 为外部项目注册名（缺省为主项目），路径一律由服务端解析。
+    """
+    keys:     list[str]
+    age_days: dict[str, float] = {}
+    dry_run:  bool = True
+    project:  Optional[str] = None
+
+
+class CleanupItemInfo(BaseModel):
+    name:          str
+    size_bytes:    int = 0
+    last_activity: str = ""
+    action:        str   # "keep" | "delete" | "deleted" | "failed"
+    reason:        str = ""
+
+
+class CleanupCategoryResult(BaseModel):
+    key:           str
+    label:         str
+    dry_run:       bool
+    error:         str = ""
+    items:         list[CleanupItemInfo] = []
+    total_bytes:   int = 0
+    delete_count:  int = 0
+    deleted_count: int = 0
+    failed_count:  int = 0
+
+
+class CleanupRunResponse(BaseModel):
+    dry_run:    bool
+    project:    Optional[str] = None
+    summary:    str = ""
+    results:    list[CleanupCategoryResult] = []
+
+
 # ── 受保护文件清单（protected_files_manifest_and_delete_guard_plan.md）────
 
 class ProtectedFileEntry(BaseModel):

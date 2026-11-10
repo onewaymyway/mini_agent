@@ -1666,6 +1666,37 @@ LLM 调用统一走 owner 的 LLM 配置。
 | `GET` | `/v1/protected-files/snapshots/{generation_id}` | 某一份快照的详细路径清单 |
 | `POST` | `/v1/protected-files/restore` | `force=False`（默认）只返回"将要覆盖哪些路径"的预览、不写盘；确认后 `force=True` 重新请求才真正执行（与 `POST /v1/sessions/cleanup` 的 `dry_run` 两段式交互同构） |
 
+### 清理中心接口（owner only）
+
+设计见 `next_doc/cleanup_center_plan.md`。
+
+#### GET /v1/cleanup/categories
+
+返回清理类别清单：`key`、`label`、`description`、`default_checked`、`default_age_days`、
+`risk`（`low`/`medium`/`high`）、`risk_note`。只读，不触碰磁盘。
+
+#### POST /v1/cleanup/run
+
+```json
+{
+  "keys": ["cache", "debug"],
+  "age_days": {"cache": 30},
+  "dry_run": true,
+  "project": null
+}
+```
+
+- `keys`：必填，至少一个类别 key；未知 key → `400`。
+- `age_days`：可选，按 key 覆盖天数（0–3650，非法值 → `400`）；缺省用类别默认值。
+- `dry_run`：默认 `true`，只扫描不删除；确认后再带 `false` 请求一次。
+- `project`：可选，外部项目注册名（路径由服务端解析，不接受路径；未注册 → `404`）。
+
+响应：`summary` 与 `results[]`，每个类别包含 `items[]`（`name`、`size_bytes`、`last_activity`、
+`action` ∈ `keep` / `delete` / `deleted` / `failed`、`reason`）、`total_bytes`、`delete_count`、
+`deleted_count`、`failed_count`，以及可能的 `error`（单类失败只影响该类）。
+
+参数校验在进入线程池之前完成，业务错误不会被熔断器计为系统故障。
+
 ### Daemon 启动流程
 
 ```bash
