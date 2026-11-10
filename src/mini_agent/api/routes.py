@@ -3248,6 +3248,7 @@ def _cleanup_item_to_model(item) -> SessionCleanupItem:
         turns=item.turns, action=item.action, reason=item.reason,
         extracted_now=item.extracted_now,
         raw_results_bytes=getattr(item, "raw_results_bytes", 0),
+        output_files=getattr(item, "output_files", 0),
     )
 
 
@@ -3265,6 +3266,7 @@ def _workflow_item_to_model(item) -> WorkflowRunCleanupItem:
         size_bytes=item.size_bytes, output_files=item.output_files,
         action=item.action, reason=item.reason,
         raw_results_bytes=item.raw_results_bytes,
+        stale=getattr(item, "stale", False),
     )
 
 
@@ -3300,8 +3302,10 @@ def _cleanup_report_to_result(report, *, project=None, sessions_dir="", note="")
         output_protected_count=report.output_protected_count,
         workflow_total_scanned=report.workflow_total_scanned,
         workflow_kept_count=len(report.workflow_kept),
+        workflow_stale_count=sum(1 for i in report.workflow_kept if getattr(i, "stale", False)),
         workflow_deleted=[_workflow_item_to_model(i) for i in report.workflow_deleted],
         workflow_failed=[_workflow_item_to_model(i) for i in report.workflow_failed],
+        adhoc_temp_deleted=[_raw_orphan_item_to_model(i) for i in report.adhoc_temp_deleted],
         raw_orphan_deleted=[_raw_orphan_item_to_model(i) for i in report.raw_orphan_deleted],
         raw_orphan_failed=[_raw_orphan_item_to_model(i) for i in report.raw_orphan_failed],
     )

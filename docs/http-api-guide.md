@@ -1526,19 +1526,29 @@ raw_results 不动；命中受保护文件清单则保留并在 `reason` 里注�
 `deleted[]` / `orphan_deleted[]` 条目带 `raw_results_bytes`，响应带
 `raw_results_total_bytes`。该联动对主 agent 与外部项目一致。
 
-**产出保护（始终开启，不可关闭）**：会话目录下 `output/` 中有任何文件的 session，
-即使满足下面所有删除条件也**保留**，`kept` 中 `reason` 写明"含产出文件 N 个，受保护"。
-响应字段 `output_protected_count` 统计因此被保留的会话与工作流运行数。
+**产出保护（默认关闭，参数 `protect_outputs` 仅内部可用，不经 HTTP 请求体暴露）**：
+产出保护已由用户决定关闭，清理会照常删除含 `output/` 产出的会话与工作流运行。为避免
+误删，每条删除项带 `output_files`（产出文件数），响应中所有将删除的产出数会在
+`summary` 里以"⚠️ 产出文件：将删除 N 个"提示，看板也会弹出醒目警告。
+`output_protected_count` 在保护关闭时恒为 `0`。
 
 **工作流运行目录（`workflow_sessions/<wid>/`）**：与会话清理一并执行（主 agent 与
 外部项目均适用），响应字段 `workflow_total_scanned` / `workflow_kept_count` /
 `workflow_deleted[]` / `workflow_failed[]`。判定规则：状态为 `running` /
 `paused` / `awaiting_approval` 的一律保留（崩溃遗留的假 `running` 需先在工作流页面
-`mark_interrupted`）；含 `output/` 产出的保留；按 `updated_at` 倒序最近
+`mark_interrupted`）；按 `updated_at` 倒序最近
 `keep_recent_count` 个保留；`keep_recent_days` 内保留；其余（`done` / `failed` /
 `partial` / `cancelled`）删除。删除时同时清理运行目录内每个子目录（步骤子 Agent）
-对应的 raw_results。无 `session.json` 的目录：年龄不足 `orphan_min_age_hours` 保留，
-超过且无产出则作为孤儿运行删除。工作流运行不走知识抽取门槛。
+对应的 raw_results。无 `session.json` 的目录：年龄不足 `orphan_min_age_hours` 保留，超过则作为孤儿运行删除。
+工作流运行不走知识抽取门槛。
+
+**疑似中断遗留**：状态为 `running` / `paused` / `awaiting_approval` 但超过
+`keep_recent_days` 天未更新的运行，视为崩溃遗留，**只报告、永不自动删除**，
+响应字段 `workflow_stale_count` 统计数量，对应的 `workflow_kept[]` 项 `stale=true`。
+请先在工作流页面 `mark_interrupted` 再清理。
+
+**adhoc 临时目录**：`.agent/adhoc/<key>/temp/` 下超过 7 天未活动的条目会被清理，
+响应字段 `adhoc_temp_deleted[]`。`output/` 永不触碰。
 
 **孤立 raw_results**（`include_orphans: true` 时）：`raw_results/<名字>/` 若不被任何
 `sessions/<id>/` 或工作流运行目录（含其中的子 Agent 目录名）引用，且最后活动时间早于

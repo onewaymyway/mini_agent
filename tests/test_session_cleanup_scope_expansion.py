@@ -22,7 +22,7 @@ import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from mini_agent.evolution.session_cleanup import cleanup_sessions
+from mini_agent.evolution.session_cleanup import cleanup_sessions, format_report_lines
 from mini_agent.session import SessionManager
 from mini_agent.storage.paths import AgentPaths
 
@@ -114,10 +114,20 @@ class _Base(unittest.TestCase):
 
 
 class OutputProtectionTests(_Base):
-    def test_session_with_output_is_kept_others_deleted(self):
-        _make_chat_session(self.sessions_dir, "s_plain", days_ago=OLD_DAYS)
+    def test_default_is_off_output_session_is_deleted_and_reported(self):
         _make_chat_session(self.sessions_dir, "s_out", days_ago=OLD_DAYS, with_output=True)
         report = self._cleanup(include_workflow_runs=False)
+        self.assertIn("s_out", {i.session_id for i in report.deleted})
+        self.assertFalse((self.sessions_dir / "s_out").exists())
+        self.assertEqual(report.deleted[0].output_files, 1)
+        self.assertEqual(report.output_protected_count, 0)
+        lines = "\n".join(format_report_lines(report))
+        self.assertIn("删除 1 个产出文件", lines)
+
+    def test_protect_outputs_true_keeps_session_with_output(self):
+        _make_chat_session(self.sessions_dir, "s_plain", days_ago=OLD_DAYS)
+        _make_chat_session(self.sessions_dir, "s_out", days_ago=OLD_DAYS, with_output=True)
+        report = self._cleanup(include_workflow_runs=False, protect_outputs=True)
         deleted_ids = {i.session_id for i in report.deleted}
         self.assertIn("s_plain", deleted_ids)
         self.assertNotIn("s_out", deleted_ids)
@@ -126,7 +136,7 @@ class OutputProtectionTests(_Base):
 
     def test_dry_run_counts_protection_and_deletes_nothing(self):
         _make_chat_session(self.sessions_dir, "s_out", days_ago=OLD_DAYS, with_output=True)
-        report = self._cleanup(dry_run=True, include_workflow_runs=False)
+        report = self._cleanup(dry_run=True, include_workflow_runs=False, protect_outputs=True)
         self.assertEqual(report.output_protected_count, 1)
         self.assertTrue((self.sessions_dir / "s_out").exists())
 
@@ -148,9 +158,16 @@ class WorkflowRunCleanupTests(_Base):
         self.assertEqual(report.workflow_deleted, [])
         self.assertEqual(len(report.workflow_kept), 3)
 
-    def test_run_with_output_is_protected(self):
+    def test_run_with_output_is_deleted_by_default_and_reported(self):
         _make_run(self.wf_base, "wf_out", status="done", days_ago=OLD_DAYS, with_output=True)
         report = self._cleanup()
+        self.assertEqual([i.run_id for i in report.workflow_deleted], ["wf_out"])
+        self.assertEqual(report.workflow_deleted[0].output_files, 1)
+        self.assertFalse((self.wf_base / "wf_out").exists())
+
+    def test_run_with_output_is_protected_when_enabled(self):
+        _make_run(self.wf_base, "wf_out", status="done", days_ago=OLD_DAYS, with_output=True)
+        report = self._cleanup(protect_outputs=True)
         self.assertEqual(report.workflow_deleted, [])
         self.assertTrue((self.wf_base / "wf_out" / "output" / "result.md").exists())
         self.assertEqual(report.output_protected_count, 1)
@@ -176,7 +193,7 @@ class WorkflowRunCleanupTests(_Base):
         (old_out / "output" / "x.md").write_text("x", encoding="utf-8")
         _age_tree(old_out, OLD_TS)
 
-        report = self._cleanup()
+        report = self._cleanup(protect_outputs=True)
         self.assertFalse(old.exists())
         self.assertTrue(young.exists())
         self.assertTrue(old_out.exists())
@@ -245,6 +262,49 @@ class ExternalRootTests(_Base):
         self.assertFalse((ext_wf / "wf_ext_old").exists())
         # 主项目的工作流目录不受外部项目清理影响
         self.assertTrue((self.wf_base / "wf_main_old").exists())
+
+
+class StaleRunningTests(_Base):
+    def test_stale_running_is_reported_never_deleted(self):
+        _make_run(self.wf_base, "wf_crashed", status="running", days_ago=OLD_DAYS)
+        _make_run(self.wf_base, "wf_fresh_running", status="running", days_ago=1)
+        report = self._cleanup()
+        self.assertEqual(report.workflow_deleted, [])
+        stale = {i.run_id: i.stale for i in report.workflow_kept}
+        self.assertEqual(stale, {"wf_crashed": True, "wf_fresh_running": False})
+        self.assertTrue((self.wf_base / "wf_crashed").exists())
+        lines = "\n".join(format_report_lines(report))
+        self.assertIn("疑似中断遗留的工作流运行 1 个", lines)
+
+
+class AdhocTempTests(_Base):
+    def test_only_stale_temp_entries_are_removed_output_never_touched(self):
+        adhoc = self.root / ".agent" / "adhoc" / "unbound"
+        stale = adhoc / "temp" / "stale_dir"
+        stale.mkdir(parents=True)
+        (stale / "a.txt").write_text("x", encoding="utf-8")
+        _age_tree(stale, OLD_TS)
+        fresh = adhoc / "temp" / "fresh.txt"
+        fresh.write_text("y", encoding="utf-8")
+        out = adhoc / "output" / "deliverable.md"
+        out.parent.mkdir(parents=True)
+        out.write_text("keep me", encoding="utf-8")
+        _age_tree(adhoc / "output", OLD_TS)
+
+        report = self._cleanup(include_workflow_runs=False)
+        self.assertEqual([i.dir_name for i in report.adhoc_temp_deleted],
+                         ["unbound/temp/stale_dir"])
+        self.assertFalse(stale.exists())
+        self.assertTrue(fresh.exists())
+        self.assertTrue(out.exists())
+
+    def test_adhoc_dry_run_deletes_nothing(self):
+        adhoc = self.root / ".agent" / "adhoc" / "k" / "temp" / "old"
+        adhoc.mkdir(parents=True)
+        _age_tree(adhoc, OLD_TS)
+        report = self._cleanup(dry_run=True, include_workflow_runs=False)
+        self.assertEqual(len(report.adhoc_temp_deleted), 1)
+        self.assertTrue(adhoc.exists())
 
 
 if __name__ == "__main__":

@@ -10,7 +10,8 @@ session.json、events.jsonl、watchdog.jsonl、各 step 子 Agent 会话目录�
      超过安全窗口且无产出 → 删除；有产出 → 保留。
   2. 状态非终结（running/paused/awaiting_approval/未知）→ 保留。崩溃遗留的假
      running 不自动删，需先在工作流页面 mark_interrupted。
-  3. output/ 下有文件 → 保留（产出保护，始终开启）。
+  3. output/ 下有文件 → 仅在 protect_outputs=True 时保留（默认 False，用户已决定
+     关闭产出保护）；关闭时照常删除，但 output_files 会记录产出文件数供预览提示。
   4. 按 updated_at 倒序，最近 keep_recent_count 个保留。
   5. updated_at 在 keep_recent_days 之内保留。
   6. 其余（done/failed/partial/cancelled）→ 删除。
@@ -40,9 +41,12 @@ class WorkflowRunItem:
     action: str            # "keep" | "delete" | "failed"
     reason: str
     raw_results_bytes: int = 0
+    # 非终结状态且超过保留窗口未更新：疑似崩溃/中断遗留。只报告，永不自动删除。
+    stale: bool = False
 
     def to_dict(self) -> dict:
         return {
+            "stale": self.stale,
             "run_id": self.run_id,
             "status": self.status,
             "updated_at": self.updated_at,
@@ -127,6 +131,7 @@ def scan_workflow_runs(
     keep_recent_days: float = 30,
     keep_recent_count: int = 20,
     orphan_min_age_hours: float = 6.0,
+    protect_outputs: bool = False,
 ) -> list[WorkflowRunItem]:
     """只分类，不删除。返回所有运行目录的判定结果（含 keep 与 delete）。"""
     from mini_agent.storage.paths import AgentPaths
@@ -163,7 +168,7 @@ def scan_workflow_runs(
                     size_bytes=size, output_files=out_n, action="keep",
                     reason=f"无 session.json，目录年龄 < {orphan_min_age_hours} 小时，可能正在启动",
                 ))
-            elif out_n:
+            elif out_n and protect_outputs:
                 items.append(WorkflowRunItem(
                     run_id=d.name, status="unknown", updated_at=_iso(last),
                     size_bytes=size, output_files=out_n, action="keep",
@@ -188,8 +193,15 @@ def scan_workflow_runs(
         )
 
         if status not in _TERMINAL_STATUSES:
-            item.reason = f"状态非终结（{status}），保留"
-        elif out_n:
+            if ts < keep_days_cutoff:
+                item.stale = True
+                item.reason = (
+                    f"状态仍为 {status} 且超过 {keep_recent_days} 天未更新，疑似中断遗留；"
+                    "请先在工作流页面 mark_interrupted，再清理"
+                )
+            else:
+                item.reason = f"状态非终结（{status}），保留"
+        elif out_n and protect_outputs:
             item.reason = f"含产出文件 {out_n} 个，受保护"
         else:
             terminal_candidates.append((ts, item))
@@ -218,6 +230,7 @@ def cleanup_workflow_runs(
     keep_recent_count: int = 20,
     orphan_min_age_hours: float = 6.0,
     dry_run: bool = True,
+    protect_outputs: bool = False,
 ) -> list[WorkflowRunItem]:
     """扫描 + （可选）执行。返回全部判定结果；失败项 action="failed"。"""
     from mini_agent.storage.paths import AgentPaths
@@ -228,6 +241,7 @@ def cleanup_workflow_runs(
         keep_recent_days=keep_recent_days,
         keep_recent_count=keep_recent_count,
         orphan_min_age_hours=orphan_min_age_hours,
+        protect_outputs=protect_outputs,
     )
     if not items:
         return items

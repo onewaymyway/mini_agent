@@ -56,6 +56,7 @@ if TYPE_CHECKING:
 DEFAULT_KEEP_RECENT_DAYS = 30
 DEFAULT_KEEP_RECENT_COUNT = 20
 DEFAULT_MIN_TURNS_FOR_EXTRACTION = 3
+DEFAULT_ADHOC_TEMP_MIN_AGE_DAYS = 7
 
 # 孤儿目录（有目录、没 meta.json）专用阈值：
 # session 目录在 raw_history.set_path() 时就已创建，meta.json 要等一轮对话
@@ -154,6 +155,9 @@ class CleanupReport:
     workflow_kept: list = field(default_factory=list)      # list[WorkflowRunItem]
     workflow_deleted: list = field(default_factory=list)
     workflow_failed: list = field(default_factory=list)
+
+    # adhoc/<key>/temp 过期临时条目（output/ 永不触碰）
+    adhoc_temp_deleted: list[RawOrphanItem] = field(default_factory=list)
 
     # 孤立 raw_results 目录（仅 include_orphans=True 时扫描）
     raw_orphan_kept: list[RawOrphanItem] = field(default_factory=list)
@@ -548,6 +552,56 @@ def scan_orphan_raw_results(
     return kept, deleted, failed
 
 
+# ── adhoc 临时目录（.agent/adhoc/<key>/temp/）─────────────────────────────────
+
+def cleanup_adhoc_temp(project_root, *, min_age_days: float = DEFAULT_ADHOC_TEMP_MIN_AGE_DAYS,
+                       dry_run: bool = True) -> list[RawOrphanItem]:
+    """删除 .agent/adhoc/<key>/temp/ 下超过 min_age_days 未活动的条目。
+
+    只碰 temp/：output/ 是产出，永不触碰。目录内最后活动时间（递归取最新 mtime）
+    未过期的条目保留，避免删除正在被无会话任务使用的临时文件。
+    返回删除（或 dry-run 将删除）的条目列表，dir_name 形如 "unbound/temp/<name>"。
+    """
+    from mini_agent.utils.protected_files_guard import is_protected as _is_protected
+
+    out: list[RawOrphanItem] = []
+    if not project_root:
+        return out
+    adhoc_root = Path(project_root) / ".agent" / "adhoc"
+    if not adhoc_root.is_dir():
+        return out
+    cutoff = time.time() - min_age_days * 86400.0
+    for key_dir in adhoc_root.iterdir():
+        temp = key_dir / "temp"
+        if not key_dir.is_dir() or not temp.is_dir():
+            continue
+        for entry in temp.iterdir():
+            label = f"{key_dir.name}/temp/{entry.name}"
+            if _dir_last_activity(entry) >= cutoff:
+                continue
+            size = _dir_size(entry) if entry.is_dir() else entry.stat().st_size
+            item = RawOrphanItem(
+                dir_name=label, size_bytes=size, action="delete",
+                reason=f"adhoc temp 超过 {min_age_days} 天未活动",
+            )
+            if dry_run:
+                out.append(item)
+                continue
+            try:
+                if _is_protected(entry, project_root):
+                    continue
+                if entry.is_dir():
+                    shutil.rmtree(entry, ignore_errors=False)
+                else:
+                    entry.unlink()
+                out.append(item)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc,
+                              where='mini_agent.evolution.session_cleanup.cleanup_adhoc_temp')
+    return out
+
+
 # ── 主流程 ────────────────────────────────────────────────────────────────
 
 def scan_sessions_for_cleanup(
@@ -618,13 +672,16 @@ def cleanup_sessions(
     dry_run: bool = True,
     include_orphans: bool = False,
     orphan_min_age_hours: float = DEFAULT_ORPHAN_MIN_AGE_HOURS,
-    protect_outputs: bool = True,
+    protect_outputs: bool = False,
     include_workflow_runs: bool = True,
+    include_adhoc_temp: bool = True,
+    adhoc_temp_min_age_days: float = DEFAULT_ADHOC_TEMP_MIN_AGE_DAYS,
 ) -> CleanupReport:
     """扫描 + （可选）执行清理。
 
-    protect_outputs（内部参数，始终默认 True，不经 HTTP 请求体暴露）：会话的
-    output/ 下有文件时保留该会话，避免删除用户产出。
+    protect_outputs（默认 False，用户决定关闭产出保护）：True 时会话的 output/ 下
+    有文件就保留该会话；False 时照常删除，但每条删除项都会记录 output_files，
+    预览与报告会明确提示"将删除产出文件 N 个"。
     include_workflow_runs：同时清理 <project_root>/.agent/workflow_sessions/ 下的
     工作流运行目录（判定见 workflow_run_cleanup.py）。project_root 为 None 或
     不含 workflow_sessions 时自动跳过。
@@ -723,6 +780,7 @@ def cleanup_sessions(
                 keep_recent_count=keep_recent_count,
                 orphan_min_age_hours=orphan_min_age_hours,
                 dry_run=dry_run,
+                protect_outputs=protect_outputs,
             )
             for it in wf_items:
                 if it.action == "delete":
@@ -743,6 +801,15 @@ def cleanup_sessions(
         report.raw_orphan_kept = rk
         report.raw_orphan_deleted = rd
         report.raw_orphan_failed = rf
+
+    if include_adhoc_temp and project_root is not None:
+        try:
+            report.adhoc_temp_deleted = cleanup_adhoc_temp(
+                project_root, min_age_days=adhoc_temp_min_age_days, dry_run=dry_run,
+            )
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.session_cleanup.cleanup_sessions.adhoc')
 
     return report
 
@@ -802,6 +869,7 @@ def _count_files_under(path: Path) -> int:
 
 def _finish_deletion(session_manager, item: CleanupItem, report: CleanupReport, dry_run: bool,
                      project_root=None) -> None:
+    item.output_files = _session_output_file_count(session_manager, item.session_id)
     if dry_run:
         item.raw_results_bytes, _ = _clear_raw_results(project_root, item.session_id, dry_run=True)
         report.deleted.append(item)
@@ -851,6 +919,24 @@ def format_report_lines(report: CleanupReport) -> list[str]:
     if report.output_protected_count:
         lines.append(
             f"产出保护：{report.output_protected_count} 个会话/工作流运行含产出文件，已保留。"
+        )
+    lost = sum(i.output_files for i in report.deleted) + sum(
+        i.output_files for i in report.workflow_deleted)
+    if lost:
+        lines.append(
+            f"⚠️ 产出文件：本次{'将' if report.dry_run else '已'}删除 {lost} 个产出文件"
+            f"（产出保护已关闭），请确认是否需要先导出。"
+        )
+    stale_n = sum(1 for i in report.workflow_kept if getattr(i, "stale", False))
+    if stale_n:
+        lines.append(
+            f"⏸ 疑似中断遗留的工作流运行 {stale_n} 个（状态未终结且长期未更新）："
+            "未删除，请到工作流页面确认后 mark_interrupted 再清理。"
+        )
+    if report.adhoc_temp_deleted:
+        lines.append(
+            f"adhoc 临时目录：{verb} {len(report.adhoc_temp_deleted)} 个过期 temp 条目"
+            f"（约 {sum(i.size_bytes for i in report.adhoc_temp_deleted) / 1024 / 1024:.1f} MB）。"
         )
 
     if report.workflow_total_scanned:

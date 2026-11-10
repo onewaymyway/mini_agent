@@ -3105,11 +3105,18 @@ def _render_cleanup_result_tables(res: dict, *, key_prefix: str = "") -> None:
     deleted = res.get("deleted", [])
     skipped = res.get("skipped_pending_extraction", [])
     failed = res.get("failed", [])
+    lost_files = sum(i.get("output_files", 0) for i in deleted + res.get("workflow_deleted", []))
+    if lost_files:
+        st.warning(
+            f"⚠️ 本次{'将' if res.get('dry_run') else '已'}删除 {lost_files} 个产出文件（产出保护已关闭）。"
+            "这些文件属于用户产出，删除后不可恢复，请确认是否需要先导出。"
+        )
     if deleted:
         st.markdown(f"**将删除（{len(deleted)}）**" if res.get("dry_run") else f"**已删除（{len(deleted)}）**")
         st.dataframe(
             [{"session_id": i["session_id"], "title": i["title"],
               "updated_at": i["updated_at"], "turns": i["turns"],
+              "output_files": i.get("output_files", 0),
               "raw_results_mb": round(i.get("raw_results_bytes", 0) / 1024 / 1024, 2),
               "reason": i["reason"]} for i in deleted],
             width='stretch', hide_index=True,
@@ -3162,6 +3169,11 @@ def _render_cleanup_result_tables(res: dict, *, key_prefix: str = "") -> None:
     wf_failed = res.get("workflow_failed", [])
     if res.get("output_protected_count"):
         st.info(f"🛡️ 产出保护：{res['output_protected_count']} 个会话/工作流运行含产出文件，已保留，不会被删除。")
+    if res.get("workflow_stale_count"):
+        st.warning(
+            f"⏸ {res['workflow_stale_count']} 个工作流运行状态仍未终结且长期未更新，疑似中断遗留。"
+            "本次不会删除，请到工作流页面确认后标记为中断，再执行清理。"
+        )
     if res.get("workflow_total_scanned"):
         st.markdown("---")
         wf_mb = sum(i.get("size_bytes", 0) for i in wf_deleted) / 1024 / 1024
@@ -3176,6 +3188,7 @@ def _render_cleanup_result_tables(res: dict, *, key_prefix: str = "") -> None:
                 [{"run_id": i["run_id"], "status": i.get("status", ""),
                   "updated_at": i.get("updated_at", ""),
                   "size_mb": round(i.get("size_bytes", 0) / 1024 / 1024, 2),
+                  "output_files": i.get("output_files", 0),
                   "raw_results_mb": round(i.get("raw_results_bytes", 0) / 1024 / 1024, 2),
                   "reason": i["reason"]} for i in wf_deleted],
                 width='stretch', hide_index=True,
@@ -3186,6 +3199,16 @@ def _render_cleanup_result_tables(res: dict, *, key_prefix: str = "") -> None:
                 [{"run_id": i["run_id"], "reason": i["reason"]} for i in wf_failed],
                 width='stretch', hide_index=True,
             )
+    adhoc_deleted = res.get("adhoc_temp_deleted", [])
+    if adhoc_deleted:
+        adhoc_mb = sum(i.get("size_bytes", 0) for i in adhoc_deleted) / 1024 / 1024
+        st.markdown(f"**adhoc 临时目录 · 过期 temp（{len(adhoc_deleted)}，约 {adhoc_mb:.1f} MB）**")
+        st.dataframe(
+            [{"entry": i["dir_name"],
+              "size_mb": round(i.get("size_bytes", 0) / 1024 / 1024, 2),
+              "reason": i["reason"]} for i in adhoc_deleted],
+            width='stretch', hide_index=True,
+        )
     raw_deleted = res.get("raw_orphan_deleted", [])
     if raw_deleted:
         raw_mb = sum(i.get("size_bytes", 0) for i in raw_deleted) / 1024 / 1024
@@ -3200,7 +3223,7 @@ def _render_cleanup_result_tables(res: dict, *, key_prefix: str = "") -> None:
 
 def _cleanup_has_anything_to_delete(res: dict) -> bool:
     """单范围看 deleted/orphan_deleted/workflow_deleted/raw_orphan_deleted；「全部外部项目」要看每个项目分组。"""
-    keys = ("deleted", "orphan_deleted", "workflow_deleted", "raw_orphan_deleted")
+    keys = ("deleted", "orphan_deleted", "workflow_deleted", "raw_orphan_deleted", "adhoc_temp_deleted")
     if any(res.get(k) for k in keys):
         return True
     return any(any(p.get(k) for k in keys) for p in (res.get("projects") or []))

@@ -1,6 +1,6 @@
 # 会话清理范围扩展改进计划（session_cleanup_scope_expansion_plan）
 
-> 状态：已实施（阶段一、阶段二）。阶段三为后续项，未实施。
+> 状态：阶段一、阶段二已实施；产出保护已按用户决定关闭（默认 `protect_outputs=False`，参数保留供内部使用）；阶段三部分项已实施（见第 4 节）。
 
 ## 1. 背景与问题
 
@@ -36,7 +36,7 @@
 
 ## 3. 设计
 
-### 3.1 产出保护（阶段一）
+### 3.1 产出保护（阶段一，已于第二轮按用户指示关闭，默认 `protect_outputs=False`）
 
 - 判定：会话目录 `sessions/<id>/output/` 或运行目录 `workflow_sessions/<wid>/output/`
   下存在至少一个文件 → 保留，原因写明"含产出文件 N 个，受保护"。
@@ -79,16 +79,22 @@
 - 看板清理面板新增「工作流运行」「孤立 raw_results」两块结果表，
   确认执行的可勾选条件同时考虑这两类。
 
-## 4. 不在本次范围（阶段三，待确认后立项）
+## 4. 阶段三：已实施与未实施
+
+已实施（2026-11-10 按用户指示继续）：
+- 产出保护关闭，并以 `output_files` 与预览警告替代保护（见第 6 节）。
+- `adhoc/<key>/temp/` 超过 7 天未活动的条目清理（`output/` 不触碰）。
+- 工作流"疑似中断遗留"（非终结且超窗口未更新）：只报告、不删除，API 字段 `workflow_stale_count`。
+
+未实施（仍待确认后立项）：
 
 | 项目 | 原因 |
 |---|---|
-| `.agent/adhoc/<key>/temp` 与 `output` 清理 | 涉及 temp 与产出边界的判定，需先确认 temp 是否可能被后台任务引用 |
 | `daemon_run_outputs/{goals,cron}` | 与 goal 产出目录的所有权关系需要先梳理 |
 | `cache/`、`debug/`、`external_input/`、`events_archive/`、`daily_reports/` | 各自有独立用途，需逐个确认保留语义 |
 | JSONL 增长文件（events、llm_call_stats、growth_*、timeline 等） | 应走 `archive/gc.py` 的归档机制而非删除，需扩展 archive target 清单 |
 | `~/.agent/logs/*` 轮转 | 全局日志，影响面大，单独立项 |
-| 会话清理定时化 | 删除为不可撤销操作，定时执行前需先有可靠的预览与告警 |
+| 定时任务节奏调整 | `sys:session_cleanup` 已存在（每 7 天、`--extract-first`），现在会一并清理产出与工作流运行；是否改为仅预览或降低频率，待你决定 |
 | `raw_result_cleanup.py` 巡检注册调度 | 阶段二已用更精确的孤立判定替代其"按 mtime 删整目录"的粗粒度规则，原巡检保持未注册 |
 
 ## 5. 验收
@@ -101,8 +107,9 @@
 
 ## 6. 行为变化（上线前必读）
 
-- **产出保护生效后，旧的"按时间删会话"会保留更多会话**：凡含 `output/` 产出的会话不再删除。
-  这是预期的安全修复，但磁盘占用会比以前高。
+- **产出保护已关闭**：含 `output/` 产出的会话与工作流运行与其他条目一样按时间规则删除。
+  预览与报告会以"将删除 N 个产出文件"明确提示，看板以醒目警告展示。定时任务无人值守时同样
+  会删除这些产出，请确认是否需要先导出（可通过恢复 `protect_outputs=True` 的默认值回到保护模式）。
 - **定时任务 `sys:session_cleanup`（每 7 天，`/session cleanup --extract-first`）会同时清理
   工作流运行目录**，因为它走的是同一套默认参数（`include_workflow_runs=True`）。
   如果不希望无人值守删除工作流记录，可以在 `cron_scheduler.py` 的该任务模板中去掉依赖，

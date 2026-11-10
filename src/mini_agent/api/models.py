@@ -314,6 +314,8 @@ class SessionCleanupItem(BaseModel):
     extracted_now: bool = False
     # 对应 raw_results/<session_id>/ 目录大小（字节）：dry-run 为"将释放"，执行后为"已释放"
     raw_results_bytes: int = 0
+    # 该会话 output/ 下的产出文件数（产出保护关闭时，>0 表示会一并删除产出）
+    output_files: int = 0
 
 
 class SessionCleanupRequest(BaseModel):
@@ -363,6 +365,7 @@ class WorkflowRunCleanupItem(BaseModel):
     action:            str   # "keep" | "delete" | "failed"
     reason:            str = ""
     raw_results_bytes: int = 0
+    stale:             bool = False
 
 
 class RawOrphanCleanupItem(BaseModel):
@@ -395,9 +398,13 @@ class SessionCleanupProjectResult(BaseModel):
     raw_results_total_bytes:      int = 0
     # 产出保护：含 output/ 产出文件而被保留的会话 + 工作流运行数（只统计，不删除）
     output_protected_count:       int = 0
+    # adhoc/<key>/temp 过期临时条目（output/ 永不触碰）
+    adhoc_temp_deleted:           list[RawOrphanCleanupItem] = []
     # 工作流运行目录（workflow_sessions/<wid>/）清理结果，默认与会话清理一并执行
     workflow_total_scanned:       int = 0
     workflow_kept_count:          int = 0
+    # 疑似中断遗留（非终结且超窗口未更新）的工作流运行数，只报告不删除
+    workflow_stale_count:         int = 0
     workflow_deleted:             list[WorkflowRunCleanupItem] = []
     workflow_failed:              list[WorkflowRunCleanupItem] = []
     # 孤立 raw_results（include_orphans=True 时才扫描）
