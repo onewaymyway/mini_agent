@@ -84,6 +84,8 @@ class WebAppStatus:
     log_path: Optional[str] = None
     # 实例实际监听的地址（运行中才有；由看板启动时选择，见 start(bind=...)）
     bind: Optional[str] = None
+    # 看板启动的实例是否启用了登录门禁（外部启动的实例未知，为 None）
+    login_required: Optional[bool] = None
 
     @property
     def is_up(self) -> bool:
@@ -300,18 +302,88 @@ def _resolve_python(root: Path, spec: WebAppSpec) -> str:
     return str(candidate)
 
 
-def build_command(root: Path, spec: WebAppSpec, bind: Optional[str] = None) -> List[str]:
+AUTH_ENTRY_NAME = "auth_entry.py"
+
+_AUTH_ENTRY_TEMPLATE = """# -*- coding: utf-8 -*-
+# 由 mini_agent.external_projects.web_app 在看板启动时自动生成，请勿手动修改（每次启动会覆盖）。
+# 作用：先过共享登录门禁（mini_agent.web_auth），通过后再执行项目原来的 Streamlit 入口。
+import runpy
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = __ROOT__
+ENTRY = __ENTRY__
+APP_TITLE = __TITLE__
+
+sys.path.insert(0, PROJECT_ROOT)
+
+import streamlit as st
+
+# Streamlit 要求 set_page_config 是页面上的第一个命令；门禁组件需要在它之后渲染
+st.set_page_config(page_title=APP_TITLE, layout="wide")
+# 项目自己的 set_page_config 只能调用一次，这里屏蔽它（页面配置已由上面设置）
+st.set_page_config = lambda *args, **kwargs: None
+
+from mini_agent.web_auth import require_login  # noqa: E402
+
+require_login(APP_TITLE)  # 未登录：渲染登录页并停止，下面的代码不会执行
+runpy.run_path(str(Path(PROJECT_ROOT) / ENTRY), run_name="__main__")
+"""
+
+
+def auth_entry_path(root: Path) -> Path:
+    return _run_dir(root) / AUTH_ENTRY_NAME
+
+
+def write_auth_entry(root: Path, spec: WebAppSpec) -> Path:
+    """生成登录包装入口（.run/auth_entry.py），返回其路径。"""
+    path = auth_entry_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    content = (_AUTH_ENTRY_TEMPLATE
+               .replace("__ROOT__", repr(str(root.resolve())))
+               .replace("__ENTRY__", repr(spec.entry))
+               .replace("__TITLE__", repr(f"{root.name} · {spec.entry}")))
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+def mini_agent_src_dir() -> Path:
+    """mini_agent 包所在的目录（含 mini_agent/ 的那一层），供子进程 PYTHONPATH 使用。"""
+    import mini_agent
+    return Path(mini_agent.__file__).resolve().parents[1]
+
+
+def child_env(root: Path, require_login: bool) -> dict:
+    """Streamlit 子进程环境。启用登录时注入 PYTHONPATH（让项目解释器能 import 门禁模块）
+    与账户目录（与看板一致，保证共享同一套账户）。"""
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+    if require_login:
+        from mini_agent.web_auth.gate import ENV_AUTH_DIR, shared_auth_dir
+        existing = os.environ.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = os.pathsep.join(p for p in (str(mini_agent_src_dir()), existing) if p)
+        env[ENV_AUTH_DIR] = str(shared_auth_dir())
+    return env
+
+
+def build_command(root: Path, spec: WebAppSpec, bind: Optional[str] = None,
+                  require_login: Optional[bool] = None) -> List[str]:
     """返回用于 Popen 的 argv 列表（不经过 shell）。
 
     - 缺省：`<python> -m streamlit run <entry> --server.port <port> ...`
+    - 启用登录：入口换成登录包装入口 .run/auth_entry.py（见 write_auth_entry）
     - 填了 `command`：按 shell 规则切分；其中可用占位符 `{python}` `{entry}` `{port}`。
+      自定义 command 无法注入登录门禁，因此启用登录时抛 ValueError。
     """
+    auth = spec.require_login if require_login is None else bool(require_login)
     python = _resolve_python(root, spec)
     if spec.command:
+        if auth:
+            raise ValueError("该项目自定义了 command，无法启用登录（看板无法注入登录门禁）。")
         text = spec.command.format(python=python, entry=spec.entry, port=spec.port)
         return shlex.split(text, posix=not _WINDOWS)
+    entry = str(write_auth_entry(root, spec)) if auth else spec.entry
     return [
-        python, "-m", "streamlit", "run", spec.entry,
+        python, "-m", "streamlit", "run", entry,
         "--server.port", str(spec.port),
         "--server.address", normalize_bind(bind) if bind else spec.bind_address,
         "--server.headless", "true",
@@ -343,6 +415,8 @@ def get_status(name: str, root: Path, spec: WebAppSpec) -> WebAppStatus:
     host, listening = _find_listening(spec, root)   # 默认 127.0.0.1，具体网卡 IP 监听时改探测该 IP
     if owned_pid is not None or listening:
         base["bind"] = (record or {}).get("bind") or spec.bind
+    if owned_pid is not None:
+        base["login_required"] = bool((record or {}).get("auth"))
 
     healthy = listening and streamlit_healthy(host, spec.port, spec.health_path)
 
@@ -374,14 +448,24 @@ def wait_until_ready(name: str, root: Path, spec: WebAppSpec,
 # ── 启动 / 停止 ────────────────────────────────────────────────────────
 
 def start(name: str, root: Path, spec: WebAppSpec,
-          bind: Optional[str] = None) -> Tuple[bool, str]:
-    """启动 Streamlit。bind 为看板上选择的监听地址；缺省用 manifest 声明值，再缺省 0.0.0.0。"""
+          bind: Optional[str] = None, require_login: Optional[bool] = None) -> Tuple[bool, str]:
+    """启动 Streamlit。bind 为看板上选择的监听地址；缺省用 manifest 声明值，再缺省 0.0.0.0。
+    require_login 为看板上的登录选项；缺省用 manifest 的 require_login。"""
     if spec.is_remote:
         return False, "远程项目不能由看板启动，请在远程主机上启动。"
     try:
         effective_bind = normalize_bind(bind if bind is not None else spec.bind)
     except ValueError as exc:
         return False, f"监听地址不合法：{exc}"
+    auth = spec.require_login if require_login is None else bool(require_login)
+    if auth and spec.command:
+        return False, "该项目自定义了 command，无法启用登录（看板无法注入登录门禁）。请去掉 command，或关闭「需要登录」。"
+    if auth:
+        from mini_agent.web_auth.gate import accounts_empty
+        if accounts_empty():
+            return False, ("尚未创建任何账户，无法启用登录（启动后将无法进入）。请先执行："
+                           "python -m mini_agent.web_auth add <用户名> --admin")
+
     status = get_status(name, root, spec)
     if status.state != STATE_STOPPED:
         return False, f"当前状态为 {status.label}，无需启动。"
@@ -392,16 +476,18 @@ def start(name: str, root: Path, spec: WebAppSpec,
     if spec.python and not Path(_resolve_python(root, spec)).exists():
         return False, f"指定的解释器不存在：{spec.python}"
 
-    argv = build_command(root, spec, bind=effective_bind)
+    try:
+        argv = build_command(root, spec, bind=effective_bind, require_login=auth)
+    except ValueError as exc:
+        return False, str(exc)
     _run_dir(root).mkdir(parents=True, exist_ok=True)
     log = open(log_file(root), "ab")
     try:
         header = f"\n===== {datetime.now().isoformat(timespec='seconds')} start: {' '.join(argv)}\n"
         log.write(header.encode("utf-8"))
         log.flush()
-        env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
         kwargs = dict(cwd=str(root), stdin=subprocess.DEVNULL, stdout=log,
-                      stderr=subprocess.STDOUT, env=env)
+                      stderr=subprocess.STDOUT, env=child_env(root, auth))
         if _WINDOWS:
             kwargs["creationflags"] = _CREATE_NEW_PROCESS_GROUP
         else:
@@ -417,6 +503,7 @@ def start(name: str, root: Path, spec: WebAppSpec,
         "pid": proc.pid,
         "port": spec.port,
         "bind": effective_bind,
+        "auth": auth,
         "command": argv,
         "started_at": datetime.now().isoformat(timespec="seconds"),
     })
@@ -565,7 +652,7 @@ def stop_external(name: str, root: Path, spec: WebAppSpec) -> Tuple[bool, str]:
 
 
 def restart(name: str, root: Path, spec: WebAppSpec,
-            bind: Optional[str] = None) -> Tuple[bool, str]:
+            bind: Optional[str] = None, require_login: Optional[bool] = None) -> Tuple[bool, str]:
     """重启：先结束当前实例（看板启动的直接停；外部启动的需要调用方已确认），再拉起并等待就绪。
 
     远程项目不支持。返回 (是否就绪, 说明)。
@@ -586,8 +673,10 @@ def restart(name: str, root: Path, spec: WebAppSpec,
     if not _wait_port_free(_listening_host(spec, root), spec.port):
         return False, f"端口 {spec.port} 释放超时，无法重启。"
     # 未指定时沿用上一次启动的监听地址
-    previous = (read_pid_record(root) or {}).get("bind")
-    ok, msg = start(name, root, spec, bind=bind if bind is not None else previous)
+    previous = read_pid_record(root) or {}
+    ok, msg = start(name, root, spec,
+                    bind=bind if bind is not None else previous.get("bind"),
+                    require_login=require_login if require_login is not None else previous.get("auth"))
     if not ok:
         return False, msg
     ready = wait_until_ready(name, root, spec)

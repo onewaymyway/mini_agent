@@ -358,6 +358,33 @@ web_app:
 当前约定端口：world_simulator 8502、stock_watch 8503、novel_writer 8504、
 novel_to_video 8505。
 
+#### 登录保护（共享账户）
+
+外部项目的 Streamlit 页面可以要求登录，使用看板的共享账户（`~/.agent/web_auth/`）。
+两种开启方式：
+
+- **项目默认**：在 `project.yaml` 的 `web_app` 中声明
+
+  ```yaml
+  web_app:
+    port: 8503
+    require_login: true     # 默认 false
+  ```
+
+- **看板逐次选择**：启动前的「🔐 需要登录」复选框默认取上面的值，可以临时改。
+
+启用后，看板启动的不是项目原来的入口，而是看板生成的包装脚本 `.run/auth_entry.py`：它先渲染
+登录页，验证通过后才执行项目原来的 `entry`。项目代码不需要任何改动，也无法绕过登录。
+
+注意：
+- 账户目录为空时无法启用（启动会被拒绝，并提示创建账户）：`python -m mini_agent.web_auth add <用户名> --admin`。
+- 声明了自定义 `command` 的项目无法启用登录（看板无法注入门禁），启动会被拒绝。
+- 同一浏览器访问同一主机名下的看板和外部项目，登录态互通；在任一处退出或被管理员踢掉，所有应用都会失效。
+- 登录页只对经看板启动的实例生效；直接用 `streamlit run app.py` 启动不会有登录。
+- 安装 `extra-streamlit-components` 时支持 Cookie 免登录（刷新页面不用重新输入密码）；未安装时仍然有效拦截，只是需要更频繁地登录。
+
+设计见 `next_doc/shared_web_login_plan.md`。
+
 ### 6.5 会话与工作流运行清理
 
 每个外部项目的 `<项目根>/.agent/` 下会积累两类可清理数据：`sessions/`（对话会话）与

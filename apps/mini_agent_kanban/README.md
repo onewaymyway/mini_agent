@@ -43,7 +43,7 @@ streamlit run apps/mini_agent_kanban/app.py -- \
 | `--auto-token` | 启动时自动从项目 `.agent/` 目录读取 API Token，不用手动粘贴 |
 | `--project-root <路径>` | 项目根目录（含 `.agent/` 子目录），配合 `--auto-token` / `--require-login` 使用；不传则用当前工作目录 |
 | `--require-login` | 开启看板登录门禁：必须先用账户密码登录才能看到看板内容（见下文"登录鉴权"） |
-| `--users-file <路径>` | 账户文件路径，配合 `--require-login` 使用；不传则用 `<项目根目录>/.agent/kanban_users.json` |
+| `--users-file <路径>` | 账户文件路径，配合 `--require-login` 使用；不传则用共享账户目录 `~/.agent/web_auth/users.json`（见下文"登录鉴权"） |
 
 ## 功能一览
 
@@ -110,6 +110,22 @@ session 存储目录，以及待审批权限请求 / 待回答交互请求（点
 
 ## 登录鉴权
 
+> **共享账户（新）**：登录门禁已抽成通用模块 `mini_agent.web_auth`，看板和所有外部项目的
+> Streamlit 界面共用同一套账户（默认目录 `~/.agent/web_auth/`，可用环境变量
+> `MINI_AGENT_WEB_AUTH_DIR` 覆盖）。账户管理推荐用 `python -m mini_agent.web_auth`：
+>
+> ```bash
+> python -m mini_agent.web_auth add alice --admin     # 新增（交互输入密码）
+> python -m mini_agent.web_auth list
+> python -m mini_agent.web_auth passwd alice
+> python -m mini_agent.web_auth remove alice
+> python -m mini_agent.web_auth revoke-all --username alice
+> ```
+>
+> `manage_users.py` 仍可用，默认也已指向共享目录。看板首次启动时会把旧的
+> `<项目>/.agent/kanban_users.json` 复制到共享目录（只复制一次）。升级后需要重新登录一次。
+> 外部项目如何接入登录见 `docs/external-projects-guide.md` 的 6.4 节。
+
 加 `--require-login` 后，打开看板会先要求输入账户密码，验证通过才能看到任何看板
 内容。这是**看板页面自身的登录门禁**，和上面 mini-agent HTTP API 的 Token 鉴权是
 两回事，互不替代：
@@ -142,8 +158,8 @@ python manage_users.py set-admin alice --users-file "E:\codes\mini_claude_code\.
 python manage_users.py unset-admin alice --users-file "E:\codes\mini_claude_code\.agent\kanban_users.json"
 ```
 
-`--users-file` 需要和启动 `app.py` 时传的保持一致（或者都不传，两边都会落到
-`<项目根目录>/.agent/kanban_users.json`）。
+`--users-file` 需要和启动 `app.py` 时传的保持一致（或者都不传，两边都会落到共享目录
+`~/.agent/web_auth/users.json`）。
 
 **2. 页面**：登录后顶部会出现"👤 账户管理" tab（仅 `--require-login` 模式
 出现），不用再登服务器敲命令：

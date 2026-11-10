@@ -203,6 +203,9 @@ class WebAppSpec:
     # 0.0.0.0 = 所有网卡（无登录保护，只在可信网络使用）；127.0.0.1 = 仅本机；
     # 也可以是本机某个网卡的 IP。与 host 不同，bind 不改变启停归属，仍由看板启停。
     bind: Optional[str] = None
+    # 是否需要登录才能使用（共享账户，见 next_doc/shared_web_login_plan.md）。
+    # 启用时看板会用包装入口先过登录门禁，再执行 entry。看板启动面板可逐次改选。
+    require_login: bool = False
 
     @property
     def is_remote(self) -> bool:
@@ -556,7 +559,7 @@ def _parse_web_app(raw: Any) -> Optional[WebAppSpec]:
     if raw is None:
         return None
     if not isinstance(raw, dict):
-        raise ProjectManifestError("web_app: 必须是一个映射（port/entry/python/command/host/bind/health_path）")
+        raise ProjectManifestError("web_app: 必须是一个映射（port/entry/python/command/host/bind/require_login/health_path）")
 
     port = raw.get("port")
     if isinstance(port, bool) or not isinstance(port, int):
@@ -577,6 +580,9 @@ def _parse_web_app(raw: Any) -> Optional[WebAppSpec]:
     entry = _opt_str("entry", "app.py")
     health_path = _opt_str("health_path", "/_stcore/health")
     bind = _opt_str("bind", None)
+    req_login = raw.get("require_login", False)
+    if not isinstance(req_login, bool):
+        raise ProjectManifestError("web_app.require_login: 必须是 true 或 false")
     if bind is not None and bind != "localhost":
         import ipaddress
         try:
@@ -593,6 +599,7 @@ def _parse_web_app(raw: Any) -> Optional[WebAppSpec]:
         host=_opt_str("host", None),
         health_path=health_path,
         bind=bind,
+        require_login=req_login,
     )
 
 

@@ -558,20 +558,25 @@ def _read_token_from_project(project_root: str) -> tuple:
 # 登录门禁（可选，--require-login 开启）
 # ═══════════════════════════════════════════════════════════════════════
 def _auth_paths(cli_args) -> tuple:
-    """解析账户文件 / 签名密钥文件 / 登录失败限流记录文件 / 会话登记表
-    文件的实际路径，都挂在项目根目录的 .agent/ 下，和 token 自动读取
-    共用同一个"项目根目录"概念，避免用户要理解好几套路径规则。"""
+    """登录相关文件的实际路径（账户 / 签名密钥 / 限流记录 / 会话登记表）。
+
+    [shared_web_login_plan.md] 账户与会话统一放在共享目录（默认 ~/.agent/web_auth/，
+    或环境变量 MINI_AGENT_WEB_AUTH_DIR），和外部项目共用一套数据。
+    --users-file 仍可指定账户文件（相对路径相对于 --project-root）。
+    首次启动时会把旧的 <项目>/.agent/kanban_users.json 一次性复制到共享目录。
+    """
+    from mini_agent.web_auth.gate import auth_paths, migrate_legacy_kanban_users
+
     root = Path(cli_args.project_root).expanduser().resolve() if cli_args.project_root.strip() else Path.cwd().resolve()
+    migrate_legacy_kanban_users(root)
+    shared = auth_paths()
     if cli_args.users_file.strip():
         users_file = Path(cli_args.users_file).expanduser()
         if not users_file.is_absolute():
             users_file = root / users_file
     else:
-        users_file = root / ".agent" / "kanban_users.json"
-    secret_file = root / ".agent" / "kanban_session_secret"
-    attempts_file = root / ".agent" / "kanban_login_attempts.json"
-    sessions_file = root / ".agent" / "kanban_sessions.json"
-    return users_file, secret_file, attempts_file, sessions_file
+        users_file = shared.users
+    return users_file, shared.secret, shared.attempts, shared.sessions
 
 
 def _client_id() -> str:
@@ -604,7 +609,7 @@ def _client_id() -> str:
 # 里的一层改进，不是万能药。真正要做到 JS 也读不到，需要走反向代理签发
 # HttpOnly Cookie 的方案（见 kanban_auth_cookie_migration_plan.md 里
 # 记录的"方案 B"，评估后判断改造量对个人项目不划算，未采用）。
-AUTH_COOKIE_NAME = "mini_agent_kanban_auth"
+from mini_agent.web_auth.gate import AUTH_COOKIE_NAME  # noqa: E402  统一 Cookie 名，见 shared_web_login_plan.md
 
 
 def _get_cookie_manager():
@@ -676,104 +681,20 @@ def _cookie_clear_auth() -> None:
 
 
 def render_login_gate(cli_args) -> bool:
-    """登录门禁。返回 True 表示已通过验证，调用方可以继续往下渲染看板；
-    返回 False 表示这里已经把登录表单/提示画完了，调用方应直接 return，
-    不能再渲染任何看板内容（否则未登录也能看到数据）。
+    """看板登录门禁：委托给共享模块 mini_agent.web_auth.gate（所有 Streamlit 应用共用）。
 
-    [kanban_session_management_plan.md] 引入 `SessionStore` 之后，"已登录"
-    不再是"`st.session_state.authenticated` 是 True 就永远放行"——每次
-    进到这个函数都会用 `st.session_state["session_id"]` 重新核对一下这个
-    会话是否还在登记表里。这样"退出登录"（撤销自己当前会话）、"退出所有
-    其他会话"（自助踢掉自己其他设备/标签页的登录）、管理员在"👤 账户
-    管理"里踢掉某个会话，都能在**下一次这个标签页触发任意 rerun**（点
-    按钮、切 tab……）时就生效，不需要等 token 自然过期，也不需要轮换
-    `kanban_session_secret` 连累所有人重新登录。
+    返回 True 表示已通过验证，调用方可以继续渲染看板；False 表示登录页已经画好，
+    调用方应直接 return，不能再渲染任何看板内容。
     """
-    from auth import UserStore, LoginAttemptTracker, SessionStore, make_token, verify_token, get_or_create_secret
+    from mini_agent.web_auth.gate import AuthPaths, render_login_gate as _gate
 
     users_file, secret_file, attempts_file, sessions_file = _auth_paths(cli_args)
-    store = UserStore(users_file)
-    tracker = LoginAttemptTracker(attempts_file)
-    session_store = SessionStore(sessions_file)
-
-    if st.session_state.get("authenticated"):
-        sid = st.session_state.get("session_id", "")
-        username = st.session_state.get("username", "")
-        if session_store.is_valid(sid, username):
-            session_store.touch(sid)
-            return True
-        # 会话已被撤销（自己点了"退出所有其他会话"/"退出登录"，或管理员
-        # 把这个会话踢了）或者过期：清掉本地登录态和 URL 里的 token，
-        # 退回登录页，不再往下渲染任何看板内容。
-        st.session_state.authenticated = False
-        st.session_state.pop("username", None)
-        st.session_state.pop("session_id", None)
-        _cookie_clear_auth()
-        st.warning("⚠️ 当前会话已失效（可能已被撤销或过期），请重新登录。")
-
-    secret = get_or_create_secret(secret_file)
-
-    # 优先尝试用 Cookie 里的免登录 token 自动恢复登录态，这样刷新页面 /
-    # 重新打开浏览器标签不会强制要求重新输入密码（12 小时内有效，除非
-    # 中途被撤销）。[kanban_auth_cookie_migration_plan.md] 原来是从
-    # `st.query_params.get("auth")` 读，现在改成从 Cookie 读，避免 token
-    # 出现在 URL 里。
-    cookie_token = _cookie_get_auth()
-    if cookie_token:
-        result = verify_token(cookie_token, secret)
-        if result:
-            username, sid = result
-            if session_store.is_valid(sid, username):
-                session_store.touch(sid)
-                st.session_state.authenticated = True
-                st.session_state.username = username
-                st.session_state.session_id = sid
-                return True
-        # 签名过期/篡改，或者签名合法但对应会话已被撤销：都清掉 Cookie 里
-        # 的 token，避免带着一个永远失效的 token 反复刷新却看不出原因。
-        _cookie_clear_auth()
-
-    st.markdown("## 🔐 mini-agent 看板登录")
-
-    if store.is_empty():
-        st.warning(
-            "尚未创建任何账户，看板无法登录。请先在服务器上执行：\n\n"
-            f"```\npython apps/mini_agent_kanban/manage_users.py add <用户名> "
-            f"--users-file \"{users_file}\"\n```"
-        )
-        return False
-
-    with st.form("login_form"):
-        username = st.text_input("用户名")
-        password = st.text_input("密码", type="password")
-        submitted = st.form_submit_button("登录", width='stretch')
-
-    if submitted:
-        client_id = _client_id()
-        remaining = tracker.seconds_until_unlocked(username, client_id)
-        if remaining > 0:
-            mins = int(remaining // 60) + 1
-            st.error(f"🔒 该账户登录失败次数过多，已被临时锁定，请约 {mins} 分钟后再试。")
-        elif store.verify(username, password):
-            tracker.record_success(username, client_id)
-            sid, exp = session_store.create(username, client_id)
-            st.session_state.authenticated = True
-            st.session_state.username = username
-            st.session_state.session_id = sid
-            # [kanban_auth_cookie_migration_plan.md] 原来写 URL
-            # query_params 时，踩过"写入后又手动 st.rerun() 导致两次重跑
-            # 竞态"的坑；改成写 Cookie 之后不存在这个问题——`.set()` 不会
-            # 触发自动 rerun，这里维持登录成功后由 Streamlit 表单提交本身
-            # 触发的重跑即可，下一次重跑 `_cookie_get_auth()` 就能读到刚
-            # 写入的值（`CookieManager.set()` 会同步更新它自己的内存快照，
-            # 不需要等浏览器真正落盘那一轮 round trip）。
-            _cookie_set_auth(make_token(username, sid, exp, secret), exp)
-        else:
-            tracker.record_failure(username, client_id)
-            left = max(tracker.max_attempts - _current_fail_count(tracker, username, client_id), 0)
-            st.error(f"用户名或密码错误。（连续失败达到上限会临时锁定该账户，剩余尝试次数：{left}）")
-
-    return False
+    ok, _username = _gate(
+        "mini-agent 看板",
+        paths=AuthPaths(users=users_file, secret=secret_file,
+                        attempts=attempts_file, sessions=sessions_file),
+    )
+    return ok
 
 
 def _current_fail_count(tracker, username: str, client_id: str) -> int:
@@ -13381,6 +13302,8 @@ def _render_web_app_row(name: str, entry) -> None:
     where = f" · 主机 {spec.host}（远程）" if spec.is_remote else ""
     if status.is_up and status.bind and not spec.is_remote:
         where += f" · 监听 {status.bind}"
+    if status.is_up and status.login_required is not None and not spec.is_remote:
+        where += " · 🔐 需要登录" if status.login_required else " · 🔓 无登录"
     c1.markdown(f"🌐 Streamlit：{status.label} · 端口 {spec.port}{where}")
     if status.is_up:
         c2.link_button("🌐 打开", status.url)
@@ -13401,11 +13324,24 @@ def _render_web_app_row(name: str, entry) -> None:
             help="只会结束监听本端口、且命令行含 streamlit 的进程；其它进程一律拒绝。")
 
     bind_value = None
+    auth_value = bool(spec.require_login)
     if status.can_start and not spec.is_remote:
         bind_value = _wa_bind_choice(name, spec.bind_address)
+        auth_value = st.checkbox(
+            "🔐 需要登录（使用看板共享的账户登录）", value=bool(spec.require_login),
+            key=f"webapp_auth_{name}",
+            help="启用后，打开此应用需先用看板账户登录；账户与看板共用（~/.agent/web_auth/）。"
+                 "声明了自定义 command 的项目无法启用。",
+        )
+        if auth_value:
+            from mini_agent.web_auth.gate import accounts_empty, shared_auth_dir
+            if accounts_empty():
+                st.warning("⚠️ 共享账户目录里还没有任何账户，启用登录后将无法进入。"
+                           "请先执行：`python -m mini_agent.web_auth add <用户名> --admin`"
+                           f"（目录：`{shared_auth_dir()}`）")
     if status.can_start and c3.button("▶️ 启动", key=f"webapp_start_{name}",
                                        disabled=bind_value is None):
-        ok, msg = wa.start(name, entry.root, spec, bind=bind_value)
+        ok, msg = wa.start(name, entry.root, spec, bind=bind_value, require_login=auth_value)
         if ok:
             with st.spinner("等待 Streamlit 就绪…"):
                 status = wa.wait_until_ready(name, entry.root, spec)

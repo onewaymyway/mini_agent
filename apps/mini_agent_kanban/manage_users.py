@@ -2,7 +2,7 @@
 manage_users.py —— 看板账户管理 CLI（增 / 删 / 查账户，管理员身份，会话）。
 
 看板本身不提供"注册"界面，账户由管理员在服务器上用这个脚本创建，
-和 auth.py 共用同一份账户文件（默认 <项目根目录>/.agent/kanban_users.json）。
+和看板共用同一份共享账户文件（默认 ~/.agent/web_auth/users.json，见 next_doc/shared_web_login_plan.md；\n推荐改用 `python -m mini_agent.web_auth`，两者操作同一份数据）。
 [kanban_account_management_ui_plan.md] 之后，看板页面里也能做同样的事
 （登录后进"👤 账户管理" tab），这个脚本主要用在：部署时创建第一个
 管理员账户（鸡生蛋问题——页面兜底需要"没有任何管理员"这个前提，命令行
@@ -64,13 +64,13 @@ def main():
     # 不用强迫用户记"这个参数必须放在子命令前面"这种反直觉规则。
     users_file_parser = argparse.ArgumentParser(add_help=False)
     users_file_parser.add_argument(
-        "--users-file", default=".agent/kanban_users.json",
-        help="账户文件路径（默认 ./.agent/kanban_users.json，需要和 app.py 启动参数一致）",
+        "--users-file", default=None,
+        help="账户文件路径（默认共享目录 ~/.agent/web_auth/users.json，与所有应用共用）",
     )
 
     sessions_file_parser = argparse.ArgumentParser(add_help=False)
     sessions_file_parser.add_argument(
-        "--sessions-file", default=".agent/kanban_sessions.json",
+        "--sessions-file", default=None,
         help="会话登记表文件路径（默认 ./.agent/kanban_sessions.json，"
              "需要和看板实际使用的项目根目录一致）",
     )
@@ -124,6 +124,16 @@ def main():
     p_ras.add_argument("--username", default=None, help="只撤销这个用户的会话，不传则撤销所有人的")
 
     args = parser.parse_args()
+
+    # 默认改为共享账户目录（与 python -m mini_agent.web_auth 一致）；旧路径仍可用 --users-file 指定。
+    # 不同子命令的参数不完全一样，所以用 getattr 判断。
+    from mini_agent.web_auth.gate import auth_paths as _shared_paths
+
+    _sp = _shared_paths()
+    if getattr(args, "users_file", None) is None:
+        args.users_file = str(_sp.users)
+    if getattr(args, "sessions_file", None) is None:
+        args.sessions_file = str(_sp.sessions)
 
     if args.cmd in ("list-sessions", "revoke-session", "revoke-all-sessions"):
         session_store = SessionStore(Path(args.sessions_file))
