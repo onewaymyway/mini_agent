@@ -591,7 +591,8 @@ class AgentClient:
         if all_external_projects:
             body["all_external_projects"] = True
         # extract_first 会调 LLM 所以放宽；全部外部项目要逐个串行扫描，也放宽一些
-        timeout = 200 if extract_first else (120 if all_external_projects else 35)
+        # 与服务端超时对齐（服务端 180 秒）；全部外部项目逐个串行，需要更长等待
+        timeout = 300 if (extract_first or all_external_projects) else 200
         return self._post("/sessions/cleanup", json_body=body, timeout=timeout)
 
     def session_cleanup_scopes(self):

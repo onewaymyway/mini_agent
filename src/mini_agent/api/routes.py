@@ -3360,7 +3360,9 @@ async def _cleanup_external_scope(request: Request, body: SessionCleanupRequest)
     """project=<注册名> 或 all_external_projects=True 的清理（owner only，调用方已校验）。"""
     from mini_agent.external_projects.registry import ExternalProjectRegistry
 
-    timeout = 30.0
+    # 会话清理现在还要扫描工作流运行目录与孤立 raw_results，真实规模下 30 秒不够；
+    # 线程池里的任务超时后不会被强杀，所以这里给足时间，避免 504 后仍在后台删除。
+    timeout = 180.0
 
     if body.project is not None:
         name = body.project.strip()
@@ -3523,7 +3525,7 @@ async def cleanup_sessions_endpoint(request: Request, body: SessionCleanupReques
         orphan_min_age_hours=body.orphan_min_age_hours,
         where="session_cleanup",
         # extract_first=True 时可能触发多次 LLM 调用，给更宽松的超时
-        timeout=180.0 if body.extract_first else 30.0,
+        timeout=180.0,
     )
 
     result = _cleanup_report_to_result(

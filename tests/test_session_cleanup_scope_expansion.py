@@ -277,6 +277,31 @@ class StaleRunningTests(_Base):
         self.assertIn("疑似中断遗留的工作流运行 1 个", lines)
 
 
+class ScanPerformanceContractTests(_Base):
+    """性能重构的契约：单次遍历统计正确；只有待删条目才计算大小（避免整树遍历拖慢外部项目清理）。"""
+
+    def test_walk_stats_counts_files_bytes_and_latest_mtime(self):
+        from mini_agent.evolution.session_cleanup import _walk_stats
+        d = self.root / "walk"
+        (d / "a" / "b").mkdir(parents=True)
+        (d / "a" / "x.txt").write_text("12345", encoding="utf-8")
+        (d / "a" / "b" / "y.txt").write_text("123", encoding="utf-8")
+        files, total, latest = _walk_stats(d)
+        self.assertEqual(files, 2)
+        self.assertEqual(total, 8)
+        self.assertGreater(latest, 0)
+
+    def test_kept_runs_do_not_compute_size_deleted_runs_do_and_report_it(self):
+        from mini_agent.evolution.workflow_run_cleanup import scan_workflow_runs
+        _make_run(self.wf_base, "wf_recent", status="done", days_ago=2)
+        _make_run(self.wf_base, "wf_old", status="done", days_ago=OLD_DAYS)
+        items = {i.run_id: i for i in scan_workflow_runs(
+            self.root, keep_recent_count=0, keep_recent_days=30)}
+        self.assertEqual(items["wf_recent"].size_bytes, 0)   # 保留项不计算大小
+        self.assertGreater(items["wf_old"].size_bytes, 0)    # 待删项必须有大小
+        self.assertEqual(items["wf_old"].action, "delete")
+
+
 class AdhocTempTests(_Base):
     def test_only_stale_temp_entries_are_removed_output_never_touched(self):
         adhoc = self.root / ".agent" / "adhoc" / "unbound"

@@ -125,3 +125,20 @@
   全部通过（含 HTTP 路由测试）。
 - 其余 10 个失败用例（browser_core_session_manager、session_to_workflow、workflow_p11、workflow_p15）
   在原始代码上同样失败（环境缺少 json_repair 等依赖，与本次改动无关），未被本次改动引入。
+
+## 8. 性能与超时（2026-11-10 修复 504）
+
+现象：外部项目会话清理返回 `HTTP 504 操作 'session_cleanup_external' 超时（>30.0s）`。
+
+定位（以 300 个会话、1500 个工作流运行、每运行约 300 个文件的合成数据）：
+- 原始代码 dry-run 约 0.5 秒（不含工作流）。
+- 扩展后第一版约 14 秒：工作流扫描对每个运行目录做多次 pathlib `rglob`（活动时间、大小、产出数、子目录名），且保留项也被计算。
+- 修复后约 3.4 秒（dry-run），剩余开销为必要的文件统计。
+
+修复：
+1. 工作流判定只读 `session.json.updated_at`，不递归遍历；大小与产出数只对待删条目计算。
+2. 孤立 raw_results 先判断引用，再计算大小。
+3. 目录统计改为单次 `os.scandir` 遍历（`session_cleanup._walk_stats`），替代 pathlib `rglob`。
+4. 服务端 `session_cleanup` 超时由 30 秒放宽到 180 秒；看板客户端等待时间对齐为 200 秒（全部外部项目 300 秒）。
+
+注意：线程池中的任务超时后不会被强杀，可能在 HTTP 返回 504 之后继续执行。执行类操作（dry_run=false）遇到 504 时，应先重新预览确认实际状态，不要直接重试。

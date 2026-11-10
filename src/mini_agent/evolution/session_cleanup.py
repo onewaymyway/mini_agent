@@ -40,6 +40,7 @@ include_orphans=True 时还会清理没有任何会话/工作流目录引用的�
 
 from __future__ import annotations
 
+import os
 import shutil
 import time
 from dataclasses import dataclass, field
@@ -240,36 +241,55 @@ def _parse_updated_at(updated_at: str) -> Optional[float]:
 
 # ── 孤儿目录（有目录、没 meta.json）─────────────────────────────────────────
 
+def _walk_stats(path) -> tuple[int, int, float]:
+    """单次 os.scandir 遍历：返回 (文件数, 总字节, 最新文件 mtime；无文件则 0.0)。
+
+    比 pathlib 的 rglob("*") + stat 快数倍（pathlib 每个路径片段都会创建对象）。
+    只统计普通文件，不跟随符号链接，避免循环。
+    """
+    files = 0
+    total = 0
+    latest = 0.0
+    stack = [str(path)]
+    while stack:
+        cur = stack.pop()
+        try:
+            it = os.scandir(cur)
+        except OSError:
+            continue
+        with it:
+            for entry in it:
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(entry.path)
+                        continue
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    st = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                files += 1
+                total += st.st_size
+                if st.st_mtime > latest:
+                    latest = st.st_mtime
+    return files, total, latest
+
+
 def _dir_last_activity(path: Path) -> float:
     """目录内所有文件里最新的 mtime；目录为空/不可读则退化为目录本身 mtime。
     不能只看目录自身 mtime——在已存在的文件里 append（比如持续写
-    raw_history.jsonl）不会更新父目录的 mtime，会把"还在写"的目录误判成
-    "早就不动了"。"""
-    latest = path.stat().st_mtime
+    raw_history.jsonl）不会更新父目录的 mtime，会把\"还在写\"的目录误判成
+    \"早就不动了\"。"""
     try:
-        for f in path.rglob("*"):
-            if f.is_file():
-                try:
-                    latest = max(latest, f.stat().st_mtime)
-                except OSError:
-                    continue
+        own = Path(path).stat().st_mtime
     except OSError:
-        pass
-    return latest
+        return 0.0
+    _, _, latest = _walk_stats(path)
+    return max(own, latest)
 
 
 def _dir_size(path: Path) -> int:
-    total = 0
-    try:
-        for f in path.rglob("*"):
-            if f.is_file():
-                try:
-                    total += f.stat().st_size
-                except OSError:
-                    continue
-    except OSError:
-        pass
-    return total
+    return _walk_stats(path)[1]
 
 
 # ── raw_results 联动清理 ──────────────────────────────────────────────────
@@ -470,6 +490,23 @@ def _invalidate_metas_cache_safe(session_manager: "SessionManager") -> None:
 
 # ── 孤立 raw_results（raw_results/<name>/ 无任何会话/工作流目录引用）─────────
 
+def _subdir_names_recursive(base: Path) -> set[str]:
+    """递归收集子目录名，只遍历目录、不 stat 文件（比 rglob("*") 快得多）。"""
+    names: set[str] = set()
+    stack = [base]
+    while stack:
+        cur = stack.pop()
+        try:
+            with os.scandir(cur) as it:
+                for entry in it:
+                    if entry.is_dir(follow_symlinks=False):
+                        names.add(entry.name)
+                        stack.append(Path(entry.path))
+        except OSError:
+            continue
+    return names
+
+
 def scan_orphan_raw_results(
     project_root,
     sessions_dir,
@@ -507,7 +544,7 @@ def scan_orphan_raw_results(
     try:
         wf_base = AgentPaths(Path(project_root)).workflow_sessions_dir
         if wf_base.is_dir():
-            known.update(d.name for d in wf_base.rglob("*") if d.is_dir())
+            known.update(_subdir_names_recursive(wf_base))
     except Exception:
         # 无法可靠枚举工作流目录时，保守起见不做任何删除
         return kept, deleted, failed
@@ -519,9 +556,9 @@ def scan_orphan_raw_results(
         return kept, deleted, failed
 
     for d in candidates:
-        size = _dir_size(d)
         if d.name in known:
-            continue  # 仍被会话或工作流引用，不是孤立
+            continue  # 仍被会话或工作流引用，不是孤立（先判断引用，再算大小）
+        size = _dir_size(d)
         if _dir_last_activity(d) >= cutoff:
             kept.append(RawOrphanItem(
                 dir_name=d.name, size_bytes=size, action="keep",

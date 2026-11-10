@@ -59,42 +59,18 @@ class WorkflowRunItem:
 
 
 def _count_files(path: Path) -> int:
-    n = 0
-    try:
-        for f in path.rglob("*"):
-            if f.is_file():
-                n += 1
-    except OSError:
-        pass
-    return n
+    from mini_agent.evolution.session_cleanup import _walk_stats
+    return _walk_stats(path)[0]
 
 
 def _size(path: Path) -> int:
-    total = 0
-    try:
-        for f in path.rglob("*"):
-            if f.is_file():
-                try:
-                    total += f.stat().st_size
-                except OSError:
-                    continue
-    except OSError:
-        pass
-    return total
+    from mini_agent.evolution.session_cleanup import _walk_stats
+    return _walk_stats(path)[1]
 
 
 def _last_activity(path: Path) -> float:
-    latest = path.stat().st_mtime
-    try:
-        for f in path.rglob("*"):
-            if f.is_file():
-                try:
-                    latest = max(latest, f.stat().st_mtime)
-                except OSError:
-                    continue
-    except OSError:
-        pass
-    return latest
+    from mini_agent.evolution.session_cleanup import _dir_last_activity
+    return _dir_last_activity(path)
 
 
 def _iso(ts: float) -> str:
@@ -102,15 +78,9 @@ def _iso(ts: float) -> str:
 
 
 def _nested_dir_names(run_dir: Path) -> set[str]:
-    """运行目录下所有子目录名（step 子 Agent 的 session id 即在其中）。"""
-    names: set[str] = set()
-    try:
-        for d in run_dir.rglob("*"):
-            if d.is_dir():
-                names.add(d.name)
-    except OSError:
-        pass
-    return names
+    """运行目录下所有子目录名（step 子 Agent 的 session id 即在其中）。只遍历目录。"""
+    from mini_agent.evolution.session_cleanup import _subdir_names_recursive
+    return _subdir_names_recursive(run_dir)
 
 
 def _read_session_json(run_dir: Path) -> Optional[dict]:
@@ -133,7 +103,13 @@ def scan_workflow_runs(
     orphan_min_age_hours: float = 6.0,
     protect_outputs: bool = False,
 ) -> list[WorkflowRunItem]:
-    """只分类，不删除。返回所有运行目录的判定结果（含 keep 与 delete）。"""
+    """只分类，不删除。返回所有运行目录的判定结果（含 keep 与 delete）。
+
+    性能约定：判定只依赖 session.json 的 updated_at（一次小文件读取），不递归遍历
+    运行目录。大小与产出文件数只对真正要删除（或 protect_outputs 需要判断）的条目
+    才计算，避免在上千个运行目录上做整树 rglob（曾导致外部项目清理超过 30 秒）。
+    无 session.json 的残留目录是少数情况，才会做一次递归活动时间判断。
+    """
     from mini_agent.storage.paths import AgentPaths
 
     try:
@@ -147,49 +123,53 @@ def scan_workflow_runs(
     age_cutoff = now - orphan_min_age_hours * 3600.0
     keep_days_cutoff = now - keep_recent_days * 86400.0
 
-    items: list[WorkflowRunItem] = []
-    terminal_candidates: list[tuple[float, WorkflowRunItem]] = []
-
     try:
         run_dirs = [d for d in base.iterdir() if d.is_dir()]
     except OSError:
         return []
 
+    items: list[WorkflowRunItem] = []
+    terminal_candidates: list[tuple[float, WorkflowRunItem, Path]] = []
+
     for d in run_dirs:
-        last = _last_activity(d)
-        size = _size(d)
-        out_n = _count_files(d / "output") if (d / "output").is_dir() else 0
         data = _read_session_json(d)
 
         if data is None:
+            # 无 session.json：少数情况，递归取活动时间判断是否正在启动
+            last = _last_activity(d)
+            size = _size(d)
+            out_n = _count_files(d / "output") if (d / "output").is_dir() else 0
             if last >= age_cutoff:
-                items.append(WorkflowRunItem(
-                    run_id=d.name, status="unknown", updated_at=_iso(last),
-                    size_bytes=size, output_files=out_n, action="keep",
-                    reason=f"无 session.json，目录年龄 < {orphan_min_age_hours} 小时，可能正在启动",
-                ))
+                reason = f"无 session.json，目录年龄 < {orphan_min_age_hours} 小时，可能正在启动"
+                action = "keep"
             elif out_n and protect_outputs:
-                items.append(WorkflowRunItem(
-                    run_id=d.name, status="unknown", updated_at=_iso(last),
-                    size_bytes=size, output_files=out_n, action="keep",
-                    reason=f"无 session.json 的残留，但含产出文件 {out_n} 个，受保护",
-                ))
+                reason = f"无 session.json 的残留，但含产出文件 {out_n} 个，受保护"
+                action = "keep"
             else:
-                items.append(WorkflowRunItem(
-                    run_id=d.name, status="unknown", updated_at=_iso(last),
-                    size_bytes=size, output_files=0, action="delete",
-                    reason="无 session.json 且超过安全窗口，判定为孤儿运行目录",
-                ))
+                reason = "无 session.json 且超过安全窗口，判定为孤儿运行目录"
+                if out_n:
+                    reason += f"（含产出文件 {out_n} 个，保护已关闭，将一并删除）"
+                action = "delete"
+            items.append(WorkflowRunItem(
+                run_id=d.name, status="unknown", updated_at=_iso(last),
+                size_bytes=size, output_files=out_n, action=action, reason=reason,
+            ))
             continue
 
         status = str(data.get("status", "unknown"))
         try:
-            ts = float(data.get("updated_at", last))
+            ts = float(data.get("updated_at", 0.0))
         except (TypeError, ValueError):
-            ts = last
+            ts = 0.0
+        if ts <= 0:
+            try:
+                ts = d.stat().st_mtime
+            except OSError:
+                ts = now
+
         item = WorkflowRunItem(
             run_id=d.name, status=status, updated_at=_iso(ts),
-            size_bytes=size, output_files=out_n, action="keep", reason="",
+            size_bytes=0, output_files=0, action="keep", reason="",
         )
 
         if status not in _TERMINAL_STATUSES:
@@ -201,16 +181,14 @@ def scan_workflow_runs(
                 )
             else:
                 item.reason = f"状态非终结（{status}），保留"
-        elif out_n and protect_outputs:
-            item.reason = f"含产出文件 {out_n} 个，受保护"
-        else:
-            terminal_candidates.append((ts, item))
+            items.append(item)
             continue
-        items.append(item)
 
-    # 终结状态的候选：先按 updated_at 倒序挑出最近 N 个与窗口内的保留
+        terminal_candidates.append((ts, item, d))
+
+    # 终结状态：先按 updated_at 倒序决定保留窗口
     terminal_candidates.sort(key=lambda p: p[0], reverse=True)
-    for idx, (ts, item) in enumerate(terminal_candidates):
+    for idx, (ts, item, d) in enumerate(terminal_candidates):
         if idx < keep_recent_count:
             item.reason = f"最近 {keep_recent_count} 个运行之一，保留"
         elif ts >= keep_days_cutoff:
@@ -218,6 +196,17 @@ def scan_workflow_runs(
         else:
             item.action = "delete"
             item.reason = f"运行已结束（{item.status}）且超出保留窗口，可清理"
+        # 只有要删除（或保护开关需要判断）时才计算大小与产出数
+        if item.action == "delete" or protect_outputs:
+            out_n = _count_files(d / "output") if (d / "output").is_dir() else 0
+            item.output_files = out_n
+            if protect_outputs and out_n and item.action == "delete":
+                item.action = "keep"
+                item.reason = f"含产出文件 {out_n} 个，受保护"
+            elif item.action == "delete" and out_n:
+                item.reason += f"（含产出文件 {out_n} 个，保护已关闭，将一并删除）"
+        if item.action == "delete":
+            item.size_bytes = _size(d)
         items.append(item)
 
     return items
