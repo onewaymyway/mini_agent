@@ -113,13 +113,45 @@ class WebAppStatus:
 # ── 地址 ───────────────────────────────────────────────────────────────
 
 def probe_host(spec: WebAppSpec) -> str:
-    """看板探测/连接时使用的主机名：未填 host 时为本机。"""
-    return spec.host or "127.0.0.1"
+    """看板探测/连接时使用的主机名。
+
+    远程（填了 host）用 host；本机启动时按实际监听地址探测：监听 0.0.0.0 或 127.0.0.1
+    时用回环地址连接，监听某个具体网卡 IP 时用该 IP（否则会误判为未运行）。
+    """
+    if spec.host:
+        return spec.host
+    if spec.bind and spec.bind not in ("0.0.0.0", "::", "localhost"):
+        return spec.bind
+    return "127.0.0.1"
 
 
 def web_app_url(spec: WebAppSpec) -> str:
-    """浏览器打开用的地址：未填 host 时用 localhost。"""
+    """浏览器打开用的地址：未填 host 时用 localhost（本机访问）。"""
     return f"http://{spec.host or 'localhost'}:{spec.port}"
+
+
+def detect_lan_ip() -> Optional[str]:
+    """探测本机出口网卡的局域网 IP（不真正发包，只让内核选路）。失败返回 None。"""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("10.255.255.255", 1))
+            ip = sock.getsockname()[0]
+        return None if ip.startswith("127.") else ip
+    except OSError:
+        return None
+
+
+def lan_url(spec: WebAppSpec) -> Optional[str]:
+    """局域网可访问地址：仅当监听非回环地址时返回。
+
+    bind 为具体 IP 时直接用它；bind 为 0.0.0.0 时探测本机局域网 IP，探测不到返回 None。
+    """
+    if not spec.listens_beyond_loopback:
+        return None
+    host = spec.bind if spec.bind not in ("0.0.0.0", "::") else detect_lan_ip()
+    if not host:
+        return None
+    return f"http://{host}:{spec.port}"
 
 
 # ── 探测 ───────────────────────────────────────────────────────────────
@@ -233,7 +265,7 @@ def build_command(root: Path, spec: WebAppSpec) -> List[str]:
     return [
         python, "-m", "streamlit", "run", spec.entry,
         "--server.port", str(spec.port),
-        "--server.address", "127.0.0.1",
+        "--server.address", spec.bind_address,
         "--server.headless", "true",
         "--browser.gatherUsageStats", "false",
     ]
@@ -466,11 +498,11 @@ def stop_external(name: str, root: Path, spec: WebAppSpec) -> Tuple[bool, str]:
         return False, (f"端口 {spec.port} 上的进程（PID {pid}）不是 Streamlit，已拒绝结束。"
                        f"命令行：{cmd[:160] or '（无法读取）'}")
     _terminate(pid)
-    if not _wait_port_free("127.0.0.1", spec.port):
+    if not _wait_port_free(probe_host(spec), spec.port):
         _kill(pid)
-        _wait_port_free("127.0.0.1", spec.port, timeout=3.0)
+        _wait_port_free(probe_host(spec), spec.port, timeout=3.0)
     _reap(pid)
-    if port_listening("127.0.0.1", spec.port):
+    if port_listening(probe_host(spec), spec.port):
         return False, f"已发送结束信号，但端口 {spec.port} 仍被占用（PID {pid}）。"
     return True, f"已结束外部启动的 Streamlit（PID {pid}）"
 
@@ -493,7 +525,7 @@ def restart(name: str, root: Path, spec: WebAppSpec) -> Tuple[bool, str]:
             return False, f"结束外部进程失败：{msg}"
     elif status.state == STATE_STARTING:
         stop(name, root, spec)
-    if not _wait_port_free("127.0.0.1", spec.port):
+    if not _wait_port_free(probe_host(spec), spec.port):
         return False, f"端口 {spec.port} 释放超时，无法重启。"
     ok, msg = start(name, root, spec)
     if not ok:

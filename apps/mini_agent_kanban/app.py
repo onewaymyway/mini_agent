@@ -13333,9 +13333,19 @@ def _render_web_app_row(name: str, entry) -> None:
     status = wa.get_status(name, entry.root, spec)
     c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
     where = f" · 主机 {spec.host}（远程）" if spec.is_remote else ""
+    if spec.listens_beyond_loopback and not spec.is_remote:
+        where += f" · 监听 {spec.bind_address}"
     c1.markdown(f"🌐 Streamlit：{status.label} · 端口 {spec.port}{where}")
     if status.is_up:
         c2.link_button("🌐 打开", status.url)
+    if spec.is_remote:
+        st.caption("ℹ️ 填了 host 视为远程部署，看板只探测/打开不启停。"
+                   "若要在本机启动并允许局域网 IP 访问，请删除 host，改用 `bind: 0.0.0.0`。")
+    lan = wa.lan_url(spec) if spec.listens_beyond_loopback and not spec.is_remote else None
+    if lan and status.is_up:
+        st.caption(f"🌍 局域网访问：{lan}（该页面无登录保护，仅在可信网络内使用）")
+    elif spec.listens_beyond_loopback and not spec.is_remote and status.is_up:
+        st.caption(f"🌍 监听 {spec.bind_address}，但未探测到局域网 IP，请手动用本机 IP 访问。")
 
     # 外部启动的实例：结束它需要用户勾选确认（看板只结束「监听该端口且命令行含 streamlit」的进程）
     confirm_external = False

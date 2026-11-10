@@ -198,11 +198,25 @@ class WebAppSpec:
     command: Optional[str] = None          # 完整启动命令覆盖；缺省 = streamlit run <entry> ...
     host: Optional[str] = None             # 缺省 = 同一台机器；填写则视为远程，看板只探测/打开，不启停
     health_path: str = "/_stcore/health"   # Streamlit 健康检查路径
+    # 本机启动时的监听地址（--server.address）。缺省 127.0.0.1 = 仅本机可访问；
+    # 0.0.0.0 = 所有网卡（局域网 IP 可访问，无登录保护，只在可信网络使用）；
+    # 也可填本机某个网卡的 IP。注意：与 host 不同，bind 不改变启停归属，仍由看板启停。
+    bind: Optional[str] = None
 
     @property
     def is_remote(self) -> bool:
         """填了非本机 host 即视为远程：看板只探测与打开，不负责启停。"""
         return self.host is not None and self.host not in _LOCAL_HOST_NAMES
+
+    @property
+    def bind_address(self) -> str:
+        """实际监听地址；缺省 127.0.0.1。"""
+        return self.bind or "127.0.0.1"
+
+    @property
+    def listens_beyond_loopback(self) -> bool:
+        """是否监听非回环地址（局域网可能可访问）。"""
+        return self.bind_address not in ("127.0.0.1", "::1", "localhost")
 
 
 @dataclass
@@ -541,7 +555,7 @@ def _parse_web_app(raw: Any) -> Optional[WebAppSpec]:
     if raw is None:
         return None
     if not isinstance(raw, dict):
-        raise ProjectManifestError("web_app: 必须是一个映射（port/entry/python/command/host/health_path）")
+        raise ProjectManifestError("web_app: 必须是一个映射（port/entry/python/command/host/bind/health_path）")
 
     port = raw.get("port")
     if isinstance(port, bool) or not isinstance(port, int):
@@ -561,6 +575,15 @@ def _parse_web_app(raw: Any) -> Optional[WebAppSpec]:
 
     entry = _opt_str("entry", "app.py")
     health_path = _opt_str("health_path", "/_stcore/health")
+    bind = _opt_str("bind", None)
+    if bind is not None and bind != "localhost":
+        import ipaddress
+        try:
+            ipaddress.ip_address(bind)
+        except ValueError:
+            raise ProjectManifestError(
+                f"web_app.bind: {bind!r} 不是合法的 IP 地址（可填 127.0.0.1 / 0.0.0.0 / 本机网卡 IP）"
+            )
     return WebAppSpec(
         port=port,
         entry=entry,
@@ -568,6 +591,7 @@ def _parse_web_app(raw: Any) -> Optional[WebAppSpec]:
         command=_opt_str("command", None),
         host=_opt_str("host", None),
         health_path=health_path,
+        bind=bind,
     )
 
 
