@@ -3229,6 +3229,32 @@ def _cleanup_has_anything_to_delete(res: dict) -> bool:
     return any(any(p.get(k) for k in keys) for p in (res.get("projects") or []))
 
 
+def _flash_set(key: str, level: str, text: str) -> None:
+    """执行完成后要 st.rerun() 刷新列表，直接 st.success 会随重跑消失；先存进 session_state，下一次渲染再显示。"""
+    st.session_state[key] = {"level": level, "text": text}
+
+
+def _flash_show(key: str) -> None:
+    """显示并清除一次性提示（配合 _flash_set 使用）。"""
+    msg = st.session_state.pop(key, None)
+    if not msg:
+        return
+    if msg["level"] == "success":
+        st.success(msg["text"])
+    elif msg["level"] == "warning":
+        st.warning(msg["text"])
+    else:
+        st.info(msg["text"])
+
+
+def _toast(text: str, icon: str = "✅") -> None:
+    """轻量完成提示（不触发重跑）。旧版 Streamlit 无 st.toast 时静默降级为 info。"""
+    try:
+        st.toast(text, icon=icon)
+    except Exception:
+        st.info(text)
+
+
 def _render_session_cleanup_panel(client: AgentClient) -> None:
     """[Session 清理功能看板集成] 批量清理长期不用的旧 session。
 
@@ -3314,11 +3340,14 @@ def _render_session_cleanup_panel(client: AgentClient) -> None:
                 project=scope_project, all_external_projects=scope_all_ext,
             )
 
+        _flash_show("cleanup_session_flash")
         bc1, bc2 = st.columns(2)
         if bc1.button("🔍 预览（dry-run，不会真的删除）", width='stretch'):
-            res = _run(True)
+            with st.spinner("正在扫描会话（dry-run，不会删除）…会话多或目录大时可能需要几十秒，请稍候"):
+                res = _run(True)
             if res and "_error" not in res:
                 st.session_state[preview_key] = res
+                _toast(f"预览完成：{res.get('summary', '')}", icon="🔍")
             else:
                 st.session_state.pop(preview_key, None)
                 st.error((res or {}).get("_error", "预览失败"))
@@ -3349,9 +3378,11 @@ def _render_session_cleanup_panel(client: AgentClient) -> None:
                 confirm = bc2.checkbox("我已确认以上列表，执行删除", key="cleanup_confirm")
                 if st.button("⚠️ 确认执行清理（不可撤销）", disabled=not confirm,
                               width='stretch', type="primary"):
-                    res = _run(False)
+                    with st.spinner("正在执行清理，请勿关闭页面，完成前不要重复点击…"):
+                        res = _run(False)
                     if res and "_error" not in res:
-                        st.success(res.get("summary", "清理完成"))
+                        _flash_set("cleanup_session_flash", "success",
+                                   f"✅ 清理已完成：{res.get('summary', '')}")
                         st.session_state.pop(preview_key, None)
                         st.session_state.pop("cleanup_confirm", None)
                         st.rerun()
@@ -16959,6 +16990,7 @@ def render_cleanup_center_tab(client: AgentClient) -> None:
         "会话与工作流运行请使用「🗂️ 会话管理」中的批量清理。owner 权限。"
     )
 
+    _flash_show("cc_flash")
     cats_res = client.cleanup_categories()
     if not cats_res or "_error" in cats_res:
         st.error((cats_res or {}).get("_error", "无法获取清理类别"))
@@ -17002,10 +17034,13 @@ def render_cleanup_center_tab(client: AgentClient) -> None:
 
     bc1, bc2 = st.columns(2)
     if bc1.button("🔍 预览（dry-run，不会真的删除）", width='stretch', key="cc_preview_btn"):
-        res = client.cleanup_run(keys, age_days=days, dry_run=True, project=project)
+        with st.spinner(f"正在预览 {len(keys)} 个类别（dry-run，不会删除）…大目录可能需要几十秒，请稍候"):
+            res = client.cleanup_run(keys, age_days=days, dry_run=True, project=project)
         if res and "_error" not in res:
             st.session_state["cc_preview"] = {"snapshot": _cc_snapshot_key(keys, days, project), "res": res}
             st.session_state.pop("cc_confirm", None)
+            n_del = sum(r.get("delete_count", 0) for r in res.get("results", []))
+            _toast(f"预览完成：共 {n_del} 个条目待删除（尚未删除）", icon="🔍")
         else:
             st.session_state.pop("cc_preview", None)
             st.error((res or {}).get("_error", "预览失败"))
@@ -17031,9 +17066,10 @@ def render_cleanup_center_tab(client: AgentClient) -> None:
             confirm = bc2.checkbox("我已确认以上列表，执行删除", key="cc_confirm")
             if st.button("⚠️ 确认执行清理（不可撤销）", disabled=not confirm,
                          width='stretch', type="primary", key="cc_execute_btn"):
-                done = client.cleanup_run(keys, age_days=days, dry_run=False, project=project)
+                with st.spinner("正在执行清理，请勿关闭页面，完成前不要重复点击…"):
+                    done = client.cleanup_run(keys, age_days=days, dry_run=False, project=project)
                 if done and "_error" not in done:
-                    st.success(done.get("summary", "清理完成"))
+                    _flash_set("cc_flash", "success", f"✅ 清理已完成：{done.get('summary', '')}")
                     st.session_state.pop("cc_preview", None)
                     st.session_state.pop("cc_confirm", None)
                     st.rerun()
