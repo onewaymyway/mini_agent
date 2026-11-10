@@ -399,6 +399,7 @@ from .models import (
     SessionActionResponse, SessionDeleteResponse,
     SessionCleanupRequest, SessionCleanupResponse, SessionCleanupItem, OrphanCleanupItem,
     SessionCleanupProjectResult, SessionCleanupScopeInfo, SessionCleanupScopesResponse,
+    WorkflowRunCleanupItem, RawOrphanCleanupItem,
     ProtectedFileEntry, ProtectedFilesStatusResponse,
     ProtectedFileAddRequest, ProtectedFileRemoveRequest,
     ProtectedFilesBackupRequest, ProtectedFilesBackupResponse,
@@ -3258,6 +3259,22 @@ def _orphan_item_to_model(item) -> OrphanCleanupItem:
     )
 
 
+def _workflow_item_to_model(item) -> WorkflowRunCleanupItem:
+    return WorkflowRunCleanupItem(
+        run_id=item.run_id, status=item.status, updated_at=item.updated_at,
+        size_bytes=item.size_bytes, output_files=item.output_files,
+        action=item.action, reason=item.reason,
+        raw_results_bytes=item.raw_results_bytes,
+    )
+
+
+def _raw_orphan_item_to_model(item) -> RawOrphanCleanupItem:
+    return RawOrphanCleanupItem(
+        dir_name=item.dir_name, size_bytes=item.size_bytes,
+        action=item.action, reason=item.reason,
+    )
+
+
 def _cleanup_report_to_result(report, *, project=None, sessions_dir="", note="") -> SessionCleanupProjectResult:
     """CleanupReport → 单范围响应。主 agent / 外部项目共用，保证展示口径一致。"""
     from mini_agent.evolution.session_cleanup import format_report_lines
@@ -3280,6 +3297,13 @@ def _cleanup_report_to_result(report, *, project=None, sessions_dir="", note="")
         orphan_deleted=[_orphan_item_to_model(i) for i in report.orphan_deleted],
         orphan_failed=[_orphan_item_to_model(i) for i in report.orphan_failed],
         raw_results_total_bytes=report.raw_results_total_bytes,
+        output_protected_count=report.output_protected_count,
+        workflow_total_scanned=report.workflow_total_scanned,
+        workflow_kept_count=len(report.workflow_kept),
+        workflow_deleted=[_workflow_item_to_model(i) for i in report.workflow_deleted],
+        workflow_failed=[_workflow_item_to_model(i) for i in report.workflow_failed],
+        raw_orphan_deleted=[_raw_orphan_item_to_model(i) for i in report.raw_orphan_deleted],
+        raw_orphan_failed=[_raw_orphan_item_to_model(i) for i in report.raw_orphan_failed],
     )
 
 
@@ -3381,6 +3405,9 @@ async def _cleanup_external_scope(request: Request, body: SessionCleanupRequest)
         orphan_total_scanned=sum(r.orphan_total_scanned for r in results),
         orphan_kept_count=sum(r.orphan_kept_count for r in results),
         raw_results_total_bytes=sum(r.raw_results_total_bytes for r in results),
+        output_protected_count=sum(r.output_protected_count for r in results),
+        workflow_total_scanned=sum(r.workflow_total_scanned for r in results),
+        workflow_kept_count=sum(r.workflow_kept_count for r in results),
         projects=results,
     )
 

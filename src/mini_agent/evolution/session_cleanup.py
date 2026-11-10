@@ -30,8 +30,12 @@ cron 任务不属于以上任何保留规则的来源——cron 任务本身不�
 的 session（见 evolution/cron_agent_bridge.py 顶部说明：每次触发都重新构建
 Agent，不跨触发保留 session 历史），所以不需要为它单独扫描"是否被 cron 引用"。
 
-workflow_sessions/（工作流每个 step 的子 Agent 数据）是完全独立的目录树，
-不在 `.agent/sessions/` 下，天然不受本模块影响。
+产出保护（始终开启）：会话的 output/ 下有文件时保留该会话，不删除用户产出。
+
+workflow_sessions/<wid>/（工作流运行目录）由 workflow_run_cleanup.py 处理，
+cleanup_sessions(include_workflow_runs=True) 时一并清理，判定规则见该模块。
+include_orphans=True 时还会清理没有任何会话/工作流目录引用的孤立 raw_results。
+详见 next_doc/session_cleanup_scope_expansion_plan.md。
 """
 
 from __future__ import annotations
@@ -74,6 +78,8 @@ class CleanupItem:
     # 该 session 对应的 <project_root>/.agent/raw_results/<session_id>/ 目录大小
     # （字节）。dry-run 时是"将释放"，实际执行时是"已释放"；没有该目录则为 0。
     raw_results_bytes: int = 0
+    # sessions/<id>/output/ 下的产出文件数（>0 时受产出保护，不会被删除）
+    output_files: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -85,6 +91,24 @@ class CleanupItem:
             "reason": self.reason,
             "extracted_now": self.extracted_now,
             "raw_results_bytes": self.raw_results_bytes,
+            "output_files": self.output_files,
+        }
+
+
+@dataclass
+class RawOrphanItem:
+    """raw_results/<name>/ 中没有任何会话/工作流目录引用的孤立目录（见 scan_orphan_raw_results）。"""
+    dir_name: str
+    size_bytes: int
+    action: str            # "keep" | "delete" | "failed"
+    reason: str
+
+    def to_dict(self) -> dict:
+        return {
+            "dir_name": self.dir_name,
+            "size_bytes": self.size_bytes,
+            "action": self.action,
+            "reason": self.reason,
         }
 
 
@@ -126,6 +150,27 @@ class CleanupReport:
     orphan_deleted: list[OrphanItem] = field(default_factory=list)
     orphan_failed: list[OrphanItem] = field(default_factory=list)
 
+    # 工作流运行目录（.agent/workflow_sessions/<wid>/），见 workflow_run_cleanup.py
+    workflow_kept: list = field(default_factory=list)      # list[WorkflowRunItem]
+    workflow_deleted: list = field(default_factory=list)
+    workflow_failed: list = field(default_factory=list)
+
+    # 孤立 raw_results 目录（仅 include_orphans=True 时扫描）
+    raw_orphan_kept: list[RawOrphanItem] = field(default_factory=list)
+    raw_orphan_deleted: list[RawOrphanItem] = field(default_factory=list)
+    raw_orphan_failed: list[RawOrphanItem] = field(default_factory=list)
+
+    @property
+    def output_protected_count(self) -> int:
+        """因含产出文件而被保留的会话数（会话 + 工作流运行）。"""
+        n = sum(1 for i in self.kept if i.output_files > 0)
+        n += sum(1 for i in self.workflow_kept if i.output_files > 0)
+        return n
+
+    @property
+    def workflow_total_scanned(self) -> int:
+        return len(self.workflow_kept) + len(self.workflow_deleted) + len(self.workflow_failed)
+
     @property
     def total_scanned(self) -> int:
         return (
@@ -143,6 +188,7 @@ class CleanupReport:
         return (
             sum(i.raw_results_bytes for i in self.deleted)
             + sum(i.raw_results_bytes for i in self.orphan_deleted)
+            + sum(i.raw_results_bytes for i in self.workflow_deleted)
         )
 
     def to_dict(self) -> dict:
@@ -418,6 +464,90 @@ def _invalidate_metas_cache_safe(session_manager: "SessionManager") -> None:
         pass
 
 
+# ── 孤立 raw_results（raw_results/<name>/ 无任何会话/工作流目录引用）─────────
+
+def scan_orphan_raw_results(
+    project_root,
+    sessions_dir,
+    *,
+    min_age_hours: float = DEFAULT_ORPHAN_MIN_AGE_HOURS,
+    dry_run: bool = True,
+) -> tuple[list[RawOrphanItem], list[RawOrphanItem], list[RawOrphanItem]]:
+    """扫描并（可选）删除没有任何会话目录引用的 raw_results/<name>/。
+
+    已知 id 集合 = sessions_dir 下所有目录名 ∪ workflow_sessions 下所有子目录名
+    （工作流 step 子 Agent 的 session id 位于其中，它们的 raw_results 不算孤立）。
+    目录最后活动时间早于 min_age_hours 才判定为孤立，避免误删刚写入的原文。
+
+    Returns: (kept, deleted, failed)
+    """
+    from mini_agent.storage.paths import AgentPaths
+    from mini_agent.utils.protected_files_guard import is_protected as _is_protected
+
+    kept: list[RawOrphanItem] = []
+    deleted: list[RawOrphanItem] = []
+    failed: list[RawOrphanItem] = []
+
+    if not project_root:
+        return kept, deleted, failed
+    try:
+        root = (Path(project_root) / _RAW_RESULTS_SUBDIR).resolve()
+    except (OSError, ValueError):
+        return kept, deleted, failed
+    if not root.is_dir():
+        return kept, deleted, failed
+
+    known: set[str] = set()
+    if sessions_dir and Path(sessions_dir).is_dir():
+        known.update(d.name for d in Path(sessions_dir).iterdir() if d.is_dir())
+    try:
+        wf_base = AgentPaths(Path(project_root)).workflow_sessions_dir
+        if wf_base.is_dir():
+            known.update(d.name for d in wf_base.rglob("*") if d.is_dir())
+    except Exception:
+        # 无法可靠枚举工作流目录时，保守起见不做任何删除
+        return kept, deleted, failed
+
+    cutoff = time.time() - min_age_hours * 3600.0
+    try:
+        candidates = [d for d in root.iterdir() if d.is_dir()]
+    except OSError:
+        return kept, deleted, failed
+
+    for d in candidates:
+        size = _dir_size(d)
+        if d.name in known:
+            continue  # 仍被会话或工作流引用，不是孤立
+        if _dir_last_activity(d) >= cutoff:
+            kept.append(RawOrphanItem(
+                dir_name=d.name, size_bytes=size, action="keep",
+                reason=f"无对应会话，但目录年龄 < {min_age_hours} 小时，暂不判定为孤立"))
+            continue
+        item = RawOrphanItem(
+            dir_name=d.name, size_bytes=size, action="delete",
+            reason="raw_results 无任何会话/工作流目录引用，超过安全窗口，判定为孤立")
+        if dry_run:
+            deleted.append(item)
+            continue
+        try:
+            if _is_protected(d, project_root):
+                item.action = "failed"
+                item.reason += "；命中受保护文件清单，跳过删除"
+                failed.append(item)
+                continue
+            shutil.rmtree(d, ignore_errors=False)
+            deleted.append(item)
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc,
+                          where='mini_agent.evolution.session_cleanup.scan_orphan_raw_results')
+            item.action = "failed"
+            item.reason += "；删除失败"
+            failed.append(item)
+
+    return kept, deleted, failed
+
+
 # ── 主流程 ────────────────────────────────────────────────────────────────
 
 def scan_sessions_for_cleanup(
@@ -488,8 +618,16 @@ def cleanup_sessions(
     dry_run: bool = True,
     include_orphans: bool = False,
     orphan_min_age_hours: float = DEFAULT_ORPHAN_MIN_AGE_HOURS,
+    protect_outputs: bool = True,
+    include_workflow_runs: bool = True,
 ) -> CleanupReport:
     """扫描 + （可选）执行清理。
+
+    protect_outputs（内部参数，始终默认 True，不经 HTTP 请求体暴露）：会话的
+    output/ 下有文件时保留该会话，避免删除用户产出。
+    include_workflow_runs：同时清理 <project_root>/.agent/workflow_sessions/ 下的
+    工作流运行目录（判定见 workflow_run_cleanup.py）。project_root 为 None 或
+    不含 workflow_sessions 时自动跳过。
 
     extract_first=True 但缺少 llm_client/cfg 时会自动退化为"跳过待抽取的
     session、只清理已抽取或内容过少的"，不会报错——保证这个函数在任何调用
@@ -519,6 +657,15 @@ def cleanup_sessions(
     can_extract = extract_first and llm_client is not None and cfg is not None
 
     for m in candidate_metas:
+        if protect_outputs:
+            out_n = _session_output_file_count(session_manager, m.id)
+            if out_n:
+                report.kept.append(CleanupItem(
+                    session_id=m.id, title=m.title, updated_at=m.updated_at, turns=m.turns,
+                    action="keep", reason=f"含产出文件 {out_n} 个，受保护",
+                    output_files=out_n,
+                ))
+                continue
         needs_extraction = (
             m.turns >= min_turns_for_extraction and not m.knowledge_extracted
         )
@@ -567,6 +714,36 @@ def cleanup_sessions(
         report.orphan_deleted = orphan_deleted
         report.orphan_failed = orphan_failed
 
+    if include_workflow_runs and project_root is not None:
+        try:
+            from mini_agent.evolution.workflow_run_cleanup import cleanup_workflow_runs
+            wf_items = cleanup_workflow_runs(
+                project_root,
+                keep_recent_days=keep_recent_days,
+                keep_recent_count=keep_recent_count,
+                orphan_min_age_hours=orphan_min_age_hours,
+                dry_run=dry_run,
+            )
+            for it in wf_items:
+                if it.action == "delete":
+                    report.workflow_deleted.append(it)
+                elif it.action == "failed":
+                    report.workflow_failed.append(it)
+                else:
+                    report.workflow_kept.append(it)
+        except Exception as _mini_agent_exc:
+            from mini_agent.errors import log_exception
+            log_exception(_mini_agent_exc, where='mini_agent.evolution.session_cleanup.cleanup_sessions.workflow')
+
+    if include_orphans and project_root is not None:
+        rk, rd, rf = scan_orphan_raw_results(
+            project_root, session_manager.session_dir,
+            min_age_hours=orphan_min_age_hours, dry_run=dry_run,
+        )
+        report.raw_orphan_kept = rk
+        report.raw_orphan_deleted = rd
+        report.raw_orphan_failed = rf
+
     return report
 
 
@@ -602,6 +779,25 @@ def _extract_then_mark(session_manager, session_id: str, llm_client, cfg, *, dry
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.evolution.session_cleanup._extract_then_mark')
         return False
+
+
+def _session_output_file_count(session_manager, session_id: str) -> int:
+    """sessions/<id>/output/ 下的文件数（产出保护用）。目录不存在返回 0。"""
+    out = Path(session_manager.session_dir) / session_id / "output"
+    if not out.is_dir():
+        return 0
+    return _count_files_under(out)
+
+
+def _count_files_under(path: Path) -> int:
+    n = 0
+    try:
+        for f in path.rglob("*"):
+            if f.is_file():
+                n += 1
+    except OSError:
+        pass
+    return n
 
 
 def _finish_deletion(session_manager, item: CleanupItem, report: CleanupReport, dry_run: bool,
@@ -650,6 +846,30 @@ def format_report_lines(report: CleanupReport) -> list[str]:
         lines.append(
             f"  同时{'将清理' if report.dry_run else '已清理'}对应的 raw_results 约 "
             f"{report.raw_results_total_bytes / 1024 / 1024:.1f} MB。"
+        )
+
+    if report.output_protected_count:
+        lines.append(
+            f"产出保护：{report.output_protected_count} 个会话/工作流运行含产出文件，已保留。"
+        )
+
+    if report.workflow_total_scanned:
+        wf_size = sum(i.size_bytes for i in report.workflow_deleted)
+        lines.append(
+            f"工作流运行目录：共扫描 {report.workflow_total_scanned} 个，"
+            f"保留 {len(report.workflow_kept)} 个，{verb} {len(report.workflow_deleted)} 个"
+            f"（约 {wf_size / 1024 / 1024:.1f} MB），失败 {len(report.workflow_failed)} 个。"
+        )
+        for item in report.workflow_deleted:
+            lines.append(f"  [{verb}·工作流] {item.run_id}  — {item.reason}")
+        for item in report.workflow_failed:
+            lines.append(f"  [失败·工作流] {item.run_id}  — {item.reason}")
+
+    if report.raw_orphan_deleted or report.raw_orphan_failed:
+        raw_size = sum(i.size_bytes for i in report.raw_orphan_deleted)
+        lines.append(
+            f"孤立 raw_results：{verb} {len(report.raw_orphan_deleted)} 个"
+            f"（约 {raw_size / 1024 / 1024:.1f} MB），失败 {len(report.raw_orphan_failed)} 个。"
         )
 
     if report.orphan_total_scanned:

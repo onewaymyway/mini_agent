@@ -3157,13 +3157,53 @@ def _render_cleanup_result_tables(res: dict, *, key_prefix: str = "") -> None:
             )
 
 
+    # 工作流运行目录 / 孤立 raw_results 的结果表
+    wf_deleted = res.get("workflow_deleted", [])
+    wf_failed = res.get("workflow_failed", [])
+    if res.get("output_protected_count"):
+        st.info(f"🛡️ 产出保护：{res['output_protected_count']} 个会话/工作流运行含产出文件，已保留，不会被删除。")
+    if res.get("workflow_total_scanned"):
+        st.markdown("---")
+        wf_mb = sum(i.get("size_bytes", 0) for i in wf_deleted) / 1024 / 1024
+        st.info(
+            f"工作流运行目录：共扫描 {res['workflow_total_scanned']} 个，"
+            f"保留 {res.get('workflow_kept_count', 0)} 个，"
+            f"将删除 {len(wf_deleted)} 个（约 {wf_mb:.1f} MB）。"
+        )
+        if wf_deleted:
+            st.markdown(f"**工作流运行 · 将删除（{len(wf_deleted)}）**")
+            st.dataframe(
+                [{"run_id": i["run_id"], "status": i.get("status", ""),
+                  "updated_at": i.get("updated_at", ""),
+                  "size_mb": round(i.get("size_bytes", 0) / 1024 / 1024, 2),
+                  "raw_results_mb": round(i.get("raw_results_bytes", 0) / 1024 / 1024, 2),
+                  "reason": i["reason"]} for i in wf_deleted],
+                width='stretch', hide_index=True,
+            )
+        if wf_failed:
+            st.markdown(f"**工作流运行 · 失败（{len(wf_failed)}）**")
+            st.dataframe(
+                [{"run_id": i["run_id"], "reason": i["reason"]} for i in wf_failed],
+                width='stretch', hide_index=True,
+            )
+    raw_deleted = res.get("raw_orphan_deleted", [])
+    if raw_deleted:
+        raw_mb = sum(i.get("size_bytes", 0) for i in raw_deleted) / 1024 / 1024
+        st.markdown(f"**孤立 raw_results · 将删除（{len(raw_deleted)}，约 {raw_mb:.1f} MB）**")
+        st.dataframe(
+            [{"dir_name": i["dir_name"],
+              "size_mb": round(i.get("size_bytes", 0) / 1024 / 1024, 2),
+              "reason": i["reason"]} for i in raw_deleted],
+            width='stretch', hide_index=True,
+        )
+
+
 def _cleanup_has_anything_to_delete(res: dict) -> bool:
-    """单范围看 deleted/orphan_deleted；「全部外部项目」要看每个项目分组。"""
-    if res.get("deleted") or res.get("orphan_deleted"):
+    """单范围看 deleted/orphan_deleted/workflow_deleted/raw_orphan_deleted；「全部外部项目」要看每个项目分组。"""
+    keys = ("deleted", "orphan_deleted", "workflow_deleted", "raw_orphan_deleted")
+    if any(res.get(k) for k in keys):
         return True
-    return any(
-        (p.get("deleted") or p.get("orphan_deleted")) for p in (res.get("projects") or [])
-    )
+    return any(any(p.get(k) for k in keys) for p in (res.get("projects") or []))
 
 
 def _render_session_cleanup_panel(client: AgentClient) -> None:

@@ -336,6 +336,20 @@ Streamlit，不经过 daemon，daemon 没有运行也能用。实现位于
 当前约定端口：world_simulator 8502、stock_watch 8503、novel_writer 8504、
 novel_to_video 8505。
 
+### 6.5 会话与工作流运行清理
+
+每个外部项目的 `<项目根>/.agent/` 下会积累两类可清理数据：`sessions/`（对话会话）与
+`workflow_sessions/`（每次工作流运行的记录、步骤子 Agent 数据与 `output/` 产出）。
+看板「🧹 批量清理旧会话」的「清理范围」选择某个外部项目，或「全部外部项目」时，两类都会
+参与判定：
+
+- 含 `output/` 产出文件的会话与工作流运行**始终保留**，不会因为时间久远被删除。
+- 工作流运行中 / 已暂停 / 等待审批的一律保留；已结束（`done` / `failed` / `partial` /
+  `cancelled`）且超出保留窗口的才会删除，删除时连同步骤子 Agent 的 raw_results 一起清理。
+- 「含孤儿目录」开启时，还会清理没有任何会话或工作流目录引用的孤立 `raw_results`。
+
+判定细节与主项目完全一致，见 `next_doc/session_cleanup_scope_expansion_plan.md`。
+
 ## 7. daemon 侧调度器（可选）
 
 `mini_agent.external_projects.scheduler.run_due_entrypoints(registry)`

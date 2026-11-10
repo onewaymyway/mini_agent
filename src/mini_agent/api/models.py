@@ -353,6 +353,26 @@ class OrphanCleanupItem(BaseModel):
     raw_results_bytes: int = 0
 
 
+class WorkflowRunCleanupItem(BaseModel):
+    """单个工作流运行目录（.agent/workflow_sessions/<wid>/）的清理判定结果。"""
+    run_id:            str
+    status:            str = ""
+    updated_at:        str = ""
+    size_bytes:        int = 0
+    output_files:      int = 0
+    action:            str   # "keep" | "delete" | "failed"
+    reason:            str = ""
+    raw_results_bytes: int = 0
+
+
+class RawOrphanCleanupItem(BaseModel):
+    """孤立 raw_results/<name>/ 的清理判定结果（无任何会话/工作流目录引用）。"""
+    dir_name:   str
+    size_bytes: int = 0
+    action:     str   # "keep" | "delete" | "failed"
+    reason:     str = ""
+
+
 class SessionCleanupProjectResult(BaseModel):
     """单个清理范围（主 agent 或某个外部项目）的清理结果。"""
     dry_run:                    bool
@@ -373,6 +393,16 @@ class SessionCleanupProjectResult(BaseModel):
     orphan_failed:                list[OrphanCleanupItem] = []
     # 被删（dry-run 为"将删"）session / 孤儿目录对应的 raw_results 总大小（字节）
     raw_results_total_bytes:      int = 0
+    # 产出保护：含 output/ 产出文件而被保留的会话 + 工作流运行数（只统计，不删除）
+    output_protected_count:       int = 0
+    # 工作流运行目录（workflow_sessions/<wid>/）清理结果，默认与会话清理一并执行
+    workflow_total_scanned:       int = 0
+    workflow_kept_count:          int = 0
+    workflow_deleted:             list[WorkflowRunCleanupItem] = []
+    workflow_failed:              list[WorkflowRunCleanupItem] = []
+    # 孤立 raw_results（include_orphans=True 时才扫描）
+    raw_orphan_deleted:           list[RawOrphanCleanupItem] = []
+    raw_orphan_failed:            list[RawOrphanCleanupItem] = []
 
 
 class SessionCleanupResponse(SessionCleanupProjectResult):

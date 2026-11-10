@@ -276,6 +276,12 @@ Web Demo 的事件流面板类似，但集成在同一多 Tab 界面中。
   `next_doc/session_cleanup_design.md` §9。该操作需要 owner 权限（单
   token 模式下自动放行，多用户模式下非 owner 调用会被拒绝）。
 
+  - **产出保护与工作流运行**：含 `output/` 产出文件的会话始终保留，预览顶部会以
+    "🛡️ 产出保护" 提示保留数量。清理范围内的 `workflow_sessions/<wid>/` 工作流运行
+    目录同样参与预览，独立展示"工作流运行目录"汇总与"将删除"表格（显示状态、更新时间、
+    大小与联动的 raw_results 大小）。运行中/已暂停/等待审批的工作流永远保留。
+    判定细节见 `next_doc/session_cleanup_scope_expansion_plan.md`。
+
   - **含孤儿目录**：会话管理分页统计数（走 `meta.json` 才能识别的
     "正常 session"）经常和 `.agent/sessions/` 目录下实际的目录数对不
     上——差值通常是一批"有目录、没 `meta.json`"的孤儿目录，一轮对话

@@ -277,3 +277,9 @@ agent（保守 opt-in）。
 - 看板新增 UI 用 Streamlit `AppTest` 做过运行时烟测（假 client：范围选项、全部项目
   分组预览、切换范围清预览、抽取勾选置灰），但没有真实浏览器 / 真实 daemon 的端到端验证。
 
+## 11. 范围扩展（后续）
+
+清理范围已扩展到 `workflow_sessions/<wid>/` 工作流运行目录、产出保护（`output/` 非空的会话
+不删除）与孤立 raw_results 清理，详见 [session_cleanup_scope_expansion_plan.md](session_cleanup_scope_expansion_plan.md)。
+本文档 §1–§10 描述的是扩展前的会话清理规则，其中会话层面的保留与抽取门槛仍然有效。
+
