@@ -1480,7 +1480,9 @@ Content-Type: application/json
   "keep_recent_count": 20,
   "extract_first": false,
   "include_orphans": false,
-  "orphan_min_age_hours": 6
+  "orphan_min_age_hours": 6,
+  "project": null,
+  "all_external_projects": false
 }
 ```
 
@@ -1502,6 +1504,28 @@ Content-Type: application/json
   `meta.json` 要等一轮对话跑完才写入，目录本身创建得更早，太新的孤儿
   目录很可能只是正在进行中的第一轮，不足这个年龄不会被判定为孤儿删除。
 
+- `project`（默认 `null`）：清理范围。`null` = 主 agent（与旧调用方行为
+  完全一致）；传**已注册外部项目的注册名**则清理该外部项目自己的
+  `<项目根>/.agent/sessions/`。**只认注册名**——路径由服务端从注册表
+  （`~/.agent/external_projects.json`）解析，客户端不能传路径，路径样式的
+  名字（`../x` 等）一律 `404`。注册名未注册 / 项目目录已不存在 → `404`；
+  项目还没有 `.agent/sessions/` → `200` + 空结果（不会创建目录）。
+  已注册但未开启「自动调度」（`enabled=false`）的项目同样可以清理。
+- `all_external_projects`（默认 `false`）：一次清理**全部**已注册外部项目，
+  逐个项目串行、各自独立判定；与 `project` 互斥（同时给 → `400`）。响应顶层
+  只放汇总（`summary` 与各项计数求和），逐项目明细在 `projects[]` 里，
+  单个项目不可处理（目录被移走等）只会让那一项带 `error`，不影响其它项目。
+- 外部项目**暂不支持 `extract_first`**（抽取结果会写进主项目 wiki，归属不
+  对）：传了会被忽略，`summary` 里会注明，尚未抽取知识的会话被保守跳过
+  （进 `skipped_pending_extraction`），不会被删。
+
+**raw_results 联动清理**：每删除一个 session（或孤儿目录），会同时删除它对应的
+`<project_root>/.agent/raw_results/<session_id>/`（工具结果原文落盘目录，只有
+该 session 的历史会引用它）。`dry_run` 时只统计大小不删除；被保留的 session 的
+raw_results 不动；命中受保护文件清单则保留并在 `reason` 里注明。每个
+`deleted[]` / `orphan_deleted[]` 条目带 `raw_results_bytes`，响应带
+`raw_results_total_bytes`。该联动对主 agent 与外部项目一致。
+
 保留优先级（命中任意一条即保留，不进入候选删除）：
 1. 当前活跃 session（自动排除，不需要调用方传）
 2. `pinned == true`（即上面的置顶保护）
@@ -1518,6 +1542,16 @@ Content-Type: application/json
 当前活跃 session id、挂着未终结 Goal、或目录年龄小于
 `orphan_min_age_hours` 即保留；否则判定为孤儿，候选删除（不经过知识
 抽取门槛——一轮都没跑完，本身也没有值得抽取的内容）。
+
+#### GET /v1/sessions/cleanup/scopes — 清理范围列表（owner only）
+
+看板「清理范围」下拉框的数据源：已注册外部项目的轻量列表（只读注册表 +
+检查目录是否存在，不做健康检查，比 `GET /self/external_projects` 轻得多）。
+
+```json
+{"projects": [{"name": "stock_watch", "path": "E:/x/stock_watch",
+               "sessions_dir": "E:/x/stock_watch/.agent/sessions", "has_sessions_dir": true}]}
+```
 
 响应示例（`dry_run: true`，含孤儿目录）：
 

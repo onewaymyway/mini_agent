@@ -143,7 +143,8 @@ def handle_session_cmd(args: list[str], agent: Agent) -> None:
             "/session dir | /session search <query> | "
             "/session pin <id> | /session unpin <id> | "
             "/session cleanup [--dry-run] [--keep-days N] [--keep-count N] "
-            "[--extract-first] [--include-orphans] [--orphan-min-age-hours N]"
+            "[--extract-first] [--include-orphans] [--orphan-min-age-hours N] "
+            "[--project <外部项目注册名> | --all-external-projects]"
         )
 
 
@@ -188,6 +189,32 @@ def _handle_session_cleanup(rest: list[str], agent: Agent, mgr) -> None:
             R.print_error("--orphan-min-age-hours 需要一个数字参数")
             return
 
+    # 清理范围：默认主 agent；--project <注册名> 清理某个外部项目；
+    # --all-external-projects 清理全部已注册外部项目（二者互斥）。
+    # 外部项目首版不支持 --extract-first（抽取结果会写进主项目 wiki，归属不对）。
+    project_name = None
+    if "--project" in rest:
+        try:
+            project_name = rest[rest.index("--project") + 1]
+        except IndexError:
+            R.print_error("--project 需要一个外部项目注册名")
+            return
+        if project_name.startswith("--"):
+            R.print_error("--project 需要一个外部项目注册名")
+            return
+    all_external = "--all-external-projects" in rest
+    if project_name is not None and all_external:
+        R.print_error("--project 与 --all-external-projects 不能同时使用")
+        return
+    if project_name is not None or all_external:
+        _run_external_cleanup(
+            project_name, all_external,
+            keep_days=keep_days, keep_count=keep_count, dry_run=dry_run,
+            include_orphans=include_orphans, orphan_min_age_hours=orphan_min_age_hours,
+            extract_first=extract_first,
+        )
+        return
+
     llm_client = getattr(agent, "_llm", None) if extract_first else None
     cfg = agent.cfg if extract_first else None
     exclude_ids = {agent.session_id} if agent.session_id else set()
@@ -208,3 +235,57 @@ def _handle_session_cleanup(rest: list[str], agent: Agent, mgr) -> None:
     )
     for line in format_report_lines(report):
         R.console.print(line)
+
+
+def _run_external_cleanup(
+    project_name, all_external: bool, *, keep_days, keep_count, dry_run,
+    include_orphans, orphan_min_age_hours, extract_first,
+) -> None:
+    """/session cleanup --project <name> | --all-external-projects 的实现。
+
+    与看板 POST /v1/sessions/cleanup 的外部项目分支共用同一套
+    evolution/session_cleanup.py 判定逻辑；每删一个 session 同时清理其 raw_results。
+    """
+    from mini_agent.evolution.session_cleanup import (
+        cleanup_sessions,
+        format_report_lines,
+        resolve_external_project_session_env,
+        ExternalProjectSessionError,
+        DEFAULT_MIN_TURNS_FOR_EXTRACTION,
+    )
+
+    if extract_first:
+        R.print_warning("外部项目暂不支持 --extract-first，已忽略；未抽取知识的会话会被保守跳过。")
+
+    if all_external:
+        from mini_agent.external_projects.registry import ExternalProjectRegistry
+        names = [r.name for r in ExternalProjectRegistry().list()]
+        if not names:
+            R.print_info("没有已注册的外部项目。")
+            return
+    else:
+        names = [project_name]
+
+    for name in names:
+        try:
+            mgr, root, sessions_dir = resolve_external_project_session_env(name)
+        except ExternalProjectSessionError as exc:
+            if exc.kind == "no_sessions_dir":
+                R.console.print(f"[dim]■ {name}：{exc}，无需清理。[/dim]")
+            else:
+                R.print_error(f"■ {name}：{exc}")
+            continue
+        R.console.print(f"[bold]■ 外部项目 {name}[/bold]  [dim]{sessions_dir}[/dim]")
+        report = cleanup_sessions(
+            mgr, root,
+            exclude_ids=set(),
+            keep_recent_days=keep_days,
+            keep_recent_count=keep_count,
+            min_turns_for_extraction=DEFAULT_MIN_TURNS_FOR_EXTRACTION,
+            extract_first=False,
+            dry_run=dry_run,
+            include_orphans=include_orphans,
+            orphan_min_age_hours=orphan_min_age_hours,
+        )
+        for line in format_report_lines(report):
+            R.console.print(line)

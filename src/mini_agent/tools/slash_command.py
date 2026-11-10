@@ -68,6 +68,12 @@ _DENY_PREFIXES = (
 # 等仍然维持拒绝。
 _SESSION_SUBCOMMAND_ALLOWLIST = ("session cleanup", "session pin", "session unpin")
 
+# [next_doc/session_cleanup_external_projects_plan.md] `/session cleanup` 的外部项目范围
+# （--project / --all-external-projects）会删除**别的项目**的会话，超出"只影响本项目
+# 其它旧 session"的白名单前提，只允许用户本人在 CLI/看板/REST 触发，agent 经
+# run_slash_command 一律拒绝（cron sys:session_cleanup 仍只清理主 agent）。
+_SESSION_CLEANUP_EXTERNAL_FLAGS = ("--project", "--all-external-projects")
+
 
 # [next_doc/cron_command_job_plan.md] 会创建/改写「定时执行任意 shell 命令」的 cron 子命令：
 # 只允许 owner 通过 REST/CLI/看板操作，agent 经 run_slash_command 一律拒绝，
@@ -92,6 +98,8 @@ def _is_denied(name: str, full_command: str = "") -> bool:
         return True
     if name == "session":
         full = full_command.lower().strip()
+        if any(flag in full.split() for flag in _SESSION_CLEANUP_EXTERNAL_FLAGS):
+            return True
         return not any(
             full == allowed or full.startswith(allowed + " ")
             for allowed in _SESSION_SUBCOMMAND_ALLOWLIST

@@ -36,6 +36,7 @@ workflow_sessions/（工作流每个 step 的子 Agent 数据）是完全独立�
 
 from __future__ import annotations
 
+import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -70,6 +71,9 @@ class CleanupItem:
     action: str            # "keep" | "skip_pending_extraction" | "delete"
     reason: str             # 人类可读原因
     extracted_now: bool = False  # 本次是否临时触发了离线抽取
+    # 该 session 对应的 <project_root>/.agent/raw_results/<session_id>/ 目录大小
+    # （字节）。dry-run 时是"将释放"，实际执行时是"已释放"；没有该目录则为 0。
+    raw_results_bytes: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -80,6 +84,7 @@ class CleanupItem:
             "action": self.action,
             "reason": self.reason,
             "extracted_now": self.extracted_now,
+            "raw_results_bytes": self.raw_results_bytes,
         }
 
 
@@ -93,6 +98,8 @@ class OrphanItem:
     size_bytes: int
     action: str            # "keep" | "delete"
     reason: str
+    # 孤儿目录同名的 raw_results/<dir_name>/ 目录大小（字节），含义同 CleanupItem
+    raw_results_bytes: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -101,6 +108,7 @@ class OrphanItem:
             "size_bytes": self.size_bytes,
             "action": self.action,
             "reason": self.reason,
+            "raw_results_bytes": self.raw_results_bytes,
         }
 
 
@@ -129,6 +137,14 @@ class CleanupReport:
     def orphan_total_scanned(self) -> int:
         return len(self.orphan_kept) + len(self.orphan_deleted) + len(self.orphan_failed)
 
+    @property
+    def raw_results_total_bytes(self) -> int:
+        """被删（或 dry-run 将被删）的 session / 孤儿目录对应的 raw_results 总大小。"""
+        return (
+            sum(i.raw_results_bytes for i in self.deleted)
+            + sum(i.raw_results_bytes for i in self.orphan_deleted)
+        )
+
     def to_dict(self) -> dict:
         return {
             "dry_run": self.dry_run,
@@ -141,6 +157,7 @@ class CleanupReport:
             "orphan_kept": [i.to_dict() for i in self.orphan_kept],
             "orphan_deleted": [i.to_dict() for i in self.orphan_deleted],
             "orphan_failed": [i.to_dict() for i in self.orphan_failed],
+            "raw_results_total_bytes": self.raw_results_total_bytes,
         }
 
 
@@ -203,6 +220,61 @@ def _dir_size(path: Path) -> int:
     except OSError:
         pass
     return total
+
+
+# ── raw_results 联动清理 ──────────────────────────────────────────────────
+#
+# 工具结果原文会落盘到 <project_root>/.agent/raw_results/<session_id>/
+# （perception/raw_result_store.py），只有对应 session 的历史会引用它。
+# SessionManager.delete() 只删 sessions/<id>/，不会碰 raw_results，session 被清理
+# 后这些原文就成了无人引用的残留，所以清理 session 时要一并带走。
+
+_RAW_RESULTS_SUBDIR = ".agent/raw_results"
+
+
+def _raw_results_dir_for(project_root, session_id: str) -> Optional[Path]:
+    """返回 session 对应的 raw_results 目录（存在才返回，否则 None）。
+
+    session_id 必须是单层目录名（不含路径分隔符 / 上跳），且解析后确实落在
+    raw_results 根目录的直接子级——防止脏数据里的 id 让删除指向别处。
+    """
+    if not project_root or not session_id:
+        return None
+    if session_id in (".", "..") or Path(session_id).name != session_id:
+        return None
+    try:
+        root = (Path(project_root) / _RAW_RESULTS_SUBDIR).resolve()
+        target = (root / session_id).resolve()
+    except (OSError, ValueError):
+        return None
+    if target.parent != root or not target.is_dir():
+        return None
+    return target
+
+
+def _clear_raw_results(project_root, session_id: str, *, dry_run: bool) -> tuple[int, str]:
+    """清理（dry_run 时只统计）某个 session 的 raw_results 目录。
+
+    返回 (大小字节, 失败说明)。没有对应目录 → (0, "")；命中受保护清单或
+    删除失败 → (0, 说明)——调用方把说明追加进 reason，不影响 session 本身的
+    删除结果（session 已经删掉了，raw_results 残留只是少清了一点）。
+    """
+    target = _raw_results_dir_for(project_root, session_id)
+    if target is None:
+        return 0, ""
+    size = _dir_size(target)
+    if dry_run:
+        return size, ""
+    try:
+        from mini_agent.utils.protected_files_guard import is_protected as _is_protected
+        if _is_protected(target, project_root):
+            return 0, "raw_results 命中受保护文件清单，已保留"
+        shutil.rmtree(target, ignore_errors=False)
+        return size, ""
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.evolution.session_cleanup._clear_raw_results')
+        return 0, "raw_results 清理失败"
 
 
 def scan_orphan_session_dirs(
@@ -290,8 +362,6 @@ def cleanup_orphan_session_dirs(
     dry_run: bool = True,
 ) -> tuple[list[OrphanItem], list[OrphanItem], list[OrphanItem]]:
     """扫描 + （可选）执行孤儿目录清理。返回 (kept, deleted, failed)。"""
-    import shutil
-
     items, delete_paths = scan_orphan_session_dirs(
         session_manager, project_root, exclude_ids=exclude_ids, min_age_hours=min_age_hours,
     )
@@ -305,6 +375,8 @@ def cleanup_orphan_session_dirs(
         if item.action != "delete":
             continue
         if dry_run:
+            item.raw_results_bytes, _ = _clear_raw_results(
+                project_root, item.dir_name, dry_run=True)
             deleted.append(item)
             continue
         path = delete_by_name.get(item.dir_name)
@@ -316,6 +388,10 @@ def cleanup_orphan_session_dirs(
                     failed.append(item)
                     continue
                 shutil.rmtree(path, ignore_errors=False)
+                item.raw_results_bytes, _rr_note = _clear_raw_results(
+                    project_root, item.dir_name, dry_run=False)
+                if _rr_note:
+                    item.reason += "；" + _rr_note
                 deleted.append(item)
             else:
                 item.reason += "；目录已不存在"
@@ -455,7 +531,7 @@ def cleanup_sessions(
                     else f"内容过少（turns={m.turns} < {min_turns_for_extraction}），无需抽取"
                 ),
             )
-            _finish_deletion(session_manager, item, report, dry_run)
+            _finish_deletion(session_manager, item, report, dry_run, project_root)
             continue
 
         if not can_extract:
@@ -472,7 +548,7 @@ def cleanup_sessions(
                 session_id=m.id, title=m.title, updated_at=m.updated_at, turns=m.turns,
                 action="delete", reason="已补跑离线知识抽取后删除", extracted_now=True,
             )
-            _finish_deletion(session_manager, item, report, dry_run)
+            _finish_deletion(session_manager, item, report, dry_run, project_root)
         else:
             report.failed.append(CleanupItem(
                 session_id=m.id, title=m.title, updated_at=m.updated_at, turns=m.turns,
@@ -528,8 +604,10 @@ def _extract_then_mark(session_manager, session_id: str, llm_client, cfg, *, dry
         return False
 
 
-def _finish_deletion(session_manager, item: CleanupItem, report: CleanupReport, dry_run: bool) -> None:
+def _finish_deletion(session_manager, item: CleanupItem, report: CleanupReport, dry_run: bool,
+                     project_root=None) -> None:
     if dry_run:
+        item.raw_results_bytes, _ = _clear_raw_results(project_root, item.session_id, dry_run=True)
         report.deleted.append(item)
         return
     try:
@@ -539,6 +617,12 @@ def _finish_deletion(session_manager, item: CleanupItem, report: CleanupReport, 
         log_exception(_mini_agent_exc, where='mini_agent.evolution.session_cleanup._finish_deletion')
         ok = False
     if ok:
+        # session 目录已删，联动清理它的 raw_results；这一步失败/被保护不改变
+        # "session 已删除"的结论，只把说明追加进 reason。
+        item.raw_results_bytes, _rr_note = _clear_raw_results(
+            project_root, item.session_id, dry_run=False)
+        if _rr_note:
+            item.reason += "；" + _rr_note
         report.deleted.append(item)
     else:
         item.reason += "；删除失败"
@@ -562,6 +646,11 @@ def format_report_lines(report: CleanupReport) -> list[str]:
         lines.append(f"  [跳过] {item.session_id}  {item.title}  — {item.reason}")
     for item in report.failed:
         lines.append(f"  [失败] {item.session_id}  {item.title}  — {item.reason}")
+    if report.raw_results_total_bytes:
+        lines.append(
+            f"  同时{'将清理' if report.dry_run else '已清理'}对应的 raw_results 约 "
+            f"{report.raw_results_total_bytes / 1024 / 1024:.1f} MB。"
+        )
 
     if report.orphan_total_scanned:
         orphan_size = sum(i.size_bytes for i in report.orphan_deleted)
@@ -576,3 +665,60 @@ def format_report_lines(report: CleanupReport) -> list[str]:
             lines.append(f"  [失败·孤儿] {item.dir_name}  — {item.reason}")
 
     return lines
+
+
+# ── 外部项目范围（next_doc/session_cleanup_external_projects_plan.md）─────────
+#
+# 每个已注册的外部项目都有自己的 <项目根>/.agent/sessions/（Workspace.sessions_dir），
+# 目录格式与主项目完全一致，所以 cleanup_sessions() 本体不需要任何改动：
+# 只要把"外部项目自己的 SessionManager + 项目根"传进去，pin / goal 在跑 /
+# 最近 N 个 / 最近 N 天 / 孤儿目录年龄安全网 / 知识抽取门槛全部原样生效。
+
+class ExternalProjectSessionError(Exception):
+    """外部项目会话环境解析失败。
+
+    kind:
+      - "not_registered"   注册表里没有这个名字
+      - "root_missing"     已注册，但项目根目录在磁盘上不存在（路径被移走/删除）
+      - "no_sessions_dir"  项目根存在，但还没有 .agent/sessions/（没产生过会话，无事可清）
+    """
+
+    def __init__(self, kind: str, message: str) -> None:
+        super().__init__(message)
+        self.kind = kind
+
+
+def resolve_external_project_session_env(name: str, registry=None):
+    """已注册外部项目的注册名 → (SessionManager, 项目根, sessions 目录)。
+
+    只接受**注册名**，不接受调用方传路径：路径一律从注册表解析，调用方
+    （HTTP 客户端）没法借这个入口让服务端去删任意目录。
+    已注册但未启用自动调度（enabled=False）的项目同样可以清理——
+    enabled 只管 cron 自动调度，与会话清理无关。
+
+    不会创建目录：SessionManager.__init__ 会 mkdir，所以先确认 sessions 目录
+    存在再构造。
+    """
+    from mini_agent.external_projects.registry import (
+        ExternalProjectRegistry,
+        ExternalProjectRegistryError,
+    )
+    from mini_agent.session import SessionManager
+    from mini_agent.storage.paths import AgentPaths
+
+    registry = registry if registry is not None else ExternalProjectRegistry()
+    try:
+        record = registry.get(name)
+    except ExternalProjectRegistryError as exc:
+        raise ExternalProjectSessionError("not_registered", str(exc)) from exc
+
+    root = Path(record.path).expanduser()
+    if not root.is_dir():
+        raise ExternalProjectSessionError(
+            "root_missing", f"外部项目 '{name}' 的目录不存在：{root}")
+    root = root.resolve()
+    sessions_dir = AgentPaths(root).sessions_dir
+    if not sessions_dir.is_dir():
+        raise ExternalProjectSessionError(
+            "no_sessions_dir", f"外部项目 '{name}' 还没有会话目录：{sessions_dir}")
+    return SessionManager(session_dir=sessions_dir), root, sessions_dir

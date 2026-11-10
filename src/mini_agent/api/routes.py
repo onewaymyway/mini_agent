@@ -398,6 +398,7 @@ from .models import (
     SessionInfo, SessionsListResponse, SessionDetailResponse,
     SessionActionResponse, SessionDeleteResponse,
     SessionCleanupRequest, SessionCleanupResponse, SessionCleanupItem, OrphanCleanupItem,
+    SessionCleanupProjectResult, SessionCleanupScopeInfo, SessionCleanupScopesResponse,
     ProtectedFileEntry, ProtectedFilesStatusResponse,
     ProtectedFileAddRequest, ProtectedFileRemoveRequest,
     ProtectedFilesBackupRequest, ProtectedFilesBackupResponse,
@@ -3245,6 +3246,7 @@ def _cleanup_item_to_model(item) -> SessionCleanupItem:
         session_id=item.session_id, title=item.title, updated_at=item.updated_at,
         turns=item.turns, action=item.action, reason=item.reason,
         extracted_now=item.extracted_now,
+        raw_results_bytes=getattr(item, "raw_results_bytes", 0),
     )
 
 
@@ -3252,7 +3254,164 @@ def _orphan_item_to_model(item) -> OrphanCleanupItem:
     return OrphanCleanupItem(
         dir_name=item.dir_name, last_activity=item.last_activity,
         size_bytes=item.size_bytes, action=item.action, reason=item.reason,
+        raw_results_bytes=getattr(item, "raw_results_bytes", 0),
     )
+
+
+def _cleanup_report_to_result(report, *, project=None, sessions_dir="", note="") -> SessionCleanupProjectResult:
+    """CleanupReport → 单范围响应。主 agent / 外部项目共用，保证展示口径一致。"""
+    from mini_agent.evolution.session_cleanup import format_report_lines
+
+    summary_line = format_report_lines(report)[0]  # 复用 CLI 同款汇总文案，看板/CLI 展示一致
+    if note:
+        summary_line = f"{summary_line}（{note}）"
+    return SessionCleanupProjectResult(
+        dry_run=report.dry_run,
+        project=project,
+        sessions_dir=str(sessions_dir),
+        total_scanned=report.total_scanned,
+        kept_count=len(report.kept),
+        deleted=[_cleanup_item_to_model(i) for i in report.deleted],
+        skipped_pending_extraction=[_cleanup_item_to_model(i) for i in report.skipped_pending_extraction],
+        failed=[_cleanup_item_to_model(i) for i in report.failed],
+        summary=summary_line,
+        orphan_total_scanned=report.orphan_total_scanned,
+        orphan_kept_count=len(report.orphan_kept),
+        orphan_deleted=[_orphan_item_to_model(i) for i in report.orphan_deleted],
+        orphan_failed=[_orphan_item_to_model(i) for i in report.orphan_failed],
+        raw_results_total_bytes=report.raw_results_total_bytes,
+    )
+
+
+def _cleanup_external_project_sync(name: str, body: SessionCleanupRequest):
+    """同步清理单个已注册外部项目的会话（在线程池里跑）。
+
+    返回 (SessionCleanupProjectResult | None, ExternalProjectSessionError | None)：
+    业务性失败（未注册/目录不存在）以第二个值返回而不是抛出，避免被
+    run_blocking 当成"系统故障"记一次熔断失败。
+    """
+    from mini_agent.evolution.session_cleanup import (
+        cleanup_sessions, resolve_external_project_session_env,
+        ExternalProjectSessionError,
+    )
+
+    try:
+        mgr, root, sessions_dir = resolve_external_project_session_env(name)
+    except ExternalProjectSessionError as exc:
+        return None, exc
+
+    report = cleanup_sessions(
+        mgr, root,
+        exclude_ids=set(),  # 外部项目会话不归 daemon 的主 bridge 持有，没有"当前激活会话"
+        keep_recent_days=body.keep_recent_days,
+        keep_recent_count=body.keep_recent_count,
+        min_turns_for_extraction=3,
+        # 外部项目首版不支持先补抽取：抽取结果会写进主项目 wiki，归属不对。
+        extract_first=False,
+        llm_client=None,
+        cfg=None,
+        dry_run=body.dry_run,
+        include_orphans=body.include_orphans,
+        orphan_min_age_hours=body.orphan_min_age_hours,
+    )
+    note = "外部项目不支持先补抽取，未抽取知识的会话已保守跳过" if body.extract_first else ""
+    return _cleanup_report_to_result(report, project=name, sessions_dir=sessions_dir, note=note), None
+
+
+def _empty_project_result(name: str, body: SessionCleanupRequest, *, summary: str = "", error: str = "",
+                          sessions_dir: str = "") -> SessionCleanupProjectResult:
+    return SessionCleanupProjectResult(
+        dry_run=body.dry_run, project=name, sessions_dir=sessions_dir,
+        summary=summary, error=error,
+    )
+
+
+async def _cleanup_external_scope(request: Request, body: SessionCleanupRequest) -> SessionCleanupResponse:
+    """project=<注册名> 或 all_external_projects=True 的清理（owner only，调用方已校验）。"""
+    from mini_agent.external_projects.registry import ExternalProjectRegistry
+
+    timeout = 30.0
+
+    if body.project is not None:
+        name = body.project.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="project 不能为空")
+        result, err = await run_blocking(
+            _cleanup_external_project_sync, name, body,
+            where="session_cleanup_external", timeout=timeout,
+        )
+        if err is not None:
+            if err.kind == "no_sessions_dir":
+                return SessionCleanupResponse(**_empty_project_result(
+                    name, body, summary=str(err) + "，无需清理").model_dump())
+            raise HTTPException(status_code=404, detail=str(err))
+        return SessionCleanupResponse(**result.model_dump())
+
+    # all_external_projects：逐个项目串行处理（每个项目各自独立判定，互不影响）
+    names = [r.name for r in ExternalProjectRegistry().list()]
+    results: list[SessionCleanupProjectResult] = []
+    for name in names:
+        result, err = await run_blocking(
+            _cleanup_external_project_sync, name, body,
+            where="session_cleanup_external", timeout=timeout,
+        )
+        if err is not None:
+            if err.kind == "no_sessions_dir":
+                results.append(_empty_project_result(name, body, summary=str(err) + "，无需清理"))
+            else:
+                results.append(_empty_project_result(name, body, error=str(err), summary=str(err)))
+        else:
+            results.append(result)
+
+    verb = "将删除" if body.dry_run else "已删除"
+    total_deleted = sum(len(r.deleted) + len(r.orphan_deleted) for r in results)
+    summary = (
+        f"外部项目会话清理{'（dry-run，不会实际删除）' if body.dry_run else ''}："
+        f"共 {len(results)} 个已注册项目，{verb} {total_deleted} 个会话/孤儿目录，"
+        f"同时涉及 raw_results 约 {sum(r.raw_results_total_bytes for r in results) / 1024 / 1024:.1f} MB，"
+        f"{sum(1 for r in results if r.error)} 个项目无法处理。"
+    )
+    if body.extract_first:
+        summary += "（外部项目不支持先补抽取，未抽取知识的会话已保守跳过）"
+    return SessionCleanupResponse(
+        dry_run=body.dry_run,
+        summary=summary,
+        total_scanned=sum(r.total_scanned for r in results),
+        kept_count=sum(r.kept_count for r in results),
+        orphan_total_scanned=sum(r.orphan_total_scanned for r in results),
+        orphan_kept_count=sum(r.orphan_kept_count for r in results),
+        raw_results_total_bytes=sum(r.raw_results_total_bytes for r in results),
+        projects=results,
+    )
+
+
+@router.get("/sessions/cleanup/scopes", response_model=SessionCleanupScopesResponse)
+async def cleanup_scopes_endpoint(request: Request):
+    """看板「清理范围」下拉框的数据源：已注册的外部项目列表（owner only）。
+
+    只读注册表 + 检查目录是否存在，不做健康检查/子进程探测（比
+    GET /self/external_projects 轻得多），切到会话 tab 时不会拖慢页面。
+    """
+    _require_owner(request)
+
+    def _collect():
+        from mini_agent.external_projects.registry import ExternalProjectRegistry
+        from mini_agent.storage.paths import AgentPaths
+
+        out = []
+        for rec in ExternalProjectRegistry().list():
+            try:
+                sdir = AgentPaths(Path(rec.path).expanduser()).sessions_dir
+                has = sdir.is_dir()
+            except Exception:
+                sdir, has = "", False
+            out.append(SessionCleanupScopeInfo(
+                name=rec.name, path=rec.path, sessions_dir=str(sdir), has_sessions_dir=has,
+            ))
+        return out
+
+    projects = await run_blocking(_collect, where="session_cleanup_scopes", timeout=10.0, fallback=[])
+    return SessionCleanupScopesResponse(projects=projects)
 
 
 @router.post("/sessions/cleanup", response_model=SessionCleanupResponse)
@@ -3271,8 +3430,19 @@ async def cleanup_sessions_endpoint(request: Request, body: SessionCleanupReques
     LLM client——多用户模式下每个用户的 cleanup 只影响自己的 session，
     但目前统一走 owner 的 LLM 配置，抽取失败会体现在响应的 failed 列表里
     并保守跳过删除，不会误删。
+
+    清理范围（next_doc/session_cleanup_external_projects_plan.md）：
+      - 默认（不传 project / all_external_projects）：主 agent，行为不变；
+      - project=<注册名>：该外部项目自己的 .agent/sessions/；
+      - all_external_projects=True：全部已注册外部项目，结果按项目分组。
+    每删一个 session，都会同时清理它对应的 <project_root>/.agent/raw_results/<session_id>/。
     """
     _require_owner(request)
+
+    if body.project is not None and body.all_external_projects:
+        raise HTTPException(status_code=400, detail="project 与 all_external_projects 不能同时指定")
+    if body.project is not None or body.all_external_projects:
+        return await _cleanup_external_scope(request, body)
 
     user_mgr = _user_session_manager(request)
     project_root = getattr(request.app.state, "project_root", None)
@@ -3303,7 +3473,7 @@ async def cleanup_sessions_endpoint(request: Request, body: SessionCleanupReques
     if project_root is None and mgr is not None:
         project_root = getattr(mgr, "session_dir", None)  # 兜底：goal 保护判定允许拿不到时退化为"无保护"
 
-    from mini_agent.evolution.session_cleanup import cleanup_sessions, format_report_lines
+    from mini_agent.evolution.session_cleanup import cleanup_sessions
 
     report = await run_blocking(
         cleanup_sessions,
@@ -3323,20 +3493,10 @@ async def cleanup_sessions_endpoint(request: Request, body: SessionCleanupReques
         timeout=180.0 if body.extract_first else 30.0,
     )
 
-    summary_line = format_report_lines(report)[0]  # 复用 CLI 同款汇总文案，看板/CLI 展示一致
-    return SessionCleanupResponse(
-        dry_run=report.dry_run,
-        total_scanned=report.total_scanned,
-        kept_count=len(report.kept),
-        deleted=[_cleanup_item_to_model(i) for i in report.deleted],
-        skipped_pending_extraction=[_cleanup_item_to_model(i) for i in report.skipped_pending_extraction],
-        failed=[_cleanup_item_to_model(i) for i in report.failed],
-        summary=summary_line,
-        orphan_total_scanned=report.orphan_total_scanned,
-        orphan_kept_count=len(report.orphan_kept),
-        orphan_deleted=[_orphan_item_to_model(i) for i in report.orphan_deleted],
-        orphan_failed=[_orphan_item_to_model(i) for i in report.orphan_failed],
+    result = _cleanup_report_to_result(
+        report, project=None, sessions_dir=getattr(mgr, "session_dir", ""),
     )
+    return SessionCleanupResponse(**result.model_dump())
 
 
 # ── 受保护文件清单（看板集成，owner only）───────────────────────────────────

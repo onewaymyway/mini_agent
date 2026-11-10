@@ -255,7 +255,14 @@ Web Demo 的事件流面板类似，但集成在同一多 Tab 界面中。
   > 影响后端批量清理判定的开关，两者刻意用了不同的图标和措辞，避免混淆。
 
 - **🧹 批量清理旧会话**：分页控件下方的折叠面板，对应 CLI 的
-  `/session cleanup`。填好"保留最近 N 天"/"保留最近 N 个"两道安全网参数
+  `/session cleanup`。面板顶部的 **清理范围** 下拉框默认是"主 agent（当前
+  项目）"，也可以选某个**已注册的外部项目**（清理它自己
+  `.agent/sessions/` 下的会话），或 **📦 全部外部项目**（一次预览/清理所有
+  已注册项目，结果按项目折叠分组展示）。外部项目首版不支持"先补跑知识抽取"
+  （勾选框置灰），尚未抽取知识的会话会被保守跳过、不删除；切换范围会清掉
+  上一份预览和确认勾选，避免拿 A 范围的预览去确认执行 B 范围。每个被清理的
+  会话对应的 `raw_results/<session_id>/`（工具结果原文）会**一并清理**，预览里
+  会显示将释放的大小。其余步骤：填好"保留最近 N 天"/"保留最近 N 个"两道安全网参数
   （默认 30 天 / 20 个），可选"先补跑知识抽取"（对候选删除但还没抽取过
   知识的 session，删除前先跑一次离线抽取，会调用 LLM、耗时更长）。点
   **🔍 预览** 先 dry-run 一次，列出"将删除 / 待抽取跳过 / 失败"三张表；
@@ -1176,7 +1183,8 @@ plan.md`）：纯只读快照，回答"P2 公平轮询/P3 老化加成/P4 时间
 | `pending_permissions(session_id=)` / `respond_permission()` | `/v1/permissions/*` | 权限审批 |
 | `sessions(limit=50, offset=0)` / `session_detail()` / `resume_session()` / `new_session()` / `delete_session()` | `/v1/sessions*` | 会话管理（`offset` 配合 `limit` 做分页） |
 | `pin_session()` / `unpin_session()` | `POST /v1/sessions/{id}/pin\|unpin` | 清理保护置顶 / 取消置顶 |
-| `cleanup_sessions(dry_run=True, keep_recent_days=30, keep_recent_count=20, extract_first=False, include_orphans=False, orphan_min_age_hours=6.0)` | `POST /v1/sessions/cleanup` | 批量清理旧会话（预览/执行同一接口，`dry_run` 区分），owner only；`include_orphans` 一并清理无 `meta.json` 的孤儿目录 |
+| `cleanup_sessions(dry_run=True, keep_recent_days=30, keep_recent_count=20, extract_first=False, include_orphans=False, orphan_min_age_hours=6.0, project=None, all_external_projects=False)` | `POST /v1/sessions/cleanup` | 批量清理旧会话（预览/执行同一接口，`dry_run` 区分），owner only；`include_orphans` 一并清理无 `meta.json` 的孤儿目录；`project=<外部项目注册名>` / `all_external_projects=True` 清理外部项目的会话（默认主 agent）；清理时同步清理对应 `raw_results/<session_id>/` |
+| `session_cleanup_scopes()` | `GET /v1/sessions/cleanup/scopes` | 「清理范围」下拉框数据：已注册外部项目的轻量列表（owner only） |
 | `users()` | `/v1/users` | 多用户列表（多用户模式） |
 | `self_status()` / `autonomous_status()` | `/self/status`、`/self/autonomous` | 自省与自主循环状态 |
 | `pause_scheduling(reason=)` / `resume_scheduling()` | `POST /v1/autonomous/scheduling/pause\|resume` | 看板"停止调度"功能：全局暂停/恢复自动调度，见顶部状态条一节 |

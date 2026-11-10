@@ -312,6 +312,8 @@ class SessionCleanupItem(BaseModel):
     action:        str   # "keep" | "skip_pending_extraction" | "delete"
     reason:        str
     extracted_now: bool = False
+    # 对应 raw_results/<session_id>/ 目录大小（字节）：dry-run 为"将释放"，执行后为"已释放"
+    raw_results_bytes: int = 0
 
 
 class SessionCleanupRequest(BaseModel):
@@ -330,6 +332,15 @@ class SessionCleanupRequest(BaseModel):
     # 老前端调用这个接口时行为突变。
     include_orphans:      bool = False
     orphan_min_age_hours: float = 6.0
+    # 清理范围（默认主 agent，与旧调用方行为完全一致）。
+    #   project：已注册外部项目的**注册名**（只认注册名，路径由服务端从注册表解析，
+    #            客户端不能传路径）；与 all_external_projects 互斥。
+    #   all_external_projects：一次处理全部已注册外部项目，结果按项目分组放在
+    #            响应的 projects 里。
+    # 外部项目首版不支持 extract_first（抽取结果会写进主项目 wiki，归属不对），
+    # 传了也会被忽略，并在 summary 里注明。
+    project:               Optional[str] = None
+    all_external_projects: bool = False
 
 
 class OrphanCleanupItem(BaseModel):
@@ -339,12 +350,18 @@ class OrphanCleanupItem(BaseModel):
     size_bytes:    int
     action:        str   # "keep" | "delete"
     reason:        str
+    raw_results_bytes: int = 0
 
 
-class SessionCleanupResponse(BaseModel):
+class SessionCleanupProjectResult(BaseModel):
+    """单个清理范围（主 agent 或某个外部项目）的清理结果。"""
     dry_run:                    bool
-    total_scanned:               int
-    kept_count:                  int
+    # 本结果对应的范围：None = 主 agent；否则为外部项目注册名
+    project:                    Optional[str] = None
+    sessions_dir:               str = ""   # 实际清理的目录，供看板核对"清的是哪儿"
+    error:                      str = ""   # 该范围无法清理的原因（项目目录不存在等），非空时其余统计为 0
+    total_scanned:               int = 0
+    kept_count:                  int = 0
     deleted:                     list[SessionCleanupItem] = []
     skipped_pending_extraction:  list[SessionCleanupItem] = []
     failed:                      list[SessionCleanupItem] = []
@@ -354,6 +371,30 @@ class SessionCleanupResponse(BaseModel):
     orphan_kept_count:           int = 0
     orphan_deleted:               list[OrphanCleanupItem] = []
     orphan_failed:                list[OrphanCleanupItem] = []
+    # 被删（dry-run 为"将删"）session / 孤儿目录对应的 raw_results 总大小（字节）
+    raw_results_total_bytes:      int = 0
+
+
+class SessionCleanupResponse(SessionCleanupProjectResult):
+    """POST /v1/sessions/cleanup 响应。
+
+    单范围（主 agent 或 project=xxx）时字段与 SessionCleanupProjectResult 一致；
+    all_external_projects=True 时顶层只放汇总（summary / 各项计数求和），
+    逐项目明细在 projects 里，顶层 deleted 等列表为空。
+    """
+    projects: list[SessionCleanupProjectResult] = []
+
+
+class SessionCleanupScopeInfo(BaseModel):
+    """看板「清理范围」下拉框的一项：一个已注册外部项目（轻量，不做健康检查）。"""
+    name:             str
+    path:             str
+    sessions_dir:     str = ""
+    has_sessions_dir: bool = False
+
+
+class SessionCleanupScopesResponse(BaseModel):
+    projects: list[SessionCleanupScopeInfo] = []
 
 
 # ── 受保护文件清单（protected_files_manifest_and_delete_guard_plan.md）────

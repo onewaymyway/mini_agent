@@ -218,4 +218,62 @@ s3 keep 目录年龄 < 6 小时，可能是正在进行中的第一轮，暂不�
 `dry_run=False` 实际执行后：`s2` 目录被删除，`s3`（安全网内）和 `s1`
 （正常 session，本来就不在孤儿扫描范围内）原样保留，行为符合预期。
 
+## 11. 外部项目范围 + raw_results 联动清理（新增）
+
+详细方案与取舍见 `next_doc/session_cleanup_external_projects_plan.md`。
+
+### 11.1 外部项目范围
+
+每个已注册外部项目（`~/.agent/external_projects.json`）都有自己的
+`<项目根>/.agent/sessions/`，格式与主项目完全一致，所以
+`cleanup_sessions()` 判定逻辑**没有任何改动**：传入"外部项目自己的
+`SessionManager` + 项目根"，pin / goal 在跑 / 最近 N 个 / 最近 N 天 / 孤儿目录
+年龄安全网 / 知识抽取门槛原样生效。
+
+| 层 | 改动 |
+|------|------|
+| `evolution/session_cleanup.py` | 新增 `resolve_external_project_session_env(name)`（注册名 → `SessionManager` + 项目根 + sessions 目录；错误类型 `ExternalProjectSessionError`，`kind` ∈ `not_registered`/`root_missing`/`no_sessions_dir`；只认注册名、不创建目录） |
+| `api/models.py` | `SessionCleanupRequest` 新增 `project` / `all_external_projects`；新增 `SessionCleanupProjectResult`（单范围结果，`SessionCleanupResponse` 继承它并增加 `projects[]`）、`SessionCleanupScopeInfo` / `SessionCleanupScopesResponse` |
+| `api/routes.py` | `POST /v1/sessions/cleanup` 按范围分发（互斥校验 400、未注册 404、无会话目录空结果）；新增 `GET /v1/sessions/cleanup/scopes`；主 agent 分支行为不变，仅响应构造抽成 `_cleanup_report_to_result()` |
+| `apps/mini_agent_kanban/client.py` / `app.py` | `cleanup_sessions(project=, all_external_projects=)`、`session_cleanup_scopes()`；面板新增「清理范围」下拉框（主 agent / 📦 全部外部项目 / 📁 各项目）、全部项目时按项目折叠分组、切换范围清预览与确认勾选 |
+| `cli/commands/sessions.py` | `/session cleanup --project <名>` / `--all-external-projects` |
+| `tools/slash_command.py` | agent 经 `run_slash_command` 触发的 `session cleanup` 若带这两个参数一律拒绝（只有用户本人可清理别的项目的会话）；cron `sys:session_cleanup` 不变，仍只清理主 agent |
+
+安全性：只接受注册名，路径从注册表解析（路径样式的名字 404）；仍然 owner only；
+删除仍只走 `SessionManager.delete()` / 孤儿目录 `shutil.rmtree`；默认范围仍是主
+agent（保守 opt-in）。
+
+**外部项目首版不支持 `extract_first`**：知识抽取结果会写进主项目 wiki，归属不对。
+传了会被忽略（响应 `summary` 注明），"turns≥3 且未标记已抽取"的会话进
+`skipped_pending_extraction`，不会被删（宁可少删）。外部项目的这类会话需要等
+抽取归属问题另行解决后才能被清理。
+
+### 11.2 raw_results 联动清理（主 agent 与外部项目一致）
+
+工具结果原文落盘在 `<project_root>/.agent/raw_results/<session_id>/`
+（`perception/raw_result_store.py`），只有对应 session 的历史会引用；而
+`SessionManager.delete()` 只删 `sessions/<id>/`，session 被清理后这些原文就成了
+无人引用的残留。现在清理 session / 孤儿目录时会同时删掉同名 raw_results 目录：
+
+- `_raw_results_dir_for()`：session id 必须是单层目录名且解析后确实是
+  `raw_results` 的直接子级（`..` / 路径分隔符 / 空串一律不处理）；
+- `dry_run` 只统计大小（`raw_results_bytes`）不删；被保留的 session 不动；
+- 命中受保护文件清单 → 保留并在 `reason` 里注明；删除失败 → 在 `reason` 里注明，
+  不改变"session 已删除"的结论；
+- `CleanupItem` / `OrphanItem` 新增 `raw_results_bytes`，`CleanupReport` 新增
+  `raw_results_total_bytes`，响应与 CLI 汇总同步展示。
+
+注意：这是对**主 agent 清理**也生效的行为变化（此前 session 被清理后 raw_results
+会一直留到 `perception/raw_result_cleanup.py` 按 14 天保留期/容量巡检才被清掉）。
+已被清理 session 遗留的、同名 session 已不存在的老 raw_results 目录不在本次
+范围内，仍由那个低频巡检负责。
+
+### 11.3 已知局限
+
+- 外部项目"正在被执行的会话"没有"当前激活会话"概念可排除，靠既有安全网兜底
+  （goal 状态 / 最近 N 个 / 最近 N 天 / 孤儿目录 6 小时年龄）。
+- 会话列表（「🗂️ 会话管理」上半部分）与 pin/unpin 暂未扩展到外部项目，只做清理；
+  外部项目会话的 `meta.json` 里若已有 `pinned=true`，清理时照常受保护。
+- 看板新增 UI 用 Streamlit `AppTest` 做过运行时烟测（假 client：范围选项、全部项目
+  分组预览、切换范围清预览、抽取勾选置灰），但没有真实浏览器 / 真实 daemon 的端到端验证。
 

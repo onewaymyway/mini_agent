@@ -249,7 +249,7 @@ mini-agent --retry-backoff linear --retry-backoff-step 60 --retry-backoff-max 30
 | `/session search <q>` | 关键词搜索 session（需 `--session-search`） |
 | `/session pin <id>` | 置顶保护一个 session，`/session cleanup` 时永不删除 |
 | `/session unpin <id>` | 取消置顶保护 |
-| `/session cleanup [--dry-run] [--keep-days N] [--keep-count N] [--extract-first]` | 批量清理长期不用的旧 session：跳过当前 session、`pinned` session、goal 仍在 `running`/`stuck` 的 session，以及最近 `keep-count`（默认 20）个 / 最近 `keep-days`（默认 30）天内的 session；候选删除的 session 若内容太少（`turns < 3`）直接删，若已抽取过知识（`meta.json.knowledge_extracted`）也直接删，否则默认保守跳过——加 `--extract-first` 会先补跑一次离线知识抽取再删除。建议第一次先加 `--dry-run` 看报告。也已注册为每 7 天一次的内置 cron job `sys:session_cleanup`（默认带 `--extract-first`），详见 [evolution/session_cleanup.py](../src/mini_agent/evolution/session_cleanup.py) |
+| `/session cleanup [--dry-run] [--keep-days N] [--keep-count N] [--extract-first] [--include-orphans] [--orphan-min-age-hours N] [--project <外部项目注册名> \| --all-external-projects]` | 批量清理长期不用的旧 session：跳过当前 session、`pinned` session、goal 仍在 `running`/`stuck` 的 session，以及最近 `keep-count`（默认 20）个 / 最近 `keep-days`（默认 30）天内的 session；候选删除的 session 若内容太少（`turns < 3`）直接删，若已抽取过知识（`meta.json.knowledge_extracted`）也直接删，否则默认保守跳过——加 `--extract-first` 会先补跑一次离线知识抽取再删除。建议第一次先加 `--dry-run` 看报告。也已注册为每 7 天一次的内置 cron job `sys:session_cleanup`（默认带 `--extract-first`），每清理一个 session 会同时清理它对应的 `.agent/raw_results/<session_id>/`。`--project <名>` / `--all-external-projects` 清理已注册外部项目自己的会话（不支持 `--extract-first`，会被忽略；cron `sys:session_cleanup` 与 agent 经 `run_slash_command` 都**不能**触发外部项目范围，只有用户本人可用）。详见 [evolution/session_cleanup.py](../src/mini_agent/evolution/session_cleanup.py)、[外部项目范围方案](../next_doc/session_cleanup_external_projects_plan.md) |
 
 ### 任务管理（`src/mini_agent/cli/commands/tasks.py`）
 

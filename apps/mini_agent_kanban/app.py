@@ -3068,6 +3068,104 @@ def render_sessions_tab(client: AgentClient):
     _render_pinned_sessions_panel_entry(client)
 
 
+_CLEANUP_SCOPE_MAIN = "main"
+_CLEANUP_SCOPE_ALL_EXT = "all_external"
+
+
+def _fmt_mb(n_bytes) -> str:
+    return f"{(n_bytes or 0) / 1024 / 1024:.1f} MB"
+
+
+def _cleanup_scope_options(client: AgentClient) -> "list[tuple[str, str]]":
+    """清理范围下拉框的选项：[(scope_key, 展示文案), ...]。
+
+    scope_key：_CLEANUP_SCOPE_MAIN（主 agent）/ _CLEANUP_SCOPE_ALL_EXT（全部外部项目）/
+    "ext:<注册名>"（某个外部项目）。外部项目列表来自轻量接口
+    GET /v1/sessions/cleanup/scopes，30 秒缓存，拉取失败时只剩"主 agent"。
+    """
+    import time as _time
+    cache = st.session_state.get("_cleanup_scopes_cache")
+    if not cache or _time.time() - cache.get("ts", 0) > 30:
+        res = client.session_cleanup_scopes()
+        projects = (res or {}).get("projects", []) if res and "_error" not in res else []
+        cache = {"ts": _time.time(), "projects": projects}
+        st.session_state["_cleanup_scopes_cache"] = cache
+    options = [(_CLEANUP_SCOPE_MAIN, "主 agent（当前项目）")]
+    projects = cache.get("projects", [])
+    if projects:
+        options.append((_CLEANUP_SCOPE_ALL_EXT, f"📦 全部外部项目（{len(projects)} 个）"))
+        for p in projects:
+            suffix = "" if p.get("has_sessions_dir") else "（暂无会话目录）"
+            options.append((f"ext:{p['name']}", f"📁 {p['name']}{suffix}"))
+    return options
+
+
+def _render_cleanup_result_tables(res: dict, *, key_prefix: str = "") -> None:
+    """渲染单个范围的清理结果（将删除/待抽取跳过/失败 + 孤儿目录 + raw_results 汇总）。"""
+    deleted = res.get("deleted", [])
+    skipped = res.get("skipped_pending_extraction", [])
+    failed = res.get("failed", [])
+    if deleted:
+        st.markdown(f"**将删除（{len(deleted)}）**" if res.get("dry_run") else f"**已删除（{len(deleted)}）**")
+        st.dataframe(
+            [{"session_id": i["session_id"], "title": i["title"],
+              "updated_at": i["updated_at"], "turns": i["turns"],
+              "raw_results_mb": round(i.get("raw_results_bytes", 0) / 1024 / 1024, 2),
+              "reason": i["reason"]} for i in deleted],
+            width='stretch', hide_index=True,
+        )
+    if skipped:
+        st.markdown(f"**待抽取，本次跳过（{len(skipped)}）**")
+        st.dataframe(
+            [{"session_id": i["session_id"], "title": i["title"],
+              "reason": i["reason"]} for i in skipped],
+            width='stretch', hide_index=True,
+        )
+    if failed:
+        st.markdown(f"**失败（{len(failed)}）**")
+        st.dataframe(
+            [{"session_id": i["session_id"], "title": i["title"],
+              "reason": i["reason"]} for i in failed],
+            width='stretch', hide_index=True,
+        )
+
+    orphan_deleted = res.get("orphan_deleted", [])
+    orphan_failed = res.get("orphan_failed", [])
+    if res.get("orphan_total_scanned"):
+        st.markdown("---")
+        orphan_mb = sum(i.get("size_bytes", 0) for i in orphan_deleted) / 1024 / 1024
+        st.info(
+            f"孤儿目录：共扫描 {res['orphan_total_scanned']} 个，"
+            f"保留 {res.get('orphan_kept_count', 0)} 个，"
+            f"将删除 {len(orphan_deleted)} 个（约 {orphan_mb:.1f} MB）。"
+        )
+        if orphan_deleted:
+            st.markdown(f"**孤儿目录 · 将删除（{len(orphan_deleted)}）**")
+            st.dataframe(
+                [{"dir_name": i["dir_name"], "last_activity": i["last_activity"],
+                  "size_mb": round(i.get("size_bytes", 0) / 1024 / 1024, 2),
+                  "raw_results_mb": round(i.get("raw_results_bytes", 0) / 1024 / 1024, 2),
+                  "reason": i["reason"]} for i in orphan_deleted],
+                width='stretch', hide_index=True,
+            )
+        if orphan_failed:
+            st.markdown(f"**孤儿目录 · 失败（{len(orphan_failed)}）**")
+            st.dataframe(
+                [{"dir_name": i["dir_name"], "reason": i["reason"]}
+                 for i in orphan_failed],
+                width='stretch', hide_index=True,
+            )
+
+
+def _cleanup_has_anything_to_delete(res: dict) -> bool:
+    """单范围看 deleted/orphan_deleted；「全部外部项目」要看每个项目分组。"""
+    if res.get("deleted") or res.get("orphan_deleted"):
+        return True
+    return any(
+        (p.get("deleted") or p.get("orphan_deleted")) for p in (res.get("projects") or [])
+    )
+
+
 def _render_session_cleanup_panel(client: AgentClient) -> None:
     """[Session 清理功能看板集成] 批量清理长期不用的旧 session。
 
@@ -3080,14 +3178,40 @@ def _render_session_cleanup_panel(client: AgentClient) -> None:
 
     额外支持"含孤儿目录"（勾选后一并扫描/清理有目录、没 meta.json 的残留
     目录，见 session_cleanup.py::scan_orphan_session_dirs），默认关闭。
+
+    [外部项目范围] 「清理范围」可选主 agent（默认）/ 某个已注册外部项目 /
+    全部外部项目（见 next_doc/session_cleanup_external_projects_plan.md）。
+    清理 session 时会同时清理它对应的 raw_results/<session_id>/ 目录。
     """
     st.markdown("---")
     with st.expander("🧹 批量清理旧会话（Session Cleanup）"):
         st.caption(
             "自动清理长期不用的旧 session，释放磁盘空间。规则：当前会话 / "
             "🔒已保护 / 目标仍在进行中的会话 / 最近 N 个 / 最近 N 天内的会话"
-            "永远不会被清理。owner 权限。"
+            "永远不会被清理；每个被清理的会话对应的 raw_results 目录会一并清理。owner 权限。"
         )
+
+        # ── 清理范围 ──────────────────────────────────────────────────
+        scope_options = _cleanup_scope_options(client)
+        scope_labels = dict(scope_options)
+        scope_key = st.selectbox(
+            "清理范围", [k for k, _ in scope_options],
+            format_func=lambda k: scope_labels.get(k, k), key="cleanup_scope",
+            help="默认只清理主 agent 自己的会话；也可以选某个已注册的外部项目"
+                 "（清理它自己 .agent/sessions/ 下的会话），或一次清理全部外部项目。",
+        )
+        scope_project = scope_key[4:] if scope_key.startswith("ext:") else None
+        scope_all_ext = scope_key == _CLEANUP_SCOPE_ALL_EXT
+        is_external = scope_project is not None or scope_all_ext
+        # 切换范围时丢掉旧预览/确认勾选，避免拿 A 范围的预览去确认执行 B 范围
+        preview_key = "session_cleanup_preview"
+        if st.session_state.get("_cleanup_scope_prev") != scope_key:
+            st.session_state["_cleanup_scope_prev"] = scope_key
+            st.session_state.pop(preview_key, None)
+            st.session_state.pop("cleanup_confirm", None)
+        if is_external:
+            st.caption("外部项目首版不支持「先补跑知识抽取」；尚未抽取知识的会话会被保守跳过、不删除。")
+
         cc1, cc2, cc3 = st.columns(3)
         keep_days = cc1.number_input("保留最近 N 天", min_value=0, value=30, step=1,
                                       key="cleanup_keep_days",
@@ -3097,9 +3221,11 @@ def _render_session_cleanup_panel(client: AgentClient) -> None:
                                        help="按更新时间倒序，最新的这么多个会话永远保留")
         extract_first = cc3.checkbox(
             "先补跑知识抽取", value=False, key="cleanup_extract_first",
+            disabled=is_external,
             help="候选删除但还没抽取过知识的会话，删除前先离线抽取一次知识"
-                 "（会调用 LLM，耗时更长；不勾选则这类会话本次跳过、不删）",
-        )
+                 "（会调用 LLM，耗时更长；不勾选则这类会话本次跳过、不删）。"
+                 "外部项目暂不支持。",
+        ) and not is_external
 
         oc1, oc2 = st.columns(2)
         include_orphans = oc1.checkbox(
@@ -3116,15 +3242,18 @@ def _render_session_cleanup_panel(client: AgentClient) -> None:
                  "孤儿目录很可能是正在进行中的第一轮，不足这个年龄不会被判定为孤儿",
         )
 
-        bc1, bc2 = st.columns(2)
-        preview_key = "session_cleanup_preview"
-        if bc1.button("🔍 预览（dry-run，不会真的删除）", width='stretch'):
-            res = client.cleanup_sessions(
-                dry_run=True, keep_recent_days=float(keep_days),
+        def _run(dry_run: bool):
+            return client.cleanup_sessions(
+                dry_run=dry_run, keep_recent_days=float(keep_days),
                 keep_recent_count=int(keep_count), extract_first=extract_first,
                 include_orphans=include_orphans,
                 orphan_min_age_hours=float(orphan_min_age_hours),
+                project=scope_project, all_external_projects=scope_all_ext,
             )
+
+        bc1, bc2 = st.columns(2)
+        if bc1.button("🔍 预览（dry-run，不会真的删除）", width='stretch'):
+            res = _run(True)
             if res and "_error" not in res:
                 st.session_state[preview_key] = res
             else:
@@ -3134,69 +3263,30 @@ def _render_session_cleanup_panel(client: AgentClient) -> None:
         preview = st.session_state.get(preview_key)
         if preview:
             st.info(preview.get("summary", ""))
-            deleted = preview.get("deleted", [])
-            skipped = preview.get("skipped_pending_extraction", [])
-            failed = preview.get("failed", [])
-            if deleted:
-                st.markdown(f"**将删除（{len(deleted)}）**")
-                st.dataframe(
-                    [{"session_id": i["session_id"], "title": i["title"],
-                      "updated_at": i["updated_at"], "turns": i["turns"],
-                      "reason": i["reason"]} for i in deleted],
-                    width='stretch', hide_index=True,
+            if scope_all_ext:
+                for pr in preview.get("projects") or []:
+                    title = f"📁 {pr.get('project')} — {pr.get('summary', '')}"
+                    with st.expander(title, expanded=bool(pr.get("deleted") or pr.get("orphan_deleted"))):
+                        if pr.get("sessions_dir"):
+                            st.caption(f"目录：{pr['sessions_dir']}")
+                        if pr.get("error"):
+                            st.warning(pr["error"])
+                        else:
+                            _render_cleanup_result_tables(pr)
+            else:
+                st.caption(
+                    "范围：" + (f"外部项目 {scope_project}" if scope_project else "主 agent")
+                    + (f" · 目录：{preview['sessions_dir']}" if preview.get("sessions_dir") else "")
                 )
-            if skipped:
-                st.markdown(f"**待抽取，本次跳过（{len(skipped)}）**")
-                st.dataframe(
-                    [{"session_id": i["session_id"], "title": i["title"],
-                      "reason": i["reason"]} for i in skipped],
-                    width='stretch', hide_index=True,
-                )
-            if failed:
-                st.markdown(f"**失败（{len(failed)}）**")
-                st.dataframe(
-                    [{"session_id": i["session_id"], "title": i["title"],
-                      "reason": i["reason"]} for i in failed],
-                    width='stretch', hide_index=True,
-                )
+                _render_cleanup_result_tables(preview)
+            if preview.get("raw_results_total_bytes"):
+                st.caption(f"同时将清理对应的 raw_results 约 {_fmt_mb(preview['raw_results_total_bytes'])}。")
 
-            orphan_deleted = preview.get("orphan_deleted", [])
-            orphan_failed = preview.get("orphan_failed", [])
-            if preview.get("orphan_total_scanned"):
-                st.markdown("---")
-                orphan_mb = sum(i.get("size_bytes", 0) for i in orphan_deleted) / 1024 / 1024
-                st.info(
-                    f"孤儿目录：共扫描 {preview['orphan_total_scanned']} 个，"
-                    f"保留 {preview.get('orphan_kept_count', 0)} 个，"
-                    f"将删除 {len(orphan_deleted)} 个（约 {orphan_mb:.1f} MB）。"
-                )
-                if orphan_deleted:
-                    st.markdown(f"**孤儿目录 · 将删除（{len(orphan_deleted)}）**")
-                    st.dataframe(
-                        [{"dir_name": i["dir_name"], "last_activity": i["last_activity"],
-                          "size_mb": round(i.get("size_bytes", 0) / 1024 / 1024, 2),
-                          "reason": i["reason"]} for i in orphan_deleted],
-                        width='stretch', hide_index=True,
-                    )
-                if orphan_failed:
-                    st.markdown(f"**孤儿目录 · 失败（{len(orphan_failed)}）**")
-                    st.dataframe(
-                        [{"dir_name": i["dir_name"], "reason": i["reason"]}
-                         for i in orphan_failed],
-                        width='stretch', hide_index=True,
-                    )
-
-            has_anything_to_delete = bool(deleted or orphan_deleted)
-            if has_anything_to_delete:
+            if _cleanup_has_anything_to_delete(preview):
                 confirm = bc2.checkbox("我已确认以上列表，执行删除", key="cleanup_confirm")
                 if st.button("⚠️ 确认执行清理（不可撤销）", disabled=not confirm,
                               width='stretch', type="primary"):
-                    res = client.cleanup_sessions(
-                        dry_run=False, keep_recent_days=float(keep_days),
-                        keep_recent_count=int(keep_count), extract_first=extract_first,
-                        include_orphans=include_orphans,
-                        orphan_min_age_hours=float(orphan_min_age_hours),
-                    )
+                    res = _run(False)
                     if res and "_error" not in res:
                         st.success(res.get("summary", "清理完成"))
                         st.session_state.pop(preview_key, None)
