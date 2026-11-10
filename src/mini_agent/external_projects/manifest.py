@@ -198,9 +198,10 @@ class WebAppSpec:
     command: Optional[str] = None          # 完整启动命令覆盖；缺省 = streamlit run <entry> ...
     host: Optional[str] = None             # 缺省 = 同一台机器；填写则视为远程，看板只探测/打开，不启停
     health_path: str = "/_stcore/health"   # Streamlit 健康检查路径
-    # 本机启动时的监听地址（--server.address）。缺省 127.0.0.1 = 仅本机可访问；
-    # 0.0.0.0 = 所有网卡（局域网 IP 可访问，无登录保护，只在可信网络使用）；
-    # 也可填本机某个网卡的 IP。注意：与 host 不同，bind 不改变启停归属，仍由看板启停。
+    # 本机启动时的监听地址的"建议值"（--server.address）。看板启动时会弹出监听地址选择，
+    # 默认选中这里声明的值；未声明则为 0.0.0.0（所有网卡，局域网可访问）。
+    # 0.0.0.0 = 所有网卡（无登录保护，只在可信网络使用）；127.0.0.1 = 仅本机；
+    # 也可以是本机某个网卡的 IP。与 host 不同，bind 不改变启停归属，仍由看板启停。
     bind: Optional[str] = None
 
     @property
@@ -210,8 +211,8 @@ class WebAppSpec:
 
     @property
     def bind_address(self) -> str:
-        """实际监听地址；缺省 127.0.0.1。"""
-        return self.bind or "127.0.0.1"
+        """建议监听地址；缺省 0.0.0.0（看板启动时的默认选项）。"""
+        return self.bind or "0.0.0.0"
 
     @property
     def listens_beyond_loopback(self) -> bool:

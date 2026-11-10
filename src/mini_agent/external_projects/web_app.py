@@ -82,6 +82,8 @@ class WebAppStatus:
     pid: Optional[int] = None
     message: str = ""
     log_path: Optional[str] = None
+    # 实例实际监听的地址（运行中才有；由看板启动时选择，见 start(bind=...)）
+    bind: Optional[str] = None
 
     @property
     def is_up(self) -> bool:
@@ -112,17 +114,62 @@ class WebAppStatus:
 
 # ── 地址 ───────────────────────────────────────────────────────────────
 
-def probe_host(spec: WebAppSpec) -> str:
-    """看板探测/连接时使用的主机名。
+LOOPBACK_HOST = "127.0.0.1"
+DEFAULT_BIND = "0.0.0.0"
 
-    远程（填了 host）用 host；本机启动时按实际监听地址探测：监听 0.0.0.0 或 127.0.0.1
-    时用回环地址连接，监听某个具体网卡 IP 时用该 IP（否则会误判为未运行）。
+
+def normalize_bind(value: Optional[str]) -> str:
+    """校验并规范化监听地址。缺省 = 0.0.0.0；localhost 归一为 127.0.0.1；非法值抛 ValueError。"""
+    import ipaddress
+    if value is None or not str(value).strip():
+        return DEFAULT_BIND
+    text = str(value).strip()
+    if text == "localhost":
+        return LOOPBACK_HOST
+    try:
+        ipaddress.ip_address(text)
+    except ValueError:
+        raise ValueError(f"{text!r} 不是合法的 IP 地址")
+    return text
+
+
+def _is_wildcard(bind: str) -> bool:
+    return bind in ("0.0.0.0", "::")
+
+
+def _is_loopback(bind: str) -> bool:
+    return bind in ("127.0.0.1", "::1", "localhost")
+
+
+def probe_host(spec: WebAppSpec) -> str:
+    """看板探测端口时固定使用 127.0.0.1（具体监听地址见 _listening_host 的备选探测）。
+
+    远程项目（填了 host）例外：探测远程 host 本身。
     """
-    if spec.host:
-        return spec.host
-    if spec.bind and spec.bind not in ("0.0.0.0", "::", "localhost"):
-        return spec.bind
-    return "127.0.0.1"
+    return spec.host or LOOPBACK_HOST
+
+
+def _probe_candidates(spec: WebAppSpec, root: Path) -> List[str]:
+    """本机探测目标：先 127.0.0.1；若实例监听的是具体网卡 IP（来自运行记录或 manifest），再探测该 IP。"""
+    hosts = [LOOPBACK_HOST]
+    record = read_pid_record(root)
+    for bind in (record.get("bind") if record else None, spec.bind):
+        if bind and not _is_wildcard(bind) and not _is_loopback(bind) and bind not in hosts:
+            hosts.append(bind)
+    return hosts
+
+
+def _find_listening(spec: WebAppSpec, root: Path) -> Tuple[str, bool]:
+    """只探测一次：返回 (正在监听端口的主机, 是否在监听)；都不在监听则为 (127.0.0.1, False)。"""
+    for host in _probe_candidates(spec, root):
+        if port_listening(host, spec.port):
+            return host, True
+    return LOOPBACK_HOST, False
+
+
+def _listening_host(spec: WebAppSpec, root: Path) -> str:
+    """正在监听端口的探测主机；都不在监听则返回 127.0.0.1（供停止/重启的端口等待使用）。"""
+    return _find_listening(spec, root)[0]
 
 
 def web_app_url(spec: WebAppSpec) -> str:
@@ -141,14 +188,15 @@ def detect_lan_ip() -> Optional[str]:
         return None
 
 
-def lan_url(spec: WebAppSpec) -> Optional[str]:
-    """局域网可访问地址：仅当监听非回环地址时返回。
+def lan_url(spec: WebAppSpec, bind: Optional[str] = None) -> Optional[str]:
+    """局域网可访问地址：仅当实际监听非回环地址时返回。bind 缺省用 spec 上声明的地址。
 
-    bind 为具体 IP 时直接用它；bind 为 0.0.0.0 时探测本机局域网 IP，探测不到返回 None。
+    具体 IP 直接用它；0.0.0.0 时探测本机局域网 IP，探测不到返回 None。
     """
-    if not spec.listens_beyond_loopback:
+    b = bind or spec.bind_address
+    if _is_loopback(b):
         return None
-    host = spec.bind if spec.bind not in ("0.0.0.0", "::") else detect_lan_ip()
+    host = detect_lan_ip() if _is_wildcard(b) else b
     if not host:
         return None
     return f"http://{host}:{spec.port}"
@@ -252,7 +300,7 @@ def _resolve_python(root: Path, spec: WebAppSpec) -> str:
     return str(candidate)
 
 
-def build_command(root: Path, spec: WebAppSpec) -> List[str]:
+def build_command(root: Path, spec: WebAppSpec, bind: Optional[str] = None) -> List[str]:
     """返回用于 Popen 的 argv 列表（不经过 shell）。
 
     - 缺省：`<python> -m streamlit run <entry> --server.port <port> ...`
@@ -265,7 +313,7 @@ def build_command(root: Path, spec: WebAppSpec) -> List[str]:
     return [
         python, "-m", "streamlit", "run", spec.entry,
         "--server.port", str(spec.port),
-        "--server.address", spec.bind_address,
+        "--server.address", normalize_bind(bind) if bind else spec.bind_address,
         "--server.headless", "true",
         "--browser.gatherUsageStats", "false",
     ]
@@ -292,8 +340,10 @@ def get_status(name: str, root: Path, spec: WebAppSpec) -> WebAppStatus:
             _remove_pid_record(root)  # 进程已不在，清理陈旧记录
             record = None
     log_path = str(log_file(root))
+    host, listening = _find_listening(spec, root)   # 默认 127.0.0.1，具体网卡 IP 监听时改探测该 IP
+    if owned_pid is not None or listening:
+        base["bind"] = (record or {}).get("bind") or spec.bind
 
-    listening = port_listening(host, spec.port)
     healthy = listening and streamlit_healthy(host, spec.port, spec.health_path)
 
     if healthy:
@@ -323,9 +373,15 @@ def wait_until_ready(name: str, root: Path, spec: WebAppSpec,
 
 # ── 启动 / 停止 ────────────────────────────────────────────────────────
 
-def start(name: str, root: Path, spec: WebAppSpec) -> Tuple[bool, str]:
+def start(name: str, root: Path, spec: WebAppSpec,
+          bind: Optional[str] = None) -> Tuple[bool, str]:
+    """启动 Streamlit。bind 为看板上选择的监听地址；缺省用 manifest 声明值，再缺省 0.0.0.0。"""
     if spec.is_remote:
         return False, "远程项目不能由看板启动，请在远程主机上启动。"
+    try:
+        effective_bind = normalize_bind(bind if bind is not None else spec.bind)
+    except ValueError as exc:
+        return False, f"监听地址不合法：{exc}"
     status = get_status(name, root, spec)
     if status.state != STATE_STOPPED:
         return False, f"当前状态为 {status.label}，无需启动。"
@@ -336,7 +392,7 @@ def start(name: str, root: Path, spec: WebAppSpec) -> Tuple[bool, str]:
     if spec.python and not Path(_resolve_python(root, spec)).exists():
         return False, f"指定的解释器不存在：{spec.python}"
 
-    argv = build_command(root, spec)
+    argv = build_command(root, spec, bind=effective_bind)
     _run_dir(root).mkdir(parents=True, exist_ok=True)
     log = open(log_file(root), "ab")
     try:
@@ -360,6 +416,7 @@ def start(name: str, root: Path, spec: WebAppSpec) -> Tuple[bool, str]:
         "name": name,
         "pid": proc.pid,
         "port": spec.port,
+        "bind": effective_bind,
         "command": argv,
         "started_at": datetime.now().isoformat(timespec="seconds"),
     })
@@ -498,16 +555,17 @@ def stop_external(name: str, root: Path, spec: WebAppSpec) -> Tuple[bool, str]:
         return False, (f"端口 {spec.port} 上的进程（PID {pid}）不是 Streamlit，已拒绝结束。"
                        f"命令行：{cmd[:160] or '（无法读取）'}")
     _terminate(pid)
-    if not _wait_port_free(probe_host(spec), spec.port):
+    if not _wait_port_free(_listening_host(spec, root), spec.port):
         _kill(pid)
-        _wait_port_free(probe_host(spec), spec.port, timeout=3.0)
+        _wait_port_free(_listening_host(spec, root), spec.port, timeout=3.0)
     _reap(pid)
-    if port_listening(probe_host(spec), spec.port):
+    if port_listening(_listening_host(spec, root), spec.port):
         return False, f"已发送结束信号，但端口 {spec.port} 仍被占用（PID {pid}）。"
     return True, f"已结束外部启动的 Streamlit（PID {pid}）"
 
 
-def restart(name: str, root: Path, spec: WebAppSpec) -> Tuple[bool, str]:
+def restart(name: str, root: Path, spec: WebAppSpec,
+            bind: Optional[str] = None) -> Tuple[bool, str]:
     """重启：先结束当前实例（看板启动的直接停；外部启动的需要调用方已确认），再拉起并等待就绪。
 
     远程项目不支持。返回 (是否就绪, 说明)。
@@ -525,9 +583,11 @@ def restart(name: str, root: Path, spec: WebAppSpec) -> Tuple[bool, str]:
             return False, f"结束外部进程失败：{msg}"
     elif status.state == STATE_STARTING:
         stop(name, root, spec)
-    if not _wait_port_free(probe_host(spec), spec.port):
+    if not _wait_port_free(_listening_host(spec, root), spec.port):
         return False, f"端口 {spec.port} 释放超时，无法重启。"
-    ok, msg = start(name, root, spec)
+    # 未指定时沿用上一次启动的监听地址
+    previous = (read_pid_record(root) or {}).get("bind")
+    ok, msg = start(name, root, spec, bind=bind if bind is not None else previous)
     if not ok:
         return False, msg
     ready = wait_until_ready(name, root, spec)

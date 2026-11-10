@@ -13317,6 +13317,52 @@ def _tail_text(path, lines: int = 40) -> str:
         return ""
 
 
+_WA_BIND_CUSTOM = "__custom__"
+
+
+def _wa_bind_choice(name: str, default_bind: str):
+    """启动前的监听地址选择器。默认 0.0.0.0（所有网卡，局域网可访问）。
+
+    返回合法的监听地址；自定义输入为空或不合法时返回 None（此时不允许启动）。
+    """
+    from mini_agent.external_projects import web_app as wa
+
+    lan_ip = wa.detect_lan_ip()
+    options = [("0.0.0.0", "0.0.0.0（所有网卡，局域网可访问）"),
+               ("127.0.0.1", "127.0.0.1（仅本机）")]
+    if lan_ip:
+        options.append((lan_ip, f"{lan_ip}（本机局域网 IP）"))
+    options.append((_WA_BIND_CUSTOM, "自定义 IP…"))
+    labels = dict(options)
+    values = [v for v, _ in options]
+
+    # manifest 声明的建议值：在列表里则直接选中，否则进入自定义并预填
+    custom_prefill = ""
+    if default_bind in values:
+        default = default_bind
+    else:
+        default = _WA_BIND_CUSTOM
+        custom_prefill = default_bind or ""
+    choice = st.selectbox(
+        "监听地址（启动时生效，决定能否从其它设备访问）",
+        options=values, index=values.index(default),
+        format_func=lambda v: labels[v], key=f"webapp_bind_{name}",
+        help="0.0.0.0：局域网其它设备可用 IP 访问，但页面无登录保护；127.0.0.1：仅本机。",
+    )
+    if choice != _WA_BIND_CUSTOM:
+        return choice
+    custom = st.text_input("自定义 IP", value=custom_prefill, key=f"webapp_bind_custom_{name}",
+                           placeholder="如 192.168.1.20（本机网卡 IP）")
+    if not custom.strip():
+        st.caption("请填写一个 IP 地址后再启动。")
+        return None
+    try:
+        return wa.normalize_bind(custom)
+    except ValueError as exc:
+        st.caption(f"❌ {exc}")
+        return None
+
+
 def _render_web_app_row(name: str, entry) -> None:
     flash = st.session_state.pop(f"webapp_flash_{name}", None)
     if entry is None:
@@ -13333,19 +13379,19 @@ def _render_web_app_row(name: str, entry) -> None:
     status = wa.get_status(name, entry.root, spec)
     c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
     where = f" · 主机 {spec.host}（远程）" if spec.is_remote else ""
-    if spec.listens_beyond_loopback and not spec.is_remote:
-        where += f" · 监听 {spec.bind_address}"
+    if status.is_up and status.bind and not spec.is_remote:
+        where += f" · 监听 {status.bind}"
     c1.markdown(f"🌐 Streamlit：{status.label} · 端口 {spec.port}{where}")
     if status.is_up:
         c2.link_button("🌐 打开", status.url)
     if spec.is_remote:
         st.caption("ℹ️ 填了 host 视为远程部署，看板只探测/打开不启停。"
-                   "若要在本机启动并允许局域网 IP 访问，请删除 host，改用 `bind: 0.0.0.0`。")
-    lan = wa.lan_url(spec) if spec.listens_beyond_loopback and not spec.is_remote else None
-    if lan and status.is_up:
+                   "若要在本机启动并允许局域网 IP 访问，请删除 host，启动时选择监听地址即可。")
+    lan = wa.lan_url(spec, status.bind) if (status.is_up and status.bind and not spec.is_remote) else None
+    if lan:
         st.caption(f"🌍 局域网访问：{lan}（该页面无登录保护，仅在可信网络内使用）")
-    elif spec.listens_beyond_loopback and not spec.is_remote and status.is_up:
-        st.caption(f"🌍 监听 {spec.bind_address}，但未探测到局域网 IP，请手动用本机 IP 访问。")
+    elif status.is_up and status.bind and not spec.is_remote and not wa._is_loopback(status.bind):
+        st.caption(f"🌍 监听 {status.bind}，但未探测到局域网 IP，请手动用本机 IP 访问。")
 
     # 外部启动的实例：结束它需要用户勾选确认（看板只结束「监听该端口且命令行含 streamlit」的进程）
     confirm_external = False
@@ -13354,8 +13400,12 @@ def _render_web_app_row(name: str, entry) -> None:
             "我确认结束这个外部启动的 Streamlit 进程", key=f"webapp_ext_confirm_{name}",
             help="只会结束监听本端口、且命令行含 streamlit 的进程；其它进程一律拒绝。")
 
-    if status.can_start and c3.button("▶️ 启动", key=f"webapp_start_{name}"):
-        ok, msg = wa.start(name, entry.root, spec)
+    bind_value = None
+    if status.can_start and not spec.is_remote:
+        bind_value = _wa_bind_choice(name, spec.bind_address)
+    if status.can_start and c3.button("▶️ 启动", key=f"webapp_start_{name}",
+                                       disabled=bind_value is None):
+        ok, msg = wa.start(name, entry.root, spec, bind=bind_value)
         if ok:
             with st.spinner("等待 Streamlit 就绪…"):
                 status = wa.wait_until_ready(name, entry.root, spec)

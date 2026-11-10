@@ -80,7 +80,7 @@ class TestBuildCommand(unittest.TestCase):
         self.assertEqual(argv[1:4], ["-m", "streamlit", "run"])
         self.assertIn("app.py", argv)
         self.assertEqual(argv[argv.index("--server.port") + 1], "8503")
-        self.assertEqual(argv[argv.index("--server.address") + 1], "127.0.0.1")
+        self.assertEqual(argv[argv.index("--server.address") + 1], "0.0.0.0")
 
     def test_relative_python_resolves_to_project_root(self):
         argv = wa.build_command(self.root, WebAppSpec(port=8503, python=".venv/bin/python"))
