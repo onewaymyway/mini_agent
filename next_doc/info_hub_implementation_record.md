@@ -18,6 +18,7 @@
 | P7 | 添加信息源（表单 / 对话生成 / 查重 / provider 选择） | 已完成（真实模型调用未在沙箱验证） |
 | 补充 | Streamlit 主看板 | 已完成 |
 | 清理 | 移除旧 HTML 看板，只保留 Streamlit | 已完成 |
+| 补充 | 补齐外部项目契约（project.yaml / entrypoints），使其可注册 | 已完成 |
 | P8 | 订阅源 | 已完成（具体站点待定，通用检查器已就绪） |
 | P9 | 健壮性与收尾 | 已完成 |
 
@@ -470,3 +471,28 @@ Ran 141 tests ... OK
 
 ### 整体收尾状态
 P0–P9 均已完成。仍未在真实环境验证：有头登录、语音输出、真实模型生成信息源、真实站点选择器与订阅站点。
+
+
+---
+
+## 补充：补齐外部项目契约（已完成）
+
+### 问题
+看板“注册新项目”扫描 `external_projects/` 时提示 `info_hub` 暂不能注册：`entrypoints.run_source: 缺少必填字段 'cmd'`。原因是 P0 起 `project.yaml` 用了不被框架识别的 `command` 字段，另外还缺 `health_check`、`entrypoints/` 脚本等规范内容。
+
+### 对照规范补齐（参考 stock_watch / novel_writer 与 external-project-manager 模板）
+- `project.yaml` 重写：`cmd`（非 `command`）、`timeout_sec`、`params`；去掉框架不认识的顶层字段（`version`/`description`/`enabled_by_default`）与把看板当 entrypoint 的 `dashboard` 项（看板改由 `web_app` 声明）；新增 `health_check`、`resources`、`review`（enabled: false）、`web_app`（entry app.py，端口 8506）。
+- 新增 `entrypoints/`：`_common.py`（引导 sys.path、`run_entrypoint` 记账本，无 mini_agent 时降级只执行、`INFO_HUB_ROOT` 指定根目录）、`tick.py`、`run_source.py`、`report.py`、`resume_source.py`、`health.py`。入口复用 `cli.main`，与 `python cli.py ...` 同一代码路径。
+- 四个业务入口标 `concurrency: unmanaged`（不调 LLM）并写 `timeout_sec`。
+- `.gitignore` 增加 `.agent/run_status.jsonl`、`.agent/improvement_backlog.jsonl`、`.run/`；`PROJECT.md` 补齐目标/依赖策略/已知限制/entrypoints 接入/变更记录。
+- `.claude/skills/external-project-manager/reference/project_yaml_schema.md` 端口约定补 info_hub 8506。
+
+### 默认值决定（请确认）
+**`tick` 没有声明 `schedule`**。原因：看板进程已自带后台调度；Windows 下文件锁退化为无锁，daemon 再定时跑 tick 可能与看板后台调度重叠、重复抓取。注册默认也不开自动调度。需要 daemon 定时时，取消 `project.yaml` 里 `# schedule: "cron: */5 * * * *"` 的注释，并把 `streamlit.background_tick` 设为 false。
+
+### 验证
+- 框架 `load_manifest` 校验通过；扫描接口不再把 info_hub 标为不可注册，可正常注册（默认 enabled=False）。
+- 新增 `tests/test_external_projects_manifests_valid.py`（主仓库，8 用例）：**所有** external_projects 的 project.yaml 都必须通过校验、entrypoint 脚本存在、web_app 端口不冲突；info_hub 契约断言。
+- 新增 `external_projects/info_hub/tests/test_entrypoints.py`（8 用例，真实子进程运行）：health 正常/源配置有误只告警/配置损坏失败；缺参数退出码 2；run_source 失败返回非 0 并写运行记录；resume 无状态返回 1；tick 正常、report 未知计划失败；有框架时写 `.agent/run_status.jsonl`（成功与失败都记）。
+- info_hub 全部测试通过（含新增）。
+未验证：真实 daemon 注册后由 daemon 触发 entrypoint、看板启动 info_hub 的 Streamlit（沙箱只有子进程与 AppTest）。

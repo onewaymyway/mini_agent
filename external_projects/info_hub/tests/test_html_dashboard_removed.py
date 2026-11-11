@@ -26,7 +26,8 @@ class HtmlDashboardRemovedTests(unittest.TestCase):
     def test_project_yaml_has_only_streamlit_dashboard(self):
         conf = yaml.safe_load((ROOT / "project.yaml").read_text(encoding="utf-8"))
         self.assertNotIn("serve", conf["entrypoints"])
-        self.assertIn("streamlit", conf["entrypoints"]["dashboard"]["command"])
+        self.assertNotIn("dashboard", conf["entrypoints"])
+        self.assertEqual(conf["web_app"]["entry"], "app.py")  # 看板只通过 web_app 声明（Streamlit）
 
     def test_settings_no_longer_have_html_server_block(self):
         settings = load_settings(make_project({}))

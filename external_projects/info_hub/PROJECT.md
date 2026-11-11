@@ -3,6 +3,41 @@
 独立外部项目，负责定时抓取信息源、整理为纯文本数据、生成报告，并在看板上听报。
 设计见 `next_doc/info_hub_external_project_plan.md`，实施记录见 `next_doc/info_hub_implementation_record.md`。
 
+> 本项目遵循 `next_doc/external_projects_workspace_plan.md` 确立的外部项目标准结构：完全自包含、可独立于
+> mini_agent daemon 运行，可整体移动到任意路径，只要在 daemon 侧重新 `mini-agent projects register <路径>`
+> （或在看板「外部项目 → 注册新项目」里选择）即可被看见。
+
+## 目标
+1. 定时抓取多个信息源（RSS / JSON 接口 / HTML 页面 / 脚本），热榜排名变化、增量去重。
+2. 订阅小说章节、视频更新，只在进度变化时提醒。
+3. 按计划生成报告（markdown + json），在看板上听报（浏览器语音，不生成音频文件）。
+4. 全部产出为纯文本，人可直接阅读；抓取、整理、报告不调用 LLM（LLM 仅用于看板“对话生成信息源”）。
+
+## 数据源与依赖策略
+- 信息源由用户在 `sources/` 中配置，优先级 rss > json_api > html_list > script；需要登录的站点用共享浏览器 profile，登录一次长期复用。
+- 依赖见 `requirements.txt`：PyYAML、beautifulsoup4（解析）、streamlit（看板）、playwright（仅 login 与需浏览器渲染的源使用）。
+- 不访问任何固定域名，`project.yaml` 的 `resources.allowed_domains` 因此为空。
+
+## 已知限制 / 待验证事项
+- 有头浏览器登录、听报的声音、真实模型生成信息源、真实站点选择器均未在真实环境验证（详见 `next_doc/info_hub_implementation_record.md`）。
+- 文件锁依赖 fcntl，Windows 下退化为无锁：看板后台调度与另一路 tick 同时运行可能重复抓取，所以 daemon 默认不定时调度本项目（见下）。
+- 登录态依赖浏览器持久化 profile，只发会话 cookie 的站点关闭浏览器后会失效。
+
+## 作为外部项目接入（entrypoints）
+`project.yaml` 声明了以下 headless 入口，均可脱离 daemon 直接运行（成功/失败记进 `.agent/run_status.jsonl`，检测不到 mini_agent 时只执行不记账）：
+
+| entrypoint | 命令 | 说明 |
+|---|---|---|
+| `tick` | `python entrypoints/tick.py` | 执行一次调度（等价 `cli.py tick`）。**默认不声明 schedule**：看板进程自带后台调度；需要 daemon 定时请按 `project.yaml` 注释取消 `schedule` 并关闭看板 `background_tick` |
+| `run_source <source_id>` | `python entrypoints/run_source.py <id>` | 立即抓取一个信息源 |
+| `report <plan_id>` | `python entrypoints/report.py <plan>` | 立即生成一份报告 |
+| `resume_source <source_id>` | `python entrypoints/resume_source.py <id>` | 手动恢复被暂停/连续失败的源 |
+| `health_check` | `python entrypoints/health.py` | 只检查依赖、配置、状态文件，不访问网络；单个源的问题只告警不影响退出码 |
+
+四个入口都标 `concurrency: unmanaged`（不调 LLM，不占 cron 并发槽位）。`INFO_HUB_ROOT` 环境变量可指定项目根目录（测试/多实例用）。
+看板（Streamlit，端口 8506）由 `web_app` 块声明，可在 mini_agent 看板「外部项目」里启动/打开。
+注册：`mini-agent projects register external_projects/info_hub`，或在看板「注册新项目」里扫描选择；默认不开启自动调度。
+
 ## 目录约定
 - `sources/_index.json`：信息源注册表（id 与启用状态）
 - `sources/<id>/source.yaml`：单个信息源声明
@@ -184,3 +219,6 @@ health:
 | 报告“异常”里出现已暂停 | 先查最近错误，修好后“恢复” |
 | 想让失败源自动降频/暂停 | 把 `health.enabled` 改为 true |
 | 不开看板也要调度 | 系统计划任务每 5 分钟 `python cli.py tick` |
+
+## 变更记录
+- 2026-11-11：补齐外部项目契约——`project.yaml` 按规范改用 `cmd`、新增 `entrypoints/`（tick / run_source / report / resume_source / health）、`health_check`、`resources`、`review`、`web_app`；`.gitignore` 增加账本与 `.run/`。此前 `project.yaml` 使用了不被框架识别的 `command` 字段，无法注册。

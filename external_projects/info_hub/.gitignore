@@ -6,3 +6,7 @@ browser/profile/
 browser/profile.lock
 browser/login_status.json
 sources/*/samples/
+# 外部项目运行账本与看板进程文件（由 mini_agent 框架读写）
+.agent/run_status.jsonl
+.agent/improvement_backlog.jsonl
+.run/

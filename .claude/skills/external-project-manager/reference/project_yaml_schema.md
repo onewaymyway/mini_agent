@@ -117,7 +117,7 @@ Streamlit 界面。由**看板**（「🗂️ 外部项目」Tab）负责探测�
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `port` | int | 是 | 监听端口，范围 1024–65535。同一台机器上多个项目不得重复（注册表里检测到冲突时，相关项目都会显示配置错误）。约定：world_simulator 8502、stock_watch 8503、novel_writer 8504、novel_to_video 8505，新项目请取未占用端口 |
+| `port` | int | 是 | 监听端口，范围 1024–65535。同一台机器上多个项目不得重复（注册表里检测到冲突时，相关项目都会显示配置错误）。约定：world_simulator 8502、stock_watch 8503、novel_writer 8504、novel_to_video 8505、info_hub 8506，新项目请取未占用端口 |
 | `entry` | str | 否，缺省 `app.py` | Streamlit 入口文件，相对项目根目录 |
 | `python` | str | 否 | 该项目的解释器路径。相对路径按项目根解析（如 `.venv/Scripts/python.exe`）。**缺省 = 启动看板的解释器**（通常与 daemon 为同一个环境） |
 | `command` | str | 否 | 完整启动命令，覆盖缺省的 `python -m streamlit run ...`。可用占位符 `{python}`、`{entry}`、`{port}`。按 shell 规则切分，**不经过 shell 执行** |

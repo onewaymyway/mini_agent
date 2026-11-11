@@ -1,16 +1,68 @@
-# info_hub 对外契约：daemon 或其他工具只读取此文件，不 import 本项目代码。
+# project.yaml — info_hub 与 daemon 之间唯一的契约
+#
+# 完整字段参考 .claude/skills/external-project-manager/reference/project_yaml_schema.md
+# （对齐 src/mini_agent/external_projects/manifest.py 的实际校验规则）。
+# daemon 只读取本文件与 entrypoints，不 import 本项目代码。
+#
+# 项目说明见 PROJECT.md，设计见 next_doc/info_hub_external_project_plan.md。
+
 name: info_hub
-version: 0.1.0
-description: 定时抓取多信息源、生成报告、看板听报
+
 entrypoints:
+  # 执行一次调度：运行到期的信息源 + 生成到期的报告（等价 python cli.py tick）。
+  # **不声明 schedule（保守默认）**：看板（Streamlit）进程自带后台调度，OS 计划任务也可调用；
+  # 若再让 daemon 定时跑，Windows 下文件锁会退化为无锁，可能与看板后台调度重叠、重复抓取。
+  # 确需 daemon 定时：取消下一行注释，并在看板里把 background_tick 关掉（config/settings.yaml 的
+  # streamlit.background_tick: false）。
+  tick:
+    cmd: "python entrypoints/tick.py"
+    # schedule: "cron: */5 * * * *"
+    timeout_sec: 1800
+    # 不调 LLM 的纯脚本：不占 cron 并发槽位、不过资源仲裁（见 next_doc/cron_unmanaged_concurrency_plan.md）
+    concurrency: unmanaged
+  # 立即抓取一个信息源（按需触发，不定时）
   run_source:
-    command: python cli.py run {source_id}
+    cmd: "python entrypoints/run_source.py"
+    timeout_sec: 600
+    concurrency: unmanaged
     params:
-      source_id: {type: string, required: true}
-  dashboard:
-    command: streamlit run app.py --server.port 8506
+      - name: source_id
+        required: true
+        help: "信息源 id，见 sources/_index.json 或 python cli.py list"
+  # 立即生成一份报告（按需触发）
   report:
-    command: python cli.py report {plan_id}
+    cmd: "python entrypoints/report.py"
+    timeout_sec: 300
+    concurrency: unmanaged
     params:
-      plan_id: {type: string, required: true}
-enabled_by_default: false
+      - name: plan_id
+        required: true
+        help: "报告计划 id，见 config/settings.yaml 的 reports，如 rolling / daily"
+  # 手动恢复被自动暂停/连续失败的信息源（按需触发）
+  resume_source:
+    cmd: "python entrypoints/resume_source.py"
+    timeout_sec: 60
+    concurrency: unmanaged
+    params:
+      - name: source_id
+        required: true
+        help: "要恢复的信息源 id"
+
+health_check:
+  cmd: "python entrypoints/health.py"
+
+resources:
+  # 信息源由用户在 sources/ 中自行配置，可访问的域名不固定，无法在此预先枚举；
+  # 站点级访问频率限制见 config/settings.yaml 的 defaults 与各源 schedule。
+  allowed_domains: []
+  max_concurrency: 1
+
+review:
+  cadence: weekly
+  enabled: false
+
+# Streamlit 看板（由 mini_agent 看板的「外部项目」tab 探测 / 启动 / 打开）。
+# 端口约定：world_simulator 8502、stock_watch 8503、novel_writer 8504、novel_to_video 8505、info_hub 8506。
+web_app:
+  entry: app.py
+  port: 8506
