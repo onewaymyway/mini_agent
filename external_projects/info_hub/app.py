@@ -474,6 +474,11 @@ def _status_tab():
     else:
         st.success("后台调度正常（空闲等待下一次 tick）")
 
+    st.markdown("""<style>
+    div[data-testid="stMetricValue"] { font-size: 1.0rem !important; line-height: 1.3 !important;
+        white-space: normal !important; overflow: visible !important; word-break: break-all; }
+    div[data-testid="stMetricLabel"] p { font-size: 0.8rem !important; white-space: normal !important; }
+    </style>""", unsafe_allow_html=True)
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("最后活动", fmt_time(tk.get("last_activity_at")))
     c2.metric("上次 tick 结束", fmt_time(tk.get("tick_finished_at")))
@@ -493,7 +498,9 @@ def _status_tab():
             "最近结果": ("成功" if r["last_outcome"] and r["last_outcome"]["ok"]
                          else ("失败" if r["last_outcome"] else "")),
             "最近错误": (r["last_outcome"] or {}).get("error") or r["last_error"] or "",
-        } for r in res["sources"]]), hide_index=True, use_container_width=True)
+        } for r in res["sources"]]), hide_index=True, use_container_width=True,
+            column_config={"信息源": st.column_config.TextColumn(width="large"),
+                           "最近错误": st.column_config.TextColumn(width="large")})
     if res["reports"]:
         st.subheader("报告计划")
         st.dataframe(pd.DataFrame([{
@@ -503,7 +510,9 @@ def _status_tab():
     st.subheader(f"最近错误（{len(errors)}）")
     if errors:
         st.dataframe(pd.DataFrame([{"时间": fmt_time(e["at"]), "位置": e["where"], "信息": e["message"]}
-                                   for e in reversed(errors)]), hide_index=True, use_container_width=True)
+                                   for e in reversed(errors)]), hide_index=True, use_container_width=True,
+                     column_config={"信息": st.column_config.TextColumn(width="large"),
+                                    "时间": st.column_config.TextColumn(width="medium")})
     else:
         st.info("没有记录到错误。")
 
