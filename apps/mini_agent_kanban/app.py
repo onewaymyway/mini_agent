@@ -13383,6 +13383,54 @@ def _render_web_app_row(name: str, entry) -> None:
                 st.code(log_tail, language=None)
 
 
+@st.fragment
+def _ext_scan_candidates_section(client: AgentClient):
+    """「➕ 注册新项目」里的"扫描 external_projects 目录"：列出还没注册的子目录，
+    选择后一键注册。扫描只读；注册仍走既有 register 接口（默认校验 project.yaml、
+    默认不开启自动调度）。"""
+    st.markdown("**从 `external_projects/` 目录选择**")
+    if st.button("🔍 扫描未注册的目录", key="ext_scan_btn"):
+        resp = client.external_project_candidates()
+        if resp and "_error" in resp:
+            st.error(f"扫描失败：{resp['_error']}")
+            st.session_state.pop("ext_scan_result", None)
+        else:
+            st.session_state["ext_scan_result"] = resp or {}
+    res = st.session_state.get("ext_scan_result")
+    if res is None:
+        st.caption("点击扫描后，这里会列出 `external_projects/` 下尚未注册的目录。")
+        return
+    if not res.get("exists"):
+        st.info(f"未找到目录：`{res.get('scan_root', '')}`")
+        return
+    cands = res.get("candidates") or []
+    if not cands:
+        st.success("`external_projects/` 下的目录都已注册。")
+        return
+    st.caption(f"扫描目录：`{res.get('scan_root', '')}`，共 {len(cands)} 个未注册。")
+    for c in cands:
+        d = c["dir_name"]
+        with st.container(border=True):
+            st.markdown(f"**`{d}`**")
+            if not c.get("registrable"):
+                st.warning(f"暂不能注册：{c.get('manifest_error') or 'project.yaml 不合法'}")
+                continue
+            if c.get("name_conflict"):
+                st.warning(f"项目名 `{c['suggested_name']}` 已被另一个路径占用，请改名后再注册。")
+            name = st.text_input("项目名称", value=c["suggested_name"], key=f"ext_scan_name_{d}")
+            if st.button("注册这个目录", key=f"ext_scan_reg_{d}"):
+                r = client.register_external_project(c["path"], name.strip())
+                if r and "_error" in r:
+                    st.error(f"注册失败：{r['_error']}")
+                else:
+                    st.session_state.pop("ext_scan_result", None)
+                    st.success(
+                        f"已注册 '{(r or {}).get('project', {}).get('name', name)}'。"
+                        "默认未开启「自动调度」，确认项目行为后可在项目卡片上手动打开。"
+                    )
+                    st.rerun()
+
+
 def render_external_projects_tab(client: AgentClient):
     """[external_projects_kanban_integration_plan.md 第一期] 把此前只有
     `mini-agent projects ...` 命令行能访问的外部项目管理能力接入看板：
@@ -13402,6 +13450,9 @@ def render_external_projects_tab(client: AgentClient):
     )
 
     with st.expander("➕ 注册新项目"):
+        _ext_scan_candidates_section(client)
+        st.divider()
+        st.markdown("**或手动填写路径**")
         with st.form("register_external_project_form", clear_on_submit=True):
             reg_path = st.text_input("项目根目录路径（需包含 project.yaml）")
             reg_name = st.text_input("项目名称（留空则用路径最后一段目录名）")

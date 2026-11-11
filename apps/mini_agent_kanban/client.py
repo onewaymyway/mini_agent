@@ -1486,6 +1486,10 @@ class AgentClient:
             body["name"] = name
         return self._post("/external_projects/register", body)
 
+    def external_project_candidates(self):
+        """扫描主项目 `external_projects/` 目录，列出尚未注册的子目录（只读）。"""
+        return self._get("/external_projects/candidates")
+
     def unregister_external_project(self, name: str):
         """[external_projects_agent_skill_workflow_integration_plan.md]
         注销一个外部项目——只删注册表记录，不删项目本身的文件；后端会

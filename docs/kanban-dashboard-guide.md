@@ -874,8 +874,16 @@ cron job 后等待其按 cadence 自动触发。
 项目），不涉及改代码或合并分支——`propose_fix`/`land_maintenance_fix`
 的看板化明确不在本次范围（风险控制考量见该计划文档第4节）。
 
-- **顶部「➕ 注册新项目」**：填项目根目录路径（需包含 `project.yaml`）+
-  可选项目名称，调用 `POST /v1/external_projects/register`。
+- **顶部「➕ 注册新项目」**：两种方式。
+  - **从 `external_projects/` 目录选择**：点「🔍 扫描未注册的目录」，调用
+    `GET /v1/external_projects/candidates`，列出主项目 `external_projects/` 下
+    **尚未注册**的子目录（按路径判断是否已注册，不是按名字）。每个候选可改项目名后
+    点「注册这个目录」（走下面同一个 register 接口，默认校验 `project.yaml`、默认不开
+    自动调度）。缺少或不合法的 `project.yaml` 会列出但不能注册并给出原因；建议名与已注册
+    项目重名时给出提示。隐藏目录、`_` 开头目录、`__pycache__` 不扫描。扫描只读，不会注册
+    任何东西。
+  - **手动填写路径**：填项目根目录路径（需包含 `project.yaml`）+ 可选项目名称，调用
+    `POST /v1/external_projects/register`（可注册 `external_projects/` 之外的目录）。
 - **Streamlit 界面行**（仅声明了 `web_app` 的项目显示）：状态徽标
   （未运行 / 启动中 / 运行中（看板启动）/ 运行中（外部启动）/ 端口被占用 /
   远程可达 / 远程不可达）、端口，以及下列按钮：
@@ -1264,6 +1272,7 @@ plan.md`）：纯只读快照，回答"P2 公平轮询/P3 老化加成/P4 时间
 | `objective_completion_trend(limit=30)` | `GET /v1/objectives/completion_trend` | Objective 完成率每日快照序列：完成/失败数、平均重试次数、活跃数（只读，方向 D.1） |
 | `wiki_quarantine_status()` | `GET /v1/wiki/quarantine_status` | wiki 隔离区当前积压情况，不含已修复记录（只读，方向 E） |
 | `external_projects_status()` | `GET /v1/self/external_projects` | 已注册外部项目的聚合状态（健康 + 最近5条执行记录），"🗂️ 外部项目"Tab 总览卡片数据来源 |
+| `external_project_candidates()` | `GET /v1/external_projects/candidates` | 扫描主项目 `external_projects/` 目录，返回未注册的子目录候选（只读） |
 | `register_external_project(path, name=, validate=True)` | `POST /v1/external_projects/register` | 注册一个新的外部项目 |
 | `refresh_external_project_entrypoints(name)` | `POST /v1/external_projects/{name}/refresh_entrypoints` | 按最新 `project.yaml` 重新加载 entrypoints：先校验 manifest（失败保留现有任务），再删除该项目旧的 `ext:*` cron 任务并按最新配置重新注册；返回 `removed`/`registered`/`entrypoints`/`unscheduled`/`enabled`/`cron_synced` |
 | `trigger_external_project_run(name, entrypoint, params=None)` | `POST /v1/external_projects/{name}/trigger_run` | 立即触发某个已注册项目的某个 entrypoint 一次；`params` 是该 entrypoint 在 `project.yaml` 里声明了 `params` 时按参数名传的值（阶段6） |

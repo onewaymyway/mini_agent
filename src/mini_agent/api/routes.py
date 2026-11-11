@@ -87,6 +87,7 @@ api/routes.py — FastAPI 路由定义
                                        （health + 最近执行记录，读注册表 +
                                        账本，daemon 不在场也不影响外部项目
                                        本身，本端点只是"顺手看一眼"）
+    GET    /v1/external_projects/candidates  扫描 external_projects/ 目录，列出未注册的子目录
     POST   /v1/external_projects/register  [external_projects_kanban_
                                        integration_plan.md 阶段1] 注册新的
                                        外部项目
@@ -1207,6 +1208,30 @@ async def post_external_projects_register(request: Request):
         return {"project": record.to_dict()}
     except ExternalProjectRegistryError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/external_projects/candidates")
+async def get_external_projects_candidates(request: Request):
+    """GET /v1/external_projects/candidates — 扫描主项目 `external_projects/` 目录，
+    列出**尚未注册**的子目录，供看板"选择后注册"。
+
+    只读，不注册任何项目。扫描根固定为 daemon 当前工作目录（与 register 记录
+    `main_project_root` 的默认取值一致）下的 `external_projects/`，不接受调用方
+    传入任意目录。返回 {"scan_root": str, "exists": bool, "candidates": [...]}，
+    字段含义见 `registry.scan_unregistered()`。
+    """
+    _require_owner(request)
+    try:
+        from mini_agent.external_projects.registry import ExternalProjectRegistry, scan_unregistered
+
+        root = Path.cwd() / "external_projects"
+        return {
+            "scan_root": str(root),
+            "exists": root.is_dir(),
+            "candidates": scan_unregistered(root, ExternalProjectRegistry()),
+        }
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(exc))
 

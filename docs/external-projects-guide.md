@@ -259,6 +259,7 @@ review 这一具体接线动作目前还没做，见第9节"已知限制"。
 
 | 能力 | HTTP 端点 | 对应命令行 |
 |---|---|---|
+| 扫描未注册目录 | `GET /v1/external_projects/candidates` | —（命令行无对应） |
 | 注册新项目 | `POST /v1/external_projects/register` | `mini-agent projects register` |
 | 手动触发 entrypoint | `POST /v1/external_projects/{name}/trigger_run` | `mini-agent projects run` |
 | 更新 entrypoints（重建 cron 任务） | `POST /v1/external_projects/{name}/refresh_entrypoints` | —（命令行无对应；见下） |

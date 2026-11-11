@@ -274,3 +274,56 @@ class ExternalProjectRegistry:
         """便捷方法：按注册表条目路径加载并返回该项目当前的 manifest。"""
         record = self.get(name)
         return load_manifest(Path(record.path))
+
+
+# ── 扫描 external_projects 目录，列出尚未注册的子目录 ──────────────────────
+
+def scan_unregistered(
+    scan_root: Path,
+    registry: Optional["ExternalProjectRegistry"] = None,
+) -> List[Dict]:
+    """扫描 `scan_root`（通常是主项目的 `external_projects/` 目录）下的一级子目录，
+    返回**尚未注册**的候选。只读：不注册、不写任何文件。
+
+    判定"已注册"按**路径**（`find_by_path`），不是按名字——同名但路径不同的目录
+    仍会列出，并标记 `name_conflict=True`，避免用户误以为它已经注册过。
+
+    每个候选包含：
+      dir_name / path / has_manifest / manifest_ok / manifest_error /
+      suggested_name（manifest 合法时取 manifest.name，否则取目录名）/
+      name_conflict（suggested_name 已被另一个路径占用）/ registrable（manifest_ok）
+    跳过：隐藏目录（以 `.` 开头）、`_` 开头的目录、`__pycache__`、非目录。
+    `scan_root` 不存在时返回空列表。结果按目录名排序。
+    """
+    registry = registry or ExternalProjectRegistry()
+    root = Path(scan_root).expanduser()
+    if not root.is_dir():
+        return []
+    registered_names = {p.name for p in registry.list()}
+    out: List[Dict] = []
+    for child in sorted(root.iterdir(), key=lambda c: c.name):
+        if not child.is_dir() or child.name.startswith((".", "_")) or child.name == "__pycache__":
+            continue
+        if registry.find_by_path(child) is not None:
+            continue
+        has_manifest = (child / "project.yaml").is_file()
+        manifest_ok, manifest_error, suggested = False, "", child.name
+        if not has_manifest:
+            manifest_error = "缺少 project.yaml"
+        else:
+            try:
+                suggested = load_manifest(child).name or child.name
+                manifest_ok = True
+            except ProjectManifestError as exc:
+                manifest_error = str(exc)
+        out.append({
+            "dir_name": child.name,
+            "path": str(child.resolve()),
+            "has_manifest": has_manifest,
+            "manifest_ok": manifest_ok,
+            "manifest_error": manifest_error,
+            "suggested_name": suggested,
+            "name_conflict": suggested in registered_names,
+            "registrable": manifest_ok,
+        })
+    return out

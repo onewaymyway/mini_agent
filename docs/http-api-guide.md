@@ -1302,6 +1302,14 @@ curl -s -X DELETE "http://127.0.0.1:8765/v1/output_registry/links" \
 # 早于本次新增的既有端点，一并列在这里方便查阅
 GET /v1/self/external_projects
 
+# 扫描主项目 external_projects/ 目录，列出尚未注册的子目录（只读，不注册）
+GET /v1/external_projects/candidates
+# 响应：{"scan_root": "...", "exists": true, "candidates": [{"dir_name", "path",
+#   "has_manifest", "manifest_ok", "manifest_error", "suggested_name",
+#   "name_conflict", "registrable"}]}
+# 扫描根固定为 daemon 工作目录下的 external_projects/，不接受自定义目录；
+# 已注册按"路径"判断；仅 owner 可调用
+
 # 注册一个新的外部项目
 POST /v1/external_projects/register
 Body: { "path": "/data/stock_watch", "name": "stock_watch", "validate": true }
