@@ -27,7 +27,7 @@
     },
     {
       "id": "xiaohongshu_hot",
-      "enabled": false
+      "enabled": true
     }
   ]
 }

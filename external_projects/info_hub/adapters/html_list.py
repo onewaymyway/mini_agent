@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import re
+from urllib.parse import urljoin
 from typing import Optional
 
 from bs4 import BeautifulSoup, Tag
@@ -153,6 +154,11 @@ class HtmlListAdapter(Adapter):
             self.max_items(spec),
             date_pattern=spec.parse.get("date_pattern"),
         )
+        # 相对链接补全为绝对地址（以页面地址为基准）
+        base_url = spec.request.get("url", "")
+        for i in items:
+            if i.url and not i.url.startswith(("http://", "https://")):
+                i.url = urljoin(base_url, i.url)
         with_date = sum(1 for i in items if i.published_at)
         debug = {
             "rows_matched": len(items),

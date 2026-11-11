@@ -9,11 +9,12 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class XhsSourceTests(unittest.TestCase):
-    def test_source_loads_and_is_disabled_until_probed(self):
+    def test_source_loads_and_is_configured(self):
         res = load_sources(load_settings(ROOT))
         self.assertNotIn("xiaohongshu_hot", res.errors)
         spec = res.specs["xiaohongshu_hot"]
-        self.assertFalse(spec.enabled)
+        self.assertTrue(spec.enabled)
+        self.assertNotIn("TODO", str(spec.parse))
         self.assertEqual(spec.browser.get("site"), "xiaohongshu")
 
     def test_site_declared(self):

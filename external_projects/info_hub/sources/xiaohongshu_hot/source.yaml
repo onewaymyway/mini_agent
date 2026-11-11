@@ -1,26 +1,27 @@
-# 小红书热点（网页版，浏览器抓取，需要先登录一次：python cli.py login xiaohongshu）。
-# 状态：默认停用。页面结构尚未确认，请先运行 xhs_probe.py 获取真实 DOM，再填写 request.url、
-# browser.wait_selector 与 parse 中的选择器，然后把 enabled 改为 true。
-# 注意：小红书无公开热榜接口，网页内容依赖登录态与前端渲染，页面改版可能导致选择器失效。
+# 小红书发现页推荐流（网页版，无需登录即可浏览，仍通过浏览器抓取以等待前端渲染）。
+# 注意：这是推荐信息流，内容随访问变化，不是热度排行榜，因此按 feed 处理（只报新增）。
+# 选择器来自 xhs_probe.py 对 https://www.xiaohongshu.com/explore 的探测结果。
 id: xiaohongshu_hot
-name: 小红书热点
+name: 小红书发现页
 category: hot_community
-kind: hot_list
+kind: feed
 adapter: html_list
-enabled: false
+enabled: true
 schedule: {every: 1h}
 request:
-  url: https://www.xiaohongshu.com/explore   # 待探测确认热点所在页面
+  url: https://www.xiaohongshu.com/explore
 browser:
   required: true
   site: xiaohongshu
   headless: true
-  wait_selector: "TODO-待探测"
+  wait_selector: "section.note-item"
 parse:
-  list_selector: "TODO-待探测"
+  list_selector: "section.note-item"
   fields:
-    title: "TODO-待探测"
-    url: "TODO-待探测@href"
+    title: "a.title"
+    url: "a.cover@href"
+    heat: "span.count"
+    summary: "span.name"
 policy:
-  max_items: 30
-tags: [小红书, 热点]
+  max_items: 40
+tags: [小红书, 发现]
