@@ -1,16 +1,19 @@
-# 网易新闻头条（移动端公开列表接口；这是头条流而非“热度榜”，因此用 feed，只报新增）。
+# 网易新闻移动端首页（服务端渲染，直接抓取 HTML；只取文章链接，忽略频道导航）。
+# 原 JSON 列表接口已停更（返回 2018 年缓存），改为抓首页。
 id: netease_news
-name: 网易新闻头条
+name: 网易新闻首页
 category: news
 kind: feed
-adapter: json_api
+adapter: html_list
 enabled: true
 schedule: {every: 30m}
 request:
-  url: https://c.m.163.com/nc/article/headline/T1348647853363/0-40.html
-  headers: {User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"}
+  url: https://c.m.163.com/
+  headers: {User-Agent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"}
 parse:
-  items_path: T1348647853363
-  fields: {title: title, url: url, summary: digest, published_at: ptime}
-policy: {max_items: 40}
+  list_selector: 'a[href*="/news/a/"], a[href*="/news/v/"], a[href*="/news/s/"]'
+  fields:
+    title: self
+    url: "@href"
+policy: {max_items: 80}
 tags: [网易, 新闻]

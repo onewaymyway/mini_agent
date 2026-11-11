@@ -16,14 +16,12 @@ RESP = {
         {"word": "百度词", "hotScore": 999, "url": "https://www.baidu.com/s?wd=x", "desc": "说明"}]}]}]}},
     "bilibili_popular": {"data": {"list": [{"title": "视频A", "bvid": "BV1xx", "stat": {"view": 5000}, "desc": "d"}]}},
     "v2ex_hot": [{"title": "主题", "url": "https://www.v2ex.com/t/1", "replies": 33, "content": "c"}],
-    "netease_news": {"T1348647853363": [{"title": "新闻", "url": "https://news.163.com/a", "digest": "dg", "ptime": "2026-11-11 10:00:00"}]},
 }
 EXPECT = {
     "weibo_hot": ("某 话题", "https://s.weibo.com/weibo?q=%23%E6%9F%90%20%E8%AF%9D%E9%A2%98%23", "123456"),
     "baidu_hot": ("百度词", "https://www.baidu.com/s?wd=x", "999"),
     "bilibili_popular": ("视频A", "https://www.bilibili.com/video/BV1xx", "5000"),
     "v2ex_hot": ("主题", "https://www.v2ex.com/t/1", "33"),
-    "netease_news": ("新闻", "https://news.163.com/a", None),
 }
 
 

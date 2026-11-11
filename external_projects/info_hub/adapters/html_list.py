@@ -31,7 +31,8 @@ def _select_value(scope: Tag, expr: str) -> str:
         return ""
     selector, _, attr = expr.partition("@")
     selector = selector.strip()
-    node = scope.select_one(selector) if selector else scope
+    # "self" 或以 @ 开头（如 "@href"）表示取条目本身，便于条目即为 <a> 的情况
+    node = scope if selector in ("", "self") else scope.select_one(selector)
     if node is None:
         return ""
     if attr:
