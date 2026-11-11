@@ -9,6 +9,8 @@ entrypoints:
     command: python cli.py run {source_id}
     params:
       source_id: {type: string, required: true}
+  dashboard:
+    command: streamlit run app.py --server.port 8506
   report:
     command: python cli.py report {plan_id}
     params:

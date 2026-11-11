@@ -1,4 +1,6 @@
 PyYAML>=6.0
 beautifulsoup4>=4.12
+# Streamlit 看板（app.py）。1.37+ 支持 st.tabs / st.data_editor / st.form 等所用特性
+streamlit>=1.37
 # 浏览器相关（P3）：仅 login 与需要浏览器的源使用，其他命令不依赖
 playwright>=1.40

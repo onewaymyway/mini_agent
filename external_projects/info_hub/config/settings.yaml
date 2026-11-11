@@ -6,7 +6,10 @@ paths:
   browser_profile_dir: browser/profile
 server:
   host: 127.0.0.1
-  port: 8765
+  port: 8765   # 旧 HTML 看板（cli.py serve）
+streamlit:
+  port: 8506
+  background_tick: true   # 看板进程内是否后台调度
 defaults:
   schedule_every: 60m
   retain_days: 14

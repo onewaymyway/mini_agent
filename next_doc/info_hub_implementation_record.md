@@ -315,3 +315,38 @@ P5 与 P6 的前端在同一组文件中（app.js 同时包含看板与播放器
 - 对话生成的"script"类型在 P7 实现，方案中 script 适配器原定放在 P7，已按计划完成。
 - 草稿目录按源 id 命名，LLM 建议的 id 合法且不冲突时直接采用，否则加后缀。
 - 修改次数上限为 5 次，方案未规定，属于为控制成本而加的限制。
+
+
+---
+
+## 补充：Streamlit 主看板（已完成）
+
+按要求，与其他外部项目（stock_watch、novel_writer）保持一致，主看板改为 Streamlit 应用。
+
+### 交付内容
+- `app.py`：Streamlit 看板，启动命令 `streamlit run app.py --server.port 8506`（端口与 stock_watch 的 8503 错开）。
+  - 复用 `server/api.py`，业务逻辑与 HTML 看板一致，不重复实现。
+  - 报告页：摘要指标、Markdown 报告、整份听报与单条朗读。
+  - 信息源页：表格编辑启用状态、立即抓取。
+  - 添加信息源页：表单（预览、保存）与对话生成（草稿、预览、修改、确认、放弃）。
+  - 运行记录页、登录页。
+  - 侧边栏：provider 来源、后台调度状态、立即调度、生成报告。
+  - 后台调度：`st.cache_resource` 保证每个进程只启动一次；可用 `streamlit.background_tick` 或环境变量关闭。
+  - `INFO_HUB_ROOT` 环境变量：指定项目目录（测试与多实例用）。
+- `dashboard/speech.py`：听报播放器 HTML。段落 JSON 嵌入脚本前转义 `</`，防止报告内容闭合 `<script>`。
+- `requirements.txt` 增加 streamlit；`project.yaml` 增加 dashboard 入口；`config/settings.yaml` 增加 streamlit 配置块。
+
+### 验证方式
+- `tests/test_streamlit_app.py`：使用 `streamlit.testing.v1.AppTest` 无头运行 app.py。覆盖：空项目渲染、有数据时报告与信息源显示、provider 缺失时显示错误而不崩溃、立即抓取按钮、听报组件转义、以及"禁止裸表达式语句"的回归测试。
+- 真实服务验证：用临时项目（带 RSS 源与报告）启动 `streamlit run`，用无头 Chromium 打开页面并切换各页签，截图检查。没有 Streamlit 异常。
+
+### 真实验证中发现并修正的问题
+- 侧边栏把一行三元表达式 `st.info(...) if ... else st.error(...)` 当成"魔法输出"，把源码和 DeltaGenerator 对象打印到了页面上。Streamlit 会渲染裸表达式语句，已改为 if/else，并增加回归测试。
+
+### 未在沙箱验证的部分
+- **听报声音**：无头浏览器没有语音引擎，语音列表为空。请在本机打开看板确认朗读。
+- **iframe 内的语音权限**：听报播放器运行在 components.html 的 iframe 中。用户点击"播放"按钮后应能正常发声，但需要在 Chrome/Edge 上实际确认。
+
+### 与方案的偏差与说明
+- 旧的 HTML 看板（`cli.py serve`）保留，作为可选的旧版。两者共用同一套 API，行为一致，因此可以按需选用。
+- 为兼容 requirements 中声明的 `streamlit>=1.37`，没有改用较新的 `width="stretch"` 参数，因此 streamlit 1.67 会打印弃用提示。功能不受影响。

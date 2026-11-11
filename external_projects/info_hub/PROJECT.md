@@ -26,7 +26,34 @@ python cli.py tick                 执行一次调度：运行到期的信息源
 python cli.py serve                启动看板（http://127.0.0.1:8765）并后台定时调度
 ```
 
-## 看板
+## Streamlit 看板（主看板）
+
+与其他外部项目一致，本项目的主看板是 Streamlit 应用 `app.py`：
+
+```
+cd external_projects/info_hub
+pip install -r requirements.txt
+streamlit run app.py --server.port 8506
+```
+
+浏览器打开 http://localhost:8506 。端口与 stock_watch（8503）错开。
+
+页面：
+- **报告**：选择报告，查看摘要与 Markdown 内容；整份听报，或选择单条条目朗读。
+- **信息源**：表格形式查看，勾选启用后点"保存启用状态"；选择信息源立即抓取。
+- **添加信息源**：表单添加（预览、保存），或对话生成（生成草稿、预览、按意见修改、确认、放弃）。
+- **运行记录**：按日期查看。
+- **登录**：查看站点登录状态与登录命令。
+
+侧边栏：显示对话生成使用的模型配置来源、后台调度状态、立即调度、生成报告。
+
+后台调度：看板进程启动时，会在后台每隔 `defaults.tick_interval_minutes` 分钟执行一次到期任务。关闭看板即停止。如果不需要，设置 `streamlit.background_tick: false`，或环境变量 `INFO_HUB_BACKGROUND_TICK=0`。也可以改用系统 cron 调用 `python cli.py tick`。
+
+听报使用浏览器语音合成（speechSynthesis）：播放器运行在页面内嵌的组件中，不生成音频文件。
+
+看板业务逻辑复用 `server/api.py`，与下面的 HTML 看板行为一致。
+
+## HTML 看板（可选，旧版）
 `serve` 启动后，浏览器打开 http://127.0.0.1:8765 。四个页面：
 - **报告**：查看各计划生成的报告；可立即生成；可整份听报，也可逐条朗读。
 - **信息源**：按分类筛选，启用/停用，立即抓取单个源，查看最近运行时间与条目数，配置错误单独列出。
