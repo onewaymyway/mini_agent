@@ -17,6 +17,7 @@ HTML = """
   <li><a href="https://c.m.163.com/news/a/L9K8JTJS000189FH.html">时政微观察丨山河铭记</a><span>央视新闻客户端2026-10-19</span></li>
   <li><a href="https://c.m.163.com/news/v/VD8M8ARG4.html">外卖小哥坐电动车上靠着护栏</a><span>直击新鲜事2026-10-19</span></li>
   <li><a href="https://c.m.163.com/news/s/S1791966107305.html">三季度GDP，同比增长4.5%</a></li>
+  <li><a href="https://c.m.163.com/news/a/L9K22JPL0530NLC9.html">韩国养老金，血亏一万亿</a><span>中国基金报2026-10-19 14:30</span></li>
 </ul>
 </body></html>
 """
@@ -37,9 +38,18 @@ class NeteaseHomepageTests(unittest.TestCase):
             "时政微观察丨山河铭记",
             "外卖小哥坐电动车上靠着护栏",
             "三季度GDP，同比增长4.5%",
+            "韩国养老金，血亏一万亿",
         ])
         self.assertEqual(items[0].url, "https://c.m.163.com/news/a/L9K8JTJS000189FH.html")
         self.assertTrue(all("/news/sub/" not in i.url and "/news/hot/" not in i.url for i in items))
+
+    def test_published_at_extracted_with_and_without_time(self):
+        spec = load_sources(load_settings(ROOT)).specs["netease_news"]
+        items = parse_list(HTML, spec.parse["list_selector"], spec.parse["fields"], 100)
+        self.assertEqual(items[0].published_at, "2026-10-19")
+        self.assertEqual(items[1].published_at, "2026-10-19")
+        self.assertIsNone(items[2].published_at)  # 无日期的条目保持 None
+        self.assertEqual(items[3].published_at, "2026-10-19 14:30")
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@
 """
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 from bs4 import BeautifulSoup, Tag
@@ -31,8 +32,13 @@ def _select_value(scope: Tag, expr: str) -> str:
         return ""
     selector, _, attr = expr.partition("@")
     selector = selector.strip()
-    # "self" 或以 @ 开头（如 "@href"）表示取条目本身，便于条目即为 <a> 的情况
-    node = scope if selector in ("", "self") else scope.select_one(selector)
+    # "self"/"" 取条目本身；"parent" 取父元素（链接与来源、日期并列时使用）
+    if selector in ("", "self"):
+        node = scope
+    elif selector == "parent":
+        node = scope.parent if isinstance(scope.parent, Tag) else None
+    else:
+        node = scope.select_one(selector)
     if node is None:
         return ""
     if attr:
@@ -40,14 +46,32 @@ def _select_value(scope: Tag, expr: str) -> str:
     return node.get_text(" ", strip=True)
 
 
-def parse_list(html: str, list_selector: str, fields: dict[str, str], limit: int) -> list[RawItem]:
+DEFAULT_DATE_PATTERN = r"(\d{4}-\d{1,2}-\d{1,2}(?:[ T]\d{1,2}:\d{2}(?::\d{2})?)?)"
+
+
+def _extract_date(text: str, pattern: str) -> Optional[str]:
+    """从文本中取第一个匹配的日期（或日期时间）；无匹配返回 None。"""
+    if not text:
+        return None
+    m = re.search(pattern, text)
+    if not m:
+        return None
+    return (m.group(1) if m.groups() else m.group(0)).strip() or None
+
+
+def parse_list(html: str, list_selector: str, fields: dict[str, str], limit: int,
+               date_pattern: Optional[str] = None) -> list[RawItem]:
     soup = BeautifulSoup(html, "html.parser")
     rows = soup.select(list_selector)
     items: list[RawItem] = []
+    pattern = date_pattern or DEFAULT_DATE_PATTERN
     for idx, row in enumerate(rows, start=1):
         title = _select_value(row, fields.get("title", ""))
         if not title:
             continue
+        published = None
+        if fields.get("published_at"):
+            published = _extract_date(_select_value(row, fields["published_at"]), pattern)
         items.append(
             RawItem(
                 title=title,
@@ -55,6 +79,7 @@ def parse_list(html: str, list_selector: str, fields: dict[str, str], limit: int
                 rank=idx,
                 heat=_select_value(row, fields.get("heat", "")) or None,
                 summary=_select_value(row, fields.get("summary", "")),
+                published_at=published,
             )
         )
         if len(items) >= limit:
@@ -106,5 +131,6 @@ class HtmlListAdapter(Adapter):
             spec.parse["list_selector"],
             spec.parse.get("fields", {}),
             self.max_items(spec),
+            date_pattern=spec.parse.get("date_pattern"),
         )
         return FetchResult(items=items, meta={"rows_matched": len(items)})
