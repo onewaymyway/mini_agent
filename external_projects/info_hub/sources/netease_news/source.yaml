@@ -15,6 +15,6 @@ parse:
   fields:
     title: self
     url: "@href"
-    published_at: parent   # 来源与日期写在链接的父元素里，从中提取日期（可含时间）
+    published_at: ancestor   # 日期在链接的某个祖先容器里（仅取只含本条新闻的容器）
 policy: {max_items: 80}
 tags: [网易, 新闻]

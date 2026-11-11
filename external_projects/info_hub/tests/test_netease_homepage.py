@@ -19,6 +19,10 @@ HTML = """
   <li><a href="https://c.m.163.com/news/s/S1791966107305.html">三季度GDP，同比增长4.5%</a></li>
   <li><a href="https://c.m.163.com/news/a/L9K22JPL0530NLC9.html">韩国养老金，血亏一万亿</a><span>中国基金报2026-10-19 14:30</span></li>
 </ul>
+<div class="card"><div class="head"><a href="https://c.m.163.com/news/a/L9JVI7A7055040N3.html">38岁网红突发疾病去世</a></div>
+  <div class="meta">上观新闻2026-10-19 09:08</div></div>
+<div class="group"><a href="https://c.m.163.com/news/a/L9AAAAAA000000AA.html">共享容器-甲</a>
+  <a href="https://c.m.163.com/news/a/L9BBBBBB000000BB.html">共享容器-乙</a><span>2026-10-18</span></div>
 </body></html>
 """
 
@@ -39,6 +43,9 @@ class NeteaseHomepageTests(unittest.TestCase):
             "外卖小哥坐电动车上靠着护栏",
             "三季度GDP，同比增长4.5%",
             "韩国养老金，血亏一万亿",
+            "38岁网红突发疾病去世",
+            "共享容器-甲",
+            "共享容器-乙",
         ])
         self.assertEqual(items[0].url, "https://c.m.163.com/news/a/L9K8JTJS000189FH.html")
         self.assertTrue(all("/news/sub/" not in i.url and "/news/hot/" not in i.url for i in items))
@@ -50,6 +57,11 @@ class NeteaseHomepageTests(unittest.TestCase):
         self.assertEqual(items[1].published_at, "2026-10-19")
         self.assertIsNone(items[2].published_at)  # 无日期的条目保持 None
         self.assertEqual(items[3].published_at, "2026-10-19 14:30")
+        # 日期在祖先 card 中（链接的父元素没有日期）
+        self.assertEqual(items[4].published_at, "2026-10-19 09:08")
+        # 同一容器内多条新闻共享的日期不分配给任何一条，避免错配
+        self.assertIsNone(items[5].published_at)
+        self.assertIsNone(items[6].published_at)
 
 
 if __name__ == "__main__":

@@ -56,17 +56,23 @@ def _print_debug(source_id: str, extra: dict) -> None:
     dbg = extra.get("debug") or {}
     if not dbg:
         return
-    print(f"items_path 尝试: {dbg.get('items_path_tried')}  title 字段: {dbg.get('title_path')}")
+    if "items_path_tried" in dbg:
+        print(f"items_path 尝试: {dbg.get('items_path_tried')}  title 字段: {dbg.get('title_path')}")
+    if "list_selector" in dbg:
+        print(f"list_selector: {dbg.get('list_selector')}  有日期: {extra.get('with_date')}/{extra.get('rows_matched', dbg.get('rows_matched'))}")
     print("字段映射:", _json.dumps(dbg.get("fields"), ensure_ascii=False))
-    print("响应结构:", _json.dumps(dbg.get("payload_outline"), ensure_ascii=False, indent=2))
+    if "payload_outline" in dbg:
+        print("响应结构:", _json.dumps(dbg.get("payload_outline"), ensure_ascii=False, indent=2))
     print("保留的前3条:")
     for row in dbg.get("kept_first3") or []:
         print("  ", _json.dumps(row, ensure_ascii=False))
-    print("被跳过条目样本:")
-    for sample in dbg.get("skipped_samples") or []:
-        print("  ", sample)
-    print("原始响应开头(1500字符):")
-    print(dbg.get("raw_head"))
+    if "skipped_samples" in dbg:
+        print("被跳过条目样本:")
+        for sample in dbg.get("skipped_samples") or []:
+            print("  ", sample)
+    if dbg.get("raw_head"):
+        print("原始响应开头(1500字符):")
+        print(dbg.get("raw_head"))
     print("---- 调试信息结束 ----")
 
 

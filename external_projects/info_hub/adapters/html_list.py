@@ -59,6 +59,24 @@ def _extract_date(text: str, pattern: str) -> Optional[str]:
     return (m.group(1) if m.groups() else m.group(0)).strip() or None
 
 
+def _date_from_ancestors(row: Tag, list_selector: str, pattern: str, max_levels: int = 6) -> Optional[str]:
+    """从条目向上找第一个“只包含本条目”的祖先容器，取其中的日期。
+
+    日期常与链接不在同一父元素里，但容器若包含多条新闻，其中的日期不属于本条，故只接受单条容器。
+    """
+    node = row.parent
+    for _ in range(max_levels):
+        if not isinstance(node, Tag):
+            break
+        if len(node.select(list_selector)) > 1:
+            break  # 已包含其他新闻，再往上只会更混杂
+        date = _extract_date(node.get_text(" ", strip=True), pattern)
+        if date:
+            return date
+        node = node.parent
+    return None
+
+
 def parse_list(html: str, list_selector: str, fields: dict[str, str], limit: int,
                date_pattern: Optional[str] = None) -> list[RawItem]:
     soup = BeautifulSoup(html, "html.parser")
@@ -70,7 +88,9 @@ def parse_list(html: str, list_selector: str, fields: dict[str, str], limit: int
         if not title:
             continue
         published = None
-        if fields.get("published_at"):
+        if fields.get("published_at") == "ancestor":
+            published = _date_from_ancestors(row, list_selector, pattern)
+        elif fields.get("published_at"):
             published = _extract_date(_select_value(row, fields["published_at"]), pattern)
         items.append(
             RawItem(
@@ -133,4 +153,13 @@ class HtmlListAdapter(Adapter):
             self.max_items(spec),
             date_pattern=spec.parse.get("date_pattern"),
         )
-        return FetchResult(items=items, meta={"rows_matched": len(items)})
+        with_date = sum(1 for i in items if i.published_at)
+        debug = {
+            "rows_matched": len(items),
+            "with_date": with_date,
+            "list_selector": spec.parse["list_selector"],
+            "fields": spec.parse.get("fields", {}),
+            "kept_first3": [{"title": i.title, "url": i.url, "published_at": i.published_at}
+                            for i in items[:3]],
+        }
+        return FetchResult(items=items, meta={"rows_matched": len(items), "with_date": with_date, "debug": debug})
