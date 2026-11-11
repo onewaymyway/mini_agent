@@ -55,6 +55,7 @@ class RunnerTests(unittest.TestCase):
         res = run_source(spec, settings, ctx)
         self.assertTrue(res.ok)
         self.assertEqual(res.item_count, 2)
+        self.assertEqual(res.new_count, 2)
 
         snapshots = list((settings.paths.raw_dir / "news_a").rglob("*.json"))
         self.assertEqual(len(snapshots), 1)

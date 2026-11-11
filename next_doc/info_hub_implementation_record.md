@@ -10,7 +10,7 @@
 |---|---|---|
 | P0 | 项目骨架、纯文本存储工具、配置加载 | 已完成 |
 | P1 | 适配器框架、rss / json_api 适配器、信息源注册与 run 命令 | 已完成 |
-| P2 | 归一化、去重、增量对比（hot_list 排名变化） | 待开始 |
+| P2 | 归一化、去重、增量对比（hot_list 排名变化） | 已完成 |
 | P3 | 共享浏览器会话、html_list 适配器、login 命令 | 待开始 |
 | P4 | 定时报告生成 | 待开始 |
 | P5 | 看板基础版 | 待开始 |
@@ -90,3 +90,32 @@ python3 cli.py validate   -> 已加载 0 个信息源，0 个有错误；可用�
 - 方案中 `info_hub run` 写作命令名，实际实现为 `python cli.py run`，`info_hub` 入口待 P9 再包装。
 - 当前 `items` 直接追加，未做去重。去重与增量对比按计划放在 P2。
 - 真实外网抓取未在沙箱中验证（沙箱无外网），测试全部使用本地假数据。上线前需要在用户环境中用真实 RSS 地址验证一次。
+
+---
+
+## P2：归一化、去重与增量（已完成）
+
+### 交付内容
+- `core/pipeline.py`：
+  - 状态文件 `data/state/<源id>.json`：记录已见条目（id → 首次见到时间）与上一次快照的排名。
+  - 去重：已见条目不再写入 `items/*.jsonl`。
+  - 过期清理：超过 `policy.retain_days` 的已见记录自动移除，防止状态文件无限增长。
+  - hot_list 变化计算：新进（new）、上升（rising）、下降（falling）、掉出（dropped），并标记首次快照（first_snapshot）。
+  - feed / recommend / custom：只输出 new。
+- `core/runner.py` 集成流水线：状态读取、整理与写回在同一把文件锁内完成；原始快照新增 `new_count` 与 `changes` 字段；运行记录同时显示"抓取 X 条，新增 Y 条"。
+- `tests/test_pipeline.py`：单元测试 5 个，集成测试 1 个（验证第二次抓取只写入新条目，且无重复）。
+
+### 数据文件示例（人可直接阅读）
+- `data/state/news_a.json`：`seen` 字典 + `last_snapshot.ranks`。
+- `data/raw/news_a/2026-11-11/120000.json`：完整快照，含 `changes` 块。
+- `data/items/news_a/2026-11-11.jsonl`：仅新增条目，每行一条 json。
+
+### 验收结果
+```
+python -m unittest discover -s tests -t .
+Ran 26 tests ... OK
+```
+
+### 备注
+- 去重与清理阈值目前只有 `retain_days` 一个参数，`max_items` 仍由适配器截断。
+- 增量对比目前基于内存中的单次快照比较，尚未做跨天的热榜趋势分析，该部分留给 P5 看板的"热榜"页面。
