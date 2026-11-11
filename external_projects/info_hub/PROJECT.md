@@ -24,6 +24,8 @@ python cli.py login <site>         打开有头浏览器登录站点，完成后
 python cli.py login-status         查看各站点登录状态
 python cli.py report <plan_id>     立即生成一份报告
 python cli.py tick                 执行一次调度：运行到期的信息源，生成到期的报告
+python cli.py health               查看各信息源健康状态（连续失败、降频、暂停）
+python cli.py resume <source_id>   手动恢复被暂停/连续失败的信息源
 ```
 
 ## Streamlit 看板（主看板）
@@ -43,7 +45,7 @@ streamlit run app.py --server.port 8506
 - **信息源**：表格形式查看，勾选启用后点"保存启用状态"；选择信息源立即抓取。
 - **添加信息源**：表单添加（预览、保存），或对话生成（生成草稿、预览、按意见修改、确认、放弃）。
 - **订阅**：每个订阅源的当前进度、最近检查/更新时间、最近几次更新。
-- **运行记录**：按日期查看。
+- **运行记录**：按日期查看（含降频/告警/暂停/恢复事件）。
 - **登录**：查看站点登录状态与登录命令。
 
 侧边栏：显示对话生成使用的模型配置来源、后台调度状态、立即调度、生成报告。
@@ -139,3 +141,46 @@ subscription:
 ### 限制
 - 看板“添加信息源”表单暂不支持订阅源，需手写 `source.yaml` 并在 `sources/_index.json` 登记（对话生成同样未覆盖）。
 - 第一批具体站点未定，内置检查器是通用的；真实站点的选择器/接口需要在你的环境里调试。
+
+
+## 健康状态：降频与自动暂停（P9）
+
+每次运行（调度或手动）都会更新 `data/state/_health.json`（纯文本）里的连续失败次数，成功即清零。
+
+| 层 | 默认 | 行为 |
+|---|---|---|
+| 记录与标红 | **始终开启** | 连续失败达到 `degrade_after` 次：看板信息源表“健康”列标红、出现“异常信息源”区，报告“异常”小节列出，运行记录写一条“告警”。**不改变抓取频率** |
+| 降频与自动暂停 | **关闭**（`health.enabled: false`） | 开启后：达到 `degrade_after` 次起抓取间隔按 `backoff_factor` 逐次放大（上限 `max_interval`）；达到 `pause_after` 次自动暂停，tick 不再运行，直到手动恢复 |
+
+```yaml
+# config/settings.yaml
+health:
+  enabled: false        # 改为 true 才会降频/自动暂停
+  degrade_after: 3
+  pause_after: 8
+  backoff_factor: 2
+  max_interval: 1d
+```
+示例（`every: 10m`，degrade_after=3，factor=2）：第 3 次失败后间隔 20m，第 4 次 40m，之后不超过 `max_interval`；到第 `pause_after` 次失败即暂停。配置写错（如 `max_interval` 无法解析）时退回默认（即关闭降频/暂停），不会中断调度。
+
+**恢复**：看板“异常信息源”里点“恢复”；或 `python cli.py resume <id>`；或手动抓取一次成功（清零并解除暂停）。`python cli.py health` 随时查看状态。
+
+**不静默**：已暂停与配置错误的源不会再产生运行失败记录，所以报告“异常”小节会直接列出它们（与时间窗口无关），听报也会读到；降频/暂停/恢复事件都写进当天运行记录。
+
+## 扩展指南
+
+- **新增信息源实例**：在 `sources/<id>/source.yaml` 写配置，并在 `sources/_index.json` 登记；`python cli.py validate` 校验。看板“添加信息源”（表单/对话生成）覆盖 rss / json_api / html_list / script；订阅源需手写。
+- **新增适配器类型**：在 `adapters/` 新建模块，继承 `Adapter`，设置 `kind_name`，实现 `validate` 与 `fetch`；自动发现，无需改调度、报告、看板。
+- **新增订阅检查器**：在 `checkers/` 新建模块，继承 `Checker`，设置 `name`，实现 `validate` 与 `check`。
+- **新增看板页面**：业务逻辑写进 `server/api.py`（纯函数，便于测试），页面写在 `app.py`。
+- **测试**：`python -m unittest discover -s tests -t .`；`tests/helpers.py::make_project` 在临时目录构造最小项目，网络通过 `FetchContext.http_get` 注入。
+
+## 运维速查
+
+| 现象 | 看哪里 |
+|---|---|
+| 某个源没数据 | 看板“信息源”健康列 / `python cli.py health` / 运行记录 |
+| 提示需要重新登录 | “登录”页，`python cli.py login <site>` |
+| 报告“异常”里出现已暂停 | 先查最近错误，修好后“恢复” |
+| 想让失败源自动降频/暂停 | 把 `health.enabled` 改为 true |
+| 不开看板也要调度 | 系统计划任务每 5 分钟 `python cli.py tick` |

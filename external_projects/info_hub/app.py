@@ -166,6 +166,8 @@ with tab_sources:
             "ID": s["id"],
             "分类": cat_names.get(s["category"], s["category"]),
             "类型": f"{s['kind']} / {s['adapter']}" + (" · 需登录" if s.get("browser_site") else ""),
+            "健康": {"ok": "🟢 正常", "degraded": f"🔴 连续失败 {s.get('failures', 0)} 次",
+                     "paused": "⛔ 已暂停"}.get(s.get("health"), "🟢 正常"),
             "频率": s["every"],
             "上次运行": fmt_time(s.get("last_run")),
             "最近条目": s.get("last_item_count"),
@@ -185,6 +187,18 @@ with tab_sources:
                 st.rerun()
             else:
                 st.caption("没有变化。")
+
+        sick = [s for s in rows if s.get("health") in ("degraded", "paused")]
+        if sick:
+            st.subheader("异常信息源")
+            for s_ in sick:
+                c1, c2 = st.columns([5, 1])
+                c1.error(f"{s_['name']}（{s_['id']}）"
+                         + ("已自动暂停" if s_["health"] == "paused" else "连续失败")
+                         + f"，失败 {s_.get('failures', 0)} 次：{s_.get('last_error') or ''}")
+                if c2.button("恢复", key=f"resume_{s_['id']}"):
+                    call(api.resume_source, settings, s_["id"])
+                    st.rerun()
 
         st.subheader("立即抓取")
         ids = [s["id"] for s in rows]

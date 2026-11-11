@@ -10,9 +10,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
+from core import health
 from core.digest import write_report
 from core.runner import default_context, run_source
-from core.scheduler import is_due, source_is_due
+from core.scheduler import _parse_ts, is_due
 from core.settings import Settings
 from core.sources import load_sources
 from core.store import atomic_write_json, file_lock, read_json
@@ -23,6 +24,7 @@ class TickReport:
     ran_sources: list[str] = field(default_factory=list)
     failed_sources: list[str] = field(default_factory=list)
     skipped_sources: list[str] = field(default_factory=list)
+    paused_sources: list[str] = field(default_factory=list)
     generated_reports: list[str] = field(default_factory=list)
     report_paths: dict[str, dict[str, str]] = field(default_factory=dict)
 
@@ -33,6 +35,8 @@ def tick(settings: Settings, now: Optional[datetime] = None, ctx=None) -> TickRe
     state_path = settings.paths.state_dir / "_scheduler.json"
     default_every = settings.defaults.get("schedule_every", "60m")
     ctx = ctx or default_context(settings)
+    hcfg = health.load_health_config(settings)
+    hstate = health.read_all(settings)
 
     with file_lock(state_path):
         sched = read_json(state_path, default={"sources": {}, "reports": {}}) or {"sources": {}, "reports": {}}
@@ -41,9 +45,14 @@ def tick(settings: Settings, now: Optional[datetime] = None, ctx=None) -> TickRe
         for sid, spec in sorted(loaded.specs.items()):
             if not spec.enabled:
                 continue
+            if hstate.get(sid, {}).get("paused"):
+                out.paused_sources.append(sid)   # 已自动暂停，需手动恢复
+                continue
             every = spec.schedule.get("every", default_every)
             try:
-                due = source_is_due(every, sched["sources"].get(sid), now)
+                interval = health.effective_interval(every, hstate.get(sid), hcfg)
+                last = _parse_ts(sched["sources"].get(sid))
+                due = last is None or now - last >= interval
             except ValueError:
                 out.skipped_sources.append(sid)
                 continue

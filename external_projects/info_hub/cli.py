@@ -8,6 +8,8 @@
   python cli.py login-status         查看各站点登录状态
   python cli.py report <plan_id>     立即生成一份报告
   python cli.py tick                 执行一次调度：运行到期的信息源并生成到期的报告
+  python cli.py health               查看各信息源健康状态（连续失败、降频、暂停）
+  python cli.py resume <source_id>   手动恢复被暂停/连续失败的信息源
 """
 from __future__ import annotations
 
@@ -111,6 +113,41 @@ def cmd_report(settings, plan_id: str) -> int:
     return 0
 
 
+def cmd_health(settings) -> int:
+    from core import health
+
+    cfg = health.load_health_config(settings)
+    state = health.read_all(settings)
+    print(f"降频/自动暂停：{'已开启' if cfg.enabled else '未开启（只标红，不改变抓取频率）'}"
+          f"（degrade_after={cfg.degrade_after}, pause_after={cfg.pause_after}）")
+    loaded = load_sources(settings)
+    shown = 0
+    for sid in sorted(loaded.specs):
+        e = state.get(sid)
+        st = health.status_of(e, cfg)
+        if st == "ok" and not (e or {}).get("failures"):
+            continue
+        shown += 1
+        label = {"ok": "正常", "degraded": "连续失败", "paused": "已暂停"}[st]
+        print(f"{sid:20s} {label}  失败 {int((e or {}).get('failures', 0))} 次  最近错误: {(e or {}).get('last_error', '')}")
+    for sid, errs in sorted(loaded.errors.items()):
+        shown += 1
+        print(f"{sid:20s} 配置错误  {'; '.join(errs)}")
+    if not shown:
+        print("所有信息源状态正常。")
+    return 0
+
+
+def cmd_resume(settings, source_id: str) -> int:
+    from core import health
+
+    if health.resume(settings, source_id):
+        print(f"已恢复 {source_id}，下次 tick 将重新运行。")
+        return 0
+    print(f"{source_id} 没有需要恢复的状态。")
+    return 1
+
+
 def cmd_tick(settings) -> int:
     from core.tick import tick
 
@@ -120,6 +157,8 @@ def cmd_tick(settings) -> int:
         print(f"失败信息源: {', '.join(rep.failed_sources)}")
     if rep.skipped_sources:
         print(f"间隔无法解析，已跳过: {', '.join(rep.skipped_sources)}")
+    if rep.paused_sources:
+        print(f"已暂停（需 python cli.py resume <id> 恢复）: {', '.join(rep.paused_sources)}")
     print(f"生成报告: {', '.join(rep.generated_reports) or '无'}")
     return 0
 
@@ -137,6 +176,9 @@ def main(argv: list[str] | None = None, root: Path | None = None) -> int:
     p_report = sub.add_parser("report", help="立即生成一份报告")
     p_report.add_argument("plan_id")
     sub.add_parser("tick", help="执行一次调度")
+    sub.add_parser("health", help="查看信息源健康状态")
+    p_resume = sub.add_parser("resume", help="手动恢复被暂停的信息源")
+    p_resume.add_argument("source_id")
     args = parser.parse_args(argv)
 
     settings = load_settings(root)
@@ -154,6 +196,10 @@ def main(argv: list[str] | None = None, root: Path | None = None) -> int:
         return cmd_report(settings, args.plan_id)
     if args.command == "tick":
         return cmd_tick(settings)
+    if args.command == "health":
+        return cmd_health(settings)
+    if args.command == "resume":
+        return cmd_resume(settings, args.source_id)
     return 2
 
 

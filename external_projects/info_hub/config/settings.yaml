@@ -7,6 +7,12 @@ paths:
 streamlit:
   port: 8506
   background_tick: true   # 看板进程内是否后台调度
+health:                   # 信息源健康：降频与自动暂停（默认关闭；失败计数与标红始终开启）
+  enabled: false
+  degrade_after: 3        # 连续失败 N 次：标红；开启 enabled 后同时降频
+  pause_after: 8          # 连续失败 M 次：自动暂停（需 enabled），手动恢复前 tick 不再运行
+  backoff_factor: 2       # 降频倍数：每多失败一次，间隔 × 该倍数
+  max_interval: 1d        # 降频后的间隔上限
 defaults:
   schedule_every: 60m
   retain_days: 14

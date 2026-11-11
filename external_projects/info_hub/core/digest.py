@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from adapters.base import SourceSpec
+from core import health as health_mod
 from core.scheduler import parse_interval
 from core.settings import Settings
 from core.sources import load_sources
@@ -95,6 +96,25 @@ def collect_errors(settings: Settings, start: datetime, end: datetime) -> list[d
     return errors
 
 
+def collect_health_problems(settings: Settings, loaded) -> list[dict[str, Any]]:
+    """当前仍存在的问题：已暂停、连续失败（标红）、配置错误。与时间窗口无关——被暂停/配错的源不会再产生
+    运行失败记录，不在这里列出就会从报告里悄悄消失。"""
+    cfg = health_mod.load_health_config(settings)
+    state = health_mod.read_all(settings)
+    out: list[dict[str, Any]] = []
+    for sid, spec in sorted(loaded.specs.items()):
+        e = state.get(sid)
+        st = health_mod.status_of(e, cfg)
+        if st == "ok":
+            continue
+        out.append({"source_id": sid, "source_name": spec.name, "kind": st,
+                    "failures": int(e.get("failures", 0)), "last_error": e.get("last_error", "")})
+    for sid, errs in sorted(loaded.errors.items()):
+        out.append({"source_id": sid, "source_name": sid, "kind": "config_error",
+                    "failures": 0, "last_error": "；".join(errs)})
+    return out
+
+
 def _selected_categories(plan: dict[str, Any], settings: Settings) -> list[dict[str, str]]:
     wanted = plan.get("categories", "all")
     if wanted == "all":
@@ -109,6 +129,7 @@ def build_digest(settings: Settings, plan: dict[str, Any], now: datetime) -> dic
     items = collect_items(settings, start, end)
     changes = collect_latest_changes(settings, start, end)
     errors = collect_errors(settings, start, end)
+    problems = collect_health_problems(settings, loaded)
 
     # 订阅更新单独成节、置顶显示，不再出现在分类小节里
     sub_ids = {sid for sid, sp in specs.items() if sp.kind == "subscription"}
@@ -174,7 +195,9 @@ def build_digest(settings: Settings, plan: dict[str, Any], now: datetime) -> dic
             "source_count": len({i["source_id"] for i in items} | set(changes)),
             "error_count": len(errors),
             "subscription_updates": len(subscriptions),
+            "problem_count": len(problems),
         },
+        "health": problems,
         "subscriptions": subscriptions,
         "sections": sections,
         "errors": errors,
@@ -198,8 +221,14 @@ def render_markdown(digest: dict[str, Any], title_time: str) -> str:
             prev = f"（上次：{sub['previous_title']}）" if sub["previous_title"] else ""
             lines.append(f"- 《{sub['source_name']}》更新至 {link}{prev}")
         lines.append("")
-    if digest["errors"]:
+    problems = digest.get("health", [])
+    if digest["errors"] or problems:
         lines.append("## 异常")
+        for pr in problems:
+            label = {"paused": "已自动暂停，需手动恢复", "degraded": "连续失败",
+                     "config_error": "配置错误"}.get(pr["kind"], pr["kind"])
+            cnt = f"（连续失败 {pr['failures']} 次）" if pr["failures"] else ""
+            lines.append(f"- `{pr['source_id']}` {label}{cnt}：{pr['last_error']}")
         for e in digest["errors"]:
             lines.append(f"- {e['time']} `{e['source_id']}`：{e['error']}")
         lines.append("")

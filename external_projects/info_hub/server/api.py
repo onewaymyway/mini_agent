@@ -16,7 +16,7 @@ from core.sources import load_sources
 from core.speech_text import digest_to_segments, item_to_segments
 from core.store import atomic_write_json, read_json
 
-_RUN_LINE_RE = re.compile(r"^- (\d{2}:\d{2}:\d{2}) `([^`]+)` (成功|失败)(.*)$")
+_RUN_LINE_RE = re.compile(r"^- (\d{2}:\d{2}:\d{2}) `([^`]+)` (成功|失败|降频|告警|暂停|恢复)(.*)$")
 
 
 class ApiError(Exception):
@@ -41,9 +41,14 @@ def list_sources(settings: Settings) -> dict[str, Any]:
     loaded = load_sources(settings)
     sched = read_json(settings.paths.state_dir / "_scheduler.json", default={}) or {}
     last_runs = sched.get("sources", {})
+    from core import health as _health
+
+    hcfg = _health.load_health_config(settings)
+    hstate = _health.read_all(settings)
     rows = []
     for sid, spec in sorted(loaded.specs.items()):
         snap = _latest_snapshot(settings, sid)
+        he = hstate.get(sid) or {}
         rows.append({
             "id": sid,
             "name": spec.name,
@@ -57,6 +62,9 @@ def list_sources(settings: Settings) -> dict[str, Any]:
             "last_fetched_at": snap.get("fetched_at") if snap else None,
             "last_item_count": snap.get("item_count") if snap else None,
             "config_errors": [],
+            "health": _health.status_of(he, hcfg),
+            "failures": int(he.get("failures", 0)),
+            "last_error": he.get("last_error") if he.get("failures") else None,
         })
     for sid, errs in sorted(loaded.errors.items()):
         rows.append({"id": sid, "name": sid, "config_errors": errs, "enabled": False})
@@ -102,6 +110,15 @@ def list_subscriptions(settings: Settings, history: int = 5) -> dict[str, Any]:
             "recent_updates": updates,
         })
     return {"subscriptions": rows}
+
+
+def resume_source(settings: Settings, source_id: str) -> dict[str, Any]:
+    """手动恢复被暂停/连续失败的信息源（清除失败计数与暂停标记）。"""
+    from core import health as _health
+
+    if source_id not in load_sources(settings).specs:
+        raise ApiError(404, f"未找到信息源 {source_id}")
+    return {"id": source_id, "resumed": _health.resume(settings, source_id)}
 
 
 def set_source_enabled(settings: Settings, source_id: str, enabled: bool) -> dict[str, Any]:

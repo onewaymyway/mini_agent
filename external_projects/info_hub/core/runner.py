@@ -8,6 +8,7 @@ from typing import Any, Optional
 
 from adapters.base import FetchContext, SourceSpec
 from adapters.registry import get_adapter
+from core import health
 from core.normalize import normalize, now_iso
 from core.pipeline import process
 from core.settings import Settings
@@ -49,6 +50,14 @@ def _write_run_log(settings: Settings, when: datetime, result: RunResult) -> Non
             fh.write(format_run_line(when, result))
 
 
+def _record_health(settings: Settings, result: "RunResult") -> None:
+    """健康记录失败不能影响抓取结果本身。"""
+    try:
+        health.record_result(settings, result.source_id, result.ok, result.error)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[health] 记录失败: {type(exc).__name__}: {exc}")
+
+
 def default_context(settings: Settings) -> FetchContext:
     """构造默认运行上下文：共享浏览器会话（惰性启动）与站点配置。"""
     from core.browser_session import BrowserSession
@@ -73,6 +82,7 @@ def run_source(spec: SourceSpec, settings: Settings, ctx: Optional[FetchContext]
     if adapter is None:
         result = RunResult(spec.id, False, 0, 0.0, error=f"未找到适配器 {spec.adapter}")
         _write_run_log(settings, when, result)
+        _record_health(settings, result)
         return result
 
     fetch = adapter.fetch(spec, ctx)
@@ -80,6 +90,7 @@ def run_source(spec: SourceSpec, settings: Settings, ctx: Optional[FetchContext]
     if not fetch.ok:
         result = RunResult(spec.id, False, 0, duration, error=fetch.error)
         _write_run_log(settings, when, result)
+        _record_health(settings, result)
         return result
 
     items = [normalize(spec, raw, fetched_at) for raw in fetch.items]
@@ -121,4 +132,5 @@ def run_source(spec: SourceSpec, settings: Settings, ctx: Optional[FetchContext]
         extra=fetch.meta,
     )
     _write_run_log(settings, when, result)
+    _record_health(settings, result)
     return result

@@ -60,6 +60,9 @@ def digest_to_segments(digest: dict[str, Any]) -> list[dict[str, str]]:
     for sub in digest.get("subscriptions", []):
         prev = f"，上次是{sub.get('previous_title')}" if sub.get("previous_title") else ""
         segs += _seg(f"订阅更新：{sub.get('source_name', '')}更新至{sub.get('title', '')}{prev}。", "subscription")
+    for pr in digest.get("health", []):
+        label = {"paused": "已暂停", "degraded": "连续失败", "config_error": "配置错误"}.get(pr.get("kind"), "异常")
+        segs += _seg(f"异常：{pr.get('source_name', '')}{label}，{pr.get('last_error', '')}", "error")
     for err in digest.get("errors", []):
         segs += _seg(f"异常：{err.get('source_id', '')}，{err.get('error', '')}", "error")
 
