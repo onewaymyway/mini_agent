@@ -1,0 +1,16 @@
+# info_hub 对外契约：daemon 或其他工具只读取此文件，不 import 本项目代码。
+name: info_hub
+version: 0.1.0
+description: 定时抓取多信息源、生成报告、看板听报
+entrypoints:
+  serve:
+    command: python cli.py serve
+  run_source:
+    command: python cli.py run {source_id}
+    params:
+      source_id: {type: string, required: true}
+  report:
+    command: python cli.py report {plan_id}
+    params:
+      plan_id: {type: string, required: true}
+enabled_by_default: false

@@ -1,0 +1,6 @@
+__pycache__/
+data/
+reports/
+browser/profile/
+browser/login_status.json
+sources/*/samples/

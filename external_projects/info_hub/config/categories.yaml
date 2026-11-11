@@ -1,0 +1,14 @@
+# 分类由用户编辑。source.yaml 中的 category 必须引用这里的 id。
+categories:
+  - id: hot_community
+    name: 热点社区
+  - id: video
+    name: 视频
+  - id: novel
+    name: 小说
+  - id: tech
+    name: 技术
+  - id: news
+    name: 资讯
+  - id: other
+    name: 其他

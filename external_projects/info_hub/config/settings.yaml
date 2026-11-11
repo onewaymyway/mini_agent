@@ -1,0 +1,22 @@
+# 全局配置。所有路径相对于 info_hub 项目根目录。
+paths:
+  sources_dir: sources
+  data_dir: data
+  reports_dir: reports
+  browser_profile_dir: browser/profile
+server:
+  host: 127.0.0.1
+  port: 8765
+defaults:
+  schedule_every: 60m
+  retain_days: 14
+  max_items: 50
+reports:
+  - id: rolling
+    every: 3h
+    window: 3h
+    categories: all
+  - id: daily
+    at: "08:00"
+    window: 24h
+    categories: all
