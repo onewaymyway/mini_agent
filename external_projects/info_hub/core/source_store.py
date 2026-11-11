@@ -173,3 +173,56 @@ def unique_id(settings: Settings, base: str, reserved: set[str]) -> str:
         candidate = f"{base}_{n}"
         n += 1
     return candidate
+
+# 表单管理的字段；其余字段（请求头、date_pattern、url_template、time_format 等）编辑时原样保留
+FORM_FIELD_KEYS = ("title", "url")
+
+
+def merge_source(existing: dict[str, Any], form: dict[str, Any]) -> dict[str, Any]:
+    """以现有 source.yaml 为底，覆盖表单管理的字段，保留表单未涉及的配置。"""
+    import copy
+    out = copy.deepcopy(existing)
+    for key in ("name", "category", "kind", "adapter", "tags", "enabled"):
+        if key in form:
+            out[key] = form[key]
+    out["request"] = {**(existing.get("request") or {}), "url": form["request"]["url"]}
+    out["policy"] = {**(existing.get("policy") or {}), "max_items": form["policy"]["max_items"]}
+    out["schedule"] = {**(existing.get("schedule") or {}), "every": form["schedule"]["every"]}
+
+    if "parse" in form:
+        same_adapter = existing.get("adapter") == form.get("adapter")
+        base = dict(existing.get("parse") or {}) if same_adapter else {}
+        parse = {k: v for k, v in base.items() if k not in ("list_selector", "items_path", "fields")}
+        # 选择器只保留当前适配器对应的键
+        for key in ("list_selector", "items_path"):
+            if key in form["parse"]:
+                parse[key] = form["parse"][key]
+        fields = dict(base.get("fields") or {})
+        for key in FORM_FIELD_KEYS:
+            value = (form["parse"].get("fields") or {}).get(key, "")
+            if value:
+                fields[key] = value
+            else:
+                fields.pop(key, None)
+        parse["fields"] = fields
+        out["parse"] = parse
+
+    if form.get("browser"):
+        out["browser"] = {**(existing.get("browser") or {}), **form["browser"]}
+    else:
+        out.pop("browser", None)
+    return out
+
+
+def update_source_file(settings: Settings, sid: str, source: dict[str, Any]) -> Path:
+    """覆盖写入 source.yaml，并同步索引中的启用状态。"""
+    target = settings.paths.sources_dir / sid / "source.yaml"
+    if not target.exists():
+        raise SourceError(f"未找到信息源 {sid}")
+    atomic_write_text(target, yaml.safe_dump(source, allow_unicode=True, sort_keys=False))
+    index = read_json(settings.paths.source_index, default={"version": 1, "sources": []}) or {"sources": []}
+    for entry in index.get("sources", []):
+        if entry.get("id") == sid:
+            entry["enabled"] = bool(source.get("enabled", True))
+    atomic_write_json(settings.paths.source_index, index)
+    return target

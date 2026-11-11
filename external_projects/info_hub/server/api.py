@@ -497,3 +497,66 @@ def tick_status(settings: Settings) -> dict[str, Any]:
         "sources": rows,
         "reports": reports,
     }
+
+
+# ---------- 编辑现有信息源 ----------
+def _source_path(settings: Settings, source_id: str) -> Path:
+    if not source_id or source_id != Path(source_id).name:
+        raise ApiError(400, "信息源 id 不合法")
+    path = settings.paths.sources_dir / source_id / "source.yaml"
+    if not path.exists():
+        raise ApiError(404, f"未找到信息源 {source_id}")
+    return path
+
+
+def get_source(settings: Settings, source_id: str) -> dict[str, Any]:
+    """读取信息源的表单字段，用于编辑时回填。"""
+    import yaml as _yaml
+    raw = _yaml.safe_load(_source_path(settings, source_id).read_text(encoding="utf-8")) or {}
+    index = read_json(settings.paths.source_index, default={"sources": []}) or {"sources": []}
+    enabled = next((bool(e.get("enabled")) for e in index.get("sources", []) if e.get("id") == source_id), False)
+    parse = raw.get("parse") or {}
+    browser = raw.get("browser") or {}
+    fields = parse.get("fields") or {}
+    return {
+        "id": source_id,
+        "name": raw.get("name", ""),
+        "category": raw.get("category", ""),
+        "kind": raw.get("kind", "feed"),
+        "adapter": raw.get("adapter", ""),
+        "every": (raw.get("schedule") or {}).get("every", "60m"),
+        "url": (raw.get("request") or {}).get("url", ""),
+        "max_items": (raw.get("policy") or {}).get("max_items", 30),
+        "tags": raw.get("tags") or [],
+        "enabled": enabled,
+        "list_selector": parse.get("list_selector", ""),
+        "items_path": parse.get("items_path", ""),
+        "fields": {"title": fields.get("title", ""), "url": fields.get("url", "")},
+        "browser_required": bool(browser.get("required")),
+        "browser_site": browser.get("site", ""),
+        "wait_selector": browser.get("wait_selector", ""),
+    }
+
+
+def update_source(settings: Settings, source_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    """保存对现有信息源的修改。ID 不可修改；未在表单中出现的配置（请求头、解析细节等）原样保留。"""
+    import yaml as _yaml
+    from core.source_store import SourceError, merge_source, update_source_file, validate_candidate
+    path = _source_path(settings, source_id)
+    existing = _yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    raw_form = body.get("source")
+    if not isinstance(raw_form, dict):
+        raise ApiError(400, "缺少 source 对象")
+    form = form_to_source(dict(raw_form, id=source_id))
+    merged = merge_source(existing, form)
+    spec, errors, dups = validate_candidate(settings, merged, script_dir=path.parent)
+    if errors:
+        raise ApiError(400, "；".join(errors))
+    dups = [d for d in dups if d != source_id]
+    if dups and not body.get("force"):
+        raise ApiError(409, f"与已有信息源相似：{', '.join(dups)}。如仍要保存，请勾选强制保存")
+    try:
+        update_source_file(settings, source_id, merged)
+    except SourceError as exc:
+        raise ApiError(400, str(exc))
+    return {"id": source_id, "path": str(path.relative_to(settings.paths.root))}
