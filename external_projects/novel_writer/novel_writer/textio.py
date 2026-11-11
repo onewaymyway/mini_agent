@@ -118,6 +118,29 @@ def _plausible(text: str, *, guessed: bool = False) -> Optional[str]:
     return None
 
 
+_MAX_DAMAGED_BYTES = 8          # 允许的非法字节数上限（超过即按「不是 UTF-8」处理）
+_MIN_DAMAGED_CJK_RATIO = 0.5    # 能解出来的文字里，CJK 字符占比不低于此值才视为中文 UTF-8 文件
+
+
+def _damaged_utf8_summary(data: bytes) -> Optional[int]:
+    """若文件是「基本合法的 UTF-8、只坏了少量字节」，返回非法字节数；否则返回 None。
+
+    判定：替换后非法字节很少（≤ _MAX_DAMAGED_BYTES 且不超过全文 0.1%），且能解出的文字
+    以中文为主。真正的 GBK/UTF-16 文件会产生大量替换字符，不会命中这里。
+    """
+    text = data.decode("utf-8", errors="replace")
+    bad = text.count("\ufffd")
+    if bad == 0 or bad > _MAX_DAMAGED_BYTES or bad > len(data) * 0.001:
+        return None
+    readable = [c for c in text if c != "\ufffd" and c not in "\n\r\t "]
+    if not readable:
+        return None
+    cjk = sum(1 for c in readable if "\u4e00" <= c <= "\u9fff")
+    if cjk / len(readable) < _MIN_DAMAGED_CJK_RATIO:
+        return None
+    return bad
+
+
 def _utf8_failure(data: bytes, exc: UnicodeDecodeError) -> str:
     lo, hi = max(exc.start - 8, 0), min(exc.end + 8, len(data))
     return (f"{exc.reason}：位置 {exc.start}，字节 {_hex(data[exc.start:exc.end])}"
@@ -155,6 +178,15 @@ def read_text_utf8(path: Path, *, repair: bool = True) -> str:
             return text.replace("\r\n", "\n").replace("\r", "\n")
         # 带 BOM 的 UTF-8：内容可读，但 BOM 会混进正文，同样转存清掉
         return _repair(path, data, "utf-8-sig", "文件头为 EF BB BF（UTF-8 BOM）", repair)
+
+    damage = _damaged_utf8_summary(data)
+    if damage is not None:
+        # 绝大部分是合法 UTF-8、只有少量非法字节：这是「UTF-8 文件有几处损坏」，不是 GBK。
+        # 整体按 GBK/GB18030 转码会把正文改成乱码，所以不转码，交给修复流程（LLM 修复 / 人工）。
+        raise _fail(path, data, utf8_err,
+                    [f"按 UTF-8 读取只有 {damage} 处非法字节，其余内容是合法 UTF-8（中文占比高），"
+                     "判定为 UTF-8 文件局部损坏，已拒绝整体转码以免改坏正文"],
+                    "请用备份或修复流程恢复该文件，不要直接转码。")
 
     attempts: List[str] = []
     for enc, why in _detect_candidates(data):
