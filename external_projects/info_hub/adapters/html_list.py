@@ -24,7 +24,7 @@ from typing import Optional
 from bs4 import BeautifulSoup, Tag
 
 from adapters.base import Adapter, FetchContext, FetchResult, RawItem, SourceSpec
-from core.browser_session import LoginRequired
+from core.browser_session import LoginRequired, RiskControlBlocked
 
 
 def _select_value(scope: Tag, expr: str) -> str:
@@ -144,6 +144,8 @@ class HtmlListAdapter(Adapter):
                 html = ctx.http_get(url).decode("utf-8", errors="replace")
         except LoginRequired as exc:
             return FetchResult(items=[], error=f"需要重新登录：{exc}", meta={"login_required": site})
+        except RiskControlBlocked as exc:
+            return FetchResult(items=[], error=f"风控拦截：{exc}", meta={"risk_blocked": site})
         except Exception as exc:  # noqa: BLE001
             return FetchResult(items=[], error=f"{type(exc).__name__}: {exc}")
 

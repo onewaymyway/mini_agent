@@ -16,6 +16,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
+from urllib.parse import parse_qs, urlparse
 
 from core.store import atomic_write_json, file_lock, read_json
 
@@ -27,6 +28,39 @@ class LoginRequired(RuntimeError):
         super().__init__(f"站点 {site} 需要重新登录（当前跳转到 {final_url}）")
         self.site = site
         self.final_url = final_url
+
+
+class RiskControlBlocked(RuntimeError):
+    """站点风控拦截（非登录失效）：需要换可靠网络、或改用有头浏览器后重试。"""
+
+    def __init__(self, site: str, final_url: str, error_code: str, message: str):
+        super().__init__(
+            f"站点 {site} 被风控拦截（错误码 {error_code}：{message}），"
+            "请切换可靠网络，或改用有头浏览器后重试"
+        )
+        self.site = site
+        self.final_url = final_url
+        self.error_code = error_code
+
+
+def classify_landing(url: str, expired_pattern: Optional[str]) -> Optional[tuple[str, str, str]]:
+    """判断最终落地 URL 属于哪种异常页面。
+
+    返回 None（正常页面）、("blocked", error_code, error_msg)（风控拦截）
+    或 ("expired", "", "")（登录失效）。
+
+    注意：登录失效只匹配 URL 的 path 部分，不匹配 query。风控错误页的 query 里
+    常带有 rejectUrl=.../login/... 之类的字段，整串匹配会把风控误判为登录失效。
+    """
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    if "error_code" in query:
+        code = (query.get("error_code") or [""])[0]
+        msg = (query.get("error_msg") or [""])[0]
+        return ("blocked", code, msg)
+    if expired_pattern and expired_pattern in parsed.path:
+        return ("expired", "", "")
+    return None
 
 
 @contextlib.contextmanager
@@ -66,6 +100,7 @@ class BrowserSession:
         self._launcher = launcher or self._default_launcher
         # 锁文件与 profile 同级：profile.lock
         self._lock_target = self.profile_dir
+        self.prefer_system_chrome = True
 
     # ---------- 底层启动 ----------
     def _default_launcher(self, headless: bool) -> tuple[Any, Any]:
@@ -74,11 +109,31 @@ class BrowserSession:
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         with proactor_loop_policy():
             pw = sync_playwright().start()
-        ctx = pw.chromium.launch_persistent_context(
+        options: dict[str, Any] = dict(
             user_data_dir=str(self.profile_dir.resolve()),
             headless=headless,
             args=["--disable-blink-features=AutomationControlled"],
+            # 去掉 Playwright 默认注入的 --enable-automation，减少自动化特征
+            ignore_default_args=["--enable-automation"],
+            locale="zh-CN",
+            timezone_id="Asia/Shanghai",
+            viewport={"width": 1366, "height": 900},
         )
+        ctx = None
+        # 优先用本机已安装的 Chrome（指纹与日常浏览器一致）；未安装时退回 Playwright 自带 Chromium
+        if self.prefer_system_chrome:
+            try:
+                ctx = pw.chromium.launch_persistent_context(channel="chrome", **options)
+            except Exception:  # noqa: BLE001 - 本机无 Chrome，退回自带 Chromium
+                ctx = None
+        if ctx is None:
+            try:
+                ctx = pw.chromium.launch_persistent_context(**options)
+            except Exception:
+                pw.stop()
+                raise
+        # 隐藏 navigator.webdriver 标记（无头/自动化环境会暴露它）
+        ctx.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
         return pw, ctx
 
     def _open(self, headless: bool):
@@ -121,7 +176,12 @@ class BrowserSession:
             html = page.content()
         finally:
             self._close(pw, ctx)
-        if site and expired_pattern and expired_pattern in final_url:
+        landing = classify_landing(final_url, expired_pattern) if site else None
+        if landing is not None:
+            kind, code, msg = landing
+            if kind == "blocked":
+                self._record(site, status="blocked", error=f"风控拦截 {code}：{msg}")
+                raise RiskControlBlocked(site, final_url, code, msg)
             self._record(site, status="expired", error=f"跳转到 {final_url}")
             raise LoginRequired(site, final_url)
         return html

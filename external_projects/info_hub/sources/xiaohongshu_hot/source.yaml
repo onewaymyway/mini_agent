@@ -11,7 +11,7 @@ request:
 browser:
   required: true
   site: xiaohongshu
-  headless: true
+  headless: false
   wait_selector: section.note-item
 parse:
   list_selector: section.note-item
