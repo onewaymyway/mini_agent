@@ -1,27 +1,27 @@
-# 小红书发现页推荐流（网页版，无需登录即可浏览，仍通过浏览器抓取以等待前端渲染）。
-# 注意：这是推荐信息流，内容随访问变化，不是热度排行榜，因此按 feed 处理（只报新增）。
-# 选择器来自 xhs_probe.py 对 https://www.xiaohongshu.com/explore 的探测结果。
 id: xiaohongshu_hot
 name: 小红书发现页
 category: hot_community
 kind: feed
 adapter: html_list
 enabled: true
-schedule: {every: 1h}
+schedule:
+  every: 10m
 request:
   url: https://www.xiaohongshu.com/explore
 browser:
   required: true
   site: xiaohongshu
   headless: true
-  wait_selector: "section.note-item"
+  wait_selector: section.note-item
 parse:
-  list_selector: "section.note-item"
+  list_selector: section.note-item
   fields:
-    title: "a.title"
-    url: "a.cover@href"
-    heat: "span.count"
-    summary: "span.name"
+    title: a.title
+    url: a.cover@href
+    heat: span.count
+    summary: span.name
 policy:
   max_items: 40
-tags: [小红书, 发现]
+tags:
+- 小红书
+- 发现
