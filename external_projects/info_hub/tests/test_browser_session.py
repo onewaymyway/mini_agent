@@ -120,5 +120,31 @@ class SharedProfileTests(ChromiumTestCase):
         self.assertEqual([i.title for i in res.items], ["热榜A"])
 
 
+
+
+class ProactorPolicyTests(unittest.TestCase):
+    def test_noop_off_windows_and_policy_restored(self):
+        import asyncio
+        from core.browser_session import proactor_loop_policy
+        before = asyncio.get_event_loop_policy()
+        with proactor_loop_policy():
+            pass
+        self.assertIs(asyncio.get_event_loop_policy(), before)
+
+    def test_windows_branch_switches_and_restores(self):
+        import asyncio, sys
+        from unittest import mock
+        import core.browser_session as bs
+        calls = []
+        fake = mock.Mock()
+        with mock.patch.object(bs.sys, "platform", "win32"), \
+             mock.patch.object(bs.asyncio, "WindowsProactorEventLoopPolicy", create=True, return_value=fake), \
+             mock.patch.object(bs.asyncio, "set_event_loop_policy", side_effect=calls.append), \
+             mock.patch.object(bs.asyncio, "get_event_loop_policy", return_value="old"):
+            with bs.proactor_loop_policy():
+                self.assertEqual(calls, [fake])
+        self.assertEqual(calls, [fake, "old"])
+
+
 if __name__ == "__main__":
     unittest.main()

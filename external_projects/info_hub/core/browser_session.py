@@ -10,6 +10,9 @@ playwright 在方法内部才 import，因此不使用浏览器的命令（list 
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -24,6 +27,26 @@ class LoginRequired(RuntimeError):
         super().__init__(f"站点 {site} 需要重新登录（当前跳转到 {final_url}）")
         self.site = site
         self.final_url = final_url
+
+
+@contextlib.contextmanager
+def proactor_loop_policy():
+    """Windows 下临时启用 Proactor 事件循环策略。
+
+    playwright 需要用 asyncio 启动浏览器子进程；Streamlit/Tornado 常把全局策略设为
+    SelectorEventLoop，此时 sync_playwright().start() 会抛 NotImplementedError。
+    只在创建 playwright 自己的事件循环期间切换，结束后恢复原策略，不影响看板。
+    非 Windows 不做任何事。
+    """
+    if sys.platform != "win32":
+        yield
+        return
+    old = asyncio.get_event_loop_policy()
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    try:
+        yield
+    finally:
+        asyncio.set_event_loop_policy(old)
 
 
 def _now() -> str:
@@ -49,7 +72,8 @@ class BrowserSession:
         from playwright.sync_api import sync_playwright  # 延迟导入
 
         self.profile_dir.mkdir(parents=True, exist_ok=True)
-        pw = sync_playwright().start()
+        with proactor_loop_policy():
+            pw = sync_playwright().start()
         ctx = pw.chromium.launch_persistent_context(
             user_data_dir=str(self.profile_dir.resolve()),
             headless=headless,
