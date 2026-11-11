@@ -1,6 +1,8 @@
 """加载 config/*.yaml 与路径解析。所有路径相对于 info_hub 项目根目录。"""
 from __future__ import annotations
 
+import json
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -61,7 +63,26 @@ class Settings:
 
     @property
     def tick_interval_minutes(self) -> int:
+        """后台 tick 间隔（分钟）。看板修改后的值优先于 settings.yaml 中的默认值，每次读取都是最新值。"""
+        override = _read_tick_override(self.paths.state_dir / "runtime_config.json")
+        if override is not None:
+            return override
         return int(self.defaults.get("tick_interval_minutes", 5))
+
+
+TICK_INTERVAL_MIN = 1
+TICK_INTERVAL_MAX = 1440
+
+
+def _read_tick_override(path: Path) -> int | None:
+    """读取运行时覆盖值；文件不存在或内容不合法时返回 None（回退到 settings.yaml）。"""
+    try:
+        value = json.loads(path.read_text(encoding="utf-8")).get("tick_interval_minutes")
+    except (OSError, ValueError, AttributeError):
+        return None
+    if isinstance(value, int) and TICK_INTERVAL_MIN <= value <= TICK_INTERVAL_MAX:
+        return value
+    return None
 
 
 def load_settings(root: Path | None = None) -> Settings:

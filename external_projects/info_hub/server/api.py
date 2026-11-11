@@ -560,3 +560,22 @@ def update_source(settings: Settings, source_id: str, body: dict[str, Any]) -> d
     except SourceError as exc:
         raise ApiError(400, str(exc))
     return {"id": source_id, "path": str(path.relative_to(settings.paths.root))}
+
+
+# ---------- 后台 tick 间隔 ----------
+def set_tick_interval(settings: Settings, minutes: Any) -> dict[str, Any]:
+    """保存后台 tick 间隔（运行时覆盖，不改 settings.yaml）。下一轮循环起生效。"""
+    from core.settings import TICK_INTERVAL_MAX, TICK_INTERVAL_MIN
+    if isinstance(minutes, float) and not minutes.is_integer():
+        raise ApiError(400, "间隔必须是整数（分钟）")
+    try:
+        value = int(minutes)
+    except (TypeError, ValueError):
+        raise ApiError(400, "间隔必须是整数（分钟）")
+    if not TICK_INTERVAL_MIN <= value <= TICK_INTERVAL_MAX:
+        raise ApiError(400, f"间隔必须在 {TICK_INTERVAL_MIN} 到 {TICK_INTERVAL_MAX} 分钟之间")
+    atomic_write_json(settings.paths.state_dir / "runtime_config.json", {
+        "tick_interval_minutes": value,
+        "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+    })
+    return {"tick_interval_minutes": value}

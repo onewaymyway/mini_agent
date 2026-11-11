@@ -48,7 +48,7 @@ def _background_scheduler(root: str) -> Optional[threading.Event]:
         return None
     from core.tick import start_tick_loop
     stop = threading.Event()
-    start_tick_loop(settings, stop, settings.tick_interval_minutes * 60)
+    start_tick_loop(settings, stop)  # 间隔每次从 settings 读取，看板修改后自动生效
     return stop
 
 
@@ -551,6 +551,19 @@ def _status_tab():
         white-space: normal !important; overflow: visible !important; word-break: break-all; }
     div[data-testid="stMetricLabel"] p { font-size: 0.8rem !important; white-space: normal !important; }
     </style>""", unsafe_allow_html=True)
+    with st.form("tick_interval_form"):
+        ti1, ti2 = st.columns([3, 1])
+        new_minutes = ti1.number_input("后台 tick 间隔（分钟）", min_value=1, max_value=1440,
+                                       value=int(interval), step=1, key="tick_interval_input",
+                                       help="修改后约 5 秒内生效，无需重启看板")
+        save_interval = ti2.form_submit_button("保存间隔")
+    if save_interval:
+        if call(api.set_tick_interval, settings, int(new_minutes)) is not None:
+            st.session_state["tick_interval_msg"] = f"后台 tick 间隔已改为 {int(new_minutes)} 分钟，约 5 秒内生效"
+            st.rerun()
+    if msg := st.session_state.pop("tick_interval_msg", None):
+        st.success(msg)
+
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("最后活动", fmt_time(tk.get("last_activity_at")))
     c2.metric("上次 tick 结束", fmt_time(tk.get("tick_finished_at")))

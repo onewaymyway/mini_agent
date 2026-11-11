@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
@@ -106,20 +107,30 @@ def _run_tick(settings: Settings, now: Optional[datetime], ctx) -> TickReport:
     return out
 
 
-def start_tick_loop(settings: Settings, stop: threading.Event, interval_sec: int) -> threading.Thread:
-    """后台线程：每隔 interval_sec 秒执行一次 tick，直到 stop 被置位。
+def start_tick_loop(settings: Settings, stop: threading.Event, interval_sec: Optional[float] = None) -> threading.Thread:
+    """后台线程：按间隔执行 tick，直到 stop 被置位。
 
-    由 Streamlit 看板在进程内启动；单次 tick 失败已记入状态文件，循环不会退出。
+    interval_sec 为空时，每次判断都读取 settings.tick_interval_minutes（看板可在线修改），
+    修改后最迟约 5 秒内生效。单次 tick 失败已记入状态文件，循环不会退出。
     """
     tick_status.loop_started(settings)
 
+    def current_interval() -> float:
+        if interval_sec is not None:
+            return float(interval_sec)
+        return float(settings.tick_interval_minutes) * 60.0
+
     def loop():
+        last: Optional[float] = None
         while not stop.is_set():
-            try:
-                tick(settings)
-            except Exception as exc:  # noqa: BLE001 - 循环不能因单次失败退出
-                print(f"[tick] 失败: {type(exc).__name__}: {exc}")
-            stop.wait(interval_sec)
+            now = time.monotonic()
+            if last is None or now - last >= current_interval():
+                last = now
+                try:
+                    tick(settings)
+                except Exception as exc:  # noqa: BLE001 - 循环不能因单次失败退出
+                    print(f"[tick] 失败: {type(exc).__name__}: {exc}")
+            stop.wait(max(0.05, min(5.0, current_interval())))
 
     th = threading.Thread(target=loop, name="info_hub-tick", daemon=True)
     th.start()
