@@ -24,6 +24,10 @@
     {
       "id": "netease_news",
       "enabled": true
+    },
+    {
+      "id": "xiaohongshu_hot",
+      "enabled": false
     }
   ]
 }

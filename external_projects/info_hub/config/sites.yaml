@@ -11,3 +11,9 @@ sites:
     login_url: https://www.zhihu.com/signin
     check_url: https://www.zhihu.com/hot
     expired_pattern: /signin
+  xiaohongshu:
+    # 登录页与登录失效特征需以本机实际页面为准；若登录检测误判，请调整 expired_pattern 或 check_url
+    name: 小红书
+    login_url: https://www.xiaohongshu.com/explore
+    check_url: https://www.xiaohongshu.com/explore
+    expired_pattern: /login

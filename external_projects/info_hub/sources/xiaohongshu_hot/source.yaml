@@ -1,0 +1,26 @@
+# 小红书热点（网页版，浏览器抓取，需要先登录一次：python cli.py login xiaohongshu）。
+# 状态：默认停用。页面结构尚未确认，请先运行 xhs_probe.py 获取真实 DOM，再填写 request.url、
+# browser.wait_selector 与 parse 中的选择器，然后把 enabled 改为 true。
+# 注意：小红书无公开热榜接口，网页内容依赖登录态与前端渲染，页面改版可能导致选择器失效。
+id: xiaohongshu_hot
+name: 小红书热点
+category: hot_community
+kind: hot_list
+adapter: html_list
+enabled: false
+schedule: {every: 1h}
+request:
+  url: https://www.xiaohongshu.com/explore   # 待探测确认热点所在页面
+browser:
+  required: true
+  site: xiaohongshu
+  headless: true
+  wait_selector: "TODO-待探测"
+parse:
+  list_selector: "TODO-待探测"
+  fields:
+    title: "TODO-待探测"
+    url: "TODO-待探测@href"
+policy:
+  max_items: 30
+tags: [小红书, 热点]
