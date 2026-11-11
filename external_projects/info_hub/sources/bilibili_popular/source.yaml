@@ -12,6 +12,7 @@ request:
 parse:
   items_path: data.list
   url_template: "https://www.bilibili.com/video/{bvid}"
-  fields: {title: title, heat: stat.view, summary: desc}
+  time_format: unix
+  fields: {title: title, heat: stat.view, summary: desc, published_at: pubdate}
 policy: {max_items: 50}
 tags: [B站, 热门]

@@ -12,6 +12,7 @@
       heat: hot_value
       summary: desc
     url_template: "https://example.com/p/{id}"   # 可选：接口不给链接时拼接，{路径} 取条目字段并做 URL 编码
+    time_format: unix                            # 可选：published_at 字段为 Unix 时间戳（秒或毫秒）时转换
   request.headers: 可选，额外请求头（如 Referer / User-Agent），写在 request.headers 映射里
 
 嵌套示例（列表套列表）：items_path: data.cards.0.content.*.content
@@ -20,6 +21,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from urllib.parse import quote
 from typing import Any, Optional
 
@@ -94,6 +96,20 @@ def _brief(obj: Any, limit: int = 400) -> str:
     except (TypeError, ValueError):
         text = repr(obj)
     return text if len(text) <= limit else text[:limit] + "...(截断)"
+
+
+def _format_unix(value: str) -> Optional[str]:
+    """Unix 时间戳（秒，或毫秒）转为本地时间 'YYYY-MM-DD HH:MM:SS'；无法解析返回 None。"""
+    try:
+        ts = float(value)
+    except (TypeError, ValueError):
+        return None
+    if ts > 1e11:  # 毫秒
+        ts /= 1000.0
+    try:
+        return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _as_text(value: Any) -> str:
@@ -190,6 +206,9 @@ class JsonApiAdapter(Adapter):
             url_value = _optional_field(obj, fields, "url") or ""
             if not url_value and spec.parse.get("url_template"):
                 url_value = _render_template(str(spec.parse["url_template"]), obj)
+            published = _optional_field(obj, fields, "published_at")
+            if published and spec.parse.get("time_format") == "unix":
+                published = _format_unix(published)
             items.append(
                 RawItem(
                     title=title,
@@ -197,7 +216,7 @@ class JsonApiAdapter(Adapter):
                     rank=len(items) + 1,
                     heat=_optional_field(obj, fields, "heat"),
                     summary=_optional_field(obj, fields, "summary") or "",
-                    published_at=_optional_field(obj, fields, "published_at"),
+                    published_at=published,
                 )
             )
         if not items:

@@ -426,8 +426,8 @@ with tab_results:
                 rows = [it for it in snap["items"] if kw in (it.get("title") or "") or kw in (it.get("summary") or "")]
                 if rows:
                     st.dataframe(pd.DataFrame([{
-                        "排名": it.get("rank"), "标题": it.get("title"), "热度": it.get("heat"),
-                        "摘要": it.get("summary"), "链接": it.get("url")} for it in rows]),
+                        "排名": it.get("rank"), "标题": it.get("title"), "发布时间": it.get("published_at") or "",
+                        "热度": it.get("heat"), "摘要": it.get("summary"), "链接": it.get("url")} for it in rows]),
                         hide_index=True, use_container_width=True,
                         column_config={"链接": st.column_config.LinkColumn("链接", display_text="打开")})
                 else:

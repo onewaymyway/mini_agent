@@ -12,6 +12,7 @@ request:
 parse:
   items_path: data.realtime
   url_template: "https://s.weibo.com/weibo?q=%23{word}%23"
-  fields: {title: word, heat: num, summary: label_name}
+  time_format: unix
+  fields: {title: word, heat: num, summary: label_name, published_at: onboard_time}  # 上榜时间字段名未经实测，取不到则为空
 policy: {max_items: 50}
 tags: [微博, 热榜]

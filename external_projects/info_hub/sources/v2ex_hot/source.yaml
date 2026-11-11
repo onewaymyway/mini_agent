@@ -10,6 +10,7 @@ request:
   url: https://www.v2ex.com/api/topics/hot.json
   headers: {User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"}
 parse:
-  fields: {title: title, url: url, heat: replies, summary: content}
+  time_format: unix
+  fields: {title: title, url: url, heat: replies, summary: content, published_at: created}
 policy: {max_items: 30}
 tags: [V2EX, 技术]

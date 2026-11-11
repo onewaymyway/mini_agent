@@ -46,5 +46,28 @@ class JsonApiPathTests(unittest.TestCase):
         self.assertIn("raw_head", r.meta["debug"])
 
 
+class UnixTimeTests(unittest.TestCase):
+    def _spec(self):
+        s = _spec("l", {"title": "title", "published_at": "ts"})
+        s.parse["time_format"] = "unix"
+        return s
+
+    def test_seconds_converted(self):
+        from datetime import datetime
+        r = _run(self._spec(), {"l": [{"title": "a", "ts": 1700000000}]})
+        self.assertEqual(r.items[0].published_at,
+                         datetime.fromtimestamp(1700000000).strftime("%Y-%m-%d %H:%M:%S"))
+
+    def test_milliseconds_converted(self):
+        from datetime import datetime
+        r = _run(self._spec(), {"l": [{"title": "a", "ts": 1700000000000}]})
+        self.assertEqual(r.items[0].published_at,
+                         datetime.fromtimestamp(1700000000).strftime("%Y-%m-%d %H:%M:%S"))
+
+    def test_missing_time_is_none(self):
+        r = _run(self._spec(), {"l": [{"title": "a"}]})
+        self.assertIsNone(r.items[0].published_at)
+
+
 if __name__ == "__main__":
     unittest.main()
