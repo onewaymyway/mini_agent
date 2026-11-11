@@ -98,8 +98,8 @@ with st.sidebar:
             st.rerun()
 
 st.title("信息看板")
-tab_reports, tab_sources, tab_subs, tab_add, tab_runs, tab_login = st.tabs(
-    ["报告", "信息源", "订阅", "添加信息源", "运行记录", "登录"])
+tab_reports, tab_sources, tab_results, tab_subs, tab_add, tab_runs, tab_login = st.tabs(
+    ["报告", "信息源", "抓取结果", "订阅", "添加信息源", "运行记录", "登录"])
 
 
 # ---------- 报告 ----------
@@ -385,6 +385,53 @@ with tab_add:
                             st.session_state.pop("draft_id", None)
                             st.success(f"已添加信息源 {res['id']}")
                             st.rerun()
+
+
+# ---------- 抓取结果 ----------
+with tab_results:
+    _srcs = [x for x in (call(api.list_sources, settings) or {"sources": []})["sources"]
+             if not x.get("config_errors")]
+    if not _srcs:
+        st.info("还没有信息源。")
+    else:
+        _names = {x["id"]: f"{x['name']}（{x['id']}）" for x in _srcs}
+        rc1, rc2 = st.columns([2, 2])
+        sid = rc1.selectbox("信息源", list(_names), format_func=lambda k: _names[k], key="res_src")
+        snaps = (call(api.list_snapshots, settings, sid) or {"snapshots": []})["snapshots"]
+        if not snaps:
+            st.info("该信息源还没有抓取结果。到“信息源”页签点“立即抓取”，或在终端运行 python cli.py run " + sid)
+        else:
+            labels = {x["id"]: f"{fmt_time(x['fetched_at'])} · {x['item_count']} 条 · 新增 {x['new_count']}" for x in snaps}
+            snap_id = rc2.selectbox("抓取时间", list(labels), format_func=lambda k: labels[k], key="res_snap")
+            snap = call(api.read_snapshot, settings, sid, snap_id)
+            if snap:
+                st.caption(f"抓取于 {fmt_time(snap['fetched_at'])}，共 {snap['item_count']} 条，新增 {snap['new_count']} 条")
+                ch = snap["changes"]
+                titles = {it.get("id"): it.get("title", "") for it in snap["items"]}
+                if ch.get("new") or ch.get("rising") or ch.get("falling") or ch.get("dropped"):
+                    for key, label in (("new", "🆕 新上榜/新增"), ("rising", "🔺 上升"),
+                                       ("falling", "🔻 下降"), ("dropped", "⬇️ 掉出")):
+                        entries = ch.get(key) or []
+                        if entries:
+                            with st.expander(f"{label}（{len(entries)}）"):
+                                for e in entries:
+                                    t = e.get("title") or titles.get(e.get("id")) or e.get("id", "")
+                                    extra = ""
+                                    if "to" in e and "from" in e:
+                                        extra = f"（{e['from']} → {e['to']}）"
+                                    elif "from" in e:
+                                        extra = f"（原第 {e['from']} 名）"
+                                    st.write(f"- {t}{extra}")
+                kw = st.text_input("按标题过滤", key="res_kw").strip()
+                rows = [it for it in snap["items"] if kw in (it.get("title") or "") or kw in (it.get("summary") or "")]
+                if rows:
+                    st.dataframe(pd.DataFrame([{
+                        "排名": it.get("rank"), "标题": it.get("title"), "热度": it.get("heat"),
+                        "摘要": it.get("summary"), "链接": it.get("url")} for it in rows]),
+                        hide_index=True, use_container_width=True,
+                        column_config={"链接": st.column_config.LinkColumn("链接", display_text="打开")})
+                else:
+                    st.info("没有匹配的条目。")
 
 
 # ---------- 运行记录 ----------

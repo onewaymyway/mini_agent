@@ -191,6 +191,43 @@ def item_speech(settings: Settings, source_id: str, item_id: str) -> dict[str, A
     raise ApiError(404, "条目不存在")
 
 
+# ---------- 抓取结果 ----------
+_SNAP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}/\d{6}\.json$")
+
+
+def list_snapshots(settings: Settings, source_id: str, limit: int = 30) -> dict[str, Any]:
+    """某信息源最近的抓取快照（新到旧）。快照 id 形如 2026-11-11/124530.json。"""
+    base = settings.paths.raw_dir / source_id
+    if not base.is_dir() or source_id != Path(source_id).name:
+        return {"source_id": source_id, "snapshots": []}
+    files = sorted(base.glob("*/*.json"), reverse=True)[:max(1, limit)]
+    rows = []
+    for f in files:
+        data = read_json(f, default={}) or {}
+        rows.append({"id": f"{f.parent.name}/{f.name}", "fetched_at": data.get("fetched_at"),
+                     "item_count": data.get("item_count"), "new_count": data.get("new_count")})
+    return {"source_id": source_id, "snapshots": rows}
+
+
+def read_snapshot(settings: Settings, source_id: str, snapshot_id: str | None = None) -> dict[str, Any]:
+    """读取一次抓取的完整结果；snapshot_id 为空取最新。"""
+    if source_id != Path(source_id).name or not source_id:
+        raise ApiError(400, "信息源 id 不合法")
+    if snapshot_id is None:
+        snaps = list_snapshots(settings, source_id, 1)["snapshots"]
+        if not snaps:
+            raise ApiError(404, "该信息源还没有抓取结果")
+        snapshot_id = snaps[0]["id"]
+    if not _SNAP_RE.fullmatch(snapshot_id):
+        raise ApiError(400, "快照 id 不合法")
+    data = read_json(settings.paths.raw_dir / source_id / snapshot_id, default=None)
+    if not isinstance(data, dict):
+        raise ApiError(404, "抓取结果不存在")
+    return {"snapshot_id": snapshot_id, "source_id": source_id, "fetched_at": data.get("fetched_at"),
+            "item_count": data.get("item_count"), "new_count": data.get("new_count"),
+            "changes": data.get("changes") or {}, "items": data.get("items") or []}
+
+
 # ---------- 运行记录 ----------
 def list_runs(settings: Settings, day: str | None = None) -> dict[str, Any]:
     if day is None:

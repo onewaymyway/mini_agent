@@ -65,11 +65,25 @@ class StreamlitAppTests(unittest.TestCase):
         root = make_project({})
         at = run_app(root)
         self.assertEqual(len(at.exception), 0, [e.value for e in at.exception])
-        labels = [t.label for t in at.tabs]  # 含嵌套子页签，只校验顶层六个按顺序存在
-        top = ["报告", "信息源", "订阅", "添加信息源", "运行记录", "登录"]
+        labels = [t.label for t in at.tabs]  # 含嵌套子页签，只校验顶层七个按顺序存在
+        top = ["报告", "信息源", "抓取结果", "订阅", "添加信息源", "运行记录", "登录"]
         positions = [labels.index(t) for t in top]
         self.assertEqual(positions, sorted(positions))
         self.assertTrue(any("还没有报告" in i.value for i in at.info))
+
+    def test_results_tab_shows_latest_snapshot(self):
+        root = make_project({"news_a": SRC})
+        settings = load_settings(root)
+        spec = load_sources(settings).specs["news_a"]
+        run_source(spec, settings, FetchContext(http_get=lambda u, **k: RSS))
+        at = run_app(root)
+        self.assertEqual(len(at.exception), 0, [e.value for e in at.exception])
+        self.assertTrue(any("共 2 条" in c.value for c in at.caption), [c.value for c in at.caption])
+        self.assertTrue(any("看板新闻甲" in str(df.value) for df in at.dataframe))
+
+    def test_results_tab_without_snapshot_shows_hint(self):
+        at = run_app(make_project({"news_a": SRC}))
+        self.assertTrue(any("还没有抓取结果" in i.value for i in at.info))
 
     def test_sources_and_reports_are_shown(self):
         root = make_project({"news_a": SRC})
