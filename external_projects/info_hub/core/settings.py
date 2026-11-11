@@ -53,7 +53,7 @@ class Paths:
 class Settings:
     paths: Paths
     defaults: dict[str, Any]
-    reports: list[dict[str, Any]]
+    base_reports: list[dict[str, Any]]
     categories: list[dict[str, str]]
     raw: dict[str, Any] = None  # type: ignore[assignment]
 
@@ -69,17 +69,39 @@ class Settings:
             return override
         return int(self.defaults.get("tick_interval_minutes", 5))
 
+    @property
+    def reports(self) -> list[dict[str, Any]]:
+        """报告计划（已合并看板修改的间隔、时刻与窗口）。每次访问都是最新值。"""
+        overrides = read_runtime_config(self.paths.state_dir / "runtime_config.json").get("reports") or {}
+        out = []
+        for plan in self.base_reports:
+            merged = dict(plan)
+            o = overrides.get(plan.get("id")) or {}
+            for key in ("every", "at"):
+                if key in o and key in plan:           # 不允许 every 与 at 互相切换
+                    merged[key] = o[key]
+            if "window" in o and ("every" in plan or "at" in plan):
+                merged["window"] = o["window"]
+            out.append(merged)
+        return out
+
 
 TICK_INTERVAL_MIN = 1
 TICK_INTERVAL_MAX = 1440
 
 
+def read_runtime_config(path: Path) -> dict[str, Any]:
+    """读取看板保存的运行时配置（data/state/runtime_config.json）；缺失或损坏时返回空字典。"""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def _read_tick_override(path: Path) -> int | None:
     """读取运行时覆盖值；文件不存在或内容不合法时返回 None（回退到 settings.yaml）。"""
-    try:
-        value = json.loads(path.read_text(encoding="utf-8")).get("tick_interval_minutes")
-    except (OSError, ValueError, AttributeError):
-        return None
+    value = read_runtime_config(path).get("tick_interval_minutes")
     if isinstance(value, int) and TICK_INTERVAL_MIN <= value <= TICK_INTERVAL_MAX:
         return value
     return None
@@ -107,7 +129,7 @@ def load_settings(root: Path | None = None) -> Settings:
     return Settings(
         paths=paths,
         defaults=cfg.get("defaults", {}),
-        reports=cfg.get("reports", []),
+        base_reports=cfg.get("reports", []),
         categories=categories,
         raw=cfg,
     )

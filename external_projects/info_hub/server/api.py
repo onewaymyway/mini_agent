@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -487,7 +487,8 @@ def tick_status(settings: Settings) -> dict[str, Any]:
 
     reports = []
     for plan in settings.reports:
-        reports.append({"id": plan["id"], "every": plan.get("every") or plan.get("at"),
+        reports.append({"id": plan["id"], "every": plan.get("every"), "at": plan.get("at"),
+                        "window": plan.get("window"),
                         "last_run": sched.get("reports", {}).get(plan["id"])})
 
     return {
@@ -574,8 +575,50 @@ def set_tick_interval(settings: Settings, minutes: Any) -> dict[str, Any]:
         raise ApiError(400, "间隔必须是整数（分钟）")
     if not TICK_INTERVAL_MIN <= value <= TICK_INTERVAL_MAX:
         raise ApiError(400, f"间隔必须在 {TICK_INTERVAL_MIN} 到 {TICK_INTERVAL_MAX} 分钟之间")
-    atomic_write_json(settings.paths.state_dir / "runtime_config.json", {
-        "tick_interval_minutes": value,
-        "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-    })
+    _save_runtime(settings, {"tick_interval_minutes": value})
     return {"tick_interval_minutes": value}
+
+
+def _save_runtime(settings: Settings, updates: dict[str, Any]) -> None:
+    """合并写入运行时配置，保留其他已保存的覆盖项。"""
+    from core.settings import read_runtime_config
+    path = settings.paths.state_dir / "runtime_config.json"
+    data = read_runtime_config(path)
+    data.update(updates)
+    data["updated_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+    atomic_write_json(path, data)
+
+
+# ---------- 报告计划的间隔、时刻与窗口 ----------
+def set_report_schedule(settings: Settings, plan_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    """修改报告计划。interval 类计划可改 every；at 类计划可改 at；所有计划可改 window。"""
+    from core.scheduler import parse_at, parse_interval
+    from core.settings import read_runtime_config
+    base = next((p for p in settings.base_reports if p.get("id") == plan_id), None)
+    if base is None:
+        raise ApiError(404, f"未找到报告计划 {plan_id}")
+    change: dict[str, Any] = {}
+    try:
+        if "every" in base and body.get("every") not in (None, ""):
+            every = str(body["every"]).strip()
+            if parse_interval(every) < timedelta(minutes=1):
+                raise ValueError("间隔不能短于 1 分钟")
+            change["every"] = every
+        if "at" in base and body.get("at") not in (None, ""):
+            at = str(body["at"]).strip()
+            parse_at(at)
+            change["at"] = at
+        if body.get("window") not in (None, "") and ("every" in base or "at" in base):
+            window = str(body["window"]).strip()
+            if parse_interval(window) < timedelta(minutes=1):
+                raise ValueError("窗口不能短于 1 分钟")
+            change["window"] = window
+    except ValueError as exc:
+        raise ApiError(400, str(exc))
+    if not change:
+        raise ApiError(400, "没有可保存的内容")
+    current = read_runtime_config(settings.paths.state_dir / "runtime_config.json")
+    reports = dict(current.get("reports") or {})
+    reports[plan_id] = {**(reports.get(plan_id) or {}), **change}
+    _save_runtime(settings, {"reports": reports})
+    return {"id": plan_id, **change}

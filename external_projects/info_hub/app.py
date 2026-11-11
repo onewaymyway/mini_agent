@@ -590,8 +590,31 @@ def _status_tab():
     if res["reports"]:
         st.subheader("报告计划")
         st.dataframe(pd.DataFrame([{
-            "计划": r["id"], "频率": r["every"] or "", "上次生成": fmt_time(r["last_run"]) if r["last_run"] else "从未",
+            "计划": r["id"],
+            "类型": "按间隔" if r.get("every") else f"每日 {r.get('at')}",
+            "间隔/时刻": r.get("every") or r.get("at") or "",
+            "窗口": r.get("window") or "",
+            "上次生成": fmt_time(r["last_run"]) if r["last_run"] else "从未",
         } for r in res["reports"]]), hide_index=True, use_container_width=True)
+        for r in res["reports"]:
+            with st.form(f"report_form_{r['id']}"):
+                st.markdown(f"**修改报告计划：{r['id']}**")
+                rc1, rc2 = st.columns(2)
+                body: dict[str, Any] = {}
+                if r.get("every"):
+                    body["every"] = rc1.text_input("间隔（如 3h、30m、1d）", value=r["every"],
+                                                   key=f"rep_every_{r['id']}")
+                if r.get("at"):
+                    body["at"] = rc1.text_input("每日时刻（HH:MM）", value=r["at"], key=f"rep_at_{r['id']}")
+                if r.get("window") or r.get("every") or r.get("at"):
+                    body["window"] = rc2.text_input("统计窗口（如 3h、24h）", value=r.get("window") or "",
+                                                    key=f"rep_win_{r['id']}")
+                if st.form_submit_button("保存报告计划"):
+                    if call(api.set_report_schedule, settings, r["id"], body) is not None:
+                        st.session_state["report_msg"] = f"报告计划 {r['id']} 已保存，下一轮 tick 起生效"
+                        st.rerun()
+        if msg := st.session_state.pop("report_msg", None):
+            st.success(msg)
     errors = tk.get("errors") or []
     st.subheader(f"最近错误（{len(errors)}）")
     if errors:
