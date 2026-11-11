@@ -57,6 +57,9 @@ def digest_to_segments(digest: dict[str, Any]) -> list[dict[str, str]]:
         f"异常 {s.get('error_count', 0)} 次。",
         "overview",
     )
+    for sub in digest.get("subscriptions", []):
+        prev = f"，上次是{sub.get('previous_title')}" if sub.get("previous_title") else ""
+        segs += _seg(f"订阅更新：{sub.get('source_name', '')}更新至{sub.get('title', '')}{prev}。", "subscription")
     for err in digest.get("errors", []):
         segs += _seg(f"异常：{err.get('source_id', '')}，{err.get('error', '')}", "error")
 

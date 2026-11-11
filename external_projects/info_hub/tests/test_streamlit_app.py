@@ -31,7 +31,33 @@ def run_app(root: Path) -> AppTest:
     return at
 
 
+def _feed(*titles):
+    items = "".join(f"<item><title>{t}</title><link>https://n/{t}</link></item>" for t in titles)
+    return f'<?xml version="1.0"?><rss version="2.0"><channel>{items}</channel></rss>'.encode("utf-8")
+
+
 class StreamlitAppTests(unittest.TestCase):
+    def test_subscription_tab_shows_cursor_and_updates(self):
+        src = {"id": "novel_a", "name": "某小说", "category": "news", "kind": "subscription",
+               "adapter": "subscription", "request": {"url": "https://n/feed"},
+               "subscription": {"checker": "feed_latest"}}
+        root = make_project({"novel_a": src})
+        settings = load_settings(root)
+        spec = load_sources(settings).specs["novel_a"]
+        run_source(spec, settings, FetchContext(http_get=lambda u, **k: _feed("第1章")))
+        run_source(spec, settings, FetchContext(http_get=lambda u, **k: _feed("第2章", "第1章")))
+        at = run_app(root)
+        self.assertEqual(len(at.exception), 0, [e.value for e in at.exception])
+        rendered = " ".join(m.value for m in at.markdown)
+        self.assertIn("某小说", rendered)
+        self.assertIn("当前进度", rendered)
+        self.assertIn("第2章", rendered)
+        self.assertIn("上次：第1章", rendered)
+
+    def test_subscription_tab_empty_hint(self):
+        at = run_app(make_project({}))
+        self.assertTrue(any("还没有订阅源" in i.value for i in at.info))
+
     def tearDown(self):
         os.environ.pop("INFO_HUB_ROOT", None)
 
@@ -39,8 +65,8 @@ class StreamlitAppTests(unittest.TestCase):
         root = make_project({})
         at = run_app(root)
         self.assertEqual(len(at.exception), 0, [e.value for e in at.exception])
-        labels = [t.label for t in at.tabs]  # 含嵌套子页签，只校验顶层五个按顺序存在
-        top = ["报告", "信息源", "添加信息源", "运行记录", "登录"]
+        labels = [t.label for t in at.tabs]  # 含嵌套子页签，只校验顶层六个按顺序存在
+        top = ["报告", "信息源", "订阅", "添加信息源", "运行记录", "登录"]
         positions = [labels.index(t) for t in top]
         self.assertEqual(positions, sorted(positions))
         self.assertTrue(any("还没有报告" in i.value for i in at.info))

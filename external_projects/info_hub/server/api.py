@@ -63,6 +63,47 @@ def list_sources(settings: Settings) -> dict[str, Any]:
     return {"sources": rows, "categories": settings.categories}
 
 
+def list_subscriptions(settings: Settings, history: int = 5) -> dict[str, Any]:
+    """订阅页数据：每个订阅源的当前游标（来自状态文件）与最近几次更新。"""
+    from core.store import read_json as _rj, read_jsonl
+
+    loaded = load_sources(settings)
+    sched = _rj(settings.paths.state_dir / "_scheduler.json", default={}) or {}
+    last_runs = sched.get("sources", {})
+    rows = []
+    for sid, spec in sorted(loaded.specs.items()):
+        if spec.kind != "subscription":
+            continue
+        state = _rj(settings.paths.state_dir / f"{sid}.json", default={}) or {}
+        cur = state.get("cursor") or {}
+        updates: list[dict[str, Any]] = []
+        base = settings.paths.items_dir / sid
+        if base.exists():
+            for path in sorted(base.glob("*.jsonl"), reverse=True):
+                for it in reversed(list(read_jsonl(path))):
+                    updates.append({"title": it.get("title", ""), "url": it.get("url", ""),
+                                    "fetched_at": it.get("fetched_at", ""),
+                                    "previous_title": it.get("extra", {}).get("previous_title", "")})
+                    if len(updates) >= history:
+                        break
+                if len(updates) >= history:
+                    break
+        rows.append({
+            "id": sid,
+            "name": spec.name,
+            "enabled": spec.enabled,
+            "checker": (spec.raw.get("subscription") or {}).get("checker"),
+            "every": spec.schedule.get("every", settings.defaults.get("schedule_every", "60m")),
+            "current_title": cur.get("title"),
+            "current_url": cur.get("url"),
+            "checked_at": cur.get("checked_at"),
+            "updated_at": cur.get("updated_at"),
+            "last_run": last_runs.get(sid),
+            "recent_updates": updates,
+        })
+    return {"subscriptions": rows}
+
+
 def set_source_enabled(settings: Settings, source_id: str, enabled: bool) -> dict[str, Any]:
     path = settings.paths.source_index
     index = read_json(path, default={"version": 1, "sources": []}) or {"sources": []}

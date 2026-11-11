@@ -110,6 +110,23 @@ def build_digest(settings: Settings, plan: dict[str, Any], now: datetime) -> dic
     changes = collect_latest_changes(settings, start, end)
     errors = collect_errors(settings, start, end)
 
+    # 订阅更新单独成节、置顶显示，不再出现在分类小节里
+    sub_ids = {sid for sid, sp in specs.items() if sp.kind == "subscription"}
+    subscriptions = [
+        {
+            "source_id": it["source_id"],
+            "source_name": specs[it["source_id"]].name,
+            "title": it["title"],
+            "url": it.get("url", ""),
+            "current": it.get("extra", {}).get("cursor", ""),
+            "previous_title": it.get("extra", {}).get("previous_title", ""),
+            "fetched_at": it.get("fetched_at", ""),
+        }
+        for it in sorted(items, key=lambda x: x.get("fetched_at", ""))
+        if it["source_id"] in sub_ids
+    ]
+    items = [it for it in items if it["source_id"] not in sub_ids]
+
     by_cat: dict[str, dict[str, list]] = {}
     for it in items:
         by_cat.setdefault(it["category"], {}).setdefault(it["source_id"], []).append(it)
@@ -156,7 +173,9 @@ def build_digest(settings: Settings, plan: dict[str, Any], now: datetime) -> dic
             "new_items": len(items),
             "source_count": len({i["source_id"] for i in items} | set(changes)),
             "error_count": len(errors),
+            "subscription_updates": len(subscriptions),
         },
+        "subscriptions": subscriptions,
         "sections": sections,
         "errors": errors,
     }
@@ -171,6 +190,14 @@ def render_markdown(digest: dict[str, Any], title_time: str) -> str:
     lines.append("## 概览")
     lines.append(f"- 本窗口新增条目：{s['new_items']} 条，涉及信息源 {s['source_count']} 个，异常 {s['error_count']} 次")
     lines.append("")
+    subs = digest.get("subscriptions", [])
+    if subs:
+        lines.append("## 订阅更新")
+        for sub in subs:
+            link = f"[{sub['title']}]({sub['url']})" if sub["url"] else sub["title"]
+            prev = f"（上次：{sub['previous_title']}）" if sub["previous_title"] else ""
+            lines.append(f"- 《{sub['source_name']}》更新至 {link}{prev}")
+        lines.append("")
     if digest["errors"]:
         lines.append("## 异常")
         for e in digest["errors"]:
@@ -202,7 +229,7 @@ def render_markdown(digest: dict[str, Any], title_time: str) -> str:
             elif not hot:
                 lines.append("- 本窗口无新增")
             lines.append("")
-    if not digest["sections"]:
+    if not digest["sections"] and not subs:
         lines.append("本窗口没有可展示的内容。")
         lines.append("")
     return "\n".join(lines)

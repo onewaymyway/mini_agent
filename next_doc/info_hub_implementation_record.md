@@ -18,7 +18,7 @@
 | P7 | 添加信息源（表单 / 对话生成 / 查重 / provider 选择） | 已完成（真实模型调用未在沙箱验证） |
 | 补充 | Streamlit 主看板 | 已完成 |
 | 清理 | 移除旧 HTML 看板，只保留 Streamlit | 已完成 |
-| P8 | 订阅源 | 待开始 |
+| P8 | 订阅源 | 已完成（具体站点待定，通用检查器已就绪） |
 | P9 | 健壮性与收尾 | 待开始 |
 
 ## 待确认事项的默认取值
@@ -399,3 +399,37 @@ Remove-Item -Force external_projects\info_hub\tests\test_api_and_server.py
 
 ### 未验证
 - 沙箱未做浏览器级的 Streamlit 页面截图复查，只有 AppTest 无头测试；看板 UI 本身本阶段未改动。
+
+
+---
+
+## P8：订阅源（已完成）
+
+### 站点未定的处理
+第 17 节“订阅站点范围”一直未回复，按本记录开头的默认值“先做 Checker 接口”：实现**通用**检查器，不绑定具体站点；之后确定站点时，多数只需写一份 `source.yaml`。
+
+### 交付内容
+- `checkers/`（新包，自动发现，与 adapters 同构）：`base.py`（`Checker`/`Cursor`/`CheckResult`）、`registry.py`、`wrapped.py`（包装现有列表适配器）、`feed_latest.py`（包装 rss）、`json_latest.py`（包装 json_api）、`html_latest.py`（包装 html_list，可走共享登录态）。包装时把 `max_items` 放宽到 1000，保证“从旧到新”排列的目录页不会因截断丢掉最新项。
+- `adapters/subscription.py`：调用 Checker → `order` 处理 → 关键词过滤 → 输出当前最新一条（`extra.cursor`）。校验：kind 必须为 subscription、checker 存在、order/关键词格式、并校验被包装适配器的配置。
+- `core/pipeline.py`：subscription 走游标比较而不是“已见去重”；首次只记基线（`notify_on_first` 可选开启）；变化才产生条目并带 `previous_title`；无候选不动游标。状态文件新增 `cursor` 字段。
+- `core/normalize.py`：订阅条目 id 以游标值为准。
+- `core/digest.py`：新增 `subscriptions` 与 `summary.subscription_updates`；markdown 新增置顶的“## 订阅更新”（形如“《某小说》更新至 第2章（上次：第1章）”）；订阅条目不再进入分类小节；只有订阅更新时不再显示“没有可展示的内容”。
+- `core/speech_text.py`：听报先读订阅更新（kind=subscription）。
+- `server/api.py::list_subscriptions`、`app.py` 新增“订阅”页签（当前进度、最近检查/更新、最近更新列表）。
+
+### 验证
+```
+python -m unittest discover -s tests -t .
+Ran 129 tests ... OK
+```
+新增 `tests/test_p8_subscription.py`（19 用例：注册与校验、基线→更新→无变化、游标回退、notify_on_first、关键词过滤、无候选保持游标、抓取失败保持状态、json oldest_first 且 max_items=3 不丢最新项、html_latest、报告/听报/api）与 `tests/test_streamlit_app.py` 两个订阅页用例（AppTest 无头）。测试全部使用本地假数据。
+
+### 测试中发现的问题
+- 自己写的测试数据里 RSS 链接用的是序号，导致不同章节 url 相同、游标不变——说明 `cursor_from: auto` 优先取 url：**如果站点的 url 不随章节变化，请改用 `cursor_from: title`**，已写入 PROJECT.md。
+- html 的 `title: ""` 不会取行自身文本（html_list 的既有行为），文档示例已改为 `list_selector: ".chapter li"` + `title: "a"`。
+
+### 未做 / 未验证
+- 表单与对话生成不支持创建订阅源（需手写 yaml）。
+- 真实站点（小说站、视频频道）与真实网络未验证；站点定下后再配置。
+- 看板订阅页只有无头测试，没有浏览器截图复查。
+- 订阅源与普通源共用调度间隔与失败处理；P9 的“连续失败降频/暂停”会一并覆盖订阅源。

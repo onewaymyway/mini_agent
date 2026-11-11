@@ -98,8 +98,8 @@ with st.sidebar:
             st.rerun()
 
 st.title("信息看板")
-tab_reports, tab_sources, tab_add, tab_runs, tab_login = st.tabs(
-    ["报告", "信息源", "添加信息源", "运行记录", "登录"])
+tab_reports, tab_sources, tab_subs, tab_add, tab_runs, tab_login = st.tabs(
+    ["报告", "信息源", "订阅", "添加信息源", "运行记录", "登录"])
 
 
 # ---------- 报告 ----------
@@ -198,6 +198,29 @@ with tab_sources:
                     st.success(f"抓取 {res['item_count']} 条，新增 {res['new_count']} 条")
                 else:
                     st.error(f"失败：{res['error']}")
+
+
+# ---------- 订阅 ----------
+with tab_subs:
+    subs = (call(api.list_subscriptions, settings) or {"subscriptions": []})["subscriptions"]
+    if not subs:
+        st.info("还没有订阅源。订阅源的 kind 为 subscription，配置方式见 PROJECT.md“订阅源”一节。")
+    for sub in subs:
+        with st.container(border=True):
+            st.markdown(f"**{sub['name']}** · `{sub['id']}` · {sub['checker']} · 每 {sub['every']}"
+                        + ("" if sub["enabled"] else " · 已停用"))
+            if sub["current_title"]:
+                head = f"[{sub['current_title']}]({sub['current_url']})" if sub["current_url"] else sub["current_title"]
+                st.markdown(f"当前进度：{head}")
+                st.caption(f"最近检查 {fmt_time(sub['checked_at'])} · 最近更新 {fmt_time(sub['updated_at'])}")
+            else:
+                st.caption("尚未检查。到“信息源”页签点“抓取一次”记录基线。")
+            if sub["recent_updates"]:
+                st.markdown("最近更新：")
+                for u in sub["recent_updates"]:
+                    prev = f"（上次：{u['previous_title']}）" if u["previous_title"] else ""
+                    link = f"[{u['title']}]({u['url']})" if u["url"] else u["title"]
+                    st.markdown(f"- {fmt_time(u['fetched_at'])} {link}{prev}")
 
 
 # ---------- 添加信息源 ----------

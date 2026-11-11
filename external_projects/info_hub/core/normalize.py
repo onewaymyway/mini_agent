@@ -15,7 +15,9 @@ def now_iso() -> str:
 def item_key(spec: SourceSpec, raw: RawItem) -> str:
     """稳定 id：优先用 url，没有 url 时用标题哈希。"""
     dedup_by = spec.policy.get("dedup_by", "url")
-    if dedup_by == "title" or not raw.url:
+    if spec.kind == "subscription" and raw.extra.get("cursor"):
+        basis = str(raw.extra["cursor"])  # 订阅条目以游标值为准
+    elif dedup_by == "title" or not raw.url:
         basis = raw.title.strip()
     else:
         basis = raw.url.strip()

@@ -12,6 +12,12 @@ changes 字段说明（仅 hot_list 有排名类变化）：
 - rising / falling：与上一快照相比排名上升 / 下降，附带 from / to
 - dropped：上一快照存在、本次掉出榜单的条目
 对于 feed / recommend / custom，只输出 new，去重后的条目才写入 items。
+
+subscription（订阅）不走“已见去重”，而是比较游标：
+- state["cursor"] 保存 {value,title,url,checked_at,updated_at}；
+- 首次检查只记录基线（subscription.notify_on_first 为 true 时才产生更新）；
+- 游标变化才产生 1 条更新条目，extra.previous_cursor / previous_title 记录上一次的进度；
+- 候选为空（被过滤或页面无内容）时不改动游标。
 """
 from __future__ import annotations
 
@@ -73,6 +79,40 @@ def _hot_list_changes(items: list[dict[str, Any]], last: Optional[dict[str, Any]
     return {"first_snapshot": False, "new": new, "rising": rising, "falling": falling, "dropped": dropped}
 
 
+def _process_subscription(spec: SourceSpec, items: list[dict[str, Any]], state: dict[str, Any],
+                          fetched_at: str) -> PipelineResult:
+    prev = state.get("cursor")
+    new_state = dict(state)
+    new_state.setdefault("seen", {})
+    if not items:
+        return PipelineResult(new_items=[], changes={"no_candidate": True}, state=new_state)
+    cur = items[0]
+    value = str(cur.get("extra", {}).get("cursor", cur["id"]))
+    cursor = {"value": value, "title": cur["title"], "url": cur.get("url", ""),
+              "checked_at": fetched_at, "updated_at": fetched_at}
+    notify_first = bool((spec.raw.get("subscription") or {}).get("notify_on_first", False))
+    new_items: list[dict[str, Any]] = []
+    if prev is None:
+        changes: dict[str, Any] = {"first_snapshot": True, "updated": False,
+                                   "current": {"value": value, "title": cur["title"]}}
+        if notify_first:
+            new_items = [cur]
+            changes["updated"] = True
+    elif prev.get("value") != value:
+        cur = {**cur, "extra": {**cur.get("extra", {}), "previous_cursor": prev.get("value"),
+                                "previous_title": prev.get("title", "")}}
+        new_items = [cur]
+        changes = {"first_snapshot": False, "updated": True,
+                   "previous": {"value": prev.get("value"), "title": prev.get("title", "")},
+                   "current": {"value": value, "title": cur["title"]}}
+    else:
+        cursor["updated_at"] = prev.get("updated_at", fetched_at)
+        changes = {"first_snapshot": False, "updated": False,
+                   "current": {"value": value, "title": cur["title"]}}
+    new_state["cursor"] = cursor
+    return PipelineResult(new_items=new_items, changes=changes, state=new_state)
+
+
 def process(
     spec: SourceSpec,
     items: list[dict[str, Any]],
@@ -83,6 +123,8 @@ def process(
     """对本次抓取的条目做去重与变化计算，返回新状态（不写盘）。"""
     now = now or datetime.now().astimezone()
     state = state or empty_state(spec.id)
+    if spec.kind == "subscription":
+        return _process_subscription(spec, items, state, fetched_at)
     retain_days = int(spec.policy.get("retain_days", 14))
     seen = _prune_seen(dict(state.get("seen", {})), retain_days, now)
 

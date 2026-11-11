@@ -11,6 +11,7 @@
 - `config/sites.yaml`：需要登录的站点（登录地址、登录失效判定）
 - `config/llm.yaml`：对话生成信息源使用的 provider 配置来源（可选）
 - `adapters/`：适配器类型，自动发现；新增适配器只需新增模块
+- `checkers/`：订阅检查器（feed_latest / json_latest / html_latest），自动发现；新增订阅站点类型只需新增模块
 - `core/`：存储、流水线、浏览器会话、调度、报告
 - `data/`、`reports/`、`browser/profile/`：运行产物，已加入 .gitignore。`browser/profile/` 含登录凭据，勿分享
 
@@ -41,6 +42,7 @@ streamlit run app.py --server.port 8506
 - **报告**：选择报告，查看摘要与 Markdown 内容；整份听报，或选择单条条目朗读。
 - **信息源**：表格形式查看，勾选启用后点"保存启用状态"；选择信息源立即抓取。
 - **添加信息源**：表单添加（预览、保存），或对话生成（生成草稿、预览、按意见修改、确认、放弃）。
+- **订阅**：每个订阅源的当前进度、最近检查/更新时间、最近几次更新。
 - **运行记录**：按日期查看。
 - **登录**：查看站点登录状态与登录命令。
 
@@ -97,3 +99,43 @@ LLM 生成的 `script.py` 会在你点击"预览"或"确认添加"时运行，�
 - 静态检查会拒绝导入 `os`、`sys`、`subprocess`、`socket` 等模块，拒绝调用 `exec`、`eval`、`open`；
 - 这只是护栏，**不是沙箱**。请像审查代码一样阅读草稿中的脚本（位于 `data/drafts/<id>/script.py`）再确认；
 - 确认前可以放弃草稿，草稿目录中的脚本不会被调度器执行。
+
+
+## 订阅源（P8）
+
+订阅源用来跟踪“某个对象的最新进度”（小说最新章节、UP 主最新视频），只在**进度变化**时产生一条更新，并在报告顶部的“订阅更新”小节置顶显示（不再重复出现在分类小节里），听报时也会先读订阅更新。
+
+### 配置（`sources/<id>/source.yaml`）
+```yaml
+id: novel_a
+name: 某小说
+category: news
+kind: subscription          # 必须
+adapter: subscription       # 必须
+schedule: {every: 30m}
+request: {url: https://example.com/novel/123/chapters}
+parse:                      # 与 html_list 的写法相同
+  list_selector: ".chapter li"
+  fields: {title: "a", url: "a@href"}
+subscription:
+  checker: html_latest      # feed_latest(RSS/Atom) | json_latest(JSON 接口) | html_latest(HTML 页面，可走共享登录态)
+  order: newest_first       # 目录页从旧到新排列时写 oldest_first
+  cursor_from: auto         # 游标取值：auto(优先 url，其次标题) | url | title
+  include_keywords: []      # 非空时：标题（或 extra.author）命中任一才算候选
+  exclude_keywords: ["番外"] # 命中任一则排除
+  notify_on_first: false    # 首次检查是否也算更新（默认 false，只记录基线）
+```
+`feed_latest` 用 RSS 的 `request.url`；`json_latest` 用 `parse.items_path` 与 `parse.fields`（同 json_api）；`html_latest` 的 `browser.*` 写法同 html_list，需要登录时与其他源共用同一份登录态。
+
+### 行为
+- 每次检查取候选列表 → 按 `order` 与关键词过滤 → 取最新一条作为“当前游标”。
+- 游标保存在 `data/state/<id>.json` 的 `cursor` 字段（人可直接阅读）。**首次检查只记录基线，不算更新**（保守默认，避免第一次就刷出一条“更新”）。
+- 游标与上次不同才写入一条更新条目（`extra.previous_title` 记录上次进度）；游标回退再前进同样算变化，不会被“已见去重”吞掉。
+- 过滤后无候选、或抓取失败：不改动游标，失败照常进“异常”小节。
+
+### 新增一种订阅站点
+在 `checkers/` 新建模块，继承 `checkers.base.Checker`，设置 `name`，实现 `validate` 与 `check`（返回最新在前的 `Cursor` 列表）。无需改调度、报告或看板。多数“列表页”类站点直接用上述三种内置检查器即可。
+
+### 限制
+- 看板“添加信息源”表单暂不支持订阅源，需手写 `source.yaml` 并在 `sources/_index.json` 登记（对话生成同样未覆盖）。
+- 第一批具体站点未定，内置检查器是通用的；真实站点的选择器/接口需要在你的环境里调试。
