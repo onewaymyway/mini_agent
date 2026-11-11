@@ -16,6 +16,8 @@
 | P5 | 看板基础版（含 serve 常驻服务） | 已完成 |
 | P6 | 听报（Web Speech） | 已完成（语音输出需在本机确认） |
 | P7 | 添加信息源（表单 / 对话生成 / 查重 / provider 选择） | 已完成（真实模型调用未在沙箱验证） |
+| 补充 | Streamlit 主看板 | 已完成 |
+| 清理 | 移除旧 HTML 看板，只保留 Streamlit | 已完成 |
 | P8 | 订阅源 | 待开始 |
 | P9 | 健壮性与收尾 | 待开始 |
 
@@ -200,7 +202,7 @@ P3 与 P4 的改动中，`cli.py` 与 `core/runner.py` 两个文件同时包含�
 
 ---
 
-## P5：看板与常驻服务（已完成）
+## P5：看板与常驻服务（已完成；其中 HTML 前端与 HTTP 服务已在“清理”阶段移除）
 
 ### 交付内容
 - `server/api.py`：看板业务逻辑，与 HTTP 解耦。
@@ -348,5 +350,52 @@ P5 与 P6 的前端在同一组文件中（app.js 同时包含看板与播放器
 - **iframe 内的语音权限**：听报播放器运行在 components.html 的 iframe 中。用户点击"播放"按钮后应能正常发声，但需要在 Chrome/Edge 上实际确认。
 
 ### 与方案的偏差与说明
-- 旧的 HTML 看板（`cli.py serve`）保留，作为可选的旧版。两者共用同一套 API，行为一致，因此可以按需选用。
+- ~~旧的 HTML 看板（`cli.py serve`）保留，作为可选的旧版~~ ——**已在“清理”阶段移除**，见下文。
 - 为兼容 requirements 中声明的 `streamlit>=1.37`，没有改用较新的 `width="stretch"` 参数，因此 streamlit 1.67 会打印弃用提示。功能不受影响。
+
+
+---
+
+## 清理：移除旧 HTML 看板，只保留 Streamlit（已完成）
+
+### 动机
+P5/P6/P7 先做了原生 HTML 看板，随后补了 Streamlit 看板，两者并存会让每次功能改动都要维护两套界面。按要求删除旧 HTML 看板，只保留 Streamlit。
+
+### 删除
+- `ui/`（`index.html`、`app.js`、`app.css`）
+- `server/app.py`（标准库 HTTP 服务、路由表、自定义头与本机 Host 校验）
+- `cli.py serve` 子命令及 `cmd_serve`
+- `config/settings.yaml` 的 `server:` 块（host/port 8765）；`core/settings.py` 的 `server_host` / `server_port`
+- `project.yaml` 的 `serve` 入口（保留 `dashboard` 入口）
+- 测试：`tests/test_ui_smoke.py`（HTML 页面冒烟）、`tests/test_p7_http.py`、`tests/test_api_and_server.py` 中的 `ServerTests`（HTTP 层）
+
+### 保留与迁移
+- `server/api.py` **保留**：它是 Streamlit 看板调用的业务层，不含 HTTP。`server/__init__.py` 说明改为“业务 API”。
+- `start_tick_loop`（后台调度线程）原在 `server/app.py`，Streamlit 看板也在用，**迁到 `core/tick.py`**；`app.py` 改为 `from core.tick import start_tick_loop`。行为不变：单次 tick 失败只打印、不终止循环。
+- 测试：`tests/test_api_and_server.py` 的 `ApiTests` 保留并改名 `tests/test_api.py`；`test_p7_http.py` 的业务断言（无 provider 返回 503、草稿 404、表单创建后可列出）改为直接调用 api 层，落在新文件 `tests/test_p7_api.py`；新增 `tests/test_html_dashboard_removed.py`（旧文件不存在、`serve` 不可用、`project.yaml` 仅有 streamlit 看板、settings 无 server 块、`start_tick_loop` 能运行/停止/容忍失败）。
+- 随 HTTP 层一起删除的测试（自定义请求头 403、非本机 Host 拒绝、路径路由 404/405、静态文件目录穿越）只针对已移除的 HTTP 服务，不再适用。报告路径穿越的防护在 api 层（`_safe_report_path`），其测试 `test_report_path_traversal_rejected` 保留。
+
+### 行为变化（需知悉）
+- 不再有 `python cli.py serve`。需要“无界面常驻调度”时，用系统 cron / 计划任务每 5 分钟执行 `python cli.py tick`；有看板时调度随 Streamlit 进程运行。
+- 端口 8765 不再被本项目占用（主项目 HTTP API 默认端口也是 8765，此前两者配置易混淆）。
+
+### 验证
+```
+python -m unittest discover -s tests -t .
+Ran 108 tests ... OK
+```
+（含 `tests/test_streamlit_app.py` 的 AppTest 无头运行，确认 `app.py` 在移除 `server/app.py` 后仍可渲染。）
+
+### 覆盖解压后需手动删除的旧文件
+zip 覆盖不会删除文件。在 mini_agent 根目录执行（PowerShell）：
+```
+Remove-Item -Recurse -Force external_projects\info_hub\ui
+Remove-Item -Force external_projects\info_hub\server\app.py
+Remove-Item -Force external_projects\info_hub\tests\test_ui_smoke.py
+Remove-Item -Force external_projects\info_hub\tests\test_p7_http.py
+Remove-Item -Force external_projects\info_hub\tests\test_api_and_server.py
+```
+包内同时附带 `external_projects/info_hub/DELETED_FILES.txt` 记录这份清单。
+
+### 未验证
+- 沙箱未做浏览器级的 Streamlit 页面截图复查，只有 AppTest 无头测试；看板 UI 本身本阶段未改动。

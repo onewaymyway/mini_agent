@@ -60,14 +60,6 @@ class Settings:
         return {c["id"] for c in self.categories}
 
     @property
-    def server_host(self) -> str:
-        return str(self.raw.get("server", {}).get("host", "127.0.0.1"))
-
-    @property
-    def server_port(self) -> int:
-        return int(self.raw.get("server", {}).get("port", 8765))
-
-    @property
     def tick_interval_minutes(self) -> int:
         return int(self.defaults.get("tick_interval_minutes", 5))
 

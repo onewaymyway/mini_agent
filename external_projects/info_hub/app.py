@@ -12,7 +12,7 @@
     cd external_projects/info_hub
     streamlit run app.py --server.port 8504
 
-业务逻辑全部复用 server/api.py，与 HTML 看板（cli.py serve）行为一致。
+业务逻辑全部复用 server/api.py，（旧的 HTML 看板与 `cli.py serve` 已移除，Streamlit 是唯一看板。）
 """
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ def _background_scheduler(root: str) -> Optional[threading.Event]:
     settings = load_settings(Path(root))
     if not settings.raw.get("streamlit", {}).get("background_tick", True):
         return None
-    from server.app import start_tick_loop
+    from core.tick import start_tick_loop
     stop = threading.Event()
     start_tick_loop(settings, stop, settings.tick_interval_minutes * 60)
     return stop

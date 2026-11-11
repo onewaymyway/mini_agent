@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
@@ -65,3 +66,21 @@ def tick(settings: Settings, now: Optional[datetime] = None, ctx=None) -> TickRe
 
         atomic_write_json(state_path, sched)
     return out
+
+
+def start_tick_loop(settings: Settings, stop: threading.Event, interval_sec: int) -> threading.Thread:
+    """后台线程：每隔 interval_sec 秒执行一次 tick，直到 stop 被置位。
+
+    由 Streamlit 看板在进程内启动；单次 tick 失败只打印，不会终止循环。
+    """
+    def loop():
+        while not stop.is_set():
+            try:
+                tick(settings)
+            except Exception as exc:  # noqa: BLE001 - 循环不能因单次失败退出
+                print(f"[tick] 失败: {type(exc).__name__}: {exc}")
+            stop.wait(interval_sec)
+
+    th = threading.Thread(target=loop, name="info_hub-tick", daemon=True)
+    th.start()
+    return th

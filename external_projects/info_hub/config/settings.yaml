@@ -4,9 +4,6 @@ paths:
   data_dir: data
   reports_dir: reports
   browser_profile_dir: browser/profile
-server:
-  host: 127.0.0.1
-  port: 8765   # 旧 HTML 看板（cli.py serve）
 streamlit:
   port: 8506
   background_tick: true   # 看板进程内是否后台调度

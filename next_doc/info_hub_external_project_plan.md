@@ -4,6 +4,8 @@
 - **位置**：`external_projects/info_hub/`（独立外部项目）
 - **前序**：v1 草案曾设计为 SQLite + 本地音频 + 主 agent 内置抓取能力，本版按用户反馈全面调整
 
+> **修订（看板形态）**：旧的原生 HTML 看板（`ui/`、`server/app.py`、`cli.py serve`）已移除，**Streamlit 看板（`app.py`）是唯一看板**。下文凡提到 `ui/`、`server/app.py`、`info_hub serve`、HTML 前端的位置，均以 Streamlit 实现为准；`server/api.py` 保留为业务层。详见实施记录“阶段：移除旧 HTML 看板”。
+
 ---
 
 ## 1. 背景
@@ -112,10 +114,10 @@ external_projects/info_hub/
   browser/
     profile/                                       # 共享浏览器用户数据目录（登录态所在，敏感，不入库）
     login_status.json                              # 各站点登录状态记录（非敏感元数据）
-  ui/
-    index.html / app.js / app.css
+  app.py                                           # Streamlit 看板（唯一看板）
+  dashboard/                                       # 听报播放器组件
   server/
-    app.py                                         # 看板与 API
+    api.py                                         # 看板业务层（无 HTTP）
   tests/
   skills/
     add-source/SKILL.md                            # 项目内的信息源添加指南（仅本项目使用）
@@ -417,7 +419,7 @@ reports:
 
 ## 13. 运行与调度
 
-- 项目提供命令行入口：`info_hub serve`（启动看板与调度器）、`info_hub run <source_id>`（立即抓取单源）、`info_hub report <plan_id>`（立即生成报告）、`info_hub login <site>`（打开有头浏览器登录）。
+- 项目提供命令行入口：`streamlit run app.py`（启动看板，进程内带后台调度）、`info_hub run <source_id>`（立即抓取单源）、`info_hub report <plan_id>`（立即生成报告）、`info_hub login <site>`（打开有头浏览器登录）。
 - 调度器为单进程，内部按各源与报告计划的间隔排队执行。浏览器类任务串行执行，HTTP 类任务可以并发。
 - 项目的 `project.yaml` 声明入口与参数，供主项目后期接入时使用。接入不是必须的，本项目可以独立运行。
 
@@ -474,7 +476,7 @@ reports:
 - 验收：`reports/` 下按时间生成 `.md` 与 `.json`，`latest.json` 指向最新报告，报告内容包含异常小节。
 
 ### P5：看板基础版（约 1.5 天）
-- 实现 `server/app.py` 与前端基础页面：报告、信息源、运行记录、设置。
+- 实现看板基础页面：报告、信息源、运行记录、设置（最初为原生 HTML，现已由 Streamlit `app.py` 取代）。
 - 信息源页面支持启停与立即抓取。
 - 验收：在看板上能查看报告、立即抓取单源、看到运行记录。
 

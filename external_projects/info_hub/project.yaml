@@ -3,8 +3,6 @@ name: info_hub
 version: 0.1.0
 description: 定时抓取多信息源、生成报告、看板听报
 entrypoints:
-  serve:
-    command: python cli.py serve
   run_source:
     command: python cli.py run {source_id}
     params:

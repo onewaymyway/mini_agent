@@ -8,7 +8,6 @@
   python cli.py login-status         查看各站点登录状态
   python cli.py report <plan_id>     立即生成一份报告
   python cli.py tick                 执行一次调度：运行到期的信息源并生成到期的报告
-  python cli.py serve                启动看板（http://127.0.0.1:8765）并后台定时调度
 """
 from __future__ import annotations
 
@@ -125,29 +124,6 @@ def cmd_tick(settings) -> int:
     return 0
 
 
-def cmd_serve(settings) -> int:
-    import threading
-    from server.app import make_server, start_tick_loop
-
-    stop = threading.Event()
-    try:
-        server = make_server(settings)
-    except ValueError as exc:
-        print(exc)
-        return 1
-    start_tick_loop(settings, stop, settings.tick_interval_minutes * 60)
-    host, port = server.server_address[:2]
-    print(f"看板已启动：http://{host}:{port}  （每 {settings.tick_interval_minutes} 分钟调度一次，Ctrl+C 退出）")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        stop.set()
-        server.server_close()
-    return 0
-
-
 def main(argv: list[str] | None = None, root: Path | None = None) -> int:
     parser = argparse.ArgumentParser(prog="info_hub")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -161,7 +137,6 @@ def main(argv: list[str] | None = None, root: Path | None = None) -> int:
     p_report = sub.add_parser("report", help="立即生成一份报告")
     p_report.add_argument("plan_id")
     sub.add_parser("tick", help="执行一次调度")
-    sub.add_parser("serve", help="启动看板与后台调度")
     args = parser.parse_args(argv)
 
     settings = load_settings(root)
@@ -179,8 +154,6 @@ def main(argv: list[str] | None = None, root: Path | None = None) -> int:
         return cmd_report(settings, args.plan_id)
     if args.command == "tick":
         return cmd_tick(settings)
-    if args.command == "serve":
-        return cmd_serve(settings)
     return 2
 
 
