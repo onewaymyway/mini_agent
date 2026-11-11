@@ -53,6 +53,17 @@ def _optional_field(obj: dict, fields: dict[str, str], name: str) -> Optional[st
     return _as_text(_get_path(obj, fields[name])) or None
 
 
+def outline(obj: Any, depth: int = 4) -> Any:
+    """响应结构的缩略描述（只留键名、列表长度与类型，不含具体内容），用于排查路径配置。"""
+    if depth <= 0:
+        return type(obj).__name__
+    if isinstance(obj, dict):
+        return {k: outline(v, depth - 1) for k, v in list(obj.items())[:15]}
+    if isinstance(obj, list):
+        return f"list[{len(obj)}]" + (f" of {json.dumps(outline(obj[0], depth - 1), ensure_ascii=False)}" if obj else "")
+    return type(obj).__name__
+
+
 _TPL_RE = re.compile(r"\{([^{}]+)\}")
 
 
@@ -117,6 +128,12 @@ class JsonApiAdapter(Adapter):
                     summary=_optional_field(obj, fields, "summary") or "",
                     published_at=_optional_field(obj, fields, "published_at"),
                 )
+            )
+        if not items:
+            return FetchResult(
+                items=[],
+                error=("解析到 0 条：items_path 指向的列表为空，或 title 字段路径取不到值。"
+                       f"响应结构：{json.dumps(outline(payload), ensure_ascii=False)[:800]}"),
             )
         limit = self.max_items(spec)
         return FetchResult(items=items[:limit], meta={"total_in_payload": len(raw_list)})

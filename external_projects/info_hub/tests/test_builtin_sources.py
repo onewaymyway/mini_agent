@@ -50,6 +50,15 @@ class BuiltinSourcesTests(unittest.TestCase):
             self.assertEqual((it.title, it.url, it.heat), (title, url, heat), sid)
             self.assertIn("User-Agent", seen["headers"])
 
+    def test_zero_items_reports_structure_outline(self):
+        specs = load_sources(load_settings(ROOT)).specs
+        payload = {"data": {"cards": [{"content": [{"content": [{"query": "x"}]}]}]}}
+        r = get_adapter("json_api").fetch(specs["baidu_hot"], FetchContext(
+            http_get=lambda u, headers=None: json.dumps(payload).encode("utf-8")))
+        self.assertFalse(r.ok)
+        self.assertIn("解析到 0 条", r.error)
+        self.assertIn("cards", r.error)
+
 
 if __name__ == "__main__":
     unittest.main()
