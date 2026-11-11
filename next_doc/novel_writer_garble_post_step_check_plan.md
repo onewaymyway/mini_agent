@@ -181,3 +181,35 @@ A 层让绝大多数乱码在本步骤内就被修好；B 层兜底（A 层用�
 
 ## 全部阶段结论
 G1（配置/注册表/体检/report）→ G2（skill 步骤内重做）→ G3（统一守卫）→ G4（展示与回归）均已完成。默认仍为 `off`，建议先在真实项目以 `report` 观察误报，再切换 `rerun`。
+
+## 乱码自愈：修改循环回滚 + 从写作步骤重走（2026-11-11）
+
+事故：第 16 章修改循环中，某轮 chapter-writer 写出双重编码的乱码（UTF-8 字节被按 GBK 解读后再存为 UTF-8）。
+乱码未被检测，核查与后续修改都以乱码为输入，最终 `waiting_user`。备份（`.原编码.bak`）保存的也是乱码，
+无法还原（约 2.5% 字符因 `?` 替换而永久丢失），因此正确做法是重写正文。
+
+根因（三处）：
+1. 乱码检测（`_is_garbled_file`、`garble_reasons_of`、`contamination`）调用 `read_text_utf8` 时默认 `repair=True`，
+   检测本身会把非 UTF-8 文件就地转存，改写正文。已改为只读（`repair=False`）。
+2. `read_text_utf8` 对「基本是 UTF-8、只坏了几个字节」的文件也会整体按 GBK/GB18030 猜测转码，把正文改成乱码。
+   现在若文件大部分是合法 UTF-8 且中文占比高，只报错（局部损坏），不转码。
+3. 修改循环每轮写作后只跑核查与机器校验，没有乱码检测，乱码会一直被当作正文继续修改。
+
+实现：
+- 修改循环（`chapter_ops.revise_cycle`）：进入时若正文已是乱码 → 直接抛 `RestartChain`；
+  每轮写作后先检测，命中则回滚到上一版通过检测的正文并继续修改；同一循环内连续 2 次乱码 → `RestartChain`。
+- `runner.RestartChain`：`run_step` 接住后，把第 N 章从 `write_chapter` 起的整条链
+  （`write_chapter / garble_guard / machine_check / review / revise_loop`）全部重置为待运行，
+  由 worker 从写作步骤重新执行；上一章的步骤不受影响。
+- `chapter_ops.reset_chapter_chain(ws, n, reason)`：可手动调用，用于已经挂起的章节（如第 16 章）一键重走。
+
+手动恢复第 16 章：
+```python
+from novel_writer.workspace import Workspace
+from novel_writer.chapter_ops import reset_chapter_chain
+reset_chapter_chain(Workspace(r"<工作区>"), 16, reason="正文乱码，重写")
+```
+之后让 worker 继续运行（或在 UI 中继续），流程会从写作步骤重新生成第 16 章。
+
+测试：`tests/test_garble_self_heal.py`（7 个，含真实工作区的重走测试）、`tests/test_textio_damaged_utf8.py`（3 个）。
+novel_writer 全量：与原始代码相比无新增失败（6 个既有失败保持不变）。

@@ -45,7 +45,7 @@ def _iso(ts: Optional[float]) -> Optional[str]:
 def _garble_reasons(path: Optional[Path]) -> Optional[List[str]]:
     if path is None or not path.is_file():
         return None
-    report = is_garbled(read_text_utf8(path))
+    report = is_garbled(read_text_utf8(path, repair=False))   # 检测只读
     return report.reasons if report.garbled else []
 
 

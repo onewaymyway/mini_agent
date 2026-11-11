@@ -393,7 +393,7 @@ def _is_garbled_file(path: Path) -> bool:
     from novel_writer.garble import is_garbled
 
     try:
-        return is_garbled(read_text_utf8(path)).garbled
+        return is_garbled(read_text_utf8(path, repair=False)).garbled   # 检测只读，绝不改写文件
     except Exception:  # noqa: BLE001
         return True
 
@@ -472,7 +472,7 @@ def _garble_guard(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invo
         raise ChapterOpError(f"第 {n} 章{label}文件缺失，无法做乱码检测")
 
     def check() -> Any:
-        return is_garbled(read_text_utf8(path))
+        return is_garbled(read_text_utf8(path, repair=False))   # 检测只读
 
     if pin_chapter:
         # 正文：重新生成必须覆盖当前这个文件；同时先收敛历史遗留的同章号重复文件
@@ -766,6 +766,28 @@ def _refresh_check_steps(ws: Workspace, n: int, *, clean: bool) -> None:
         st.update_step(ws, step.id, **fields)
 
 
+# ── 乱码自愈：回滚 + 从写作步骤重走 ─────────────────────────────────────────
+
+GARBLE_CHAIN = ("write_chapter", "garble_guard", "machine_check", "review", "revise_loop")
+GARBLE_STRIKES_LIMIT = 2   # 修改循环里连续几次写出乱码就放弃回滚，改为从写作步骤重走
+
+
+def chapter_chain_ids(n: int) -> List[str]:
+    """第 n 章从写作步骤起的整条流程（重走时全部重置为待运行）。"""
+    return [S.chapter_id(n, name) for name in GARBLE_CHAIN]
+
+
+def reset_chapter_chain(ws: Workspace, n: int, reason: str = "") -> List[str]:
+    """把第 n 章从写作步骤起的流程全部重置为待运行（可手动调用，也供修改循环自动调用）。"""
+    from novel_writer import state as st
+
+    ids = chapter_chain_ids(n)
+    for sid in ids:
+        st.reset_step(ws, sid)
+    st.log_line(ws, f"↺ 第 {n} 章：从写作步骤重走（{reason or '手动重置'}）")
+    return ids
+
+
 def revise_cycle(ws: Workspace, n: int, *, stage: str, invoker, settings: Dict[str, Any],
                  id_prefix: str, feedback: str = "", max_rounds: int = MAX_REVISE_ROUNDS) -> Dict[str, Any]:
     """修改 → 核查 循环（通用）。
@@ -778,7 +800,14 @@ def revise_cycle(ws: Workspace, n: int, *, stage: str, invoker, settings: Dict[s
     """
     from dataclasses import replace
 
-    from novel_writer.runner import run_skill_step
+    from novel_writer.runner import RestartChain, run_skill_step
+
+    chapter = chapter_file(ws, n)
+    # 进入修改循环时正文已是乱码（且无可回滚版本）：直接从写作步骤重走
+    if chapter is not None and chapter.is_file() and _is_garbled_file(chapter):
+        raise RestartChain(f"第 {n} 章正文疑似乱码，从写作步骤重走", chapter_chain_ids(n))
+    good = chapter.read_bytes() if (chapter is not None and chapter.is_file()) else None
+    garble_strikes = 0
 
     review = _review_step(n)
     review_path = ws.path("review_report", nn=n)
@@ -807,6 +836,17 @@ def revise_cycle(ws: Workspace, n: int, *, stage: str, invoker, settings: Dict[s
             outputs=(S.glob_of("chapter_text", nn=n),),
         )
         run_skill_step(ws, writer, invoker=invoker, settings=settings, run_no=k)
+        # 每轮写完先检测乱码（检测只读）：乱码绝不进入核查与下一轮修改
+        if chapter is not None and chapter.is_file() and _is_garbled_file(chapter):
+            garble_strikes += 1
+            if good is not None and garble_strikes < GARBLE_STRIKES_LIMIT:
+                chapter.write_bytes(good)
+                _log(ws, n, f"修改第 {k} 轮写出乱码，已回滚到上一版正文，继续修改（{garble_strikes}/{GARBLE_STRIKES_LIMIT}）")
+                feedback = ""
+                continue
+            raise RestartChain(f"第 {n} 章修改第 {k} 轮写出乱码，回滚无效，从写作步骤重走", chapter_chain_ids(n))
+        if chapter is not None and chapter.is_file():
+            good = chapter.read_bytes()   # 本轮通过乱码检测：记为新的可回滚版本
         run_skill_step(ws, replace(review, id=f"{id_prefix}.review.r{k}"),
                        invoker=invoker, settings=settings, run_no=k)
         red = red_items(_read(review_path))
@@ -940,7 +980,7 @@ def garble_reasons_of(path: Optional[Path]) -> List[str]:
     from novel_writer.garble import is_garbled
     if path is None or not path.is_file():
         return []
-    report = is_garbled(read_text_utf8(path))
+    report = is_garbled(read_text_utf8(path, repair=False))   # 检测只读
     return report.reasons if report.garbled else []
 
 

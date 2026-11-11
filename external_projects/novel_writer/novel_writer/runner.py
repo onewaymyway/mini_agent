@@ -44,6 +44,16 @@ class StepFailed(RuntimeError):
     pass
 
 
+class RestartChain(Exception):
+    """正文已确认无法在当前步骤内修复（如修改轮次反复写出乱码、且没有可回滚的版本）：
+    由 run_step 把 step_ids 对应的步骤全部重置为待运行，从写作步骤起重走前面的流程。
+    """
+
+    def __init__(self, summary: str, step_ids: List[str]) -> None:
+        super().__init__(summary)
+        self.step_ids = list(step_ids)
+
+
 class StepTimeout(StepFailed):
     """步骤总耗时超过 settings.step_timeout 设定的时限，执行中的 agent 已被强制终止。"""
 
@@ -680,6 +690,12 @@ def run_step(
         st.log_line(ws, f"⏱ {step.id}：{exc}")
     except StepFailed as exc:
         status, fields = st.ST_FAILED, {"error": str(exc)}
+    except RestartChain as exc:
+        # 重走：先把整条链（含本步骤）重置为待运行，本步骤也回到 pending，由 worker 从写作步骤接着跑
+        for sid in exc.step_ids:
+            st.reset_step(ws, sid)
+        st.log_line(ws, f"↺ {step.id}：{exc}（已重置 {len(exc.step_ids)} 个步骤，从写作步骤重走）")
+        status, fields = st.ST_PENDING, {"summary": str(exc)}
     except RP.RepairableDataError as exc:   # 数据文件坏了：记下修复请求，worker 会交给 LLM 修复
         status = st.ST_FAILED
         fields = {"error": f"{type(exc).__name__}: {exc}",
