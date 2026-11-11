@@ -1,0 +1,5 @@
+# 对话生成信息源（P7）使用的 LLM 配置来源。
+# 默认留空：依次使用本项目根目录的 providers.json，没有则使用主项目的 providers.json。
+# 如需为本项目指定单独的 provider 配置，填写文件路径（相对于 info_hub 根目录，或绝对路径）。
+# 文件格式与主项目的 providers.json 完全相同，见主项目 providers.json.example。
+providers_file: ""

@@ -205,6 +205,8 @@
     return iso ? iso.replace("T", " ").slice(0, 16) : "从未";
   }
 
+  window.__infoHubReloadSources = () => loadSources();
+
   // ---------- 运行记录 ----------
   async function loadRuns() {
     const input = $("#runs-day");
@@ -396,4 +398,194 @@
   window.addEventListener("hashchange", () => showTab(currentTab()));
   showTab(currentTab());
   window.__infoHub = { renderMarkdown, esc, player };  // 便于调试与测试
+})();
+
+/* ===== P7：添加信息源（表单 / 对话生成） ===== */
+(function () {
+  "use strict";
+  const $ = (sel) => document.querySelector(sel);
+  const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const post = (path, body) => fetch(path, {
+    method: "POST", headers: { "Content-Type": "application/json", "X-Info-Hub": "1" }, body: JSON.stringify(body || {}),
+  }).then(async (r) => { const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || ("HTTP " + r.status)); return d; });
+  const get = (path) => fetch(path).then(async (r) => { const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || ("HTTP " + r.status)); return d; });
+  const flash2 = (msg, isErr) => { const el = document.querySelector("#flash"); el.textContent = msg; el.className = "flash" + (isErr ? " error" : ""); el.hidden = false; clearTimeout(flash2._t); flash2._t = setTimeout(() => (el.hidden = true), 4000); };
+
+  let categories = [];
+  let sites = [];
+
+  async function init() {
+    const data = await get("/api/sources");
+    categories = data.categories || [];
+    ["#f-category", "#d-category"].forEach((sel) => {
+      const el = $(sel); el.innerHTML = "";
+      categories.forEach((c) => el.add(new Option(c.name, c.id)));
+    });
+    const status = await get("/api/llm-status");
+    $("#llm-status").textContent = "对话生成使用的模型配置：" + status.label;
+    if (status.source === "none") $("#llm-status").classList.add("errors");
+    const login = await get("/api/login-status");
+    sites = login.sites || [];
+    const siteSel = $("#f-site"); siteSel.innerHTML = "";
+    sites.forEach((s) => siteSel.add(new Option(s.name + "（" + s.site + "）", s.site)));
+    refreshDrafts();
+    syncAdapterFields();
+  }
+
+  function syncAdapterFields() {
+    const a = $("#f-adapter").value;
+    document.querySelectorAll(".f-html").forEach((el) => el.classList.toggle("hidden-by-kind", a !== "html_list"));
+    document.querySelectorAll(".f-json").forEach((el) => el.classList.toggle("hidden-by-kind", a !== "json_api"));
+    const linkField = document.querySelector("#f-link");
+  }
+
+  function formSource() {
+    const v = (id) => ($(id).value || "").trim();
+    const adapter = v("#f-adapter");
+    const src = {
+      id: v("#f-id"), name: v("#f-name"), category: $("#f-category").value, kind: $("#f-kind").value,
+      adapter, every: v("#f-every") || "60m", url: v("#f-url"), max_items: 30, tags: [],
+    };
+    if (adapter === "html_list") {
+      const fields = { title: v("#f-title") };
+      if (v("#f-link")) fields.url = v("#f-link");
+      src.list_selector = v("#f-list");
+      src.fields = fields;
+    }
+    if (adapter === "json_api") {
+      const fields = { title: v("#f-jtitle") };
+      if (v("#f-jlink")) fields.url = v("#f-jlink");
+      src.items_path = v("#f-items");
+      src.fields = fields;
+    }
+    if ($("#f-browser").checked) { src.browser_required = true; src.browser_site = $("#f-site").value; }
+    return src;
+  }
+
+  function renderCheck(d, target) {
+    const parts = [];
+    if (d.errors && d.errors.length) parts.push(`<div class="errors">${d.errors.map(esc).join("<br>")}</div>`);
+    if (d.duplicates && d.duplicates.length) parts.push(`<div class="dup">与已有信息源相似：${d.duplicates.map(esc).join("、")}</div>`);
+    const p = d.preview;
+    if (p) {
+      parts.push(p.ok ? `<p>预览：共 ${p.total} 条，前 ${p.items.length} 条</p>` : `<p class="errors">抓取失败：${esc(p.error)}</p>`);
+      if (p.items && p.items.length) parts.push("<ol>" + p.items.map((i) => `<li>${esc(i.title)}${i.heat ? ` <span class="muted">${esc(i.heat)}</span>` : ""}</li>`).join("") + "</ol>");
+    }
+    target.innerHTML = parts.join("") || '<p class="muted">校验通过。</p>';
+  }
+
+  // 表单
+  async function formPreview() {
+    try {
+      const d = await post("/api/sources/preview", { source: formSource() });
+      renderCheck(d, $("#f-result"));
+    } catch (e) { flash2(e.message, true); }
+  }
+  async function formCreate() {
+    try {
+      const r = await post("/api/sources/create", { source: formSource(), force: $("#f-force").checked });
+      flash2(`已添加信息源 ${r.id}`);
+      $("#f-result").innerHTML = `<p>已保存到 ${esc(r.path)}</p>`;
+      if (window.__infoHubReloadSources) window.__infoHubReloadSources();
+    } catch (e) { flash2(e.message, true); }
+  }
+
+  // 对话生成
+  let currentDraft = null;
+
+  async function refreshDrafts() {
+    const data = await get("/api/drafts");
+    const ul = $("#draft-list"); ul.innerHTML = "";
+    if (!data.drafts.length) { ul.innerHTML = '<li class="muted">没有草稿</li>'; return; }
+    data.drafts.forEach((d) => {
+      const li = document.createElement("li");
+      li.innerHTML = `<div><strong>${esc(d.name || d.id)}</strong></div><div class="meta">${esc(d.id)} · ${esc(d.adapter || "")} · 修改 ${d.revisions_count || 0} 次</div>`;
+      li.addEventListener("click", () => openDraft(d.id));
+      ul.appendChild(li);
+    });
+  }
+
+  async function openDraft(id) {
+    currentDraft = await get("/api/drafts/" + encodeURIComponent(id));
+    renderDraft();
+  }
+
+  function renderDraft() {
+    const d = currentDraft;
+    if (!d) return;
+    const view = $("#draft-view");
+    view.className = "report draft-card";
+    view.innerHTML = `
+      <h3>${esc(d.name || d.id)} <span class="muted">(${esc(d.id)})</span></h3>
+      <p>${esc(d.explanation || "")}</p>
+      <p class="muted">适配器：${esc(d.adapter)} · 由 ${esc(d.llm_provider || "未知")} 生成${d.has_script ? " · 含脚本（仅在预览与确认时运行）" : ""}</p>
+      <div id="draft-check"></div>
+      <details><summary>查看源配置</summary><pre>${esc(JSON.stringify(d.source, null, 2))}</pre></details>
+      ${d.has_script ? `<p class="meta muted">脚本保存在 data/drafts/${esc(d.id)}/script.py，确认前可在该文件中查看。</p>` : ""}
+      <div class="toolbar">
+        <button id="btn-d-preview">预览</button>
+        <input id="d-feedback" placeholder="对草稿的修改意见，例如：标题选择器不对" style="flex:1;min-width:220px">
+        <button id="btn-d-revise">按意见修改</button>
+      </div>
+      <div class="toolbar">
+        <label><input type="checkbox" id="d-force"> 与已有源相似时仍然添加</label>
+        <button id="btn-d-confirm">确认添加</button>
+        <button id="btn-d-discard" class="ghost">放弃草稿</button>
+      </div>`;
+    renderCheck({ errors: d.errors, duplicates: d.duplicates, preview: d.preview }, $("#draft-check"));
+    $("#btn-d-preview").addEventListener("click", async () => {
+      try { currentDraft = await post(`/api/drafts/${encodeURIComponent(d.id)}/preview`, {}); renderDraft(); }
+      catch (e) { flash2(e.message, true); }
+    });
+    $("#btn-d-revise").addEventListener("click", async () => {
+      const fb = $("#d-feedback").value.trim();
+      if (!fb) { flash2("请先填写修改意见", true); return; }
+      try { currentDraft = await post(`/api/drafts/${encodeURIComponent(d.id)}/revise`, { feedback: fb }); renderDraft(); refreshDrafts(); }
+      catch (e) { flash2(e.message, true); }
+    });
+    $("#btn-d-confirm").addEventListener("click", async () => {
+      try {
+        const r = await post(`/api/drafts/${encodeURIComponent(d.id)}/confirm`, { force: $("#d-force").checked });
+        flash2(`已添加信息源 ${r.id}`);
+        currentDraft = null;
+        view.innerHTML = `<p>已添加到 ${esc(r.path)}</p>`;
+        refreshDrafts();
+        if (window.__infoHubReloadSources) window.__infoHubReloadSources();
+      } catch (e) { flash2(e.message, true); }
+    });
+    $("#btn-d-discard").addEventListener("click", async () => {
+      await post(`/api/drafts/${encodeURIComponent(d.id)}/discard`, {});
+      currentDraft = null;
+      view.className = "report";
+      view.innerHTML = '<p class="muted">草稿已放弃。</p>';
+      refreshDrafts();
+    });
+  }
+
+  async function generate() {
+    const btn = $("#btn-d-generate");
+    btn.disabled = true; btn.textContent = "生成中…";
+    try {
+      currentDraft = await post("/api/sources/generate", {
+        url: $("#d-url").value.trim(), name: $("#d-name").value.trim(), hint: $("#d-hint").value.trim(),
+        category: $("#d-category").value, use_browser: $("#d-browser").checked,
+      });
+      renderDraft(); refreshDrafts();
+    } catch (e) { flash2(e.message, true); }
+    finally { btn.disabled = false; btn.textContent = "生成草稿"; }
+  }
+
+  // 绑定
+  document.querySelectorAll("[data-add]").forEach((b) => b.addEventListener("click", () => {
+    document.querySelectorAll("[data-add]").forEach((x) => x.classList.toggle("active", x === b));
+    $("#add-form").hidden = b.dataset.add !== "form";
+    $("#add-dialog").hidden = b.dataset.add !== "dialog";
+  }));
+  $("#f-adapter").addEventListener("change", syncAdapterFields);
+  $("#btn-f-preview").addEventListener("click", formPreview);
+  $("#btn-f-create").addEventListener("click", formCreate);
+  $("#btn-d-generate").addEventListener("click", generate);
+  document.querySelector('button[data-tab="sources"]').addEventListener("click", () => setTimeout(init, 0));
+  init().catch(() => {});
 })();

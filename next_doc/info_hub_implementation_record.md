@@ -15,7 +15,7 @@
 | P4 | 定时报告、调度判定、tick 命令 | 已完成 |
 | P5 | 看板基础版（含 serve 常驻服务） | 已完成 |
 | P6 | 听报（Web Speech） | 已完成（语音输出需在本机确认） |
-| P7 | 添加信息源（表单 / 对话生成 / 查重） | 待开始 |
+| P7 | 添加信息源（表单 / 对话生成 / 查重 / provider 选择） | 已完成（真实模型调用未在沙箱验证） |
 | P8 | 订阅源 | 待开始 |
 | P9 | 健壮性与收尾 | 待开始 |
 
@@ -263,3 +263,55 @@ P3 与 P4 的改动中，`cli.py` 与 `core/runner.py` 两个文件同时包含�
 
 ### 打包说明
 P5 与 P6 的前端在同一组文件中（app.js 同时包含看板与播放器），且 digest 的 id 字段改动同时影响两者，因此合并为 `info_hub_P5-P6.zip` 交付。
+
+
+---
+
+## P7：添加信息源（已完成，真实模型调用未在沙箱验证）
+
+### provider 选择（按用户要求）
+- 默认使用主项目的 `providers.json`，与主项目 agent 的 LLM 配置保持一致。
+- 本项目可在 `config/llm.yaml` 中通过 `providers_file` 指定单独的配置文件。
+- 本项目根目录若存在 `providers.json`，优先于主项目。
+- 选择顺序：`config/llm.yaml` 指定 > 本项目 `providers.json` > 主项目 `providers.json`。看板显示实际生效的来源。
+- 通过主项目的 `load_config(providers_config_file=...)` 与 `LLMHelper.from_config` 构造模型，不复制 provider 的格式与实现。
+
+### 交付内容
+- `core/llm.py`：provider 选择、`build_llm`、`provider_status`。
+- `core/explore.py`：页面结构摘要（候选列表容器、样例、内嵌数据提示、JSON 形状）。不向模型发送整页 HTML。
+- `core/fingerprint.py`：查重指纹（域名去掉 www 后比较；同域名且同列表选择器或同路径视为相似）。
+- `adapters/script.py`：脚本适配器，`fetch(ctx)` 约定，静态检查禁止高风险导入与调用。
+- `core/source_store.py`：校验（id 格式、分类、kind、适配器自校验、查重）、写入 `sources/`、草稿存储、预览。
+- `core/source_generator.py`：LLM 对话生成（生成、修改、预览、确认、放弃），输出 JSON 解析（容忍代码块与前后文字）。
+- `server/api.py`：表单预览/保存、草稿接口。`server/app.py` 改为正则路由表（21 条路由）。
+- `ui/`：信息源页的添加面板（表单 / 对话生成）、草稿列表与草稿详情。
+- `config/llm.yaml`：provider 来源配置，默认留空。
+
+### 验证方式
+- 单元与流程测试（`tests/test_p7_units.py`、`tests/test_p7_flow.py`、`tests/test_p7_http.py`）：使用假模型，覆盖：
+  - provider 三级选择与缺失时的错误；
+  - 查重（www 与裸域名、同选择器、不同路径）；
+  - 页面摘要（候选选择器、内嵌数据提示）；
+  - 脚本静态检查（禁止导入、禁止 exec/eval/open、缺少 fetch）；
+  - 生成草稿时模型收到的是摘要而非整页 HTML；
+  - **脚本草稿在生成时不执行，预览时才执行**；
+  - 对话修改保持同一草稿 id，并携带用户反馈；
+  - 相似源需要强制确认；分类错误阻止确认；
+  - 表单预览与保存、409 冲突、404 与 405 路由行为。
+- UI 冒烟测试：添加面板展开、显示 provider 状态、表单字段随适配器切换、切换到对话生成。
+- 与主项目的集成（真实位置、临时 providers.json，不发起网络请求）：
+  - 本项目 providers.json 存在时，选择为 project，并通过主项目 load_config 与 LLMHelper 成功构造；
+  - 本项目无配置时，回退到主项目 providers.json，选择为 main，成功构造。
+  - 临时文件均已删除。
+
+### 未在沙箱验证的部分
+- **真实模型生成草稿**：沙箱没有可用的 API key，只验证了配置链路与构造，没有实际调用模型。请在你的环境里用一个真实站点试一次"对话生成"，重点看生成的选择器是否正确。
+- **真实站点的选择器质量**：摘要与模型输出的质量取决于具体页面，需要实际试用。
+
+### 与主项目的依赖问题（观察到，未修改主项目）
+- 主项目的 `src/mini_agent/utils/blocking_guard.py` 直接导入 fastapi，但主项目 `requirements.txt` 中未列出 fastapi。在干净环境中 `from mini_agent.config import load_config` 会失败。外部项目调用主项目 LLM 时会遇到这个问题。建议主项目补充依赖声明。
+
+### 与方案的偏差
+- 对话生成的"script"类型在 P7 实现，方案中 script 适配器原定放在 P7，已按计划完成。
+- 草稿目录按源 id 命名，LLM 建议的 id 合法且不冲突时直接采用，否则加后缀。
+- 修改次数上限为 5 次，方案未规定，属于为控制成本而加的限制。

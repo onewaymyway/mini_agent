@@ -1,20 +1,23 @@
 """看板服务：标准库 http.server 实现，无额外依赖。
 
 安全约定：
-- 只绑定 127.0.0.1，不对外网暴露。
+- 只绑定 127.0.0.1，Host 头不是本机则拒绝。
 - 所有 POST 必须携带请求头 X-Info-Hub: 1。浏览器跨站表单无法附加自定义头，
-  从而防止其他网页在你不知情时触发抓取或报告生成。
-- 静态文件只从 ui/ 目录读取，报告路径限定在 reports/ 之内。
+  从而防止其他网页在你不知情时触发抓取、生成草稿或确认写入信息源。
+- 静态文件只从 ui/ 目录读取，报告路径限定在 reports/ 之内（见 api 模块）。
+
+路由是正则表驱动的：新增接口只需在 build_router 中追加一行。
 """
 from __future__ import annotations
 
 import json
 import mimetypes
+import re
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from core.settings import Settings
 from server import api
@@ -23,34 +26,113 @@ from server.api import ApiError
 UI_DIR = Path(__file__).resolve().parents[1] / "ui"
 CUSTOM_HEADER = "X-Info-Hub"
 
+# handler(settings, match, query_dict, body_dict) -> payload
+Handler = Callable[[Settings, re.Match, dict, dict], Any]
 
-def build_routes(settings: Settings) -> tuple[dict, dict]:
-    get_routes: dict[str, Callable[[dict[str, list[str]]], Any]] = {
-        "/api/sources": lambda q: api.list_sources(settings),
-        "/api/reports": lambda q: api.list_reports(settings),
-        "/api/report": lambda q: api.read_report(settings, q.get("path", [""])[0]),
-        "/api/report/speech": lambda q: api.report_speech(settings, q.get("path", [""])[0]),
-        "/api/item/speech": lambda q: api.item_speech(settings, q.get("source", [""])[0], q.get("id", [""])[0]),
-        "/api/runs": lambda q: api.list_runs(settings, q.get("day", [None])[0]),
-        "/api/login-status": lambda q: api.login_status(settings),
-    }
-    post_routes: dict[str, Callable[[dict[str, Any]], Any]] = {
-        "/api/tick": lambda body: api.run_tick_now(settings),
-        "/api/reports/generate": lambda body: api.generate_report_now(settings, body.get("plan_id", "")),
-    }
-    return get_routes, post_routes
+
+def build_router() -> list[tuple[str, re.Pattern, Handler]]:
+    R: list[tuple[str, re.Pattern, Handler]] = []
+
+    def route(method: str, pattern: str):
+        def deco(fn: Handler):
+            R.append((method, re.compile("^" + pattern + "$"), fn))
+            return fn
+        return deco
+
+    # 信息源与运行
+    @route("GET", r"/api/sources")
+    def _(s, m, q, b): return api.list_sources(s)
+
+    @route("POST", r"/api/sources/([a-z0-9_]+)/run")
+    def _(s, m, q, b): return api.run_source_now(s, unquote(m.group(1)))
+
+    @route("POST", r"/api/sources/([a-z0-9_]+)/enabled")
+    def _(s, m, q, b): return api.set_source_enabled(s, unquote(m.group(1)), bool(b.get("enabled")))
+
+    # 报告
+    @route("GET", r"/api/reports")
+    def _(s, m, q, b): return api.list_reports(s)
+
+    @route("GET", r"/api/report")
+    def _(s, m, q, b): return api.read_report(s, q.get("path", [""])[0])
+
+    @route("GET", r"/api/report/speech")
+    def _(s, m, q, b): return api.report_speech(s, q.get("path", [""])[0])
+
+    @route("GET", r"/api/item/speech")
+    def _(s, m, q, b): return api.item_speech(s, q.get("source", [""])[0], q.get("id", [""])[0])
+
+    @route("POST", r"/api/reports/generate")
+    def _(s, m, q, b): return api.generate_report_now(s, str(b.get("plan_id", "")))
+
+    @route("POST", r"/api/tick")
+    def _(s, m, q, b): return api.run_tick_now(s)
+
+    # 运行记录与登录
+    @route("GET", r"/api/runs")
+    def _(s, m, q, b): return api.list_runs(s, q.get("day", [None])[0])
+
+    @route("GET", r"/api/login-status")
+    def _(s, m, q, b): return api.login_status(s)
+
+    # P7：添加信息源
+    @route("GET", r"/api/llm-status")
+    def _(s, m, q, b): return api.provider_status(s)
+
+    @route("POST", r"/api/sources/preview")
+    def _(s, m, q, b): return api.preview_form(s, b)
+
+    @route("POST", r"/api/sources/create")
+    def _(s, m, q, b): return api.create_form(s, b)
+
+    @route("POST", r"/api/sources/generate")
+    def _(s, m, q, b): return api.generate_source(s, b)
+
+    @route("GET", r"/api/drafts")
+    def _(s, m, q, b): return api.list_drafts(s)
+
+    @route("GET", r"/api/drafts/([a-z0-9_]+)")
+    def _(s, m, q, b): return api.get_draft(s, m.group(1))
+
+    @route("POST", r"/api/drafts/([a-z0-9_]+)/revise")
+    def _(s, m, q, b): return api.revise_draft(s, m.group(1), b)
+
+    @route("POST", r"/api/drafts/([a-z0-9_]+)/preview")
+    def _(s, m, q, b): return api.preview_draft(s, m.group(1))
+
+    @route("POST", r"/api/drafts/([a-z0-9_]+)/confirm")
+    def _(s, m, q, b): return api.confirm_draft(s, m.group(1), b)
+
+    @route("POST", r"/api/drafts/([a-z0-9_]+)/discard")
+    def _(s, m, q, b): return api.discard_draft(s, m.group(1))
+
+    return R
+
+
+def match_route(router, method: str, path: str):
+    """返回 (handler, match)；路径存在但方法不对时抛出 405。"""
+    path_matched = False
+    for m_name, pattern, fn in router:
+        m = pattern.match(path)
+        if m is None:
+            continue
+        path_matched = True
+        if m_name == method:
+            return fn, m
+    if path_matched:
+        raise ApiError(405, "请求方法不支持")
+    raise ApiError(404, "未知接口")
 
 
 def make_handler(settings: Settings):
-    get_routes, post_routes = build_routes(settings)
+    router = build_router()
 
-    class Handler(BaseHTTPRequestHandler):
-        server_version = "info_hub/0.5"
+    class RequestHandler(BaseHTTPRequestHandler):
+        server_version = "info_hub/0.7"
 
         def log_message(self, fmt, *args):  # 减少控制台噪音
             pass
 
-        # ---- 工具 ----
         def _send_json(self, status: int, payload: Any) -> None:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(status)
@@ -61,17 +143,17 @@ def make_handler(settings: Settings):
             self.wfile.write(body)
 
         def _send_static(self, rel: str) -> None:
+            base = UI_DIR.resolve()
             target = (UI_DIR / rel.lstrip("/")).resolve()
-            if UI_DIR.resolve() not in target.parents and target != UI_DIR.resolve():
-                self._send_json(403, {"error": "forbidden"})
-                return
+            if target != base and base not in target.parents:
+                return self._send_json(403, {"error": "forbidden"})
             if not target.is_file():
-                self._send_json(404, {"error": "not found"})
-                return
+                return self._send_json(404, {"error": "not found"})
             ctype = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
             body = target.read_bytes()
             self.send_response(200)
-            self.send_header("Content-Type", f"{ctype}; charset=utf-8" if ctype.startswith("text") or ctype.endswith("javascript") else ctype)
+            text_like = ctype.startswith("text") or ctype.endswith("javascript")
+            self.send_header("Content-Type", f"{ctype}; charset=utf-8" if text_like else ctype)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
@@ -94,52 +176,33 @@ def make_handler(settings: Settings):
             host = (self.headers.get("Host") or "").split(":")[0]
             return host in ("127.0.0.1", "localhost", "")
 
-        # ---- 分发 ----
-        def do_GET(self):
+        def _dispatch(self, method: str) -> None:
             if not self._local_only():
                 return self._send_json(403, {"error": "仅允许本机访问"})
             url = urlparse(self.path)
+            if method == "POST" and self.headers.get(CUSTOM_HEADER) != "1":
+                return self._send_json(403, {"error": f"缺少请求头 {CUSTOM_HEADER}: 1"})
             try:
                 if url.path.startswith("/api/"):
-                    handler = get_routes.get(url.path)
-                    if handler is None:
-                        return self._send_json(404, {"error": "未知接口"})
-                    return self._send_json(200, handler(parse_qs(url.query)))
-                if url.path in ("", "/"):
-                    return self._send_static("index.html")
-                return self._send_static(url.path)
+                    fn, m = match_route(router, method, url.path)
+                    query = parse_qs(url.query)
+                    body = self._read_body() if method == "POST" else {}
+                    return self._send_json(200, fn(settings, m, query, body))
+                if method == "GET":
+                    return self._send_static("index.html" if url.path in ("", "/") else url.path)
+                return self._send_json(404, {"error": "未知接口"})
             except ApiError as exc:
                 return self._send_json(exc.status, {"error": exc.message})
             except Exception as exc:  # noqa: BLE001 - 返回可读错误，不泄露堆栈
                 return self._send_json(500, {"error": f"{type(exc).__name__}: {exc}"})
 
-        def do_POST(self):
-            if not self._local_only():
-                return self._send_json(403, {"error": "仅允许本机访问"})
-            if self.headers.get(CUSTOM_HEADER) != "1":
-                return self._send_json(403, {"error": f"缺少请求头 {CUSTOM_HEADER}: 1"})
-            url = urlparse(self.path)
-            try:
-                parts = url.path.split("/")
-                # /api/sources/<id>/run  与  /api/sources/<id>/enabled
-                if len(parts) == 5 and parts[1] == "api" and parts[2] == "sources":
-                    sid, action = parts[3], parts[4]
-                    body = self._read_body()
-                    if action == "run":
-                        return self._send_json(200, api.run_source_now(settings, sid))
-                    if action == "enabled":
-                        return self._send_json(200, api.set_source_enabled(settings, sid, bool(body.get("enabled"))))
-                    return self._send_json(404, {"error": "未知操作"})
-                handler = post_routes.get(url.path)
-                if handler is None:
-                    return self._send_json(404, {"error": "未知接口"})
-                return self._send_json(200, handler(self._read_body()))
-            except ApiError as exc:
-                return self._send_json(exc.status, {"error": exc.message})
-            except Exception as exc:  # noqa: BLE001
-                return self._send_json(500, {"error": f"{type(exc).__name__}: {exc}"})
+        def do_GET(self):
+            self._dispatch("GET")
 
-    return Handler
+        def do_POST(self):
+            self._dispatch("POST")
+
+    return RequestHandler
 
 
 def start_tick_loop(settings: Settings, stop: threading.Event, interval_sec: int) -> threading.Thread:

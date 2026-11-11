@@ -52,3 +52,30 @@ class UiSmokeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AddSourceUiTests(UiSmokeTests):
+    """P7 添加面板：能展开、切换表单/对话、显示 provider 状态。"""
+
+    def test_add_panel_renders_and_shows_provider_status(self):
+        from playwright.sync_api import sync_playwright
+        errors = []
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.on("pageerror", lambda e: errors.append(str(e)))
+            page.goto(self.url)
+            page.click("button[data-tab=sources]")
+            page.wait_for_selector("#source-rows tr")
+            page.click("#add-panel > summary")
+            page.wait_for_selector("#f-name")
+            page.wait_for_function("document.querySelector('#llm-status').textContent.length > 0")
+            status = page.inner_text("#llm-status")
+            self.assertIn("对话生成使用的模型配置", status)
+            page.select_option("#f-adapter", "html_list")
+            self.assertTrue(page.is_visible("#f-list"))
+            self.assertFalse(page.is_visible("#f-items"))
+            page.click("button[data-add=dialog]")
+            self.assertTrue(page.is_visible("#d-url"))
+            browser.close()
+        self.assertEqual(errors, [])

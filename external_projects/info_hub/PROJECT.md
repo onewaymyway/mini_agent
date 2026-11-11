@@ -9,6 +9,7 @@
 - `config/settings.yaml`：全局配置、报告计划（every / at）、默认抓取间隔
 - `config/categories.yaml`：分类
 - `config/sites.yaml`：需要登录的站点（登录地址、登录失效判定）
+- `config/llm.yaml`：对话生成信息源使用的 provider 配置来源（可选）
 - `adapters/`：适配器类型，自动发现；新增适配器只需新增模块
 - `core/`：存储、流水线、浏览器会话、调度、报告
 - `data/`、`reports/`、`browser/profile/`：运行产物，已加入 .gitignore。`browser/profile/` 含登录凭据，勿分享
@@ -51,3 +52,30 @@ python cli.py serve                启动看板（http://127.0.0.1:8765）并后
 - Python 3.10+，依赖见 requirements.txt
 - 安装浏览器：`python -m playwright install chromium`
 - 测试：`python -m unittest discover -s tests -t .`
+
+
+## 添加信息源（P7）
+
+看板的"信息源"页面有"＋ 添加信息源"面板，两种方式：
+
+**表单添加**：填写名称、ID、分类、类型、适配器和选择器。点"预览"会抓取前 10 条，点"保存"写入 `sources/`。保存前会检查与已有源的相似度（同域名、同列表选择器或同路径视为相似），相似时需要勾选"仍然保存"。
+
+**对话生成**：填写地址与需求描述，系统会：
+1. 抓取页面，生成结构摘要（候选列表选择器、样例文本、内嵌数据提示），不把整页 HTML 发给模型；
+2. 调用 LLM 生成源配置（优先 rss > json_api > html_list > script）；
+3. 生成草稿保存在 `data/drafts/`，**此时不会运行任何脚本**；
+4. 你可以预览、按意见修改（最多 5 次，同一个草稿）、确认添加或放弃。
+
+### LLM 的 provider 配置
+对话生成使用的模型配置按以下顺序选择：
+1. `config/llm.yaml` 中 `providers_file` 指定的文件；
+2. 本项目根目录的 `providers.json`；
+3. 主项目的 `providers.json`（本项目未单独配置时的默认行为）。
+
+格式与主项目的 `providers.json` 相同。看板顶部会显示当前使用的是哪一份配置。
+
+### 脚本信息源的安全边界
+LLM 生成的 `script.py` 会在你点击"预览"或"确认添加"时运行，之后随调度运行。
+- 静态检查会拒绝导入 `os`、`sys`、`subprocess`、`socket` 等模块，拒绝调用 `exec`、`eval`、`open`；
+- 这只是护栏，**不是沙箱**。请像审查代码一样阅读草稿中的脚本（位于 `data/drafts/<id>/script.py`）再确认；
+- 确认前可以放弃草稿，草稿目录中的脚本不会被调度器执行。

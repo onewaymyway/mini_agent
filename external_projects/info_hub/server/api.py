@@ -204,3 +204,151 @@ def run_tick_now(settings: Settings) -> dict[str, Any]:
     rep = tick(settings)
     return {"ran_sources": rep.ran_sources, "failed_sources": rep.failed_sources,
             "generated_reports": rep.generated_reports}
+
+
+# ---------- P7：添加信息源（表单 / 对话生成 / 草稿） ----------
+def _split_tags(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    return [t.strip() for t in str(value or "").split(",") if t.strip()]
+
+
+def form_to_source(form: dict[str, Any]) -> dict[str, Any]:
+    """把表单字段转换为 source.yaml 结构。字段含义见 PROJECT.md。"""
+    adapter = str(form.get("adapter", ""))
+    source: dict[str, Any] = {
+        "id": str(form.get("id", "")).strip(),
+        "name": str(form.get("name", "")).strip(),
+        "category": str(form.get("category", "")).strip(),
+        "kind": str(form.get("kind", "feed")).strip(),
+        "adapter": adapter,
+        "tags": _split_tags(form.get("tags")),
+        "enabled": bool(form.get("enabled", True)),
+        "request": {"url": str(form.get("url", "")).strip()},
+        "policy": {"max_items": int(form.get("max_items") or 30), "dedup_by": "url"},
+        "schedule": {"every": str(form.get("every") or "60m").strip()},
+    }
+    if adapter == "json_api":
+        source["parse"] = {"items_path": str(form.get("items_path", "")).strip(),
+                           "fields": dict(form.get("fields") or {})}
+    elif adapter == "html_list":
+        source["parse"] = {"list_selector": str(form.get("list_selector", "")).strip(),
+                           "fields": dict(form.get("fields") or {})}
+    if form.get("browser_required"):
+        source["browser"] = {"required": True, "site": str(form.get("browser_site", "")).strip(),
+                             "headless": True, "wait_selector": str(form.get("wait_selector", "")).strip()}
+    return source
+
+
+def _form_source(body: dict[str, Any]) -> dict[str, Any]:
+    src = body.get("source")
+    if not isinstance(src, dict):
+        raise ApiError(400, "缺少 source 对象")
+    return form_to_source(src)
+
+
+def provider_status(settings: Settings) -> dict[str, Any]:
+    from core.llm import provider_status as _ps
+    return _ps(settings)
+
+
+def preview_form(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
+    from core.source_store import preview_spec, validate_candidate
+    from core.runner import default_context
+    source = _form_source(body)
+    spec, errors, dups = validate_candidate(settings, source)
+    if spec is None or errors:
+        return {"ok": False, "errors": errors, "duplicates": dups, "preview": None}
+    if spec.kind not in ("hot_list", "feed", "recommend", "subscription", "custom"):
+        return {"ok": False, "errors": ["kind 不合法"], "duplicates": dups, "preview": None}
+    return {"ok": True, "errors": [], "duplicates": dups,
+            "preview": preview_spec(spec, default_context(settings))}
+
+
+def create_form(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
+    from core.source_store import SourceError, validate_candidate, write_source
+    source = _form_source(body)
+    spec, errors, dups = validate_candidate(settings, source)
+    if errors:
+        raise ApiError(400, "；".join(errors))
+    if dups and not body.get("force"):
+        raise ApiError(409, f"与已有信息源相似：{', '.join(dups)}。如仍要添加，请勾选强制添加")
+    try:
+        target = write_source(settings, source)
+    except SourceError as exc:
+        raise ApiError(400, str(exc))
+    return {"id": source["id"], "path": str(target.relative_to(settings.paths.root))}
+
+
+def _llm(settings: Settings):
+    from core.llm import LLMUnavailable, build_llm
+    try:
+        return build_llm(settings)
+    except LLMUnavailable as exc:
+        raise ApiError(503, str(exc))
+
+
+def generate_source(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
+    from core.source_generator import generate_draft
+    from core.source_store import SourceError
+    from core.llm import resolve_provider
+    llm = _llm(settings)
+    label = resolve_provider(settings).label
+    try:
+        draft = generate_draft(
+            settings, llm,
+            url=str(body.get("url", "")).strip(),
+            name=str(body.get("name", "")).strip(),
+            hint=str(body.get("hint", "")).strip(),
+            category=body.get("category") or None,
+            site=body.get("site") or None,
+            use_browser=bool(body.get("use_browser")),
+            provider_label=label,
+        )
+    except SourceError as exc:
+        raise ApiError(400, str(exc))
+    return draft
+
+
+def _draft_call(fn):
+    from core.source_store import SourceError
+    try:
+        return fn()
+    except SourceError as exc:
+        raise ApiError(400, str(exc))
+    except FileNotFoundError as exc:
+        raise ApiError(404, str(exc))
+
+
+def list_drafts(settings: Settings) -> dict[str, Any]:
+    from core.source_store import list_drafts as _list
+    return {"drafts": _list(settings)}
+
+
+def get_draft(settings: Settings, draft_id: str) -> dict[str, Any]:
+    from core.source_store import load_draft
+    return _draft_call(lambda: load_draft(settings, draft_id))
+
+
+def revise_draft(settings: Settings, draft_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    from core.source_generator import revise_draft as _revise
+    from core.llm import resolve_provider
+    llm = _llm(settings)
+    return _draft_call(lambda: _revise(settings, llm, draft_id, str(body.get("feedback", "")),
+                                       provider_label=resolve_provider(settings).label))
+
+
+def preview_draft(settings: Settings, draft_id: str) -> dict[str, Any]:
+    from core.source_generator import preview_draft as _preview
+    return _draft_call(lambda: _preview(settings, draft_id))
+
+
+def confirm_draft(settings: Settings, draft_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    from core.source_generator import confirm_draft as _confirm
+    return _draft_call(lambda: _confirm(settings, draft_id, force=bool(body.get("force"))))
+
+
+def discard_draft(settings: Settings, draft_id: str) -> dict[str, Any]:
+    from core.source_store import discard_draft as _discard
+    _discard(settings, draft_id)
+    return {"discarded": draft_id}
