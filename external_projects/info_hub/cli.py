@@ -52,7 +52,8 @@ def _print_debug(source_id: str, extra: dict) -> None:
         return
     import json as _json
     print(f"---- [{source_id}] 调试信息 ----")
-    print(f"列表总数(payload): {extra.get('total_in_payload')}  跳过条目: {extra.get('skipped')}")
+    if extra.get("total_in_payload") is not None:
+        print(f"列表总数(payload): {extra.get('total_in_payload')}  跳过条目: {extra.get('skipped')}")
     dbg = extra.get("debug") or {}
     if not dbg:
         return
