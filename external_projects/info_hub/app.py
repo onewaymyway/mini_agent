@@ -582,7 +582,8 @@ def _status_tab():
             "连续失败": r["failures"],
             "最近结果": ("成功" if r["last_outcome"] and r["last_outcome"]["ok"]
                          else ("失败" if r["last_outcome"] else "")),
-            "最近错误": (r["last_outcome"] or {}).get("error") or r["last_error"] or "",
+            "最近错误": ((r["last_outcome"] or {}).get("error") or "") if (r["last_outcome"] and not r["last_outcome"]["ok"])
+                        else (r["last_error"] if r["failures"] else "") or "",
         } for r in res["sources"]]), hide_index=True, use_container_width=True,
             column_config={"信息源": st.column_config.TextColumn(width="large"),
                            "最近错误": st.column_config.TextColumn(width="large")})

@@ -481,7 +481,7 @@ def tick_status(settings: Settings) -> dict[str, Any]:
             "last_run": last.isoformat(timespec="seconds") if last else None,
             "next_due": next_due,
             "failures": entry.get("failures", 0),
-            "last_error": entry.get("last_error"),
+            "last_error": entry.get("last_error") if entry.get("failures") else None,
             "last_outcome": outcomes.get(sid),
         })
 

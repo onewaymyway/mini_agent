@@ -110,6 +110,7 @@ def record_result(settings: Settings, source_id: str, ok: bool, error: Optional[
         if ok:
             e.update(failures=0, paused=False, last_success_at=ts)
             e.pop("paused_at", None)
+            e.pop("last_error", None)   # 已恢复，旧错误不再有效
             if before != "ok":
                 event = "recovered"
         else:
