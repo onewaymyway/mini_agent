@@ -447,3 +447,53 @@ def discard_draft(settings: Settings, draft_id: str) -> dict[str, Any]:
     from core.source_store import discard_draft as _discard
     _discard(settings, draft_id)
     return {"discarded": draft_id}
+
+
+def tick_status(settings: Settings) -> dict[str, Any]:
+    """调度状态总览：后台循环与 tick 运行情况、各源上次/下次运行、暂停与最近错误、报告计划。"""
+    from datetime import timedelta
+    from core import health, tick_status as ts
+    from core.scheduler import _parse_ts
+
+    sched = read_json(settings.paths.state_dir / "_scheduler.json", default={}) or {}
+    last_sched = sched.get("sources", {})
+    hcfg = health.load_health_config(settings)
+    hstate = health.read_all(settings)
+    default_every = settings.defaults.get("schedule_every", "60m")
+    loaded = load_sources(settings)
+    tick_interval = timedelta(minutes=settings.tick_interval_minutes)
+    status = ts.summary(settings, tick_interval)
+    outcomes = status.get("source_outcomes", {})
+
+    rows = []
+    for sid, spec in sorted(loaded.specs.items()):
+        every = spec.schedule.get("every", default_every)
+        entry = hstate.get(sid) or {}
+        last = _parse_ts(last_sched.get(sid))
+        try:
+            interval = health.effective_interval(every, entry, hcfg)
+            next_due = (last + interval).isoformat(timespec="seconds") if last else "立即"
+        except ValueError:
+            interval, next_due = None, "频率配置错误"
+        rows.append({
+            "id": sid, "name": spec.name, "enabled": spec.enabled,
+            "paused": bool(entry.get("paused")), "every": every,
+            "last_run": last.isoformat(timespec="seconds") if last else None,
+            "next_due": next_due,
+            "failures": entry.get("failures", 0),
+            "last_error": entry.get("last_error"),
+            "last_outcome": outcomes.get(sid),
+        })
+
+    reports = []
+    for plan in settings.reports:
+        reports.append({"id": plan["id"], "every": plan.get("every") or plan.get("at"),
+                        "last_run": sched.get("reports", {}).get(plan["id"])})
+
+    return {
+        "tick": status,
+        "tick_interval_minutes": settings.tick_interval_minutes,
+        "scheduler_lock": ts.scheduler_lock_state(settings),
+        "sources": rows,
+        "reports": reports,
+    }

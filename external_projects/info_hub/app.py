@@ -98,8 +98,8 @@ with st.sidebar:
             st.rerun()
 
 st.title("信息看板")
-tab_reports, tab_sources, tab_results, tab_subs, tab_add, tab_runs, tab_login = st.tabs(
-    ["报告", "信息源", "抓取结果", "订阅", "添加信息源", "运行记录", "登录"])
+tab_reports, tab_sources, tab_results, tab_subs, tab_add, tab_runs, tab_status, tab_login = st.tabs(
+    ["报告", "信息源", "抓取结果", "订阅", "添加信息源", "运行记录", "调度状态", "登录"])
 
 
 # ---------- 报告 ----------
@@ -388,7 +388,8 @@ with tab_add:
 
 
 # ---------- 抓取结果 ----------
-with tab_results:
+@st.fragment(run_every=60)
+def _results_tab():
     _srcs = [x for x in (call(api.list_sources, settings) or {"sources": []})["sources"]
              if not x.get("config_errors")]
     if not _srcs:
@@ -406,6 +407,9 @@ with tab_results:
             snap = call(api.read_snapshot, settings, sid, snap_id)
             if snap:
                 st.caption(f"抓取于 {fmt_time(snap['fetched_at'])}，共 {snap['item_count']} 条，新增 {snap['new_count']} 条")
+                if snap.get("meta"):
+                    with st.expander("调试信息（解析统计、字段映射、原始响应开头）"):
+                        st.json(snap["meta"])
                 ch = snap["changes"]
                 titles = {it.get("id"): it.get("title", "") for it in snap["items"]}
                 if ch.get("new") or ch.get("rising") or ch.get("falling") or ch.get("dropped"):
@@ -434,6 +438,10 @@ with tab_results:
                     st.info("没有匹配的条目。")
 
 
+with tab_results:
+    _results_tab()
+
+
 # ---------- 运行记录 ----------
 with tab_runs:
     day = st.date_input("日期", value=date.today(), key="runs_day")
@@ -444,6 +452,64 @@ with tab_runs:
             hide_index=True, use_container_width=True)
     else:
         st.info("当天没有运行记录。")
+
+
+# ---------- 调度状态 ----------
+@st.fragment(run_every=30)
+def _status_tab():
+    res = call(api.tick_status, settings)
+    if not res:
+        st.info("无法读取调度状态。")
+        return
+    tk = res["tick"]
+    interval = res["tick_interval_minutes"]
+    if tk.get("stalled"):
+        st.error(f"疑似卡住：tick 正在运行，已 {tk.get('running_for_sec', 0) // 60} 分钟未结束，"
+                 f"当前源 {tk.get('current_source') or '（无）'}。")
+    elif tk.get("loop_suspected_dead"):
+        st.error("后台调度可能已停止：超过 2 个 tick 周期没有任何活动。"
+                 "请确认 Streamlit 看板进程仍在运行，并查看它的终端输出。")
+    elif tk.get("running"):
+        st.info(f"tick 正在运行，当前源：{tk.get('current_source') or '（无）'}")
+    else:
+        st.success("后台调度正常（空闲等待下一次 tick）")
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("最后活动", fmt_time(tk.get("last_activity_at")))
+    c2.metric("上次 tick 结束", fmt_time(tk.get("tick_finished_at")))
+    c3.metric("tick 间隔", f"{interval} 分钟")
+    c4.metric("调度文件锁", res["scheduler_lock"])
+    st.caption("每 30 秒自动刷新。Windows 下文件锁不可检测，仅 Linux/macOS 显示锁状态。")
+
+    st.subheader("各信息源")
+    if res["sources"]:
+        st.dataframe(pd.DataFrame([{
+            "信息源": f"{r['name']}（{r['id']}）",
+            "状态": "已暂停" if r["paused"] else ("启用" if r["enabled"] else "停用"),
+            "频率": r["every"],
+            "上次运行": fmt_time(r["last_run"]) if r["last_run"] else "从未",
+            "下次到期": r["next_due"] if r["next_due"] in ("立即", "频率配置错误") else fmt_time(r["next_due"]),
+            "连续失败": r["failures"],
+            "最近结果": ("成功" if r["last_outcome"] and r["last_outcome"]["ok"]
+                         else ("失败" if r["last_outcome"] else "")),
+            "最近错误": (r["last_outcome"] or {}).get("error") or r["last_error"] or "",
+        } for r in res["sources"]]), hide_index=True, use_container_width=True)
+    if res["reports"]:
+        st.subheader("报告计划")
+        st.dataframe(pd.DataFrame([{
+            "计划": r["id"], "频率": r["every"] or "", "上次生成": fmt_time(r["last_run"]) if r["last_run"] else "从未",
+        } for r in res["reports"]]), hide_index=True, use_container_width=True)
+    errors = tk.get("errors") or []
+    st.subheader(f"最近错误（{len(errors)}）")
+    if errors:
+        st.dataframe(pd.DataFrame([{"时间": fmt_time(e["at"]), "位置": e["where"], "信息": e["message"]}
+                                   for e in reversed(errors)]), hide_index=True, use_container_width=True)
+    else:
+        st.info("没有记录到错误。")
+
+
+with tab_status:
+    _status_tab()
 
 
 # ---------- 登录 ----------
