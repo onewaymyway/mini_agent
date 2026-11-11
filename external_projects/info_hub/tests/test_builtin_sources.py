@@ -12,8 +12,8 @@ ROOT = Path(__file__).resolve().parent.parent
 
 RESP = {
     "weibo_hot": {"data": {"realtime": [{"word": "某 话题", "num": 123456, "label_name": "热"}]}},
-    "baidu_hot": {"data": {"cards": [{"content": [
-        {"word": "百度词", "hotScore": 999, "url": "https://www.baidu.com/s?wd=x", "desc": "说明"}]}]}},
+    "baidu_hot": {"data": {"cards": [{"component": "hotList", "content": [{"content": [
+        {"word": "百度词", "hotScore": 999, "url": "https://www.baidu.com/s?wd=x", "desc": "说明"}]}]}]}},
     "bilibili_popular": {"data": {"list": [{"title": "视频A", "bvid": "BV1xx", "stat": {"view": 5000}, "desc": "d"}]}},
     "v2ex_hot": [{"title": "主题", "url": "https://www.v2ex.com/t/1", "replies": 33, "content": "c"}],
     "netease_news": {"T1348647853363": [{"title": "新闻", "url": "https://news.163.com/a", "digest": "dg", "ptime": "2026-11-11 10:00:00"}]},
@@ -58,6 +58,15 @@ class BuiltinSourcesTests(unittest.TestCase):
         self.assertFalse(r.ok)
         self.assertIn("解析到 0 条", r.error)
         self.assertIn("cards", r.error)
+
+    def test_baidu_flat_shape_still_supported(self):
+        specs = load_sources(load_settings(ROOT)).specs
+        flat = {"data": {"cards": [{"content": [
+            {"word": "扁平词", "hotScore": 1, "url": "https://www.baidu.com/s?wd=y", "desc": ""}]}]}}
+        r = get_adapter("json_api").fetch(specs["baidu_hot"], FetchContext(
+            http_get=lambda u, headers=None: json.dumps(flat).encode("utf-8")))
+        self.assertTrue(r.ok, r.error)
+        self.assertEqual(r.items[0].title, "扁平词")
 
 
 if __name__ == "__main__":

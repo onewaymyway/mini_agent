@@ -4,7 +4,8 @@
   request:
     url: https://example.com/api/hot
   parse:
-    items_path: data.list          # 列表所在路径
+    items_path: data.list          # 列表所在路径，支持 a.b.c；段为 * 时展开该列表的每个元素
+                                   # 也可写成列表（候选路径），按顺序取第一个非空结果
     fields:
       title: title                 # 字段路径，支持 a.b.c
       url: link
@@ -12,6 +13,8 @@
       summary: desc
     url_template: "https://example.com/p/{id}"   # 可选：接口不给链接时拼接，{路径} 取条目字段并做 URL 编码
   request.headers: 可选，额外请求头（如 Referer / User-Agent），写在 request.headers 映射里
+
+嵌套示例（列表套列表）：items_path: data.cards.0.content.*.content
 """
 from __future__ import annotations
 
@@ -38,6 +41,50 @@ def _get_path(obj: Any, path: str) -> Any:
         if cur is None:
             return None
     return cur
+
+
+def _walk(obj: Any, parts: list[str]) -> list[Any]:
+    """沿路径取值；遇到 * 时对列表每个元素继续向下走，返回所有叶子值。"""
+    if not parts:
+        return [obj]
+    if obj is None:
+        return []
+    head, rest = parts[0], parts[1:]
+    if head == "*":
+        if not isinstance(obj, list):
+            return []
+        out: list[Any] = []
+        for elem in obj:
+            out.extend(_walk(elem, rest))
+        return out
+    if isinstance(obj, dict):
+        return _walk(obj.get(head), rest)
+    if isinstance(obj, list) and head.isdigit():
+        idx = int(head)
+        return _walk(obj[idx] if idx < len(obj) else None, rest)
+    return []
+
+
+def _resolve_list(payload: Any, path: str) -> Optional[list[Any]]:
+    """按路径取列表；路径为空时直接用整个响应。取不到列表返回 None。"""
+    if not path:
+        return payload if isinstance(payload, list) else None
+    leaves = _walk(payload, [p for p in path.split(".") if p != ""])
+    out: list[Any] = []
+    found = False
+    for leaf in leaves:
+        if isinstance(leaf, list):
+            found = True
+            out.extend(leaf)
+    return out if found else None
+
+
+def _candidate_paths(items_path: Any) -> list[str]:
+    if not items_path:
+        return [""]
+    if isinstance(items_path, list):
+        return [str(p) for p in items_path]
+    return [str(items_path)]
 
 
 def _as_text(value: Any) -> str:
@@ -105,16 +152,31 @@ class JsonApiAdapter(Adapter):
         except Exception as exc:  # noqa: BLE001
             return FetchResult(items=[], error=f"{type(exc).__name__}: {exc}")
 
-        raw_list = _get_path(payload, items_path) if items_path else payload
-        if not isinstance(raw_list, list):
-            return FetchResult(items=[], error=f"items_path '{items_path}' 未指向列表")
+        raw_list: Optional[list[Any]] = None
+        tried: list[str] = []
+        for cand in _candidate_paths(items_path):
+            tried.append(cand)
+            lst = _resolve_list(payload, cand)
+            if lst:
+                raw_list = lst
+                break
+            if raw_list is None and lst is not None:
+                raw_list = lst  # 找到了列表但为空，保留以便区分报错
+        if raw_list is None:
+            return FetchResult(
+                items=[],
+                error=f"items_path {tried} 未指向列表；响应结构：{json.dumps(outline(payload), ensure_ascii=False)[:800]}",
+            )
 
         items: list[RawItem] = []
-        for idx, obj in enumerate(raw_list, start=1):
-            if not isinstance(obj, dict):
-                continue
-            title = _as_text(_get_path(obj, fields["title"]))
+        skipped = 0
+        skipped_sample: Optional[list[str]] = None
+        for obj in raw_list:
+            title = _as_text(_get_path(obj, fields["title"])) if isinstance(obj, dict) else ""
             if not title:
+                skipped += 1
+                if skipped_sample is None and isinstance(obj, dict):
+                    skipped_sample = sorted(obj.keys())[:12]
                 continue
             url_value = _optional_field(obj, fields, "url") or ""
             if not url_value and spec.parse.get("url_template"):
@@ -123,7 +185,7 @@ class JsonApiAdapter(Adapter):
                 RawItem(
                     title=title,
                     url=url_value,
-                    rank=idx,
+                    rank=len(items) + 1,
                     heat=_optional_field(obj, fields, "heat"),
                     summary=_optional_field(obj, fields, "summary") or "",
                     published_at=_optional_field(obj, fields, "published_at"),
@@ -136,4 +198,7 @@ class JsonApiAdapter(Adapter):
                        f"响应结构：{json.dumps(outline(payload), ensure_ascii=False)[:800]}"),
             )
         limit = self.max_items(spec)
-        return FetchResult(items=items[:limit], meta={"total_in_payload": len(raw_list)})
+        meta: dict[str, Any] = {"total_in_payload": len(raw_list), "skipped": skipped}
+        if skipped_sample is not None:
+            meta["skipped_sample_keys"] = skipped_sample
+        return FetchResult(items=items[:limit], meta=meta)

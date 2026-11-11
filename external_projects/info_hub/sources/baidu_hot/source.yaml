@@ -10,7 +10,10 @@ request:
   url: "https://top.baidu.com/api/board?platform=wise&tab=realtime"
   headers: {User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"}
 parse:
-  items_path: data.cards.0.content
+  # 新版响应 cards[0].content 是分组列表，条目在每组的 content 里；旧版为扁平列表，作为回退候选
+  items_path:
+    - data.cards.0.content.*.content
+    - data.cards.0.content
   fields: {title: word, url: url, heat: hotScore, summary: desc}
 policy: {max_items: 50}
 tags: [百度, 热榜]
