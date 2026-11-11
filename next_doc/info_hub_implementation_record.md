@@ -9,7 +9,7 @@
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | P0 | 项目骨架、纯文本存储工具、配置加载 | 已完成 |
-| P1 | 适配器框架、rss / json_api 适配器、信息源注册与 run 命令 | 待开始 |
+| P1 | 适配器框架、rss / json_api 适配器、信息源注册与 run 命令 | 已完成 |
 | P2 | 归一化、去重、增量对比（hot_list 排名变化） | 待开始 |
 | P3 | 共享浏览器会话、html_list 适配器、login 命令 | 待开始 |
 | P4 | 定时报告生成 | 待开始 |
@@ -58,3 +58,35 @@ Ran 7 tests ... OK
 
 ### 已知限制
 - 文件锁依赖 fcntl，Windows 下退化为无锁，当前按 Linux / Termux 环境设计。
+
+---
+
+## P1：适配器框架与首批适配器（已完成）
+
+### 交付内容
+- `adapters/base.py`：`Adapter` 基类、`SourceSpec`、`RawItem`、`FetchResult`、`FetchContext`。HTTP 通过 `FetchContext.http_get` 注入，测试可替换。
+- `adapters/registry.py`：扫描 `adapters/` 包自动注册，`kind_name` 重复时报错。
+- `adapters/rss.py`：RSS 2.0 与 Atom，仅用标准库 `xml.etree`。
+- `adapters/json_api.py`：通过点号路径（如 `data.list`）取列表与字段，支持 heat、summary、published_at 可选字段。
+- `core/sources.py`：读取 `_index.json` 与各源 `source.yaml`，做必填字段、id 一致性、分类存在性、kind 合法性、适配器自校验。单个源出错不影响其他源。
+- `core/normalize.py`：生成统一 Item 结构，稳定 id 为 `源id:url哈希`（无 url 时用标题哈希）。
+- `core/runner.py`：执行单源，写 `data/raw/<id>/<日期>/<时分秒>.json` 快照、追加 `data/items/<id>/<日期>.jsonl`、追加 `data/runs/<日期>.log.md` 运行记录。失败时不写条目，但记录错误。
+- `cli.py`：`list`、`validate`、`run <id>`。
+- `tests/helpers.py`：在临时目录构造最小项目，供集成测试使用。
+- `tests/test_adapters.py`、`tests/test_sources_and_runner.py`。
+
+### 扩展机制的落地情况
+- 新增适配器：在 `adapters/` 下新建模块并继承 `Adapter`，设置 `kind_name`，无需改注册表。
+- 新增信息源：在 `sources/` 下建目录与 `source.yaml`，并在 `_index.json` 中登记。
+
+### 验收结果
+```
+python -m unittest discover -s tests -t .
+Ran 21 tests ... OK
+python3 cli.py validate   -> 已加载 0 个信息源，0 个有错误；可用适配器: json_api, rss
+```
+
+### 与方案的偏差
+- 方案中 `info_hub run` 写作命令名，实际实现为 `python cli.py run`，`info_hub` 入口待 P9 再包装。
+- 当前 `items` 直接追加，未做去重。去重与增量对比按计划放在 P2。
+- 真实外网抓取未在沙箱中验证（沙箱无外网），测试全部使用本地假数据。上线前需要在用户环境中用真实 RSS 地址验证一次。
