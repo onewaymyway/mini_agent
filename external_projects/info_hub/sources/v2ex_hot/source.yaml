@@ -1,0 +1,15 @@
+# V2EX 今日热议主题（公开接口，无需登录）。
+id: v2ex_hot
+name: V2EX 热议
+category: tech
+kind: hot_list
+adapter: json_api
+enabled: true
+schedule: {every: 1h}
+request:
+  url: https://www.v2ex.com/api/topics/hot.json
+  headers: {User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"}
+parse:
+  fields: {title: title, url: url, heat: replies, summary: content}
+policy: {max_items: 30}
+tags: [V2EX, 技术]

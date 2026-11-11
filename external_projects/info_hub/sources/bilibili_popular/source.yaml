@@ -1,0 +1,17 @@
+# B 站综合热门（公开接口，无需登录）。
+id: bilibili_popular
+name: B站热门
+category: video
+kind: hot_list
+adapter: json_api
+enabled: true
+schedule: {every: 1h}
+request:
+  url: "https://api.bilibili.com/x/web-interface/popular?ps=50&pn=1"
+  headers: {User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36", Referer: "https://www.bilibili.com/"}
+parse:
+  items_path: data.list
+  url_template: "https://www.bilibili.com/video/{bvid}"
+  fields: {title: title, heat: stat.view, summary: desc}
+policy: {max_items: 50}
+tags: [B站, 热门]

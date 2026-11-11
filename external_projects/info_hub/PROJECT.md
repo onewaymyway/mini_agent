@@ -234,3 +234,18 @@ health:
 ## 看板：抓取结果页签
 
 看板新增“抓取结果”页签（在“信息源”之后）：选择信息源与抓取时间（最近 30 次），查看当次完整条目表（排名/标题/热度/摘要/可点击链接），热榜源额外列出新上榜、上升、下降、掉出；支持按标题/摘要过滤。数据来自 `data/raw/<源>/<日期>/<时分秒>.json`，对应业务函数 `server/api.py::list_snapshots/read_snapshot`（快照 id 做了格式校验，防路径穿越）。
+
+## 内置信息源清单
+
+| id | 名称 | 分类/类型 | 方式 | 备注 |
+|---|---|---|---|---|
+| zhihu_hot | 知乎热榜 | 热点社区 / hot_list | html_list + 登录态 | 需先 `python cli.py login zhihu` |
+| weibo_hot | 微博热搜 | 热点社区 / hot_list | json_api（公开接口） | 链接由 `url_template` 拼出搜索页 |
+| baidu_hot | 百度热搜 | 热点社区 / hot_list | json_api | |
+| bilibili_popular | B站热门 | 视频 / hot_list | json_api | 链接由 bvid 拼出 |
+| v2ex_hot | V2EX 热议 | 技术 / hot_list | json_api | |
+| netease_news | 网易新闻头条 | 资讯 / feed | json_api（移动端列表接口） | 头条流而非热度榜，只报新增 |
+
+- `json_api` 新增两个可选配置：`request.headers`（额外请求头，如 User-Agent/Referer）与 `parse.url_template`（接口不给链接时用 `{字段路径}` 拼接，值会做 URL 编码，任一字段为空则链接留空）。
+- 验证情况：只用仿真响应测了字段映射（`tests/test_builtin_sources.py`）；这些是第三方非官方接口，沙箱无法联网，真实可用性与字段名需在你的环境里验证，接口改版时只需改对应 `source.yaml`。
+- 不想抓某个源：看板“信息源”页签里停用，或把 `enabled` 改 false。

@@ -1,0 +1,16 @@
+# 网易新闻头条（移动端公开列表接口；这是头条流而非“热度榜”，因此用 feed，只报新增）。
+id: netease_news
+name: 网易新闻头条
+category: news
+kind: feed
+adapter: json_api
+enabled: true
+schedule: {every: 30m}
+request:
+  url: https://c.m.163.com/nc/article/headline/T1348647853363/0-40.html
+  headers: {User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"}
+parse:
+  items_path: T1348647853363
+  fields: {title: title, url: url, summary: digest, published_at: ptime}
+policy: {max_items: 40}
+tags: [网易, 新闻]

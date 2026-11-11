@@ -10,10 +10,14 @@
       url: link
       heat: hot_value
       summary: desc
+    url_template: "https://example.com/p/{id}"   # 可选：接口不给链接时拼接，{路径} 取条目字段并做 URL 编码
+  request.headers: 可选，额外请求头（如 Referer / User-Agent），写在 request.headers 映射里
 """
 from __future__ import annotations
 
 import json
+import re
+from urllib.parse import quote
 from typing import Any, Optional
 
 from adapters.base import Adapter, FetchContext, FetchResult, RawItem, SourceSpec
@@ -49,6 +53,24 @@ def _optional_field(obj: dict, fields: dict[str, str], name: str) -> Optional[st
     return _as_text(_get_path(obj, fields[name])) or None
 
 
+_TPL_RE = re.compile(r"\{([^{}]+)\}")
+
+
+def _render_template(tpl: str, obj: Any) -> str:
+    """把模板里的 {路径} 替换为条目字段（URL 编码）；任一字段为空则返回空串。"""
+    missing = False
+
+    def sub(m: "re.Match[str]") -> str:
+        nonlocal missing
+        val = _as_text(_get_path(obj, m.group(1).strip()))
+        if not val:
+            missing = True
+        return quote(val, safe="")
+
+    out = _TPL_RE.sub(sub, tpl)
+    return "" if missing else out
+
+
 class JsonApiAdapter(Adapter):
     kind_name = "json_api"
 
@@ -65,8 +87,10 @@ class JsonApiAdapter(Adapter):
         url = spec.request.get("url", "")
         items_path = spec.parse.get("items_path", "")
         fields: dict[str, str] = spec.parse.get("fields", {})
+        headers = spec.request.get("headers")
         try:
-            payload = json.loads(ctx.http_get(url).decode("utf-8"))
+            raw = ctx.http_get(url, headers=headers) if headers else ctx.http_get(url)
+            payload = json.loads(raw.decode("utf-8"))
         except Exception as exc:  # noqa: BLE001
             return FetchResult(items=[], error=f"{type(exc).__name__}: {exc}")
 
@@ -81,10 +105,13 @@ class JsonApiAdapter(Adapter):
             title = _as_text(_get_path(obj, fields["title"]))
             if not title:
                 continue
+            url_value = _optional_field(obj, fields, "url") or ""
+            if not url_value and spec.parse.get("url_template"):
+                url_value = _render_template(str(spec.parse["url_template"]), obj)
             items.append(
                 RawItem(
                     title=title,
-                    url=_optional_field(obj, fields, "url") or "",
+                    url=url_value,
                     rank=idx,
                     heat=_optional_field(obj, fields, "heat"),
                     summary=_optional_field(obj, fields, "summary") or "",

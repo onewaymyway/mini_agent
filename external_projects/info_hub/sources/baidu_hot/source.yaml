@@ -1,0 +1,16 @@
+# 百度热搜（公开接口，无需登录）。
+id: baidu_hot
+name: 百度热搜
+category: hot_community
+kind: hot_list
+adapter: json_api
+enabled: true
+schedule: {every: 30m}
+request:
+  url: "https://top.baidu.com/api/board?platform=wise&tab=realtime"
+  headers: {User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"}
+parse:
+  items_path: data.cards.0.content
+  fields: {title: word, url: url, heat: hotScore, summary: desc}
+policy: {max_items: 50}
+tags: [百度, 热榜]

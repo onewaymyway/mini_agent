@@ -1,0 +1,17 @@
+# 微博热搜（公开接口，无需登录）。接口改版时只需改 parse。
+id: weibo_hot
+name: 微博热搜
+category: hot_community
+kind: hot_list
+adapter: json_api
+enabled: true
+schedule: {every: 30m}
+request:
+  url: https://weibo.com/ajax/side/hotSearch
+  headers: {User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36", Referer: "https://weibo.com/"}
+parse:
+  items_path: data.realtime
+  url_template: "https://s.weibo.com/weibo?q=%23{word}%23"
+  fields: {title: word, heat: num, summary: label_name}
+policy: {max_items: 50}
+tags: [微博, 热榜]

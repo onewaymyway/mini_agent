@@ -1,6 +1,29 @@
 {
   "version": 1,
   "sources": [
-    {"id": "zhihu_hot", "enabled": true}
+    {
+      "id": "zhihu_hot",
+      "enabled": true
+    },
+    {
+      "id": "weibo_hot",
+      "enabled": true
+    },
+    {
+      "id": "baidu_hot",
+      "enabled": true
+    },
+    {
+      "id": "bilibili_popular",
+      "enabled": true
+    },
+    {
+      "id": "v2ex_hot",
+      "enabled": true
+    },
+    {
+      "id": "netease_news",
+      "enabled": true
+    }
   ]
 }
