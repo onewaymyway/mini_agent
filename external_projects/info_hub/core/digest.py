@@ -140,8 +140,8 @@ def build_digest(settings: Settings, plan: dict[str, Any], now: datetime) -> dic
                 "kind": spec.kind if spec else "unknown",
                 "new_count": len(src_map.get(sid, [])),
                 "items": [
-                    {"title": i["title"], "url": i.get("url", ""), "summary": i.get("summary", ""),
-                     "rank": i.get("rank")}
+                    {"id": i["id"], "title": i["title"], "url": i.get("url", ""),
+                     "summary": i.get("summary", ""), "rank": i.get("rank")}
                     for i in src_map.get(sid, [])[:MAX_ITEMS_PER_SOURCE]
                 ],
                 "hot_changes": hot,

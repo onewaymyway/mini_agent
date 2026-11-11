@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>info_hub 看板</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">info_hub</div>
+    <nav class="tabs">
+      <button data-tab="reports" class="tab active">报告</button>
+      <button data-tab="sources" class="tab">信息源</button>
+      <button data-tab="runs" class="tab">运行记录</button>
+      <button data-tab="login" class="tab">登录</button>
+    </nav>
+    <div class="actions">
+      <button id="btn-tick" class="ghost">立即调度</button>
+    </div>
+  </header>
+  <div id="flash" class="flash" hidden></div>
+
+  <main>
+    <section id="tab-reports" class="panel">
+      <div class="toolbar">
+        <select id="plan-select" aria-label="报告计划"></select>
+        <button id="btn-generate">生成报告</button>
+      </div>
+      <div class="split">
+        <ul id="report-list" class="list"></ul>
+        <article id="report-view" class="report"><p class="muted">选择左侧的报告查看内容。</p></article>
+      </div>
+    </section>
+
+    <section id="tab-sources" class="panel" hidden>
+      <div class="toolbar">
+        <select id="category-filter" aria-label="按分类筛选"><option value="">全部分类</option></select>
+      </div>
+      <table class="table">
+        <thead>
+          <tr><th>名称</th><th>分类</th><th>类型</th><th>频率</th><th>上次运行</th><th>条目</th><th>启用</th><th></th></tr>
+        </thead>
+        <tbody id="source-rows"></tbody>
+      </table>
+      <div id="config-errors"></div>
+    </section>
+
+    <section id="tab-runs" class="panel" hidden>
+      <div class="toolbar">
+        <input type="date" id="runs-day" aria-label="日期">
+      </div>
+      <table class="table">
+        <thead><tr><th>时间</th><th>信息源</th><th>结果</th><th>详情</th></tr></thead>
+        <tbody id="run-rows"></tbody>
+      </table>
+    </section>
+
+    <section id="tab-login" class="panel" hidden>
+      <p class="muted">登录需要在终端中执行，系统会打开有头浏览器，完成后回到终端按回车。登录态保存在共享 profile 中，之后抓取会自动复用。</p>
+      <table class="table">
+        <thead><tr><th>站点</th><th>状态</th><th>最近登录</th><th>登录命令</th></tr></thead>
+        <tbody id="login-rows"></tbody>
+      </table>
+    </section>
+  </main>
+
+  <footer id="player" class="player" hidden>
+    <div class="player-title" id="player-title"></div>
+    <div class="player-controls">
+      <button id="p-prev" title="上一段">⏮</button>
+      <button id="p-toggle" title="播放/暂停">▶</button>
+      <button id="p-next" title="下一段">⏭</button>
+      <button id="p-stop" title="停止">⏹</button>
+      <label>语速 <input type="range" id="p-rate" min="0.5" max="2" step="0.1" value="1"><span id="p-rate-val">1.0</span></label>
+      <label>语音 <select id="p-voice"></select></label>
+      <span id="p-progress" class="muted"></span>
+    </div>
+    <div class="player-warn" id="p-warn" hidden>当前浏览器不支持语音朗读。</div>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>

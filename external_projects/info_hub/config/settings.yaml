@@ -11,6 +11,7 @@ defaults:
   schedule_every: 60m
   retain_days: 14
   max_items: 50
+  tick_interval_minutes: 5
 reports:
   - id: rolling
     every: 3h
