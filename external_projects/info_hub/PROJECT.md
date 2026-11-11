@@ -222,3 +222,11 @@ health:
 
 ## 变更记录
 - 2026-11-11：补齐外部项目契约——`project.yaml` 按规范改用 `cmd`、新增 `entrypoints/`（tick / run_source / report / resume_source / health）、`health_check`、`resources`、`review`、`web_app`；`.gitignore` 增加账本与 `.run/`。此前 `project.yaml` 使用了不被框架识别的 `command` 字段，无法注册。
+
+## 内置信息源：知乎热榜（zhihu_hot）
+
+- 配置：`sources/zhihu_hot/source.yaml`（html_list + 共享浏览器登录态，每 1 小时抓取，分类“热点社区”，kind=hot_list，因此报告里有排名上升/下降/新上榜）。
+- 首次使用先登录一次：`python cli.py login zhihu`（站点定义在 `config/sites.yaml` 的 `zhihu`，被跳转到 `/signin` 视为登录失效，看板“登录”页可见状态）。未登录时该源会报“需要重新登录”，不影响其他源。
+- 选择器基于知乎热榜页 `.HotItem` 系列 DOM；若知乎改版导致抓到 0 条，只需修改 `source.yaml` 的 `parse`。
+- 验证情况：用仿真页面测试了选择器与登录失效处理（`tests/test_zhihu_hot_source.py`）；沙箱无法访问知乎，真实页面抓取需在你的环境里验证。
+- 不想抓取时：把 `enabled` 改为 false（同时改 `sources/_index.json`），或在看板信息源表里停用。

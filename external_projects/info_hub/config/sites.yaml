@@ -6,3 +6,8 @@ sites:
     login_url: https://example.com/login
     check_url: https://example.com/me
     expired_pattern: /login
+  zhihu:
+    name: 知乎
+    login_url: https://www.zhihu.com/signin
+    check_url: https://www.zhihu.com/hot
+    expired_pattern: /signin

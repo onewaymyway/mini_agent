@@ -1,4 +1,6 @@
 {
   "version": 1,
-  "sources": []
+  "sources": [
+    {"id": "zhihu_hot", "enabled": true}
+  ]
 }

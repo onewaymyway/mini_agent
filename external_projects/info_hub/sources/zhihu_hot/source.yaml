@@ -1,0 +1,28 @@
+# 知乎热榜（热点社区）。知乎对未登录访问限制较多，需先登录一次：
+#   python cli.py login zhihu
+# 登录态保存在共享浏览器 profile（browser/profile/，勿分享）。
+# 选择器基于知乎热榜页当前 DOM（.HotItem 系列），若改版导致 0 条，只需改这里的 parse。
+id: zhihu_hot
+name: 知乎热榜
+category: hot_community
+kind: hot_list
+adapter: html_list
+enabled: true
+schedule: {every: 1h}
+request:
+  url: https://www.zhihu.com/hot
+browser:
+  required: true
+  site: zhihu
+  headless: true
+  wait_selector: ".HotItem"
+parse:
+  list_selector: ".HotList-list .HotItem"
+  fields:
+    title: ".HotItem-title"
+    url: ".HotItem-content a@href"
+    heat: ".HotItem-metrics"
+    summary: ".HotItem-excerpt"
+policy:
+  max_items: 50
+tags: [知乎, 热榜]
