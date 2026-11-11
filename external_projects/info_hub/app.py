@@ -98,8 +98,8 @@ with st.sidebar:
             st.rerun()
 
 st.title("信息看板")
-tab_reports, tab_sources, tab_results, tab_subs, tab_add, tab_runs, tab_status, tab_login = st.tabs(
-    ["报告", "信息源", "抓取结果", "订阅", "添加信息源", "运行记录", "调度状态", "登录"])
+tab_reports, tab_sources, tab_edit, tab_results, tab_subs, tab_add, tab_runs, tab_status, tab_login = st.tabs(
+    ["报告", "信息源", "编辑信息源", "抓取结果", "订阅", "添加信息源", "运行记录", "调度状态", "登录"])
 
 
 # ---------- 报告 ----------
@@ -159,6 +159,7 @@ with tab_sources:
     if not rows:
         st.info("还没有信息源。到“添加信息源”页签添加。")
     else:
+        st.caption("要修改信息源的配置，请到“编辑信息源”页签。")
         cat_names = {c["id"]: c["name"] for c in data["categories"]}
         df = pd.DataFrame([{
             "启用": s["enabled"],
@@ -387,71 +388,75 @@ with tab_add:
                             st.rerun()
 
 
-    st.subheader("编辑信息源")
-    edit_ids = [s["id"] for s in rows]
-    edit_names = {s["id"]: f"{s['name']}（{s['id']}）" for s in rows}
-    pick = st.selectbox("选择要编辑的信息源", edit_ids, format_func=lambda i: edit_names[i], key="edit_pick")
-    detail = call(api.get_source, settings, pick)
-    if detail:
-        cat_ids = [c["id"] for c in settings.categories]
-        cat_label = {c["id"]: c["name"] for c in settings.categories}
-        kinds = ["hot_list", "feed", "recommend", "custom", "subscription"]
-        adapters = ["rss", "json_api", "html_list"]
-        sites_for_edit = [x["site"] for x in (call(api.login_status, settings) or {"sites": []})["sites"]]
-        k = lambda name: f"ed_{pick}_{name}"  # noqa: E731 - 每个源独立的控件 key，切换源时不串值
-        with st.form(f"edit_form_{pick}"):
-            e1, e2, e3 = st.columns(3)
-            e_name = e1.text_input("名称", value=detail["name"], key=k("name"))
-            e_cat = e2.selectbox("分类", cat_ids, format_func=lambda c: cat_label.get(c, c),
-                                 index=cat_ids.index(detail["category"]) if detail["category"] in cat_ids else 0,
-                                 key=k("cat"))
-            e_kind = e3.selectbox("类型", kinds, index=kinds.index(detail["kind"]) if detail["kind"] in kinds else 1,
-                                  key=k("kind"))
-            e4, e5, e6 = st.columns(3)
-            e_adapter = e4.selectbox("适配器", adapters,
-                                     index=adapters.index(detail["adapter"]) if detail["adapter"] in adapters else 0,
-                                     key=k("adapter"), help="切换适配器后，原选择器不再生效，请重新填写")
-            e_every = e5.text_input("频率", value=detail["every"], key=k("every"))
-            e_max = e6.number_input("最多条目", min_value=1, max_value=500, value=int(detail["max_items"] or 30),
-                                    key=k("max"))
-            e_url = st.text_input("地址", value=detail["url"], key=k("url"))
-            e_tags = st.text_input("标签（逗号分隔）", value=", ".join(detail["tags"]), key=k("tags"))
-            e_fields = {}
-            e_list = e_items = ""
-            if e_adapter == "html_list":
-                e7, e8, e9 = st.columns(3)
-                e_list = e7.text_input("列表选择器", value=detail["list_selector"], key=k("list"))
-                e_fields["title"] = e8.text_input("标题选择器", value=detail["fields"]["title"], key=k("ftitle"))
-                e_fields["url"] = e9.text_input("链接选择器", value=detail["fields"]["url"], key=k("furl"))
-            elif e_adapter == "json_api":
-                e7, e8, e9 = st.columns(3)
-                e_items = e7.text_input("列表路径", value=detail["items_path"], key=k("items"))
-                e_fields["title"] = e8.text_input("标题字段", value=detail["fields"]["title"], key=k("ftitle"))
-                e_fields["url"] = e9.text_input("链接字段", value=detail["fields"]["url"], key=k("furl"))
-            e_login = st.checkbox("需要登录（共享浏览器会话）", value=detail["browser_required"], key=k("login"))
-            e_site = st.selectbox("站点", sites_for_edit or [detail["browser_site"]],
-                                  index=(sites_for_edit.index(detail["browser_site"])
-                                         if detail["browser_site"] in sites_for_edit else 0),
-                                  disabled=not e_login, key=k("site")) if (sites_for_edit or detail["browser_site"]) else None
-            e_wait = st.text_input("等待元素选择器（浏览器源）", value=detail["wait_selector"], key=k("wait"))
-            e_enabled = st.checkbox("启用", value=detail["enabled"], key=k("enabled"))
-            e_force = st.checkbox("与已有源相似时仍然保存", key=k("force"))
-            do_save_edit = st.form_submit_button("保存修改")
-        if do_save_edit:
-            body = {"source": {
-                "id": pick, "name": e_name.strip(), "category": e_cat, "kind": e_kind, "adapter": e_adapter,
-                "every": e_every.strip() or "60m", "url": e_url.strip(), "max_items": int(e_max),
-                "tags": e_tags, "enabled": bool(e_enabled), "list_selector": e_list.strip(),
-                "items_path": e_items.strip(), "fields": {kk: vv.strip() for kk, vv in e_fields.items()},
-            }, "force": bool(e_force)}
-            if e_login and e_site:
-                body["source"]["browser_required"] = True
-                body["source"]["browser_site"] = e_site
-                body["source"]["wait_selector"] = e_wait.strip()
-            res = call(api.update_source, settings, pick, body)
-            if res is not None:
-                st.success(f"已保存 {pick}")
-                st.rerun()
+with tab_edit:
+    if not rows:
+        st.info("还没有信息源。到“添加信息源”页签添加。")
+    else:
+        st.subheader("编辑信息源")
+        edit_ids = [s["id"] for s in rows]
+        edit_names = {s["id"]: f"{s['name']}（{s['id']}）" for s in rows}
+        pick = st.selectbox("选择要编辑的信息源", edit_ids, format_func=lambda i: edit_names[i], key="edit_pick")
+        detail = call(api.get_source, settings, pick)
+        if detail:
+            cat_ids = [c["id"] for c in settings.categories]
+            cat_label = {c["id"]: c["name"] for c in settings.categories}
+            kinds = ["hot_list", "feed", "recommend", "custom", "subscription"]
+            adapters = ["rss", "json_api", "html_list"]
+            sites_for_edit = [x["site"] for x in (call(api.login_status, settings) or {"sites": []})["sites"]]
+            k = lambda name: f"ed_{pick}_{name}"  # noqa: E731 - 每个源独立的控件 key，切换源时不串值
+            with st.form(f"edit_form_{pick}"):
+                e1, e2, e3 = st.columns(3)
+                e_name = e1.text_input("名称", value=detail["name"], key=k("name"))
+                e_cat = e2.selectbox("分类", cat_ids, format_func=lambda c: cat_label.get(c, c),
+                                     index=cat_ids.index(detail["category"]) if detail["category"] in cat_ids else 0,
+                                     key=k("cat"))
+                e_kind = e3.selectbox("类型", kinds, index=kinds.index(detail["kind"]) if detail["kind"] in kinds else 1,
+                                      key=k("kind"))
+                e4, e5, e6 = st.columns(3)
+                e_adapter = e4.selectbox("适配器", adapters,
+                                         index=adapters.index(detail["adapter"]) if detail["adapter"] in adapters else 0,
+                                         key=k("adapter"), help="切换适配器后，原选择器不再生效，请重新填写")
+                e_every = e5.text_input("频率", value=detail["every"], key=k("every"))
+                e_max = e6.number_input("最多条目", min_value=1, max_value=500, value=int(detail["max_items"] or 30),
+                                        key=k("max"))
+                e_url = st.text_input("地址", value=detail["url"], key=k("url"))
+                e_tags = st.text_input("标签（逗号分隔）", value=", ".join(detail["tags"]), key=k("tags"))
+                e_fields = {}
+                e_list = e_items = ""
+                if e_adapter == "html_list":
+                    e7, e8, e9 = st.columns(3)
+                    e_list = e7.text_input("列表选择器", value=detail["list_selector"], key=k("list"))
+                    e_fields["title"] = e8.text_input("标题选择器", value=detail["fields"]["title"], key=k("ftitle"))
+                    e_fields["url"] = e9.text_input("链接选择器", value=detail["fields"]["url"], key=k("furl"))
+                elif e_adapter == "json_api":
+                    e7, e8, e9 = st.columns(3)
+                    e_items = e7.text_input("列表路径", value=detail["items_path"], key=k("items"))
+                    e_fields["title"] = e8.text_input("标题字段", value=detail["fields"]["title"], key=k("ftitle"))
+                    e_fields["url"] = e9.text_input("链接字段", value=detail["fields"]["url"], key=k("furl"))
+                e_login = st.checkbox("需要登录（共享浏览器会话）", value=detail["browser_required"], key=k("login"))
+                e_site = st.selectbox("站点", sites_for_edit or [detail["browser_site"]],
+                                      index=(sites_for_edit.index(detail["browser_site"])
+                                             if detail["browser_site"] in sites_for_edit else 0),
+                                      disabled=not e_login, key=k("site")) if (sites_for_edit or detail["browser_site"]) else None
+                e_wait = st.text_input("等待元素选择器（浏览器源）", value=detail["wait_selector"], key=k("wait"))
+                e_enabled = st.checkbox("启用", value=detail["enabled"], key=k("enabled"))
+                e_force = st.checkbox("与已有源相似时仍然保存", key=k("force"))
+                do_save_edit = st.form_submit_button("保存修改")
+            if do_save_edit:
+                body = {"source": {
+                    "id": pick, "name": e_name.strip(), "category": e_cat, "kind": e_kind, "adapter": e_adapter,
+                    "every": e_every.strip() or "60m", "url": e_url.strip(), "max_items": int(e_max),
+                    "tags": e_tags, "enabled": bool(e_enabled), "list_selector": e_list.strip(),
+                    "items_path": e_items.strip(), "fields": {kk: vv.strip() for kk, vv in e_fields.items()},
+                }, "force": bool(e_force)}
+                if e_login and e_site:
+                    body["source"]["browser_required"] = True
+                    body["source"]["browser_site"] = e_site
+                    body["source"]["wait_selector"] = e_wait.strip()
+                res = call(api.update_source, settings, pick, body)
+                if res is not None:
+                    st.success(f"已保存 {pick}")
+                    st.rerun()
 
 
 # ---------- 抓取结果 ----------
