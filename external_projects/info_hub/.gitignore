@@ -1,6 +1,8 @@
 __pycache__/
+*.lock
 data/
 reports/
 browser/profile/
+browser/profile.lock
 browser/login_status.json
 sources/*/samples/

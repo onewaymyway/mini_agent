@@ -66,7 +66,10 @@ def default_http_get(url: str, headers: Optional[dict[str, str]] = None, timeout
 
 @dataclass
 class FetchContext:
+    """适配器运行时依赖。browser 为共享浏览器会话（BrowserSession 或兼容对象）。"""
     http_get: Callable[..., bytes] = default_http_get
+    browser: Optional[Any] = None
+    sites: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 class Adapter(ABC):

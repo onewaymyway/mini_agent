@@ -11,8 +11,8 @@
 | P0 | 项目骨架、纯文本存储工具、配置加载 | 已完成 |
 | P1 | 适配器框架、rss / json_api 适配器、信息源注册与 run 命令 | 已完成 |
 | P2 | 归一化、去重、增量对比（hot_list 排名变化） | 已完成 |
-| P3 | 共享浏览器会话、html_list 适配器、login 命令 | 待开始 |
-| P4 | 定时报告生成 | 待开始 |
+| P3 | 共享浏览器会话、html_list 适配器、login 命令 | 已完成（有头登录未在沙箱验证） |
+| P4 | 定时报告、调度判定、tick 命令 | 已完成 |
 | P5 | 看板基础版 | 待开始 |
 | P6 | 听报（Web Speech） | 待开始 |
 | P7 | 添加信息源（表单 / 对话生成 / 查重） | 待开始 |
@@ -119,3 +119,81 @@ Ran 26 tests ... OK
 ### 备注
 - 去重与清理阈值目前只有 `retain_days` 一个参数，`max_items` 仍由适配器截断。
 - 增量对比目前基于内存中的单次快照比较，尚未做跨天的热榜趋势分析，该部分留给 P5 看板的"热榜"页面。
+
+---
+
+## P3：共享浏览器会话与 html_list（已完成，有头登录未在沙箱验证）
+
+### 交付内容
+- `core/browser_session.py`：`BrowserSession`
+  - 所有站点共用同一个持久化 profile（`browser/profile/`），登录一次即可复用。
+  - 所有 profile 操作在 `profile.lock` 内串行，避免两个浏览器进程同时占用同一 profile。
+  - `fetch_html`：无头抓取；若最终 URL 包含站点的 `expired_pattern`，抛出 `LoginRequired`，并把状态记为 expired。
+  - `interactive_login`：有头浏览器打开登录页，用户完成后回车，系统再用无头模式验证 `check_url`，成功则记为 logged_in。
+  - `browser/login_status.json`：记录各站点状态与时间，不含任何凭据。
+  - playwright 在方法内延迟导入，不使用浏览器的命令不会因此报错。
+- `adapters/html_list.py`：基于 BeautifulSoup 的 CSS 选择器解析，字段支持 `选择器@属性`。`browser.required` 为 true 时经共享会话渲染；登录失效转为可读的错误结果，而不是静默失败。
+- `config/sites.yaml`：站点登录配置（示例站点，需要替换为真实站点）。
+- `core/runner.py`：新增 `default_context`，运行时自动注入浏览器会话与站点配置。
+- `cli.py`：新增 `login <site>` 与 `login-status`。
+- `adapters/base.py`：`FetchContext` 增加 `browser` 与 `sites` 字段。
+- `core/settings.py`：新增 `load_sites`。
+
+### 验证方式
+- `tests/test_browser_session.py` 使用**真实无头 Chromium** 与本地 HTTP 服务器：
+  - 第一个会话写入持久 cookie，第二个全新会话在同一 profile 下能访问登录后页面。
+  - 没有登录态时抛出 LoginRequired，状态记为 expired。
+  - `interactive_login` 的流程（用无头模式替代有头模式）能记录 logged_in。
+  - html_list 通过真实浏览器完成端到端抓取。
+- Chromium 无法启动时这些用例自动跳过。
+- `tests/test_html_list.py` 使用假浏览器测试解析与错误转换。
+
+### 验证中发现并修正的问题
+- 测试服务器最初发的是会话 cookie（无过期时间），Chromium 关闭时会丢弃它，导致登录态无法跨次保留。这是真实风险：如果目标站点也只发会话 cookie，就需要额外的处理方式。已在 PROJECT.md 中注明，测试改为发持久 cookie。
+- 测试中的 html 字段选择器写成了非法的 `"."`，已修正。
+
+### 未在沙箱验证的部分
+- **有头登录**：沙箱没有显示器，无法打开有头窗口。登录流程的代码路径已用无头模式覆盖，但真正的有头窗口需要在你的机器上验证一次：`python cli.py login <site>`。
+- **真实站点**：知乎、微博、小红书等站点的选择器与登录判定都需要在真实环境中调整，示例配置只是占位。
+
+---
+
+## P4：定时报告与调度（已完成）
+
+### 交付内容
+- `core/scheduler.py`：
+  - `parse_interval`（支持 Nm / Nh / Nd）、`parse_at`（HH:MM）。
+  - `is_due`：`every` 类计划按间隔判定；`at` 类计划每天在指定时刻之后触发一次。
+  - `source_is_due`：信息源抓取间隔判定。
+- `core/digest.py`：
+  - 按时间窗口收集条目（窗口外的过滤掉）。
+  - 每个源取窗口内最新快照的热榜变化（新进、上升、下降、掉出）。
+  - 收集窗口内的运行失败记录作为"异常"。
+  - 按分类分节输出 markdown 与 json；写入 `reports/latest.json` 指针。
+- `core/tick.py`：一次调度。运行所有到期的启用信息源，生成所有到期的报告；调度状态写入 `data/state/_scheduler.json`，重复调用安全。
+- `core/runner.py`：运行记录改为固定的 `|` 分隔格式，便于解析。
+- `cli.py`：新增 `report <plan_id>` 与 `tick`。
+
+### 与方案的偏差
+- 报告文件名为 `reports/<日期>/<HHMM>-<plan_id>.md`，方案中写的是 `<HHMM>.md`。加上 plan_id 后，同一时刻生成的多份不同计划不会互相覆盖。
+- 调度采用"外部周期调用 tick"的方式（推荐交给系统 cron），而不是常驻 serve 循环。常驻循环与看板一起在 P5 的 serve 中实现。
+- 定时表达式只支持 `Nm / Nh / Nd` 与 `HH:MM`，不支持 cron 表达式。
+- 失败的源同样更新调度时间，避免失败时每次 tick 都重试造成风控风险。
+
+### 验收结果
+```
+python -m unittest discover -s tests -t .
+Ran 53 tests ... OK
+```
+
+端到端冒烟测试（在项目副本中、用本地 HTTP 服务器作为真实信息源）：
+- `validate` 通过 2 个源。
+- `tick` 同时运行两个到期的源，并生成到期的报告。
+- 紧接着再次 `tick`，没有任何任务到期，什么都没执行。
+- `report rolling` 生成的 markdown 中，RSS 源与 HTML 热榜源的条目都正确出现。
+- 运行记录与状态文件均为纯文本，可直接阅读。
+
+冒烟测试中发现并修正的问题：运行记录的错误信息与统计信息混在一起，导致异常小节把"抓取 0 条"也当成了错误内容。已改为固定的分隔格式并补充测试。
+
+### 打包说明
+P3 与 P4 的改动中，`cli.py` 与 `core/runner.py` 两个文件同时包含两个阶段的修改，无法干净地拆分。因此 P3 与 P4 合并为一个压缩包 `info_hub_P3-P4.zip` 交付，而不是分别打包。

@@ -26,23 +26,45 @@ class RunResult:
     extra: dict[str, Any] = field(default_factory=dict)
 
 
+def format_run_line(when: datetime, result: RunResult) -> str:
+    """运行记录的固定格式（| 分隔），便于 digest 可靠解析。
+
+    成功：- HH:MM:SS `源id` 成功 | 抓取 N 条 | 新增 M 条 | 耗时 Xs
+    失败：- HH:MM:SS `源id` 失败 | 错误：<信息> | 耗时 Xs
+    """
+    if result.ok:
+        body = f"成功 | 抓取 {result.item_count} 条 | 新增 {result.new_count} 条"
+    else:
+        body = f"失败 | 错误：{result.error}"
+    return f"- {when:%H:%M:%S} `{result.source_id}` {body} | 耗时 {result.duration_sec:.2f}s\n"
+
+
 def _write_run_log(settings: Settings, when: datetime, result: RunResult) -> None:
     path = settings.paths.runs_dir / f"{when:%Y-%m-%d}.log.md"
     path.parent.mkdir(parents=True, exist_ok=True)
-    status = "成功" if result.ok else f"失败：{result.error}"
-    line = (
-        f"- {when:%H:%M:%S} `{result.source_id}` {status}，"
-        f"抓取 {result.item_count} 条，新增 {result.new_count} 条，耗时 {result.duration_sec:.2f}s\n"
-    )
     with file_lock(path):
         if not path.exists():
             path.write_text(f"# 运行记录 {when:%Y-%m-%d}\n\n", encoding="utf-8")
         with path.open("a", encoding="utf-8") as fh:
-            fh.write(line)
+            fh.write(format_run_line(when, result))
+
+
+def default_context(settings: Settings) -> FetchContext:
+    """构造默认运行上下文：共享浏览器会话（惰性启动）与站点配置。"""
+    from core.browser_session import BrowserSession
+    from core.settings import load_sites
+
+    return FetchContext(
+        browser=BrowserSession(
+            settings.paths.browser_profile_dir,
+            settings.paths.root / "browser" / "login_status.json",
+        ),
+        sites=load_sites(settings.paths.root),
+    )
 
 
 def run_source(spec: SourceSpec, settings: Settings, ctx: Optional[FetchContext] = None) -> RunResult:
-    ctx = ctx or FetchContext()
+    ctx = ctx or default_context(settings)
     when = datetime.now().astimezone()
     fetched_at = now_iso()
     started = time.monotonic()

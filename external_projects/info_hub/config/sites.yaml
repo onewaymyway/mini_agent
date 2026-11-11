@@ -1,0 +1,8 @@
+# 需要登录的站点配置。信息源通过 browser.site 引用这里的 id。
+# expired_pattern：访问后最终 URL 若包含该片段，视为登录已失效（例如被跳转到登录页）。
+sites:
+  example_site:
+    name: 示例站点
+    login_url: https://example.com/login
+    check_url: https://example.com/me
+    expired_pattern: /login

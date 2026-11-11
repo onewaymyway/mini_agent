@@ -84,3 +84,16 @@ def load_settings(root: Path | None = None) -> Settings:
         reports=cfg.get("reports", []),
         categories=categories,
     )
+
+
+def load_sites(root: Path | None = None) -> dict[str, dict[str, Any]]:
+    """读取 config/sites.yaml 的 sites 映射。文件不存在时返回空字典。"""
+    root = Path(root) if root else PROJECT_ROOT
+    path = root / "config" / "sites.yaml"
+    if not path.exists():
+        return {}
+    data = _load_yaml(path)
+    sites = data.get("sites", {}) or {}
+    if not isinstance(sites, dict):
+        raise ValueError("sites.yaml 中 sites 必须是映射")
+    return sites
