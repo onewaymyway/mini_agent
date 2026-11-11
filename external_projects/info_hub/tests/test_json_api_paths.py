@@ -42,7 +42,8 @@ class JsonApiPathTests(unittest.TestCase):
         r = _run(_spec("l"), payload)
         self.assertTrue(r.ok)
         self.assertEqual(r.meta["skipped"], 2)
-        self.assertEqual(r.meta["skipped_sample_keys"], ["ads"])
+        self.assertIn('"ads"', r.meta["debug"]["skipped_samples"][0])
+        self.assertIn("raw_head", r.meta["debug"])
 
 
 if __name__ == "__main__":

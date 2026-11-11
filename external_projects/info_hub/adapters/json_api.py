@@ -87,6 +87,15 @@ def _candidate_paths(items_path: Any) -> list[str]:
     return [str(items_path)]
 
 
+def _brief(obj: Any, limit: int = 400) -> str:
+    """条目的简短文本表示，用于调试输出。"""
+    try:
+        text = json.dumps(obj, ensure_ascii=False)
+    except (TypeError, ValueError):
+        text = repr(obj)
+    return text if len(text) <= limit else text[:limit] + "...(截断)"
+
+
 def _as_text(value: Any) -> str:
     if value is None:
         return ""
@@ -170,13 +179,13 @@ class JsonApiAdapter(Adapter):
 
         items: list[RawItem] = []
         skipped = 0
-        skipped_sample: Optional[list[str]] = None
+        skipped_samples: list[str] = []
         for obj in raw_list:
             title = _as_text(_get_path(obj, fields["title"])) if isinstance(obj, dict) else ""
             if not title:
                 skipped += 1
-                if skipped_sample is None and isinstance(obj, dict):
-                    skipped_sample = sorted(obj.keys())[:12]
+                if len(skipped_samples) < 3:
+                    skipped_samples.append(_brief(obj))
                 continue
             url_value = _optional_field(obj, fields, "url") or ""
             if not url_value and spec.parse.get("url_template"):
@@ -198,7 +207,17 @@ class JsonApiAdapter(Adapter):
                        f"响应结构：{json.dumps(outline(payload), ensure_ascii=False)[:800]}"),
             )
         limit = self.max_items(spec)
-        meta: dict[str, Any] = {"total_in_payload": len(raw_list), "skipped": skipped}
-        if skipped_sample is not None:
-            meta["skipped_sample_keys"] = skipped_sample
+        meta: dict[str, Any] = {
+            "total_in_payload": len(raw_list),
+            "skipped": skipped,
+            "debug": {
+                "items_path_tried": tried,
+                "title_path": fields["title"],
+                "fields": fields,
+                "payload_outline": outline(payload, depth=6),
+                "skipped_samples": skipped_samples,
+                "kept_first3": [{"title": i.title, "url": i.url, "heat": i.heat} for i in items[:3]],
+                "raw_head": raw.decode("utf-8", errors="replace")[:1500],
+            },
+        }
         return FetchResult(items=items[:limit], meta=meta)

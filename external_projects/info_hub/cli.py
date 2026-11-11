@@ -46,6 +46,30 @@ def cmd_validate(settings) -> int:
     return 1 if loaded.errors else 0
 
 
+def _print_debug(source_id: str, extra: dict) -> None:
+    """打印抓取调试信息（解析统计、路径、跳过条目样本、原始响应开头）。"""
+    if not extra:
+        return
+    import json as _json
+    print(f"---- [{source_id}] 调试信息 ----")
+    print(f"列表总数(payload): {extra.get('total_in_payload')}  跳过条目: {extra.get('skipped')}")
+    dbg = extra.get("debug") or {}
+    if not dbg:
+        return
+    print(f"items_path 尝试: {dbg.get('items_path_tried')}  title 字段: {dbg.get('title_path')}")
+    print("字段映射:", _json.dumps(dbg.get("fields"), ensure_ascii=False))
+    print("响应结构:", _json.dumps(dbg.get("payload_outline"), ensure_ascii=False, indent=2))
+    print("保留的前3条:")
+    for row in dbg.get("kept_first3") or []:
+        print("  ", _json.dumps(row, ensure_ascii=False))
+    print("被跳过条目样本:")
+    for sample in dbg.get("skipped_samples") or []:
+        print("  ", sample)
+    print("原始响应开头(1500字符):")
+    print(dbg.get("raw_head"))
+    print("---- 调试信息结束 ----")
+
+
 def cmd_run(settings, source_id: str) -> int:
     loaded = load_sources(settings)
     if source_id in loaded.errors:
@@ -58,6 +82,7 @@ def cmd_run(settings, source_id: str) -> int:
     result = run_source(spec, settings)
     if result.ok:
         print(f"[{source_id}] 成功，{result.item_count} 条，快照: {result.raw_path}")
+        _print_debug(source_id, result.extra)
         return 0
     print(f"[{source_id}] 失败: {result.error}")
     return 1
