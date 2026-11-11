@@ -122,6 +122,19 @@ def _selected_categories(plan: dict[str, Any], settings: Settings) -> list[dict[
     return [c for c in settings.categories if c["id"] in wanted]
 
 
+def _source_status(paused: bool, new_count: int, errs: list[dict[str, Any]], ever_fetched: bool) -> tuple[str, str]:
+    """源在本窗口的状态：paused | new | failed | no_new | never。"""
+    if paused:
+        return "paused", "已自动暂停，需手动恢复"
+    if new_count:
+        return "new", f"本窗口新增 {new_count} 条"
+    if errs:
+        return "failed", f"本窗口抓取失败 {len(errs)} 次：{errs[-1]['error']}"
+    if not ever_fetched:
+        return "never", "尚未抓取过"
+    return "no_new", "本窗口无新增"
+
+
 def build_digest(settings: Settings, plan: dict[str, Any], now: datetime) -> dict[str, Any]:
     start, end = window_bounds(plan, now)
     loaded = load_sources(settings)
@@ -152,14 +165,24 @@ def build_digest(settings: Settings, plan: dict[str, Any], now: datetime) -> dic
     for it in items:
         by_cat.setdefault(it["category"], {}).setdefault(it["source_id"], []).append(it)
 
+    health_state = health_mod.read_all(settings)
+    cap = int(settings.defaults.get("report_max_items_per_source", MAX_ITEMS_PER_SOURCE))
+    errors_by_src: dict[str, list[dict[str, Any]]] = {}
+    for e in errors:
+        errors_by_src.setdefault(e["source_id"], []).append(e)
+
+    counts = {"enabled": 0, "new": 0, "no_new": 0, "failed": 0, "paused": 0, "never": 0, "omitted_items": 0}
     sections = []
     for cat in _selected_categories(plan, settings):
         src_map = by_cat.get(cat["id"], {})
-        hot_ids = [sid for sid, s in specs.items() if s.category == cat["id"] and s.kind == "hot_list"]
-        if not src_map and not any(sid in changes for sid in hot_ids):
+        # 每个启用的源都要出现（即使窗口内无新增）；窗口内有条目的已停用源也保留，避免悄悄丢数据
+        cat_sids = sorted({sid for sid, sp in specs.items()
+                           if sp.category == cat["id"] and sp.enabled and sp.kind != "subscription"}
+                          | set(src_map))
+        if not cat_sids:
             continue
         source_blocks = []
-        for sid in sorted(set(src_map) | set(hot_ids)):
+        for sid in cat_sids:
             spec = specs.get(sid)
             snap = changes.get(sid)
             hot = None
@@ -172,31 +195,59 @@ def build_digest(settings: Settings, plan: dict[str, Any], now: datetime) -> dic
                     "falling": ch.get("falling", [])[:MAX_CHANGES_PER_KIND],
                     "dropped": ch.get("dropped", [])[:MAX_CHANGES_PER_KIND],
                 }
+                hot["omitted"] = {k: max(0, len(ch.get(k, [])) - MAX_CHANGES_PER_KIND)
+                                  for k in ("new", "rising", "falling", "dropped")}
+            new_items = src_map.get(sid, [])
+            errs = errors_by_src.get(sid, [])
+            paused = bool((health_state.get(sid) or {}).get("paused"))
+            ever_fetched = sid in health_state or (settings.paths.raw_dir / sid).exists()
+            status, status_text = _source_status(paused, len(new_items), errs, ever_fetched)
+            counts["enabled"] += 1 if (spec and spec.enabled) else 0
+            counts[status] += 1
+            omitted = max(0, len(new_items) - cap)
+            counts["omitted_items"] += omitted
             source_blocks.append({
                 "source_id": sid,
                 "source_name": spec.name if spec else sid,
                 "kind": spec.kind if spec else "unknown",
-                "new_count": len(src_map.get(sid, [])),
+                "enabled": bool(spec and spec.enabled),
+                "status": status,
+                "status_text": status_text,
+                "new_count": len(new_items),
+                "omitted": omitted,
+                "errors_in_window": len(errs),
+                "last_error": errs[-1]["error"] if errs else "",
                 "items": [
                     {"id": i["id"], "title": i["title"], "url": i.get("url", ""),
-                     "summary": i.get("summary", ""), "rank": i.get("rank")}
-                    for i in src_map.get(sid, [])[:MAX_ITEMS_PER_SOURCE]
+                     "summary": i.get("summary", ""), "rank": i.get("rank"),
+                     "published_at": i.get("published_at")}
+                    for i in new_items[:cap]
                 ],
                 "hot_changes": hot,
             })
         sections.append({"category": cat["id"], "name": cat["name"], "sources": source_blocks})
 
+    active = {b["source_id"] for sec in sections for b in sec["sources"]
+              if b["status"] == "new" or b["hot_changes"]}
+    summary = {
+        "source_count": counts["enabled"],
+        "active_source_count": len(active),
+        "new_items": len(items),
+        "no_new_count": counts["no_new"],
+        "failed_count": counts["failed"],
+        "paused_count": counts["paused"],
+        "never_count": counts["never"],
+        "omitted_items": counts["omitted_items"],
+        "error_count": len(errors),
+        "subscription_updates": len(subscriptions),
+        "problem_count": len(problems),
+    }
+
     return {
         "plan_id": plan["id"],
         "generated_at": now.isoformat(timespec="seconds"),
         "window": {"start": start.isoformat(timespec="seconds"), "end": end.isoformat(timespec="seconds")},
-        "summary": {
-            "new_items": len(items),
-            "source_count": len({i["source_id"] for i in items} | set(changes)),
-            "error_count": len(errors),
-            "subscription_updates": len(subscriptions),
-            "problem_count": len(problems),
-        },
+        "summary": summary,
         "health": problems,
         "subscriptions": subscriptions,
         "sections": sections,
@@ -211,7 +262,11 @@ def render_markdown(digest: dict[str, Any], title_time: str) -> str:
     lines.append("")
     s = digest["summary"]
     lines.append("## 概览")
-    lines.append(f"- 本窗口新增条目：{s['new_items']} 条，涉及信息源 {s['source_count']} 个，异常 {s['error_count']} 次")
+    lines.append(f"- 本窗口新增条目：{s['new_items']} 条，启用信息源 {s['source_count']} 个（有更新 {s.get('active_source_count', 0)} 个）")
+    lines.append(f"- 无新增 {s.get('no_new_count', 0)} 个，抓取失败 {s.get('failed_count', 0)} 个，"
+                 f"已暂停 {s.get('paused_count', 0)} 个，尚未抓取 {s.get('never_count', 0)} 个")
+    if s.get("omitted_items"):
+        lines.append(f"- 另有 {s['omitted_items']} 条新增因单源展示上限未列出，完整数据见 JSON 报告")
     lines.append("")
     subs = digest.get("subscriptions", [])
     if subs:
@@ -250,13 +305,24 @@ def render_markdown(digest: dict[str, Any], title_time: str) -> str:
                         for r in rows))
                 if hot["dropped"]:
                     lines.append(f"- 掉出榜单：{len(hot['dropped'])} 条")
-            if src["items"]:
+            status = src.get("status", "new" if src["items"] else "no_new")
+            if status == "new" or src["items"]:
                 lines.append(f"- 本窗口新增 {src['new_count']} 条：")
                 for it in src["items"]:
                     link = f"[{it['title']}]({it['url']})" if it["url"] else it["title"]
                     lines.append(f"  - {link}")
+                if src.get("omitted"):
+                    lines.append(f"  - （另有 {src['omitted']} 条未展示）")
+            elif status == "failed":
+                lines.append(f"- ⚠ {src.get('status_text', '抓取失败')}")
+            elif status == "paused":
+                lines.append("- ⛔ 已自动暂停，需手动恢复")
+            elif status == "never":
+                lines.append("- 尚未抓取过")
             elif not hot:
                 lines.append("- 本窗口无新增")
+            if hot and hot.get("omitted") and any(hot["omitted"].values()):
+                lines.append("- 榜单变化较多，部分未展示")
             lines.append("")
     if not digest["sections"] and not subs:
         lines.append("本窗口没有可展示的内容。")
