@@ -46,11 +46,12 @@ def record_open(data_dir: Path, *, source_id: str, item_key: str, view: str, mod
     path = exposure_path(data_dir)
     with file_lock(path):
         append_jsonl(path, {"kind": "open", "time": _now_iso(now), "source_id": source_id,
-                            "item_key": item_key, "view": view if view in ("ranked", "plain") else "",
+                            "item_key": item_key, "view": view if view in EVENT_VIEWS else "",
                             "mode": mode})
 
 
 MAX_DWELL_SECONDS = 3600
+EVENT_VIEWS = ("ranked", "plain", "feed_v1")  # 打开/停留记录接受的视图名（impression 仍只接受 ranked/plain）
 
 
 def record_dwell(data_dir: Path, *, source_id: str, item_key: str, view: str, seconds: int,
@@ -62,7 +63,7 @@ def record_dwell(data_dir: Path, *, source_id: str, item_key: str, view: str, se
     path = exposure_path(data_dir)
     with file_lock(path):
         append_jsonl(path, {"kind": "dwell", "time": _now_iso(now), "source_id": source_id,
-                            "item_key": item_key, "view": view if view in ("ranked", "plain") else "",
+                            "item_key": item_key, "view": view if view in EVENT_VIEWS else "",
                             "seconds": seconds})
 
 

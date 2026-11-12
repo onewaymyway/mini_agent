@@ -32,6 +32,32 @@ view:                     # 已弃用：看板只保留“在专用浏览器中�
 profile:                  # 兴趣画像
   llm_enabled: true       # 是否允许用 LLM 归纳兴趣（需已配置模型；关闭后只用统计）
   rank_reports: true      # 报告中每个信息源的条目是否按兴趣排序（不影响抓取数据）
+feed:                     # 推荐信息流（看板“推荐”标签页，P1）；全部可调，缺省值与 core/feed.py 的 DEFAULT_CONFIG 一致
+  featured_size: 10       # 今日精选条数
+  hot_min_sources: 3      # 多源热点：至少被几个不同信息源报道
+  hot_size: 8             # 多源热点最多条数
+  topic_groups: 4         # 关注主题分组数
+  topic_group_size: 5     # 每个主题组最多条数
+  topic_min_group: 2      # 主题组至少包含的簇数
+  later_size: 30          # 稍后看队列展示条数
+  others_limit: 30        # 其余分区默认展示条数
+  candidate_limit: 2000   # 候选池上限
+  cluster_threshold: 0.45 # 标题聚合阈值（越大越保守，宁可漏聚，不要误并）
+  cold_start_factor: 0.3  # 画像为空时 interest 权重的系数
+  persistence_snapshots: 12  # 一直挂在榜上超过该快照数的条目降权
+  weights:
+    interest: 0.35
+    source_affinity: 0.15
+    freshness: 0.25
+    importance: 0.25
+    persistence_penalty: 0.3
+  half_life_hours:        # 新鲜度半衰期（小时），按信息源类型
+    hot_list: 3
+    feed: 12
+    recommend: 24
+    custom: 12
+    subscription: 72
+    default: 12
 dedicated_browser:        # 专用浏览器：独立数据目录的有头浏览器，用于抓取与阅读（看板可管理）
   executable: ""          # 留空则自动查找 Chrome / Edge；可填绝对路径
   profile_dir: browser/dedicated_profile

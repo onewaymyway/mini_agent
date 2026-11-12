@@ -4,7 +4,7 @@
 - first_seen：窗口内首次出现的抓取时间（用于“最新出现在前”排序与显示）；last_seen：最近一次出现；
 - rank / heat / summary 等取最近一次快照里的值；
 - is_new：窗口内某次快照把它标为“新增”（真正第一次出现的条目），区别于一直挂在榜上的老条目；
-- seen_count：窗口内出现过的快照次数。
+- seen_count：窗口内出现过的快照次数；first_rank：首次出现时的排名（与 rank 比较可得排名变化）。
 只读文件，不修改任何数据。
 """
 from __future__ import annotations
@@ -63,7 +63,8 @@ def merge_source(raw_dir: Path, source_id: str, since: datetime) -> dict[str, An
             cur = items.get(it["id"])
             when = data.get("fetched_at")
             if cur is None:
-                cur = {"first_seen": when, "seen_count": 0, "is_new": False}
+                # first_rank：窗口内首次出现时的排名（用于计算“排名上升”）
+                cur = {"first_seen": when, "first_rank": it.get("rank"), "seen_count": 0, "is_new": False}
                 items[it["id"]] = cur
             cur.update({k: it.get(k) for k in ("id", "title", "url", "summary", "rank", "heat", "published_at")})
             cur["source_id"] = source_id

@@ -76,6 +76,7 @@ streamlit run app.py --server.port 8506
 浏览器打开 http://localhost:8506 。端口与 stock_watch（8503）错开。
 
 页面：
+- **推荐**（P1）：把抓取结果整理成“今日精选 / 多源热点 / 关注主题 / 稍后看 / 其余”。同一事件的多条报道聚成一张卡片，卡片带一句话理由；已 👍 / 👎 / 打开的条目默认隐藏。与“抓取结果”页并存，后者保持原始列表。排序参数见 `config/settings.yaml` 的 `feed` 段。设计见 `next_doc/info_hub_recommendation_feed_design.md`。
 - **报告**：选择报告，查看摘要与 Markdown 内容；整份听报，或选择单条条目朗读。
 - **信息源**：表格形式查看，勾选启用后点"保存启用状态"；选择信息源立即抓取。
 - **添加信息源**：表单添加（预览、保存），或对话生成（生成草稿、预览、按意见修改、确认、放弃）。
@@ -221,6 +222,7 @@ health:
 | 不开看板也要调度 | 系统计划任务每 5 分钟 `python cli.py tick` |
 
 ## 变更记录
+- 2026-11-12：新增“推荐”页签（推荐信息流 P1）：`core/feed.py`（候选池、标题二元组聚合去重、多信号打分、分区、一句话理由、曝光记录 `data/feed/shown.jsonl`）；`server/api.py` 新增 `feed_view` / `record_feed_impressions_api`；`core/merged.py` 新增 `first_rank` 字段；反馈与打开记录接受视图名 `feed_v1`。详见 `next_doc/info_hub_recommendation_feed_design.md` §11。
 - 2026-11-12：抓取结果页新增“合并显示”：同一分类/类型下所有信息源在所选时间范围（1 小时到 30 天）内的结果合成一张列表，支持排序、只看新增、标题过滤；新增 `core/merged.py`、`api.merged_results`。详见 `next_doc/info_hub_dedicated_browser_design.md` §20。
 - 2026-11-12：抓取结果页增加“信息源分类 / 信息源类型”筛选（默认全部），用于缩小信息源下拉。详见 `next_doc/info_hub_dedicated_browser_design.md` §19。
 - 2026-11-12：新增信息源 `eastmoney_news`（东方财富要闻）与 `netease_money`（网易财经，浏览器渲染，`config/sites.yaml` 新增同名站点）；`html_list` 适配器对非 UTF-8（GBK/GB2312）页面改为 gb18030 回退解码。

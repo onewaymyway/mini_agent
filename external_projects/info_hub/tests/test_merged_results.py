@@ -125,8 +125,10 @@ class MergedViewTests(unittest.TestCase):
         return at
 
     def _titles(self, at):
-        # 只取条目标题（测试数据的标题都以 A/B/C 开头），排除页面其他面板里的粗体小标题
-        return [m.value for m in at.markdown if re.fullmatch(r"\*\*[ABC][^*]*\*\*", m.value)]
+        # 只取“抓取结果”标签页内的条目标题（测试数据的标题都以 A/B/C 开头）。
+        # 限定到该标签页：“推荐”标签页也会展示同样的条目，不能混进来；页面其他面板里的粗体小标题也排除在外。
+        tab = next(t for t in at.tabs if t.label == "抓取结果")
+        return [m.value for m in tab.markdown if re.fullmatch(r"\*\*[ABC][^*]*\*\*", m.value)]
 
     def _buttons(self, at):
         return [b for b in at.button if b.key and b.key.startswith("op_mg_")]

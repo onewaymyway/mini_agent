@@ -818,6 +818,55 @@ def rank_snapshot(settings: Settings, source_id: str, items: list[dict[str, Any]
             "items": prof.rank_items(data, items, source_id, actions)}
 
 
+# ---------- 推荐信息流（P1，见 next_doc/info_hub_recommendation_feed_design.md） ----------
+def feed_view(settings: Settings, *, hours: float = 24, category: str = "", kind: str = "",
+              include_processed: bool = False, now: datetime | None = None) -> dict[str, Any]:
+    """推荐信息流：候选池 → 聚合去重 → 多信号打分 → 分区。只读，不写曝光（由 record_feed_impressions_api 显式记录）。"""
+    from core import feed as feedmod
+    from core.profile import ensure_fresh
+    try:
+        hours = float(hours)
+    except (TypeError, ValueError):
+        raise ApiError(400, "时间范围必须是数字")
+    if not 0 < hours <= 24 * 30:
+        raise ApiError(400, "时间范围需大于 0 且不超过 30 天")
+    loaded = load_sources(settings)
+    srcs = [{"id": sid, "name": spec.name, "kind": spec.kind}
+            for sid, spec in sorted(loaded.specs.items())
+            if (not category or spec.category == category) and (not kind or spec.kind == kind)]
+    cfg = feedmod.load_config(settings.raw)
+    data_dir = settings.paths.data_dir
+    profile = ensure_fresh(data_dir)
+    res = feedmod.build_feed(data_dir=data_dir, raw_dir=settings.paths.raw_dir, sources=srcs, hours=hours,
+                             cfg=cfg, profile=profile, now=now, include_processed=include_processed)
+    res["config"] = feedmod.public_config_summary(cfg)
+    return res
+
+
+def record_feed_impressions_api(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
+    """记录一次推荐信息流展示（位置、分区、分量）。body: {window_hours, impressions:[{item_key, position, section, ...}]}。"""
+    from core import feed as feedmod
+    rows = body.get("impressions") or []
+    if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
+        raise ApiError(400, "impressions 必须是对象列表")
+    clean = []
+    for r in rows[:200]:
+        key = str(r.get("item_key") or "")
+        if not _ID16_RE.match(key):
+            raise ApiError(400, "条目 key 不合法")
+        pos = r.get("position")
+        if not isinstance(pos, int) or pos < 0:
+            raise ApiError(400, "position 必须是非负整数")
+        clean.append({"item_key": key, "position": pos, "section": str(r.get("section") or "")[:20],
+                      "score": r.get("score"), "components": r.get("components") or {}})
+    try:
+        window = float(body.get("window_hours") or 0)
+    except (TypeError, ValueError):
+        raise ApiError(400, "window_hours 必须是数字")
+    feedmod.record_impressions(settings.paths.data_dir, window_hours=window, impressions=clean)
+    return {"recorded": len(clean)}
+
+
 # ---------- 信息源发现（第三阶段） ----------
 _CAND_RE = re.compile(r"^disc_[a-z][a-z0-9_]{1,15}_[0-9a-f]{6}$")
 

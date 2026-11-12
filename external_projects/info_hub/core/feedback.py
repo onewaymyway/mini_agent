@@ -31,7 +31,7 @@ REASONS: dict[str, str] = {
 MAX_NOTE_CHARS = 300
 VIEW_MODES = ("reader", "iframe", "newtab")
 FEEDBACK_OPEN_MODES = VIEW_MODES + ("dedicated",)  # 反馈事件记录的打开方式；dedicated = 专用浏览器
-LIST_VIEWS = ("ranked", "plain")
+LIST_VIEWS = ("ranked", "plain", "feed_v1")  # feed_v1：“推荐”标签页（core/feed.py）
 
 
 def normalize_url(url: str) -> str:
