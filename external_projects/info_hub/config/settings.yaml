@@ -45,12 +45,21 @@ feed:                     # 推荐信息流（看板“推荐”标签页，P1�
   cluster_threshold: 0.45 # 标题聚合阈值（越大越保守，宁可漏聚，不要误并）
   cold_start_factor: 0.3  # 画像为空时 interest 权重的系数
   persistence_snapshots: 12  # 一直挂在榜上超过该快照数的条目降权
+  explore_ratio: 0.15     # 精选中探索位的比例（画像之外的内容）；0 即关闭
+  explore_min_featured: 4 # 精选条数少于该值时不设探索位
+  diversity:              # 精选的多样性控制
+    source_cap: 3         # 同一信息源在精选中最多条数
+    topic_repeat_penalty: 0.1  # 同一主题每多一条，后续候选扣分
+  fatigue:                # 曝光疲劳：展示很多次却从未点击的条目逐步降权
+    shows: 3              # 展示达到该次数开始计入
+    window_days: 7        # 只统计最近这么多天的展示
   weights:
     interest: 0.35
     source_affinity: 0.15
     freshness: 0.25
     importance: 0.25
     persistence_penalty: 0.3
+    fatigue_penalty: 0.2  # 设为 0 即关闭疲劳降权
   half_life_hours:        # 新鲜度半衰期（小时），按信息源类型
     hot_list: 3
     feed: 12

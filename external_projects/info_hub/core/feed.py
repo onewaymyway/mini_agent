@@ -18,13 +18,13 @@ from __future__ import annotations
 import math
 import re
 from bisect import bisect_left, bisect_right
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
 from core import merged
 from core.feedback import item_key, normalize_url, read_feedback
-from core.store import append_jsonl, file_lock, read_jsonl
+from core.store import append_jsonl, atomic_write_json, file_lock, read_json, read_jsonl
 
 VIEW = "feed_v1"
 PROCESSED_ACTIONS = ("interested", "not_interested")  # 明确处理过：不再进入推荐
@@ -54,6 +54,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "freshness": 0.25,
         "importance": 0.25,
         "persistence_penalty": 0.3,
+        "fatigue_penalty": 0.2,    # P2：展示很多次却从未点击的条目降权；设为 0 即关闭
+    },
+    "explore_ratio": 0.15,         # P2：精选中探索位的比例（画像之外的内容）；设为 0 即关闭
+    "explore_min_featured": 4,     # 精选条数少于该值时不设探索位
+    "diversity": {                 # P2：精选中的多样性控制
+        "source_cap": 3,           # 同一信息源在精选中最多出现的条数
+        "topic_repeat_penalty": 0.1,  # 同一主题每多一条，后续候选扣掉的分数
+    },
+    "fatigue": {                   # P2：曝光疲劳
+        "shows": 3,                # 展示达到该次数仍无任何动作，开始视为弱负向
+        "window_days": 7,          # 只统计最近这么多天的展示
     },
     # 新鲜度半衰期（小时）：资讯流消逝快，订阅内容保留久；未知类型用 default
     "half_life_hours": {"hot_list": 3, "feed": 12, "recommend": 24, "custom": 12, "subscription": 72,
@@ -69,7 +80,7 @@ def load_config(raw: Optional[dict[str, Any]]) -> dict[str, Any]:
     if not isinstance(user, dict):
         return cfg
     for key, value in user.items():
-        if key in ("weights", "half_life_hours") and isinstance(value, dict):
+        if key in cfg and isinstance(cfg[key], dict) and isinstance(value, dict):
             cfg[key].update({k: v for k, v in value.items() if isinstance(v, (int, float))})
         elif key in cfg and not isinstance(cfg[key], dict) and isinstance(value, (int, float)):
             cfg[key] = value
@@ -278,14 +289,68 @@ def _feedback_by_source(events: list[dict[str, Any]]) -> tuple[dict[str, int], d
     return pos, neg
 
 
+# ---------- P2：偏好（不再显示的信息源） ----------
+def prefs_path(data_dir: Path) -> Path:
+    return Path(data_dir) / "feed" / "prefs.json"
+
+
+def load_prefs(data_dir: Path) -> dict[str, Any]:
+    data = read_json(prefs_path(data_dir), default=None)
+    hidden = data.get("hidden_sources", []) if isinstance(data, dict) else []
+    return {"hidden_sources": [str(x) for x in hidden if isinstance(x, str) and x]}
+
+
+def save_prefs(data_dir: Path, prefs: dict[str, Any]) -> None:
+    path = prefs_path(data_dir)
+    with file_lock(path):
+        atomic_write_json(path, {"hidden_sources": sorted(set(prefs.get("hidden_sources", [])))})
+
+
+def set_source_hidden(data_dir: Path, source_id: str, hidden: bool) -> dict[str, Any]:
+    prefs = load_prefs(data_dir)
+    current = set(prefs["hidden_sources"])
+    (current.add if hidden else current.discard)(source_id)
+    prefs["hidden_sources"] = sorted(current)
+    save_prefs(data_dir, prefs)
+    return prefs
+
+
+# ---------- P2：曝光计数与疲劳 ----------
+def shown_counts(data_dir: Path, now: datetime, window_days: float) -> dict[str, int]:
+    """窗口内每个条目被展示过的次数（来自 shown.jsonl，append-only）。"""
+    since = now - timedelta(days=window_days)
+    counts: dict[str, int] = {}
+    for row in read_jsonl(shown_path(data_dir)):
+        if row.get("kind") != "feed_impression":
+            continue
+        when = _parse_time(row.get("time"))
+        if when is None or when < since:
+            continue
+        for it in row.get("items") or []:
+            key = it.get("item_key")
+            if key:
+                counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def fatigue_value(count: int, shows: int) -> float:
+    """展示次数达到 shows 后开始线性增长，展示 2×shows−1 次时达到 1（shows=3 时即第 5 次）。未达到则为 0。"""
+    if shows <= 0 or count < shows:
+        return 0.0
+    return round(min(1.0, (count - shows + 1) / shows), 4)
+
+
 # ---------- 主流程 ----------
 def build_feed(*, data_dir: Path, raw_dir: Path, sources: list[dict[str, Any]], hours: float,
                cfg: Optional[dict[str, Any]] = None, profile: Optional[dict[str, Any]] = None,
-               now: Optional[datetime] = None, include_processed: bool = False) -> dict[str, Any]:
+               now: Optional[datetime] = None, include_processed: bool = False,
+               hidden_sources: Optional[set[str]] = None,
+               shown: Optional[dict[str, int]] = None) -> dict[str, Any]:
     """构造推荐信息流。只读（不写 feed 目录，曝光记录由调用方显式 record_impressions）。
 
-    sources：[{id, name, kind}]；profile：兴趣画像（缺省时从 data_dir 读取并按需重算）。
-    返回 {generated_at, since, window_hours, stats, sections, impressions}。
+    sources：[{id, name, kind}]；profile：兴趣画像（缺省时从 data_dir 读取并按需重算）；
+    hidden_sources：“不再显示”的信息源；shown：{item_key: 窗口内展示次数}（缺省从 shown.jsonl 计算）。
+    返回 {generated_at, since, window_hours, stats, sections, impressions, others_limit, config...}。
     """
     from core.profile import ensure_fresh, score_item
 
@@ -297,6 +362,9 @@ def build_feed(*, data_dir: Path, raw_dir: Path, sources: list[dict[str, Any]], 
     merged_res = merged.merge_sources(raw_dir, ids, hours, now=now) if ids else {
         "items": [], "since": now.isoformat(timespec="seconds"), "sources": {}}
     profile = profile if profile is not None else ensure_fresh(data_dir)
+    hidden = set(hidden_sources or ())
+    if shown is None:
+        shown = shown_counts(data_dir, now, cfg["fatigue"]["window_days"])
 
     events = read_feedback(data_dir)
     latest = _event_index(events)
@@ -307,8 +375,8 @@ def build_feed(*, data_dir: Path, raw_dir: Path, sources: list[dict[str, Any]], 
     learned_sources = (profile.get("learned") or {}).get("sources") or {}
     blocked_terms = [t.lower() for t in (profile.get("explicit") or {}).get("exclude", []) if t]
 
-    stats = {"raw_items": len(merged_res["items"]), "processed": 0, "blocked": 0, "later": 0,
-             "candidates": 0, "clusters": 0, "cold_start": not profile_informative(profile),
+    stats = {"raw_items": len(merged_res["items"]), "processed": 0, "blocked": 0, "hidden_sources": 0,
+             "later": 0, "candidates": 0, "clusters": 0, "cold_start": not profile_informative(profile),
              "truncated": False}
 
     pool: list[dict[str, Any]] = []
@@ -321,7 +389,10 @@ def build_feed(*, data_dir: Path, raw_dir: Path, sources: list[dict[str, Any]], 
         row = dict(it)
         row.update({"item_key": key, "source_name": names.get(it.get("source_id"), it.get("source_id")),
                     "source_kind": kinds.get(it.get("source_id"), ""), "processed": False,
-                    "processed_by": ""})
+                    "processed_by": "", "shown_count": shown.get(key, 0)})
+        if it.get("source_id") in hidden:
+            stats["hidden_sources"] += 1
+            continue
         if any(term in text for term in blocked_terms):
             stats["blocked"] += 1
             continue
@@ -396,18 +467,21 @@ def build_feed(*, data_dir: Path, raw_dir: Path, sources: list[dict[str, Any]], 
                                  learned_sources=learned_sources) for sid in src_ids) / max(1, len(src_ids))
         imp = importance(n_sources, best_rank, max_rise)
         pen = persistence_penalty(members, cfg["persistence_snapshots"])
+        fat = max(fatigue_value(m.get("shown_count", 0), cfg["fatigue"]["shows"]) for m in members)
         comps = {
             "interest": round(inter, 4),
             "source_affinity": round(sa, 4),
             "freshness": fr,
             "importance": imp,
             "persistence_penalty": pen,
+            "fatigue_penalty": fat,
         }
         score = (weights["interest"] * interest_factor * inter
                  + weights["source_affinity"] * sa
                  + weights["freshness"] * fr
                  + weights["importance"] * imp
-                 - weights["persistence_penalty"] * pen)
+                 - weights["persistence_penalty"] * pen
+                 - weights.get("fatigue_penalty", 0.0) * fat)
         rep = _representative(members)
         cards.append(_cluster_card(rep, members, names, p, comps, round(score, 4), best_rank, max_rise, now))
 
@@ -500,14 +574,59 @@ def build_reason(card: dict[str, Any]) -> str:
     return " · ".join(parts) if parts else "综合排序靠前"
 
 
+def _pick_featured(ranked: list[dict[str, Any]], n: int, source_cap: int, topic_penalty: float) -> list[dict[str, Any]]:
+    """精选的贪心多样性挑选（MMR 思路）：每次选“扣掉同主题重复惩罚后”分最高的；同一信息源不超过 source_cap。"""
+    chosen: list[dict[str, Any]] = []
+    src_count: dict[str, int] = {}
+    topic_count: dict[str, int] = {}
+    pool = list(ranked)
+    while pool and len(chosen) < n:
+        best, best_val = None, None
+        for c in pool:
+            src = c.get("source_id") or ""
+            if source_cap > 0 and src_count.get(src, 0) >= source_cap:
+                continue
+            topic = c["matches"][0] if c.get("matches") else ""
+            val = c["score"] - (topic_penalty * topic_count.get(topic, 0) if topic else 0.0)
+            if best_val is None or val > best_val:
+                best, best_val = c, val
+        if best is None:
+            break
+        chosen.append(best)
+        pool.remove(best)
+        src_count[best.get("source_id") or ""] = src_count.get(best.get("source_id") or "", 0) + 1
+        topic = best["matches"][0] if best.get("matches") else ""
+        if topic:
+            topic_count[topic] = topic_count.get(topic, 0) + 1
+    return chosen
+
+
+def _explore_size(cfg: dict[str, Any]) -> int:
+    ratio = float(cfg.get("explore_ratio") or 0)
+    if ratio <= 0 or cfg["featured_size"] < cfg["explore_min_featured"]:
+        return 0
+    return max(1, round(cfg["featured_size"] * ratio))
+
+
 def _assign_sections(cards: list[dict[str, Any]], cfg: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
-    """每个簇只归入一个分区：精选 → 多源热点 → 关注主题 → 其余。"""
+    """每个簇只归入一个分区。挑选顺序：精选（带多样性）→ 探索 → 多源热点 → 关注主题 → 其余。"""
     ranked = sorted(cards, key=lambda c: c["score"], reverse=True)
     used: set[str] = set()
+    div = cfg.get("diversity") or {}
 
-    featured = ranked[:cfg["featured_size"]]
+    featured = _pick_featured(ranked, cfg["featured_size"], int(div.get("source_cap", 3)),
+                              float(div.get("topic_repeat_penalty", 0.1)))
     for c in featured:
         c["section"] = "featured"
+        used.add(c["key"])
+
+    # 探索位：画像之外（没有命中关注主题）但重要且新鲜的簇；标注为“探索”，防止回音室
+    rest = [c for c in ranked if c["key"] not in used]
+    explore = sorted((c for c in rest if not c["matches"]),
+                     key=lambda c: c["components"].get("importance", 0) * c["components"].get("freshness", 0),
+                     reverse=True)[:_explore_size(cfg)]
+    for c in explore:
+        c["section"] = "explore"
         used.add(c["key"])
 
     rest = [c for c in ranked if c["key"] not in used]
@@ -535,16 +654,17 @@ def _assign_sections(cards: list[dict[str, Any]], cfg: dict[str, Any]) -> dict[s
     others = [c for c in ranked if c["key"] not in used]
     for c in others:
         c["section"] = "others"
-    return {"featured": featured, "hot": hot_pool, "topics": topics, "others": others}
+    return {"featured": featured, "explore": explore, "hot": hot_pool, "topics": topics, "others": others}
 
 
 def _impression_order(sections: dict[str, Any], others_limit: int) -> list[dict[str, Any]]:
-    """按屏幕上的先后顺序给出位置。其余分区只计入前 others_limit 条（即默认展示的那部分）。"""
+    """按屏幕上的先后顺序给出位置：精选 → 多源热点 → 关注主题 → 探索 → 其余（只计入默认展示的前 others_limit 条）。"""
     order: list[dict[str, Any]] = []
 
     def add(card: dict[str, Any], section: str) -> None:
         order.append({"item_key": card["key"], "position": len(order), "section": section,
-                      "score": card.get("score"), "components": card.get("components") or {}})
+                      "score": card.get("score"), "components": card.get("components") or {},
+                      "first_seen": card.get("first_seen")})
 
     for c in sections["featured"]:
         add(c, "featured")
@@ -553,6 +673,8 @@ def _impression_order(sections: dict[str, Any], others_limit: int) -> list[dict[
     for group in sections["topics"]:
         for c in group["cards"]:
             add(c, "topics")
+    for c in sections["explore"]:
+        add(c, "explore")
     for c in sections["others"][:others_limit]:
         add(c, "others")
     return order

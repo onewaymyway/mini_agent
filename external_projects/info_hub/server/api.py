@@ -837,8 +837,10 @@ def feed_view(settings: Settings, *, hours: float = 24, category: str = "", kind
     cfg = feedmod.load_config(settings.raw)
     data_dir = settings.paths.data_dir
     profile = ensure_fresh(data_dir)
+    hidden = set(feedmod.load_prefs(data_dir)["hidden_sources"])
     res = feedmod.build_feed(data_dir=data_dir, raw_dir=settings.paths.raw_dir, sources=srcs, hours=hours,
-                             cfg=cfg, profile=profile, now=now, include_processed=include_processed)
+                             cfg=cfg, profile=profile, now=now, include_processed=include_processed,
+                             hidden_sources=hidden)
     res["config"] = feedmod.public_config_summary(cfg)
     return res
 
@@ -858,13 +860,51 @@ def record_feed_impressions_api(settings: Settings, body: dict[str, Any]) -> dic
         if not isinstance(pos, int) or pos < 0:
             raise ApiError(400, "position 必须是非负整数")
         clean.append({"item_key": key, "position": pos, "section": str(r.get("section") or "")[:20],
-                      "score": r.get("score"), "components": r.get("components") or {}})
+                      "score": r.get("score"), "components": r.get("components") or {},
+                      "first_seen": r.get("first_seen")})
     try:
         window = float(body.get("window_hours") or 0)
     except (TypeError, ValueError):
         raise ApiError(400, "window_hours 必须是数字")
     feedmod.record_impressions(settings.paths.data_dir, window_hours=window, impressions=clean)
     return {"recorded": len(clean)}
+
+
+def feed_set_source_hidden_api(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
+    """“不再显示此来源”：推荐页不再展示该信息源的条目（抓取结果页不受影响）。可撤销。"""
+    from core import feed as feedmod
+    sid = str(body.get("source_id") or "")
+    if not sid or sid != Path(sid).name:
+        raise ApiError(400, "信息源 id 不合法")
+    prefs = feedmod.set_source_hidden(settings.paths.data_dir, sid, bool(body.get("hidden", True)))
+    return {"hidden_sources": prefs["hidden_sources"]}
+
+
+def feed_block_topic_api(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
+    """“屏蔽此主题”：把主题词加入手写屏蔽词（画像面板里可撤销），推荐页与抓取结果排序都会据此降低含该词的条目。"""
+    from core import profile as prof
+    term = str(body.get("topic") or "").strip()
+    if not term:
+        raise ApiError(400, "主题不能为空")
+    data = prof.load_profile(settings.paths.data_dir)
+    explicit = data.get("explicit") or {}
+    exclude = list(explicit.get("exclude") or [])
+    if term not in exclude:
+        exclude.append(term)
+    prof.save_explicit(settings.paths.data_dir, explicit.get("topics") or [], exclude)
+    return {"exclude": exclude}
+
+
+def feed_replay_api(settings: Settings, days: float = 30) -> dict[str, Any]:
+    """离线回放：推荐顺序 vs 按首次出现时间倒序，在前 10 条上的正例率 / 👎 率 / NDCG@10。"""
+    from core import feed_eval
+    try:
+        days = float(days)
+    except (TypeError, ValueError):
+        raise ApiError(400, "天数必须是数字")
+    if not 0 < days <= 90:
+        raise ApiError(400, "天数需大于 0 且不超过 90")
+    return feed_eval.replay(settings.paths.data_dir, days=days)
 
 
 # ---------- 信息源发现（第三阶段） ----------

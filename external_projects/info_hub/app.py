@@ -30,6 +30,7 @@ import streamlit as st
 PROJECT_ROOT = Path(os.environ.get("INFO_HUB_ROOT") or Path(__file__).resolve().parent).resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from core import feed as feed_prefs  # noqa: E402
 from core.feedback import item_key  # noqa: E402
 from core.settings import load_settings  # noqa: E402
 from dashboard.speech import speech_player_html  # noqa: E402
@@ -962,7 +963,7 @@ def _reading_panel(sid: str, items: list[dict], view: str = "plain") -> None:
 
 
 # ---------- 推荐（P1：候选池 → 聚合去重 → 多信号打分 → 分区） ----------
-_FEED_SECTION_TITLE = {"featured": "今日精选", "hot": "多源热点", "topics": "关注主题", "later": "稍后看"}
+_FEED_SECTION_TITLE = {"featured": "今日精选", "hot": "多源热点", "topics": "关注主题", "explore": "探索", "later": "稍后看"}
 
 
 def _feed_version() -> tuple:
@@ -989,7 +990,7 @@ def _feed_row(card: dict, k: str) -> None:
     簇内所有成员一起处理：点一次反馈，同一事件的每条报道都会记录，避免处理后另一来源的同一事件又冒出来。
     """
     k = f"feed_{k}"  # 推荐页的按钮键统一加 feed_ 前缀，与“抓取结果”页的 fb_* / op_* 键互不干扰
-    c1, c2, c3, c4, c5 = st.columns([8, 1, 1, 1, 2], vertical_alignment="center")
+    c1, c2, c3, c4, c5, c6 = st.columns([8, 1, 1, 1, 1, 2], vertical_alignment="center")
     head = ("✅ 已处理 · " if card.get("processed") else "") + ("🆕 " if card.get("is_new") else "")
     c1.markdown(f"{head}**{card['title']}**")
     if card.get("summary"):
@@ -1015,7 +1016,12 @@ def _feed_row(card: dict, k: str) -> None:
             if ok:
                 st.toast(f"已记录：{tip}")
                 st.rerun()
-    with c5:
+    if c5.button("🚫", key=f"feed_hide_{k}", help="不再显示此信息源的条目（可在页面底部撤销）"):
+        if call(api.feed_set_source_hidden_api, settings, {"source_id": card.get("source_id", ""),
+                                                            "hidden": True}) is not None:
+            st.toast("已隐藏该信息源")
+            st.rerun()
+    with c6:
         open_button(card.get("url"), f"op_{k}", sid=card.get("source_id", ""), title=card.get("title") or "",
                     view="feed_v1")
     if len(members) > 1:
@@ -1035,6 +1041,51 @@ def _feed_block(cards: list, prefix: str) -> None:
         _feed_row(card, f"{prefix}_{n}")
 
 
+def _record_members(card: dict, act: str) -> bool:
+    """把一个事件（簇）的全部报道记录为同一反馈动作。返回是否全部成功。"""
+    ok = True
+    for m in card.get("sources") or []:
+        out = call(api.record_feedback, settings, {
+            "action": act, "source_id": m.get("source_id", ""), "url": m.get("url") or "",
+            "title": m.get("title") or "", "view": "feed_v1"})
+        ok = ok and out is not None
+    return ok
+
+
+@st.fragment
+def _triage_block(queue: list, tag: str) -> None:
+    """快速分诊：一次只看一条，👍 / 👎 / ⏰ 直接记录，跳过则看下一条。冷启动时用来快速积累反馈。"""
+    key = f"triage_i_{tag}"
+    i = st.session_state.get(key, 0)
+    if not queue:
+        st.info("没有待分诊的条目。")
+        return
+    if i >= len(queue):
+        st.success(f"这一轮 {len(queue)} 条已经看完了。")
+        if st.button("从头再来", key=f"triage_reset_{tag}"):
+            st.session_state[key] = 0
+            st.rerun()
+        return
+    card = queue[i]
+    st.caption(f"快速分诊 {i + 1} / {len(queue)} · {card.get('reason', '')}")
+    st.markdown(f"**{card['title']}**")
+    if card.get("summary"):
+        st.caption(str(card["summary"])[:200])
+    st.caption(f"{card['n_sources']} 个来源 · {card.get('age') or ''}")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    for col, act, label in ((c1, "interested", "👍 感兴趣"), (c2, "not_interested", "👎 不感兴趣"),
+                            (c3, "later", "⏰ 稍后看")):
+        if col.button(label, key=f"triage_{act}_{tag}_{i}", use_container_width=True):
+            if _record_members(card, act):
+                st.rerun()  # 该条目已处理，列表前移，索引不变
+    if c4.button("跳过", key=f"triage_skip_{tag}_{i}", use_container_width=True):
+        st.session_state[key] = i + 1
+        st.rerun()
+    with c5:
+        open_button(card.get("url"), f"triage_op_{tag}_{i}", sid=card.get("source_id", ""),
+                    title=card.get("title") or "", view="feed_v1")
+
+
 def _feed_tab() -> None:
     srcs_all = (call(api.list_sources, settings) or {"sources": []})["sources"]
     valid = [x for x in srcs_all if not x.get("config_errors")]
@@ -1052,51 +1103,97 @@ def _feed_tab() -> None:
                         format_func=lambda k: "全部类型" if not k else kind_names.get(k, k))
     show_processed = f4.toggle("显示已处理", key="feed_show_processed",
                                help="默认隐藏已 👍 / 👎 / 打开过的条目；打开后这些条目会带“已处理”标记排在其余里。")
+    triage_on = st.toggle("快速分诊模式", key="feed_triage",
+                          help="一次只看一条，用 👍 / 👎 / ⏰ / 跳过快速打标。冷启动时最有用。")
     if not valid:
         st.info("还没有信息源。")
         return
     res = call(_feed_cached, str(PROJECT_ROOT), float(hours), category, kind, bool(show_processed), _feed_version())
     if res is None:
         return
+    sec = res["sections"]
     st_ = res["stats"]
     st.caption(f"{dict(_WINDOWS)[hours]}（自 {fmt_time(res['since'])} 起）· 原始 {st_['raw_items']} 条 · "
                f"去重为 {st_['clusters']} 个事件 · 已处理隐藏 {0 if show_processed else st_['processed']} 条 · "
-               f"屏蔽 {st_['blocked']} 条 · 稍后看 {st_['later']} 条")
+               f"屏蔽 {st_['blocked']} 条 · 不再显示的信息源 {st_['hidden_sources']} 条 · 稍后看 {st_['later']} 条")
     if st_["cold_start"]:
         st.info("兴趣画像还是空的（冷启动）：当前排序主要依据“多源报道 / 排名 / 新鲜度”。"
-                "在下面给几条 👍 / 👎，推荐会很快变得更贴近你。")
+                "打开“快速分诊模式”给几条 👍 / 👎，推荐会很快变得更贴近你。")
     if st_.get("truncated"):
         st.caption("候选条目超过上限，只取了最近出现的一部分。")
 
     # 每个展示批次只记录一次曝光（同一份缓存结果在会话内只记一次）
-    guard = f"feed_imp_{res['generated_at']}_{hours}_{category}_{kind}_{int(show_processed)}"
-    if res["impressions"] and guard not in st.session_state:
-        call(api.record_feed_impressions_api, settings,
-             {"window_hours": hours, "impressions": res["impressions"]})
-        st.session_state[guard] = True
+    if not triage_on:
+        guard = f"feed_imp_{res['generated_at']}_{hours}_{category}_{kind}_{int(show_processed)}"
+        if res["impressions"] and guard not in st.session_state:
+            call(api.record_feed_impressions_api, settings,
+                 {"window_hours": hours, "impressions": res["impressions"]})
+            st.session_state[guard] = True
 
-    sec = res["sections"]
-    if not any(sec[k] for k in ("featured", "hot", "topics", "later", "others")):
-        st.info("这段时间内没有需要推荐的新内容。可以放宽时间范围，或到“抓取结果”页确认信息源已有数据。")
-    if sec["featured"]:
-        st.subheader(f"⭐ {_FEED_SECTION_TITLE['featured']}（{len(sec['featured'])}）")
-        _feed_block(sec["featured"], f"f_{hours}_{category}_{kind}")
-    if sec["hot"]:
-        st.subheader(f"🔥 {_FEED_SECTION_TITLE['hot']}（{len(sec['hot'])}）")
-        st.caption("被多个不同信息源同时报道的事件。")
-        _feed_block(sec["hot"], f"h_{hours}_{category}_{kind}")
-    for gi, group in enumerate(sec["topics"]):
-        if gi == 0:
-            st.subheader(f"🎯 {_FEED_SECTION_TITLE['topics']}")
-        st.markdown(f"**#{group['topic']}**（{len(group['cards'])}）")
-        _feed_block(group["cards"], f"t{gi}_{hours}_{category}_{kind}")
-    if sec["later"]:
-        with st.expander(f"⏰ {_FEED_SECTION_TITLE['later']}（{len(sec['later'])}）", expanded=False):
-            _feed_block(sec["later"], f"l_{hours}_{category}_{kind}")
-    if sec["others"]:
-        limit = res["others_limit"]
-        with st.expander(f"其余（{len(sec['others'])} 条，默认展示前 {limit} 条）", expanded=False):
-            _feed_block(sec["others"][:limit], f"o_{hours}_{category}_{kind}")
+    if triage_on:
+        queue = (list(sec["featured"]) + list(sec["explore"]) + list(sec["hot"])
+                 + [c for g in sec["topics"] for c in g["cards"]] + list(sec["others"]))
+        _triage_block(queue, f"{hours}_{category}_{kind}")
+    else:
+        if not any(sec[k] for k in ("featured", "explore", "hot", "topics", "later", "others")):
+            st.info("这段时间内没有需要推荐的新内容。可以放宽时间范围，或到“抓取结果”页确认信息源已有数据。")
+        if sec["featured"]:
+            st.subheader(f"⭐ {_FEED_SECTION_TITLE['featured']}（{len(sec['featured'])}）")
+            _feed_block(sec["featured"], f"f_{hours}_{category}_{kind}")
+        if sec["hot"]:
+            st.subheader(f"🔥 {_FEED_SECTION_TITLE['hot']}（{len(sec['hot'])}）")
+            st.caption("被多个不同信息源同时报道的事件。")
+            _feed_block(sec["hot"], f"h_{hours}_{category}_{kind}")
+        for gi, group in enumerate(sec["topics"]):
+            if gi == 0:
+                st.subheader(f"🎯 {_FEED_SECTION_TITLE['topics']}")
+            tc1, tc2 = st.columns([8, 2], vertical_alignment="center")
+            tc1.markdown(f"**#{group['topic']}**（{len(group['cards'])}）")
+            if tc2.button("屏蔽此主题", key=f"feed_block_topic_{gi}_{hours}_{category}_{kind}",
+                          help="把该词加入手写屏蔽词（画像面板可撤销）"):
+                if call(api.feed_block_topic_api, settings, {"topic": group["topic"]}) is not None:
+                    st.toast(f"已屏蔽主题：{group['topic']}")
+                    st.rerun()
+            _feed_block(group["cards"], f"t{gi}_{hours}_{category}_{kind}")
+        if sec["explore"]:
+            st.subheader(f"🧭 {_FEED_SECTION_TITLE['explore']}（{len(sec['explore'])}）")
+            st.caption("画像之外但重要、新鲜的内容。标注为探索，用来防止兴趣越来越窄。")
+            _feed_block(sec["explore"], f"e_{hours}_{category}_{kind}")
+        if sec["later"]:
+            with st.expander(f"⏰ {_FEED_SECTION_TITLE['later']}（{len(sec['later'])}）", expanded=False):
+                _feed_block(sec["later"], f"l_{hours}_{category}_{kind}")
+        if sec["others"]:
+            limit = res["others_limit"]
+            with st.expander(f"其余（{len(sec['others'])} 条，默认展示前 {limit} 条）", expanded=False):
+                _feed_block(sec["others"][:limit], f"o_{hours}_{category}_{kind}")
+
+    with st.expander("已“不再显示”的信息源（可撤销）"):
+        hidden = feed_prefs.load_prefs(settings.paths.data_dir)["hidden_sources"]
+        names = {x["id"]: x["name"] for x in valid}
+        if not hidden:
+            st.caption("没有。")
+        for sid in hidden:
+            hc1, hc2 = st.columns([8, 2], vertical_alignment="center")
+            hc1.write(f"{names.get(sid, sid)}（{sid}）")
+            if hc2.button("恢复显示", key=f"feed_unhide_{sid}"):
+                if call(api.feed_set_source_hidden_api, settings, {"source_id": sid, "hidden": False}) is not None:
+                    st.rerun()
+
+    with st.expander("离线回放评估（推荐顺序 vs 按时间倒序，前 10 条）"):
+        st.caption("用历史展示与之后的 👍 / 👎 / 打开作为标签，只作参考，有位置偏差。")
+        if st.button("计算回放", key="feed_replay_btn"):
+            rep = call(api.feed_replay_api, settings, days=30)
+            if rep is not None:
+                st.session_state["feed_replay_result"] = rep
+        rep = st.session_state.get("feed_replay_result")
+        if rep:
+            st.write(rep["message"] + f"（近 {rep['window_days']:g} 天，{rep['batches']} 批次，"
+                                      f"{rep['labeled_items']} 条有标签）")
+            rows = []
+            for name, label in (("precision", "正例率"), ("negative_rate", "👎 率"), ("ndcg", "NDCG@10")):
+                rows.append({"指标": label, "推荐顺序": rep["recommended"][name],
+                             "时间倒序（基线）": rep["baseline"][name]})
+            st.table(pd.DataFrame(rows))
     with st.expander("排序参数（只读，可在 config/settings.yaml 的 feed 段修改）"):
         st.json(res["config"])
 
