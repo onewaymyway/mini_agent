@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>info_hub 反馈 · 设置</title>
+  <style>
+    body { font-family: system-ui, "Microsoft YaHei", sans-serif; margin: 24px; max-width: 520px; }
+    label { display: block; margin: 12px 0 4px; }
+    input { width: 100%; box-sizing: border-box; padding: 6px; }
+    button { margin-top: 12px; padding: 6px 14px; }
+    #msg { margin-top: 12px; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h2>info_hub 反馈设置</h2>
+  <p>在看板“结果”页的“专用浏览器”区域可以查看端口与令牌（令牌文件位于 data/state/receiver_token.txt）。</p>
+  <label>接收服务端口</label>
+  <input id="port" type="number" min="1" max="65535" value="8765">
+  <label>连接令牌</label>
+  <input id="token" type="password" autocomplete="off">
+  <button id="save">保存</button>
+  <button id="test">测试连接</button>
+  <div id="msg"></div>
+  <script src="options.js"></script>
+</body>
+</html>

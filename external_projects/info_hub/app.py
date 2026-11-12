@@ -462,6 +462,7 @@ with tab_edit:
 # ---------- 抓取结果 ----------
 @st.fragment(run_every=60)
 def _results_tab():
+    _receiver_panel()
     _profile_panel()
     _candidates_panel()
     _evaluation_panel()
@@ -586,6 +587,23 @@ def _profile_panel() -> None:
                 st.rerun()
 
 
+# ---------- 专用浏览器与反馈插件连接信息 ----------
+def _receiver_panel() -> None:
+    info = call(api.receiver_info, settings)
+    if not info:
+        return
+    with st.expander("🧩 专用浏览器与反馈插件", expanded=False):
+        st.caption("抓取与阅读使用同一个专用浏览器（独立数据目录，与系统浏览器隔离）。"
+                   "插件需要在该浏览器中以“开发者模式 → 加载已解压的扩展程序”加载一次，选择项目下的 extension/infohub-feedback 目录。")
+        st.write(f"接收服务地址：`{info['url']}`（需先在项目目录运行 `python -m server.feedback_receiver`）")
+        st.write(f"连接令牌文件：`{info['token_path']}`")
+        st.code(info["token"], language=None)
+        if info["executable"]:
+            st.write(f"浏览器：`{info['executable']}`")
+        else:
+            st.warning("未找到 Chrome 或 Edge，请在 config/settings.yaml 的 dedicated_browser.executable 中填写路径。")
+        st.write(f"专用数据目录：`{info['profile']}`")
+
 # ---------- 推荐效果评估（第四阶段） ----------
 def _evaluation_panel() -> None:
     days = 30
@@ -684,6 +702,14 @@ def _reading_panel(sid: str, items: list[dict], view: str = "plain") -> None:
         elif call(api.set_default_open_mode, settings, mode) is not None:
             st.toast(f"默认打开方式已改为：{_MODE_LABELS[mode]}")
             st.rerun()
+
+    if st.button("在专用浏览器中打开（插件反馈按钮可用）", key=f"rd_dedicated_{key}"):
+        out = call(api.open_in_dedicated_browser, settings, {
+            "url": url, "source_id": sid, "item_key": key, "view": view, "title": title})
+        if out is not None:
+            call(api.record_open_api, settings, {"source_id": sid, "item_key": key,
+                                                 "view": view, "mode": "dedicated"})
+            st.toast("已在专用浏览器中打开")
 
     def _log_open(mode_name: str) -> None:
         guard = f"open_{key}_{mode_name}_{view}"

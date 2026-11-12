@@ -31,3 +31,8 @@ view:                     # 看板条目的打开方式（reader=阅读模式 / 
   default_open_mode: reader   # 看板上“设为默认”会写入运行时配置，覆盖此处
 profile:                  # 兴趣画像
   llm_enabled: true       # 是否允许用 LLM 归纳兴趣（需已配置模型；关闭后只用统计）
+dedicated_browser:        # 专用浏览器：独立数据目录的有头浏览器，用于看板“在专用浏览器中打开”
+  executable: ""          # 留空则自动查找 Chrome / Edge；可填绝对路径
+  profile_dir: browser/dedicated_profile
+feedback_receiver:        # 反馈插件的本地接收服务（python -m server.feedback_receiver）
+  port: 8765

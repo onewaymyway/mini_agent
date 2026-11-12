@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "info_hub 反馈",
+  "version": "0.1.0",
+  "description": "在 info_hub 专用浏览器中为信息条目记录反馈（感兴趣 / 不感兴趣 / 稍后看）。",
+  "permissions": ["storage"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "options_page": "options.html"
+}

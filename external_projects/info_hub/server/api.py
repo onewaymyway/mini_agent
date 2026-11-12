@@ -883,3 +883,38 @@ def evaluation_report(settings: Settings, days: int = 30) -> dict[str, Any]:
         cands, cfg["min_decisions"], cfg["min_rate"])
     metrics["recommendations"] = evaluation.recommendations(metrics)
     return metrics
+
+
+# ---------- 专用浏览器与反馈插件 ----------
+def open_in_dedicated_browser(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
+    from core import dedicated_browser as db
+    url = str(body.get("url") or "").strip()
+    if not re.match(r"^https?://", url):
+        raise ApiError(400, "链接必须是 http(s) 地址")
+    sid = str(body.get("source_id") or "")
+    key = str(body.get("item_key") or "")
+    if sid != Path(sid).name or not sid:
+        raise ApiError(400, "信息源 id 不合法")
+    if not _ID16_RE.match(key):
+        raise ApiError(400, "条目 key 不合法")
+    view = str(body.get("view") or "")
+    title = str(body.get("title") or "")
+    target = db.build_open_url(url, item_key=key, source_id=sid, view=view, title=title)
+    try:
+        out = db.open_url(settings.paths.root, db.load_config(settings.paths.root), target)
+    except FileNotFoundError as exc:
+        raise ApiError(503, str(exc))
+    except OSError as exc:
+        raise ApiError(500, f"启动浏览器失败：{exc}")
+    return out
+
+
+def receiver_info(settings: Settings) -> dict[str, Any]:
+    from core import dedicated_browser as db
+    from server.feedback_receiver import token_path, load_or_create_token
+    cfg = db.load_config(settings.paths.root)
+    token = load_or_create_token(settings)
+    return {"url": f"http://127.0.0.1:{cfg['receiver_port']}", "token": token,
+            "token_path": str(token_path(settings)),
+            "executable": db.find_executable(cfg["executable"]) or "",
+            "profile": str(db.profile_path(settings.paths.root, cfg["profile_dir"]))}
