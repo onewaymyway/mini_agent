@@ -8,7 +8,7 @@ async function loadConfig() {
 async function post(path, payload, quiet) {
   const cfg = await loadConfig();
   if (!cfg.token) {
-    if (quiet) return { found: false };
+    if (quiet) return { found: false, reason: "扩展未设置连接令牌（扩展选项中填写）" };
     return { ok: false, error: "尚未设置连接令牌，请在扩展选项中填写" };
   }
   try {
@@ -18,10 +18,10 @@ async function post(path, payload, quiet) {
       body: JSON.stringify(payload),
     });
     const data = await resp.json().catch(() => ({}));
-    if (quiet) return resp.ok ? data : { found: false };
+    if (quiet) return resp.ok ? data : { found: false, reason: `接收服务返回 HTTP ${resp.status}${resp.status === 404 ? "（服务版本过旧，缺少 /v1/context）" : ""}${data.error ? "：" + data.error : ""}` };
     return { ok: resp.ok, status: resp.status, error: resp.ok ? "" : (data.error || `HTTP ${resp.status}`) };
   } catch (e) {
-    if (quiet) return { found: false };
+    if (quiet) return { found: false, reason: `无法连接接收服务：${e.message}` };
     return { ok: false, error: `无法连接 info_hub 接收服务：${e.message}` };
   }
 }

@@ -28,6 +28,8 @@
       if (saved && saved.pathname === location.pathname && KEY_RE.test(saved.key)) ctx = saved;
     } catch (e) { /* 忽略 */ }
   }
+  const log = (...a) => console.info("[info_hub]", ...a);
+  log("内容脚本已加载", location.href.split("#")[0], ctx ? "（片段/会话已有上下文）" : "（需要查询看板登记）");
   const MANUAL_SOURCE = "manual";  // 手动模式使用的信息源 id（不属于任何看板信息源）
   const pageUrl = () => location.href.split("#")[0];
 
@@ -40,9 +42,10 @@
         ctx = { key: c.item_key, sourceId: c.source_id || "", view: c.view || "", title: c.title || "",
                 url: pageUrl(), pathname: location.pathname };
         try { sessionStorage.setItem(STORE, JSON.stringify(ctx)); } catch (e) { /* 忽略 */ }
+        log("已通过看板登记恢复条目上下文：", c.source_id, c.item_key);
         return begin();
       }
-      console.debug("[info_hub] 未找到条目上下文（片段与看板登记均无匹配）：", pageUrl(), resp);
+      log("未找到条目上下文：", resp && resp.reason ? resp.reason : "接收服务已响应但没有匹配的看板登记", resp);
       chrome.storage.local.get({ showAll: false }).then((cfg) => {
         if (!cfg.showAll) return;
         ctx = { manual: true, key: "", sourceId: MANUAL_SOURCE, view: "", title: "", url: "", pathname: location.pathname };

@@ -79,9 +79,11 @@ class ExtensionE2ETests(unittest.TestCase):
                     tempfile.mkdtemp(prefix="ihe2e_prof_"), headless=False,
                     args=[f"--disable-extensions-except={EXT}", f"--load-extension={EXT}", "--no-sandbox"])
                 try:
-                    for _ in range(50):
+                    for i in range(150):  # 最长约 30 秒；偶发启动较慢
                         if ctx.service_workers:
                             break
+                        if i == 25:  # 慢启动时开一个页面，促使扩展 service worker 注册
+                            ctx.new_page().goto("about:blank")
                         time.sleep(0.2)
                     self.assertTrue(ctx.service_workers, "扩展未加载")
                     ctx.service_workers[0].evaluate(
