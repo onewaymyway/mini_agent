@@ -462,7 +462,7 @@ with tab_edit:
 # ---------- 抓取结果 ----------
 @st.fragment(run_every=60)
 def _results_tab():
-    _receiver_panel()
+    _services_panel()
     _profile_panel()
     _candidates_panel()
     _evaluation_panel()
@@ -587,22 +587,76 @@ def _profile_panel() -> None:
                 st.rerun()
 
 
-# ---------- 专用浏览器与反馈插件连接信息 ----------
-def _receiver_panel() -> None:
+# ---------- 服务管理：接收服务与专用浏览器（看板内启动/停止） ----------
+def _services_panel() -> None:
+    rs = call(api.receiver_status, settings)
+    bs = call(api.browser_overview, settings)
     info = call(api.receiver_info, settings)
-    if not info:
+    if rs is None or bs is None or info is None:
         return
-    with st.expander("🧩 专用浏览器与反馈插件", expanded=False):
-        st.caption("抓取与阅读使用同一个专用浏览器（独立数据目录，与系统浏览器隔离）。"
-                   "插件需要在该浏览器中以“开发者模式 → 加载已解压的扩展程序”加载一次，选择项目下的 extension/infohub-feedback 目录。")
-        st.write(f"接收服务地址：`{info['url']}`（需先在项目目录运行 `python -m server.feedback_receiver`）")
-        st.write(f"连接令牌文件：`{info['token_path']}`")
+    with st.expander("🧩 服务管理：反馈接收服务与专用浏览器", expanded=False):
+        st.caption("专用浏览器使用 info_hub 自己的数据目录，与系统浏览器隔离。"
+                   "插件在该浏览器中加载一次（开发者模式 → 加载已解压的扩展程序 → extension/infohub-feedback）。")
+
+        # --- 接收服务 ---
+        st.markdown("**反馈接收服务**")
+        mode_text = {"managed": "运行中（由看板启动）", "external": "运行中（非看板启动）",
+                     "stopped": "未运行"}[rs["mode"]]
+        st.write(f"状态：{mode_text} · 端口 {rs['port']}" + (f" · pid {rs['pid']}" if rs.get("pid") else ""))
+        if rs["mode"] == "stopped" and not rs["port_free"]:
+            st.warning(f"端口 {rs['port']} 已被其他程序占用，请换一个端口。")
+        c1, c2, c3 = st.columns([2, 1, 1])
+        new_port = c1.number_input("端口（1024–65535）", min_value=1024, max_value=65535,
+                                   value=int(rs["port"]), key="rcv_port_input")
+        if c2.button("保存端口", key="rcv_save_port"):
+            out = call(api.receiver_set_port, settings, {"port": int(new_port)})
+            if out is not None:
+                st.toast(out["note"])
+                st.rerun()
+        running = rs["mode"] != "stopped"
+        if c3.button("停止服务", key="rcv_stop", disabled=rs["mode"] != "managed"):
+            if call(api.receiver_stop, settings) is not None:
+                st.toast("接收服务已停止")
+                st.rerun()
+        if st.button("启动接收服务", key="rcv_start", disabled=running, type="primary"):
+            with st.spinner("正在启动接收服务…"):
+                out = call(api.receiver_start, settings, {})
+            if out is not None:
+                st.toast("接收服务已启动")
+                st.rerun()
+        with st.expander("接收服务日志（最近 20 行）"):
+            st.code("\n".join(rs["log_tail"]) or "（暂无日志）", language=None)
+        st.write(f"插件连接地址：`{info['url']}`　令牌文件：`{info['token_path']}`")
         st.code(info["token"], language=None)
-        if info["executable"]:
-            st.write(f"浏览器：`{info['executable']}`")
+
+        st.divider()
+        # --- 专用浏览器 ---
+        st.markdown("**专用浏览器**")
+        state_text = {"running": f"运行中（pid {', '.join(map(str, bs['pids']))}）",
+                      "stopped": "未运行",
+                      "unknown": "无法检测（请安装 psutil）"}[bs["state"]]
+        st.write(f"状态：{state_text}")
+        st.write(f"数据目录：`{bs['profile']}`" + ("" if bs["profile_exists"] else "（首次启动时创建）"))
+        if bs["executable"]:
+            st.write(f"浏览器程序：`{bs['executable']}`")
         else:
-            st.warning("未找到 Chrome 或 Edge，请在 config/settings.yaml 的 dedicated_browser.executable 中填写路径。")
-        st.write(f"专用数据目录：`{info['profile']}`")
+            st.warning("未找到 Chrome 或 Edge，请在下方填写浏览器程序的完整路径。")
+        exe_input = st.text_input("浏览器程序路径（留空则自动查找）", value=bs["executable"],
+                                  key="db_exe_input")
+        e1, e2, e3 = st.columns(3)
+        if e1.button("保存路径", key="db_save_exe"):
+            if call(api.browser_set_executable, settings, {"executable": exe_input}) is not None:
+                st.toast("浏览器路径已保存")
+                st.rerun()
+        if e2.button("启动专用浏览器", key="db_start", disabled=bs["state"] == "running"):
+            if call(api.browser_start, settings) is not None:
+                st.toast("专用浏览器已启动")
+                st.rerun()
+        if e3.button("关闭专用浏览器", key="db_stop", disabled=bs["state"] != "running",
+                     help="只关闭本项目专用数据目录对应的浏览器窗口，不影响系统浏览器。"):
+            if call(api.browser_stop, settings) is not None:
+                st.toast("专用浏览器已关闭")
+                st.rerun()
 
 # ---------- 推荐效果评估（第四阶段） ----------
 def _evaluation_panel() -> None:

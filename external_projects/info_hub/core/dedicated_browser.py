@@ -6,7 +6,9 @@
 """
 from __future__ import annotations
 
+import os
 import shutil
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -16,7 +18,7 @@ from urllib.parse import quote, urlsplit, urlunsplit
 import yaml
 
 DEFAULT_PROFILE_DIR = "browser/dedicated_profile"
-DEFAULT_RECEIVER_PORT = 8765
+DEFAULT_RECEIVER_PORT = 18765
 
 
 def load_config(root: Path) -> dict[str, Any]:
@@ -26,11 +28,93 @@ def load_config(root: Path) -> dict[str, Any]:
         cfg = {}
     db = cfg.get("dedicated_browser") or {}
     rc = cfg.get("feedback_receiver") or {}
+    # 看板保存的运行时配置优先（data/state/runtime_config.json）
+    from core.settings import read_runtime_config
+    rt = read_runtime_config(Path(root) / "data" / "state" / "runtime_config.json")
+    rt_db = rt.get("dedicated_browser") or {}
+    rt_port = (rt.get("receiver") or {}).get("port")
+    port = rt_port if isinstance(rt_port, int) else int(rc.get("port", DEFAULT_RECEIVER_PORT))
+    executable = rt_db.get("executable") if "executable" in rt_db else db.get("executable")
     return {
-        "executable": str(db.get("executable") or "").strip(),
+        "executable": str(executable or "").strip(),
         "profile_dir": str(db.get("profile_dir") or DEFAULT_PROFILE_DIR),
-        "receiver_port": int(rc.get("port", DEFAULT_RECEIVER_PORT)),
+        "receiver_port": port,
     }
+
+
+def _same_path(a: str, b: str) -> bool:
+    try:
+        return Path(a).resolve() == Path(b).resolve()
+    except OSError:
+        return a == b
+
+
+def browser_pids(profile: Path) -> Optional[list[int]]:
+    """专用数据目录对应的浏览器主进程 pid。None 表示无法检测（缺少 psutil 且不是 POSIX）。"""
+    profile = Path(profile)
+    try:
+        import psutil  # 可选依赖
+    except ImportError:
+        psutil = None
+    if psutil is not None:
+        pids = []
+        for proc in psutil.process_iter(["pid", "cmdline"]):
+            try:
+                cmd = proc.info.get("cmdline") or []
+            except (psutil.Error, OSError):
+                continue
+            if any(_is_profile_arg(a, profile) for a in cmd) and not any(a.startswith("--type=") for a in cmd):
+                pids.append(proc.info["pid"])
+        return pids
+    if sys.platform == "win32":
+        return None
+    # 无 psutil 时，Chrome 在数据目录里写入 SingletonLock（指向 "主机名-pid"）
+    lock = profile / "SingletonLock"
+    try:
+        target = os.readlink(lock)
+        pid = int(target.rsplit("-", 1)[-1])
+    except (OSError, ValueError):
+        return []
+    return [pid] if _pid_alive_simple(pid) else []
+
+
+def _is_profile_arg(arg: str, profile: Path) -> bool:
+    prefix = "--user-data-dir="
+    return arg.startswith(prefix) and _same_path(arg[len(prefix):], str(profile))
+
+
+def _pid_alive_simple(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
+def browser_status(root: Path, cfg: dict[str, Any]) -> dict[str, Any]:
+    profile = profile_path(root, cfg.get("profile_dir", DEFAULT_PROFILE_DIR))
+    pids = browser_pids(profile)
+    exe = find_executable(cfg.get("executable", ""))
+    if pids is None:
+        state = "unknown"
+    else:
+        state = "running" if pids else "stopped"
+    return {"state": state, "pids": pids or [], "executable": exe or "",
+            "profile": str(profile), "profile_exists": profile.is_dir()}
+
+
+def stop_browser(root: Path, cfg: dict[str, Any]) -> int:
+    """关闭专用浏览器的主进程。返回关闭的进程数。只作用于本项目的专用数据目录。"""
+    profile = profile_path(root, cfg.get("profile_dir", DEFAULT_PROFILE_DIR))
+    pids = browser_pids(profile)
+    if pids is None:
+        raise RuntimeError("无法检测专用浏览器进程，请安装 psutil 后重试")
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            pass
+    return len(pids)
 
 
 def _candidates() -> list[str]:

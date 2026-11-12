@@ -1,5 +1,5 @@
 // 后台 service worker：负责与本地接收服务通信（内容脚本不直接跨域请求）。
-const DEFAULTS = { port: 8765, token: "" };
+const DEFAULTS = { port: 18765, token: "" };
 
 async function loadConfig() {
   return chrome.storage.local.get(DEFAULTS);

@@ -77,5 +77,12 @@ class DashboardFeedbackTests(unittest.TestCase):
         self.assertTrue(any(d for d in at.dataframe))
 
 
+    def test_services_panel_renders_with_start_buttons(self):
+        at = self._app()
+        self.assertTrue(any("服务管理" in e.label for e in at.expander))
+        self.assertTrue(any(b.key == "rcv_start" for b in at.button))
+        self.assertTrue(any(b.key == "db_start" for b in at.button))
+
+
 if __name__ == "__main__":
     unittest.main()

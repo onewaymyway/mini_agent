@@ -34,5 +34,5 @@ profile:                  # 兴趣画像
 dedicated_browser:        # 专用浏览器：独立数据目录的有头浏览器，用于看板“在专用浏览器中打开”
   executable: ""          # 留空则自动查找 Chrome / Edge；可填绝对路径
   profile_dir: browser/dedicated_profile
-feedback_receiver:        # 反馈插件的本地接收服务（python -m server.feedback_receiver）
-  port: 8765
+feedback_receiver:        # 反馈插件的本地接收服务（python -m server.feedback_receiver）；看板可修改
+  port: 18765

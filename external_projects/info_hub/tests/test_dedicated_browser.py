@@ -56,7 +56,7 @@ class OpenUrlTests(unittest.TestCase):
     def test_load_config_defaults(self):
         root = make_project({})
         cfg = db.load_config(root)
-        self.assertEqual(cfg["receiver_port"], 8765)
+        self.assertEqual(cfg["receiver_port"], 18765)
         self.assertEqual(cfg["profile_dir"], "browser/dedicated_profile")
 
 
@@ -91,7 +91,7 @@ class ApiOpenTests(unittest.TestCase):
 
     def test_receiver_info_exposes_token_and_url(self):
         info = api.receiver_info(self.settings)
-        self.assertEqual(info["url"], "http://127.0.0.1:8765")
+        self.assertEqual(info["url"], "http://127.0.0.1:18765")
         self.assertEqual(info["token"], load_or_create_token(self.settings))
 
 

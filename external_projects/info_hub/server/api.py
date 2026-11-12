@@ -911,10 +911,95 @@ def open_in_dedicated_browser(settings: Settings, body: dict[str, Any]) -> dict[
 
 def receiver_info(settings: Settings) -> dict[str, Any]:
     from core import dedicated_browser as db
+    from core import services
     from server.feedback_receiver import token_path, load_or_create_token
     cfg = db.load_config(settings.paths.root)
     token = load_or_create_token(settings)
-    return {"url": f"http://127.0.0.1:{cfg['receiver_port']}", "token": token,
+    return {"url": f"http://127.0.0.1:{services.effective_port(settings)}", "token": token,
             "token_path": str(token_path(settings)),
             "executable": db.find_executable(cfg["executable"]) or "",
             "profile": str(db.profile_path(settings.paths.root, cfg["profile_dir"]))}
+
+
+def _service_call(fn, *args):
+    from core.services import ServiceError
+    try:
+        return fn(*args)
+    except ServiceError as exc:
+        raise ApiError(409, str(exc))
+
+
+def receiver_status(settings: Settings) -> dict[str, Any]:
+    from core import services
+    return services.status(settings)
+
+
+def receiver_start(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
+    from core import services
+    raw = body.get("port")
+    port = None
+    if raw not in (None, ""):
+        try:
+            port = int(raw)
+        except (TypeError, ValueError):
+            raise ApiError(400, "端口必须是数字")
+    return _service_call(services.start, settings, port)
+
+
+def receiver_stop(settings: Settings) -> dict[str, Any]:
+    from core import services
+    return _service_call(services.stop, settings)
+
+
+def receiver_set_port(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
+    from core import services
+    try:
+        port = services.set_port(settings, body.get("port"))
+    except services.ServiceError as exc:
+        raise ApiError(400, str(exc))
+    return {"port": port, "note": "端口已保存。若接收服务正在运行，请先停止再启动；插件选项中的端口也需要同步修改。"}
+
+
+def browser_overview(settings: Settings) -> dict[str, Any]:
+    from core import dedicated_browser as db
+    cfg = db.load_config(settings.paths.root)
+    return db.browser_status(settings.paths.root, cfg)
+
+
+def browser_start(settings: Settings) -> dict[str, Any]:
+    from core import dedicated_browser as db
+    cfg = db.load_config(settings.paths.root)
+    st = db.browser_status(settings.paths.root, cfg)
+    if st["state"] == "running":
+        raise ApiError(409, "专用浏览器已在运行")
+    try:
+        return db.open_url(settings.paths.root, cfg, "about:blank")
+    except FileNotFoundError as exc:
+        raise ApiError(503, str(exc))
+    except OSError as exc:
+        raise ApiError(500, f"启动浏览器失败：{exc}")
+
+
+def browser_stop(settings: Settings) -> dict[str, Any]:
+    from core import dedicated_browser as db
+    cfg = db.load_config(settings.paths.root)
+    try:
+        closed = db.stop_browser(settings.paths.root, cfg)
+    except RuntimeError as exc:
+        raise ApiError(503, str(exc))
+    return {"closed": closed}
+
+
+def browser_set_executable(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
+    from datetime import datetime
+    from core.settings import read_runtime_config
+    from core.store import atomic_write_json
+    value = str(body.get("executable") or "").strip()
+    if value and not Path(value).exists():
+        raise ApiError(400, "该路径不存在")
+    path = settings.paths.state_dir / "runtime_config.json"
+    data = read_runtime_config(path)
+    data["dedicated_browser"] = {"executable": value}
+    data["updated_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+    atomic_write_json(path, data)
+    return browser_overview(settings)

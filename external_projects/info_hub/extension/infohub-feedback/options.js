@@ -1,19 +1,19 @@
 const $ = (id) => document.getElementById(id);
 const show = (text) => { $("msg").textContent = text; };
 
-chrome.storage.local.get({ port: 8765, token: "" }).then((cfg) => {
+chrome.storage.local.get({ port: 18765, token: "" }).then((cfg) => {
   $("port").value = cfg.port;
   $("token").value = cfg.token;
 });
 
 $("save").addEventListener("click", async () => {
-  const port = Number($("port").value) || 8765;
+  const port = Number($("port").value) || 18765;
   await chrome.storage.local.set({ port, token: $("token").value.trim() });
   show("已保存。");
 });
 
 $("test").addEventListener("click", async () => {
-  const port = Number($("port").value) || 8765;
+  const port = Number($("port").value) || 18765;
   const token = $("token").value.trim();
   try {
     const ping = await fetch(`http://127.0.0.1:${port}/v1/ping`);
