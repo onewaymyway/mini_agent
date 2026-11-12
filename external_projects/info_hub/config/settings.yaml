@@ -60,6 +60,11 @@ feed:                     # 推荐信息流（看板“推荐”标签页，P1�
     importance: 0.25
     persistence_penalty: 0.3
     fatigue_penalty: 0.2  # 设为 0 即关闭疲劳降权
+  learning:               # P3 学习权重：默认关闭；训练后还需留出集验证通过，且在页面上开启，才会生效
+    min_samples: 200      # 带标签的展示样本下限
+    min_gain: 0.02        # 留出集 NDCG@10 至少高出手工权重这么多
+    holdout_ratio: 0.3    # 留出集占比（按展示批次时间切分，取较晚的部分）
+    days: 60              # 只用最近这么多天的展示
   half_life_hours:        # 新鲜度半衰期（小时），按信息源类型
     hot_list: 3
     feed: 12

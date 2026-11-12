@@ -837,10 +837,12 @@ def feed_view(settings: Settings, *, hours: float = 24, category: str = "", kind
     cfg = feedmod.load_config(settings.raw)
     data_dir = settings.paths.data_dir
     profile = ensure_fresh(data_dir)
-    hidden = set(feedmod.load_prefs(data_dir)["hidden_sources"])
+    prefs = feedmod.load_prefs(data_dir)
+    from core import feed_learn
+    learned = feed_learn.active_weights(data_dir, prefs["learning_enabled"])
     res = feedmod.build_feed(data_dir=data_dir, raw_dir=settings.paths.raw_dir, sources=srcs, hours=hours,
                              cfg=cfg, profile=profile, now=now, include_processed=include_processed,
-                             hidden_sources=hidden)
+                             hidden_sources=set(prefs["hidden_sources"]), learned_weights=learned)
     res["config"] = feedmod.public_config_summary(cfg)
     return res
 
@@ -893,6 +895,34 @@ def feed_block_topic_api(settings: Settings, body: dict[str, Any]) -> dict[str, 
         exclude.append(term)
     prof.save_explicit(settings.paths.data_dir, explicit.get("topics") or [], exclude)
     return {"exclude": exclude}
+
+
+def feed_learning_status_api(settings: Settings) -> dict[str, Any]:
+    """学习权重（P3）的状态：用户是否开启、最近一次训练报告、当前是否真正生效。"""
+    from core import feed as feedmod
+    from core import feed_learn
+    data_dir = settings.paths.data_dir
+    enabled = feedmod.load_prefs(data_dir)["learning_enabled"]
+    model = feed_learn.load_model(data_dir)
+    return {"enabled": enabled, "model": model,
+            "active": feed_learn.active_weights(data_dir, enabled) is not None,
+            "config": feed_learn.learn_config(settings.raw)}
+
+
+def feed_set_learning_api(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
+    """开启或关闭学习权重。开启只是允许使用；真正生效还要求模型已通过留出集验证。"""
+    from core import feed as feedmod
+    data_dir = settings.paths.data_dir
+    prefs = feedmod.load_prefs(data_dir)
+    prefs["learning_enabled"] = bool(body.get("enabled", False))
+    feedmod.save_prefs(data_dir, prefs)
+    return {"enabled": prefs["learning_enabled"]}
+
+
+def feed_train_api(settings: Settings) -> dict[str, Any]:
+    """用历史展示与反馈训练学习权重并做留出集验证。结果落盘，不改变当前生效状态以外的任何数据。"""
+    from core import feed_learn
+    return feed_learn.train_and_validate(settings.paths.data_dir, raw_config=settings.raw)
 
 
 def feed_replay_api(settings: Settings, days: float = 30) -> dict[str, Any]:

@@ -619,5 +619,18 @@ P0–P9 均已完成。仍未在真实环境验证：有头登录、语音输出
 - `server/api.py`：`feed_set_source_hidden_api`、`feed_block_topic_api`、`feed_replay_api`；推荐接口自动应用不再显示的来源。
 - `app.py`：卡片 🚫、主题“屏蔽此主题”、探索分区、快速分诊模式、已隐藏来源的恢复列表、离线回放面板；推荐页按钮键统一用 `feed_` 前缀。
 - 新增 `tests/test_feed_p2.py`（17 用例）。全量 450 通过，剩余 2 个为改动前就存在的账本测试。
-- 未实现：`state.json`（改由 `shown.jsonl` 统计）、线上对比视图 `feed_v1`（评估面板）、P3 学习权重、P4 LLM 增强。
+- 未实现：`state.json`（改由 `shown.jsonl` 统计）、线上对比视图 `feed_v1`（评估面板）、P4 LLM 增强。
+
+---
+
+## 推荐信息流 P3：学习权重（已完成，默认关闭，见设计文档第 13 节）
+
+- 新增 `core/feed_learn.py`：纯 Python 逻辑回归（6 个分量），按展示批次时间切分留出集，NDCG@10 对比手工权重；结果写入 `data/feed/learned_weights.json`。
+- 生效门槛：样本 ≥200、留出集提升 ≥0.02、用户在页面开启；缺一即回落手工权重。
+- `core/feed.py`：`build_feed(learned_weights=...)`，返回 `scoring`；`learned_score` 移入 `feed.py` 以避免循环导入。
+- `core/feed.py` 偏好新增 `learning_enabled`（默认 false）；`server/api.py` 新增 `feed_learning_status_api`、`feed_set_learning_api`、`feed_train_api`。
+- `app.py`：“学习权重（P3，默认关闭）”面板。
+- 新增 `tests/test_feed_p3.py`（10 用例）。全量 460 通过，剩余 2 个为改动前即存在的账本测试。
+- 未验证：真实反馈数据下的效果（样本未达门槛）。
+- 未实现：P4 LLM 增强、线上对比视图 `feed_v1`。
 

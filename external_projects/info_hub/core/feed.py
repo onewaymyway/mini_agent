@@ -243,6 +243,12 @@ def quantile_normalize(values: list[float]) -> list[float]:
     return out
 
 
+def learned_score(comps: dict[str, Any], weights: dict[str, float]) -> float:
+    """P3 线性打分：学习到的权重与各分量的点积（单调，因此只改变排序，不改变分量本身）。"""
+    names = ("interest", "source_affinity", "freshness", "importance", "persistence_penalty", "fatigue_penalty")
+    return round(sum(weights[n] * float(comps.get(n, 0.0) or 0.0) for n in names), 4)
+
+
 def profile_informative(profile: dict[str, Any]) -> bool:
     """画像里是否有任何可用于排序的信号；没有则视为冷启动。"""
     explicit = profile.get("explicit") or {}
@@ -296,14 +302,17 @@ def prefs_path(data_dir: Path) -> Path:
 
 def load_prefs(data_dir: Path) -> dict[str, Any]:
     data = read_json(prefs_path(data_dir), default=None)
-    hidden = data.get("hidden_sources", []) if isinstance(data, dict) else []
-    return {"hidden_sources": [str(x) for x in hidden if isinstance(x, str) and x]}
+    data = data if isinstance(data, dict) else {}
+    hidden = data.get("hidden_sources", [])
+    return {"hidden_sources": [str(x) for x in hidden if isinstance(x, str) and x],
+            "learning_enabled": bool(data.get("learning_enabled", False))}  # P3：默认关闭
 
 
 def save_prefs(data_dir: Path, prefs: dict[str, Any]) -> None:
     path = prefs_path(data_dir)
     with file_lock(path):
-        atomic_write_json(path, {"hidden_sources": sorted(set(prefs.get("hidden_sources", [])))})
+        atomic_write_json(path, {"hidden_sources": sorted(set(prefs.get("hidden_sources", []))),
+                                 "learning_enabled": bool(prefs.get("learning_enabled", False))})
 
 
 def set_source_hidden(data_dir: Path, source_id: str, hidden: bool) -> dict[str, Any]:
@@ -345,7 +354,8 @@ def build_feed(*, data_dir: Path, raw_dir: Path, sources: list[dict[str, Any]], 
                cfg: Optional[dict[str, Any]] = None, profile: Optional[dict[str, Any]] = None,
                now: Optional[datetime] = None, include_processed: bool = False,
                hidden_sources: Optional[set[str]] = None,
-               shown: Optional[dict[str, int]] = None) -> dict[str, Any]:
+               shown: Optional[dict[str, int]] = None,
+               learned_weights: Optional[dict[str, float]] = None) -> dict[str, Any]:
     """构造推荐信息流。只读（不写 feed 目录，曝光记录由调用方显式 record_impressions）。
 
     sources：[{id, name, kind}]；profile：兴趣画像（缺省时从 data_dir 读取并按需重算）；
@@ -476,12 +486,15 @@ def build_feed(*, data_dir: Path, raw_dir: Path, sources: list[dict[str, Any]], 
             "persistence_penalty": pen,
             "fatigue_penalty": fat,
         }
-        score = (weights["interest"] * interest_factor * inter
-                 + weights["source_affinity"] * sa
-                 + weights["freshness"] * fr
-                 + weights["importance"] * imp
-                 - weights["persistence_penalty"] * pen
-                 - weights.get("fatigue_penalty", 0.0) * fat)
+        if learned_weights:  # P3：权重已通过留出集验证且用户开启时，用学习到的线性权重排序
+            score = learned_score(comps, learned_weights)
+        else:
+            score = (weights["interest"] * interest_factor * inter
+                     + weights["source_affinity"] * sa
+                     + weights["freshness"] * fr
+                     + weights["importance"] * imp
+                     - weights["persistence_penalty"] * pen
+                     - weights.get("fatigue_penalty", 0.0) * fat)
         rep = _representative(members)
         cards.append(_cluster_card(rep, members, names, p, comps, round(score, 4), best_rank, max_rise, now))
 
@@ -496,6 +509,7 @@ def build_feed(*, data_dir: Path, raw_dir: Path, sources: list[dict[str, Any]], 
         "sections": sections,
         "impressions": impressions,
         "others_limit": cfg["others_limit"],
+        "scoring": "learned" if learned_weights else "hand",
         "source_states": merged_res.get("sources", {}),
     }
 

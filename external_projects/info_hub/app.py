@@ -1194,6 +1194,33 @@ def _feed_tab() -> None:
                 rows.append({"指标": label, "推荐顺序": rep["recommended"][name],
                              "时间倒序（基线）": rep["baseline"][name]})
             st.table(pd.DataFrame(rows))
+    with st.expander("学习权重（P3，默认关闭）"):
+        ls = call(api.feed_learning_status_api, settings) or {}
+        st.caption("用历史展示与反馈训练分量权重。只有在留出集上明显优于手工权重、且你开启后才会生效；"
+                   "否则仍使用手工权重。")
+        on = st.toggle("允许使用学习到的权重", value=bool(ls.get("enabled")), key="feed_learn_on")
+        if on != bool(ls.get("enabled")):
+            if call(api.feed_set_learning_api, settings, {"enabled": on}) is not None:
+                st.rerun()
+        if st.button("重新训练并验证", key="feed_learn_train"):
+            rep = call(api.feed_train_api, settings)
+            if rep is not None:
+                st.session_state["feed_learn_report"] = rep
+                st.rerun()
+        model = st.session_state.get("feed_learn_report") or ls.get("model")
+        if not model:
+            st.info("还没有训练记录。")
+        else:
+            st.write(f"样本：{model.get('samples', 0)} 条（需要至少 {model.get('min_samples', 0)} 条）· "
+                     f"{'✅ 已通过验证' if model.get('validated') else '未通过验证'}：{model.get('reason', '')}")
+            ho = model.get("holdout") or {}
+            if ho:
+                st.table(pd.DataFrame([{"指标": "NDCG@10（留出集）", "学习权重": ho.get("ndcg_learned"),
+                                        "手工权重": ho.get("ndcg_hand"), "差值": ho.get("gain")}]))
+            if model.get("weights"):
+                st.json(model["weights"])
+        st.caption("当前排序方式：" + ("学习权重" if res.get("scoring") == "learned" else "手工权重")
+                   + ("（已开启但未通过验证，仍用手工权重）" if on and res.get("scoring") != "learned" else ""))
     with st.expander("排序参数（只读，可在 config/settings.yaml 的 feed 段修改）"):
         st.json(res["config"])
 
