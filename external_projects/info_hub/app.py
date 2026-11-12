@@ -5,7 +5,7 @@
 - 报告：查看各计划生成的报告，整份听报或逐条朗读（浏览器语音，不生成音频文件）
 - 信息源：查看、启用/停用、立即抓取
 - 添加信息源：表单添加，或对话生成（LLM 草稿 → 预览 → 修改 → 确认）
-- 运行记录、登录状态
+- 运行与调度（调度状态 + 运行记录）、设置与管理（服务管理、登录）
 - 后台调度：看板进程内每隔 tick_interval_minutes 执行一次到期任务
 
 启动方式：
@@ -128,9 +128,9 @@ with st.sidebar:
             st.rerun()
 
 st.title("信息看板")
-(tab_reports, tab_sources, tab_edit, tab_feed, tab_results, tab_feedback, tab_subs, tab_add, tab_runs, tab_status,
- tab_login) = st.tabs(
-    ["报告", "信息源", "编辑信息源", "推荐", "抓取结果", "反馈记录", "订阅", "添加信息源", "运行记录", "调度状态", "登录"])
+(tab_feed, tab_results, tab_reports, tab_feedback, tab_sources, tab_subs, tab_add, tab_ops,
+ tab_settings) = st.tabs(
+    ["推荐", "抓取结果", "报告", "反馈记录", "信息源", "订阅", "添加信息源", "运行与调度", "设置与管理"])
 
 
 # ---------- 报告 ----------
@@ -245,6 +245,8 @@ with tab_sources:
                     st.success(f"抓取 {res['item_count']} 条，新增 {res['new_count']} 条")
                 else:
                     st.error(f"失败：{res['error']}")
+
+    _edit_rows = rows
 
 
 # ---------- 订阅 ----------
@@ -422,7 +424,7 @@ with tab_add:
                             st.rerun()
 
 
-with tab_edit:
+def _edit_panel(rows: list[dict]) -> None:
     if not rows:
         st.info("还没有信息源。到“添加信息源”页签添加。")
     else:
@@ -492,6 +494,10 @@ with tab_edit:
                 if res is not None:
                     st.success(f"已保存 {pick}")
                     st.rerun()
+
+
+with tab_sources:
+    _edit_panel(_edit_rows)
 
 
 # ---------- 抓取结果 ----------
@@ -603,7 +609,6 @@ def _merged_view(srcs: list[dict], cat_label: str) -> None:
 
 
 def _results_tab():
-    _services_panel()
     _profile_panel()
     _candidates_panel()
     _evaluation_panel()
@@ -750,7 +755,7 @@ def _services_panel() -> None:
     info = call(api.receiver_info, settings)
     if rs is None or bs is None or info is None:
         return
-    with st.expander("🧩 服务管理：反馈接收服务与专用浏览器", expanded=False):
+    with st.expander("🧩 服务管理：反馈接收服务与专用浏览器", expanded=True):
         # --- 启动后自动恢复 ---
         au = call(api.autostart_overview, settings) or {"enabled": False, "last": None, "summary": []}
         st.markdown("**看板启动后自动恢复**")
@@ -1371,7 +1376,7 @@ with tab_feedback:
 
 
 # ---------- 运行记录 ----------
-with tab_runs:
+def _runs_panel() -> None:
     day = st.date_input("日期", value=date.today(), key="runs_day")
     runs = (call(api.list_runs, settings, day.isoformat()) or {"runs": []})["runs"]
     if runs:
@@ -1482,12 +1487,9 @@ def _status_tab():
         st.info("没有记录到错误。")
 
 
-with tab_status:
-    _status_tab()
-
 
 # ---------- 登录 ----------
-with tab_login:
+def _login_panel() -> None:
     st.caption("登录需要在终端执行：系统会打开有头浏览器，完成登录后回到终端按回车。登录态保存在共享 profile 中。")
     sites = (call(api.login_status, settings) or {"sites": []})["sites"]
     if not sites:
@@ -1500,3 +1502,20 @@ with tab_login:
             "命令": s["login_command"],
             "错误": s.get("last_error") or "",
         } for s in sites]), hide_index=True, use_container_width=True)
+
+
+# ---------- 运行与调度（原“调度状态”+“运行记录”合并） ----------
+with tab_ops:
+    st.subheader("调度状态")
+    _status_tab()
+    st.divider()
+    st.subheader("运行记录")
+    _runs_panel()
+
+
+# ---------- 设置与管理（服务管理、登录） ----------
+with tab_settings:
+    _services_panel()
+    st.divider()
+    st.subheader("登录")
+    _login_panel()
