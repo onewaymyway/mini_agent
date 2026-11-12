@@ -221,6 +221,7 @@ health:
 | 不开看板也要调度 | 系统计划任务每 5 分钟 `python cli.py tick` |
 
 ## 变更记录
+- 2026-11-12：新增信息源 `eastmoney_news`（东方财富要闻）与 `netease_money`（网易财经，浏览器渲染，`config/sites.yaml` 新增同名站点）；`html_list` 适配器对非 UTF-8（GBK/GB2312）页面改为 gb18030 回退解码。
 - 2026-11-12：抓取结果每行增加 👍 / 👎 按钮，直接记录“感兴趣 / 不感兴趣”，最近一次反馈高亮，重复点击不重复记录。详见 `next_doc/info_hub_dedicated_browser_design.md` §18。
 - 2026-11-12：看板新增“反馈记录”页签，显示历史反馈，可按动作/信息源/时间/关键词筛选，每条带“打开”按钮（只读）。详见 `next_doc/info_hub_dedicated_browser_design.md` §17。
 - 2026-11-12：看板只保留“在专用浏览器中打开”，移除阅读模式/内嵌页面/新标签页；抓取结果、订阅、报告单条、候选与编辑源地址处都有“打开”按钮；新增“插件配对”（看板开启 5 分钟窗口，插件自动取得令牌，免手填）；“打开”记录改由服务端统一写入；插件 0.4.0 需在 chrome://extensions 重新加载。详见 `next_doc/info_hub_dedicated_browser_design.md` §16。
@@ -249,7 +250,18 @@ health:
 | bilibili_popular | B站热门 | 视频 / hot_list | json_api | 链接由 bvid 拼出 |
 | v2ex_hot | V2EX 热议 | 技术 / hot_list | json_api | |
 | netease_news | 网易新闻头条 | 资讯 / feed | json_api（移动端列表接口） | 头条流而非热度榜，只报新增 |
+| eastmoney_news | 东方财富要闻 | 资讯 / feed | html_list（普通抓取首页） | 取 `*.eastmoney.com/a/<ID>.html` 文章链接，只报新增 |
+| netease_money | 网易财经 | 资讯 / feed | html_list + 浏览器渲染 | 页面疑似脚本渲染，需共享浏览器；未经真实页面验证，见下 |
 
 - `json_api` 新增两个可选配置：`request.headers`（额外请求头，如 User-Agent/Referer）与 `parse.url_template`（接口不给链接时用 `{字段路径}` 拼接，值会做 URL 编码，任一字段为空则链接留空）。
 - 验证情况：只用仿真响应测了字段映射（`tests/test_builtin_sources.py`）；这些是第三方非官方接口，沙箱无法联网，真实可用性与字段名需在你的环境里验证，接口改版时只需改对应 `source.yaml`。
 - 不想抓某个源：看板“信息源”页签里停用，或把 `enabled` 改 false。
+
+## 财经信息源：东方财富要闻与网易财经
+
+- `eastmoney_news`（`sources/eastmoney_news/source.yaml`）：抓取 https://www.eastmoney.com/ 首页，选择器 `a[href*="eastmoney.com/a/"]`，只取文章链接，忽略频道导航、行情与广告跳转；每 30 分钟，分类“资讯”，kind=feed（只报新增）。依据：用网页抓取工具看到首页服务端渲染且文章链接形如 `finance.eastmoney.com/a/<时间戳ID>.html`。
+- `netease_money`（`sources/netease_money/source.yaml`）：https://money.163.com/ 首页。网页抓取工具只看到标题文字而没有任何链接地址、页面含 `{{navList}}` 模板占位，判断文章列表由脚本渲染，所以用共享浏览器渲染后再解析（`browser.required: true`，每 1 小时）。无需登录，`browser.site: netease_money` 只是适配器必填项（`config/sites.yaml` 新增同名站点，看板“登录”页会列出它，可忽略）。
+- 选择器 `a[href*="163.com/money/article/"], a[href*="money.163.com/2"]` 基于网易文章链接的常见形态（新式 `www.163.com/money/article/<ID>.html`、旧式 `money.163.com/<YY>/<MMDD>/<HH>/<ID>.html`），**没有在真实页面上验证**：沙箱无法访问这两个站点，只用仿真页面测了选择器、链接补全（含 `//` 协议头）与编码（`tests/test_finance_sources.py`）。
+- 首次使用：在看板“信息源”页签对 `netease_money` 点“抓取一次”。若报等待元素超时或 0 条，到“抓取结果”的调试信息里看页面实际链接，再改 `wait_selector` 与 `parse.list_selector`。连续失败会被健康检查自动暂停，不会反复打扰。
+- 两个源都归入现有分类“资讯”；需要单独的“财经”分类时，在 `config/categories.yaml` 增加后修改两个源的 `category` 即可。
+- `html_list` 普通抓取的解码：先按 UTF-8，失败退回 gb18030，再失败才替换非法字符（老站点常见 GBK）。

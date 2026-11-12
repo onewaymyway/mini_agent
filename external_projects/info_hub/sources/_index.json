@@ -28,6 +28,14 @@
     {
       "id": "xiaohongshu_hot",
       "enabled": true
+    },
+    {
+      "id": "eastmoney_news",
+      "enabled": true
+    },
+    {
+      "id": "netease_money",
+      "enabled": true
     }
   ]
 }

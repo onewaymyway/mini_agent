@@ -17,3 +17,9 @@ sites:
     login_url: https://www.xiaohongshu.com/explore
     check_url: https://www.xiaohongshu.com/explore
     expired_pattern: /login
+  netease_money:
+    # 网易财经无需登录；此处只为满足 browser.site 必填，expired_pattern 正常不会命中
+    name: 网易财经
+    login_url: https://money.163.com/
+    check_url: https://money.163.com/
+    expired_pattern: /passport/

@@ -47,6 +47,18 @@ def _select_value(scope: Tag, expr: str) -> str:
     return node.get_text(" ", strip=True)
 
 
+def _decode_html(raw: bytes) -> str:
+    """优先按 UTF-8 解码；老站点常见 GBK/GB2312，UTF-8 失败时退回 gb18030（其超集），都不行才替换非法字符。"""
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    try:
+        return raw.decode("gb18030")
+    except UnicodeDecodeError:
+        return raw.decode("utf-8", errors="replace")
+
+
 DEFAULT_DATE_PATTERN = r"(\d{4}-\d{1,2}-\d{1,2}(?:[ T]\d{1,2}:\d{2}(?::\d{2})?)?)"
 
 
@@ -141,7 +153,7 @@ class HtmlListAdapter(Adapter):
                     expired_pattern=site_cfg.get("expired_pattern"),
                 )
             else:
-                html = ctx.http_get(url).decode("utf-8", errors="replace")
+                html = _decode_html(ctx.http_get(url))
         except LoginRequired as exc:
             return FetchResult(items=[], error=f"需要重新登录：{exc}", meta={"login_required": site})
         except RiskControlBlocked as exc:

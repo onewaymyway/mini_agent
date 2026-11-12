@@ -1,0 +1,18 @@
+# 东方财富网首页（服务端渲染，直接抓取 HTML；只取文章链接 /a/<时间戳ID>.html，忽略频道导航、行情与广告跳转）。
+# 选择器基于首页当前结构（7x24 快讯与要闻均为 */a/<ID>.html）；若改版导致 0 条，只需改这里的 parse。
+id: eastmoney_news
+name: 东方财富要闻
+category: news
+kind: feed
+adapter: html_list
+enabled: true
+schedule: {every: 30m}
+request:
+  url: https://www.eastmoney.com/
+parse:
+  list_selector: 'a[href*="eastmoney.com/a/"]'
+  fields:
+    title: self
+    url: "@href"
+policy: {max_items: 80}
+tags: [东方财富, 财经, 新闻]

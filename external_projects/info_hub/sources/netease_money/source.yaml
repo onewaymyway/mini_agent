@@ -1,0 +1,25 @@
+# 网易财经首页。页面文章列表疑似由脚本渲染（直接抓 HTML 取不到链接），因此通过共享浏览器渲染后再解析。
+# 无需登录；browser.site 只是适配器的必填项（用于失效检测，见 config/sites.yaml 的 netease_money）。
+# 选择器基于网易文章链接的常见形态：www.163.com/money/article/<ID>.html 与旧式 money.163.com/<YY>/<MMDD>/<HH>/<ID>.html。
+# 若改版或形态不同导致等待超时/0 条，到看板“抓取结果”的调试信息里看页面实际链接，再改这里的 wait_selector 与 parse。
+id: netease_money
+name: 网易财经
+category: news
+kind: feed
+adapter: html_list
+enabled: true
+schedule: {every: 1h}
+request:
+  url: https://money.163.com/
+browser:
+  required: true
+  site: netease_money
+  headless: true
+  wait_selector: 'a[href*="163.com/money/article/"], a[href*="money.163.com/2"]'
+parse:
+  list_selector: 'a[href*="163.com/money/article/"], a[href*="money.163.com/2"]'
+  fields:
+    title: self
+    url: "@href"
+policy: {max_items: 80}
+tags: [网易, 财经, 新闻]
