@@ -656,3 +656,8 @@ P0–P9 均已完成。仍未在真实环境验证：有头登录、语音输出
 - 去掉基于文件修改时间的 60 秒缓存（`_feed_version` / `_feed_cached`）。
 - 新增 `tests/test_feed_snapshot.py`（3 用例）。全量 477 通过，剩余 2 个为改动前即存在的账本测试。
 
+## 看板重启后自动恢复接收服务与专用浏览器（已完成，默认关闭，见专用浏览器设计第 21 节）
+
+- 服务管理面板新增“看板启动后自动恢复”设置；开启后看板每次启动时，拉起当前未运行的接收服务与专用浏览器，已运行的不动。
+- 新增 `core/autostart.py`、两个 API 接口、`app.py` 启动钩子与面板区块；`config/settings.yaml` 新增 `service_autostart.enabled: false`。
+- 验证：`tests/test_autostart.py` 16 项；info_hub 全量 491 通过，剩余 2 个为改动前即存在的账本测试。

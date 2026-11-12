@@ -54,6 +54,16 @@ def _background_scheduler(root: str) -> Optional[threading.Event]:
     return stop
 
 
+@st.cache_resource(show_spinner=False)
+def _autostart_services(root: str) -> threading.Thread:
+    """看板进程启动时，按“启动后自动恢复”设置拉起接收服务与专用浏览器（后台线程，不阻塞页面）。"""
+    from core import autostart
+    t = threading.Thread(target=autostart.run, args=(load_settings(Path(root)),),
+                         name="info_hub-autostart", daemon=True)
+    t.start()
+    return t
+
+
 def call(fn, *args, **kwargs) -> Any:
     """调用 api 函数；业务错误以 st.error 展示，返回 None。"""
     try:
@@ -88,6 +98,7 @@ def open_button(url: Optional[str], key: str, *, sid: str = "", title: str = "",
 
 settings = load_settings(PROJECT_ROOT)
 _background_scheduler(str(PROJECT_ROOT))
+_autostart_services(str(PROJECT_ROOT))
 
 # ---------- 侧边栏 ----------
 with st.sidebar:
@@ -740,6 +751,21 @@ def _services_panel() -> None:
     if rs is None or bs is None or info is None:
         return
     with st.expander("🧩 服务管理：反馈接收服务与专用浏览器", expanded=False):
+        # --- 启动后自动恢复 ---
+        au = call(api.autostart_overview, settings) or {"enabled": False, "last": None, "summary": []}
+        st.markdown("**看板启动后自动恢复**")
+        auto_on = st.checkbox("看板重启后，自动启动反馈接收服务与专用浏览器（只启动当前未运行的）",
+                              value=au["enabled"], key="autostart_check")
+        st.caption("开启后，即使你手动关闭过这两个服务，下次看板启动也会重新拉起。不希望如此请关闭此项。")
+        if st.button("保存自动恢复设置", key="autostart_save", disabled=auto_on == au["enabled"]):
+            if call(api.autostart_set, settings, {"enabled": auto_on}) is not None:
+                st.toast("自动恢复设置已保存")
+                st.rerun()
+        if au["summary"]:
+            st.caption("上次看板启动时的自动恢复：" + "；".join(au["summary"]))
+            if au["last"] and au["last"].get("ran_at"):
+                st.caption(f"执行时间：{fmt_time(au['last']['ran_at'])}")
+        st.divider()
         st.caption("专用浏览器使用 info_hub 自己的数据目录，与系统浏览器隔离。"
                    "插件在该浏览器中加载一次（开发者模式 → 加载已解压的扩展程序 → extension/infohub-feedback），然后在下方“插件配对”一键完成连接。")
 

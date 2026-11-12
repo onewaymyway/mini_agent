@@ -87,3 +87,5 @@ dedicated_browser:        # 专用浏览器：独立数据目录的有头浏览�
   scrape_mode: launch     # launch：Playwright 独立启动（旧方式）；cdp：附着到专用浏览器（看板可切换）
 feedback_receiver:        # 反馈插件的本地接收服务（python -m server.feedback_receiver）；看板可修改
   port: 18765
+service_autostart:       # 看板启动后是否自动恢复接收服务与专用浏览器（只启动当前未运行的；看板“服务管理”可改）
+  enabled: false

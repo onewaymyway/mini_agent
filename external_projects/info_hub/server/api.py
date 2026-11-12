@@ -1282,6 +1282,23 @@ def browser_set_executable(settings: Settings, body: dict[str, Any]) -> dict[str
     return browser_overview(settings)
 
 
+def autostart_overview(settings: Settings) -> dict[str, Any]:
+    """看板启动后自动恢复设置：是否开启，以及上一次自动恢复的结论。"""
+    from core import autostart
+    last = autostart.last_report(settings)
+    return {"enabled": autostart.is_enabled(settings), "last": last,
+            "summary": autostart.describe(last)}
+
+
+def autostart_set(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
+    from core import autostart
+    value = body.get("enabled")
+    if not isinstance(value, bool):
+        raise ApiError(400, "enabled 必须是 true 或 false")
+    autostart.set_enabled(settings, value)
+    return autostart_overview(settings)
+
+
 def record_dwell_api(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
     from core import evaluation
     sid = str(body.get("source_id") or "")
