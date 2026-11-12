@@ -20,7 +20,8 @@ from tests.helpers import make_project
 
 EXT = Path(__file__).resolve().parents[1] / "extension" / "infohub-feedback"
 PAGE_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>SPA</title></head>
-<body><p>测试正文，用于验证插件在地址被改写后仍然可用。</p>
+<style>html,body{height:100%;overflow:hidden;margin:0}</style>
+<body><p>测试正文，用于验证插件在地址被改写后仍然可用。页面高度固定且不可滚动（模拟小红书）。</p>
 <script>history.replaceState(null, "", location.pathname + location.search);</script></body></html>"""
 
 
@@ -92,6 +93,11 @@ class ExtensionE2ETests(unittest.TestCase):
                     page.goto(url, wait_until="load")
                     time.sleep(3)
                     shown = page.evaluate("() => !!document.getElementById('infohub-feedback-host')")
+                    # 悬浮面板必须落在可视区内：右侧边缘、纵向 35% 附近的点上命中的应是工具条宿主（封闭 Shadow DOM 下会被重定向为宿主）
+                    if shown:
+                        self.assertTrue(page.evaluate(
+                            "() => { const e = document.elementFromPoint(innerWidth - 8, innerHeight * 0.35 + 18);"
+                            " return !!e && e.id === 'infohub-feedback-host'; }"), "工具条没有悬浮在可视区内")
                     if after_load:
                         after_load(page)
                 finally:

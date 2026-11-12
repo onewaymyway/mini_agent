@@ -66,19 +66,85 @@
     if (document.getElementById("infohub-feedback-host")) return;
     const host = document.createElement("div");
     host.id = "infohub-feedback-host";
+    // 宿主元素不受页面样式影响；面板用 position:fixed 悬浮在视口右侧，不随页面滚动，
+    // 小红书等“页面高度固定、不可滚动”的站点也能看到。
+    host.style.cssText = "all:initial;position:fixed;top:0;right:0;width:0;height:0;z-index:2147483647;";
     const root = host.attachShadow({ mode: "closed" });
     root.innerHTML = `
-      <div class="bar">
-        <div class="row">
-          <strong>info_hub</strong>
+      <style>
+        :host { all: initial; }
+        .wrap { position: fixed; right: 0; top: 35%; z-index: 2147483647;
+                font: 13px/1.4 system-ui, "Microsoft YaHei", sans-serif; color: #1f2328; }
+        .wrap[data-collapsed="1"] .bar { display: none; }
+        .wrap[data-collapsed="0"] .tab { display: none; }
+        .tab { all: unset; box-sizing: border-box; cursor: pointer; padding: 10px 6px; color: #fff;
+               background: #2d6cdf; border-radius: 8px 0 0 8px; writing-mode: vertical-rl;
+               letter-spacing: 2px; font-size: 12px; box-shadow: -2px 2px 8px rgba(0,0,0,.25); opacity: .9; }
+        .tab:hover { opacity: 1; background: #1f56b8; color: #fff; }
+        .bar { box-sizing: border-box; width: 172px; padding: 8px 10px 10px; background: #fff;
+               border: 1px solid #d0d7de; border-right: 0; border-radius: 10px 0 0 10px;
+               box-shadow: -2px 2px 12px rgba(0,0,0,.22); }
+        .row { display: flex; align-items: center; gap: 6px; }
+        .head { cursor: ns-resize; user-select: none; touch-action: none; margin-bottom: 6px; }
+        .head strong { flex: 1; }
+        .status { display: block; min-height: 18px; margin: 0 0 4px; font-size: 12px; color: #57606a; word-break: break-all; }
+        .status[data-ok="0"] { color: #cf222e; }
+        .status[data-ok="1"] { color: #1a7f37; }
+        .btns { flex-direction: column; align-items: stretch; gap: 6px; }
+        button { font: inherit; cursor: pointer; padding: 6px 8px; border: 1px solid #d0d7de; border-radius: 6px;
+                 background: #f6f8fa; color: inherit; text-align: left; }
+        button:hover { background: #eaeef2; }
+        .close { padding: 0 6px; border: 0; background: transparent; font-size: 16px; line-height: 1; }
+        details { margin-top: 8px; }
+        summary { cursor: pointer; color: #57606a; font-size: 12px; }
+        .rs label { display: block; margin: 4px 0; font-size: 12px; }
+        .note { box-sizing: border-box; width: 100%; margin-top: 4px; padding: 4px 6px; font: inherit;
+                border: 1px solid #d0d7de; border-radius: 6px; }
+      </style>
+      <div class="wrap" data-collapsed="0">
+        <button class="tab" title="展开 info_hub 反馈">info_hub 反馈</button>
+        <div class="bar">
+          <div class="row head" title="上下拖动可调整位置">
+            <strong>info_hub</strong>
+            <button class="close" title="收起到侧边">×</button>
+          </div>
           <span class="status"></span>
-          <button class="close" title="收起">×</button>
+          <div class="row btns"></div>
+          <details class="reasons"><summary>原因（可选）</summary><div class="rs"></div>
+            <input class="note" maxlength="300" placeholder="备注（可选）">
+          </details>
         </div>
-        <div class="row btns"></div>
-        <details class="reasons"><summary>原因（可选）</summary><div class="rs"></div>
-          <input class="note" maxlength="300" placeholder="备注（可选）">
-        </details>
       </div>`;
+    const wrap = root.querySelector(".wrap");
+    // 页面自己的快捷键（小红书的 J/K、空格等）不应被备注输入框触发
+    for (const ev of ["keydown", "keyup", "keypress"]) root.addEventListener(ev, (e) => e.stopPropagation());
+    const UI = { collapsed: false, top: null };
+    const applyUi = () => {
+      wrap.dataset.collapsed = UI.collapsed ? "1" : "0";
+      if (UI.top !== null) wrap.style.top = Math.max(0, Math.min(UI.top, window.innerHeight - 40)) + "px";
+    };
+    const saveUi = () => { try { chrome.storage.local.set({ ui: UI }); } catch (e) { /* 忽略 */ } };
+    try {
+      chrome.storage.local.get({ ui: UI }).then((cfg) => {
+        if (cfg.ui && typeof cfg.ui === "object") {
+          UI.collapsed = !!cfg.ui.collapsed;
+          UI.top = typeof cfg.ui.top === "number" ? cfg.ui.top : null;
+        }
+        applyUi();
+      }, () => {});
+    } catch (e) { /* 忽略 */ }
+    root.querySelector(".tab").addEventListener("click", () => { UI.collapsed = false; applyUi(); saveUi(); });
+    // 垂直拖动标题栏调整位置
+    const head = root.querySelector(".head");
+    head.addEventListener("pointerdown", (e) => {
+      if (e.target.closest(".close")) return;
+      const startY = e.clientY, startTop = wrap.getBoundingClientRect().top;
+      head.setPointerCapture(e.pointerId);
+      const move = (ev) => { UI.top = startTop + ev.clientY - startY; applyUi(); };
+      const up = () => { head.removeEventListener("pointermove", move); head.removeEventListener("pointerup", up); saveUi(); };
+      head.addEventListener("pointermove", move);
+      head.addEventListener("pointerup", up);
+    });
     const btnRow = root.querySelector(".btns");
     const rsBox = root.querySelector(".rs");
     const status = root.querySelector(".status");
@@ -140,7 +206,7 @@
       });
       btnRow.append(btn);
     }
-    root.querySelector(".close").addEventListener("click", () => host.remove());
+    root.querySelector(".close").addEventListener("click", () => { UI.collapsed = true; applyUi(); saveUi(); });
     document.documentElement.append(host);
 
     if (ctx.manual) return;  // 手动模式没有看板条目 key，不统计停留与打开
