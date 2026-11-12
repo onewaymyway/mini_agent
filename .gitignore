@@ -227,3 +227,4 @@ external_projects/novel_writer/.agent/
 .agent/daemon_restart_audit.log
 .agent/daemon_restart_status.json
 .agent/daemon_restart.log
+external_projects/info_hub/browser/dedicated_profile/
