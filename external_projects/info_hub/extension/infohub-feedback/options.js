@@ -26,7 +26,14 @@ $("test").addEventListener("click", async () => {
       body: "{}",
     });
     if (probe.status === 401) return show("令牌不正确。");
-    show("连接正常（服务已响应，令牌有效）。");
+    // 校验接收服务是否支持 /v1/context（旧版本服务没有该接口，小红书等丢失 #ihk 的页面会因此没有工具条）
+    const ctx = await fetch(`http://127.0.0.1:${port}/v1/context`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-InfoHub-Token": token },
+      body: JSON.stringify({ url: "https://example.invalid/probe" }),
+    });
+    if (ctx.status === 404) return show("连接正常，但接收服务版本过旧（缺少 /v1/context）。请在看板“服务管理”中停止并重新启动接收服务，同时重启看板。");
+    show("连接正常（服务已响应，令牌有效，支持上下文查询）。");
   } catch (e) {
     show("无法连接接收服务，请确认已在项目目录运行 python -m server.feedback_receiver。");
   }

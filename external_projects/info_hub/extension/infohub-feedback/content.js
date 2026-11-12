@@ -42,6 +42,7 @@
         try { sessionStorage.setItem(STORE, JSON.stringify(ctx)); } catch (e) { /* 忽略 */ }
         return begin();
       }
+      console.debug("[info_hub] 未找到条目上下文（片段与看板登记均无匹配）：", pageUrl(), resp);
       chrome.storage.local.get({ showAll: false }).then((cfg) => {
         if (!cfg.showAll) return;
         ctx = { manual: true, key: "", sourceId: MANUAL_SOURCE, view: "", title: "", url: "", pathname: location.pathname };

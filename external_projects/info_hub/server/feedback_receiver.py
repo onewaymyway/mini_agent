@@ -83,7 +83,7 @@ def make_handler(settings: Settings, token: str):
 
         def do_GET(self):
             if self.path == "/v1/ping":
-                self._send(200, {"ok": True, "version": 1})
+                self._send(200, {"ok": True, "version": 2})  # 2：新增 /v1/context
             else:
                 self._send(404, {"error": "不存在"})
 
