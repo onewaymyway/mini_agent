@@ -484,6 +484,112 @@ with tab_edit:
 
 # ---------- 抓取结果 ----------
 @st.fragment(run_every=60)
+def _item_rows(rows: list[dict], *, tail: str, view: str, rank_on: bool, key_prefix: str = "res",
+               names: Optional[dict[str, str]] = None, merged: bool = False) -> None:
+    """逐行显示条目：排名、标题/摘要、元信息，右侧 👍 / 👎 / 打开。
+
+    rows 中每个条目用自己的 source_id（单源视图里就是该源，合并视图里各不相同）。
+    merged=True 时元信息显示信息源名称、首次出现时间（月-日 时:分）与“新增”标记。
+    """
+    limit_key = f"{key_prefix}_n_{tail}"
+    shown = st.session_state.get(limit_key, 30)
+    # 每个条目最近一次反馈（用于高亮按钮，避免重复记录同一动作）
+    latest: dict[str, str] = {}
+    for ev in (call(api.list_feedback_history, settings) or {"events": []})["events"]:
+        latest.setdefault(ev.get("item_key", ""), ev.get("action", ""))
+    for n, it in enumerate(rows[:shown]):
+        isid = it.get("source_id") or ""
+        r1, r2, r3, r4, r5, r6 = st.columns([0.8, 6, 3.6, 0.9, 0.9, 1.4] if merged else [0.9, 7, 2.6, 0.9, 0.9, 1.4],
+                                            vertical_alignment="center")
+        r1.write(it.get("rank") or (n + 1 if not merged else "-"))
+        r2.markdown(f"**{it.get('title') or '（无标题）'}**")
+        if it.get("summary"):
+            r2.caption(str(it["summary"])[:140])
+        meta: list[str] = []
+        if merged:
+            meta.append((names or {}).get(isid, isid))
+            meta.append(("🆕 " if it.get("is_new") else "") + fmt_time(it.get("first_seen"))[5:])  # 月-日 时:分
+        meta += [str(x) for x in (it.get("heat"), it.get("published_at")) if x]
+        if rank_on and it.get("score") is not None:
+            meta.append(f"推荐分 {it['score']}")
+        r3.caption(" · ".join(m for m in meta if m))
+        ik = item_key(it.get("url") or "", it.get("title") or "")
+        cur = latest.get(ik, "")
+        for col, act, icon, tip in ((r4, "interested", "👍", "感兴趣"), (r5, "not_interested", "👎", "不感兴趣")):
+            if col.button(icon, key=f"fb_{act}_{key_prefix}_{tail}_{n}",
+                          type="primary" if cur == act else "secondary",
+                          help=f"标记为{tip}" + ("（当前状态）" if cur == act else "")):
+                if cur == act:
+                    st.toast(f"该条目已标记为{tip}")
+                elif call(api.record_feedback, settings, {
+                        "action": act, "source_id": isid, "url": it.get("url") or "",
+                        "title": it.get("title") or "", "view": view}) is not None:
+                    st.toast(f"已记录：{tip}")
+                    st.rerun()
+        with r6:
+            open_button(it.get("url"), f"op_{key_prefix}_{tail}_{n}", sid=isid, title=it.get("title") or "", view=view)
+    if len(rows) > shown:
+        if st.button(f"显示更多（还有 {len(rows) - shown} 条）", key=f"more_{limit_key}"):
+            st.session_state[limit_key] = shown + 30
+            st.rerun()
+
+
+_WINDOWS = [(1, "最近 1 小时"), (3, "最近 3 小时"), (6, "最近 6 小时"), (12, "最近 12 小时"), (24, "最近 24 小时"),
+            (72, "最近 3 天"), (168, "最近 7 天"), (360, "最近 15 天"), (720, "最近 30 天")]
+_SORTS = ["最新出现在前", "按信息源分组", "按我的兴趣排序"]
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _merged_cached(root: str, ids: tuple, hours: float) -> dict:
+    """合并结果缓存 60 秒：点反馈按钮等操作会重跑页面，避免每次都重新读取大量快照文件。"""
+    return api.merged_results(settings, list(ids), hours)
+
+
+def _merged_view(srcs: list[dict], cat_label: str) -> None:
+    """同一分类（及类型）下所有信息源，在所选时间范围内的抓取结果合并成一张列表。"""
+    names = {x["id"]: x["name"] for x in srcs}
+    c1, c2, c3 = st.columns([2, 2, 3])
+    hours = c1.selectbox("时间范围", [h for h, _ in _WINDOWS], index=4, key="mg_hours",
+                         format_func=lambda h: dict(_WINDOWS)[h])
+    sort = c2.selectbox("排序", _SORTS, key="mg_sort",
+                        help="“最新出现在前”按条目在所选时间范围内首次被抓到的时间；“按我的兴趣排序”按兴趣画像打分。")
+    kw = c3.text_input("按标题过滤", key="mg_kw").strip()
+    only_new = st.toggle("只看新增", key="mg_new",
+                         help="只显示在所选时间范围内第一次出现的条目，不显示一直挂在榜上的老条目。")
+    res = call(_merged_cached, str(PROJECT_ROOT), tuple(names), float(hours))
+    if res is None:
+        return
+    empty = [names[sid] for sid, v in res["sources"].items() if v["snapshots"] == 0]
+    st.caption(f"{cat_label} · {len(names)} 个信息源 · {dict(_WINDOWS)[hours]}（自 {fmt_time(res['since'])} 起）· "
+               f"去重后共 {len(res['items'])} 条")
+    if empty:
+        st.caption("以下信息源在该时间范围内没有抓取记录：" + "、".join(empty))
+    if any(v["truncated"] for v in res["sources"].values()):
+        st.caption("部分信息源快照过多，只合并了窗口内最新的一部分。")
+    rows = [it for it in res["items"]
+            if (not kw or kw in (it.get("title") or "") or kw in (it.get("summary") or ""))
+            and (not only_new or it.get("is_new"))]
+    rows.sort(key=lambda it: it.get("rank") or 10**6)
+    rows.sort(key=lambda it: it.get("first_seen") or "", reverse=True)
+    if sort == "按信息源分组":
+        order = {sid: i for i, sid in enumerate(names)}
+        rows.sort(key=lambda it: (order.get(it["source_id"], 99), it.get("rank") or 10**6))
+    elif sort == "按我的兴趣排序" and rows:
+        scored: list[dict] = []
+        for sid in names:
+            group = [it for it in rows if it["source_id"] == sid]
+            if group:
+                ranked = call(api.rank_snapshot, settings, sid, group)
+                scored.extend(ranked["items"] if ranked else group)
+        scored.sort(key=lambda it: -(it.get("score") or 0))
+        rows = scored
+    if not rows:
+        st.info("该时间范围内没有符合条件的条目。可以放宽时间范围，或确认这些信息源已有抓取结果。")
+        return
+    _item_rows(rows, tail=f"{hours}_{sort}_{int(only_new)}", view="ranked" if sort == "按我的兴趣排序" else "plain",
+               rank_on=sort == "按我的兴趣排序", key_prefix="mg", names=names, merged=True)
+
+
 def _results_tab():
     _services_panel()
     _profile_panel()
@@ -491,6 +597,7 @@ def _results_tab():
     _evaluation_panel()
     _srcs = [x for x in (call(api.list_sources, settings) or {"sources": []})["sources"]
              if not x.get("config_errors")]
+    _mode = "single"
     if not _srcs:
         st.info("还没有信息源。")
     else:
@@ -511,7 +618,15 @@ def _results_tab():
         _srcs = [x for x in _all if (not _cat or x.get("category") == _cat) and (not _kind or x.get("kind") == _kind)]
         if not _srcs:
             st.info("所选分类与类型的组合下没有信息源，请调整筛选。")
-    if _srcs:
+        else:
+            _mode = st.radio("查看方式", ["single", "merged"], horizontal=True, key="res_mode",
+                             format_func=lambda m: "单个信息源" if m == "single" else
+                             f"合并显示（{len(_srcs)} 个信息源）",
+                             help="合并显示：把上面所选分类/类型下所有信息源在所选时间范围内的结果合成一张列表。")
+            if _mode == "merged":
+                _merged_view(_srcs, ("、".join(filter(None, [_cat_names.get(_cat, _cat) if _cat else "全部分类",
+                                                             _kind_names.get(_kind, _kind) if _kind else ""]))))
+    if _srcs and _mode == "single":
         _names = {x["id"]: f"{x['name']}（{x['id']}）" for x in _srcs}
         rc1, rc2 = st.columns([2, 2])
         sid = rc1.selectbox("信息源", list(_names), format_func=lambda k: _names[k], key="res_src")
@@ -560,44 +675,7 @@ def _results_tab():
                         "item_keys": [_ik(r.get("url", ""), r.get("title", "")) for r in rows[:60]]})
                     st.session_state[guard] = True
                 if rows:
-                    fb_icon = {"interested": "👍", "not_interested": "👎", "later": "⏰"}
-                    limit_key = f"res_n_{sid}_{snap_id}_{view}"
-                    shown = st.session_state.get(limit_key, 30)
-                    # 每个条目最近一次反馈（用于高亮按钮，避免重复记录同一动作）
-                    latest: dict[str, str] = {}
-                    for ev in (call(api.list_feedback_history, settings) or {"events": []})["events"]:
-                        latest.setdefault(ev.get("item_key", ""), ev.get("action", ""))
-                    for n, it in enumerate(rows[:shown]):
-                        r1, r2, r3, r4, r5, r6 = st.columns([0.9, 7, 2.6, 0.9, 0.9, 1.4], vertical_alignment="center")
-                        r1.write(it.get("rank") or n + 1)
-                        r2.markdown(f"**{it.get('title') or '（无标题）'}**")
-                        if it.get("summary"):
-                            r2.caption(str(it["summary"])[:140])
-                        meta = [str(x) for x in (it.get("heat"), it.get("published_at")) if x]
-                        if rank_on and it.get("score") is not None:
-                            meta.append(f"推荐分 {it['score']}")
-                        r3.caption(" · ".join(m for m in meta if m))
-                        ik = item_key(it.get("url") or "", it.get("title") or "")
-                        cur = latest.get(ik, "")
-                        for col, act, icon, tip in ((r4, "interested", "👍", "感兴趣"),
-                                                    (r5, "not_interested", "👎", "不感兴趣")):
-                            if col.button(icon, key=f"fb_{act}_{sid}_{snap_id}_{view}_{n}",
-                                          type="primary" if cur == act else "secondary",
-                                          help=f"标记为{tip}" + ("（当前状态）" if cur == act else "")):
-                                if cur == act:
-                                    st.toast(f"该条目已标记为{tip}")
-                                elif call(api.record_feedback, settings, {
-                                        "action": act, "source_id": sid, "url": it.get("url") or "",
-                                        "title": it.get("title") or "", "view": view}) is not None:
-                                    st.toast(f"已记录：{tip}")
-                                    st.rerun()
-                        with r6:
-                            open_button(it.get("url"), f"op_res_{sid}_{snap_id}_{view}_{n}",
-                                        sid=sid, title=it.get("title") or "", view=view)
-                    if len(rows) > shown:
-                        if st.button(f"显示更多（还有 {len(rows) - shown} 条）", key=f"more_{limit_key}"):
-                            st.session_state[limit_key] = shown + 30
-                            st.rerun()
+                    _item_rows(rows, tail=f"{sid}_{snap_id}_{view}", view=view, rank_on=rank_on)
                 else:
                     st.info("没有匹配的条目。")
                 _reading_panel(sid, snap["items"], view)

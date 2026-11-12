@@ -221,6 +221,7 @@ health:
 | 不开看板也要调度 | 系统计划任务每 5 分钟 `python cli.py tick` |
 
 ## 变更记录
+- 2026-11-12：抓取结果页新增“合并显示”：同一分类/类型下所有信息源在所选时间范围（1 小时到 30 天）内的结果合成一张列表，支持排序、只看新增、标题过滤；新增 `core/merged.py`、`api.merged_results`。详见 `next_doc/info_hub_dedicated_browser_design.md` §20。
 - 2026-11-12：抓取结果页增加“信息源分类 / 信息源类型”筛选（默认全部），用于缩小信息源下拉。详见 `next_doc/info_hub_dedicated_browser_design.md` §19。
 - 2026-11-12：新增信息源 `eastmoney_news`（东方财富要闻）与 `netease_money`（网易财经，浏览器渲染，`config/sites.yaml` 新增同名站点）；`html_list` 适配器对非 UTF-8（GBK/GB2312）页面改为 gb18030 回退解码。
 - 2026-11-12：抓取结果每行增加 👍 / 👎 按钮，直接记录“感兴趣 / 不感兴趣”，最近一次反馈高亮，重复点击不重复记录。详见 `next_doc/info_hub_dedicated_browser_design.md` §18。

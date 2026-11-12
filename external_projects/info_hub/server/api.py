@@ -228,6 +228,20 @@ def read_snapshot(settings: Settings, source_id: str, snapshot_id: str | None = 
             "changes": data.get("changes") or {}, "items": data.get("items") or []}
 
 
+def merged_results(settings: Settings, source_ids: list[str], hours: float) -> dict[str, Any]:
+    """合并多个信息源在最近 hours 小时内的抓取结果（同源同条目去重，保留首次出现时间与最近一次的排名/热度）。"""
+    from core import merged
+    if not isinstance(source_ids, list) or not all(isinstance(x, str) and x == Path(x).name and x for x in source_ids):
+        raise ApiError(400, "信息源 id 不合法")
+    try:
+        hours = float(hours)
+    except (TypeError, ValueError):
+        raise ApiError(400, "时间范围必须是数字")
+    if not 0 < hours <= 24 * 90:
+        raise ApiError(400, "时间范围需大于 0 且不超过 90 天")
+    return merged.merge_sources(settings.paths.raw_dir, source_ids, hours)
+
+
 # ---------- 运行记录 ----------
 def list_runs(settings: Settings, day: str | None = None) -> dict[str, Any]:
     if day is None:
