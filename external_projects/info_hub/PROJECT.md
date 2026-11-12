@@ -221,6 +221,7 @@ health:
 | 不开看板也要调度 | 系统计划任务每 5 分钟 `python cli.py tick` |
 
 ## 变更记录
+- 2026-11-12：抓取结果页增加“信息源分类 / 信息源类型”筛选（默认全部），用于缩小信息源下拉。详见 `next_doc/info_hub_dedicated_browser_design.md` §19。
 - 2026-11-12：新增信息源 `eastmoney_news`（东方财富要闻）与 `netease_money`（网易财经，浏览器渲染，`config/sites.yaml` 新增同名站点）；`html_list` 适配器对非 UTF-8（GBK/GB2312）页面改为 gb18030 回退解码。
 - 2026-11-12：抓取结果每行增加 👍 / 👎 按钮，直接记录“感兴趣 / 不感兴趣”，最近一次反馈高亮，重复点击不重复记录。详见 `next_doc/info_hub_dedicated_browser_design.md` §18。
 - 2026-11-12：看板新增“反馈记录”页签，显示历史反馈，可按动作/信息源/时间/关键词筛选，每条带“打开”按钮（只读）。详见 `next_doc/info_hub_dedicated_browser_design.md` §17。

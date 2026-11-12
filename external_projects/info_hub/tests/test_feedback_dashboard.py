@@ -21,6 +21,10 @@ SRC = {"id": "news_a", "name": "新闻源A", "category": "news", "kind": "feed",
        "request": {"url": "https://n/feed"}}
 
 
+SRC_VIDEO = {"id": "vid_b", "name": "视频源B", "category": "hot_community", "kind": "hot_list", "adapter": "rss",
+             "request": {"url": "https://v/feed"}}
+
+
 class DashboardFeedbackTests(unittest.TestCase):
     def setUp(self):
         self.root = make_project({"news_a": SRC})
@@ -121,6 +125,50 @@ class DashboardFeedbackTests(unittest.TestCase):
         self.assertTrue(any("服务管理" in e.label for e in at.expander))
         self.assertTrue(any(b.key == "rcv_start" for b in at.button))
         self.assertTrue(any(b.key == "db_start" for b in at.button))
+
+
+
+class ResultsFilterTests(unittest.TestCase):
+    """抓取结果页：按信息源分类与类型筛选信息源下拉。"""
+
+    def setUp(self):
+        self.root = make_project({"news_a": SRC, "vid_b": SRC_VIDEO})
+        settings = load_settings(self.root)
+        specs = load_sources(settings).specs
+        for sid in ("news_a", "vid_b"):
+            run_source(specs[sid], settings, FetchContext(http_get=lambda u, **k: RSS))
+        os.environ["INFO_HUB_ROOT"] = str(self.root)
+        os.environ["INFO_HUB_BACKGROUND_TICK"] = "0"
+
+    def _app(self):
+        at = AppTest.from_file(APP, default_timeout=60)
+        at.run()
+        self.assertFalse(at.exception, [e.value for e in at.exception])
+        return at
+
+    def test_default_shows_all_sources(self):
+        at = self._app()
+        self.assertEqual(len(at.selectbox(key="res_src").options), 2)
+        self.assertEqual(at.selectbox(key="res_cat").value, "")
+
+    def test_category_filter_limits_source_dropdown(self):
+        at = self._app()
+        at.selectbox(key="res_cat").set_value("hot_community").run()
+        self.assertFalse(at.exception, [e.value for e in at.exception])
+        opts = at.selectbox(key="res_src").options
+        self.assertEqual(len(opts), 1)
+        self.assertIn("视频源B", opts[0])
+
+    def test_kind_filter_and_empty_combination(self):
+        at = self._app()
+        at.selectbox(key="res_kind").set_value("feed").run()
+        self.assertEqual(len(at.selectbox(key="res_src").options), 1)
+        self.assertIn("新闻源A", at.selectbox(key="res_src").options[0])
+        # 下拉里的计数基于完整列表，不随筛选变化
+        self.assertIn("热点社区（1）", at.selectbox(key="res_cat").options)
+        self.assertIn("资讯（1）", at.selectbox(key="res_cat").options)
+        at.selectbox(key="res_cat").set_value("hot_community").run()  # 热点社区分类里没有 feed 类型
+        self.assertTrue(any("没有信息源" in i.value for i in at.info))
 
 
 if __name__ == "__main__":

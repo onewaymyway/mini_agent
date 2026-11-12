@@ -494,6 +494,24 @@ def _results_tab():
     if not _srcs:
         st.info("还没有信息源。")
     else:
+        # 按信息源分类 / 类型筛选信息源下拉（默认“全部”，不改变原有行为）
+        _cat_names = {c["id"]: c["name"] for c in settings.categories}
+        _kind_names = {"hot_list": "热榜", "feed": "资讯流", "recommend": "推荐", "custom": "自定义",
+                       "subscription": "订阅"}
+        _all = list(_srcs)  # 计数始终基于完整列表（下面会把 _srcs 换成筛选后的结果）
+        _cats = [c for c in dict.fromkeys(x.get("category") for x in _all) if c]
+        _kinds = [k for k in dict.fromkeys(x.get("kind") for x in _all) if k]
+        fc1, fc2 = st.columns(2)
+        _cat = fc1.selectbox("信息源分类", [""] + _cats, key="res_cat",
+                             format_func=lambda c: "全部分类" if not c else
+                             f"{_cat_names.get(c, c)}（{sum(1 for x in _all if x.get('category') == c)}）")
+        _kind = fc2.selectbox("信息源类型", [""] + _kinds, key="res_kind",
+                              format_func=lambda k: "全部类型" if not k else
+                              f"{_kind_names.get(k, k)}（{sum(1 for x in _all if x.get('kind') == k)}）")
+        _srcs = [x for x in _all if (not _cat or x.get("category") == _cat) and (not _kind or x.get("kind") == _kind)]
+        if not _srcs:
+            st.info("所选分类与类型的组合下没有信息源，请调整筛选。")
+    if _srcs:
         _names = {x["id"]: f"{x['name']}（{x['id']}）" for x in _srcs}
         rc1, rc2 = st.columns([2, 2])
         sid = rc1.selectbox("信息源", list(_names), format_func=lambda k: _names[k], key="res_src")
