@@ -67,5 +67,15 @@ class DashboardFeedbackTests(unittest.TestCase):
         self.assertIn('"open_mode": "newtab"', runtime)
 
 
+    def test_profile_panel_and_ranking_toggle(self):
+        at = self._app()
+        self.assertTrue(any("我的兴趣画像" in e.label for e in at.expander))
+        toggles = [t for t in at.toggle if "按我的兴趣排序" in t.label]
+        self.assertTrue(toggles, "应存在排序开关")
+        toggles[0].set_value(True).run()
+        self.assertFalse(at.exception, [e.value for e in at.exception])
+        self.assertTrue(any(d for d in at.dataframe))
+
+
 if __name__ == "__main__":
     unittest.main()

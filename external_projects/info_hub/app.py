@@ -462,6 +462,7 @@ with tab_edit:
 # ---------- 抓取结果 ----------
 @st.fragment(run_every=60)
 def _results_tab():
+    _profile_panel()
     _srcs = [x for x in (call(api.list_sources, settings) or {"sources": []})["sources"]
              if not x.get("config_errors")]
     if not _srcs:
@@ -500,15 +501,79 @@ def _results_tab():
                                     st.write(f"- {t}{extra}")
                 kw = st.text_input("按标题过滤", key="res_kw").strip()
                 rows = [it for it in snap["items"] if kw in (it.get("title") or "") or kw in (it.get("summary") or "")]
+                rank_on = st.toggle("按我的兴趣排序", key=f"rank_on_{sid}",
+                                    help="按兴趣画像重新排序，最近标记为不感兴趣的条目沉底；只影响显示顺序。")
+                if rank_on and rows:
+                    ranked = call(api.rank_snapshot, settings, sid, rows)
+                    if ranked:
+                        rows = ranked["items"]
                 if rows:
-                    st.dataframe(pd.DataFrame([{
-                        "排名": it.get("rank"), "标题": it.get("title"), "发布时间": it.get("published_at") or "",
-                        "热度": it.get("heat"), "摘要": it.get("summary"), "链接": it.get("url")} for it in rows]),
-                        hide_index=True, use_container_width=True,
-                        column_config={"链接": st.column_config.LinkColumn("链接", display_text="打开")})
+                    fb_icon = {"interested": "👍", "not_interested": "👎", "later": "⏰"}
+                    frame = []
+                    for it in rows:
+                        row = {
+                            "排名": it.get("rank"), "标题": it.get("title"), "发布时间": it.get("published_at") or "",
+                            "热度": it.get("heat"), "摘要": it.get("summary"), "链接": it.get("url")}
+                        if rank_on:
+                            row["推荐分"] = it.get("score")
+                            row["匹配"] = "、".join(it.get("matches") or [])
+                            row["反馈"] = fb_icon.get(it.get("feedback"), "")
+                        frame.append(row)
+                    st.dataframe(pd.DataFrame(frame), hide_index=True, use_container_width=True,
+                                 column_config={"链接": st.column_config.LinkColumn("链接", display_text="打开")})
                 else:
                     st.info("没有匹配的条目。")
                 _reading_panel(sid, snap["items"])
+
+
+# ---------- 兴趣画像（第二阶段） ----------
+def _profile_panel() -> None:
+    data = call(api.get_profile, settings)
+    if not data:
+        return
+    prof_data = data["profile"]
+    explicit = prof_data.get("explicit", {})
+    with st.expander("🎯 我的兴趣画像", expanded=False):
+        st.caption(f"基于 {data['event_count']} 条反馈；画像更新于 {fmt_time(prof_data.get('updated_at'))}。"
+                   "反馈变化后会自动重算，也可手动重算。")
+        with st.form("profile_explicit_form"):
+            topics = st.text_input("关注主题（逗号分隔，明确想看的）",
+                                   value="、".join(explicit.get("topics", [])))
+            exclude = st.text_input("屏蔽词（逗号分隔，出现即大幅降权）",
+                                    value="、".join(explicit.get("exclude", [])))
+            if st.form_submit_button("保存显式偏好"):
+                if call(api.save_explicit_profile, settings, {"topics": topics, "exclude": exclude}) is not None:
+                    st.toast("已保存显式偏好")
+                    st.rerun()
+
+        learned = prof_data.get("learned", {}).get("keywords", {})
+        pos = sorted([(k, v) for k, v in learned.items() if v["score"] > 0], key=lambda kv: -kv[1]["score"])[:12]
+        neg = sorted([(k, v) for k, v in learned.items() if v["score"] < 0], key=lambda kv: kv[1]["score"])[:12]
+        c1, c2 = st.columns(2)
+        c1.markdown("**学到的偏好**")
+        c1.write("、".join(k for k, _ in pos) or "（暂无）")
+        c2.markdown("**学到的排斥**")
+        c2.write("、".join(k for k, _ in neg) or "（暂无）")
+
+        llm = prof_data.get("llm") or {}
+        if llm.get("summary"):
+            st.info(f"LLM 归纳：{llm['summary']}（{fmt_time(llm.get('generated_at'))}，{llm.get('provider', '')}）")
+            st.caption("关键词：" + "、".join(llm.get("keywords", [])) + "｜避开：" + "、".join(llm.get("avoid", [])))
+
+        b1, b2, b3 = st.columns(3)
+        if b1.button("重新计算（统计）", key="prof_rebuild"):
+            if call(api.rebuild_profile, settings) is not None:
+                st.rerun()
+        llm_ok = data.get("llm_enabled", False)
+        if b2.button("用 LLM 归纳兴趣", key="prof_llm", disabled=not llm_ok,
+                     help="" if llm_ok else "已在配置中关闭"):
+            with st.spinner("正在请模型归纳…"):
+                out = call(api.summarize_profile_with_llm, settings)
+            if out is not None:
+                st.rerun()
+        if b3.button("清空学到的画像", key="prof_clear"):
+            if call(api.clear_learned_profile, settings) is not None:
+                st.rerun()
 
 
 # ---------- 阅读与反馈（第一阶段） ----------

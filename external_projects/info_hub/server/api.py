@@ -698,3 +698,67 @@ def set_default_open_mode(settings: Settings, mode: str) -> dict[str, Any]:
     except ValueError as exc:
         raise ApiError(400, str(exc))
     return view_prefs(settings)
+
+
+# ---------- 兴趣画像与排序（第二阶段） ----------
+def _profile_llm(settings: Settings):
+    from core.llm import LLMUnavailable, build_llm, resolve_provider
+    try:
+        return build_llm(settings), resolve_provider(settings).label
+    except LLMUnavailable as exc:
+        raise ApiError(503, str(exc))
+
+
+def get_profile(settings: Settings) -> dict[str, Any]:
+    from core import profile as prof
+    from core.feedback import read_feedback
+    data = prof.ensure_fresh(settings.paths.data_dir)
+    return {"profile": data, "event_count": len(read_feedback(settings.paths.data_dir)),
+            "llm_enabled": prof.llm_enabled(settings.paths.root)}
+
+
+def save_explicit_profile(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
+    from core import profile as prof
+    try:
+        prof.save_explicit(settings.paths.data_dir, body.get("topics", ""), body.get("exclude", ""))
+    except prof.ProfileError as exc:
+        raise ApiError(400, str(exc))
+    return get_profile(settings)
+
+
+def rebuild_profile(settings: Settings) -> dict[str, Any]:
+    from core import profile as prof
+    prof.rebuild_learned(settings.paths.data_dir)
+    return get_profile(settings)
+
+
+def clear_learned_profile(settings: Settings) -> dict[str, Any]:
+    from core import profile as prof
+    prof.clear_learned(settings.paths.data_dir)
+    return get_profile(settings)
+
+
+def summarize_profile_with_llm(settings: Settings) -> dict[str, Any]:
+    from core import profile as prof
+    from core.feedback import read_feedback
+    if not prof.llm_enabled(settings.paths.root):
+        raise ApiError(403, "LLM 画像归纳已在配置中关闭（config/settings.yaml 的 profile.llm_enabled）")
+    llm, label = _profile_llm(settings)
+    try:
+        prof.llm_summarize(settings.paths.data_dir, llm.ask, read_feedback(settings.paths.data_dir), label)
+    except prof.ProfileError as exc:
+        raise ApiError(502, f"LLM 归纳失败：{exc}")
+    except Exception as exc:  # noqa: BLE001 - 模型调用错误统一展示
+        raise ApiError(502, f"LLM 调用失败：{type(exc).__name__}: {exc}")
+    return get_profile(settings)
+
+
+def rank_snapshot(settings: Settings, source_id: str, items: list[dict[str, Any]]) -> dict[str, Any]:
+    from core import profile as prof
+    from core.feedback import read_feedback
+    if source_id != Path(source_id).name or not source_id:
+        raise ApiError(400, "信息源 id 不合法")
+    data = prof.ensure_fresh(settings.paths.data_dir)
+    actions = prof.last_actions(read_feedback(settings.paths.data_dir))
+    return {"source_id": source_id,
+            "items": prof.rank_items(data, items, source_id, actions)}
