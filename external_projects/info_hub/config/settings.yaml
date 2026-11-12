@@ -27,3 +27,5 @@ reports:
     at: "08:00"
     window: 24h
     categories: all
+view:                     # 看板条目的打开方式（reader=阅读模式 / iframe=内嵌页面 / newtab=新标签页）
+  default_open_mode: reader   # 看板上“设为默认”会写入运行时配置，覆盖此处

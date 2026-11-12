@@ -622,3 +622,79 @@ def set_report_schedule(settings: Settings, plan_id: str, body: dict[str, Any]) 
     reports[plan_id] = {**(reports.get(plan_id) or {}), **change}
     _save_runtime(settings, {"reports": reports})
     return {"id": plan_id, **change}
+
+
+# ---------- 阅读与反馈（第一阶段） ----------
+def _source_spec(settings: Settings, source_id: str):
+    from core.sources import load_sources
+    if source_id != Path(source_id).name or not source_id:
+        raise ApiError(400, "信息源 id 不合法")
+    spec = load_sources(settings).specs.get(source_id)
+    if spec is None:
+        raise ApiError(404, "信息源不存在")
+    return spec
+
+
+def read_article(settings: Settings, source_id: str, url: str) -> dict[str, Any]:
+    """阅读模式：按信息源的抓取方式获取页面（需要登录的站点走共享浏览器 profile），抽取正文。"""
+    from core.browser_session import BrowserSession, LoginRequired, RiskControlBlocked
+    from core.reader import extract_article
+    from core.settings import load_sites
+    from adapters.base import default_http_get
+
+    if not re.match(r"^https?://", url or ""):
+        raise ApiError(400, "链接必须是 http(s) 地址")
+    spec = _source_spec(settings, source_id)
+    browser_cfg = spec.browser or {}
+    try:
+        if browser_cfg.get("required"):
+            site = browser_cfg.get("site")
+            site_cfg = (load_sites(settings.paths.root).get(site) or {}) if site else {}
+            session = BrowserSession(settings.paths.browser_profile_dir,
+                                     settings.paths.root / "browser" / "login_status.json")
+            html = session.fetch_html(url, site=site, headless=bool(browser_cfg.get("headless", True)),
+                                      expired_pattern=site_cfg.get("expired_pattern"))
+        else:
+            html = default_http_get(url).decode("utf-8", errors="replace")
+    except LoginRequired as exc:
+        raise ApiError(409, f"需要重新登录：{exc}")
+    except RiskControlBlocked as exc:
+        raise ApiError(409, f"风控拦截：{exc}")
+    except Exception as exc:  # noqa: BLE001 - 网络/解析错误统一转为 502 给看板展示
+        raise ApiError(502, f"正文抓取失败：{type(exc).__name__}: {exc}")
+    return {"source_id": source_id, "url": url, **extract_article(html, url)}
+
+
+def record_feedback(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
+    from core import feedback
+    try:
+        event = feedback.record_feedback(settings.paths.data_dir, body)
+    except ValueError as exc:
+        raise ApiError(400, str(exc))
+    return {"event": event}
+
+
+def item_feedback(settings: Settings, key: str) -> dict[str, Any]:
+    from core import feedback
+    if not re.fullmatch(r"[0-9a-f]{16}", key or ""):
+        raise ApiError(400, "条目 key 不合法")
+    events = feedback.read_feedback(settings.paths.data_dir, key)
+    return {"item_key": key, "counts": feedback.summarize(events),
+            "events": list(reversed(events))[:50]}
+
+
+def view_prefs(settings: Settings) -> dict[str, Any]:
+    from core.feedback import VIEW_MODES
+    from core.reader import default_open_mode, effective_open_mode
+    return {"open_mode": effective_open_mode(settings),
+            "config_default": default_open_mode(settings.paths.root),
+            "modes": list(VIEW_MODES)}
+
+
+def set_default_open_mode(settings: Settings, mode: str) -> dict[str, Any]:
+    from core.reader import save_open_mode
+    try:
+        save_open_mode(settings, mode)
+    except ValueError as exc:
+        raise ApiError(400, str(exc))
+    return view_prefs(settings)

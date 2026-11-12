@@ -508,6 +508,97 @@ def _results_tab():
                         column_config={"链接": st.column_config.LinkColumn("链接", display_text="打开")})
                 else:
                     st.info("没有匹配的条目。")
+                _reading_panel(sid, snap["items"])
+
+
+# ---------- 阅读与反馈（第一阶段） ----------
+_MODE_LABELS = {"reader": "阅读模式", "iframe": "内嵌页面", "newtab": "新标签页"}
+
+
+def _reading_panel(sid: str, items: list[dict]) -> None:
+    from core.feedback import ACTIONS, REASONS, item_key
+
+    cands = [it for it in items if it.get("url")]
+    if not cands:
+        return
+    st.divider()
+    st.subheader("阅读与反馈")
+    pick = st.selectbox("选择条目", list(range(len(cands))),
+                        format_func=lambda i: (cands[i].get("title") or cands[i]["url"])[:60],
+                        key=f"rd_pick_{sid}")
+    it = cands[pick]
+    url, title = it["url"], it.get("title") or ""
+    key = item_key(url, title)
+
+    prefs = call(api.view_prefs, settings) or {"open_mode": "reader", "modes": list(_MODE_LABELS)}
+    modes = prefs["modes"]
+    default_mode = prefs["open_mode"]
+    mode = st.radio("打开方式", modes, index=modes.index(default_mode), horizontal=True,
+                    format_func=lambda m: _MODE_LABELS[m] + ("（当前默认）" if m == default_mode else ""),
+                    key=f"rd_mode_{sid}")
+    if st.button("把当前选择设为默认打开方式", key=f"rd_default_{sid}"):
+        if mode == default_mode:
+            st.info("当前选择已经是默认。")
+        elif call(api.set_default_open_mode, settings, mode) is not None:
+            st.toast(f"默认打开方式已改为：{_MODE_LABELS[mode]}")
+            st.rerun()
+
+    if mode == "newtab":
+        st.link_button("在新标签页打开原文", url)
+    elif mode == "iframe":
+        st.components.v1.iframe(url, height=640, scrolling=True)
+        st.caption("多数站点禁止内嵌，若页面空白，请换用阅读模式或新标签页。")
+    else:
+        load_key = f"rd_art_{key}"
+        if st.button("加载正文", key=f"rd_load_{key}"):
+            with st.spinner("正在抓取正文…"):
+                art = call(api.read_article, settings, sid, url)
+            if art is not None:
+                st.session_state[load_key] = art
+        art = st.session_state.get(load_key)
+        if art:
+            st.markdown(f"#### {art.get('title') or title}")
+            if art.get("text_chars", 0) < 200:
+                st.caption("提取到的正文较少，可能是视频或动态页面，可换用新标签页查看。")
+            for b in art["blocks"]:
+                if b["type"] == "h":
+                    st.markdown(f"**{b['text']}**")
+                elif b["type"] == "p":
+                    st.write(b["text"])
+                elif b["type"] == "img":
+                    st.markdown(f"[🖼 {b.get('alt') or '图片'}]({b['src']})")
+        st.link_button("原文链接", url)
+
+    with st.form(f"fb_form_{key}", clear_on_submit=True):
+        st.caption("反馈（原因标签与备注均可不填）")
+        reasons = st.multiselect("原因", list(REASONS), format_func=lambda r: REASONS[r],
+                                 key=f"fb_reason_{key}")
+        note = st.text_input("备注", key=f"fb_note_{key}")
+        c1, c2, c3 = st.columns(3)
+        pressed = None
+        if c1.form_submit_button("👍 感兴趣"):
+            pressed = "interested"
+        if c2.form_submit_button("👎 不感兴趣"):
+            pressed = "not_interested"
+        if c3.form_submit_button("⏰ 稍后看"):
+            pressed = "later"
+    if pressed:
+        body = {"action": pressed, "source_id": sid, "url": url, "title": title,
+                "reasons": reasons, "note": note, "open_mode": mode}
+        if call(api.record_feedback, settings, body) is not None:
+            st.toast(f"已记录：{ACTIONS[pressed]}")
+
+    fb = call(api.item_feedback, settings, key)
+    if fb:
+        counts = " · ".join(f"{ACTIONS[a]} {n}" for a, n in fb["counts"].items())
+        with st.expander(f"该条目的反馈记录（{counts}）"):
+            if not fb["events"]:
+                st.caption("还没有反馈。")
+            for e in fb["events"]:
+                rs = "、".join(REASONS.get(r, r) for r in e.get("reasons", []))
+                extra = f"｜原因：{rs}" if rs else ""
+                extra += f"｜备注：{e['note']}" if e.get("note") else ""
+                st.write(f"- {fmt_time(e['time'])} · {ACTIONS.get(e['action'], e['action'])}{extra}")
 
 
 with tab_results:
