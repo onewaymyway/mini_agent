@@ -464,6 +464,7 @@ with tab_edit:
 def _results_tab():
     _profile_panel()
     _candidates_panel()
+    _evaluation_panel()
     _srcs = [x for x in (call(api.list_sources, settings) or {"sources": []})["sources"]
              if not x.get("config_errors")]
     if not _srcs:
@@ -508,6 +509,14 @@ def _results_tab():
                     ranked = call(api.rank_snapshot, settings, sid, rows)
                     if ranked:
                         rows = ranked["items"]
+                view = "ranked" if rank_on else "plain"
+                guard = f"imp_{sid}_{snap_id}_{view}"
+                if rows and guard not in st.session_state:  # 每个列表视图每次会话只记一次曝光
+                    from core.feedback import item_key as _ik
+                    call(api.record_impression_api, settings, {
+                        "source_id": sid, "snapshot_id": snap_id, "view": view,
+                        "item_keys": [_ik(r.get("url", ""), r.get("title", "")) for r in rows[:60]]})
+                    st.session_state[guard] = True
                 if rows:
                     fb_icon = {"interested": "👍", "not_interested": "👎", "later": "⏰"}
                     frame = []
@@ -524,7 +533,7 @@ def _results_tab():
                                  column_config={"链接": st.column_config.LinkColumn("链接", display_text="打开")})
                 else:
                     st.info("没有匹配的条目。")
-                _reading_panel(sid, snap["items"])
+                _reading_panel(sid, snap["items"], view)
 
 
 # ---------- 兴趣画像（第二阶段） ----------
@@ -577,6 +586,37 @@ def _profile_panel() -> None:
                 st.rerun()
 
 
+# ---------- 推荐效果评估（第四阶段） ----------
+def _evaluation_panel() -> None:
+    days = 30
+    data = call(api.evaluation_report, settings, days)
+    if not data:
+        return
+    with st.expander("📊 推荐效果评估（近 30 天）", expanded=False):
+        v = data["views"]
+        rows = []
+        for name, key in (("按兴趣排序", "ranked"), ("原始顺序", "plain")):
+            x = v[key]
+            pct = lambda r: "—" if r is None else f"{r:.0%}"  # noqa: E731
+            rows.append({"视图": name, "曝光条目": x["impressions"], "点击率": pct(x["ctr"]),
+                         "反馈数": x["feedback"], "感兴趣": pct(x["interested_rate"]),
+                         "不感兴趣": pct(x["not_interested_rate"]), "稍后看": pct(x["later_rate"])})
+        st.dataframe(pd.DataFrame(rows), hide_index=True)
+        for msg in data.get("recommendations", []):
+            st.info(msg)
+        by_t = data["candidates"]["by_template"]
+        if by_t:
+            st.caption("候选信息源采纳情况")
+            st.dataframe(pd.DataFrame([{
+                "模板": c["name"], "生成": c["generated"], "加入": c["accepted"], "忽略": c["rejected"],
+                "待确认": c["pending"], "采纳率": "—" if c["adoption_rate"] is None else f"{c['adoption_rate']:.0%}",
+            } for c in by_t.values()]), hide_index=True)
+        by_r = data["candidates"]["by_reason"]
+        if by_r:
+            names = {"explicit": "显式主题", "learned": "学到的偏好"}
+            st.caption("按查询词来源：" + "；".join(
+                f"{names.get(k, k)} 加入 {x['accepted']} / 忽略 {x['rejected']}" for k, x in by_r.items()))
+
 # ---------- 候选收件箱（第三阶段） ----------
 def _candidates_panel() -> None:
     data = call(api.list_candidates_api, settings)
@@ -617,7 +657,7 @@ def _candidates_panel() -> None:
 _MODE_LABELS = {"reader": "阅读模式", "iframe": "内嵌页面", "newtab": "新标签页"}
 
 
-def _reading_panel(sid: str, items: list[dict]) -> None:
+def _reading_panel(sid: str, items: list[dict], view: str = "plain") -> None:
     from core.feedback import ACTIONS, REASONS, item_key
 
     cands = [it for it in items if it.get("url")]
@@ -645,14 +685,23 @@ def _reading_panel(sid: str, items: list[dict]) -> None:
             st.toast(f"默认打开方式已改为：{_MODE_LABELS[mode]}")
             st.rerun()
 
+    def _log_open(mode_name: str) -> None:
+        guard = f"open_{key}_{mode_name}_{view}"
+        if guard not in st.session_state:
+            call(api.record_open_api, settings, {"source_id": sid, "item_key": key,
+                                                 "view": view, "mode": mode_name})
+            st.session_state[guard] = True
+
     if mode == "newtab":
         st.link_button("在新标签页打开原文", url)
     elif mode == "iframe":
+        _log_open("iframe")
         st.components.v1.iframe(url, height=640, scrolling=True)
         st.caption("多数站点禁止内嵌，若页面空白，请换用阅读模式或新标签页。")
     else:
         load_key = f"rd_art_{key}"
         if st.button("加载正文", key=f"rd_load_{key}"):
+            _log_open("reader")
             with st.spinner("正在抓取正文…"):
                 art = call(api.read_article, settings, sid, url)
             if art is not None:
@@ -686,7 +735,7 @@ def _reading_panel(sid: str, items: list[dict]) -> None:
             pressed = "later"
     if pressed:
         body = {"action": pressed, "source_id": sid, "url": url, "title": title,
-                "reasons": reasons, "note": note, "open_mode": mode}
+                "reasons": reasons, "note": note, "open_mode": mode, "view": view}
         if call(api.record_feedback, settings, body) is not None:
             st.toast(f"已记录：{ACTIONS[pressed]}")
 

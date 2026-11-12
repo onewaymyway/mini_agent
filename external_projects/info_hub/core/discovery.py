@@ -50,10 +50,13 @@ def load_config(root: Path) -> dict[str, Any]:
     if not isinstance(cfg, dict):
         cfg = {}
     limits = cfg.get("limits") or {}
+    adoption = cfg.get("adoption") or {}
     return {
         "templates": cfg.get("templates") or [],
         "daily_cap": int(limits.get("daily", DEFAULT_DAILY_CAP)),
         "pending_cap": int(limits.get("pending", DEFAULT_PENDING_CAP)),
+        "min_decisions": int(adoption.get("min_decisions", 5)),
+        "min_rate": float(adoption.get("min_rate", 0.2)),
     }
 
 
@@ -154,7 +157,7 @@ def list_candidates(data_dir: Path) -> list[dict[str, Any]]:
 
 def generate(data_dir: Path, profile: dict[str, Any], templates: list[dict[str, Any]],
              validate: Callable[[dict[str, Any]], list[str]], *, daily_cap: int, pending_cap: int,
-             now: Optional[datetime] = None) -> dict[str, Any]:
+             paused: Optional[set[str]] = None, now: Optional[datetime] = None) -> dict[str, Any]:
     """按画像生成候选。返回 {"added": [...], "skipped": {原因: 数量}}。"""
     now = now or datetime.now().astimezone()
     today = now.date().isoformat()
@@ -175,6 +178,9 @@ def generate(data_dir: Path, profile: dict[str, Any], templates: list[dict[str, 
         for tpl in templates:
             if len(pending) >= pending_cap or today_count >= daily_cap:
                 break
+            if tpl["id"] in (paused or set()):  # 采纳率偏低，暂停该模板（见 core/evaluation.py）
+                skipped["paused_low_adoption"] = skipped.get("paused_low_adoption", 0) + 1
+                continue
             cid = candidate_id(tpl["id"], query)
             if cid in cands:  # 包括已忽略、已加入的，不重复生成
                 skipped["exists"] = skipped.get("exists", 0) + 1

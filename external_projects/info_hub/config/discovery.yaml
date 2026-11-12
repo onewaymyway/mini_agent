@@ -32,4 +32,10 @@ limits:
   daily: 3
   pending: 10
 
+# 采纳率自动调节：已做出决定的候选达到 min_decisions 条且采纳率低于 min_rate 时，暂停该模板生成。
+# 暂停原因会显示在“推荐效果评估”中；把 min_rate 设为 0 即可关闭自动暂停。
+adoption:
+  min_decisions: 5
+  min_rate: 0.2
+
 templates: []

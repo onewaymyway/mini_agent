@@ -30,6 +30,7 @@ REASONS: dict[str, str] = {
 
 MAX_NOTE_CHARS = 300
 VIEW_MODES = ("reader", "iframe", "newtab")
+LIST_VIEWS = ("ranked", "plain")
 
 
 def normalize_url(url: str) -> str:
@@ -71,6 +72,7 @@ def validate_event(body: dict[str, Any]) -> dict[str, Any]:
     if not source_id or source_id != Path(source_id).name:
         raise ValueError("信息源 id 不合法")
     open_mode = str(body.get("open_mode") or "").strip()
+    view = str(body.get("view") or "").strip()  # 反馈发生时的列表视图：ranked / plain
     return {
         "action": action,
         "source_id": source_id,
@@ -80,6 +82,7 @@ def validate_event(body: dict[str, Any]) -> dict[str, Any]:
         "reasons": list(dict.fromkeys(reasons)),  # 去重且保持顺序
         "note": note,
         "open_mode": open_mode if open_mode in VIEW_MODES else "",
+        "view": view if view in LIST_VIEWS else "",
     }
 
 

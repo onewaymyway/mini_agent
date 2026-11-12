@@ -796,10 +796,13 @@ def generate_candidates(settings: Settings) -> dict[str, Any]:
         templates = discovery.load_templates(settings.paths.root)
     except discovery.DiscoveryError as exc:
         raise ApiError(400, f"搜索模板配置有误：{exc}")
+    from core import evaluation
     cfg = discovery.load_config(settings.paths.root)
     profile = ensure_fresh(settings.paths.data_dir)
+    cands = discovery.list_candidates(settings.paths.data_dir)
+    paused = set(evaluation.paused_templates(cands, cfg["min_decisions"], cfg["min_rate"]))
     result = discovery.generate(settings.paths.data_dir, profile, templates, _candidate_validator(settings),
-                                daily_cap=cfg["daily_cap"], pending_cap=cfg["pending_cap"])
+                                daily_cap=cfg["daily_cap"], pending_cap=cfg["pending_cap"], paused=paused)
     return {"added": len(result["added"]), "skipped": result["skipped"]}
 
 
@@ -835,3 +838,48 @@ def reject_candidate(settings: Settings, cid: str) -> dict[str, Any]:
     except discovery.DiscoveryError as exc:
         raise ApiError(404 if "不存在" in str(exc) else 409, str(exc))
     return {"id": cid, "status": "rejected"}
+
+
+# ---------- 推荐效果评估与候选采纳率（第四阶段） ----------
+_ID16_RE = re.compile(r"^[0-9a-f]{16}$")
+
+
+def record_impression_api(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
+    from core import evaluation
+    sid = str(body.get("source_id") or "")
+    snap = str(body.get("snapshot_id") or "")
+    keys = body.get("item_keys") or []
+    if sid != Path(sid).name or not sid:
+        raise ApiError(400, "信息源 id 不合法")
+    if not isinstance(keys, list) or not all(isinstance(k, str) and _ID16_RE.match(k) for k in keys):
+        raise ApiError(400, "条目 key 不合法")
+    try:
+        evaluation.record_impression(settings.paths.data_dir, source_id=sid, snapshot_id=snap,
+                                     view=str(body.get("view") or ""), item_keys=keys)
+    except ValueError as exc:
+        raise ApiError(400, str(exc))
+    return {"ok": True}
+
+
+def record_open_api(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
+    from core import evaluation
+    sid = str(body.get("source_id") or "")
+    key = str(body.get("item_key") or "")
+    if sid != Path(sid).name or not sid:
+        raise ApiError(400, "信息源 id 不合法")
+    if not _ID16_RE.match(key):
+        raise ApiError(400, "条目 key 不合法")
+    evaluation.record_open(settings.paths.data_dir, source_id=sid, item_key=key,
+                           view=str(body.get("view") or ""), mode=str(body.get("mode") or ""))
+    return {"ok": True}
+
+
+def evaluation_report(settings: Settings, days: int = 30) -> dict[str, Any]:
+    from core import discovery, evaluation
+    cfg = discovery.load_config(settings.paths.root)
+    cands = discovery.list_candidates(settings.paths.data_dir)
+    metrics = evaluation.compute_metrics(settings.paths.data_dir, cands, days=max(1, min(int(days), 365)))
+    metrics["candidates"]["paused_templates"] = evaluation.paused_templates(
+        cands, cfg["min_decisions"], cfg["min_rate"])
+    metrics["recommendations"] = evaluation.recommendations(metrics)
+    return metrics
