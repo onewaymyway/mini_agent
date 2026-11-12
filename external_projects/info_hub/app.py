@@ -463,6 +463,7 @@ with tab_edit:
 @st.fragment(run_every=60)
 def _results_tab():
     _profile_panel()
+    _candidates_panel()
     _srcs = [x for x in (call(api.list_sources, settings) or {"sources": []})["sources"]
              if not x.get("config_errors")]
     if not _srcs:
@@ -575,6 +576,42 @@ def _profile_panel() -> None:
             if call(api.clear_learned_profile, settings) is not None:
                 st.rerun()
 
+
+# ---------- 候选收件箱（第三阶段） ----------
+def _candidates_panel() -> None:
+    data = call(api.list_candidates_api, settings)
+    if not data:
+        return
+    pending = [c for c in data["candidates"] if c["status"] == "pending"]
+    with st.expander(f"📥 候选信息源（待确认 {len(pending)} 条）", expanded=bool(pending)):
+        if data.get("config_error"):
+            st.error(data["config_error"])
+            return
+        if not data["templates"]:
+            st.info("还没有搜索模板。请在 config/discovery.yaml 中配置 templates 后再生成候选。")
+        lim = data.get("limits", {})
+        st.caption(f"候选默认停用，只有点“加入信息源”才会抓取。每日最多生成 {lim.get('daily')} 条，"
+                   f"待确认最多 {lim.get('pending')} 条。")
+        if st.button("根据我的兴趣生成候选", key="cand_gen", disabled=not data["templates"]):
+            out = call(api.generate_candidates, settings)
+            if out is not None:
+                st.toast(f"新生成 {out['added']} 条候选")
+                st.rerun()
+        if not pending:
+            st.caption("当前没有待确认的候选。")
+        for c in pending:
+            with st.container(border=True):
+                st.markdown(f"**{c['template_name']}** · 查询词：`{c['query']}`")
+                st.caption(f"原因：{c['reason']} · 生成于 {fmt_time(c['created_at'])}")
+                st.code(c["url"], language=None)
+                b1, b2 = st.columns(2)
+                if b1.button("加入信息源", key=f"cand_ok_{c['id']}", type="primary"):
+                    if call(api.accept_candidate, settings, c["id"]) is not None:
+                        st.toast(f"已加入信息源：{c['id']}")
+                        st.rerun()
+                if b2.button("忽略", key=f"cand_no_{c['id']}"):
+                    if call(api.reject_candidate, settings, c["id"]) is not None:
+                        st.rerun()
 
 # ---------- 阅读与反馈（第一阶段） ----------
 _MODE_LABELS = {"reader": "阅读模式", "iframe": "内嵌页面", "newtab": "新标签页"}

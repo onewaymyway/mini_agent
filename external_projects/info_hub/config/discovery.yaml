@@ -1,0 +1,35 @@
+# 信息源发现（第三阶段）：按兴趣画像，套用站内搜索模板生成候选信息源。
+# 候选默认停用，需要在看板“候选收件箱”里点“加入信息源”确认后才会抓取。
+#
+# limits.daily：每天最多新生成的候选数；limits.pending：同时待确认的候选上限。
+# templates：搜索模板。source 与普通信息源的 source.yaml 结构相同，但 request.url 必须
+#           且只能包含一次 {query}（会被替换为 URL 编码后的查询词）。
+#           请按目标站点的搜索页与页面结构填写 parse 等字段，并先用“信息源”页签的预览确认可用。
+#
+# 示例（默认不启用，需按实际站点改写）：
+#
+# templates:
+#   - id: site_search
+#     name: 某站搜索
+#     source:
+#       kind: feed
+#       adapter: html_list
+#       category: news
+#       request:
+#         url: https://example.com/search?q={query}
+#       schedule:
+#         every: 6h
+#       parse:
+#         list_selector: div.result
+#         fields:
+#           title: a.title
+#           url: a.title@href
+#       policy:
+#         max_items: 20
+#       tags: [搜索]
+
+limits:
+  daily: 3
+  pending: 10
+
+templates: []

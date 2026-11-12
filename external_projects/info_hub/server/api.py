@@ -762,3 +762,76 @@ def rank_snapshot(settings: Settings, source_id: str, items: list[dict[str, Any]
     actions = prof.last_actions(read_feedback(settings.paths.data_dir))
     return {"source_id": source_id,
             "items": prof.rank_items(data, items, source_id, actions)}
+
+
+# ---------- 信息源发现（第三阶段） ----------
+_CAND_RE = re.compile(r"^disc_[a-z][a-z0-9_]{1,15}_[0-9a-f]{6}$")
+
+
+def _candidate_validator(settings: Settings):
+    from core.source_store import validate_candidate
+
+    def validate(source: dict[str, Any]) -> list[str]:
+        _, errors, _ = validate_candidate(settings, source)
+        return errors
+    return validate
+
+
+def list_candidates_api(settings: Settings) -> dict[str, Any]:
+    from core import discovery
+    try:
+        templates = discovery.load_templates(settings.paths.root)
+    except discovery.DiscoveryError as exc:
+        return {"candidates": [], "templates": [], "config_error": str(exc)}
+    cfg = discovery.load_config(settings.paths.root)
+    rows = discovery.list_candidates(settings.paths.data_dir)
+    return {"candidates": rows, "templates": [t["id"] for t in templates],
+            "limits": {"daily": cfg["daily_cap"], "pending": cfg["pending_cap"]}}
+
+
+def generate_candidates(settings: Settings) -> dict[str, Any]:
+    from core import discovery
+    from core.profile import ensure_fresh
+    try:
+        templates = discovery.load_templates(settings.paths.root)
+    except discovery.DiscoveryError as exc:
+        raise ApiError(400, f"搜索模板配置有误：{exc}")
+    cfg = discovery.load_config(settings.paths.root)
+    profile = ensure_fresh(settings.paths.data_dir)
+    result = discovery.generate(settings.paths.data_dir, profile, templates, _candidate_validator(settings),
+                                daily_cap=cfg["daily_cap"], pending_cap=cfg["pending_cap"])
+    return {"added": len(result["added"]), "skipped": result["skipped"]}
+
+
+def accept_candidate(settings: Settings, cid: str) -> dict[str, Any]:
+    from core import discovery
+    from core.source_store import SourceError, write_source
+    if not _CAND_RE.fullmatch(cid or ""):
+        raise ApiError(400, "候选 id 不合法")
+    state = discovery.load_state(settings.paths.data_dir)
+    cand = state["candidates"].get(cid)
+    if cand is None:
+        raise ApiError(404, "候选不存在")
+    if cand["status"] != "pending":
+        raise ApiError(409, f"候选已处理（{cand['status']}）")
+    source = discovery.confirmed_source(cand)
+    errors = _candidate_validator(settings)(source)
+    if errors:
+        raise ApiError(400, "候选已不可用：" + "；".join(errors))
+    try:
+        target = write_source(settings, source)
+    except SourceError as exc:
+        raise ApiError(400, str(exc))
+    discovery.decide(settings.paths.data_dir, cid, "accepted")
+    return {"id": cid, "path": str(target.relative_to(settings.paths.root))}
+
+
+def reject_candidate(settings: Settings, cid: str) -> dict[str, Any]:
+    from core import discovery
+    if not _CAND_RE.fullmatch(cid or ""):
+        raise ApiError(400, "候选 id 不合法")
+    try:
+        discovery.decide(settings.paths.data_dir, cid, "rejected")
+    except discovery.DiscoveryError as exc:
+        raise ApiError(404 if "不存在" in str(exc) else 409, str(exc))
+    return {"id": cid, "status": "rejected"}
