@@ -221,6 +221,7 @@ health:
 | 不开看板也要调度 | 系统计划任务每 5 分钟 `python cli.py tick` |
 
 ## 变更记录
+- 2026-11-12：抓取结果每行增加 👍 / 👎 按钮，直接记录“感兴趣 / 不感兴趣”，最近一次反馈高亮，重复点击不重复记录。详见 `next_doc/info_hub_dedicated_browser_design.md` §18。
 - 2026-11-12：看板新增“反馈记录”页签，显示历史反馈，可按动作/信息源/时间/关键词筛选，每条带“打开”按钮（只读）。详见 `next_doc/info_hub_dedicated_browser_design.md` §17。
 - 2026-11-12：看板只保留“在专用浏览器中打开”，移除阅读模式/内嵌页面/新标签页；抓取结果、订阅、报告单条、候选与编辑源地址处都有“打开”按钮；新增“插件配对”（看板开启 5 分钟窗口，插件自动取得令牌，免手填）；“打开”记录改由服务端统一写入；插件 0.4.0 需在 chrome://extensions 重新加载。详见 `next_doc/info_hub_dedicated_browser_design.md` §16。
 - 2026-11-12：修复看板“在专用浏览器中打开”后工具条不出现（地址片段 `#ihk` 在脚本运行前丢失）：看板打开时登记待匹配上下文（`core/pending_open.py`），插件凭当前地址经 `/v1/context` 恢复；扩展新增选项“在所有页面显示反馈工具条”（默认关闭，手动反馈记为 `manual`）；插件版本 0.2.0，需在 chrome://extensions 重新加载。详见 `next_doc/info_hub_dedicated_browser_design.md` §14。

@@ -545,19 +545,35 @@ def _results_tab():
                     fb_icon = {"interested": "👍", "not_interested": "👎", "later": "⏰"}
                     limit_key = f"res_n_{sid}_{snap_id}_{view}"
                     shown = st.session_state.get(limit_key, 30)
+                    # 每个条目最近一次反馈（用于高亮按钮，避免重复记录同一动作）
+                    latest: dict[str, str] = {}
+                    for ev in (call(api.list_feedback_history, settings) or {"events": []})["events"]:
+                        latest.setdefault(ev.get("item_key", ""), ev.get("action", ""))
                     for n, it in enumerate(rows[:shown]):
-                        r1, r2, r3, r4 = st.columns([1, 8, 3, 1.4], vertical_alignment="center")
+                        r1, r2, r3, r4, r5, r6 = st.columns([0.9, 7, 2.6, 0.9, 0.9, 1.4], vertical_alignment="center")
                         r1.write(it.get("rank") or n + 1)
                         r2.markdown(f"**{it.get('title') or '（无标题）'}**")
                         if it.get("summary"):
                             r2.caption(str(it["summary"])[:140])
                         meta = [str(x) for x in (it.get("heat"), it.get("published_at")) if x]
-                        if rank_on:
-                            if it.get("score") is not None:
-                                meta.append(f"推荐分 {it['score']}")
-                            meta.append(fb_icon.get(it.get("feedback"), ""))
+                        if rank_on and it.get("score") is not None:
+                            meta.append(f"推荐分 {it['score']}")
                         r3.caption(" · ".join(m for m in meta if m))
-                        with r4:
+                        ik = item_key(it.get("url") or "", it.get("title") or "")
+                        cur = latest.get(ik, "")
+                        for col, act, icon, tip in ((r4, "interested", "👍", "感兴趣"),
+                                                    (r5, "not_interested", "👎", "不感兴趣")):
+                            if col.button(icon, key=f"fb_{act}_{sid}_{snap_id}_{view}_{n}",
+                                          type="primary" if cur == act else "secondary",
+                                          help=f"标记为{tip}" + ("（当前状态）" if cur == act else "")):
+                                if cur == act:
+                                    st.toast(f"该条目已标记为{tip}")
+                                elif call(api.record_feedback, settings, {
+                                        "action": act, "source_id": sid, "url": it.get("url") or "",
+                                        "title": it.get("title") or "", "view": view}) is not None:
+                                    st.toast(f"已记录：{tip}")
+                                    st.rerun()
+                        with r6:
                             open_button(it.get("url"), f"op_res_{sid}_{snap_id}_{view}_{n}",
                                         sid=sid, title=it.get("title") or "", view=view)
                     if len(rows) > shown:

@@ -49,6 +49,32 @@ class DashboardFeedbackTests(unittest.TestCase):
         rows = [b for b in at.button if b.key and b.key.startswith("op_res_")]
         self.assertEqual(len(rows), 2)  # 两条新闻各一个按钮
 
+    def test_result_rows_have_interest_buttons_that_record_feedback(self):
+        at = self._app()
+        ups = [b for b in at.button if b.key and b.key.startswith("fb_interested_")]
+        downs = [b for b in at.button if b.key and b.key.startswith("fb_not_interested_")]
+        self.assertEqual((len(ups), len(downs)), (2, 2))
+        ups[0].click().run()
+        self.assertFalse(at.exception, [e.value for e in at.exception])
+        events = feedback.read_feedback(self.root / "data")
+        self.assertEqual([e["action"] for e in events], ["interested"])
+        self.assertEqual(events[0]["source_id"], "news_a")
+        self.assertEqual(events[0]["view"], "plain")
+        # 同一动作再点一次不重复记录；按钮高亮为当前状态
+        ups = [b for b in at.button if b.key and b.key.startswith("fb_interested_")]
+        self.assertEqual(ups[0].proto.type, "primary")
+        ups[0].click().run()
+        self.assertEqual(len(feedback.read_feedback(self.root / "data")), 1)
+        # 改标不感兴趣：新增一条，状态切换
+        downs = [b for b in at.button if b.key and b.key.startswith("fb_not_interested_")]
+        downs[0].click().run()
+        self.assertEqual([e["action"] for e in feedback.read_feedback(self.root / "data")],
+                         ["interested", "not_interested"])
+        downs = [b for b in at.button if b.key and b.key.startswith("fb_not_interested_")]
+        self.assertEqual(downs[0].proto.type, "primary")
+        # 另一条未受影响
+        self.assertEqual(downs[1].proto.type, "secondary")
+
     def test_open_button_calls_dedicated_browser_with_item(self):
         from unittest import mock
         at = self._app()
