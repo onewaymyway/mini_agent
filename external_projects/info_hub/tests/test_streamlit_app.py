@@ -79,7 +79,9 @@ class StreamlitAppTests(unittest.TestCase):
         at = run_app(root)
         self.assertEqual(len(at.exception), 0, [e.value for e in at.exception])
         self.assertTrue(any("共 2 条" in c.value for c in at.caption), [c.value for c in at.caption])
-        self.assertTrue(any("看板新闻甲" in str(df.value) for df in at.dataframe))
+        # 结果改为逐行显示，每行有“在专用浏览器中打开”按钮
+        self.assertTrue(any("看板新闻甲" in m.value for m in at.markdown), [m.value for m in at.markdown][:20])
+        self.assertTrue([b for b in at.button if b.key and b.key.startswith("op_res_")])
 
     def test_results_tab_without_snapshot_shows_hint(self):
         at = run_app(make_project({"news_a": SRC}))

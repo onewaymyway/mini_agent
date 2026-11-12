@@ -30,6 +30,7 @@ REASONS: dict[str, str] = {
 
 MAX_NOTE_CHARS = 300
 VIEW_MODES = ("reader", "iframe", "newtab")
+FEEDBACK_OPEN_MODES = VIEW_MODES + ("dedicated",)  # 反馈事件记录的打开方式；dedicated = 专用浏览器
 LIST_VIEWS = ("ranked", "plain")
 
 
@@ -81,7 +82,7 @@ def validate_event(body: dict[str, Any]) -> dict[str, Any]:
         "url": url,
         "reasons": list(dict.fromkeys(reasons)),  # 去重且保持顺序
         "note": note,
-        "open_mode": open_mode if open_mode in VIEW_MODES else "",
+        "open_mode": open_mode if open_mode in FEEDBACK_OPEN_MODES else "",
         "view": view if view in LIST_VIEWS else "",
     }
 

@@ -9,7 +9,6 @@
   const KEY_RE = /^[0-9a-f]{16}$/;
 
   let ctx = null;
-  let freshFromHash = false;
   const hash = new URLSearchParams(location.hash.slice(1));
   if (KEY_RE.test(hash.get("ihk") || "")) {
     ctx = {
@@ -20,7 +19,6 @@
       url: location.href.split("#")[0],
       pathname: location.pathname,
     };
-    freshFromHash = true;
     try { sessionStorage.setItem(STORE, JSON.stringify(ctx)); } catch (e) { /* 忽略存储不可用 */ }
   } else {
     try {
@@ -64,6 +62,7 @@
 
   function start() {
     if (document.getElementById("infohub-feedback-host")) return;
+    chrome.runtime.sendMessage({ type: "ensure" }, () => void chrome.runtime.lastError);
     const host = document.createElement("div");
     host.id = "infohub-feedback-host";
     // 宿主元素不受页面样式影响；面板用 position:fixed 悬浮在视口右侧，不随页面滚动，
@@ -237,13 +236,7 @@
     });
     window.addEventListener("pagehide", sendDwell);
 
-    // 只在第一次带标记打开时记录“打开”，避免 SPA 重新渲染时重复计数
-    if (freshFromHash) {
-      chrome.runtime.sendMessage({
-        type: "open",
-        body: { source_id: ctx.sourceId, item_key: ctx.key, view: ctx.view, mode: "dedicated" },
-      }, () => void chrome.runtime.lastError);
-    }
+    // “打开”记录由看板在服务端统一写入（open_in_dedicated_browser），插件不再重复上报，避免重复计数
   }
 
   resolveContext();

@@ -889,29 +889,56 @@ def evaluation_report(settings: Settings, days: int = 30) -> dict[str, Any]:
 
 # ---------- 专用浏览器与反馈插件 ----------
 def open_in_dedicated_browser(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
+    """在专用浏览器中打开链接。
+
+    - 带条目信息（source_id + item_key）：附加 #ihk 片段、登记待匹配上下文，并在服务端记录一次“打开”，插件工具条据此绑定条目。
+    - 不带条目信息（二者都为空，如候选信息源地址、信息源配置地址）：只打开原始链接，不登记也不记录。
+    """
     from core import dedicated_browser as db
     url = str(body.get("url") or "").strip()
     if not re.match(r"^https?://", url):
         raise ApiError(400, "链接必须是 http(s) 地址")
     sid = str(body.get("source_id") or "")
     key = str(body.get("item_key") or "")
-    if sid != Path(sid).name or not sid:
-        raise ApiError(400, "信息源 id 不合法")
-    if not _ID16_RE.match(key):
-        raise ApiError(400, "条目 key 不合法")
+    plain = not sid and not key
     view = str(body.get("view") or "")
     title = str(body.get("title") or "")
-    target = db.build_open_url(url, item_key=key, source_id=sid, view=view, title=title)
-    # 登记待匹配上下文：页面加载后地址里的 #ihk 片段可能被站点改写丢失，插件再凭当前地址来取
-    from core import pending_open
-    pending_open.register(settings.paths.state_dir, url=url, item_key=key, source_id=sid, view=view, title=title)
+    if plain:
+        target = url
+    else:
+        if sid != Path(sid).name or not sid:
+            raise ApiError(400, "信息源 id 不合法")
+        if not _ID16_RE.match(key):
+            raise ApiError(400, "条目 key 不合法")
+        target = db.build_open_url(url, item_key=key, source_id=sid, view=view, title=title)
+        # 登记待匹配上下文：页面加载后地址里的 #ihk 片段可能被站点改写丢失，插件再凭当前地址来取
+        from core import pending_open
+        pending_open.register(settings.paths.state_dir, url=url, item_key=key, source_id=sid, view=view, title=title)
     try:
         out = db.open_url(settings.paths.root, db.load_config(settings.paths.root), target)
     except FileNotFoundError as exc:
         raise ApiError(503, str(exc))
     except OSError as exc:
         raise ApiError(500, f"启动浏览器失败：{exc}")
+    if not plain:  # 打开成功后再记录，且只在这里记录一次（插件不再重复上报“打开”）
+        record_open_api(settings, {"source_id": sid, "item_key": key, "view": view, "mode": "dedicated"})
     return out
+
+
+def pairing_start(settings: Settings) -> dict[str, Any]:
+    """开启 5 分钟配对窗口，插件在窗口内可免手填取走令牌。"""
+    from core import pairing
+    return pairing.open_window(settings.paths.state_dir)
+
+
+def pairing_status(settings: Settings) -> dict[str, Any]:
+    from core import pairing
+    return pairing.status(settings.paths.state_dir)
+
+
+def pairing_cancel(settings: Settings) -> dict[str, Any]:
+    from core import pairing
+    return pairing.close_window(settings.paths.state_dir)
 
 
 def resolve_context_api(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:

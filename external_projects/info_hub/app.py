@@ -30,6 +30,7 @@ import streamlit as st
 PROJECT_ROOT = Path(os.environ.get("INFO_HUB_ROOT") or Path(__file__).resolve().parent).resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from core.feedback import item_key  # noqa: E402
 from core.settings import load_settings  # noqa: E402
 from dashboard.speech import speech_player_html  # noqa: E402
 from server import api  # noqa: E402
@@ -65,6 +66,23 @@ def call(fn, *args, **kwargs) -> Any:
 
 def fmt_time(iso: Optional[str]) -> str:
     return iso.replace("T", " ")[:16] if iso else "从未"
+
+
+def open_button(url: Optional[str], key: str, *, sid: str = "", title: str = "", view: str = "",
+                label: str = "打开") -> None:
+    """在专用浏览器中打开链接（看板上所有显示抓取内容地址的地方都用它）。
+
+    sid 不为空时按条目打开：反馈工具条绑定该条目，并记录一次“打开”；
+    sid 为空时只打开原始链接（候选信息源地址、信息源配置地址等没有条目的场景）。
+    """
+    if not url:
+        return
+    if st.button(label, key=key, help="在专用浏览器中打开" + ("，页面侧边的反馈工具条可用" if sid else "")):
+        out = call(api.open_in_dedicated_browser, settings, {
+            "url": url, "source_id": sid, "item_key": item_key(url, title) if sid else "",
+            "view": view, "title": title})
+        if out is not None:
+            st.toast("已在专用浏览器中打开")
 
 
 settings = load_settings(PROJECT_ROOT)
@@ -136,13 +154,14 @@ with tab_reports:
             for sec in (digest or {}).get("json", {}).get("sections", []):
                 for src in sec.get("sources", []):
                     for it in src.get("items", []):
-                        items.append((src["source_id"], it["id"], it["title"]))
+                        items.append((src["source_id"], it["id"], it["title"], it.get("url", "")))
             if not items:
                 st.caption("本报告没有条目。")
             else:
                 pick = st.selectbox("条目", range(len(items)),
                                     format_func=lambda i: items[i][2][:60], key="item_pick")
-                src_id, item_id, title = items[pick]
+                src_id, item_id, title, item_url = items[pick]
+                open_button(item_url, f"op_rep_{src_id}_{item_id}", sid=src_id, title=title)
                 one = call(api.item_speech, settings, src_id, item_id)
                 if one:
                     st.components.v1.html(speech_player_html(one["segments"], title), height=190)
@@ -225,17 +244,19 @@ with tab_subs:
             st.markdown(f"**{sub['name']}** · `{sub['id']}` · {sub['checker']} · 每 {sub['every']}"
                         + ("" if sub["enabled"] else " · 已停用"))
             if sub["current_title"]:
-                head = f"[{sub['current_title']}]({sub['current_url']})" if sub["current_url"] else sub["current_title"]
-                st.markdown(f"当前进度：{head}")
+                st.markdown(f"当前进度：{sub['current_title']}")
+                open_button(sub["current_url"], f"op_sub_{sub['id']}", sid=sub["id"], title=sub["current_title"])
                 st.caption(f"最近检查 {fmt_time(sub['checked_at'])} · 最近更新 {fmt_time(sub['updated_at'])}")
             else:
                 st.caption("尚未检查。到“信息源”页签点“抓取一次”记录基线。")
             if sub["recent_updates"]:
                 st.markdown("最近更新：")
-                for u in sub["recent_updates"]:
+                for n, u in enumerate(sub["recent_updates"]):
                     prev = f"（上次：{u['previous_title']}）" if u["previous_title"] else ""
-                    link = f"[{u['title']}]({u['url']})" if u["url"] else u["title"]
-                    st.markdown(f"- {fmt_time(u['fetched_at'])} {link}{prev}")
+                    uc1, uc2 = st.columns([8, 1])
+                    uc1.markdown(f"- {fmt_time(u['fetched_at'])} {u['title']}{prev}")
+                    with uc2:
+                        open_button(u["url"], f"op_subu_{sub['id']}_{n}", sid=sub["id"], title=u["title"])
 
 
 # ---------- 添加信息源 ----------
@@ -442,6 +463,7 @@ with tab_edit:
                 e_enabled = st.checkbox("启用", value=detail["enabled"], key=k("enabled"))
                 e_force = st.checkbox("与已有源相似时仍然保存", key=k("force"))
                 do_save_edit = st.form_submit_button("保存修改")
+            open_button(detail["url"], f"op_edit_{pick}", label="在专用浏览器中打开该地址")
             if do_save_edit:
                 body = {"source": {
                     "id": pick, "name": e_name.strip(), "category": e_cat, "kind": e_kind, "adapter": e_adapter,
@@ -520,18 +542,27 @@ def _results_tab():
                     st.session_state[guard] = True
                 if rows:
                     fb_icon = {"interested": "👍", "not_interested": "👎", "later": "⏰"}
-                    frame = []
-                    for it in rows:
-                        row = {
-                            "排名": it.get("rank"), "标题": it.get("title"), "发布时间": it.get("published_at") or "",
-                            "热度": it.get("heat"), "摘要": it.get("summary"), "链接": it.get("url")}
+                    limit_key = f"res_n_{sid}_{snap_id}_{view}"
+                    shown = st.session_state.get(limit_key, 30)
+                    for n, it in enumerate(rows[:shown]):
+                        r1, r2, r3, r4 = st.columns([1, 8, 3, 1.4], vertical_alignment="center")
+                        r1.write(it.get("rank") or n + 1)
+                        r2.markdown(f"**{it.get('title') or '（无标题）'}**")
+                        if it.get("summary"):
+                            r2.caption(str(it["summary"])[:140])
+                        meta = [str(x) for x in (it.get("heat"), it.get("published_at")) if x]
                         if rank_on:
-                            row["推荐分"] = it.get("score")
-                            row["匹配"] = "、".join(it.get("matches") or [])
-                            row["反馈"] = fb_icon.get(it.get("feedback"), "")
-                        frame.append(row)
-                    st.dataframe(pd.DataFrame(frame), hide_index=True, use_container_width=True,
-                                 column_config={"链接": st.column_config.LinkColumn("链接", display_text="打开")})
+                            if it.get("score") is not None:
+                                meta.append(f"推荐分 {it['score']}")
+                            meta.append(fb_icon.get(it.get("feedback"), ""))
+                        r3.caption(" · ".join(m for m in meta if m))
+                        with r4:
+                            open_button(it.get("url"), f"op_res_{sid}_{snap_id}_{view}_{n}",
+                                        sid=sid, title=it.get("title") or "", view=view)
+                    if len(rows) > shown:
+                        if st.button(f"显示更多（还有 {len(rows) - shown} 条）", key=f"more_{limit_key}"):
+                            st.session_state[limit_key] = shown + 30
+                            st.rerun()
                 else:
                     st.info("没有匹配的条目。")
                 _reading_panel(sid, snap["items"], view)
@@ -596,7 +627,7 @@ def _services_panel() -> None:
         return
     with st.expander("🧩 服务管理：反馈接收服务与专用浏览器", expanded=False):
         st.caption("专用浏览器使用 info_hub 自己的数据目录，与系统浏览器隔离。"
-                   "插件在该浏览器中加载一次（开发者模式 → 加载已解压的扩展程序 → extension/infohub-feedback）。")
+                   "插件在该浏览器中加载一次（开发者模式 → 加载已解压的扩展程序 → extension/infohub-feedback），然后在下方“插件配对”一键完成连接。")
 
         # --- 接收服务 ---
         st.markdown("**反馈接收服务**")
@@ -626,8 +657,33 @@ def _services_panel() -> None:
                 st.rerun()
         with st.expander("接收服务日志（最近 20 行）"):
             st.code("\n".join(rs["log_tail"]) or "（暂无日志）", language=None)
-        st.write(f"插件连接地址：`{info['url']}`　令牌文件：`{info['token_path']}`")
-        st.code(info["token"], language=None)
+
+        st.divider()
+        # --- 插件配对（免手填令牌） ---
+        st.markdown("**插件配对**")
+        ps = call(api.pairing_status, settings) or {"open": False, "remaining_seconds": 0, "paired": None}
+        if rs["mode"] == "stopped":
+            st.warning("接收服务未运行，请先启动接收服务再配对。")
+        if ps["open"]:
+            st.info(f"配对窗口已开启，约剩 {max(1, ps['remaining_seconds'] // 60)} 分钟。"
+                    "请在专用浏览器中刷新任意网页（或点一下页面侧边的反馈按钮），插件会自动取得令牌。"
+                    "完成后刷新本页可看到“已配对”。")
+            if st.button("取消配对", key="pair_cancel"):
+                call(api.pairing_cancel, settings)
+                st.rerun()
+        else:
+            if ps["paired"]:
+                st.success(f"已配对（{fmt_time(ps['paired'].get('time'))}）。令牌重新生成或更换浏览器后，可再次配对。")
+            else:
+                st.caption("尚未配对。点击下方按钮后，插件会在 5 分钟内自动取得令牌，无需手动填写。")
+            if st.button("配对插件（开启 5 分钟窗口）", key="pair_start", type="primary",
+                         disabled=rs["mode"] == "stopped"):
+                if call(api.pairing_start, settings) is not None:
+                    st.rerun()
+        st.caption(f"插件默认连接端口 18765；若修改过端口，请在扩展选项中同步一次。当前接收服务：`{info['url']}`")
+        with st.expander("手动配置（排错用）"):
+            st.write(f"令牌文件：`{info['token_path']}`")
+            st.code(info["token"], language=None)
 
         st.divider()
         # --- 专用浏览器 ---
@@ -731,6 +787,7 @@ def _candidates_panel() -> None:
                 st.markdown(f"**{c['template_name']}** · 查询词：`{c['query']}`")
                 st.caption(f"原因：{c['reason']} · 生成于 {fmt_time(c['created_at'])}")
                 st.code(c["url"], language=None)
+                open_button(c["url"], f"op_cand_{c['id']}", label="在专用浏览器中打开该地址")
                 b1, b2 = st.columns(2)
                 if b1.button("加入信息源", key=f"cand_ok_{c['id']}", type="primary"):
                     if call(api.accept_candidate, settings, c["id"]) is not None:
@@ -741,79 +798,23 @@ def _candidates_panel() -> None:
                         st.rerun()
 
 # ---------- 阅读与反馈（第一阶段） ----------
-_MODE_LABELS = {"reader": "阅读模式", "iframe": "内嵌页面", "newtab": "新标签页"}
-
-
 def _reading_panel(sid: str, items: list[dict], view: str = "plain") -> None:
-    from core.feedback import ACTIONS, REASONS, item_key
+    from core.feedback import ACTIONS, REASONS
 
     cands = [it for it in items if it.get("url")]
     if not cands:
         return
     st.divider()
     st.subheader("阅读与反馈")
+    st.caption("每条结果右侧的“打开”按钮会在专用浏览器中打开原文，并在页面侧边显示反馈工具条；"
+               "也可以在这里选择条目直接记录反馈。")
     pick = st.selectbox("选择条目", list(range(len(cands))),
                         format_func=lambda i: (cands[i].get("title") or cands[i]["url"])[:60],
                         key=f"rd_pick_{sid}")
     it = cands[pick]
     url, title = it["url"], it.get("title") or ""
     key = item_key(url, title)
-
-    prefs = call(api.view_prefs, settings) or {"open_mode": "reader", "modes": list(_MODE_LABELS)}
-    modes = prefs["modes"]
-    default_mode = prefs["open_mode"]
-    mode = st.radio("打开方式", modes, index=modes.index(default_mode), horizontal=True,
-                    format_func=lambda m: _MODE_LABELS[m] + ("（当前默认）" if m == default_mode else ""),
-                    key=f"rd_mode_{sid}")
-    if st.button("把当前选择设为默认打开方式", key=f"rd_default_{sid}"):
-        if mode == default_mode:
-            st.info("当前选择已经是默认。")
-        elif call(api.set_default_open_mode, settings, mode) is not None:
-            st.toast(f"默认打开方式已改为：{_MODE_LABELS[mode]}")
-            st.rerun()
-
-    if st.button("在专用浏览器中打开（插件反馈按钮可用）", key=f"rd_dedicated_{key}"):
-        out = call(api.open_in_dedicated_browser, settings, {
-            "url": url, "source_id": sid, "item_key": key, "view": view, "title": title})
-        if out is not None:
-            call(api.record_open_api, settings, {"source_id": sid, "item_key": key,
-                                                 "view": view, "mode": "dedicated"})
-            st.toast("已在专用浏览器中打开")
-
-    def _log_open(mode_name: str) -> None:
-        guard = f"open_{key}_{mode_name}_{view}"
-        if guard not in st.session_state:
-            call(api.record_open_api, settings, {"source_id": sid, "item_key": key,
-                                                 "view": view, "mode": mode_name})
-            st.session_state[guard] = True
-
-    if mode == "newtab":
-        st.link_button("在新标签页打开原文", url)
-    elif mode == "iframe":
-        _log_open("iframe")
-        st.components.v1.iframe(url, height=640, scrolling=True)
-        st.caption("多数站点禁止内嵌，若页面空白，请换用阅读模式或新标签页。")
-    else:
-        load_key = f"rd_art_{key}"
-        if st.button("加载正文", key=f"rd_load_{key}"):
-            _log_open("reader")
-            with st.spinner("正在抓取正文…"):
-                art = call(api.read_article, settings, sid, url)
-            if art is not None:
-                st.session_state[load_key] = art
-        art = st.session_state.get(load_key)
-        if art:
-            st.markdown(f"#### {art.get('title') or title}")
-            if art.get("text_chars", 0) < 200:
-                st.caption("提取到的正文较少，可能是视频或动态页面，可换用新标签页查看。")
-            for b in art["blocks"]:
-                if b["type"] == "h":
-                    st.markdown(f"**{b['text']}**")
-                elif b["type"] == "p":
-                    st.write(b["text"])
-                elif b["type"] == "img":
-                    st.markdown(f"[🖼 {b.get('alt') or '图片'}]({b['src']})")
-        st.link_button("原文链接", url)
+    open_button(url, f"rd_dedicated_{key}", sid=sid, title=title, view=view)
 
     with st.form(f"fb_form_{key}", clear_on_submit=True):
         st.caption("反馈（原因标签与备注均可不填）")
@@ -830,7 +831,7 @@ def _reading_panel(sid: str, items: list[dict], view: str = "plain") -> None:
             pressed = "later"
     if pressed:
         body = {"action": pressed, "source_id": sid, "url": url, "title": title,
-                "reasons": reasons, "note": note, "open_mode": mode, "view": view}
+                "reasons": reasons, "note": note, "open_mode": "dedicated", "view": view}
         if call(api.record_feedback, settings, body) is not None:
             st.toast(f"已记录：{ACTIONS[pressed]}")
 

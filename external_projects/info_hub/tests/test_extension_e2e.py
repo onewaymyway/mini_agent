@@ -39,7 +39,7 @@ def _chromium_ready():
 
 
 class ExtensionE2ETests(unittest.TestCase):
-    def _run_case(self, *, path_suffix, setup=None, storage_extra=None, after_load=None):
+    def _run_case(self, *, path_suffix, setup=None, storage_extra=None, after_load=None, store_token=True):
         """起接收服务与本地页面服务，用有头 Chromium 加载扩展并打开页面。
         返回 (页面里是否出现工具条, settings, 扩展 storage 之外的额外结果)。"""
         reason = _chromium_ready()
@@ -88,7 +88,8 @@ class ExtensionE2ETests(unittest.TestCase):
                         time.sleep(0.2)
                     self.assertTrue(ctx.service_workers, "扩展未加载")
                     ctx.service_workers[0].evaluate(
-                        "(cfg) => chrome.storage.local.set(cfg)", {"port": port, "token": token, **(storage_extra or {})})
+                        "(cfg) => chrome.storage.local.set(cfg)",
+                        {"port": port, **({"token": token} if store_token else {}), **(storage_extra or {})})
                     page = ctx.new_page()
                     page.goto(url, wait_until="load")
                     time.sleep(3)
@@ -109,11 +110,42 @@ class ExtensionE2ETests(unittest.TestCase):
             web.server_close()
         return shown, settings
 
+    def test_extension_pairs_automatically_when_window_is_open(self):
+        from server import api
+        got = {}
+
+        def open_window(settings, base):
+            api.pairing_start(settings)
+            got["settings"] = settings
+
+        def read_token(page):
+            sw = page.context.service_workers[0]
+            got["token"] = sw.evaluate("() => chrome.storage.local.get('token').then((v) => v.token || '')")
+
+        shown, settings = self._run_case(path_suffix="#ihk=0123456789abcdef&ihs=news_a&ihv=plain&iht=E2E",
+                                         setup=open_window, after_load=read_token, store_token=False)
+        self.assertTrue(shown)
+        self.assertEqual(got["token"], load_or_create_token(settings))
+        self.assertFalse(api.pairing_status(settings)["open"])  # 一次性，已关闭
+        self.assertTrue(api.pairing_status(settings)["paired"])
+
+    def test_extension_does_not_pair_when_window_is_closed(self):
+        got = {}
+
+        def read_token(page):
+            got["token"] = page.context.service_workers[0].evaluate(
+                "() => chrome.storage.local.get('token').then((v) => v.token || '')")
+
+        self._run_case(path_suffix="#ihk=0123456789abcdef&ihs=news_a&ihv=plain&iht=E2E",
+                       after_load=read_token, store_token=False)
+        self.assertEqual(got["token"], "")
+
     def test_widget_appears_after_url_rewrite_and_open_is_recorded(self):
         shown, settings = self._run_case(path_suffix="#ihk=0123456789abcdef&ihs=news_a&ihv=plain&iht=E2E")
         self.assertTrue(shown)
+        # “打开”记录改由看板在服务端统一写入，插件不再上报，避免重复计数
         rows = list(read_jsonl(evaluation.exposure_path(settings.paths.data_dir)))
-        self.assertTrue(any(r.get("kind") == "open" and r.get("mode") == "dedicated" for r in rows))
+        self.assertFalse(any(r.get("kind") == "open" for r in rows))
 
     def test_widget_appears_when_fragment_is_completely_lost(self):
         """地址里没有任何 #ihk 片段（站点重定向丢掉了它），靠看板登记的上下文识别。"""

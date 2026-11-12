@@ -139,5 +139,91 @@ class ApiAndReceiverTests(unittest.TestCase):
         self.assertTrue(any(e["source_id"] == "manual" for e in feedback.read_feedback(self.settings.paths.data_dir)))
 
 
+class OpenApiAndPairingTests(unittest.TestCase):
+    def setUp(self):
+        self.root = make_project({"news_a": {"id": "news_a", "name": "新闻", "category": "news", "kind": "feed",
+                                             "adapter": "rss", "request": {"url": "https://n/feed"}}})
+        self.settings = load_settings(self.root)
+
+    def _opens(self):
+        from core import evaluation
+        from core.store import read_jsonl
+        return [r for r in read_jsonl(evaluation.exposure_path(self.settings.paths.data_dir)) if r.get("kind") == "open"]
+
+    def test_plain_open_has_no_fragment_registration_or_record(self):
+        with mock.patch("core.dedicated_browser.open_url", return_value={"pid": 1}) as opener:
+            api.open_in_dedicated_browser(self.settings, {"url": "https://n/feed"})
+        self.assertEqual(opener.call_args[0][2], "https://n/feed")
+        self.assertIsNone(pending_open.lookup(self.settings.paths.state_dir, "https://n/feed"))
+        self.assertEqual(self._opens(), [])
+
+    def test_item_open_records_once_after_success_only(self):
+        key = feedback.item_key("https://n/9", "t")
+        body = {"url": "https://n/9", "source_id": "news_a", "item_key": key, "view": "plain", "title": "t"}
+        with mock.patch("core.dedicated_browser.open_url", side_effect=FileNotFoundError("无浏览器")):
+            with self.assertRaises(ApiError):
+                api.open_in_dedicated_browser(self.settings, body)
+        self.assertEqual(self._opens(), [])  # 打开失败不记录
+        with mock.patch("core.dedicated_browser.open_url", return_value={"pid": 1}):
+            api.open_in_dedicated_browser(self.settings, body)
+        self.assertEqual(len(self._opens()), 1)
+
+    def test_half_filled_item_is_rejected(self):
+        with self.assertRaises(ApiError):
+            api.open_in_dedicated_browser(self.settings, {"url": "https://n/9", "source_id": "news_a"})
+        with self.assertRaises(ApiError):
+            api.open_in_dedicated_browser(self.settings, {"url": "https://n/9", "item_key": KEY})
+
+    def test_pairing_window_is_one_shot_and_expires(self):
+        from core import pairing
+        sd = self.settings.paths.state_dir
+        self.assertFalse(pairing.consume(sd, "chrome-extension://abc"))  # 未开启
+        self.assertFalse(api.pairing_status(self.settings)["open"])
+        st = api.pairing_start(self.settings)
+        self.assertTrue(st["open"])
+        self.assertGreater(st["remaining_seconds"], 200)
+        self.assertTrue(pairing.consume(sd, "chrome-extension://abc"))
+        self.assertFalse(pairing.consume(sd, "chrome-extension://abc"))  # 一次性
+        self.assertEqual(api.pairing_status(self.settings)["paired"]["origin"], "chrome-extension://abc")
+        later = datetime.now().astimezone() + timedelta(minutes=6)
+        pairing.open_window(sd)
+        self.assertFalse(pairing.consume(sd, "chrome-extension://abc", now=later))  # 过期
+        api.pairing_start(self.settings)
+        api.pairing_cancel(self.settings)
+        self.assertFalse(api.pairing_status(self.settings)["open"])
+
+    def test_corrupt_pairing_file_means_closed(self):
+        from core import pairing
+        path = pairing.pairing_path(self.settings.paths.state_dir)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{bad", encoding="utf-8")
+        self.assertFalse(api.pairing_status(self.settings)["open"])
+
+
+class PairEndpointTests(ApiAndReceiverTests):
+    """/v1/pair：只有看板开启窗口后，chrome-extension 来源才能取走令牌（一次性）。"""
+
+    def _pair(self, origin="chrome-extension://abcdef"):
+        headers = {"Origin": origin} if origin else {}
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}/v1/pair", data=b"", headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return resp.status, json.loads(resp.read().decode())
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode())
+
+    def test_pair_flow(self):
+        api.pairing_cancel(self.settings)
+        status, data = self._pair()
+        self.assertEqual(status, 403)
+        self.assertNotIn("token", data)
+        api.pairing_start(self.settings)
+        self.assertEqual(self._pair(origin="https://evil.example")[0], 403)  # 非扩展来源，且不消耗窗口
+        self.assertEqual(self._pair(origin=None)[0], 403)
+        status, data = self._pair()
+        self.assertEqual((status, data["token"]), (200, self.token))
+        self.assertEqual(self._pair()[0], 403)  # 一次性
+
+
 if __name__ == "__main__":
     unittest.main()

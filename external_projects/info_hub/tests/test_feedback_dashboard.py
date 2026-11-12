@@ -1,4 +1,4 @@
-"""看板阅读与反馈面板：AppTest 无头验证面板渲染、反馈写入、默认打开方式切换。"""
+"""看板阅读与反馈面板：AppTest 无头验证面板渲染、反馈写入、专用浏览器打开按钮（旧的阅读/内嵌/新标签页已移除）。"""
 import os
 import unittest
 from pathlib import Path
@@ -36,12 +36,36 @@ class DashboardFeedbackTests(unittest.TestCase):
         self.assertFalse(at.exception, [e.value for e in at.exception])
         return at
 
-    def test_panel_renders_with_mode_switch_and_feedback_form(self):
+    def test_panel_renders_without_old_open_modes(self):
         at = self._app()
         self.assertTrue(any("阅读与反馈" in s.value for s in at.subheader))
-        modes = [r for r in at.radio if r.key and r.key.startswith("rd_mode_")]
-        self.assertTrue(modes)
-        self.assertEqual(list(modes[0].options), ["阅读模式（当前默认）", "内嵌页面", "新标签页"])
+        # 旧的打开方式单选与“设为默认”已移除
+        self.assertFalse([r for r in at.radio if r.key and r.key.startswith("rd_mode_")])
+        self.assertFalse([b for b in at.button if b.key and b.key.startswith("rd_default_")])
+        self.assertFalse([b for b in at.button if b.label == "加载正文"])
+
+    def test_every_result_row_has_dedicated_open_button(self):
+        at = self._app()
+        rows = [b for b in at.button if b.key and b.key.startswith("op_res_")]
+        self.assertEqual(len(rows), 2)  # 两条新闻各一个按钮
+
+    def test_open_button_calls_dedicated_browser_with_item(self):
+        from unittest import mock
+        at = self._app()
+        btn = [b for b in at.button if b.key and b.key.startswith("op_res_")][0]
+        with mock.patch("core.dedicated_browser.open_url", return_value={"pid": 1}) as opener:
+            btn.click().run()
+        self.assertFalse(at.exception, [e.value for e in at.exception])
+        self.assertTrue(opener.called)
+        target = opener.call_args[0][2]
+        self.assertIn("#ihk=", target)
+        self.assertIn("ihs=news_a", target)
+        # 服务端记录一次“打开”（只记一次）
+        from core import evaluation
+        from core.store import read_jsonl
+        rows = [r for r in read_jsonl(evaluation.exposure_path(self.root / "data")) if r.get("kind") == "open"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["mode"], "dedicated")
 
     def test_feedback_submit_writes_event_with_reason_optional(self):
         at = self._app()
@@ -55,17 +79,6 @@ class DashboardFeedbackTests(unittest.TestCase):
         self.assertEqual(events[0]["action"], "interested")
         self.assertEqual(events[0]["reasons"], [])
         self.assertEqual(events[0]["note"], "")
-
-    def test_set_default_mode_persists(self):
-        at = self._app()
-        [b for b in at.button if b.key and b.key.startswith("rd_default_")][0]
-        radio = [r for r in at.radio if r.key and r.key.startswith("rd_mode_")][0]
-        radio.set_value("新标签页").run()
-        [b for b in at.button if b.key and b.key.startswith("rd_default_")][0].click().run()
-        self.assertFalse(at.exception)
-        runtime = (self.root / "data" / "state" / "runtime_config.json").read_text(encoding="utf-8")
-        self.assertIn('"open_mode": "newtab"', runtime)
-
 
     def test_profile_panel_and_ranking_toggle(self):
         at = self._app()

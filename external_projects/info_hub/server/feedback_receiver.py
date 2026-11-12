@@ -2,7 +2,7 @@
 
 启动：  cd external_projects/info_hub && python -m server.feedback_receiver
 安全：  只监听 127.0.0.1；每个请求需要 X-InfoHub-Token；CORS 只允许 chrome-extension:// 来源；
-        开放 /v1/feedback、/v1/open、/v1/dwell 三个写接口与 /v1/context（只读查询），内部复用 server/api.py 的校验与存储。
+        开放 /v1/feedback、/v1/open、/v1/dwell 三个写接口与 /v1/context（只读查询）；/v1/pair 仅在看板开启的配对窗口内返回令牌，内部复用 server/api.py 的校验与存储。
 """
 from __future__ import annotations
 
@@ -87,7 +87,19 @@ def make_handler(settings: Settings, token: str):
             else:
                 self._send(404, {"error": "不存在"})
 
+        def _pair(self):
+            """插件配对：只在看板开启的短窗口内，向 chrome-extension:// 来源返回令牌（一次性）。"""
+            origin = self._origin_ok()
+            if not origin:
+                return self._send(403, {"error": "来源不允许"})
+            from core import pairing
+            if not pairing.consume(settings.paths.state_dir, origin):
+                return self._send(403, {"error": "未开启配对：请在看板“服务管理”点击“配对插件”后重试"})
+            self._send(200, {"token": token})
+
         def do_POST(self):
+            if self.path == "/v1/pair":
+                return self._pair()
             if self.path not in ("/v1/feedback", "/v1/open", "/v1/dwell", "/v1/context"):
                 return self._send(404, {"error": "不存在"})
             if self.headers.get("Origin") and not self._origin_ok():
