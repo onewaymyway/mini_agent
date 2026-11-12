@@ -2,6 +2,7 @@
 
 CDP 流程用假的 Playwright 对象验证调用顺序与异常处理；真实浏览器需在本机手动验证。
 """
+import contextlib
 import json
 import sys
 import unittest
@@ -39,10 +40,15 @@ class FakePage:
         self.closed = True
 
 
+class _Info:
+    value = None
+
+
 class FakeContext:
-    def __init__(self, landing):
+    def __init__(self, landing, expect_fails=False):
         self.pages = []
         self._landing = landing
+        self._expect_fails = expect_fails
 
     def new_page(self):
         page = FakePage()
@@ -50,17 +56,22 @@ class FakeContext:
         self.pages.append(page)
         return page
 
+    @contextlib.contextmanager
+    def expect_page(self, timeout=None):
+        """模拟 Playwright：等待块内触发的新页面事件；失败时抛出超时。"""
+        if self._expect_fails:
+            raise TimeoutError("no page")
+        info = _Info()
+        yield info
+        info.value = self.new_page()
+
 
 class FakeCDP:
     def __init__(self, ctx, landing):
         self.ctx, self.landing = ctx, landing
 
     def send(self, method, params=None):
-        if method == "Target.createTarget":
-            page = FakePage()
-            page._landing = self.landing
-            self.ctx.pages.append(page)
-        return {}
+        return {}  # 新页面由 expect_page 的事件模拟产生
 
 
 class FakeBrowser:
@@ -76,8 +87,8 @@ class FakeBrowser:
         self.closed = True
 
 
-def _fake_playwright(landing, html="<html>正文</html>"):
-    ctx = FakeContext(landing)
+def _fake_playwright(landing, html="<html>正文</html>", expect_fails=False):
+    ctx = FakeContext(landing, expect_fails=expect_fails)
     browser = FakeBrowser(ctx, landing)
     chromium = mock.Mock()
     chromium.connect_over_cdp.return_value = browser
@@ -118,6 +129,14 @@ class CdpFetchTests(unittest.TestCase):
             with self.assertRaises(RiskControlBlocked):
                 self.session.fetch_html("https://www.xiaohongshu.com/explore", site="xiaohongshu",
                                         expired_pattern="/login")
+
+    def test_falls_back_to_normal_tab_when_background_unavailable(self):
+        sync_api, pw, browser, ctx = _fake_playwright("https://x/explore/1", expect_fails=True)
+        with mock.patch("core.browser_session.cdp_available", return_value=True), \
+                mock.patch.dict(sys.modules, {"playwright": mock.Mock(), "playwright.sync_api": sync_api}):
+            html = self.session.fetch_html("https://x/explore/1")
+        self.assertEqual(html, "<html>正文</html>")
+        self.assertTrue(all(p.closed for p in ctx.pages))
 
     def test_invalid_mode_rejected(self):
         with self.assertRaises(ValueError):

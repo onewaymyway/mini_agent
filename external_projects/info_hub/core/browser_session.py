@@ -102,23 +102,21 @@ def cdp_available(port: int, timeout: float = 1.0) -> bool:
         return False
 
 
-def _open_background_page(browser: Any, context: Any, timeout: float = 5.0) -> Any:
-    """在 context 中创建后台标签页（尽量不切换前台），返回 Page。
+def _open_background_page(browser: Any, context: Any, timeout_ms: int = 5000) -> Any:
+    """在 context 中创建抓取用标签页，尽量不切换前台。
 
-    Target.createTarget 的 background 参数在较新的 Chromium 中才生效；若不生效，
-    标签页会被激活，这一点需要在目标浏览器版本上实测。
+    用 Playwright 的 expect_page 等待新页面：它会在等待期间处理浏览器事件。
+    不能用 time.sleep 轮询 context.pages —— 同步 API 下事件只在 Playwright 调用中被处理，
+    轮询会永远看不到新页面。若后台创建失败（例如浏览器版本不支持 background 参数），
+    退回普通 new_page，抓取仍可完成，只是标签页会被激活。
     """
-    import time
-    before = list(context.pages)
-    cdp = browser.new_browser_cdp_session()
-    cdp.send("Target.createTarget", {"url": "about:blank", "background": True})
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        for page in context.pages:
-            if page not in before:
-                return page
-        time.sleep(0.1)
-    raise RuntimeError("无法在专用浏览器中创建后台标签页")
+    try:
+        cdp = browser.new_browser_cdp_session()
+        with context.expect_page(timeout=timeout_ms) as info:
+            cdp.send("Target.createTarget", {"url": "about:blank", "background": True})
+        return info.value
+    except Exception:  # noqa: BLE001 - 后台创建不可用时退回普通标签页
+        return context.new_page()
 
 
 class BrowserSession:
