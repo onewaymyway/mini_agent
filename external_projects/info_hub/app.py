@@ -966,24 +966,24 @@ def _reading_panel(sid: str, items: list[dict], view: str = "plain") -> None:
 _FEED_SECTION_TITLE = {"featured": "今日精选", "hot": "多源热点", "topics": "关注主题", "explore": "探索", "later": "稍后看"}
 
 
-def _feed_version() -> tuple:
-    """反馈与曝光文件的修改时间：变化时推荐结果缓存失效（点 👍/👎 后立即生效，不必等 60 秒）。"""
-    out = []
-    for p in (settings.paths.data_dir / "feedback" / "events.jsonl",
-              settings.paths.data_dir / "feedback" / "exposures.jsonl",
-              settings.paths.data_dir / "feed" / "prefs.json",
-              settings.paths.data_dir / "feed" / "llm_cache.json"):
-        try:
-            out.append(p.stat().st_mtime_ns)
-        except OSError:
-            out.append(0)
-    return tuple(out)
+def _feed_snapshot(hours: float, category: str, kind: str, include_processed: bool, refresh: bool) -> Optional[dict]:
+    """推荐数据快照（会话内保存）。
 
-
-@st.cache_data(ttl=60, show_spinner=False)
-def _feed_cached(root: str, hours: float, category: str, kind: str, include_processed: bool,
-                 version: tuple) -> dict:
-    return api.feed_view(settings, hours=hours, category=category, kind=kind, include_processed=include_processed)
+    只在三种情况下重建：首次进入页面（新会话）、切换筛选条件、点击“刷新推荐”。
+    其余所有交互（👍 / 👎 / ⏰、🚫、屏蔽主题、开关、展开面板）都只读快照，列表不会因为反馈而变化；
+    反馈结果在下一次刷新时才体现在列表里。
+    """
+    key = (float(hours), category, kind, bool(include_processed))
+    snap = st.session_state.get("feed_snap")
+    if refresh or not snap or snap.get("key") != key:
+        res = call(api.feed_view, settings, hours=float(hours), category=category, kind=kind,
+                   include_processed=bool(include_processed))
+        if res is None:
+            return None
+        st.session_state["feed_snap"] = {"key": key, "res": res}
+        st.session_state["feed_marks"] = {}  # 本地标记随快照一起重置
+        return res
+    return snap["res"]
 
 
 def _feed_row(card: dict, k: str) -> None:
@@ -1008,22 +1008,31 @@ def _feed_row(card: dict, k: str) -> None:
     members = card.get("sources") or []
     if card.get("llm_topic") or card.get("llm_summary"):
         c1.caption(("🏷 " + card["llm_topic"] + " · " if card.get("llm_topic") else "") + card.get("llm_summary", ""))
+    marks = st.session_state.setdefault("feed_marks", {})
+    mk = marks.get(card["key"], {})
+    cur = mk.get("act", "")
+    notes = []
+    if cur:
+        notes.append("已记录：" + {"interested": "感兴趣", "not_interested": "不感兴趣", "later": "稍后看"}.get(cur, cur))
+    if mk.get("hidden"):
+        notes.append("来源已隐藏")
+    if notes:
+        c1.caption("✔ " + " · ".join(notes) + "（点“刷新推荐”后从列表移除）")
     for col, act, icon, tip in ((c2, "interested", "👍", "感兴趣"), (c3, "not_interested", "👎", "不感兴趣"),
                                 (c4, "later", "⏰", "稍后看")):
-        if col.button(icon, key=f"feed_fb_{act}_{k}", help=f"标记为{tip}（同一事件的全部报道一起标记）"):
-            ok = True
-            for m in members:
-                out = call(api.record_feedback, settings, {
-                    "action": act, "source_id": m.get("source_id", ""), "url": m.get("url") or "",
-                    "title": m.get("title") or "", "view": "feed_v1"})
-                ok = ok and out is not None
-            if ok:
+        if col.button(icon, key=f"feed_fb_{act}_{k}", type="primary" if cur == act else "secondary",
+                      help=f"标记为{tip}（同一事件的全部报道一起标记）"):
+            if cur == act:
+                st.toast(f"已是“{tip}”")
+            elif _record_members(card, act):
+                marks.setdefault(card["key"], {})["act"] = act
                 st.toast(f"已记录：{tip}")
-                st.rerun()
+                st.rerun()  # 只重画这一张卡片，列表不变
     if c5.button("🚫", key=f"feed_hide_{k}", help="不再显示此信息源的条目（可在页面底部撤销）"):
         if call(api.feed_set_source_hidden_api, settings, {"source_id": card.get("source_id", ""),
                                                             "hidden": True}) is not None:
-            st.toast("已隐藏该信息源")
+            marks.setdefault(card["key"], {})["hidden"] = True
+            st.toast("已隐藏该信息源（刷新推荐后生效）")
             st.rerun()
     with c6:
         open_button(card.get("url"), f"op_{k}", sid=card.get("source_id", ""), title=card.get("title") or "",
@@ -1081,7 +1090,8 @@ def _triage_block(queue: list, tag: str) -> None:
                             (c3, "later", "⏰ 稍后看")):
         if col.button(label, key=f"triage_{act}_{tag}_{i}", use_container_width=True):
             if _record_members(card, act):
-                st.rerun()  # 该条目已处理，列表前移，索引不变
+                st.session_state[key] = i + 1  # 进入下一条；队列本身不变
+                st.rerun()
     if c4.button("跳过", key=f"triage_skip_{tag}_{i}", use_container_width=True):
         st.session_state[key] = i + 1
         st.rerun()
@@ -1112,9 +1122,12 @@ def _feed_tab() -> None:
     if not valid:
         st.info("还没有信息源。")
         return
-    res = call(_feed_cached, str(PROJECT_ROOT), float(hours), category, kind, bool(show_processed), _feed_version())
+    rc1, rc2 = st.columns([2, 8], vertical_alignment="center")
+    refresh = rc1.button("🔄 刷新推荐", key="feed_refresh", help="重新读取抓取结果与反馈，列表在这时才会更新")
+    res = _feed_snapshot(hours, category, kind, bool(show_processed), refresh)
     if res is None:
         return
+    rc2.caption(f"数据快照生成于 {fmt_time(res['generated_at'])}。反馈、屏蔽等操作不会改变列表，点“刷新推荐”或重新加载页面才会更新。")
     sec = res["sections"]
     st_ = res["stats"]
     st.caption(f"{dict(_WINDOWS)[hours]}（自 {fmt_time(res['since'])} 起）· 原始 {st_['raw_items']} 条 · "
@@ -1156,8 +1169,7 @@ def _feed_tab() -> None:
             if tc2.button("屏蔽此主题", key=f"feed_block_topic_{gi}_{hours}_{category}_{kind}",
                           help="把该词加入手写屏蔽词（画像面板可撤销）"):
                 if call(api.feed_block_topic_api, settings, {"topic": group["topic"]}) is not None:
-                    st.toast(f"已屏蔽主题：{group['topic']}")
-                    st.rerun()
+                    st.toast(f"已屏蔽主题：{group['topic']}（刷新推荐后生效）")
             _feed_block(group["cards"], f"t{gi}_{hours}_{category}_{kind}")
         if sec["explore"]:
             st.subheader(f"🧭 {_FEED_SECTION_TITLE['explore']}（{len(sec['explore'])}）")
@@ -1181,7 +1193,7 @@ def _feed_tab() -> None:
             hc1.write(f"{names.get(sid, sid)}（{sid}）")
             if hc2.button("恢复显示", key=f"feed_unhide_{sid}"):
                 if call(api.feed_set_source_hidden_api, settings, {"source_id": sid, "hidden": False}) is not None:
-                    st.rerun()
+                    st.toast("已恢复显示（刷新推荐后生效）")
 
     with st.expander("离线回放评估（推荐顺序 vs 按时间倒序，前 10 条）"):
         st.caption("用历史展示与之后的 👍 / 👎 / 打开作为标签，只作参考，有位置偏差。")
@@ -1254,7 +1266,6 @@ def _feed_tab() -> None:
                     if rep.get("errors"):
                         msg += "部分批次失败：" + "；".join(rep["errors"][:3])
                     st.session_state["feed_llm_msg"] = msg
-                    st.rerun()
             if st.session_state.get("feed_llm_msg"):
                 st.success(st.session_state["feed_llm_msg"])
             st.caption("同一事件的判断只影响聚合：结论写入缓存后，下次刷新页面才会生效。")

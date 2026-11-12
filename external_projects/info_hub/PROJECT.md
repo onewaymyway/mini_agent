@@ -222,6 +222,7 @@ health:
 | 不开看板也要调度 | 系统计划任务每 5 分钟 `python cli.py tick` |
 
 ## 变更记录
+- 2026-11-12：推荐页交互修正：点击 👍 / 👎 / ⏰ / 🚫 不再刷新列表，推荐数据改为会话快照，点击“刷新推荐”或重新加载页面时才更新。详见 `next_doc/info_hub_recommendation_feed_design.md` §15。
 - 2026-11-12：推荐信息流 P4（LLM 增强，默认关闭）：`core/feed_llm.py`，复用 `core/llm.py::build_llm`；摘要与补聚判断按条目缓存、每日上限；页面开启后手动运行。详见 `next_doc/info_hub_recommendation_feed_design.md` §14。精选重排与理由润色未实施。
 - 2026-11-12：推荐信息流 P3（学习权重，默认关闭）：`core/feed_learn.py` 训练逻辑回归并做时间切分的留出集验证；通过门槛且用户开启后才改用学习权重。详见 `next_doc/info_hub_recommendation_feed_design.md` §13。
 - 2026-11-12：推荐信息流 P2（行为闭环）：曝光疲劳、精选多样性与来源上限、探索位、快速分诊、不再显示（来源 / 主题）、离线回放评估。新增 `core/feed_eval.py`，`core/feed.py` 与 `server/api.py` 扩展。详见 `next_doc/info_hub_recommendation_feed_design.md` §12。
