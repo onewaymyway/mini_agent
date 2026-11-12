@@ -116,8 +116,9 @@ with st.sidebar:
             st.rerun()
 
 st.title("信息看板")
-tab_reports, tab_sources, tab_edit, tab_results, tab_subs, tab_add, tab_runs, tab_status, tab_login = st.tabs(
-    ["报告", "信息源", "编辑信息源", "抓取结果", "订阅", "添加信息源", "运行记录", "调度状态", "登录"])
+(tab_reports, tab_sources, tab_edit, tab_results, tab_feedback, tab_subs, tab_add, tab_runs, tab_status,
+ tab_login) = st.tabs(
+    ["报告", "信息源", "编辑信息源", "抓取结果", "反馈记录", "订阅", "添加信息源", "运行记录", "调度状态", "登录"])
 
 
 # ---------- 报告 ----------
@@ -850,6 +851,69 @@ def _reading_panel(sid: str, items: list[dict], view: str = "plain") -> None:
 
 with tab_results:
     _results_tab()
+
+
+# ---------- 反馈记录 ----------
+def _feedback_history_tab() -> None:
+    from core.feedback import ACTIONS, REASONS
+    icons = {"interested": "👍", "not_interested": "👎", "later": "⏰"}
+    base = call(api.list_feedback_history, settings)
+    if base is None:
+        return
+    if not base["total"]:
+        st.info("还没有反馈记录。在专用浏览器里点页面侧边的反馈按钮，或在“抓取结果”下方的反馈表单中提交后，这里会显示。")
+        return
+    names = {x["id"]: x["name"] for x in (call(api.list_sources, settings) or {"sources": []})["sources"]}
+    names["manual"] = "手动反馈（非看板条目）"
+    src_label = lambda sid: f"{names.get(sid, sid)}（{sid}）"  # noqa: E731
+
+    f1, f2, f3, f4 = st.columns([2, 3, 2, 2])
+    act = f1.selectbox("动作", [""] + list(ACTIONS), key="fh_action",
+                       format_func=lambda a: "全部" if not a else f"{icons[a]} {ACTIONS[a]}")
+    src = f2.selectbox("信息源", [""] + base["sources"], key="fh_source",
+                       format_func=lambda x: "全部" if not x else src_label(x))
+    days = f3.selectbox("时间范围", [0, 1, 7, 30, 90], key="fh_days",
+                        format_func=lambda d: "全部" if not d else f"最近 {d} 天")
+    kw = f4.text_input("关键词", key="fh_kw", help="匹配标题、备注和链接，不区分大小写")
+    res = call(api.list_feedback_history, settings, action=act, source_id=src, keyword=kw, days=days)
+    if res is None:
+        return
+    events = res["events"]
+    m = st.columns(4)
+    m[0].metric("筛选结果", len(events), help=f"全部记录 {res['total']} 条")
+    for col, a in zip(m[1:], ACTIONS):
+        col.metric(f"{icons[a]} {ACTIONS[a]}", res["counts"][a])
+    if not events:
+        st.info("没有符合筛选条件的记录。")
+        return
+
+    limit_key = f"fh_n_{act}_{src}_{days}_{kw}"
+    shown = st.session_state.get(limit_key, 30)
+    for n, e in enumerate(events[:shown]):
+        with st.container(border=True):
+            c1, c2 = st.columns([9, 1.6], vertical_alignment="center")
+            c1.markdown(f"{icons.get(e['action'], '')} **{ACTIONS.get(e['action'], e['action'])}** · "
+                        f"{e.get('title') or e.get('url') or '（无标题）'}")
+            parts = [fmt_time(e.get("time")), src_label(e.get("source_id", ""))]
+            if e.get("reasons"):
+                parts.append("原因：" + "、".join(REASONS.get(r, r) for r in e["reasons"]))
+            if e.get("note"):
+                parts.append("备注：" + e["note"])
+            c1.caption(" · ".join(parts))
+            with c2:
+                src_id = e.get("source_id", "")
+                # 手动反馈没有看板条目，只打开原始链接；其余按条目打开（工具条可用）
+                open_button(e.get("url"), f"op_fh_{e.get('id', n)}",
+                            sid="" if src_id == "manual" else src_id, title=e.get("title") or "",
+                            view=e.get("view") or "")
+    if len(events) > shown:
+        if st.button(f"显示更多（还有 {len(events) - shown} 条）", key=f"more_{limit_key}"):
+            st.session_state[limit_key] = shown + 30
+            st.rerun()
+
+
+with tab_feedback:
+    _feedback_history_tab()
 
 
 # ---------- 运行记录 ----------

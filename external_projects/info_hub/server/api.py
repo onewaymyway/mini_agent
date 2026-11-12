@@ -685,6 +685,44 @@ def item_feedback(settings: Settings, key: str) -> dict[str, Any]:
             "events": list(reversed(events))[:50]}
 
 
+def list_feedback_history(settings: Settings, *, action: str = "", source_id: str = "", keyword: str = "",
+                          days: int = 0) -> dict[str, Any]:
+    """反馈历史（新的在前），可按动作、信息源、关键词（标题/备注/链接）和最近天数筛选。
+
+    返回：events（筛选后）、counts（筛选后各动作计数）、total（未筛选总数）、sources（出现过的信息源 id）。
+    """
+    from datetime import datetime, timedelta
+    from core import feedback
+    if action and action not in feedback.ACTIONS:
+        raise ApiError(400, f"未知反馈动作：{action}")
+    try:
+        days = int(days or 0)
+    except (TypeError, ValueError):
+        raise ApiError(400, "天数必须是整数")
+    all_events = feedback.read_feedback(settings.paths.data_dir)
+    since = datetime.now().astimezone() - timedelta(days=days) if days > 0 else None
+    kw = (keyword or "").strip().lower()
+
+    def keep(e: dict[str, Any]) -> bool:
+        if action and e.get("action") != action:
+            return False
+        if source_id and e.get("source_id") != source_id:
+            return False
+        if kw and kw not in " ".join(str(e.get(k) or "") for k in ("title", "note", "url")).lower():
+            return False
+        if since is not None:
+            try:
+                if datetime.fromisoformat(str(e.get("time"))) < since:
+                    return False
+            except (TypeError, ValueError):
+                return False
+        return True
+
+    events = [e for e in reversed(all_events) if keep(e)]
+    return {"events": events, "counts": feedback.summarize(events), "total": len(all_events),
+            "sources": sorted({str(e.get("source_id") or "") for e in all_events if e.get("source_id")})}
+
+
 def view_prefs(settings: Settings) -> dict[str, Any]:
     from core.feedback import VIEW_MODES
     from core.reader import default_open_mode, effective_open_mode
