@@ -50,6 +50,22 @@ def record_open(data_dir: Path, *, source_id: str, item_key: str, view: str, mod
                             "mode": mode})
 
 
+MAX_DWELL_SECONDS = 3600
+
+
+def record_dwell(data_dir: Path, *, source_id: str, item_key: str, view: str, seconds: int,
+                 now: Optional[datetime] = None) -> None:
+    """记录一次停留时长增量（插件在页面隐藏/关闭时发送，可多次累加）。"""
+    seconds = int(seconds)
+    if not 0 < seconds <= MAX_DWELL_SECONDS:
+        raise ValueError(f"停留秒数需在 1–{MAX_DWELL_SECONDS} 之间")
+    path = exposure_path(data_dir)
+    with file_lock(path):
+        append_jsonl(path, {"kind": "dwell", "time": _now_iso(now), "source_id": source_id,
+                            "item_key": item_key, "view": view if view in ("ranked", "plain") else "",
+                            "seconds": seconds})
+
+
 def _in_window(time_str: Any, since: datetime) -> bool:
     try:
         return datetime.fromisoformat(str(time_str)) >= since
@@ -91,7 +107,8 @@ def paused_templates(candidates: Iterable[dict[str, Any]], min_decisions: int = 
 
 
 def _view_stats(impressions: list[dict[str, Any]], opens: list[dict[str, Any]],
-                feedback: list[dict[str, Any]], view: str) -> dict[str, Any]:
+                feedback: list[dict[str, Any]], view: str,
+                dwells: Optional[list[dict[str, Any]]] = None) -> dict[str, Any]:
     shown: set[tuple[str, str]] = set()
     for imp in impressions:
         if imp.get("view") == view:
@@ -101,7 +118,14 @@ def _view_stats(impressions: list[dict[str, Any]], opens: list[dict[str, Any]],
     opened = {o["item_key"] for o in opens if o.get("view") == view and o.get("item_key") in shown_keys}
     fb = [e for e in feedback if e.get("view") == view]
     n = len(fb)
+    per_item: dict[str, int] = {}
+    for d in dwells or []:
+        if d.get("view") == view:
+            per_item[d["item_key"]] = per_item.get(d["item_key"], 0) + int(d.get("seconds") or 0)
+    avg_dwell = round(sum(per_item.values()) / len(per_item), 1) if per_item else None
     return {
+        "avg_dwell_seconds": avg_dwell,
+        "dwell_items": len(per_item),
         "impressions": len(shown),
         "opened_items": len(opened),
         "ctr": _rate(len(opened), len(shown_keys)),
@@ -119,8 +143,9 @@ def compute_metrics(data_dir: Path, candidates: list[dict[str, Any]], *, days: i
     exposures = [x for x in read_jsonl(exposure_path(data_dir)) if _in_window(x.get("time"), since)]
     impressions = [x for x in exposures if x.get("kind") == "impression"]
     opens = [x for x in exposures if x.get("kind") == "open"]
+    dwells = [x for x in exposures if x.get("kind") == "dwell"]
     feedback = [e for e in read_feedback(data_dir) if _in_window(e.get("time"), since)]
-    views = {v: _view_stats(impressions, opens, feedback, v) for v in ("ranked", "plain")}
+    views = {v: _view_stats(impressions, opens, feedback, v, dwells) for v in ("ranked", "plain")}
 
     adoption = template_adoption(candidates)
     by_reason: dict[str, dict[str, int]] = {}
@@ -138,6 +163,7 @@ def compute_metrics(data_dir: Path, candidates: list[dict[str, Any]], *, days: i
             "ctr_delta": _delta(views["ranked"]["ctr"], views["plain"]["ctr"]),
             "not_interested_delta": _delta(views["ranked"]["not_interested_rate"],
                                            views["plain"]["not_interested_rate"]),
+            "dwell_delta": _delta(views["ranked"]["avg_dwell_seconds"], views["plain"]["avg_dwell_seconds"]),
         },
         "candidates": {"by_template": adoption, "by_reason": reason_rates,
                        "paused_templates": paused_templates(candidates)},

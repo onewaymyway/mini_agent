@@ -637,7 +637,7 @@ def _source_spec(settings: Settings, source_id: str):
 
 def read_article(settings: Settings, source_id: str, url: str) -> dict[str, Any]:
     """阅读模式：按信息源的抓取方式获取页面（需要登录的站点走共享浏览器 profile），抽取正文。"""
-    from core.browser_session import BrowserSession, LoginRequired, RiskControlBlocked
+    from core.browser_session import BrowserNotRunning, LoginRequired, RiskControlBlocked
     from core.reader import extract_article
     from core.settings import load_sites
     from adapters.base import default_http_get
@@ -650,8 +650,8 @@ def read_article(settings: Settings, source_id: str, url: str) -> dict[str, Any]
         if browser_cfg.get("required"):
             site = browser_cfg.get("site")
             site_cfg = (load_sites(settings.paths.root).get(site) or {}) if site else {}
-            session = BrowserSession(settings.paths.browser_profile_dir,
-                                     settings.paths.root / "browser" / "login_status.json")
+            from core.dedicated_browser import make_browser_session
+            session = make_browser_session(settings)
             html = session.fetch_html(url, site=site, headless=bool(browser_cfg.get("headless", True)),
                                       expired_pattern=site_cfg.get("expired_pattern"))
         else:
@@ -660,6 +660,8 @@ def read_article(settings: Settings, source_id: str, url: str) -> dict[str, Any]
         raise ApiError(409, f"需要重新登录：{exc}")
     except RiskControlBlocked as exc:
         raise ApiError(409, f"风控拦截：{exc}")
+    except BrowserNotRunning as exc:
+        raise ApiError(409, str(exc))
     except Exception as exc:  # noqa: BLE001 - 网络/解析错误统一转为 502 给看板展示
         raise ApiError(502, f"正文抓取失败：{type(exc).__name__}: {exc}")
     return {"source_id": source_id, "url": url, **extract_article(html, url)}
@@ -1000,6 +1002,39 @@ def browser_set_executable(settings: Settings, body: dict[str, Any]) -> dict[str
     path = settings.paths.state_dir / "runtime_config.json"
     data = read_runtime_config(path)
     data["dedicated_browser"] = {"executable": value}
+    data["updated_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+    atomic_write_json(path, data)
+    return browser_overview(settings)
+
+
+def record_dwell_api(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
+    from core import evaluation
+    sid = str(body.get("source_id") or "")
+    key = str(body.get("item_key") or "")
+    if sid != Path(sid).name or not sid:
+        raise ApiError(400, "信息源 id 不合法")
+    if not _ID16_RE.match(key):
+        raise ApiError(400, "条目 key 不合法")
+    try:
+        seconds = int(body.get("seconds"))
+        evaluation.record_dwell(settings.paths.data_dir, source_id=sid, item_key=key,
+                                view=str(body.get("view") or ""), seconds=seconds)
+    except (TypeError, ValueError) as exc:
+        raise ApiError(400, str(exc))
+    return {"ok": True}
+
+
+def browser_set_scrape_mode(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
+    from datetime import datetime
+    from core.dedicated_browser import SCRAPE_MODES
+    from core.settings import read_runtime_config
+    from core.store import atomic_write_json
+    mode = str(body.get("scrape_mode") or "")
+    if mode not in SCRAPE_MODES:
+        raise ApiError(400, "抓取模式必须是 launch 或 cdp")
+    path = settings.paths.state_dir / "runtime_config.json"
+    data = read_runtime_config(path)
+    data["dedicated_browser"] = {**(data.get("dedicated_browser") or {}), "scrape_mode": mode}
     data["updated_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
     atomic_write_json(path, data)
     return browser_overview(settings)

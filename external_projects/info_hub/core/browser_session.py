@@ -30,6 +30,10 @@ class LoginRequired(RuntimeError):
         self.final_url = final_url
 
 
+class BrowserNotRunning(RuntimeError):
+    """CDP 模式下专用浏览器未运行，或未以调试端口启动。"""
+
+
 class RiskControlBlocked(RuntimeError):
     """站点风控拦截（非登录失效）：需要换可靠网络、或改用有头浏览器后重试。"""
 
@@ -87,13 +91,52 @@ def _now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
+def cdp_available(port: int, timeout: float = 1.0) -> bool:
+    """专用浏览器的调试端口是否可用（/json/version 可访问）。"""
+    import json
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=timeout) as resp:
+            return "webSocketDebuggerUrl" in json.loads(resp.read().decode("utf-8"))
+    except (OSError, ValueError):
+        return False
+
+
+def _open_background_page(browser: Any, context: Any, timeout: float = 5.0) -> Any:
+    """在 context 中创建后台标签页（尽量不切换前台），返回 Page。
+
+    Target.createTarget 的 background 参数在较新的 Chromium 中才生效；若不生效，
+    标签页会被激活，这一点需要在目标浏览器版本上实测。
+    """
+    import time
+    before = list(context.pages)
+    cdp = browser.new_browser_cdp_session()
+    cdp.send("Target.createTarget", {"url": "about:blank", "background": True})
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        for page in context.pages:
+            if page not in before:
+                return page
+        time.sleep(0.1)
+    raise RuntimeError("无法在专用浏览器中创建后台标签页")
+
+
 class BrowserSession:
     def __init__(
         self,
         profile_dir: Path,
         status_path: Path,
         launcher: Optional[Callable[[bool], tuple[Any, Any]]] = None,
+        *,
+        mode: str = "launch",
+        cdp_port: int = 9223,
     ) -> None:
+        # mode="launch"：Playwright 自行启动独立浏览器（旧方式）；
+        # mode="cdp"：附着到专用浏览器（需以调试端口启动），抓取与阅读共用同一个浏览器。
+        if mode not in ("launch", "cdp"):
+            raise ValueError(f"未知抓取模式：{mode}")
+        self.mode = mode
+        self.cdp_port = cdp_port
         self.profile_dir = Path(profile_dir)
         self.status_path = Path(status_path)
         # launcher(headless) -> (playwright_handle, context)，测试时可注入假实现
@@ -159,6 +202,8 @@ class BrowserSession:
         expired_pattern: Optional[str] = None,
         timeout_ms: int = 30000,
     ) -> str:
+        if self.mode == "cdp":
+            return self._fetch_cdp(url, site, wait_selector, expired_pattern, timeout_ms)
         with file_lock(self._lock_target):
             return self._fetch_unlocked(url, site, headless, wait_selector, expired_pattern, timeout_ms)
 
@@ -176,6 +221,50 @@ class BrowserSession:
             html = page.content()
         finally:
             self._close(pw, ctx)
+        landing = classify_landing(final_url, expired_pattern) if site else None
+        if landing is not None:
+            kind, code, msg = landing
+            if kind == "blocked":
+                self._record(site, status="blocked", error=f"风控拦截 {code}：{msg}")
+                raise RiskControlBlocked(site, final_url, code, msg)
+            self._record(site, status="expired", error=f"跳转到 {final_url}")
+            raise LoginRequired(site, final_url)
+        return html
+
+    def _fetch_cdp(self, url, site, wait_selector, expired_pattern, timeout_ms) -> str:
+        """附着到专用浏览器抓取页面：后台标签打开、取内容、关闭标签，并断开连接（不关闭浏览器）。"""
+        if not cdp_available(self.cdp_port):
+            raise BrowserNotRunning(
+                f"专用浏览器未运行或未开启调试端口 {self.cdp_port}。请在看板“服务管理”中启动专用浏览器")
+        from playwright.sync_api import sync_playwright  # 延迟导入
+        with proactor_loop_policy():
+            pw = sync_playwright().start()
+        browser = None
+        try:
+            browser = pw.chromium.connect_over_cdp(f"http://127.0.0.1:{self.cdp_port}")
+            context = browser.contexts[0] if browser.contexts else browser.new_context()
+            page = _open_background_page(browser, context)
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                if wait_selector:
+                    try:
+                        page.wait_for_selector(wait_selector, timeout=timeout_ms)
+                    except Exception:  # noqa: BLE001 - 超时则用当前内容，由解析阶段判断
+                        pass
+                final_url = page.url
+                html = page.content()
+            finally:
+                try:
+                    page.close()
+                except Exception:  # noqa: BLE001
+                    pass
+        finally:
+            if browser is not None:
+                try:
+                    browser.close()  # 对 CDP 连接而言只是断开，不会关闭用户的浏览器
+                except Exception:  # noqa: BLE001
+                    pass
+            pw.stop()
         landing = classify_landing(final_url, expired_pattern) if site else None
         if landing is not None:
             kind, code, msg = landing

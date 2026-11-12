@@ -32,5 +32,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     post("/v1/open", msg.body).then(sendResponse);
     return true;
   }
+  if (msg && msg.type === "dwell") {
+    post("/v1/dwell", msg.body).then(sendResponse);
+    return true;
+  }
   return false;
 });

@@ -31,8 +31,11 @@ view:                     # 看板条目的打开方式（reader=阅读模式 / 
   default_open_mode: reader   # 看板上“设为默认”会写入运行时配置，覆盖此处
 profile:                  # 兴趣画像
   llm_enabled: true       # 是否允许用 LLM 归纳兴趣（需已配置模型；关闭后只用统计）
-dedicated_browser:        # 专用浏览器：独立数据目录的有头浏览器，用于看板“在专用浏览器中打开”
+  rank_reports: true      # 报告中每个信息源的条目是否按兴趣排序（不影响抓取数据）
+dedicated_browser:        # 专用浏览器：独立数据目录的有头浏览器，用于抓取与阅读（看板可管理）
   executable: ""          # 留空则自动查找 Chrome / Edge；可填绝对路径
   profile_dir: browser/dedicated_profile
+  debug_port: 9223        # 调试端口（仅本机），抓取附着用；与接收服务端口不同
+  scrape_mode: launch     # launch：Playwright 独立启动（旧方式）；cdp：附着到专用浏览器（看板可切换）
 feedback_receiver:        # 反馈插件的本地接收服务（python -m server.feedback_receiver）；看板可修改
   port: 18765

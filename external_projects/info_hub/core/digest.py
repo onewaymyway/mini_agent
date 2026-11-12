@@ -135,8 +135,26 @@ def _source_status(paused: bool, new_count: int, errs: list[dict[str, Any]], eve
     return "no_new", "本窗口无新增"
 
 
+def _build_ranker(settings: Settings):
+    """按兴趣画像排序报告条目。画像不可用或被关闭时返回 None（保持原始顺序）。"""
+    from core import profile as prof
+    from core.feedback import read_feedback
+    if not prof.rank_reports_enabled(settings.paths.root):
+        return None
+    try:
+        data = prof.ensure_fresh(settings.paths.data_dir)
+        actions = prof.last_actions(read_feedback(settings.paths.data_dir))
+    except Exception:  # noqa: BLE001 - 排序失败不应影响报告生成
+        return None
+
+    def rank(sid: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return prof.rank_items(data, items, sid, actions) if items else items
+    return rank
+
+
 def build_digest(settings: Settings, plan: dict[str, Any], now: datetime) -> dict[str, Any]:
     start, end = window_bounds(plan, now)
+    ranker = _build_ranker(settings)
     loaded = load_sources(settings)
     specs: dict[str, SourceSpec] = loaded.specs
     items = collect_items(settings, start, end)
@@ -198,6 +216,8 @@ def build_digest(settings: Settings, plan: dict[str, Any], now: datetime) -> dic
                 hot["omitted"] = {k: max(0, len(ch.get(k, [])) - MAX_CHANGES_PER_KIND)
                                   for k in ("new", "rising", "falling", "dropped")}
             new_items = src_map.get(sid, [])
+            if ranker is not None:
+                new_items = ranker(sid, new_items)  # 先排序，再按单源上限截断
             errs = errors_by_src.get(sid, [])
             paused = bool((health_state.get(sid) or {}).get("paused"))
             ever_fetched = sid in health_state or (settings.paths.raw_dir / sid).exists()

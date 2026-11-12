@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from core.feedback import ACTIONS, read_feedback
-from core.store import atomic_write_json, file_lock, read_json
+from core.store import atomic_write_json, file_lock, read_json, read_jsonl
 
 PROFILE_VERSION = 1
 HALF_LIFE_DAYS = 30.0
@@ -94,8 +94,19 @@ def _event_time(event: dict[str, Any]) -> Optional[datetime]:
 
 
 # ---------- 离线统计 ----------
-def learn_from_events(events: list[dict[str, Any]], now: Optional[datetime] = None) -> dict[str, Any]:
-    """从反馈事件计算关键词与来源权重。越新的事件影响越大（半衰期 HALF_LIFE_DAYS 天）。"""
+DWELL_MIN_SECONDS = 30
+DWELL_CAP_SECONDS = 300
+DWELL_WEIGHT = 0.5  # 满封顶时权重；需高于剪枝阈值 MIN_ABS_SCORE，否则停留信号会被丢弃
+
+
+def learn_from_events(events: list[dict[str, Any]], now: Optional[datetime] = None,
+                      dwell: Optional[dict[str, int]] = None,
+                      dwell_titles: Optional[dict[str, str]] = None) -> dict[str, Any]:
+    """从反馈事件计算关键词与来源权重。越新的事件影响越大（半衰期 HALF_LIFE_DAYS 天）。
+
+    dwell：{item_key: 停留秒数合计}。停留满 DWELL_MIN_SECONDS 秒的条目，作为较弱的正向信号
+    （权重随停留时长增加，封顶于 DWELL_CAP_SECONDS），只影响关键词，不影响来源。
+    """
     now = now or datetime.now().astimezone()
     kw: dict[str, dict[str, float]] = {}
     src: dict[str, dict[str, float]] = {}
@@ -104,6 +115,14 @@ def learn_from_events(events: list[dict[str, Any]], now: Optional[datetime] = No
         cell = table.setdefault(key, {"score": 0.0, "evidence": 0})
         cell["score"] += delta
         cell["evidence"] += 1
+
+    for key, seconds in (dwell or {}).items():
+        if seconds < DWELL_MIN_SECONDS:
+            continue
+        title = (dwell_titles or {}).get(key, "")
+        w = DWELL_WEIGHT * min(seconds, DWELL_CAP_SECONDS) / DWELL_CAP_SECONDS
+        for token in tokenize(title):
+            bump(kw, token, w)
 
     for e in events:
         action = e.get("action")
@@ -129,7 +148,19 @@ def learn_from_events(events: list[dict[str, Any]], now: Optional[datetime] = No
         top = sorted(kept.items(), key=lambda kv: abs(kv[1]["score"]), reverse=True)[:TOP_N]
         return {k: {"score": round(v["score"], 3), "evidence": v["evidence"]} for k, v in top}
 
-    return {"keywords": prune(kw), "sources": prune(src), "computed_from_events": len(events)}
+    return {"keywords": prune(kw), "sources": prune(src), "computed_from_events": len(events),
+            "computed_from_dwell": len(dwell or {})}
+
+
+def dwell_totals(data_dir: Path) -> tuple[dict[str, int], dict[str, str]]:
+    """从曝光记录汇总每个条目的停留秒数，并返回 {item_key: 标题}（标题来自最近一次反馈，用于分词）。"""
+    from core.evaluation import exposure_path
+    totals: dict[str, int] = {}
+    for row in read_jsonl(exposure_path(data_dir)):
+        if row.get("kind") == "dwell" and row.get("item_key"):
+            totals[row["item_key"]] = totals.get(row["item_key"], 0) + int(row.get("seconds") or 0)
+    titles = {e.get("item_key", ""): e.get("title", "") for e in read_feedback(data_dir) if e.get("title")}
+    return totals, titles
 
 
 def rebuild_learned(data_dir: Path, events: Optional[list[dict[str, Any]]] = None,
@@ -138,7 +169,8 @@ def rebuild_learned(data_dir: Path, events: Optional[list[dict[str, Any]]] = Non
     if events is None:
         events = read_feedback(data_dir)
     profile = load_profile(data_dir)
-    profile["learned"] = learn_from_events(events, now)
+    totals, titles = dwell_totals(data_dir)
+    profile["learned"] = learn_from_events(events, now, totals, titles)
     profile["updated_at"] = (now or datetime.now().astimezone()).isoformat(timespec="seconds")
     save_profile(data_dir, profile)
     return profile
@@ -148,14 +180,17 @@ def ensure_fresh(data_dir: Path) -> dict[str, Any]:
     """读取画像；若反馈事件数量已变化，先重算 learned（即“离线学习”的按需触发）。"""
     events = read_feedback(data_dir)
     profile = load_profile(data_dir)
-    if profile["learned"].get("computed_from_events") != len(events):
+    totals, _ = dwell_totals(data_dir)
+    learned = profile["learned"]
+    if (learned.get("computed_from_events") != len(events)
+            or learned.get("computed_from_dwell") != len(totals)):
         profile = rebuild_learned(data_dir, events)
     return profile
 
 
 def clear_learned(data_dir: Path) -> dict[str, Any]:
     profile = load_profile(data_dir)
-    profile["learned"] = {"keywords": {}, "sources": {}, "computed_from_events": 0}
+    profile["learned"] = {"keywords": {}, "sources": {}, "computed_from_events": 0, "computed_from_dwell": 0}
     profile["llm"] = {}
     profile["updated_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
     save_profile(data_dir, profile)
@@ -319,6 +354,16 @@ def last_actions(events: list[dict[str, Any]]) -> dict[str, str]:
     for e in sorted(events, key=lambda e: str(e.get("time", ""))):
         out[e.get("item_key", "")] = e.get("action", "")
     return out
+
+
+def rank_reports_enabled(root: Path) -> bool:
+    """报告是否按兴趣画像排序（profile.rank_reports），缺省为 True。"""
+    import yaml
+    try:
+        cfg = yaml.safe_load((Path(root) / "config" / "settings.yaml").read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        cfg = {}
+    return bool((cfg.get("profile") or {}).get("rank_reports", True))
 
 
 def llm_enabled(root: Path) -> bool:

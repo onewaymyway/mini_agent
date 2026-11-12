@@ -94,6 +94,35 @@
   root.querySelector(".close").addEventListener("click", () => host.remove());
   document.documentElement.append(host);
 
+  // 停留时长：只统计页面可见的时间。accumulated 为已结束的可见时段合计（毫秒），
+  // lastSent 为已发送给接收服务的合计；每次发送的是两者之差，因此可以多次累加、不会重复计数。
+  let accumulated = 0;
+  let lastSent = 0;
+  let visibleSince = document.visibilityState === "visible" ? Date.now() : null;
+  function totalMs() {
+    return accumulated + (visibleSince !== null ? Date.now() - visibleSince : 0);
+  }
+  function sendDwell() {
+    const total = totalMs();
+    const seconds = Math.round((total - lastSent) / 1000);
+    if (seconds <= 0) return;
+    lastSent = total;
+    chrome.runtime.sendMessage({
+      type: "dwell",
+      body: { source_id: sourceId, item_key: key, view, seconds },
+    }, () => void chrome.runtime.lastError);
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      visibleSince = Date.now();
+    } else {
+      if (visibleSince !== null) accumulated += Date.now() - visibleSince;
+      visibleSince = null;
+      sendDwell();
+    }
+  });
+  window.addEventListener("pagehide", sendDwell);
+
   // 打开即记录一次（不论之后是否反馈），用于看板上的点击统计。
   chrome.runtime.sendMessage({
     type: "open",

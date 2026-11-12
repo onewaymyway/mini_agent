@@ -636,7 +636,22 @@ def _services_panel() -> None:
                       "stopped": "未运行",
                       "unknown": "无法检测（请安装 psutil）"}[bs["state"]]
         st.write(f"状态：{state_text}")
+        if bs["state"] == "running":
+            if bs["debug_ready"]:
+                st.write(f"调试端口 {bs['debug_port']}：可用（抓取可附着到该浏览器）")
+            else:
+                st.warning("专用浏览器在运行，但没有开启调试端口，CDP 抓取不可用。"
+                           "请关闭它后用“启动专用浏览器”重新启动。")
         st.write(f"数据目录：`{bs['profile']}`" + ("" if bs["profile_exists"] else "（首次启动时创建）"))
+        mode_labels = {"launch": "独立启动（旧方式）", "cdp": "附着到专用浏览器"}
+        mode_choice = st.radio("抓取方式", list(mode_labels), index=list(mode_labels).index(bs["scrape_mode"]),
+                               format_func=lambda m: mode_labels[m], horizontal=True, key="db_mode_radio")
+        if st.button("保存抓取方式", key="db_save_mode", disabled=mode_choice == bs["scrape_mode"]):
+            if call(api.browser_set_scrape_mode, settings, {"scrape_mode": mode_choice}) is not None:
+                st.toast("抓取方式已保存")
+                st.rerun()
+        if bs["scrape_mode"] == "cdp":
+            st.caption("抓取时会在专用浏览器中打开后台标签页，完成后关闭。专用浏览器必须处于运行状态。")
         if bs["executable"]:
             st.write(f"浏览器程序：`{bs['executable']}`")
         else:

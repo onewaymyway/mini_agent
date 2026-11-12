@@ -19,6 +19,8 @@ import yaml
 
 DEFAULT_PROFILE_DIR = "browser/dedicated_profile"
 DEFAULT_RECEIVER_PORT = 18765
+DEFAULT_DEBUG_PORT = 9223
+SCRAPE_MODES = ("launch", "cdp")
 
 
 def load_config(root: Path) -> dict[str, Any]:
@@ -35,11 +37,23 @@ def load_config(root: Path) -> dict[str, Any]:
     rt_port = (rt.get("receiver") or {}).get("port")
     port = rt_port if isinstance(rt_port, int) else int(rc.get("port", DEFAULT_RECEIVER_PORT))
     executable = rt_db.get("executable") if "executable" in rt_db else db.get("executable")
+    scrape_mode = rt_db.get("scrape_mode") if "scrape_mode" in rt_db else db.get("scrape_mode", "launch")
     return {
         "executable": str(executable or "").strip(),
         "profile_dir": str(db.get("profile_dir") or DEFAULT_PROFILE_DIR),
         "receiver_port": port,
+        "debug_port": int(db.get("debug_port", DEFAULT_DEBUG_PORT)),
+        "scrape_mode": scrape_mode if scrape_mode in SCRAPE_MODES else "launch",
     }
+
+
+def make_browser_session(settings) -> Any:
+    """按配置构造共享浏览器会话：scrape_mode=cdp 时附着到专用浏览器，否则为 Playwright 独立启动。"""
+    from core.browser_session import BrowserSession
+    cfg = load_config(settings.paths.root)
+    return BrowserSession(settings.paths.browser_profile_dir,
+                          settings.paths.root / "browser" / "login_status.json",
+                          mode=cfg["scrape_mode"], cdp_port=cfg["debug_port"])
 
 
 def _same_path(a: str, b: str) -> bool:
@@ -99,8 +113,12 @@ def browser_status(root: Path, cfg: dict[str, Any]) -> dict[str, Any]:
         state = "unknown"
     else:
         state = "running" if pids else "stopped"
+    from core.browser_session import cdp_available
+    debug_ready = bool(pids) and cdp_available(cfg.get("debug_port", DEFAULT_DEBUG_PORT))
     return {"state": state, "pids": pids or [], "executable": exe or "",
-            "profile": str(profile), "profile_exists": profile.is_dir()}
+            "profile": str(profile), "profile_exists": profile.is_dir(),
+            "debug_port": cfg.get("debug_port", DEFAULT_DEBUG_PORT), "debug_ready": debug_ready,
+            "scrape_mode": cfg.get("scrape_mode", "launch")}
 
 
 def stop_browser(root: Path, cfg: dict[str, Any]) -> int:
@@ -163,8 +181,12 @@ def build_open_url(url: str, *, item_key: str, source_id: str, view: str, title:
     return urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, frag))
 
 
-def launch_command(executable: str, profile: Path, url: str) -> list[str]:
-    return [executable, f"--user-data-dir={profile}", "--no-first-run", "--no-default-browser-check", url]
+def launch_command(executable: str, profile: Path, url: str, debug_port: Optional[int] = None) -> list[str]:
+    cmd = [executable, f"--user-data-dir={profile}", "--no-first-run", "--no-default-browser-check"]
+    if debug_port:
+        # 只绑定本机回环地址，供抓取附着；不要改为 0.0.0.0
+        cmd += [f"--remote-debugging-port={debug_port}", "--remote-debugging-address=127.0.0.1"]
+    return cmd + [url]
 
 
 def open_url(root: Path, cfg: dict[str, Any], url: str, popen=subprocess.Popen) -> dict[str, Any]:
@@ -173,6 +195,7 @@ def open_url(root: Path, cfg: dict[str, Any], url: str, popen=subprocess.Popen) 
         raise FileNotFoundError("未找到 Chrome 或 Edge。请在 config/settings.yaml 的 dedicated_browser.executable 中填写路径")
     profile = profile_path(root, cfg.get("profile_dir", DEFAULT_PROFILE_DIR))
     profile.mkdir(parents=True, exist_ok=True)
-    proc = popen(launch_command(exe, profile, url), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    proc = popen(launch_command(exe, profile, url, cfg.get("debug_port")),
+                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                  start_new_session=(sys.platform != "win32"))
     return {"executable": exe, "profile": str(profile), "pid": getattr(proc, "pid", None)}

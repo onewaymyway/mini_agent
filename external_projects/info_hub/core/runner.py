@@ -60,14 +60,11 @@ def _record_health(settings: Settings, result: "RunResult") -> None:
 
 def default_context(settings: Settings) -> FetchContext:
     """构造默认运行上下文：共享浏览器会话（惰性启动）与站点配置。"""
-    from core.browser_session import BrowserSession
+    from core.dedicated_browser import make_browser_session
     from core.settings import load_sites
 
     return FetchContext(
-        browser=BrowserSession(
-            settings.paths.browser_profile_dir,
-            settings.paths.root / "browser" / "login_status.json",
-        ),
+        browser=make_browser_session(settings),
         sites=load_sites(settings.paths.root),
     )
 
