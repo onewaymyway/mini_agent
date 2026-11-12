@@ -970,7 +970,9 @@ def _feed_version() -> tuple:
     """反馈与曝光文件的修改时间：变化时推荐结果缓存失效（点 👍/👎 后立即生效，不必等 60 秒）。"""
     out = []
     for p in (settings.paths.data_dir / "feedback" / "events.jsonl",
-              settings.paths.data_dir / "feedback" / "exposures.jsonl"):
+              settings.paths.data_dir / "feedback" / "exposures.jsonl",
+              settings.paths.data_dir / "feed" / "prefs.json",
+              settings.paths.data_dir / "feed" / "llm_cache.json"):
         try:
             out.append(p.stat().st_mtime_ns)
         except OSError:
@@ -1004,6 +1006,8 @@ def _feed_row(card: dict, k: str) -> None:
     if card.get("section") != "later":
         c1.caption("💡 " + card.get("reason", ""))
     members = card.get("sources") or []
+    if card.get("llm_topic") or card.get("llm_summary"):
+        c1.caption(("🏷 " + card["llm_topic"] + " · " if card.get("llm_topic") else "") + card.get("llm_summary", ""))
     for col, act, icon, tip in ((c2, "interested", "👍", "感兴趣"), (c3, "not_interested", "👎", "不感兴趣"),
                                 (c4, "later", "⏰", "稍后看")):
         if col.button(icon, key=f"feed_fb_{act}_{k}", help=f"标记为{tip}（同一事件的全部报道一起标记）"):
@@ -1221,6 +1225,39 @@ def _feed_tab() -> None:
                 st.json(model["weights"])
         st.caption("当前排序方式：" + ("学习权重" if res.get("scoring") == "learned" else "手工权重")
                    + ("（已开启但未通过验证，仍用手工权重）" if on and res.get("scoring") != "learned" else ""))
+    with st.expander("LLM 增强（P4，默认关闭）"):
+        lst = call(api.feed_llm_status_api, settings) or {}
+        st.caption("开启后，点“运行”会把前列条目的标题发送给你配置的模型，生成主题标签与摘要，并判断近似报道是否为同一事件。"
+                   "页面刷新不会自动调用模型。")
+        prov = (lst.get("provider") or {}).get("label", "")
+        if prov:
+            st.caption(f"模型：{prov}")
+        st.caption(f"今日已用 {lst.get('used_today', 0)} / {(lst.get('config') or {}).get('daily_limit', 0)} 次")
+        llm_on = st.toggle("开启 LLM 增强", value=bool(lst.get("enabled")), key="feed_llm_on")
+        if llm_on != bool(lst.get("enabled")):
+            if call(api.feed_set_llm_api, settings, {"enabled": llm_on}) is not None:
+                st.rerun()
+        if llm_on:
+            plan = call(api.feed_llm_plan_api, settings, hours=float(hours), category=category, kind=kind) or {}
+            st.write(f"本次预计调用 {plan.get('calls_estimate', 0)} 次："
+                     f"需要摘要 {len(plan.get('summary_targets', []))} 条，"
+                     f"待判断近似对 {len(plan.get('pending_pairs', []))} 对；"
+                     f"今日剩余额度 {plan.get('remaining', 0)} 次。")
+            can_run = plan.get("calls_estimate", 0) > 0 and plan.get("remaining", 0) > 0
+            if st.button("运行一轮（会调用模型）", key="feed_llm_run", disabled=not can_run):
+                rep = call(api.feed_llm_run_api, settings, hours=float(hours), category=category, kind=kind)
+                if rep is not None:
+                    msg = (f"完成：摘要 {rep['summaries_done']} 条，近似对判断 {rep['pairs_done']} 对，"
+                           f"共 {rep['calls']} 次调用。")
+                    if rep.get("stopped_by_limit"):
+                        msg += "已达到今日上限，剩余部分下次再运行。"
+                    if rep.get("errors"):
+                        msg += "部分批次失败：" + "；".join(rep["errors"][:3])
+                    st.session_state["feed_llm_msg"] = msg
+                    st.rerun()
+            if st.session_state.get("feed_llm_msg"):
+                st.success(st.session_state["feed_llm_msg"])
+            st.caption("同一事件的判断只影响聚合：结论写入缓存后，下次刷新页面才会生效。")
     with st.expander("排序参数（只读，可在 config/settings.yaml 的 feed 段修改）"):
         st.json(res["config"])
 

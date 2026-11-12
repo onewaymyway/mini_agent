@@ -20,7 +20,7 @@ import re
 from bisect import bisect_left, bisect_right
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from core import merged
 from core.feedback import item_key, normalize_url, read_feedback
@@ -305,14 +305,18 @@ def load_prefs(data_dir: Path) -> dict[str, Any]:
     data = data if isinstance(data, dict) else {}
     hidden = data.get("hidden_sources", [])
     return {"hidden_sources": [str(x) for x in hidden if isinstance(x, str) and x],
-            "learning_enabled": bool(data.get("learning_enabled", False))}  # P3：默认关闭
+            "learning_enabled": bool(data.get("learning_enabled", False)),  # P3：默认关闭
+            "llm_enabled": bool(data.get("llm_enabled", False))}            # P4：默认关闭
 
 
 def save_prefs(data_dir: Path, prefs: dict[str, Any]) -> None:
     path = prefs_path(data_dir)
+    current = load_prefs(data_dir)
+    current.update({k: v for k, v in prefs.items() if k in current})
     with file_lock(path):
-        atomic_write_json(path, {"hidden_sources": sorted(set(prefs.get("hidden_sources", []))),
-                                 "learning_enabled": bool(prefs.get("learning_enabled", False))})
+        atomic_write_json(path, {"hidden_sources": sorted(set(current["hidden_sources"])),
+                                 "learning_enabled": bool(current["learning_enabled"]),
+                                 "llm_enabled": bool(current["llm_enabled"])})
 
 
 def set_source_hidden(data_dir: Path, source_id: str, hidden: bool) -> dict[str, Any]:
@@ -355,7 +359,9 @@ def build_feed(*, data_dir: Path, raw_dir: Path, sources: list[dict[str, Any]], 
                now: Optional[datetime] = None, include_processed: bool = False,
                hidden_sources: Optional[set[str]] = None,
                shown: Optional[dict[str, int]] = None,
-               learned_weights: Optional[dict[str, float]] = None) -> dict[str, Any]:
+               learned_weights: Optional[dict[str, float]] = None,
+               merge_judge: Optional[Callable[[list[dict[str, Any]], list[list[int]]], list[list[int]]]] = None,
+               ) -> dict[str, Any]:
     """构造推荐信息流。只读（不写 feed 目录，曝光记录由调用方显式 record_impressions）。
 
     sources：[{id, name, kind}]；profile：兴趣画像（缺省时从 data_dir 读取并按需重算）；
@@ -439,6 +445,8 @@ def build_feed(*, data_dir: Path, raw_dir: Path, sources: list[dict[str, Any]], 
     stats["candidates"] = len(pool)
 
     groups = cluster_items(pool, threshold=cfg["cluster_threshold"], df_ratio=cfg["cluster_df_ratio"])
+    if merge_judge is not None:  # P4：只使用已缓存的“同一事件”结论合并簇，不在此调用模型
+        groups = merge_judge(pool, groups)
     stats["clusters"] = len(groups)
 
     raw_interest: list[float] = []

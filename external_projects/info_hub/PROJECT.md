@@ -76,7 +76,7 @@ streamlit run app.py --server.port 8506
 浏览器打开 http://localhost:8506 。端口与 stock_watch（8503）错开。
 
 页面：
-- **推荐**（P1–P3）：把抓取结果整理成“今日精选 / 多源热点 / 关注主题 / 探索 / 稍后看 / 其余”。同一事件的多条报道聚成一张卡片，卡片带一句话理由；已 👍 / 👎 / 打开的条目默认隐藏。精选有多样性上限，并保留探索位；展示很多次却无反应的条目逐步降权。卡片上可“不再显示此来源”，主题上可“屏蔽此主题”（均可撤销）；“快速分诊模式”一次只看一条，用于冷启动打标；页面底部可看离线回放（推荐顺序 vs 时间倒序）。学习权重（P3）默认关闭：样本与留出集验证通过、且在页面开启后才会生效。与“抓取结果”页并存，后者保持原始列表。排序参数见 `config/settings.yaml` 的 `feed` 段。设计见 `next_doc/info_hub_recommendation_feed_design.md`。
+- **推荐**（P1–P4）：把抓取结果整理成“今日精选 / 多源热点 / 关注主题 / 探索 / 稍后看 / 其余”。同一事件的多条报道聚成一张卡片，卡片带一句话理由；已 👍 / 👎 / 打开的条目默认隐藏。精选有多样性上限，并保留探索位；展示很多次却无反应的条目逐步降权。卡片上可“不再显示此来源”，主题上可“屏蔽此主题”（均可撤销）；“快速分诊模式”一次只看一条，用于冷启动打标；页面底部可看离线回放（推荐顺序 vs 时间倒序）。学习权重（P3）默认关闭：样本与留出集验证通过、且在页面开启后才会生效。LLM 增强（P4）默认关闭：开启后点击“运行”才调用模型，生成主题与摘要，并判断近似报道是否为同一事件（结论只影响聚合，且只使用缓存结论）；有每日调用上限。与“抓取结果”页并存，后者保持原始列表。排序参数见 `config/settings.yaml` 的 `feed` 段。设计见 `next_doc/info_hub_recommendation_feed_design.md`。
 - **报告**：选择报告，查看摘要与 Markdown 内容；整份听报，或选择单条条目朗读。
 - **信息源**：表格形式查看，勾选启用后点"保存启用状态"；选择信息源立即抓取。
 - **添加信息源**：表单添加（预览、保存），或对话生成（生成草稿、预览、按意见修改、确认、放弃）。
@@ -222,6 +222,7 @@ health:
 | 不开看板也要调度 | 系统计划任务每 5 分钟 `python cli.py tick` |
 
 ## 变更记录
+- 2026-11-12：推荐信息流 P4（LLM 增强，默认关闭）：`core/feed_llm.py`，复用 `core/llm.py::build_llm`；摘要与补聚判断按条目缓存、每日上限；页面开启后手动运行。详见 `next_doc/info_hub_recommendation_feed_design.md` §14。精选重排与理由润色未实施。
 - 2026-11-12：推荐信息流 P3（学习权重，默认关闭）：`core/feed_learn.py` 训练逻辑回归并做时间切分的留出集验证；通过门槛且用户开启后才改用学习权重。详见 `next_doc/info_hub_recommendation_feed_design.md` §13。
 - 2026-11-12：推荐信息流 P2（行为闭环）：曝光疲劳、精选多样性与来源上限、探索位、快速分诊、不再显示（来源 / 主题）、离线回放评估。新增 `core/feed_eval.py`，`core/feed.py` 与 `server/api.py` 扩展。详见 `next_doc/info_hub_recommendation_feed_design.md` §12。
 - 2026-11-12：新增“推荐”页签（推荐信息流 P1）：`core/feed.py`（候选池、标题二元组聚合去重、多信号打分、分区、一句话理由、曝光记录 `data/feed/shown.jsonl`）；`server/api.py` 新增 `feed_view` / `record_feed_impressions_api`；`core/merged.py` 新增 `first_rank` 字段；反馈与打开记录接受视图名 `feed_v1`。详见 `next_doc/info_hub_recommendation_feed_design.md` §11。

@@ -65,6 +65,14 @@ feed:                     # 推荐信息流（看板“推荐”标签页，P1�
     min_gain: 0.02        # 留出集 NDCG@10 至少高出手工权重这么多
     holdout_ratio: 0.3    # 留出集占比（按展示批次时间切分，取较晚的部分）
     days: 60              # 只用最近这么多天的展示
+  llm:                    # P4 LLM 增强：默认关闭；页面上开启后，点“运行”才会调用模型
+    enabled: false        # 配置层面的默认值（页面开关另行控制）
+    daily_limit: 40       # 每日模型调用次数上限
+    batch_size: 8         # 每次调用包含的条目数
+    top_n: 12             # 摘要覆盖的前列卡片数
+    pair_enabled: true    # 是否判断“近似报道是否为同一事件”
+    pair_low: 0.25        # 近似对的 Jaccard 下限
+    pair_max: 40          # 每次最多判断的近似对数
   half_life_hours:        # 新鲜度半衰期（小时），按信息源类型
     hot_list: 3
     feed: 12

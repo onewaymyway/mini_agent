@@ -619,7 +619,7 @@ P0–P9 均已完成。仍未在真实环境验证：有头登录、语音输出
 - `server/api.py`：`feed_set_source_hidden_api`、`feed_block_topic_api`、`feed_replay_api`；推荐接口自动应用不再显示的来源。
 - `app.py`：卡片 🚫、主题“屏蔽此主题”、探索分区、快速分诊模式、已隐藏来源的恢复列表、离线回放面板；推荐页按钮键统一用 `feed_` 前缀。
 - 新增 `tests/test_feed_p2.py`（17 用例）。全量 450 通过，剩余 2 个为改动前就存在的账本测试。
-- 未实现：`state.json`（改由 `shown.jsonl` 统计）、线上对比视图 `feed_v1`（评估面板）、P4 LLM 增强。
+- 未实现：`state.json`（改由 `shown.jsonl` 统计）、线上对比视图 `feed_v1`（评估面板）、精选小批量重排与理由润色（P4 中未实施的两项）。
 
 ---
 
@@ -633,4 +633,17 @@ P0–P9 均已完成。仍未在真实环境验证：有头登录、语音输出
 - 新增 `tests/test_feed_p3.py`（10 用例）。全量 460 通过，剩余 2 个为改动前即存在的账本测试。
 - 未验证：真实反馈数据下的效果（样本未达门槛）。
 - 未实现：P4 LLM 增强、线上对比视图 `feed_v1`。
+
+---
+
+## 推荐信息流 P4：LLM 增强（已完成，默认关闭，见设计文档第 14 节）
+
+- 新增 `core/feed_llm.py`：前 12 张卡片的主题标签与摘要（缓存 `data/feed/llm_cache.json`）；近似对的“同一事件”判断（缓存结论，聚合时只读使用）；每日上限（`data/feed/llm_usage.json`）；分批调用；模型输出不合法时只记录错误。
+- `core/feed.py`：`build_feed(merge_judge=...)` 在聚合后应用缓存的合并结论；偏好新增 `llm_enabled`（默认 false），保存偏好时保留其它字段。
+- `server/api.py`：`feed_llm_status_api`、`feed_set_llm_api`、`feed_llm_plan_api`（不调用模型）、`feed_llm_run_api`（未开启 400，模型不可用 503）；`feed_view` 仅在开启时挂载缓存标签并应用缓存合并。
+- `app.py`：“LLM 增强（P4，默认关闭）”面板（开关、模型来源、今日用量、预计调用、运行按钮与结果）；卡片显示主题与摘要；缓存版本纳入偏好与 LLM 缓存文件。
+- `config/settings.yaml`：`feed.llm` 段。
+- 新增 `tests/test_feed_p4.py`（14 用例，假模型）。全量 474 通过，剩余 2 个为改动前即存在的账本测试。
+- 未实现：精选小批量重排、理由润色（设计文档 P4 中的两项，见设计文档 14.2）。
+- 未验证：真实模型的输出质量与补聚判断的准确率。
 

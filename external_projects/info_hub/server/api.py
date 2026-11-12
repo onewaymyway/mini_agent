@@ -838,11 +838,16 @@ def feed_view(settings: Settings, *, hours: float = 24, category: str = "", kind
     data_dir = settings.paths.data_dir
     profile = ensure_fresh(data_dir)
     prefs = feedmod.load_prefs(data_dir)
-    from core import feed_learn
+    from core import feed_learn, feed_llm
     learned = feed_learn.active_weights(data_dir, prefs["learning_enabled"])
+    llm_on = prefs["llm_enabled"]
+    merge = feed_llm.cached_merge_judge(data_dir) if llm_on else None
     res = feedmod.build_feed(data_dir=data_dir, raw_dir=settings.paths.raw_dir, sources=srcs, hours=hours,
                              cfg=cfg, profile=profile, now=now, include_processed=include_processed,
-                             hidden_sources=set(prefs["hidden_sources"]), learned_weights=learned)
+                             hidden_sources=set(prefs["hidden_sources"]), learned_weights=learned,
+                             merge_judge=merge)
+    if llm_on:
+        feed_llm.attach_labels(res["sections"], data_dir)  # P4：只挂缓存里已有的主题与摘要
     res["config"] = feedmod.public_config_summary(cfg)
     return res
 
@@ -923,6 +928,65 @@ def feed_train_api(settings: Settings) -> dict[str, Any]:
     """用历史展示与反馈训练学习权重并做留出集验证。结果落盘，不改变当前生效状态以外的任何数据。"""
     from core import feed_learn
     return feed_learn.train_and_validate(settings.paths.data_dir, raw_config=settings.raw)
+
+
+def _llm_cfg(settings: Settings) -> dict[str, Any]:
+    from core import feed_llm
+    return feed_llm.llm_config(settings.raw)
+
+
+def feed_llm_status_api(settings: Settings) -> dict[str, Any]:
+    """LLM 增强（P4）状态：页面开关、模型来源、今日用量与配置。"""
+    from core import feed as feedmod
+    from core import feed_llm
+    from core.llm import provider_status
+    data_dir = settings.paths.data_dir
+    cfg = _llm_cfg(settings)
+    used = feed_llm.used_today(data_dir, datetime.now().astimezone())
+    return {"enabled": feedmod.load_prefs(data_dir)["llm_enabled"], "provider": provider_status(settings),
+            "config": cfg, "used_today": used, "remaining": max(0, int(cfg["daily_limit"]) - used)}
+
+
+def feed_set_llm_api(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
+    from core import feed as feedmod
+    data_dir = settings.paths.data_dir
+    feedmod.save_prefs(data_dir, {"llm_enabled": bool(body.get("enabled", False))})
+    return {"enabled": feedmod.load_prefs(data_dir)["llm_enabled"]}
+
+
+def _sections_for_llm(settings: Settings, hours: float, category: str, kind: str) -> tuple[dict, float]:
+    from core import feed as feedmod
+    from core import feed_llm  # noqa: F401
+    res = feed_view(settings, hours=hours, category=category, kind=kind)
+    threshold = float(feedmod.load_config(settings.raw)["cluster_threshold"])
+    return res, threshold
+
+
+def feed_llm_plan_api(settings: Settings, hours: float = 24, category: str = "", kind: str = "") -> dict[str, Any]:
+    """预计本次运行会调用几次模型（不调用模型）。"""
+    from core import feed_llm
+    res, threshold = _sections_for_llm(settings, hours, category, kind)
+    cfg = _llm_cfg(settings)
+    cache = feed_llm.load_cache(settings.paths.data_dir)
+    return feed_llm.plan(res["sections"], cfg, cache, threshold, settings.paths.data_dir,
+                         datetime.now().astimezone())
+
+
+def feed_llm_run_api(settings: Settings, hours: float = 24, category: str = "", kind: str = "") -> dict[str, Any]:
+    """运行一轮 LLM 增强：生成摘要、判断近似对。仅在用户已开启时调用模型，并遵守每日上限。"""
+    from core import feed as feedmod
+    from core import feed_llm
+    from core.llm import LLMUnavailable, build_llm
+    data_dir = settings.paths.data_dir
+    if not feedmod.load_prefs(data_dir)["llm_enabled"]:
+        raise ApiError(400, "LLM 增强未开启，请先在页面上开启")
+    res, threshold = _sections_for_llm(settings, hours, category, kind)
+    try:
+        llm = build_llm(settings)
+    except LLMUnavailable as exc:
+        raise ApiError(503, str(exc))
+    return feed_llm.run(data_dir, llm.ask, res["sections"], _llm_cfg(settings), threshold,
+                        datetime.now().astimezone())
 
 
 def feed_replay_api(settings: Settings, days: float = 30) -> dict[str, Any]:
