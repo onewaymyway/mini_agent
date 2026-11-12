@@ -221,6 +221,7 @@ health:
 | 不开看板也要调度 | 系统计划任务每 5 分钟 `python cli.py tick` |
 
 ## 变更记录
+- 2026-11-12：修复看板“在专用浏览器中打开”后工具条不出现（地址片段 `#ihk` 在脚本运行前丢失）：看板打开时登记待匹配上下文（`core/pending_open.py`），插件凭当前地址经 `/v1/context` 恢复；扩展新增选项“在所有页面显示反馈工具条”（默认关闭，手动反馈记为 `manual`）；插件版本 0.2.0，需在 chrome://extensions 重新加载。详见 `next_doc/info_hub_dedicated_browser_design.md` §14。
 - 2026-11-11：补齐外部项目契约——`project.yaml` 按规范改用 `cmd`、新增 `entrypoints/`（tick / run_source / report / resume_source / health）、`health_check`、`resources`、`review`、`web_app`；`.gitignore` 增加账本与 `.run/`。此前 `project.yaml` 使用了不被框架识别的 `command` 字段，无法注册。
 
 ## 内置信息源：知乎热榜（zhihu_hot）

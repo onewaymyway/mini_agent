@@ -1,14 +1,15 @@
 const $ = (id) => document.getElementById(id);
 const show = (text) => { $("msg").textContent = text; };
 
-chrome.storage.local.get({ port: 18765, token: "" }).then((cfg) => {
+chrome.storage.local.get({ port: 18765, token: "", showAll: false }).then((cfg) => {
   $("port").value = cfg.port;
   $("token").value = cfg.token;
+  $("showAll").checked = !!cfg.showAll;
 });
 
 $("save").addEventListener("click", async () => {
   const port = Number($("port").value) || 18765;
-  await chrome.storage.local.set({ port, token: $("token").value.trim() });
+  await chrome.storage.local.set({ port, token: $("token").value.trim(), showAll: $("showAll").checked });
   show("已保存。");
 });
 

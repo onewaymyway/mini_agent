@@ -496,3 +496,25 @@ P0–P9 均已完成。仍未在真实环境验证：有头登录、语音输出
 - 新增 `external_projects/info_hub/tests/test_entrypoints.py`（8 用例，真实子进程运行）：health 正常/源配置有误只告警/配置损坏失败；缺参数退出码 2；run_source 失败返回非 0 并写运行记录；resume 无状态返回 1；tick 正常、report 未知计划失败；有框架时写 `.agent/run_status.jsonl`（成功与失败都记）。
 - info_hub 全部测试通过（含新增）。
 未验证：真实 daemon 注册后由 daemon 触发 entrypoint、看板启动 info_hub 的 Streamlit（沙箱只有子进程与 AppTest）。
+
+
+---
+
+## 补充：专用浏览器工具条丢失标记的二次修复（已完成）
+
+### 问题
+小红书笔记从看板“在专用浏览器中打开”后，地址栏里没有 `#ihk=...`，反馈工具条不出现。上一次修复（`document_start` 读取并写入 sessionStorage）只处理“脚本读到之后被改写”，不覆盖“脚本运行前片段已丢失”。
+
+### 改动
+- 新增 `core/pending_open.py`：看板打开时登记条目上下文到 `data/state/pending_open.json`；按“主机 + 路径”匹配，路径变化时按最后一段 ID 兜底；24 小时过期、最多 200 条。
+- `server/api.py`：`open_in_dedicated_browser` 打开前登记；新增 `resolve_context_api`。
+- `server/feedback_receiver.py`：新增 `POST /v1/context`（需令牌、限扩展来源）。
+- 扩展 0.2.0：内容脚本在片段与 sessionStorage 都没有上下文时，经 background 查询 `/v1/context`；新增选项“在所有页面显示反馈工具条”（默认关闭），开启后无匹配页面以手动反馈模式显示（`source_id=manual`，不统计打开与停留）。
+- 测试：新增 `tests/test_pending_open.py`；`tests/test_extension_e2e.py` 重构并新增 3 个有头 Chromium 用例。
+
+### 默认值决定（请确认）
+**“在所有页面显示”默认关闭**。理由：保守默认，避免普通浏览被打扰、避免产生与看板条目无关的反馈数据；正常从看板打开的页面已由登记机制覆盖。需要时在扩展选项勾选即可。
+
+### 验证与未验证
+- 全量 info_hub 测试：新增与受影响用例全部通过；仍有 7 个与本次无关的既有失败（沙箱缺少 streamlit 与 mini_agent 框架，原始代码同样失败）。
+- 未验证：真实小红书页面与真实 Windows Chrome；手动模式下点击工具条按钮的完整路径。

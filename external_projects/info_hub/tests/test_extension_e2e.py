@@ -38,7 +38,9 @@ def _chromium_ready():
 
 
 class ExtensionE2ETests(unittest.TestCase):
-    def test_widget_appears_after_url_rewrite_and_open_is_recorded(self):
+    def _run_case(self, *, path_suffix, setup=None, storage_extra=None, after_load=None):
+        """起接收服务与本地页面服务，用有头 Chromium 加载扩展并打开页面。
+        返回 (页面里是否出现工具条, settings, 扩展 storage 之外的额外结果)。"""
         reason = _chromium_ready()
         if reason:
             self.skipTest(reason)
@@ -66,7 +68,11 @@ class ExtensionE2ETests(unittest.TestCase):
 
         web = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
         threading.Thread(target=web.serve_forever, daemon=True).start()
-        url = f"http://127.0.0.1:{web.server_address[1]}/page.html#ihk=0123456789abcdef&ihs=news_a&ihv=plain&iht=E2E"
+        base = f"http://127.0.0.1:{web.server_address[1]}/page.html"
+        if setup:
+            setup(settings, base)
+        url = base + path_suffix
+        shown = None
         try:
             with sync_playwright() as pw:
                 ctx = pw.chromium.launch_persistent_context(
@@ -79,11 +85,13 @@ class ExtensionE2ETests(unittest.TestCase):
                         time.sleep(0.2)
                     self.assertTrue(ctx.service_workers, "扩展未加载")
                     ctx.service_workers[0].evaluate(
-                        "([p, t]) => chrome.storage.local.set({port: p, token: t})", [port, token])
+                        "(cfg) => chrome.storage.local.set(cfg)", {"port": port, "token": token, **(storage_extra or {})})
                     page = ctx.new_page()
                     page.goto(url, wait_until="load")
                     time.sleep(3)
-                    self.assertTrue(page.evaluate("() => !!document.getElementById('infohub-feedback-host')"))
+                    shown = page.evaluate("() => !!document.getElementById('infohub-feedback-host')")
+                    if after_load:
+                        after_load(page)
                 finally:
                     ctx.close()
         finally:
@@ -91,8 +99,32 @@ class ExtensionE2ETests(unittest.TestCase):
             receiver.server_close()
             web.shutdown()
             web.server_close()
+        return shown, settings
+
+    def test_widget_appears_after_url_rewrite_and_open_is_recorded(self):
+        shown, settings = self._run_case(path_suffix="#ihk=0123456789abcdef&ihs=news_a&ihv=plain&iht=E2E")
+        self.assertTrue(shown)
         rows = list(read_jsonl(evaluation.exposure_path(settings.paths.data_dir)))
         self.assertTrue(any(r.get("kind") == "open" and r.get("mode") == "dedicated" for r in rows))
+
+    def test_widget_appears_when_fragment_is_completely_lost(self):
+        """地址里没有任何 #ihk 片段（站点重定向丢掉了它），靠看板登记的上下文识别。"""
+        from core import pending_open
+
+        def register(settings, base):
+            pending_open.register(settings.paths.state_dir, url=base + "?token=old", item_key="0123456789abcdef",
+                                  source_id="news_a", view="plain", title="E2E")
+
+        shown, _ = self._run_case(path_suffix="?token=new", setup=register)
+        self.assertTrue(shown)
+
+    def test_unregistered_page_has_no_widget_by_default(self):
+        shown, _ = self._run_case(path_suffix="?x=1")
+        self.assertFalse(shown)
+
+    def test_show_all_option_shows_widget_on_unregistered_page(self):
+        shown, _ = self._run_case(path_suffix="?x=1", storage_extra={"showAll": True})
+        self.assertTrue(shown)
 
 
 if __name__ == "__main__":

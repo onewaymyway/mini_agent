@@ -2,7 +2,7 @@
 
 启动：  cd external_projects/info_hub && python -m server.feedback_receiver
 安全：  只监听 127.0.0.1；每个请求需要 X-InfoHub-Token；CORS 只允许 chrome-extension:// 来源；
-        只开放 /v1/feedback、/v1/open、/v1/dwell 三个写接口，内部复用 server/api.py 的校验与存储。
+        开放 /v1/feedback、/v1/open、/v1/dwell 三个写接口与 /v1/context（只读查询），内部复用 server/api.py 的校验与存储。
 """
 from __future__ import annotations
 
@@ -88,7 +88,7 @@ def make_handler(settings: Settings, token: str):
                 self._send(404, {"error": "不存在"})
 
         def do_POST(self):
-            if self.path not in ("/v1/feedback", "/v1/open", "/v1/dwell"):
+            if self.path not in ("/v1/feedback", "/v1/open", "/v1/dwell", "/v1/context"):
                 return self._send(404, {"error": "不存在"})
             if self.headers.get("Origin") and not self._origin_ok():
                 return self._send(403, {"error": "来源不允许"})
@@ -110,6 +110,8 @@ def make_handler(settings: Settings, token: str):
             try:
                 if self.path == "/v1/feedback":
                     out = api.record_feedback(settings, body)
+                elif self.path == "/v1/context":
+                    out = api.resolve_context_api(settings, body)
                 elif self.path == "/v1/dwell":
                     out = api.record_dwell_api(settings, body)
                 else:

@@ -902,6 +902,9 @@ def open_in_dedicated_browser(settings: Settings, body: dict[str, Any]) -> dict[
     view = str(body.get("view") or "")
     title = str(body.get("title") or "")
     target = db.build_open_url(url, item_key=key, source_id=sid, view=view, title=title)
+    # 登记待匹配上下文：页面加载后地址里的 #ihk 片段可能被站点改写丢失，插件再凭当前地址来取
+    from core import pending_open
+    pending_open.register(settings.paths.state_dir, url=url, item_key=key, source_id=sid, view=view, title=title)
     try:
         out = db.open_url(settings.paths.root, db.load_config(settings.paths.root), target)
     except FileNotFoundError as exc:
@@ -909,6 +912,16 @@ def open_in_dedicated_browser(settings: Settings, body: dict[str, Any]) -> dict[
     except OSError as exc:
         raise ApiError(500, f"启动浏览器失败：{exc}")
     return out
+
+
+def resolve_context_api(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
+    """插件按当前页面地址查询“看板打开”登记的条目上下文（找不到时 found=false，不报错）。"""
+    from core import pending_open
+    url = str(body.get("url") or "").strip()
+    if len(url) > 4096 or not re.match(r"^https?://", url):
+        raise ApiError(400, "链接必须是 http(s) 地址")
+    ctx = pending_open.lookup(settings.paths.state_dir, url)
+    return {"found": ctx is not None, "context": ctx}
 
 
 def receiver_info(settings: Settings) -> dict[str, Any]:

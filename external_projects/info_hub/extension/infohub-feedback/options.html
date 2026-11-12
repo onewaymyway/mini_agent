@@ -18,6 +18,11 @@
   <input id="port" type="number" min="1" max="65535" value="18765">
   <label>连接令牌</label>
   <input id="token" type="password" autocomplete="off">
+  <label style="display:flex;gap:8px;align-items:flex-start">
+    <input id="showAll" type="checkbox" style="width:auto;margin-top:3px">
+    <span>在专用浏览器的所有页面显示反馈工具条（默认关闭）。<br>
+      非看板打开的页面会以“手动反馈”记录（信息源记为 manual），不统计停留时长。</span>
+  </label>
   <button id="save">保存</button>
   <button id="test">测试连接</button>
   <div id="msg"></div>

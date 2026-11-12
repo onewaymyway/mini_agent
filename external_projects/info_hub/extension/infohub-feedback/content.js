@@ -1,6 +1,8 @@
 // 内容脚本（document_start 注入）：在页面自身脚本运行之前读取 #ihk=... 标记。
 // 小红书等单页应用加载后常用 history.replaceState 改写地址，片段会被删掉，
 // 所以标记在最早时刻保存下来，并存入当前标签页的 sessionStorage，之后即使地址被改写也能继续识别。
+// 若标记在脚本运行前就已丢失（站点重定向/改写），则凭当前地址向接收服务查询看板登记的上下文（/v1/context）。
+// 仍找不到时：只有在扩展选项中开启“在所有页面显示”，才以“手动反馈”模式显示工具条（默认关闭）。
 (function () {
   if (window.top !== window) return;
   const STORE = "infohub-feedback-ctx";
@@ -26,9 +28,38 @@
       if (saved && saved.pathname === location.pathname && KEY_RE.test(saved.key)) ctx = saved;
     } catch (e) { /* 忽略 */ }
   }
-  if (!ctx) return;
+  const MANUAL_SOURCE = "manual";  // 手动模式使用的信息源 id（不属于任何看板信息源）
+  const pageUrl = () => location.href.split("#")[0];
+
+  function resolveContext() {
+    if (ctx) return begin();
+    const ask = { type: "context", url: pageUrl() };
+    chrome.runtime.sendMessage(ask, (resp) => {
+      if (!chrome.runtime.lastError && resp && resp.found && resp.context && KEY_RE.test(resp.context.item_key || "")) {
+        const c = resp.context;
+        ctx = { key: c.item_key, sourceId: c.source_id || "", view: c.view || "", title: c.title || "",
+                url: pageUrl(), pathname: location.pathname };
+        try { sessionStorage.setItem(STORE, JSON.stringify(ctx)); } catch (e) { /* 忽略 */ }
+        return begin();
+      }
+      chrome.storage.local.get({ showAll: false }).then((cfg) => {
+        if (!cfg.showAll) return;
+        ctx = { manual: true, key: "", sourceId: MANUAL_SOURCE, view: "", title: "", url: "", pathname: location.pathname };
+        begin();
+      }, () => {});
+    });
+  }
+
+  function begin() {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", start, { once: true });
+    } else {
+      start();
+    }
+  }
 
   function start() {
+    if (document.getElementById("infohub-feedback-host")) return;
     const host = document.createElement("div");
     host.id = "infohub-feedback-host";
     const root = host.attachShadow({ mode: "closed" });
@@ -69,6 +100,10 @@
       rsBox.append(lab);
     }
     const selectedReasons = () => [...rsBox.querySelectorAll("input:checked")].map((c) => c.value);
+    if (ctx.manual) {
+      status.textContent = "手动反馈（未从看板打开）";
+      status.dataset.ok = "1";
+    }
     const say = (text, ok) => { status.textContent = text; status.dataset.ok = ok ? "1" : "0"; };
 
     for (const [action, label] of ACTIONS) {
@@ -81,8 +116,8 @@
           body: {
             action,
             source_id: ctx.sourceId,
-            url: ctx.url,
-            title: ctx.title,
+            url: ctx.manual ? pageUrl() : ctx.url,
+            title: ctx.manual ? document.title : ctx.title,
             reasons: selectedReasons(),
             note: note.value.trim(),
             view: ctx.view,
@@ -103,6 +138,8 @@
     }
     root.querySelector(".close").addEventListener("click", () => host.remove());
     document.documentElement.append(host);
+
+    if (ctx.manual) return;  // 手动模式没有看板条目 key，不统计停留与打开
 
     // 停留时长：只统计页面可见时间，发送增量（可多次累加，不重复计数）
     let accumulated = 0;
@@ -139,9 +176,5 @@
     }
   }
 
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", start, { once: true });
-  } else {
-    start();
-  }
+  resolveContext();
 })();
