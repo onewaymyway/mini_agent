@@ -687,3 +687,9 @@ P0–P9 均已完成。仍未在真实环境验证：有头登录、语音输出
 - 看板新增“⚙ 显示数量设置”面板，六个参数可保存、可恢复默认；保存值优先于 settings.yaml。
 - 改动：`core/feed.py`（DISPLAY_LIMITS、apply_display、prefs 的 display 字段）；`server/api.py`（feed_display_get_api / feed_display_set_api）；`app.py`（_feed_display_panel）。
 - 验证：`tests/test_feed_display.py` 4 项；`tests/test_feed_swap.py` 固定数量后通过；info_hub 全量 512 项，剩余 2 个为改动前即存在的账本测试。
+
+## 推荐页底部“换一批”与回到顶部（已完成，见推荐信息流设计第 20 节）
+
+- 页面最下方新增“🔀 换一批”，与顶部按钮行为相同；两者改为 on_click 回调，快照键包含排除集合自动重建。
+- 换一批后输出滚动脚本，将页面回到最前面（真实浏览器中的效果待确认）。
+- 验证：`tests/test_feed_swap.py` 扩展后通过；info_hub 全量剩余 2 个为改动前即存在的账本测试。

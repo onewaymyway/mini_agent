@@ -64,6 +64,15 @@ class SwapTests(unittest.TestCase):
         second = self._bold(at)
         self.assertTrue(second, "还有未展示过的内容时，换一批应给出新的一批")
         self.assertFalse(first & second, "换一批后不应再出现刚才展示过的条目")
+        # 底部“换一批”：同样换下一批，并输出回到最前面的滚动脚本
+        bottom = [b for b in at.button if b.key == "feed_swap_bottom"]
+        self.assertEqual(len(bottom), 1)
+        bottom[0].click().run()
+        self.assertFalse(at.exception, [e.value for e in at.exception])
+        third = self._bold(at)
+        self.assertFalse(second & third, "底部换一批也不应重复刚才展示过的条目")
+        scrolls = [el for el in at.get("iframe") if "scrollTo" in (el.proto.srcdoc or "")]
+        self.assertTrue(scrolls, "换一批后应输出滚动到最前面的脚本")
         # 刷新推荐：排除清空，重新从头开始
         [b for b in at.button if b.key == "feed_refresh"][0].click().run()
         self.assertEqual(self._bold(at), first)

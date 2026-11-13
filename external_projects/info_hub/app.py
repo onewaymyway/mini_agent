@@ -1173,6 +1173,38 @@ def _feed_display_panel() -> None:
                 st.rerun()
 
 
+_FEED_SCROLL_TOP_JS = """
+<script>
+(function () {
+  const doc = window.parent.document;
+  const targets = [
+    doc.querySelector('[data-testid="stMain"]'),
+    doc.querySelector('[data-testid="stAppViewContainer"]'),
+    doc.querySelector("section.main"),
+    doc.querySelector('[data-testid="stMainBlockContainer"]'),
+  ].filter(Boolean);
+  targets.forEach((el) => { el.scrollTo({ top: 0, behavior: "instant" }); });
+  window.parent.scrollTo({ top: 0, behavior: "instant" });
+})();
+</script>
+"""
+
+
+def _feed_swap_click() -> None:
+    """“换一批”（顶部与底部共用）：把当前快照里屏幕上的条目记入排除集合，并标记需要滚动到最前面。
+
+    在按钮的 on_click 回调中执行，早于本轮脚本重跑；快照键包含排除集合，因此下一次渲染会自动重建数据。
+    """
+    snap = st.session_state.get("feed_snap")
+    if snap:
+        fkey = tuple(snap["key"][:4])
+        ex = st.session_state.get("feed_exclude") or {}
+        keys = set(ex.get("keys", set())) if ex.get("filter") == fkey else set()
+        keys |= _shown_member_keys(snap["res"])
+        st.session_state["feed_exclude"] = {"filter": fkey, "keys": keys}
+    st.session_state["feed_scroll_top"] = True
+
+
 def _feed_tab() -> None:
     srcs_all = (call(api.list_sources, settings) or {"sources": []})["sources"]
     valid = [x for x in srcs_all if not x.get("config_errors")]
@@ -1199,19 +1231,16 @@ def _feed_tab() -> None:
     ex = st.session_state.get("feed_exclude") or {}
     if ex.get("filter") != fkey:  # 筛选条件变化：之前“换一批”排除的条目不再适用
         ex = {"filter": fkey, "keys": set()}
+    if st.session_state.pop("feed_scroll_top", False):
+        st.components.v1.html(_FEED_SCROLL_TOP_JS, height=0)  # 换一批后滚动到最前面
     _feed_display_panel()
     rc0, rc1, rc2 = st.columns([2, 2, 8], vertical_alignment="center")
     refresh = rc1.button("🔄 刷新推荐", key="feed_refresh", help="重新读取抓取结果与反馈，列表在这时才会更新")
     if refresh:
         ex = {"filter": fkey, "keys": set()}  # 刷新从头开始，清空“换一批”的排除
     st.session_state["feed_exclude"] = ex
-    swap_clicked = rc0.button("🔀 换一批", key="feed_swap",
-                              help="排除当前屏幕上的条目，换成下一批未展示过的内容（可连续点击）")
-    if swap_clicked and st.session_state.get("feed_snap"):
-        cur = st.session_state["feed_snap"]["res"]
-        ex["keys"] = set(ex["keys"]) | _shown_member_keys(cur)
-        st.session_state["feed_exclude"] = ex
-        refresh = True
+    rc0.button("🔀 换一批", key="feed_swap", on_click=_feed_swap_click,
+               help="排除当前屏幕上的条目，换成下一批未展示过的内容（可连续点击）")
     res = _feed_snapshot(hours, category, kind, bool(show_processed), refresh, frozenset(ex["keys"]))
     if res is None:
         return
@@ -1273,6 +1302,11 @@ def _feed_tab() -> None:
             limit = res["others_limit"]
             with st.expander(f"其余（{len(sec['others'])} 条，默认展示前 {limit} 条）", expanded=False):
                 _feed_block(sec["others"][:limit], f"o_{hours}_{category}_{kind}")
+
+    if res["sections"] and any(res["sections"][k] for k in ("featured", "hot", "topics", "explore", "others")):
+        st.divider()
+        st.button("🔀 换一批", key="feed_swap_bottom", on_click=_feed_swap_click,
+                  help="排除当前屏幕上的条目，换成下一批，并回到页面最前面")
 
     with st.expander("已“不再显示”的信息源（可撤销）"):
         hidden = feed_prefs.load_prefs(settings.paths.data_dir)["hidden_sources"]
