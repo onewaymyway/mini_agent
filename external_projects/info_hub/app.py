@@ -80,20 +80,27 @@ def fmt_time(iso: Optional[str]) -> str:
 
 
 def open_button(url: Optional[str], key: str, *, sid: str = "", title: str = "", view: str = "",
-                label: str = "打开") -> None:
-    """在专用浏览器中打开链接（看板上所有显示抓取内容地址的地方都用它）。
+                label: str = "专用浏览器打开") -> None:
+    """打开原文的两种方式（看板上所有显示抓取内容地址的地方都用它）。
 
-    sid 不为空时按条目打开：反馈工具条绑定该条目，并记录一次“打开”；
-    sid 为空时只打开原始链接（候选信息源地址、信息源配置地址等没有条目的场景）。
+    - 按钮“专用浏览器打开”：在本机的专用浏览器中打开（看板与浏览器在同一台机器上时使用）。
+      sid 不为空时按条目打开：反馈工具条绑定该条目，并记录一次“打开”；sid 为空时只打开原始链接。
+    - 链接“打开”：直接在当前设备的新标签页中打开原文（其他设备访问看板时使用，不需要服务端浏览器）。
+      链接由浏览器直接跳转，服务端无法感知，因此不记录“打开”、不触发工具条。
     """
     if not url:
         return
-    if st.button(label, key=key, help="在专用浏览器中打开" + ("，页面侧边的反馈工具条可用" if sid else "")):
-        out = call(api.open_in_dedicated_browser, settings, {
-            "url": url, "source_id": sid, "item_key": item_key(url, title) if sid else "",
-            "view": view, "title": title})
-        if out is not None:
-            st.toast("已在专用浏览器中打开")
+    b_col, l_col = st.columns([3, 1], vertical_alignment="center", gap="small")
+    with b_col:
+        if st.button(label, key=key,
+                     help="在本机的专用浏览器中打开" + ("，页面侧边的反馈工具条可用" if sid else "")):
+            out = call(api.open_in_dedicated_browser, settings, {
+                "url": url, "source_id": sid, "item_key": item_key(url, title) if sid else "",
+                "view": view, "title": title})
+            if out is not None:
+                st.toast("已在专用浏览器中打开")
+    with l_col:
+        st.link_button("打开", url, help="在当前设备的新标签页中打开原文（其他设备可用）")
 
 
 settings = load_settings(PROJECT_ROOT)
@@ -1023,7 +1030,7 @@ def _feed_row(card: dict, k: str) -> None:
     簇内所有成员一起处理：点一次反馈，同一事件的每条报道都会记录，避免处理后另一来源的同一事件又冒出来。
     """
     k = f"feed_{k}"  # 推荐页的按钮键统一加 feed_ 前缀，与“抓取结果”页的 fb_* / op_* 键互不干扰
-    c1, c2, c3, c4, c5, c6 = st.columns([8, 1, 1, 1, 1, 2], vertical_alignment="center")
+    c1, c2, c3, c4, c5, c6 = st.columns([7, 1, 1, 1, 1, 3], vertical_alignment="center")
     head = ("✅ 已处理 · " if card.get("processed") else "") + ("🆕 " if card.get("is_new") else "")
     c1.markdown(f"{head}**{card['title']}**")
     if card.get("summary"):
