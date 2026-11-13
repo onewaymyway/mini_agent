@@ -68,6 +68,10 @@
     {
       "id": "hf_trending_models",
       "enabled": true
+    },
+    {
+      "id": "zhihu_home",
+      "enabled": true
     }
   ]
 }

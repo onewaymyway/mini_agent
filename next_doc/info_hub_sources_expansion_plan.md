@@ -123,3 +123,10 @@
 
 ### 7.2 验证
 - info_hub 全量通过，剩余 2 个为改动前即存在的账本测试（`test_entrypoints`）。
+
+## 8. 知乎首页推荐（已实施）
+
+- 新增信息源 `zhihu_home`：通过共享浏览器打开 `https://www.zhihu.com/`，用 html_list 解析 `.TopstoryItem` 卡片，标题取 `.ContentItem-title`，链接取卡片标题中的 `a`，摘要取 `.RichContent-inner`。分类 hot_community，类型 feed，每小时抓取。
+- 复用 `zhihu` 站点配置与登录态（与 `zhihu_hot` 相同）。首页推荐需要登录，需先执行 `python cli.py login zhihu`。
+- 未验证：知乎首页的真实 DOM 与选择器。沙箱无法访问站点，需要在本机抓取一次确认；若为 0 条，请提供调试信息中的页面结构。
+- 验证：`tests/test_new_sources.py` 新增用例（仿真浏览器响应，相对与绝对链接补全）；info_hub 全量通过，剩余 2 个为既有账本测试。

@@ -13,7 +13,7 @@ from core.settings import load_settings
 from core.sources import load_sources
 
 ROOT = Path(__file__).resolve().parent.parent
-NEW = ["bangumi_calendar", "hacker_news", "github_trending", "sspai_feed", "kr36_feed", "ruanyifeng_blog"]
+NEW = ["zhihu_home", "bangumi_calendar", "hacker_news", "github_trending", "sspai_feed", "kr36_feed", "ruanyifeng_blog"]
 
 
 def _ctx(mapping):
@@ -110,6 +110,31 @@ class NewSourcesFetchTests(unittest.TestCase):
         self.assertEqual(res.items[0].url, "https://www.36kr.com/p/3739006287216903")
         self.assertEqual(res.items[1].url, "https://36kr.com/p/2819109330061574")
         self.assertNotIn("newsflashes", " ".join(i.url for i in res.items))
+
+    def test_zhihu_home_via_browser(self):
+        html = (
+            '<html><body><div class="TopstoryItem"><h2 class="ContentItem-title">'
+            '<a href="/question/111/answer/222">如何看待某件事</a></h2>'
+            '<div class="RichContent-inner">摘要一</div></div>'
+            '<div class="TopstoryItem"><h2 class="ContentItem-title">'
+            '<a href="https://zhuanlan.zhihu.com/p/333">专栏文章</a></h2></div></body></html>'
+        )
+        seen = {}
+
+        class FakeBrowser:
+            def fetch_html(self, url, **kw):
+                seen.update(kw, url=url)
+                return html
+
+        ctx = FetchContext(browser=FakeBrowser(), sites={"zhihu": {"expired_pattern": "/signin"}})
+        res = get_adapter("html_list").fetch(self.specs["zhihu_home"], ctx)
+        self.assertIsNone(res.error)
+        self.assertEqual(seen["url"], "https://www.zhihu.com/")
+        self.assertEqual(seen["site"], "zhihu")
+        self.assertEqual(len(res.items), 2)
+        self.assertEqual(res.items[0].url, "https://www.zhihu.com/question/111/answer/222")
+        self.assertEqual(res.items[0].title, "如何看待某件事")
+        self.assertEqual(res.items[1].url, "https://zhuanlan.zhihu.com/p/333")
 
     def test_36kr_without_browser_reports_clearly(self):
         res = get_adapter("html_list").fetch(self.specs["kr36_feed"], FetchContext())

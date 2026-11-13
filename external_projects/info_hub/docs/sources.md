@@ -49,6 +49,7 @@ tags: [Hacker News, 技术, 英文]
 | id | 名称 | 分类 | 类型 | 适配器 | 调度 | 备注 |
 |---|---|---|---|---|---|---|
 | `zhihu_hot` | 知乎热榜 | hot_community | hot_list | html_list（浏览器） | 1h | 需要先登录一次：`python cli.py login zhihu` |
+| `zhihu_home` | 知乎首页推荐 | hot_community | feed | html_list（浏览器） | 1h | 需要登录（与 zhihu_hot 共用登录态）；选择器未在线验证 |
 | `weibo_hot` | 微博热搜 | hot_community | hot_list | json_api | 30m | |
 | `baidu_hot` | 百度热搜 | hot_community | hot_list | json_api | 30m | |
 | `bilibili_popular` | B站热门 | video | hot_list | json_api | 1h | |
