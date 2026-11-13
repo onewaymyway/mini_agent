@@ -456,3 +456,26 @@ P4（LLM 增强）是可选项，默认关闭，需要已配置模型。它的�
 - `tests/test_feed_swap.py` 扩展：底部按钮存在；点击后与上一批不重叠；页面输出包含滚动脚本；原有顶部换一批与刷新用例仍通过。
 - **未验证**：滚动在真实浏览器中是否生效。脚本通过 `components.html` 的 iframe 访问父页面，依赖 Streamlit 的同源沙箱设置，需要你在看板里点一下确认。若失效，可以改用 Streamlit 新版的 `st.iframe`（当前 `requirements.txt` 要求 `streamlit>=1.37`，`st.iframe` 需要更新的版本）。
 - info_hub 全量通过，剩余 2 个为改动前即存在的账本测试（`test_entrypoints`）。
+
+---
+
+## 21. 探索条数可设置，默认调大（已实施）
+
+### 21.1 变化
+- 原来探索位按精选条数的比例取（`explore_ratio: 0.15`，10 条精选只有 2 条探索，且精选少于 4 条时不设探索）。
+- 现在直接设置探索条数 `explore_size`，默认 **5**，0 即关闭。`explore_ratio` 与 `explore_min_featured` 已移除，不再影响探索条数。
+- 看板“⚙ 显示数量设置”面板新增“探索条数”，范围 0–40，保存后刷新生效。优先级同其它显示参数：看板 > settings.yaml > 内置默认。
+
+### 21.2 与其它分区的关系
+- 探索仍只从“没有命中关注主题”的事件中选取。
+- 新增约束：探索不选“多源热点”资格的事件（报道来源数 ≥ `hot_min_sources`），这类事件留给“多源热点”分区。否则当精选条数较少时，探索会抢走热点条目，导致热点分区为空。
+- 实际条数受候选数量限制，不足时少于设定值。
+
+### 21.3 代码位置
+- `core/feed.py`：`DEFAULT_CONFIG["explore_size"]`、`_explore_size`、`DISPLAY_LIMITS` 新增 `explore_size`，`_assign_sections` 中探索的筛选条件。
+- `config/settings.yaml`：`explore_size: 5`。
+- `tests/test_feed_p2.py`：探索条数的直接设置、为 0 时关闭、配置覆盖；`tests/test_feed_display.py`：看板设置探索条数并生效。
+
+### 21.4 验证
+- 相关测试通过；info_hub 全量 532 项，剩余 2 个为改动前即存在的账本测试（`test_entrypoints`）。
+- **未验证**：真实数据下探索内容的相关性是否合适，默认 5 条是否偏多，需要你在看板上观察后调整。

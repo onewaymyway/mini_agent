@@ -56,8 +56,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "persistence_penalty": 0.3,
         "fatigue_penalty": 0.2,    # P2：展示很多次却从未点击的条目降权；设为 0 即关闭
     },
-    "explore_ratio": 0.15,         # P2：精选中探索位的比例（画像之外的内容）；设为 0 即关闭
-    "explore_min_featured": 4,     # 精选条数少于该值时不设探索位
+    "explore_size": 5,             # 探索分区的条数（画像之外的内容）；设为 0 即关闭
     "diversity": {                 # P2：精选中的多样性控制
         "source_cap": 3,           # 同一信息源在精选中最多出现的条数
         "topic_repeat_penalty": 0.1,  # 同一主题每多一条，后续候选扣掉的分数
@@ -75,6 +74,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
 # 看板可调的展示数量：键 -> (最小值, 最大值, 中文名)。页面保存的值优先于 settings.yaml 与默认值。
 DISPLAY_LIMITS: dict[str, tuple[int, int, str]] = {
     "featured_size": (1, 40, "今日精选条数"),
+    "explore_size": (0, 40, "探索条数"),
     "hot_size": (0, 40, "多源热点最多条数"),
     "topic_groups": (0, 12, "关注主题分组数"),
     "topic_group_size": (1, 30, "每个主题组最多条数"),
@@ -664,10 +664,11 @@ def _pick_featured(ranked: list[dict[str, Any]], n: int, source_cap: int, topic_
 
 
 def _explore_size(cfg: dict[str, Any]) -> int:
-    ratio = float(cfg.get("explore_ratio") or 0)
-    if ratio <= 0 or cfg["featured_size"] < cfg["explore_min_featured"]:
+    """探索分区的条数：直接取配置的 explore_size（0 即关闭）。实际条数还受候选数量限制。"""
+    try:
+        return max(0, int(cfg.get("explore_size", 0)))
+    except (TypeError, ValueError):
         return 0
-    return max(1, round(cfg["featured_size"] * ratio))
 
 
 def _assign_sections(cards: list[dict[str, Any]], cfg: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
@@ -684,7 +685,8 @@ def _assign_sections(cards: list[dict[str, Any]], cfg: dict[str, Any]) -> dict[s
 
     # 探索位：画像之外（没有命中关注主题）但重要且新鲜的簇；标注为“探索”，防止回音室
     rest = [c for c in ranked if c["key"] not in used]
-    explore = sorted((c for c in rest if not c["matches"]),
+    # 探索不抢占“多源热点”的条目：多源事件留给热点分区
+    explore = sorted((c for c in rest if not c["matches"] and c["n_sources"] < cfg["hot_min_sources"]),
                      key=lambda c: c["components"].get("importance", 0) * c["components"].get("freshness", 0),
                      reverse=True)[:_explore_size(cfg)]
     for c in explore:

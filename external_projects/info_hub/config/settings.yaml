@@ -45,8 +45,7 @@ feed:                     # 推荐信息流（看板“推荐”标签页，P1�
   cluster_threshold: 0.45 # 标题聚合阈值（越大越保守，宁可漏聚，不要误并）
   cold_start_factor: 0.3  # 画像为空时 interest 权重的系数
   persistence_snapshots: 12  # 一直挂在榜上超过该快照数的条目降权
-  explore_ratio: 0.15     # 精选中探索位的比例（画像之外的内容）；0 即关闭
-  explore_min_featured: 4 # 精选条数少于该值时不设探索位
+  explore_size: 5         # 探索分区条数（画像之外的内容）；0 即关闭
   diversity:              # 精选的多样性控制
     source_cap: 3         # 同一信息源在精选中最多条数
     topic_repeat_penalty: 0.1  # 同一主题每多一条，后续候选扣分

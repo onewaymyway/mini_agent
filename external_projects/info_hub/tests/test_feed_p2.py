@@ -60,19 +60,18 @@ class FatigueAndDiversityUnitTests(unittest.TestCase):
         chosen = feed._pick_featured(ranked, 2, source_cap=0, topic_penalty=0.2)
         self.assertEqual([c["key"] for c in chosen], ["x1", "y1"])
 
-    def test_explore_size_respects_ratio_and_minimum(self):
-        self.assertEqual(feed._explore_size({"featured_size": 10, "explore_ratio": 0.15,
-                                             "explore_min_featured": 4}), 2)
-        self.assertEqual(feed._explore_size({"featured_size": 10, "explore_ratio": 0,
-                                             "explore_min_featured": 4}), 0)
-        self.assertEqual(feed._explore_size({"featured_size": 3, "explore_ratio": 0.5,
-                                             "explore_min_featured": 4}), 0)
+    def test_explore_size_is_direct_count(self):
+        self.assertEqual(feed._explore_size({"explore_size": 5}), 5)
+        self.assertEqual(feed._explore_size({"explore_size": 0}), 0)
+        self.assertEqual(feed._explore_size({"explore_size": -3}), 0)
+        self.assertEqual(feed._explore_size({"explore_size": "x"}), 0)
+        self.assertEqual(feed.DEFAULT_CONFIG["explore_size"], 5)
 
     def test_config_nested_override_keeps_defaults(self):
-        cfg = feed.load_config({"feed": {"diversity": {"source_cap": 1}, "explore_ratio": 0.3}})
+        cfg = feed.load_config({"feed": {"diversity": {"source_cap": 1}, "explore_size": 7}})
         self.assertEqual(cfg["diversity"]["source_cap"], 1)
         self.assertEqual(cfg["diversity"]["topic_repeat_penalty"], 0.1)
-        self.assertEqual(cfg["explore_ratio"], 0.3)
+        self.assertEqual(cfg["explore_size"], 7)
 
 
 class FeedP2Tests(unittest.TestCase):
@@ -122,16 +121,24 @@ class FeedP2Tests(unittest.TestCase):
         _snap(self.settings, "a", t, [_item("a", x) for x in _distinct_titles(16)])
         res = self._build()
         explore = res["sections"]["explore"]
-        self.assertEqual(len(explore), 2)
+        self.assertEqual(len(explore), min(feed.DEFAULT_CONFIG["explore_size"], len(explore)))
+        self.assertGreater(len(explore), 0)
         self.assertTrue(all(c["section"] == "explore" for c in explore))
         keys = [c["key"] for c in self._all(res)]
         self.assertEqual(len(keys), len(set(keys)))
         self.assertTrue(any(x["section"] == "explore" for x in res["impressions"]))
 
-    def test_explore_disabled_by_zero_ratio(self):
+    def test_explore_disabled_by_zero_count(self):
         t = self.now - timedelta(minutes=5)
         _snap(self.settings, "a", t, [_item("a", x) for x in _distinct_titles(16)])
-        self.assertEqual(self._build(cfg={"explore_ratio": 0})["sections"]["explore"], [])
+        self.assertEqual(self._build(cfg={"explore_size": 0})["sections"]["explore"], [])
+
+    def test_explore_count_follows_setting(self):
+        t = self.now - timedelta(minutes=5)
+        _snap(self.settings, "a", t, [_item("a", x) for x in _distinct_titles(30)])
+        res = self._build(cfg={"explore_size": 3})
+        self.assertLessEqual(len(res["sections"]["explore"]), 3)
+        self.assertGreater(len(res["sections"]["explore"]), 0)
 
     def test_hidden_source_is_excluded_and_counted(self):
         t = self.now - timedelta(minutes=5)

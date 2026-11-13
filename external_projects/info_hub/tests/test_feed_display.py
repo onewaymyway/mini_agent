@@ -43,6 +43,16 @@ class FeedDisplayTests(unittest.TestCase):
         self.assertEqual(out["values"]["featured_size"], feed.DEFAULT_CONFIG["featured_size"])
         self.assertEqual(out["overridden"], [])
 
+    def test_explore_size_is_settable_and_zero_disables(self):
+        out = api.feed_display_set_api(self.settings, {"values": {"explore_size": 9}})
+        self.assertEqual(out["values"]["explore_size"], 9)
+        self.assertIn("explore_size", out["overridden"])
+        res = api.feed_view(self.settings, hours=24)
+        self.assertLessEqual(len(res["sections"]["explore"]), 9)
+        api.feed_display_set_api(self.settings, {"values": {"explore_size": 0}})
+        res = api.feed_view(self.settings, hours=24)
+        self.assertEqual(res["sections"]["explore"], [])
+
     def test_build_uses_saved_limits(self):
         api.feed_display_set_api(self.settings, {"values": {"others_limit": 12}})
         res = api.feed_view(self.settings, hours=24)
