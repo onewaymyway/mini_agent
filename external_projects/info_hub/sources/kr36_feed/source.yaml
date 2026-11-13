@@ -1,12 +1,26 @@
-# 36 氪（RSS）。标准 RSS，无需登录；若地址变更导致 0 条，只需改 request.url。
+# 36 氪首页（通过专用浏览器抓取）。
+# 原 RSS 地址返回的是站点安全验证页，无法直接抓取，因此改为在共享浏览器中打开首页再解析。
+# 文章链接形如 https://www.36kr.com/p/<数字ID>，列表选择器据此取链接；标题取链接文本。
+# 需要：看板“设置与管理”中已启动专用浏览器。无需登录。
+# 若改版导致 0 条：到“抓取结果”的调试信息里看页面实际链接，再改这里的 list_selector。
 id: kr36_feed
 name: 36氪
 category: news
 kind: feed
-adapter: rss
+adapter: html_list
 enabled: true
 schedule: {every: 1h}
 request:
-  url: https://36kr.com/feed
+  url: https://36kr.com/
+browser:
+  required: true
+  site: kr36
+  headless: true
+  wait_selector: 'a[href*="/p/"]'
+parse:
+  list_selector: 'a[href*="36kr.com/p/"], a[href^="/p/"]'
+  fields:
+    title: self
+    url: "@href"
 policy: {max_items: 30}
 tags: [36氪, 科技, 商业]

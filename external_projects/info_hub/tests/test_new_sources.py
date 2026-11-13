@@ -87,6 +87,34 @@ class NewSourcesFetchTests(unittest.TestCase):
         self.assertEqual(res.items[0].url, "https://github.com/owner/repo-one")
         self.assertIn("owner", res.items[0].title)
 
+    def test_36kr_homepage_via_browser(self):
+        html = (
+            '<html><body><nav><a href="/newsflashes">快讯</a></nav>'
+            '<a href="https://www.36kr.com/p/3739006287216903">张雪峰医疗文件疑似泄露</a>'
+            '<a href="/p/2819109330061574">二类疫苗价格战</a>'
+            '<a href="https://www.36kr.com/p/3630682744554501">外卖大战</a></body></html>'
+        ).encode("utf-8")
+        seen = {}
+
+        class FakeBrowser:
+            def fetch_html(self, url, **kw):
+                seen.update(kw, url=url)
+                return html.decode("utf-8")
+
+        ctx = FetchContext(browser=FakeBrowser(), sites={"kr36": {"expired_pattern": "/login"}})
+        res = get_adapter("html_list").fetch(self.specs["kr36_feed"], ctx)
+        self.assertIsNone(res.error)
+        self.assertEqual(seen["url"], "https://36kr.com/")
+        self.assertEqual(seen["site"], "kr36")
+        self.assertEqual(len(res.items), 3)
+        self.assertEqual(res.items[0].url, "https://www.36kr.com/p/3739006287216903")
+        self.assertEqual(res.items[1].url, "https://36kr.com/p/2819109330061574")
+        self.assertNotIn("newsflashes", " ".join(i.url for i in res.items))
+
+    def test_36kr_without_browser_reports_clearly(self):
+        res = get_adapter("html_list").fetch(self.specs["kr36_feed"], FetchContext())
+        self.assertIn("未配置浏览器会话", res.error or "")
+
     def test_rss_feeds_parse(self):
         rss = """<?xml version="1.0"?><rss version="2.0"><channel>
 <item><title>标题一</title><link>https://sspai.com/post/1</link><pubDate>Fri, 13 Nov 2026 08:00:00 GMT</pubDate>
@@ -96,7 +124,7 @@ class NewSourcesFetchTests(unittest.TestCase):
 <updated>2026-11-13T08:00:00Z</updated><summary>S</summary></entry></feed>""".encode("utf-8")
         ctx = _ctx({"https://sspai.com/feed": rss, "https://36kr.com/feed": rss,
                     "https://www.ruanyifeng.com/blog/atom.xml": atom})
-        for sid in ("sspai_feed", "kr36_feed"):
+        for sid in ("sspai_feed",):
             res = get_adapter("rss").fetch(self.specs[sid], ctx)
             self.assertIsNone(res.error)
             self.assertEqual(res.items[0].title, "标题一")

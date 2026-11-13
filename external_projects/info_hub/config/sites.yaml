@@ -23,3 +23,9 @@ sites:
     login_url: https://money.163.com/
     check_url: https://money.163.com/
     expired_pattern: /passport/
+  kr36:
+    # 36 氪首页无需登录；此处只为满足 browser.site 必填。若出现安全验证页，抓取会报“风控拦截”，需在浏览器中手动通过验证。
+    name: 36氪
+    login_url: https://36kr.com/
+    check_url: https://36kr.com/
+    expired_pattern: /login
