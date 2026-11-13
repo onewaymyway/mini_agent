@@ -750,3 +750,11 @@ P0–P9 均已完成。仍未在真实环境验证：有头登录、语音输出
 - 配置：`config/settings.yaml` 的 `retention` 段。`defaults.retain_days` 不再用于全局清理（仅 `policy.retain_days` 用于去重状态）。
 - 验证：`tests/test_retention.py` 6 项（最小值、预览不改动、只删过程数据、保留最新快照、每日一次与开关、API 与面板）；info_hub 全量 542 项，剩余 2 个为既有账本测试。
 - 未验证：长期运行后的实际数据量与清理耗时；大体量 JSONL 的重写性能。
+
+## 数据保留参数可在看板配置（已完成）
+
+- 看板“数据保留与清理”面板新增“保留参数设置”：自动清理开关、五类保留天数、自动清理最小间隔，可保存与恢复默认。
+- 看板设置保存在 `data/state/retention_prefs.json`，优先级：看板 > `settings.yaml` > 内置默认；超出范围的值被限制，低于下限的被提高。
+- API：`retention_status_api` 返回生效参数、默认值、范围与已修改项；新增 `retention_set_api`（逐项保存或恢复默认）。
+- 验证：`tests/test_retention.py` 10 项（新增：看板设置生效与恢复、关闭自动清理、未知参数拒绝、面板保存）；info_hub 全量剩余 2 个既有账本测试。
+- 未验证：长期运行的实际效果。

@@ -32,6 +32,19 @@ DEFAULT_RETENTION: dict[str, Any] = {
 # 下限：保证推荐、合并视图、学习权重等依赖的时间窗不会因为清理而变空
 MIN_DAYS = {"raw_days": 31, "items_days": 2, "runs_days": 7, "shown_days": 60, "impressions_days": 7}
 LAST_RUN_FILE = "retention.json"
+OVERRIDES_FILE = "retention_prefs.json"  # 看板上保存的保留参数（优先于 settings.yaml）
+# 看板可调范围（天数上限 3650；间隔 1–720 小时）
+MAX_DAYS = 3650
+RUN_EVERY_RANGE = (1, 720)
+LABELS = {
+    "enabled": "自动清理",
+    "raw_days": "抓取快照保留天数",
+    "items_days": "新增条目日志保留天数",
+    "runs_days": "运行记录保留天数",
+    "shown_days": "推荐展示记录保留天数",
+    "impressions_days": "信息源展示记录保留天数",
+    "run_every_hours": "自动清理最小间隔（小时）",
+}
 
 
 def load_retention(raw: Optional[dict[str, Any]]) -> dict[str, Any]:
@@ -44,9 +57,51 @@ def load_retention(raw: Optional[dict[str, Any]]) -> dict[str, Any]:
         cfg["enabled"] = user["enabled"]
     for key, lo in MIN_DAYS.items():
         if key in user and isinstance(user[key], (int, float)) and not isinstance(user[key], bool):
-            cfg[key] = max(lo, int(user[key]))
-    if isinstance(user.get("run_every_hours"), (int, float)) and user["run_every_hours"] > 0:
-        cfg["run_every_hours"] = float(user["run_every_hours"])
+            cfg[key] = min(MAX_DAYS, max(lo, int(user[key])))
+    if isinstance(user.get("run_every_hours"), (int, float)) and not isinstance(user["run_every_hours"], bool):
+        cfg["run_every_hours"] = float(min(RUN_EVERY_RANGE[1], max(RUN_EVERY_RANGE[0], user["run_every_hours"])))
+    return cfg
+
+
+def clamp_overrides(values: dict[str, Any]) -> dict[str, Any]:
+    """看板提交的值：只保留可配置的键，限制在合法范围内；非法值丢弃。"""
+    out: dict[str, Any] = {}
+    for key, value in (values or {}).items():
+        if key == "enabled" and isinstance(value, bool):
+            out[key] = value
+        elif key in MIN_DAYS and not isinstance(value, bool):
+            try:
+                out[key] = min(MAX_DAYS, max(MIN_DAYS[key], int(value)))
+            except (TypeError, ValueError):
+                continue
+        elif key == "run_every_hours" and not isinstance(value, bool):
+            try:
+                out[key] = float(min(RUN_EVERY_RANGE[1], max(RUN_EVERY_RANGE[0], float(value))))
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
+def read_overrides(settings) -> dict[str, Any]:
+    data = read_json(settings.paths.state_dir / OVERRIDES_FILE, default=None)
+    return clamp_overrides(data) if isinstance(data, dict) else {}
+
+
+def save_overrides(settings, values: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """保存看板设置。values 为 None 表示恢复默认（清除看板上的设置）。"""
+    path = settings.paths.state_dir / OVERRIDES_FILE
+    if values is None:
+        path.unlink(missing_ok=True)
+        return {}
+    merged = {**read_overrides(settings), **clamp_overrides(values)}
+    atomic_write_json(path, merged)
+    return merged
+
+
+def effective_retention(settings) -> dict[str, Any]:
+    """当前生效的保留参数：看板设置 > settings.yaml > 内置默认，且都经过范围限制。"""
+    cfg = load_retention(settings.raw)
+    cfg.update(read_overrides(settings))
     return cfg
 
 
@@ -214,7 +269,7 @@ def _prune_impressions(settings, cutoff: datetime, dry_run: bool, report: dict[s
 def run_retention(settings, now: Optional[datetime] = None, *, dry_run: bool = False) -> dict[str, Any]:
     """执行一次清理（或预览）。返回各类数据删除的文件数、行数与字节数。"""
     now = now or datetime.now().astimezone()
-    cfg = load_retention(settings.raw)
+    cfg = effective_retention(settings)
     report = _new_report(dry_run)
     report["now"] = now.isoformat(timespec="seconds")
     report["policy"] = {k: cfg[k] for k in DEFAULT_RETENTION if k in cfg and k.endswith("days")}
@@ -251,7 +306,7 @@ def _write_last_run(settings, now: datetime, report: dict[str, Any]) -> None:
 def maybe_run_retention(settings, now: Optional[datetime] = None) -> Optional[dict[str, Any]]:
     """到期（距上次自动清理超过 run_every_hours）且已开启时执行一次；否则返回 None。异常只记录，不抛出。"""
     now = now or datetime.now().astimezone()
-    cfg = load_retention(settings.raw)
+    cfg = effective_retention(settings)
     if not cfg["enabled"]:
         return None
     last = read_last_run(settings) or {}
@@ -268,4 +323,5 @@ def maybe_run_retention(settings, now: Optional[datetime] = None) -> Optional[di
         return None
 
 
-__all__ = ["DEFAULT_RETENTION", "load_retention", "run_retention", "maybe_run_retention", "read_last_run"]
+__all__ = ["DEFAULT_RETENTION", "load_retention", "effective_retention", "clamp_overrides", "read_overrides",
+           "save_overrides", "run_retention", "maybe_run_retention", "read_last_run"]

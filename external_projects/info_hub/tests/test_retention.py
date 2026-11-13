@@ -115,6 +115,43 @@ class RetentionTests(unittest.TestCase):
         self.assertFalse(out["dry_run"])
         self.assertFalse(self.old_raw.exists())
 
+    def test_dashboard_overrides_take_effect_and_reset(self):
+        api.retention_set_api(self.st, {"values": {"raw_days": 45, "impressions_days": 1, "run_every_hours": 0}})
+        cfg = retention.effective_retention(self.st)
+        self.assertEqual(cfg["raw_days"], 45)
+        self.assertEqual(cfg["impressions_days"], retention.MIN_DAYS["impressions_days"])  # 低于下限被提高
+        self.assertEqual(cfg["run_every_hours"], retention.RUN_EVERY_RANGE[0])
+        status = api.retention_status_api(self.st)
+        self.assertEqual(sorted(status["overridden"]), ["impressions_days", "raw_days", "run_every_hours"])
+        # 设置 raw_days=45 后，200 天前的快照仍应被删除；把保留期调到 365 天则保留
+        api.retention_set_api(self.st, {"values": {"raw_days": 365}})
+        retention.run_retention(self.st, self.now, dry_run=True)
+        self.assertTrue(self.old_raw.exists())
+        api.retention_set_api(self.st, {"reset": True})
+        self.assertEqual(retention.effective_retention(self.st)["raw_days"], 31)
+        self.assertEqual(api.retention_status_api(self.st)["overridden"], [])
+
+    def test_dashboard_can_disable_auto_cleanup(self):
+        api.retention_set_api(self.st, {"values": {"enabled": False}})
+        self.assertIsNone(retention.maybe_run_retention(self.st, self.now))
+        self.assertFalse(retention.effective_retention(self.st)["enabled"])
+
+    def test_unknown_key_rejected(self):
+        from server.api import ApiError
+        with self.assertRaises(ApiError):
+            api.retention_set_api(self.st, {"values": {"nope": 3}})
+
+    def test_panel_saves_parameters(self):
+        at = AppTest.from_file(APP, default_timeout=60)
+        at.run()
+        self.assertFalse(at.exception, [e.value for e in at.exception])
+        inp = [n for n in at.number_input if n.key == "ret_raw_days"]
+        self.assertEqual(len(inp), 1)
+        inp[0].set_value(60)
+        [b for b in at.button if b.key == "ret_save"][0].click().run()
+        self.assertFalse(at.exception, [e.value for e in at.exception])
+        self.assertEqual(retention.effective_retention(self.st)["raw_days"], 60)
+
     def test_settings_panel_renders(self):
         at = AppTest.from_file(APP, default_timeout=60)
         at.run()

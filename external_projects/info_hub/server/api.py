@@ -882,13 +882,33 @@ def record_feed_impressions_api(settings: Settings, body: dict[str, Any]) -> dic
 
 
 def retention_status_api(settings: Settings) -> dict[str, Any]:
-    """数据保留：当前配置、上次清理时间与结果，以及一次预览（不删除任何文件）。"""
+    """数据保留：当前生效的参数、默认值、可调范围、看板上已改动的键、上次清理，以及一次预览（不删除文件）。"""
     from core import retention
-    cfg = retention.load_retention(settings.raw)
+    cfg = retention.effective_retention(settings)
     preview = retention.run_retention(settings, dry_run=True)
-    return {"config": cfg, "last_run": retention.read_last_run(settings),
+    return {"config": cfg, "defaults": {k: retention.load_retention(None)[k] for k in cfg},
+            "min": dict(retention.MIN_DAYS), "max_days": retention.MAX_DAYS,
+            "run_every_range": list(retention.RUN_EVERY_RANGE), "labels": dict(retention.LABELS),
+            "overridden": sorted(retention.read_overrides(settings)),
+            "last_run": retention.read_last_run(settings),
             "preview": {"categories": preview["categories"], "total_bytes": preview["total_bytes"]},
             "protected": preview["protected"]}
+
+
+def retention_set_api(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
+    """保存数据保留参数。body: {values: {...}} 逐项保存（超出范围会被限制）；{reset: true} 恢复默认。"""
+    from core import retention
+    if body.get("reset"):
+        retention.save_overrides(settings, None)
+    else:
+        values = body.get("values")
+        if not isinstance(values, dict):
+            raise ApiError(400, "values 必须是对象")
+        unknown = [k for k in values if k not in retention.LABELS]
+        if unknown:
+            raise ApiError(400, f"不支持的参数：{', '.join(unknown)}")
+        retention.save_overrides(settings, values)
+    return retention_status_api(settings)
 
 
 def retention_run_api(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:

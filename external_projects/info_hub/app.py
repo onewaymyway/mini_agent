@@ -1617,26 +1617,50 @@ def _status_tab():
 
 # ---------- 登录 ----------
 def _retention_panel() -> None:
-    """数据保留与清理：先预览数量，再执行。反馈与打开记录不会被删除。"""
+    """数据保留与清理：参数可在此调整并保存；先预览数量，再执行。反馈与打开记录不会被删除。"""
     info = call(api.retention_status_api, settings)
     if info is None:
         return
-    cfg, last = info["config"], info.get("last_run")
+    cfg, last, lim = info["config"], info.get("last_run"), info["min"]
+    labels, dflt = info["labels"], info["defaults"]
     st.caption("自动清理：每天最多一次，随调度执行。删除的是抓取快照、新增条目、运行记录与推荐展示记录；"
                "反馈（👍 / 👎 / ⏰）、打开与停留记录、偏好与学习结果永久保留。每个信息源始终保留最新一份抓取结果。")
-    st.write(f"保留天数：快照 {cfg['raw_days']} · 条目 {cfg['items_days']} · 运行记录 {cfg['runs_days']} · "
-             f"推荐展示 {cfg['shown_days']} · 信息源展示 {cfg['impressions_days']}（自动清理：{'开启' if cfg['enabled'] else '关闭'}）")
+    with st.expander("⚙ 保留参数设置", expanded=False):
+        st.caption("保存后立即生效（包括自动清理的间隔与开关）。天数不能低于下限，低于下限的值会被提高到下限。")
+        enabled = st.checkbox(f"{labels['enabled']}（默认 {'开启' if dflt['enabled'] else '关闭'}）",
+                              value=bool(cfg["enabled"]), key="ret_enabled")
+        cols = st.columns(3)
+        values = {}
+        for i, key in enumerate(("raw_days", "items_days", "runs_days", "shown_days", "impressions_days")):
+            values[key] = cols[i % 3].number_input(
+                f"{labels[key]}（默认 {dflt[key]}，最小 {lim[key]}）", min_value=int(lim[key]),
+                max_value=int(info["max_days"]), value=int(cfg[key]), step=1, key=f"ret_{key}")
+        lo, hi = info["run_every_range"]
+        values["run_every_hours"] = cols[0].number_input(
+            f"{labels['run_every_hours']}（默认 {dflt['run_every_hours']:g}）", min_value=float(lo),
+            max_value=float(hi), value=float(cfg["run_every_hours"]), step=1.0, key="ret_run_every")
+        b1, b2, _ = st.columns([2, 2, 6])
+        if b1.button("保存设置", key="ret_save", type="primary"):
+            body = {"values": {"enabled": bool(enabled), **values}}
+            if call(api.retention_set_api, settings, body) is not None:
+                st.toast("已保存")
+                st.rerun()
+        if b2.button("恢复默认", key="ret_reset"):
+            if call(api.retention_set_api, settings, {"reset": True}) is not None:
+                st.toast("已恢复默认设置")
+                st.rerun()
+        if info["overridden"]:
+            st.caption("看板上已修改：" + "、".join(labels.get(k, k) for k in info["overridden"]))
     if last:
         st.caption(f"上次清理：{fmt_time(last.get('at'))}，释放 {last.get('total_bytes', 0) / 1024:.1f} KB")
     prev = info["preview"]
-    labels = {"raw_snapshots": "抓取快照", "items": "新增条目日志", "run_logs": "运行记录",
-              "feed_shown": "推荐展示记录（行）", "source_impressions": "信息源展示记录（行）"}
-    rows = [{"类别": labels.get(k, k), "文件": v["files"], "行": v["rows"],
+    cat_labels = {"raw_snapshots": "抓取快照", "items": "新增条目日志", "run_logs": "运行记录",
+                  "feed_shown": "推荐展示记录（行）", "source_impressions": "信息源展示记录（行）"}
+    rows = [{"类别": cat_labels.get(k, k), "文件": v["files"], "行": v["rows"],
              "大小(KB)": round(v["bytes"] / 1024, 1)} for k, v in prev["categories"].items()]
     st.write("**待清理的数据（预览）**")
     st.table(pd.DataFrame(rows))
-    b1, _ = st.columns([2, 6])
-    if b1.button("立即清理", key="ret_run", type="primary"):
+    if st.button("立即清理", key="ret_run", type="primary"):
         out = call(api.retention_run_api, settings, {"dry_run": False})
         if out is not None:
             st.toast(f"已清理，释放 {out['total_bytes'] / 1024:.1f} KB")
