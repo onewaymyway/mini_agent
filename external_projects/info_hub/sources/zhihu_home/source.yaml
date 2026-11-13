@@ -1,26 +1,27 @@
-# 知乎首页推荐（通过专用浏览器抓取）。首页推荐需要登录，先在“设置与管理”中启动专用浏览器，
-# 并执行一次 python cli.py login zhihu 完成登录（登录态与 zhihu_hot 共用）。
-# 选择器基于首页推荐卡片的常见结构（.TopstoryItem / .ContentItem-title）；若改版导致 0 条，
-# 到“抓取结果”的调试信息里看页面实际结构，再改这里的 list_selector 与 fields。
 id: zhihu_home
 name: 知乎首页推荐
 category: hot_community
 kind: feed
 adapter: html_list
 enabled: true
-schedule: {every: 1h}
+schedule:
+  every: 10m
 request:
   url: https://www.zhihu.com/
 browser:
   required: true
   site: zhihu
   headless: true
-  wait_selector: ".TopstoryItem"
+  wait_selector: .TopstoryItem
 parse:
-  list_selector: ".TopstoryItem"
+  list_selector: .TopstoryItem
   fields:
-    title: ".ContentItem-title"
-    url: "h2 a@href"
-    summary: ".RichContent-inner"
-policy: {max_items: 40}
-tags: [知乎, 推荐, 首页]
+    title: .ContentItem-title
+    url: h2 a@href
+    summary: .RichContent-inner
+policy:
+  max_items: 40
+tags:
+- 知乎
+- 推荐
+- 首页
