@@ -9,7 +9,8 @@
 | `paths` | 目录，相对项目根目录 | `sources_dir`、`data_dir`、`reports_dir`、`browser_profile_dir` |
 | `streamlit` | 看板 | `port`（默认 8506）、`background_tick`（看板进程内是否后台调度） |
 | `health` | 健康状态 | `enabled`（是否降频与自动暂停，默认关）、`degrade_after`、`pause_after`、`backoff_factor`、`max_interval` |
-| `defaults` | 通用默认值 | `schedule_every`（60m）、`retain_days`（14）、`max_items`（50）、`tick_interval_minutes`（5） |
+| `defaults` | 通用默认值 | `schedule_every`（60m）、`max_items`（50）、`tick_interval_minutes`（5）。`retain_days` 已不再用于全局清理，见下方 `retention` |
+| `retention` | 数据保留与清理 | `enabled`、`raw_days`、`items_days`、`runs_days`、`shown_days`、`impressions_days`、`run_every_hours`，见下 |
 | `reports` | 报告计划 | 每个计划有 `id`，并用 `every`（间隔）或 `at`（每天固定时刻）指定时间，`window` 为统计窗口，`categories` 为分类 |
 | `profile` | 兴趣画像 | `llm_enabled`、`rank_reports`、`days` |
 | `dedicated_browser` | 专用浏览器 | `executable`（留空自动查找 Chrome/Edge）、`profile_dir`、`debug_port`（默认 9223）、`scrape_mode`（`launch` 或 `cdp`） |
@@ -41,6 +42,24 @@
 | `fatigue.shows`、`fatigue.window_days` | 3、7 | 曝光疲劳的次数与统计窗口 |
 | `half_life_hours` | 见文件 | 新鲜度半衰期，按信息源类型 |
 | `learning.*` | 见文件 | 学习权重的样本下限、增益门槛、留出比例、统计天数（默认关闭） |
+
+## 数据保留（retention 段）
+
+| 键 | 默认 | 下限 | 删除的内容 |
+|---|---|---|---|
+| `enabled` | true | — | 自动清理总开关（看板手动清理不受影响） |
+| `raw_days` | 31 | 31 | `data/raw/` 下的抓取快照；每个信息源始终保留最新一份 |
+| `items_days` | 31 | 2 | `data/items/` 下的新增条目日志 |
+| `runs_days` | 90 | 7 | `data/runs/` 下的运行记录 |
+| `shown_days` | 90 | 60 | `data/feed/shown.jsonl` 中的推荐展示记录（按行删除） |
+| `impressions_days` | 90 | 7 | `data/feedback/exposures.jsonl` 中的 impression 行（只删展示，不删用户行为） |
+| `run_every_hours` | 24 | — | 自动清理的最小间隔；随调度（tick）执行 |
+
+下限的原因：快照需覆盖 30 天的合并与推荐窗口；展示记录需覆盖 60 天的学习与回放。低于下限的配置会被提高到下限。
+
+**永久保留（不会被任何清理删除）**：反馈事件 `feedback/events.jsonl`；打开与停留记录（exposures 中的 `open`、`dwell`）；偏好 `feed/prefs.json`；学习权重、LLM 缓存与计数；`state/` 下的信息源状态；`reports/` 下生成的报告。
+
+看板“设置与管理”→“数据保留与清理”可以先预览各类数据的数量与大小，再手动清理。
 
 ## 看板可调的展示数量
 推荐页的“⚙ 显示数量设置”面板可直接调整以下参数，保存到 `data/feed/prefs.json`，优先级高于 `settings.yaml`，“恢复默认”会清除：

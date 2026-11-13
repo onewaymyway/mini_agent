@@ -47,6 +47,11 @@ def tick(settings: Settings, now: Optional[datetime] = None, ctx=None) -> TickRe
 def _run_tick(settings: Settings, now: Optional[datetime], ctx) -> TickReport:
     now = now or datetime.now().astimezone()
     out = TickReport()
+    try:  # 数据清理：每天最多一次；失败不影响本次调度
+        from core.retention import maybe_run_retention
+        maybe_run_retention(settings, now)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[retention] 跳过自动清理: {type(exc).__name__}: {exc}")
     state_path = settings.paths.state_dir / "_scheduler.json"
     default_every = settings.defaults.get("schedule_every", "60m")
     ctx = ctx or default_context(settings)

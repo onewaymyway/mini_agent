@@ -739,3 +739,14 @@ P0–P9 均已完成。仍未在真实环境验证：有头登录、语音输出
 - `app.py` 文件头的启动示例端口由 8504 改为 8506，与 `config/settings.yaml` 和 `PROJECT.md` 一致。
 - 文档中标注了未在线验证的信息源，以及 2 个既有的账本测试失败（原因为测试环境缺少 `.agent` 目录）。
 - 验证：全量测试 536 项，剩余 2 个为既有的账本测试失败；文档为说明性内容，无代码行为变化。
+
+## 数据保留与清理（已完成）
+
+- 新增 `core/retention.py`：按天数清理抓取快照、条目日志、运行记录、推荐展示记录、信息源展示记录（只删 impression）。
+- 永久保留：反馈事件、exposures 中的 open / dwell、偏好、学习权重、LLM 缓存与计数、状态文件、报告。每个信息源始终保留最新快照。
+- 下限：raw ≥ 31 天，shown ≥ 60 天，其余有最小值；低于下限的配置自动提高。
+- 自动执行：调度（tick）开始时，距上次执行超过 `run_every_hours`（24）才执行，失败只记录。
+- 看板：“设置与管理”→“数据保留与清理”，先预览再清理。API：`retention_status_api`、`retention_run_api`。
+- 配置：`config/settings.yaml` 的 `retention` 段。`defaults.retain_days` 不再用于全局清理（仅 `policy.retain_days` 用于去重状态）。
+- 验证：`tests/test_retention.py` 6 项（最小值、预览不改动、只删过程数据、保留最新快照、每日一次与开关、API 与面板）；info_hub 全量 542 项，剩余 2 个为既有账本测试。
+- 未验证：长期运行后的实际数据量与清理耗时；大体量 JSONL 的重写性能。

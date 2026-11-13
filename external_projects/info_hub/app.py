@@ -1616,6 +1616,33 @@ def _status_tab():
 
 
 # ---------- 登录 ----------
+def _retention_panel() -> None:
+    """数据保留与清理：先预览数量，再执行。反馈与打开记录不会被删除。"""
+    info = call(api.retention_status_api, settings)
+    if info is None:
+        return
+    cfg, last = info["config"], info.get("last_run")
+    st.caption("自动清理：每天最多一次，随调度执行。删除的是抓取快照、新增条目、运行记录与推荐展示记录；"
+               "反馈（👍 / 👎 / ⏰）、打开与停留记录、偏好与学习结果永久保留。每个信息源始终保留最新一份抓取结果。")
+    st.write(f"保留天数：快照 {cfg['raw_days']} · 条目 {cfg['items_days']} · 运行记录 {cfg['runs_days']} · "
+             f"推荐展示 {cfg['shown_days']} · 信息源展示 {cfg['impressions_days']}（自动清理：{'开启' if cfg['enabled'] else '关闭'}）")
+    if last:
+        st.caption(f"上次清理：{fmt_time(last.get('at'))}，释放 {last.get('total_bytes', 0) / 1024:.1f} KB")
+    prev = info["preview"]
+    labels = {"raw_snapshots": "抓取快照", "items": "新增条目日志", "run_logs": "运行记录",
+              "feed_shown": "推荐展示记录（行）", "source_impressions": "信息源展示记录（行）"}
+    rows = [{"类别": labels.get(k, k), "文件": v["files"], "行": v["rows"],
+             "大小(KB)": round(v["bytes"] / 1024, 1)} for k, v in prev["categories"].items()]
+    st.write("**待清理的数据（预览）**")
+    st.table(pd.DataFrame(rows))
+    b1, _ = st.columns([2, 6])
+    if b1.button("立即清理", key="ret_run", type="primary"):
+        out = call(api.retention_run_api, settings, {"dry_run": False})
+        if out is not None:
+            st.toast(f"已清理，释放 {out['total_bytes'] / 1024:.1f} KB")
+            st.rerun()
+
+
 def _login_panel() -> None:
     st.caption("登录需要在终端执行：系统会打开有头浏览器，完成登录后回到终端按回车。登录态保存在共享 profile 中。")
     sites = (call(api.login_status, settings) or {"sites": []})["sites"]
@@ -1643,6 +1670,9 @@ with tab_ops:
 # ---------- 设置与管理（服务管理、登录） ----------
 with tab_settings:
     _services_panel()
+    st.divider()
+    st.subheader("数据保留与清理")
+    _retention_panel()
     st.divider()
     st.subheader("登录")
     _login_panel()

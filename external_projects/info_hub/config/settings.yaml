@@ -86,5 +86,13 @@ dedicated_browser:        # 专用浏览器：独立数据目录的有头浏览�
   scrape_mode: launch     # launch：Playwright 独立启动（旧方式）；cdp：附着到专用浏览器（看板可切换）
 feedback_receiver:        # 反馈插件的本地接收服务（python -m server.feedback_receiver）；看板可修改
   port: 18765
+retention:                # 数据保留与清理：删除过程数据；反馈、打开与停留记录永久保留
+  enabled: true           # 自动清理（每天最多一次，随调度执行）；看板手动清理不受影响
+  raw_days: 31            # 抓取快照（最少 31 天，合并视图与推荐最长用 30 天）；每个信息源始终保留最新一份
+  items_days: 31          # 新增条目日志
+  runs_days: 90           # 运行记录
+  shown_days: 90          # 推荐展示记录（最少 60 天，学习权重与回放需要）
+  impressions_days: 90    # 信息源展示记录（只删 impression，open / dwell 永久保留）
+  run_every_hours: 24     # 自动清理的最小间隔
 service_autostart:       # 看板启动后是否自动恢复接收服务与专用浏览器（只启动当前未运行的；看板“服务管理”可改）
   enabled: false

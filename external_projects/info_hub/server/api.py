@@ -881,6 +881,24 @@ def record_feed_impressions_api(settings: Settings, body: dict[str, Any]) -> dic
     return {"recorded": len(clean)}
 
 
+def retention_status_api(settings: Settings) -> dict[str, Any]:
+    """数据保留：当前配置、上次清理时间与结果，以及一次预览（不删除任何文件）。"""
+    from core import retention
+    cfg = retention.load_retention(settings.raw)
+    preview = retention.run_retention(settings, dry_run=True)
+    return {"config": cfg, "last_run": retention.read_last_run(settings),
+            "preview": {"categories": preview["categories"], "total_bytes": preview["total_bytes"]},
+            "protected": preview["protected"]}
+
+
+def retention_run_api(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
+    """立即清理。body: {dry_run: bool}。反馈、打开与停留记录不会被删除。"""
+    from core import retention
+    report = retention.run_retention(settings, dry_run=bool(body.get("dry_run", False)))
+    return {"dry_run": report["dry_run"], "categories": report["categories"],
+            "total_bytes": report["total_bytes"], "protected": report["protected"]}
+
+
 def feed_display_get_api(settings: Settings) -> dict[str, Any]:
     """推荐页展示数量：当前生效值、默认值（settings.yaml 与内置默认）、合法范围。"""
     from core import feed as feedmod
