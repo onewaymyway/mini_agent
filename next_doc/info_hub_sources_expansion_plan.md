@@ -105,3 +105,21 @@
 ### 6.4 验证
 - `tests/test_new_sources.py` 中的 36 氪用例：用仿真首页验证链接筛选、相对链接补全、快讯导航链接被排除，以及未启动浏览器时的明确提示。
 - info_hub 全量通过，剩余 2 个为改动前即存在的账本测试（`test_entrypoints`）。
+
+## 7. Hugging Face 两个信息源（已实施）
+
+| 信息源 | id | 适配器 | 分类 | 类型 | 调度 | 数据来源 |
+|---|---|---|---|---|---|---|
+| Hugging Face 每日论文 | `hf_daily_papers` | script | tech | feed | 6h | `https://huggingface.co/api/daily_papers` |
+| Hugging Face 热门模型 | `hf_trending_models` | script | tech | hot_list | 2h | `https://huggingface.co/api/models?sort=trendingScore&direction=-1&limit=30` |
+
+- 每日论文：按官方列表顺序，标题取论文标题，热度为点赞数（upvotes），摘要前 3 位作者加摘要前 200 字，链接为 `huggingface.co/papers/<id>`。
+- 热门模型：按官方 trendingScore 排序，链接为 `huggingface.co/<模型 id>`，摘要包含 pipeline 类型、点赞与下载数。
+- 两者都不需要 token；如遇频率限制，可以考虑后续配置 token（本次未做）。
+
+### 7.1 未验证
+- 沙箱无法访问 huggingface.co，接口路径与字段名是根据官方文档与常见返回结构确定的，**未在线测试**。若抓取报错或为 0 条，请在“抓取结果”的调试信息中查看返回结构，告知后我调整解析。
+- 测试 `tests/test_hf_sources.py` 3 项使用仿真响应，覆盖字段映射、空条目跳过、作者与摘要的组合。
+
+### 7.2 验证
+- info_hub 全量通过，剩余 2 个为改动前即存在的账本测试（`test_entrypoints`）。

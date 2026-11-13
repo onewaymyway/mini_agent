@@ -1,0 +1,13 @@
+# Hugging Face 热门模型（按 trendingScore 排序，公开接口，免 key）。
+# 接口：https://huggingface.co/api/models?sort=trendingScore&direction=-1。解析逻辑在同目录 script.py。
+id: hf_trending_models
+name: Hugging Face 热门模型
+category: tech
+kind: hot_list
+adapter: script
+enabled: true
+schedule: {every: 2h}
+request:
+  url: https://huggingface.co/api/models?sort=trendingScore&direction=-1&limit=30
+policy: {max_items: 30}
+tags: [Hugging Face, 模型, AI]

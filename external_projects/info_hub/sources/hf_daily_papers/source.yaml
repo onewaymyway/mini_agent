@@ -1,0 +1,13 @@
+# Hugging Face Daily Papers（每日精选论文，公开接口，免 key）。
+# 接口：https://huggingface.co/api/daily_papers（列表，每项含 paper 对象）。解析逻辑在同目录 script.py。
+id: hf_daily_papers
+name: Hugging Face 每日论文
+category: tech
+kind: feed
+adapter: script
+enabled: true
+schedule: {every: 6h}
+request:
+  url: https://huggingface.co/api/daily_papers
+policy: {max_items: 40}
+tags: [Hugging Face, 论文, AI]

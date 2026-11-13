@@ -726,3 +726,9 @@ P0–P9 均已完成。仍未在真实环境验证：有头登录、语音输出
 - 探索由比例改为直接设置条数 `explore_size`，默认 5，0 关闭；看板“显示数量设置”面板可调（范围 0–40）。
 - 探索不再抢占“多源热点”资格的事件。
 - 验证：`tests/test_feed_p2.py`、`tests/test_feed_display.py` 更新后通过；info_hub 全量 532 项，剩余 2 个为改动前即存在的账本测试。
+
+## Hugging Face 每日论文与热门模型（已完成，见信息源扩展计划第 7 节）
+
+- 新增 `hf_daily_papers`（script，feed，6h）与 `hf_trending_models`（script，hot_list，2h）；`sources/_index.json` 追加两条。
+- 验证：`tests/test_hf_sources.py` 3 项（仿真响应）；info_hub 全量剩余 2 个为改动前即存在的账本测试。
+- 未验证：huggingface.co 的真实接口返回，需在本机抓取一次确认。

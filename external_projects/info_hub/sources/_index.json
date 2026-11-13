@@ -60,6 +60,14 @@
     {
       "id": "ruanyifeng_blog",
       "enabled": true
+    },
+    {
+      "id": "hf_daily_papers",
+      "enabled": true
+    },
+    {
+      "id": "hf_trending_models",
+      "enabled": true
     }
   ]
 }
