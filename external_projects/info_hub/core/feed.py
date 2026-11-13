@@ -35,14 +35,14 @@ SOURCE_PRIOR_WEIGHT = 0.5    # 来源反馈比率的先验（无数据时视为�
 SOURCE_PRIOR_STRENGTH = 5    # 先验强度（等效样本数）
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "featured_size": 10,           # 今日精选条数
+    "featured_size": 15,           # 今日精选条数
     "hot_min_sources": 3,          # 多源热点：至少被几个不同信息源报道
-    "hot_size": 8,                 # 多源热点最多条数
-    "topic_groups": 4,             # 关注主题分组数
-    "topic_group_size": 5,         # 每个主题组最多条数
+    "hot_size": 12,                 # 多源热点最多条数
+    "topic_groups": 5,             # 关注主题分组数
+    "topic_group_size": 8,         # 每个主题组最多条数
     "topic_min_group": 2,          # 主题组至少包含的簇数（少于此数的主题不单独成组）
-    "later_size": 30,              # 稍后看队列展示条数
-    "others_limit": 30,            # “其余”分区一次展示并记录曝光的条数
+    "later_size": 50,              # 稍后看队列展示条数
+    "others_limit": 50,            # “其余”分区一次展示并记录曝光的条数
     "candidate_limit": 2000,       # 候选池上限（按首次出现时间取最近的）
     "cluster_threshold": 0.45,     # 标题二元组 Jaccard 聚合阈值（宁可漏聚，不要误并）
     "cluster_df_ratio": 0.1,       # 出现在超过该比例（且超过 60 条）标题中的二元组不参与配对
@@ -70,6 +70,39 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "half_life_hours": {"hot_list": 3, "feed": 12, "recommend": 24, "custom": 12, "subscription": 72,
                         "default": 12},
 }
+
+
+# 看板可调的展示数量：键 -> (最小值, 最大值, 中文名)。页面保存的值优先于 settings.yaml 与默认值。
+DISPLAY_LIMITS: dict[str, tuple[int, int, str]] = {
+    "featured_size": (1, 40, "今日精选条数"),
+    "hot_size": (0, 40, "多源热点最多条数"),
+    "topic_groups": (0, 12, "关注主题分组数"),
+    "topic_group_size": (1, 30, "每个主题组最多条数"),
+    "later_size": (1, 200, "稍后看展示条数"),
+    "others_limit": (1, 300, "其余分区展示条数"),
+}
+
+
+def clamp_display(values: dict[str, Any]) -> dict[str, int]:
+    """只保留可调的键，并限制在合法范围内；非数字的值被丢弃。"""
+    out: dict[str, int] = {}
+    for key, value in (values or {}).items():
+        if key not in DISPLAY_LIMITS or isinstance(value, bool):
+            continue
+        try:
+            n = int(value)
+        except (TypeError, ValueError):
+            continue
+        lo, hi, _ = DISPLAY_LIMITS[key]
+        out[key] = min(hi, max(lo, n))
+    return out
+
+
+def apply_display(cfg: dict[str, Any], overrides: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """把看板保存的展示数量覆盖到配置上（返回新字典，不改动入参）。"""
+    out = dict(cfg)
+    out.update(clamp_display(overrides or {}))
+    return out
 
 
 # ---------- 配置 ----------
@@ -306,7 +339,8 @@ def load_prefs(data_dir: Path) -> dict[str, Any]:
     hidden = data.get("hidden_sources", [])
     return {"hidden_sources": [str(x) for x in hidden if isinstance(x, str) and x],
             "learning_enabled": bool(data.get("learning_enabled", False)),  # P3：默认关闭
-            "llm_enabled": bool(data.get("llm_enabled", False))}            # P4：默认关闭
+            "llm_enabled": bool(data.get("llm_enabled", False)),            # P4：默认关闭
+            "display": clamp_display(data.get("display") or {})}            # 看板设置的展示数量
 
 
 def save_prefs(data_dir: Path, prefs: dict[str, Any]) -> None:
@@ -316,7 +350,8 @@ def save_prefs(data_dir: Path, prefs: dict[str, Any]) -> None:
     with file_lock(path):
         atomic_write_json(path, {"hidden_sources": sorted(set(current["hidden_sources"])),
                                  "learning_enabled": bool(current["learning_enabled"]),
-                                 "llm_enabled": bool(current["llm_enabled"])})
+                                 "llm_enabled": bool(current["llm_enabled"]),
+                                 "display": current["display"]})
 
 
 def set_source_hidden(data_dir: Path, source_id: str, hidden: bool) -> dict[str, Any]:
@@ -737,7 +772,7 @@ def public_config_summary(cfg: dict[str, Any]) -> dict[str, Any]:
 
 
 __all__ = [
-    "VIEW", "DEFAULT_CONFIG", "load_config", "bigrams", "jaccard", "cluster_items", "freshness",
+    "VIEW", "DEFAULT_CONFIG", "DISPLAY_LIMITS", "load_config", "apply_display", "clamp_display", "bigrams", "jaccard", "cluster_items", "freshness",
     "importance", "persistence_penalty", "quantile_normalize", "source_affinity", "build_feed",
     "build_reason", "record_impressions", "shown_path", "public_config_summary",
 ]

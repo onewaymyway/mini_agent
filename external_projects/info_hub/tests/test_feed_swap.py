@@ -26,6 +26,9 @@ class SwapTests(unittest.TestCase):
               [_item("a", t) for t in self.titles])
         os.environ["INFO_HUB_ROOT"] = str(self.root)
         os.environ["INFO_HUB_BACKGROUND_TICK"] = "0"
+        # 固定展示数量（精选 10、其余 30），保证 50 条标题中既有第一批也有剩余可换的内容
+        from server import api
+        api.feed_display_set_api(self.settings, {"values": {"featured_size": 10, "others_limit": 30}})
         cache_data.clear()
 
     def _bold(self, at):

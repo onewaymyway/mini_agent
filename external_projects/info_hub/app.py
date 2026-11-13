@@ -1148,6 +1148,31 @@ def _triage_block(queue: list, tag: str) -> None:
                     title=card.get("title") or "", view="feed_v1")
 
 
+def _feed_display_panel() -> None:
+    """推荐页展示数量：在看板上调整，保存后下一次快照（刷新推荐）生效。"""
+    info = call(api.feed_display_get_api, settings)
+    if info is None:
+        return
+    with st.expander("⚙ 显示数量设置（精选、热点、主题、稍后看、其余）"):
+        st.caption("数量越多，首屏越长。保存后点“刷新推荐”或重新加载页面生效；“恢复默认”会清除看板上的设置。")
+        cols = st.columns(3)
+        values = {}
+        for i, (key, lim) in enumerate(info["limits"].items()):
+            values[key] = cols[i % 3].number_input(
+                f"{lim['label']}（默认 {info['defaults'][key]}）", min_value=int(lim["min"]),
+                max_value=int(lim["max"]), value=int(info["values"][key]), step=1, key=f"disp_{key}")
+        b1, b2, _ = st.columns([2, 2, 6])
+        if b1.button("保存并应用", key="disp_save", type="primary"):
+            if call(api.feed_display_set_api, settings, {"values": values}) is not None:
+                st.session_state.pop("feed_snap", None)  # 下一次渲染按新数量重建快照
+                st.toast("已保存，列表已按新数量刷新")
+                st.rerun()
+        if b2.button("恢复默认", key="disp_reset"):
+            if call(api.feed_display_set_api, settings, {"reset": True}) is not None:
+                st.session_state.pop("feed_snap", None)
+                st.rerun()
+
+
 def _feed_tab() -> None:
     srcs_all = (call(api.list_sources, settings) or {"sources": []})["sources"]
     valid = [x for x in srcs_all if not x.get("config_errors")]
@@ -1174,6 +1199,7 @@ def _feed_tab() -> None:
     ex = st.session_state.get("feed_exclude") or {}
     if ex.get("filter") != fkey:  # 筛选条件变化：之前“换一批”排除的条目不再适用
         ex = {"filter": fkey, "keys": set()}
+    _feed_display_panel()
     rc0, rc1, rc2 = st.columns([2, 2, 8], vertical_alignment="center")
     refresh = rc1.button("🔄 刷新推荐", key="feed_refresh", help="重新读取抓取结果与反馈，列表在这时才会更新")
     if refresh:

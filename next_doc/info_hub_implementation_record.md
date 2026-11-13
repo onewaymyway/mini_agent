@@ -680,3 +680,10 @@ P0–P9 均已完成。仍未在真实环境验证：有头登录、语音输出
 - 推荐页新增“🔀 换一批”：排除当前屏幕上的条目（含事件的全部成员报道），换成未展示过的一批；可连续点击，刷新推荐后重新开始。
 - 改动：`core/feed.py::build_feed` 新增 `exclude`；`server/api.py::feed_view` 透传；`app.py` 快照键包含排除集合。
 - 验证：`tests/test_feed_swap.py` 2 项；info_hub 全量 508 项，剩余 2 个为改动前即存在的账本测试（`test_entrypoints`）。
+
+## 推荐页展示数量加大并可在看板调整（已完成，见推荐信息流设计第 19 节）
+
+- 默认值提高：精选 10→15、多源热点 8→12、主题分组 4→5、每组 5→8、稍后看 30→50、其余 30→50（`core/feed.py` 与 `config/settings.yaml`）。
+- 看板新增“⚙ 显示数量设置”面板，六个参数可保存、可恢复默认；保存值优先于 settings.yaml。
+- 改动：`core/feed.py`（DISPLAY_LIMITS、apply_display、prefs 的 display 字段）；`server/api.py`（feed_display_get_api / feed_display_set_api）；`app.py`（_feed_display_panel）。
+- 验证：`tests/test_feed_display.py` 4 项；`tests/test_feed_swap.py` 固定数量后通过；info_hub 全量 512 项，剩余 2 个为改动前即存在的账本测试。

@@ -835,10 +835,10 @@ def feed_view(settings: Settings, *, hours: float = 24, category: str = "", kind
     srcs = [{"id": sid, "name": spec.name, "kind": spec.kind}
             for sid, spec in sorted(loaded.specs.items())
             if (not category or spec.category == category) and (not kind or spec.kind == kind)]
-    cfg = feedmod.load_config(settings.raw)
     data_dir = settings.paths.data_dir
     profile = ensure_fresh(data_dir)
     prefs = feedmod.load_prefs(data_dir)
+    cfg = feedmod.apply_display(feedmod.load_config(settings.raw), prefs["display"])  # 看板设置优先
     from core import feed_learn, feed_llm
     learned = feed_learn.active_weights(data_dir, prefs["learning_enabled"])
     llm_on = prefs["llm_enabled"]
@@ -876,6 +876,40 @@ def record_feed_impressions_api(settings: Settings, body: dict[str, Any]) -> dic
         raise ApiError(400, "window_hours 必须是数字")
     feedmod.record_impressions(settings.paths.data_dir, window_hours=window, impressions=clean)
     return {"recorded": len(clean)}
+
+
+def feed_display_get_api(settings: Settings) -> dict[str, Any]:
+    """推荐页展示数量：当前生效值、默认值（settings.yaml 与内置默认）、合法范围。"""
+    from core import feed as feedmod
+    base = feedmod.load_config(settings.raw)
+    overrides = feedmod.load_prefs(settings.paths.data_dir)["display"]
+    effective = feedmod.apply_display(base, overrides)
+    keys = list(feedmod.DISPLAY_LIMITS)
+    return {
+        "values": {k: effective[k] for k in keys},
+        "defaults": {k: feedmod.DEFAULT_CONFIG[k] for k in keys},
+        "limits": {k: {"min": lo, "max": hi, "label": label}
+                   for k, (lo, hi, label) in feedmod.DISPLAY_LIMITS.items()},
+        "overridden": sorted(overrides),
+    }
+
+
+def feed_display_set_api(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
+    """保存推荐页展示数量。body: {values: {...}} 逐项保存；{reset: true} 恢复为 settings.yaml / 内置默认。"""
+    from core import feed as feedmod
+    if body.get("reset"):
+        feedmod.save_prefs(settings.paths.data_dir, {"display": {}})
+    else:
+        values = body.get("values")
+        if not isinstance(values, dict):
+            raise ApiError(400, "values 必须是对象")
+        unknown = [k for k in values if k not in feedmod.DISPLAY_LIMITS]
+        if unknown:
+            raise ApiError(400, f"不支持的参数：{', '.join(unknown)}")
+        clean = feedmod.clamp_display(values)
+        current = feedmod.load_prefs(settings.paths.data_dir)["display"]
+        feedmod.save_prefs(settings.paths.data_dir, {"display": {**current, **clean}})
+    return feed_display_get_api(settings)
 
 
 def feed_set_source_hidden_api(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:

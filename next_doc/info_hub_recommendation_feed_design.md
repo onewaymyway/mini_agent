@@ -383,3 +383,54 @@ P4（LLM 增强）是可选项，默认关闭，需要已配置模型。它的�
 ### 18.4 验证
 - `tests/test_feed_swap.py` 2 项：排除参数确实把条目从候选中移除（`stats["excluded"]` 正确）；页面点击“换一批”后，新一批与刚展示的标题不重叠，点击“刷新推荐”后恢复为第一批。测试使用 50 条标题，确保第二批存在。
 - 未验证：真实数据量下，连续多次换一批后的内容质量与重复情况。
+
+---
+
+## 19. 展示数量加大，并可在看板调整（已实施）
+
+### 19.1 默认值调整
+一屏内容偏少，将默认展示数量提高：
+
+| 参数 | 原默认 | 新默认 | 含义 |
+|---|---|---|---|
+| `featured_size` | 10 | 15 | 今日精选条数（探索位随之按比例增加） |
+| `hot_size` | 8 | 12 | 多源热点最多条数 |
+| `topic_groups` | 4 | 5 | 关注主题分组数 |
+| `topic_group_size` | 5 | 8 | 每个主题组最多条数 |
+| `later_size` | 30 | 50 | 稍后看展示条数 |
+| `others_limit` | 30 | 50 | “其余”分区展示并记录曝光的条数 |
+
+`config/settings.yaml` 的 `feed:` 段同步更新为新值。
+
+### 19.2 看板上调整
+- 推荐页顶部新增折叠面板“⚙ 显示数量设置”，六个参数各一个数字框，显示默认值，超出范围会被限制。
+- “保存并应用”：写入 `data/feed/prefs.json` 的 `display` 字段，并重建当前快照，列表立即按新数量刷新。
+- “恢复默认”：清除看板上的设置，回到 settings.yaml（或内置默认）。
+- 优先级：看板保存的值 > settings.yaml > 内置默认。
+
+### 19.3 合法范围
+| 参数 | 最小 | 最大 |
+|---|---|---|
+| `featured_size` | 1 | 40 |
+| `hot_size` | 0 | 40 |
+| `topic_groups` | 0 | 12 |
+| `topic_group_size` | 1 | 30 |
+| `later_size` | 1 | 200 |
+| `others_limit` | 1 | 300 |
+
+超出范围的值被截断到边界；非数字值与未知参数名（API）被忽略或拒绝（400）。
+
+### 19.4 代码位置
+- `core/feed.py`：`DEFAULT_CONFIG` 新默认值；`DISPLAY_LIMITS`、`clamp_display`、`apply_display`；`load_prefs` / `save_prefs` 增加 `display` 字段。
+- `server/api.py`：`feed_display_get_api`、`feed_display_set_api`；`feed_view` 先应用看板设置再构建。
+- `app.py`：`_feed_display_panel()`，在 `_feed_tab` 中渲染。
+
+### 19.5 验证
+- `tests/test_feed_display.py` 4 项：新默认值确实变大；保存、截断与拒绝未知参数；恢复默认；保存的值真正影响 `feed_view` 的精选与其余条数；面板的数字框保存后 API 中生效。
+- `tests/test_feed_swap.py` 固定展示数量后仍通过（默认数量变大后，测试在 setUp 中显式设定，避免第二批为空）。
+- info_hub 全量 512 项，剩余 2 个为改动前即存在的账本测试（`test_entrypoints`）。
+
+### 19.6 未改动的部分
+- “其余”分区仍默认折叠，展开后才显示；如需默认展开，可再调整。
+- 稍后看队列仍在折叠面板内。
+- 候选池上限（`candidate_limit`）与聚合参数未放入看板设置，因为它们影响数据处理而非展示数量。
