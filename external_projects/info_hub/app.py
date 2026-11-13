@@ -10,7 +10,7 @@
 
 启动方式：
     cd external_projects/info_hub
-    streamlit run app.py --server.port 8504
+    streamlit run app.py --server.port 8506
 
 业务逻辑全部复用 server/api.py，（旧的 HTML 看板与 `cli.py serve` 已移除，Streamlit 是唯一看板。）
 """

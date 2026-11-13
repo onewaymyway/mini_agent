@@ -732,3 +732,10 @@ P0–P9 均已完成。仍未在真实环境验证：有头登录、语音输出
 - 新增 `hf_daily_papers`（script，feed，6h）与 `hf_trending_models`（script，hot_list，2h）；`sources/_index.json` 追加两条。
 - 验证：`tests/test_hf_sources.py` 3 项（仿真响应）；info_hub 全量剩余 2 个为改动前即存在的账本测试。
 - 未验证：huggingface.co 的真实接口返回，需在本机抓取一次确认。
+
+## 项目文档目录 docs/（已完成）
+
+- 新增 `external_projects/info_hub/docs/`：README（索引）、quickstart、architecture、sources、configuration、dashboard、recommendation、operations、testing。内容依据当前代码与配置编写。
+- `app.py` 文件头的启动示例端口由 8504 改为 8506，与 `config/settings.yaml` 和 `PROJECT.md` 一致。
+- 文档中标注了未在线验证的信息源，以及 2 个既有的账本测试失败（原因为测试环境缺少 `.agent` 目录）。
+- 验证：全量测试 536 项，剩余 2 个为既有的账本测试失败；文档为说明性内容，无代码行为变化。
