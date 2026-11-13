@@ -58,6 +58,28 @@ class FetchResult:
         return self.error is None
 
 
+# 站点的安全验证页（WAF / 反爬挑战）特征：返回的是 HTML + 脚本，而不是请求的内容
+BLOCK_MARKERS: tuple[tuple[str, str], ...] = (
+    ("__waf_verification_challenge", "waf_challenge"),
+    ("cf-chl-", "cloudflare_challenge"),
+)
+BLOCK_TEXT = {
+    "waf_challenge": "站点安全验证（WAF 挑战页）",
+    "cloudflare_challenge": "Cloudflare 安全验证页",
+}
+
+
+def detect_block(raw: Optional[bytes]) -> Optional[str]:
+    """返回拦截类型（见 BLOCK_TEXT），未识别为拦截页时返回 None。只检查开头一段，避免大文件开销。"""
+    if not raw:
+        return None
+    head = raw[:20000].decode("utf-8", errors="replace")
+    for marker, kind in BLOCK_MARKERS:
+        if marker in head:
+            return kind
+    return None
+
+
 RAW_DEBUG_LIMIT = 100_000  # 失败时保留的原文上限（字符），超过则截断并标记
 
 

@@ -4,7 +4,8 @@ from __future__ import annotations
 import re
 import xml.etree.ElementTree as ET
 
-from adapters.base import Adapter, FetchContext, FetchResult, RawItem, SourceSpec, failure_debug
+from adapters.base import (BLOCK_TEXT, Adapter, FetchContext, FetchResult, RawItem, SourceSpec,
+                           detect_block, failure_debug)
 
 # XML 1.0 不允许的控制字符；裸 & 与裸 < 是 RSS 里最常见的非法字符（标题或摘要里未转义）
 _BAD_CONTROL = re.compile(rb"[\x00-\x08\x0b\x0c\x0e-\x1f]")
@@ -83,6 +84,11 @@ class RssAdapter(Adapter):
         except Exception as exc:  # noqa: BLE001 - 错误转为结果，由上层记录
             return FetchResult(items=[], error=f"{type(exc).__name__}: {exc}",
                                meta={"debug": failure_debug(None, exc)})
+        blocked = detect_block(data)
+        if blocked:  # 返回的是安全验证页：不要尝试修复 XML，直接说明原因
+            return FetchResult(
+                items=[], error=f"被{BLOCK_TEXT[blocked]}拦截，返回的不是 RSS 内容（需要在浏览器中访问，或更换地址）",
+                meta={"debug": {**failure_debug(data), "blocked": blocked}, "blocked": blocked})
         note: dict = {}
         try:
             items = parse_feed(data)

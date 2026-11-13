@@ -82,6 +82,25 @@ class RssRepairTests(unittest.TestCase):
         self.assertEqual(len(dbg["raw_text"]), 100_000)
 
 
+WAF_PAGE = b"""<!DOCTYPE html><html><head><script type="application/json" id="__waf_verification_challenge">{"v":1}</script></head><body>wait</body></html>"""
+
+
+class BlockPageTests(unittest.TestCase):
+    def setUp(self):
+        self.spec = load_sources(load_settings(make_project({"kr": RSS_CFG}))).specs["kr"]
+
+    def test_waf_challenge_is_reported_not_parse_error(self):
+        from adapters.base import detect_block
+        self.assertEqual(detect_block(WAF_PAGE), "waf_challenge")
+        self.assertIsNone(detect_block(GOOD))
+        res = get_adapter("rss").fetch(self.spec, _ctx(WAF_PAGE))
+        self.assertIsNotNone(res.error)
+        self.assertIn("安全验证", res.error)
+        self.assertNotIn("ParseError", res.error)
+        self.assertEqual(res.meta["blocked"], "waf_challenge")
+        self.assertIn("__waf_verification_challenge", res.meta["debug"]["raw_text"])
+
+
 class RunnerDebugTests(unittest.TestCase):
     def setUp(self):
         self.root = make_project({"kr": RSS_CFG})
