@@ -1,0 +1,12 @@
+# 36 氪（RSS）。标准 RSS，无需登录；若地址变更导致 0 条，只需改 request.url。
+id: kr36_feed
+name: 36氪
+category: news
+kind: feed
+adapter: rss
+enabled: true
+schedule: {every: 1h}
+request:
+  url: https://36kr.com/feed
+policy: {max_items: 30}
+tags: [36氪, 科技, 商业]

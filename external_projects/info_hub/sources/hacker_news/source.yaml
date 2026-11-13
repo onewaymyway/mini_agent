@@ -1,0 +1,12 @@
+# Hacker News 首页热门（官方 Firebase 接口，免 key）。每次抓取前 30 条的详情，共 31 次请求，按小时调度。
+id: hacker_news
+name: Hacker News 热门
+category: tech
+kind: hot_list
+adapter: script
+enabled: true
+schedule: {every: 1h}
+request:
+  url: https://hacker-news.firebaseio.com/v0/topstories.json
+policy: {max_items: 30}
+tags: [Hacker News, 技术, 英文]

@@ -1,0 +1,20 @@
+# GitHub Trending（公开页面，无需登录）。按“今日新增 star”排序；页面改版导致 0 条时只需改 parse。
+id: github_trending
+name: GitHub Trending
+category: tech
+kind: hot_list
+adapter: html_list
+enabled: true
+schedule: {every: 6h}
+request:
+  url: https://github.com/trending
+  headers: {User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"}
+parse:
+  list_selector: "article.Box-row"
+  fields:
+    title: "h2 a"
+    url: "h2 a@href"
+    summary: "p"
+    heat: "span.d-inline-block.float-sm-right"
+policy: {max_items: 25}
+tags: [GitHub, 开源, 技术]

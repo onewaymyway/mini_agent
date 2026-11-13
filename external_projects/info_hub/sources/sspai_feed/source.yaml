@@ -1,0 +1,12 @@
+# 少数派（RSS）。标准 RSS，无需登录；若地址变更导致 0 条，只需改 request.url。
+id: sspai_feed
+name: 少数派
+category: tech
+kind: feed
+adapter: rss
+enabled: true
+schedule: {every: 1h}
+request:
+  url: https://sspai.com/feed
+policy: {max_items: 30}
+tags: [少数派, 数码, 效率]

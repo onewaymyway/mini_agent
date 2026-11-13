@@ -36,6 +36,30 @@
     {
       "id": "netease_money",
       "enabled": true
+    },
+    {
+      "id": "bangumi_calendar",
+      "enabled": true
+    },
+    {
+      "id": "hacker_news",
+      "enabled": true
+    },
+    {
+      "id": "github_trending",
+      "enabled": true
+    },
+    {
+      "id": "sspai_feed",
+      "enabled": true
+    },
+    {
+      "id": "kr36_feed",
+      "enabled": true
+    },
+    {
+      "id": "ruanyifeng_blog",
+      "enabled": true
     }
   ]
 }

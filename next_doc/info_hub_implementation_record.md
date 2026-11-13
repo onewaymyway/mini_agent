@@ -693,3 +693,10 @@ P0–P9 均已完成。仍未在真实环境验证：有头登录、语音输出
 - 页面最下方新增“🔀 换一批”，与顶部按钮行为相同；两者改为 on_click 回调，快照键包含排除集合自动重建。
 - 换一批后输出滚动脚本，将页面回到最前面（真实浏览器中的效果待确认）。
 - 验证：`tests/test_feed_swap.py` 扩展后通过；info_hub 全量剩余 2 个为改动前即存在的账本测试。
+
+## 信息源扩展第一批（已完成，见 info_hub_sources_expansion_plan.md）
+
+- 新增 6 个信息源：Bangumi 今日放送（script）、Hacker News（script）、GitHub Trending（html_list）、少数派、36 氪、阮一峰的网络日志（rss）。
+- 改动：`sources/` 下 6 个目录；`sources/_index.json` 追加 6 条。
+- 验证：`tests/test_new_sources.py` 5 项（仿真响应）；info_hub 全量 517 项，剩余 2 个为改动前即存在的账本测试。
+- 未验证：真实站点的联网抓取，需在本机看板确认。

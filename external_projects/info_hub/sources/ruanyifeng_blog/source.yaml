@@ -1,0 +1,12 @@
+# 阮一峰的网络日志（Atom，无需登录）。更新频率低，调度放宽。
+id: ruanyifeng_blog
+name: 阮一峰的网络日志
+category: tech
+kind: feed
+adapter: rss
+enabled: true
+schedule: {every: 12h}
+request:
+  url: https://www.ruanyifeng.com/blog/atom.xml
+policy: {max_items: 20}
+tags: [阮一峰, 技术, 博客]
