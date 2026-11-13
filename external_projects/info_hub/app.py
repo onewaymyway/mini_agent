@@ -103,6 +103,41 @@ def open_button(url: Optional[str], key: str, *, sid: str = "", title: str = "",
         st.link_button("打开", url, help="在当前设备的新标签页中打开原文（其他设备可用）")
 
 
+def _run_once_result_panel(res: Optional[dict]) -> None:
+    """“立即抓取”的结果与调试信息。失败时展示错误位置附近的原文与抓取原文，便于排查。
+
+    结果保存在会话里，下载按钮等触发的重跑不会让它消失。
+    """
+    if not res:
+        return
+    sid = res.get("id", "")
+    if res.get("ok"):
+        st.success(f"[{sid}] 抓取 {res['item_count']} 条，新增 {res['new_count']} 条，耗时 {res.get('duration_sec', 0)}s")
+    else:
+        st.error(f"[{sid}] 失败：{res.get('error')}")
+    dbg = res.get("debug") or {}
+    if res.get("debug_path"):
+        st.caption(f"完整调试文件：{res['debug_path']}")
+    with st.expander("调试信息（错误详情、原文、解析统计）", expanded=not res.get("ok")):
+        if dbg:
+            st.write(f"错误类型：{dbg.get('error_type') or '—'} · 原文长度：{dbg.get('raw_length', 0)} 字节"
+                     + ("（已截断）" if dbg.get("raw_truncated") else ""))
+            if dbg.get("context"):
+                st.markdown("**解析错误位置**")
+                st.code(dbg["context"], language="text")
+            if dbg.get("raw_text"):
+                st.markdown("**抓取到的原文**（前 5000 字符）")
+                st.code(dbg["raw_text"][:5000], language="xml" if "<" in dbg["raw_text"][:200] else "text")
+                st.download_button("下载抓取原文", data=dbg["raw_text"], file_name=f"{sid}_raw.txt",
+                                   mime="text/plain", key=f"dl_raw_{sid}")
+        meta = res.get("meta") or {}
+        if meta:
+            st.markdown("**解析统计**")
+            st.json(meta)
+        if not dbg and not meta:
+            st.caption("没有额外的调试信息。")
+
+
 settings = load_settings(PROJECT_ROOT)
 _background_scheduler(str(PROJECT_ROOT))
 _autostart_services(str(PROJECT_ROOT))
@@ -248,10 +283,8 @@ with tab_sources:
             with st.spinner("抓取中…"):
                 res = call(api.run_source_now, settings, target)
             if res is not None:
-                if res["ok"]:
-                    st.success(f"抓取 {res['item_count']} 条，新增 {res['new_count']} 条")
-                else:
-                    st.error(f"失败：{res['error']}")
+                st.session_state["run_once_result"] = res
+        _run_once_result_panel(st.session_state.get("run_once_result"))
 
     _edit_rows = rows
 

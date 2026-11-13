@@ -58,6 +58,48 @@ class FetchResult:
         return self.error is None
 
 
+RAW_DEBUG_LIMIT = 100_000  # 失败时保留的原文上限（字符），超过则截断并标记
+
+
+def failure_debug(raw: Optional[bytes], exc: Optional[BaseException] = None) -> dict[str, Any]:
+    """抓取失败时的调试信息：错误类型与信息、原文开头与截断后的全文、XML 解析错误位置附近的原文。
+
+    原文按 UTF-8 解码（非法字节替换为 �）。XML 错误位置按原始字节计算，与 expat 的列号一致。
+    """
+    import xml.etree.ElementTree as ET
+
+    data = raw or b""
+    text = data.decode("utf-8", errors="replace")
+    dbg: dict[str, Any] = {
+        "error_type": type(exc).__name__ if exc else "",
+        "error": str(exc) if exc else "",
+        "raw_length": len(data),
+        "raw_head": text[:1500],
+        "raw_text": text[:RAW_DEBUG_LIMIT],
+        "raw_truncated": len(text) > RAW_DEBUG_LIMIT,
+    }
+    if isinstance(exc, ET.ParseError) and data:
+        try:
+            line, col = exc.position
+        except (AttributeError, TypeError, ValueError):
+            line, col = 0, 0
+        lines = data.split(b"\n")
+        if 1 <= line <= len(lines):
+            target = lines[line - 1]
+            start = max(0, col - 1 - 120)
+            end = min(len(target), col - 1 + 80)
+            snippet = target[start:end].decode("utf-8", errors="replace")
+            pointer = len(target[start:col - 1].decode("utf-8", errors="replace"))
+            dbg["parse_error_at"] = {"line": line, "column": col}
+            dbg["context"] = (f"第 {line} 行第 {col} 列附近（[此处] 为出错位置）：\n"
+                              + snippet[:pointer] + "[此处]" + snippet[pointer:])
+            dbg["context_lines"] = [
+                f"{n}: {lines[n - 1].decode('utf-8', errors='replace')[:300]}"
+                for n in range(max(1, line - 2), min(len(lines), line) + 1)
+            ]
+    return dbg
+
+
 def default_http_get(url: str, headers: Optional[dict[str, str]] = None, timeout: float = 20.0) -> bytes:
     req = urllib.request.Request(url, headers={"User-Agent": DEFAULT_UA, **(headers or {})})
     with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - URL 来自用户配置

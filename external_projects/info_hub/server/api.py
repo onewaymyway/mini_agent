@@ -294,7 +294,10 @@ def run_source_now(settings: Settings, source_id: str) -> dict[str, Any]:
         raise ApiError(404, f"未找到信息源 {source_id}")
     res = run_source(spec, settings)
     return {"id": source_id, "ok": res.ok, "item_count": res.item_count,
-            "new_count": res.new_count, "error": res.error}
+            "new_count": res.new_count, "error": res.error,
+            "raw_path": res.raw_path, "duration_sec": round(res.duration_sec, 2),
+            "meta": {k: v for k, v in (res.extra or {}).items() if k != "debug"},
+            "debug": (res.extra or {}).get("debug"), "debug_path": (res.extra or {}).get("debug_path")}
 
 
 def generate_report_now(settings: Settings, plan_id: str) -> dict[str, Any]:

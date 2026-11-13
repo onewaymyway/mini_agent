@@ -1,9 +1,22 @@
 """RSS 2.0 与 Atom 适配器。仅使用标准库 xml.etree，无额外依赖。"""
 from __future__ import annotations
 
+import re
 import xml.etree.ElementTree as ET
 
-from adapters.base import Adapter, FetchContext, FetchResult, RawItem, SourceSpec
+from adapters.base import Adapter, FetchContext, FetchResult, RawItem, SourceSpec, failure_debug
+
+# XML 1.0 不允许的控制字符；裸 & 与裸 < 是 RSS 里最常见的非法字符（标题或摘要里未转义）
+_BAD_CONTROL = re.compile(rb"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+_BARE_AMP = re.compile(rb"&(?!(?:[A-Za-z][A-Za-z0-9]*|#[0-9]+|#x[0-9A-Fa-f]+);)")
+_BARE_LT = re.compile(rb"<(?![A-Za-z_/!?])")
+
+
+def sanitize_xml(data: bytes) -> bytes:
+    """尽量修复常见的非法 XML：去掉控制字符，转义裸 & 与裸 <。仅在原文解析失败后才使用。"""
+    data = _BAD_CONTROL.sub(b"", data)
+    data = _BARE_AMP.sub(b"&amp;", data)
+    return _BARE_LT.sub(b"&lt;", data)
 
 
 def _local(tag: str) -> str:
@@ -64,10 +77,24 @@ class RssAdapter(Adapter):
 
     def fetch(self, spec: SourceSpec, ctx: FetchContext) -> FetchResult:
         url = spec.request.get("url", "")
+        data: bytes | None = None
         try:
             data = ctx.http_get(url)
-            items = parse_feed(data)
         except Exception as exc:  # noqa: BLE001 - 错误转为结果，由上层记录
-            return FetchResult(items=[], error=f"{type(exc).__name__}: {exc}")
+            return FetchResult(items=[], error=f"{type(exc).__name__}: {exc}",
+                               meta={"debug": failure_debug(None, exc)})
+        note: dict = {}
+        try:
+            items = parse_feed(data)
+        except ET.ParseError as first:
+            try:  # 原文非法：修复常见字符后再解析一次；修复成功则记录提示
+                items = parse_feed(sanitize_xml(data))
+                note = {"xml_sanitized": True, "xml_error_before_fix": str(first)}
+            except ET.ParseError:
+                return FetchResult(items=[], error=f"ParseError: {first}",
+                                   meta={"debug": failure_debug(data, first)})
+        except Exception as exc:  # noqa: BLE001
+            return FetchResult(items=[], error=f"{type(exc).__name__}: {exc}",
+                               meta={"debug": failure_debug(data, exc)})
         limit = self.max_items(spec)
-        return FetchResult(items=items[:limit], meta={"total_in_feed": len(items)})
+        return FetchResult(items=items[:limit], meta={"total_in_feed": len(items), **note})

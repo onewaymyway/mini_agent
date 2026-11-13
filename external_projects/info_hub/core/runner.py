@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Optional
@@ -69,6 +70,36 @@ def default_context(settings: Settings) -> FetchContext:
     )
 
 
+DEBUG_KEEP = 30  # 每个信息源保留最近的失败调试文件数量
+
+
+def debug_dir(settings: Settings, source_id: str) -> Path:
+    return settings.paths.data_dir / "debug" / source_id
+
+
+def _failure_extra(settings: Settings, source_id: str, when: datetime, error: Optional[str],
+                   meta: dict[str, Any]) -> dict[str, Any]:
+    """失败时的调试信息：完整写入 data/debug/<id>/<时间>.json（含原文），返回给看板的摘要（含原文截断版）。
+
+    没有调试信息的适配器失败时返回空字典，保持原有行为。
+    """
+    debug = (meta or {}).get("debug")
+    if not isinstance(debug, dict):
+        return {}
+    try:
+        folder = debug_dir(settings, source_id)
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"{when:%Y%m%d-%H%M%S}.json"
+        atomic_write_json(path, {"source_id": source_id, "at": when.isoformat(timespec="seconds"),
+                                 "error": error, "debug": debug})
+        for old in sorted(folder.glob("*.json"))[:-DEBUG_KEEP]:
+            old.unlink(missing_ok=True)
+        rel = str(path.relative_to(settings.paths.root))
+    except OSError as exc:  # 调试文件写入失败不能影响抓取结果本身
+        rel = f"（写入失败：{exc}）"
+    return {"debug": debug, "debug_path": rel}
+
+
 def run_source(spec: SourceSpec, settings: Settings, ctx: Optional[FetchContext] = None) -> RunResult:
     ctx = ctx or default_context(settings)
     when = datetime.now().astimezone()
@@ -85,7 +116,8 @@ def run_source(spec: SourceSpec, settings: Settings, ctx: Optional[FetchContext]
     fetch = adapter.fetch(spec, ctx)
     duration = time.monotonic() - started
     if not fetch.ok:
-        result = RunResult(spec.id, False, 0, duration, error=fetch.error)
+        extra = _failure_extra(settings, spec.id, when, fetch.error, fetch.meta)
+        result = RunResult(spec.id, False, 0, duration, error=fetch.error, extra=extra)
         _write_run_log(settings, when, result)
         _record_health(settings, result)
         return result
