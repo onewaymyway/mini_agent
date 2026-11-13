@@ -1004,24 +1004,34 @@ def _reading_panel(sid: str, items: list[dict], view: str = "plain") -> None:
 _FEED_SECTION_TITLE = {"featured": "今日精选", "hot": "多源热点", "topics": "关注主题", "explore": "探索", "later": "稍后看"}
 
 
-def _feed_snapshot(hours: float, category: str, kind: str, include_processed: bool, refresh: bool) -> Optional[dict]:
+def _feed_snapshot(hours: float, category: str, kind: str, include_processed: bool, refresh: bool,
+                   exclude: frozenset = frozenset()) -> Optional[dict]:
     """推荐数据快照（会话内保存）。
 
-    只在三种情况下重建：首次进入页面（新会话）、切换筛选条件、点击“刷新推荐”。
+    只在四种情况下重建：首次进入页面（新会话）、切换筛选条件、点击“刷新推荐”、点击“换一批”（排除集合变化）。
     其余所有交互（👍 / 👎 / ⏰、🚫、屏蔽主题、开关、展开面板）都只读快照，列表不会因为反馈而变化；
     反馈结果在下一次刷新时才体现在列表里。
     """
-    key = (float(hours), category, kind, bool(include_processed))
+    key = (float(hours), category, kind, bool(include_processed), exclude)
     snap = st.session_state.get("feed_snap")
     if refresh or not snap or snap.get("key") != key:
         res = call(api.feed_view, settings, hours=float(hours), category=category, kind=kind,
-                   include_processed=bool(include_processed))
+                   include_processed=bool(include_processed), exclude=sorted(exclude))
         if res is None:
             return None
         st.session_state["feed_snap"] = {"key": key, "res": res}
         st.session_state["feed_marks"] = {}  # 本地标记随快照一起重置
         return res
     return snap["res"]
+
+
+def _shown_member_keys(res: dict) -> set[str]:
+    """当前快照里屏幕上展示的全部条目 key（包括每个事件的所有成员报道），供“换一批”排除。"""
+    sec = res["sections"]
+    cards = list(sec["featured"]) + list(sec["hot"]) + list(sec["explore"])
+    cards += [c for g in sec["topics"] for c in g["cards"]]
+    cards += list(sec["others"])[: int(res.get("others_limit") or len(sec["others"]))]
+    return {src["item_key"] for c in cards for src in (c.get("sources") or []) if src.get("item_key")}
 
 
 def _feed_row(card: dict, k: str) -> None:
@@ -1160,12 +1170,29 @@ def _feed_tab() -> None:
     if not valid:
         st.info("还没有信息源。")
         return
-    rc1, rc2 = st.columns([2, 8], vertical_alignment="center")
+    fkey = (float(hours), category, kind, bool(show_processed))
+    ex = st.session_state.get("feed_exclude") or {}
+    if ex.get("filter") != fkey:  # 筛选条件变化：之前“换一批”排除的条目不再适用
+        ex = {"filter": fkey, "keys": set()}
+    rc0, rc1, rc2 = st.columns([2, 2, 8], vertical_alignment="center")
     refresh = rc1.button("🔄 刷新推荐", key="feed_refresh", help="重新读取抓取结果与反馈，列表在这时才会更新")
-    res = _feed_snapshot(hours, category, kind, bool(show_processed), refresh)
+    if refresh:
+        ex = {"filter": fkey, "keys": set()}  # 刷新从头开始，清空“换一批”的排除
+    st.session_state["feed_exclude"] = ex
+    swap_clicked = rc0.button("🔀 换一批", key="feed_swap",
+                              help="排除当前屏幕上的条目，换成下一批未展示过的内容（可连续点击）")
+    if swap_clicked and st.session_state.get("feed_snap"):
+        cur = st.session_state["feed_snap"]["res"]
+        ex["keys"] = set(ex["keys"]) | _shown_member_keys(cur)
+        st.session_state["feed_exclude"] = ex
+        refresh = True
+    res = _feed_snapshot(hours, category, kind, bool(show_processed), refresh, frozenset(ex["keys"]))
     if res is None:
         return
-    rc2.caption(f"数据快照生成于 {fmt_time(res['generated_at'])}。反馈、屏蔽等操作不会改变列表，点“刷新推荐”或重新加载页面才会更新。")
+    if ex["keys"]:
+        rc2.caption(f"已换过 {len(ex['keys'])} 条条目（点“刷新推荐”重新开始）。")
+    else:
+        rc2.caption(f"数据快照生成于 {fmt_time(res['generated_at'])}。反馈、屏蔽等操作不会改变列表，点“刷新推荐”或重新加载页面才会更新。")
     sec = res["sections"]
     st_ = res["stats"]
     st.caption(f"{dict(_WINDOWS)[hours]}（自 {fmt_time(res['since'])} 起）· 原始 {st_['raw_items']} 条 · "

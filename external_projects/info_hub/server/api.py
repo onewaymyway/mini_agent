@@ -820,7 +820,8 @@ def rank_snapshot(settings: Settings, source_id: str, items: list[dict[str, Any]
 
 # ---------- 推荐信息流（P1，见 next_doc/info_hub_recommendation_feed_design.md） ----------
 def feed_view(settings: Settings, *, hours: float = 24, category: str = "", kind: str = "",
-              include_processed: bool = False, now: datetime | None = None) -> dict[str, Any]:
+              include_processed: bool = False, exclude: list[str] | None = None,
+              now: datetime | None = None) -> dict[str, Any]:
     """推荐信息流：候选池 → 聚合去重 → 多信号打分 → 分区。只读，不写曝光（由 record_feed_impressions_api 显式记录）。"""
     from core import feed as feedmod
     from core.profile import ensure_fresh
@@ -845,7 +846,7 @@ def feed_view(settings: Settings, *, hours: float = 24, category: str = "", kind
     res = feedmod.build_feed(data_dir=data_dir, raw_dir=settings.paths.raw_dir, sources=srcs, hours=hours,
                              cfg=cfg, profile=profile, now=now, include_processed=include_processed,
                              hidden_sources=set(prefs["hidden_sources"]), learned_weights=learned,
-                             merge_judge=merge)
+                             exclude={str(k) for k in (exclude or [])}, merge_judge=merge)
     if llm_on:
         feed_llm.attach_labels(res["sections"], data_dir)  # P4：只挂缓存里已有的主题与摘要
     res["config"] = feedmod.public_config_summary(cfg)

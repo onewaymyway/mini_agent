@@ -360,6 +360,7 @@ def build_feed(*, data_dir: Path, raw_dir: Path, sources: list[dict[str, Any]], 
                hidden_sources: Optional[set[str]] = None,
                shown: Optional[dict[str, int]] = None,
                learned_weights: Optional[dict[str, float]] = None,
+               exclude: Optional[set[str]] = None,
                merge_judge: Optional[Callable[[list[dict[str, Any]], list[list[int]]], list[list[int]]]] = None,
                ) -> dict[str, Any]:
     """构造推荐信息流。只读（不写 feed 目录，曝光记录由调用方显式 record_impressions）。
@@ -379,6 +380,7 @@ def build_feed(*, data_dir: Path, raw_dir: Path, sources: list[dict[str, Any]], 
         "items": [], "since": now.isoformat(timespec="seconds"), "sources": {}}
     profile = profile if profile is not None else ensure_fresh(data_dir)
     hidden = set(hidden_sources or ())
+    excluded_keys = set(exclude or ())  # “换一批”：已展示过的条目（按条目 key）不再进入候选
     if shown is None:
         shown = shown_counts(data_dir, now, cfg["fatigue"]["window_days"])
 
@@ -392,7 +394,7 @@ def build_feed(*, data_dir: Path, raw_dir: Path, sources: list[dict[str, Any]], 
     blocked_terms = [t.lower() for t in (profile.get("explicit") or {}).get("exclude", []) if t]
 
     stats = {"raw_items": len(merged_res["items"]), "processed": 0, "blocked": 0, "hidden_sources": 0,
-             "later": 0, "candidates": 0, "clusters": 0, "cold_start": not profile_informative(profile),
+             "excluded": 0, "later": 0, "candidates": 0, "clusters": 0, "cold_start": not profile_informative(profile),
              "truncated": False}
 
     pool: list[dict[str, Any]] = []
@@ -406,6 +408,9 @@ def build_feed(*, data_dir: Path, raw_dir: Path, sources: list[dict[str, Any]], 
         row.update({"item_key": key, "source_name": names.get(it.get("source_id"), it.get("source_id")),
                     "source_kind": kinds.get(it.get("source_id"), ""), "processed": False,
                     "processed_by": "", "shown_count": shown.get(key, 0)})
+        if key in excluded_keys:
+            stats["excluded"] += 1
+            continue
         if it.get("source_id") in hidden:
             stats["hidden_sources"] += 1
             continue
