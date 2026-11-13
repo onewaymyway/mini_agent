@@ -36,8 +36,8 @@ class OpenLinkTests(unittest.TestCase):
         for el in links:
             self.assertEqual(el.proto.label, "打开")
             self.assertTrue(el.proto.url.startswith("https://"))
-        # 原有的“专用浏览器打开”按钮仍然保留
-        dedicated = [b for b in at.button if b.label == "专用浏览器打开"]
+        # 原有的“🖥 打开”按钮仍然保留
+        dedicated = [b for b in at.button if b.label == "🖥 打开"]
         self.assertTrue(dedicated)
         # 每个专用浏览器按钮旁边都有一个“打开”链接（链接数不少于按钮数）
         self.assertGreaterEqual(len(links), len(dedicated))

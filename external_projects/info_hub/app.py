@@ -80,10 +80,10 @@ def fmt_time(iso: Optional[str]) -> str:
 
 
 def open_button(url: Optional[str], key: str, *, sid: str = "", title: str = "", view: str = "",
-                label: str = "专用浏览器打开") -> None:
+                label: str = "🖥 打开") -> None:
     """打开原文的两种方式（看板上所有显示抓取内容地址的地方都用它）。
 
-    - 按钮“专用浏览器打开”：在本机的专用浏览器中打开（看板与浏览器在同一台机器上时使用）。
+    - 按钮“🖥 打开”：在本机的专用浏览器中打开（看板与浏览器在同一台机器上时使用）。
       sid 不为空时按条目打开：反馈工具条绑定该条目，并记录一次“打开”；sid 为空时只打开原始链接。
     - 链接“打开”：直接在当前设备的新标签页中打开原文（其他设备访问看板时使用，不需要服务端浏览器）。
       链接由浏览器直接跳转，服务端无法感知，因此不记录“打开”、不触发工具条。
@@ -485,7 +485,7 @@ def _edit_panel(rows: list[dict]) -> None:
                 e_enabled = st.checkbox("启用", value=detail["enabled"], key=k("enabled"))
                 e_force = st.checkbox("与已有源相似时仍然保存", key=k("force"))
                 do_save_edit = st.form_submit_button("保存修改")
-            open_button(detail["url"], f"op_edit_{pick}", label="在专用浏览器中打开该地址")
+            open_button(detail["url"], f"op_edit_{pick}", label="🖥 打开")
             if do_save_edit:
                 body = {"source": {
                     "id": pick, "name": e_name.strip(), "category": e_cat, "kind": e_kind, "adapter": e_adapter,
@@ -939,7 +939,7 @@ def _candidates_panel() -> None:
                 st.markdown(f"**{c['template_name']}** · 查询词：`{c['query']}`")
                 st.caption(f"原因：{c['reason']} · 生成于 {fmt_time(c['created_at'])}")
                 st.code(c["url"], language=None)
-                open_button(c["url"], f"op_cand_{c['id']}", label="在专用浏览器中打开该地址")
+                open_button(c["url"], f"op_cand_{c['id']}", label="🖥 打开")
                 b1, b2 = st.columns(2)
                 if b1.button("加入信息源", key=f"cand_ok_{c['id']}", type="primary"):
                     if call(api.accept_candidate, settings, c["id"]) is not None:
