@@ -13,6 +13,7 @@ import streamlit as st
 
 from novel_writer import brief as BR
 from novel_writer import brief_review as BRV
+from novel_writer import brief_sync as BSY
 from novel_writer import state as st_state
 from novel_writer.revision_flow import jobs
 from novel_writer.revision_flow.common import FlowError
@@ -177,6 +178,32 @@ def _acts_section(root: Workspace) -> None:
         _start_bg(root, f"重排第{a}幕", _act_job, a, s, e, fb)
 
 
+def _changed_section(root: Workspace) -> None:
+    """O4：简述修改后，依赖旧简述写成的章节。ask 策略下逐章由作者决定；auto_rewrite 策略在确认时自动提交重写。"""
+    rows = BSY.affected(root)
+    policy = (root.settings() or {}).get("brief_change_policy", "ask")
+    if not rows:
+        return
+    st.warning(f"有 {len(rows)} 个已写章节依据的是旧简述（当前策略：{'自动重写' if policy == 'auto_rewrite' else '由作者决定'}）。")
+    if policy == "auto_rewrite":
+        st.caption("自动重写策略：确认简述时会为这些章节提交重写请求；也可以在下面逐章手动处理。")
+        if st.button("现在按策略提交重写", key="bsy_apply"):
+            res = _act(root, "按策略提交重写", BSY.apply_policy, root,
+                       summarize=lambda r: f"已提交 {len(r['submitted'])} 章，失败 {len(r['failed'])} 章")
+            if res:
+                st.rerun()
+    for row in rows:
+        n = row["chapter"]
+        with st.expander(f"第{n}章 {row['title']} · 简述已变更", expanded=False):
+            st.markdown("\n".join(f"- {d}" for d in row["diff"]) or "（差异无法逐项列出，请对照版本历史）")
+            c1, c2, c3 = st.columns(3)
+            for col, label, fn, key in ((c1, "重写（按新简述）", BSY.rewrite, "rw"), (c2, "保留正文", BSY.keep, "kp"),
+                                        (c3, "忽略此次变更", BSY.ignore, "ig")):
+                if col.button(label, key=f"bsy_{key}_{n}"):
+                    if _act(root, f"第{n}章：{label}", fn, root, n):
+                        st.rerun()
+
+
 def page_briefs() -> None:
     ws = require_ws()
     if not ws:
@@ -227,6 +254,7 @@ def page_briefs() -> None:
         st.info("还没有生成任何简述。")
         return
 
+    _changed_section(root)
     _acts_section(root)
     st.divider()
     pick = st.selectbox("编辑章节", list(range(1, total + 1)), format_func=lambda n: f"第{n}章", key="br_pick")

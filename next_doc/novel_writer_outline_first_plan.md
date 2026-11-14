@@ -1,6 +1,6 @@
 # novel_writer「大纲先行」模式实施计划
 
-> 状态：设计已确认。O0–O3 已完成（见 `external_projects/novel_writer/docs/outline_first.md`）；O4 起待实施。每期完成后更新本文件与 `external_projects/novel_writer/docs/`，并打包。
+> 状态：设计已确认。O0–O4 已完成（见 `external_projects/novel_writer/docs/outline_first.md`）；O5 待实施。每期完成后更新本文件与 `external_projects/novel_writer/docs/`，并打包。
 >
 > O0 实施时的两处调整：① 模式与策略存放在 `studio_settings`（与 `pause_after_ideation` 一致），不是 `项目状态/workspace_config.json`；② 向导的大纲先行选项在 O2 完成前仍按直写创建。
 
@@ -73,6 +73,11 @@
 - `docs/outline_first.md` 说明模式、配置、校验规则与偏离规则；更新 `PROJECT.md` 变更记录与 `docs/README.md` 索引。
 - 打包本期新增与修改的文件（保留目录结构）。
 
+**O4 实施说明（与原计划的偏离）**
+- 原计划写「复用 `revision_flow` 的执行器」。实施时核对发现该执行器必须基于全书终审后的完稿基线 v001（`init_baseline` 要求 final_review 已通过），写作进行中不可用。改为复用「作者反馈修订循环」（`views.request_revision_cycle`，worker 按请求队列逐章执行：修改 → 核查，可停止、可续跑）；意见由「旧简述 → 新简述」差异生成。失败隔离在提交层做（单章提交失败不影响其它章）。
+- 「写作时所用的哈希」存于 `大纲规划/章节简述/_sync.json`（written / baseline / decisions）。
+- `auto_rewrite` 在**确认简述时**统一提交（而非每次编辑即触发），避免作者连续编辑时反复触发。
+
 ## 4. 风险与边界
 
 - **流水线复杂度**：`pipeline.build_plan` 与 `chapter_steps` 的依赖改动会影响所有书。O0 用“计划步骤集合对比”测试守住 `direct` 模式不变。
@@ -86,5 +91,5 @@
 - O1 简述生成：完成（按幕生成、确定性校验、先补全蓝图条目再生成简述）
 - O2 简述确认页：完成（版本历史、编辑、单章反馈改写、整幕重排、确认冻结、确认失效）
 - O3 写作接入与关键内容校验：完成（写作输入、核对步骤、定向修正两次、偏离记录、交作者）
-- O4 简述修改后的已写章节：待实施
+- O4 简述修改后的已写章节：完成（写作依据哈希、ask 逐章保留/忽略/重写、auto_rewrite 确认时自动提交；**偏离原计划**：重写复用「作者反馈修订循环」请求而非 revision_flow 执行器，见下）
 - O5 界面收尾与文档：待实施

@@ -70,6 +70,25 @@ def create_novel(
     return _guard(run)
 
 
+def brief_changed_chapters(workspace: str) -> Dict[str, Any]:
+    """大纲先行 O4：列出「简述已变更」且作者尚未处理的已写章节（含简述差异）。"""
+    def run() -> Dict[str, Any]:
+        from novel_writer import brief_sync
+        return _ok({"chapters": brief_sync.affected(_workspace_or_raise(workspace))})
+    return _guard(run)
+
+
+def resolve_brief_change(workspace: str, chapter: int, action: str) -> Dict[str, Any]:
+    """处理某章的简述变更：action = keep（保留）/ ignore（忽略此次变更）/ rewrite（按新简述重写）。"""
+    def run() -> Dict[str, Any]:
+        from novel_writer import brief_sync
+        from novel_writer.revision_flow.common import FlowError
+        if action not in brief_sync.ACTIONS:
+            raise FlowError(f"action 必须是 {list(brief_sync.ACTIONS)} 之一")
+        return _ok(getattr(brief_sync, action)(_workspace_or_raise(workspace), int(chapter)))
+    return _guard(run)
+
+
 def set_writing_mode(workspace: str, mode: str) -> Dict[str, Any]:
     """设置写作模式（direct 直写 / outline_first 大纲先行）。已经开始写作的书不能切换。"""
     def run() -> Dict[str, Any]:

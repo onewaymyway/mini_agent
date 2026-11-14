@@ -246,7 +246,11 @@ def confirm(ws: Workspace) -> Dict[str, Any]:
     hashes = {str(n): _hash_brief(BR.load_brief(ws, n)) for n in range(1, total + 1)}
     atomic_write_json(BR.brief_dir(ws) / CONFIRM_FILE, {"confirmed_at": _now(), "hashes": hashes})
     st_state.update_step(ws, BR.BRIEF_REVIEW_ID, status=st_state.ST_PASSED, approved_at=st_state.now_iso())
-    return {"chapters": total, "confirmed_at": _now()}
+    # O4：记下尚无基准章节的简述；auto_rewrite 策略下，对「简述已变更」的已写章节自动提交重写
+    from novel_writer import brief_sync
+    brief_sync.record_baseline(ws, list(range(1, total + 1)))
+    policy = brief_sync.apply_policy(ws)
+    return {"chapters": total, "confirmed_at": _now(), "auto_rewrite": policy}
 
 
 def confirmation_status(ws: Workspace) -> Dict[str, Any]:

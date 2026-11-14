@@ -161,6 +161,8 @@ def h_brief_check(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invo
         missing = [it for it in items if not verdict["items"][it["id"]]["implemented"]]
         if not missing:
             count = _append_deviations(ws, n, verdict["deviations"], step.id)
+            from novel_writer import brief_sync  # O4：记下本章正文所依据的简述，之后简述变更据此判定
+            brief_sync.record_written(ws, n)
             return {"summary": f"第{n}章关键内容全部实现；非关键偏离 {count} 处已记入偏离记录",
                     "deviations": count, "fixes": fixes}
         if fixes >= MAX_FIXES:
