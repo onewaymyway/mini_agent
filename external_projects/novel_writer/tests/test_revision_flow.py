@@ -616,3 +616,36 @@ def test_diff_text_is_git_style_with_hunks(tmp_path):
     same = [r for r in rows if r["status"] == "same"]
     assert all(r["diff"] == "" for r in same)
     assert "银钥匙" in derived.format_diff(rows, changed["path"])
+
+
+# ─────────────────────────── 版本导出 ───────────────────────────
+
+def test_export_book_per_version_goes_to_exports_and_keeps_versions_clean(tmp_path):
+    ws = _novel(tmp_path)
+    _baseline(ws)
+    pv = _ready_preview(ws)
+    executor.start(ws, pv["id"], RewriteInvoker("玉佩", "银钥匙"))
+    out1 = derived.export_book(ws, "v001", "md")
+    out2 = derived.export_book(ws, "v002", "md")
+    assert out1["file"].startswith("_versions/exports/v001/") and out2["file"].startswith("_versions/exports/v002/")
+    assert "完稿修改测试" in Path(out1["file"]).name  # 书名来自版本内保存的 workspace_config
+    t1 = (ws.root / out1["file"]).read_text(encoding="utf-8")
+    t2 = (ws.root / out2["file"]).read_text(encoding="utf-8")
+    assert "玉佩" in t1 and "银钥匙" not in t1
+    assert "银钥匙" in t2 and "玉佩" not in t2
+    assert not (V.version_dir(ws, "v002") / "导出").exists()  # 版本目录不留导出产物
+    assert V.verify(ws, "v001") == [] and V.verify(ws, "v002") == []
+    names = {f["path"] for f in derived.list_exports(ws, "v002")}
+    assert Path(out2["file"]).name in names
+
+
+def test_export_final_per_version(tmp_path):
+    ws = _novel(tmp_path)
+    _baseline(ws)
+    pv = _ready_preview(ws)
+    executor.start(ws, pv["id"], RewriteInvoker("玉佩", "银钥匙"))
+    out = derived.export_final(ws, "v002")
+    assert out["dir"].startswith("_versions/exports/v002/最终稿/")
+    assert (ws.root / out["dir"]).is_dir()
+    assert not (V.version_dir(ws, "v002") / "导出").exists()
+    assert V.verify(ws, "v002") == []

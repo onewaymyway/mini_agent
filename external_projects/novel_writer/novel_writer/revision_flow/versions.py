@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import shutil
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from novel_writer.revision_flow.common import (
@@ -101,6 +102,17 @@ def _write_manifest(ws, vid: str, *, kind: str, parent: Optional[str], changes: 
     return data
 
 
+META_FILES = ("项目状态/workspace_config.json",)  # 书名等元信息：不属于内容，不参与校验，但导出需要
+
+
+def _copy_meta(ws, dst: Path) -> None:
+    for rel in META_FILES:
+        src = ws.root / rel
+        if src.is_file():
+            (dst / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst / rel)
+
+
 def init_baseline(ws, note: str = "完稿快照") -> Dict[str, Any]:
     """P0：全书终审通过后创建 v001（只读）。已存在则拒绝。"""
     if is_baseline_ready(ws):
@@ -115,6 +127,7 @@ def init_baseline(ws, note: str = "完稿快照") -> Dict[str, Any]:
         src = ws.root / name
         if src.is_dir():
             shutil.copytree(src, dst / name)
+    _copy_meta(ws, dst)
     if not list_content_files(dst):
         shutil.rmtree(dst)
         raise FlowError("没有可快照的内容文件")

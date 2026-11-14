@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import difflib
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -82,8 +83,69 @@ def format_diff(rows: List[Dict[str, Any]], path: Optional[str] = None) -> str:
     return "\n".join(blocks)
 
 
-def export_version(ws, vid: str) -> Dict[str, Any]:
-    """导出某个版本。版本目录结构与工作目录一致，可直接作为 Workspace 使用。"""
+def _exports_dir(ws, vid: str) -> Path:
+    return versions_root_of(ws) / "exports" / vid
+
+
+def versions_root_of(ws) -> Path:
+    from novel_writer.revision_flow.common import versions_root
+    return versions_root(ws)
+
+
+def _relocate(ws, vid: str, produced_rel: str, sub: str = "") -> Path:
+    """把版本目录内生成的导出文件/目录移到 _versions/exports/<vid>/ 下，版本目录保持干净。"""
+    src = version_dir(ws, vid) / produced_rel
+    dest_dir = _exports_dir(ws, vid) / sub
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / src.name
+    if dest.exists():
+        if dest.is_dir():
+            shutil.rmtree(dest)
+        else:
+            dest.unlink()
+    shutil.move(str(src), str(dest))
+    # 清理 版本目录/导出 下可能留下的空目录
+    top = version_dir(ws, vid) / Path(produced_rel).parts[0]
+    for p in sorted(top.rglob("*"), reverse=True):
+        if p.is_dir() and not any(p.iterdir()):
+            p.rmdir()
+    if top.is_dir() and not any(top.iterdir()):
+        top.rmdir()
+    return dest
+
+
+def export_book(ws, vid: str, fmt: str = "md") -> Dict[str, Any]:
+    """按格式导出某个版本的全书合稿（md / txt / docx / epub），输出到 _versions/exports/<vid>/。"""
     V.get_entry(ws, vid)
-    from novel_writer.final_export import export_final
-    return export_final(Workspace(version_dir(ws, vid)))
+    from novel_writer import views
+    from novel_writer.workspace import Workspace as _W
+    result = views.export_book(_W(version_dir(ws, vid)), fmt)
+    dest = _relocate(ws, vid, result["file"])
+    return {**result, "version": vid, "file": str(dest.relative_to(ws.root)), "format": fmt}
+
+
+def export_final(ws, vid: str) -> Dict[str, Any]:
+    """导出某个版本的最终稿（设定 + 章节总结 + 清洗后正文 + txt），输出到 _versions/exports/<vid>/最终稿/。"""
+    V.get_entry(ws, vid)
+    from novel_writer.final_export import export_final as _final
+    from novel_writer.workspace import Workspace as _W
+    result = _final(_W(version_dir(ws, vid)))
+    dest = _relocate(ws, vid, result["dir"], sub="最终稿")
+    return {**result, "version": vid, "dir": str(dest.relative_to(ws.root))}
+
+
+def list_exports(ws, vid: str) -> List[Dict[str, Any]]:
+    """列出某个版本已导出的文件（相对 _versions/exports/<vid>/ 的路径、大小）。"""
+    base = _exports_dir(ws, vid)
+    if not base.is_dir():
+        return []
+    out = []
+    for p in sorted(base.rglob("*")):
+        if p.is_file():
+            out.append({"path": p.relative_to(base).as_posix(), "abs": str(p), "size": p.stat().st_size})
+    return out
+
+
+def export_version(ws, vid: str) -> Dict[str, Any]:
+    """兼容旧接口：导出最终稿。"""
+    return export_final(ws, vid)

@@ -1,6 +1,7 @@
 """完稿修改页面的冒烟测试（AppTest，不调用 LLM）。"""
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -201,3 +202,30 @@ def test_diff_button_shows_git_style_content(tmp_path, monkeypatch):
     diffs = [c.value for c in at.code if "diff --git" in c.value]
     assert diffs, "应显示 git 风格差异"
     assert "+" in diffs[0] and "银钥匙" in diffs[0] and "-" in diffs[0]
+
+
+def test_reading_page_lets_user_pick_version_read_and_export(tmp_path, monkeypatch):
+    sys.path.insert(0, str(Path(__file__).parent))
+    from test_revision_flow import RewriteInvoker, _baseline, _ready_preview
+    from novel_writer.revision_flow import executor, derived
+    from streamlit.testing.v1 import AppTest
+    ws = _novel(tmp_path)
+    _baseline(ws)
+    pv = _ready_preview(ws)
+    executor.start(ws, pv["id"], RewriteInvoker("玉佩", "银钥匙"))
+    monkeypatch.setenv("RD_WS", str(ws.root))
+    app = str(Path(__file__).parent / "apps" / "reading_app.py")
+    at = AppTest.from_file(app, default_timeout=30).run()
+    assert not at.exception
+    opts = at.selectbox(key="rd_version").options
+    assert any(o.startswith("v001") for o in opts) and any(o.startswith("v002") for o in opts)
+    # 默认是工作稿：正文里还是“玉佩”
+    at.selectbox(key="rd_version").set_value("v002").run()
+    assert not at.exception
+    assert any("银钥匙" in m.value for m in at.markdown)
+    at.button(key="rd_v_export_v002").click().run()
+    assert not at.exception
+    exported = derived.list_exports(ws, "v002")
+    assert exported and exported[0]["path"].endswith(".md")
+    at.selectbox(key="rd_version").set_value("v001").run()
+    assert any("玉佩" in m.value for m in at.markdown)

@@ -91,5 +91,6 @@ Change {
 | 中断恢复 | 完成 | pid 锁 + recover_interrupted；运行页自动识别并可续跑 |
 | 实时进度 | 完成 | jobs.py + 顶部唯一任务面板：后台任务 + 逐行日志，最新在上 |
 | 操作日志 | 完成 | 所有按钮统一记录开始、结果与失败原因（jobs/ops.log） |
+| 版本导出与阅读 | 完成 | 阅读页可选版本预览与导出，导出物在 _versions/exports/ |
 
 默认上限见 `docs/revision_flow.md`。确认的时间语义与版本策略按第 2、3 节实现。
