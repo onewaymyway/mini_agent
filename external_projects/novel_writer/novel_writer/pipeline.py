@@ -89,12 +89,6 @@ def build_plan(ws: Workspace) -> List[S.StepDef]:
     if ws.settings().get("pause_after_ideation"):
         # 构思完成后停下，等作者审核（可通过「构思修订」提意见，修订后审核自动重新打开）
         plan.append(S.ideation_review_step())
-    from novel_writer import brief as _BRIEF
-    if _BRIEF.is_outline_first(ws.settings()):
-        # 大纲先行：先生成全部章节简述并经作者确认，之后才进入章节写作（章节首步依赖 brief_review）
-        bd = _BRIEF.brief_draft_step((plan[-1].id,))
-        br = _BRIEF.brief_review_step((bd.id,))
-        plan += [bd, br]
 
     _settings = ws.settings()
     quality = _settings.get("quality", "standard")
@@ -113,6 +107,32 @@ def build_plan(ws: Workspace) -> List[S.StepDef]:
                 if (a, s, e) in AP.missing_acts(blueprint, total) or f"plan_act:{a}" in _recorded}
                if _settings.get("plan_act_auto", True) else {})
     protagonist = AP.canonical_protagonist(ws, blueprint) if to_plan or act_ends else None
+    from novel_writer import brief as _BRIEF
+    outline = _BRIEF.is_outline_first(_settings)
+    if outline:
+        # 大纲先行：所有简述必须在任何章节写作之前生成并确认。因此先把所有缺失幕的蓝图条目补全（plan_act /
+        # blueprint_extend）、再生成结局设计，然后逐幕生成简述，最后进入简述确认检查点。
+        for s0 in sorted(to_plan):
+            a, s_, e_ = to_plan[s0]
+            pa = _with_deps(S.plan_act_step(a, s_, e_, reports=AP.previous_act_report_paths(a, act_list),
+                                            protagonist=protagonist, budget=AP.act_budget(blueprint, a)), (last,))
+            ext = S.blueprint_extend_step(a, s_, e_, pa.id)
+            plan += [pa, ext]
+            last = ext.id
+        to_plan = {}
+        if ending_at:
+            ending = _with_deps(S.ending_design_step(), (last,))
+            plan.append(ending)
+            last = ending.id
+        briefs = act_list or [(1, 1, total)]
+        for a, s_, e_ in briefs:
+            bd = _BRIEF.brief_draft_step(a, s_, e_, (last,))
+            plan.append(bd)
+            last = bd.id
+        review = _BRIEF.brief_review_step((last,))
+        plan.append(review)
+        last = review.id
+
     for n in range(1, total + 1):
         if n in to_plan:
             a, s0, e0 = to_plan[n]
@@ -121,8 +141,8 @@ def build_plan(ws: Workspace) -> List[S.StepDef]:
             ext = S.blueprint_extend_step(a, s0, e0, pa.id)
             plan += [pa, ext]
             last = ext.id
-        if n == ending_at:
-            # 结局设计（M6）：进入末幕前执行（方案 4.2）
+        if n == ending_at and not outline:
+            # 结局设计（M6）：进入末幕前执行（方案 4.2）；大纲先行时已在简述之前生成
             ending = _with_deps(S.ending_design_step(), (last,))
             plan.append(ending)
             last = ending.id

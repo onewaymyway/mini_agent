@@ -1,6 +1,6 @@
 # novel_writer「大纲先行」模式实施计划
 
-> 状态：设计已确认。O0 已完成（见 `external_projects/novel_writer/docs/outline_first.md`）；O1 起待实施。每期完成后更新本文件与 `external_projects/novel_writer/docs/`，并打包。
+> 状态：设计已确认。O0、O1 已完成（见 `external_projects/novel_writer/docs/outline_first.md`）；O2 起待实施。每期完成后更新本文件与 `external_projects/novel_writer/docs/`，并打包。
 >
 > O0 实施时的两处调整：① 模式与策略存放在 `studio_settings`（与 `pause_after_ideation` 一致），不是 `项目状态/workspace_config.json`；② 向导的大纲先行选项在 O2 完成前仍按直写创建。
 
@@ -83,7 +83,7 @@
 ## 5. 进度
 
 - O0 模式开关与流水线接入：完成
-- O1 简述生成：待实施
+- O1 简述生成：完成（按幕生成、确定性校验、先补全蓝图条目再生成简述）
 - O2 简述确认页：待实施
 - O3 写作接入与关键内容校验：待实施
 - O4 简述修改后的已写章节：待实施

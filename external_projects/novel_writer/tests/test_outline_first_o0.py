@@ -44,10 +44,11 @@ def test_outline_first_plan_inserts_brief_steps_before_chapters(tmp_path):
     ws = _create(tmp_path, "outline_first")
     plan = pipeline.build_plan(ws)
     ids = [s.id for s in plan]
-    i_draft, i_review = ids.index(BR.BRIEF_DRAFT_ID), ids.index(BR.BRIEF_REVIEW_ID)
+    drafts = [i for i, s in enumerate(plan) if s.id.startswith(BR.BRIEF_DRAFT_ID + ":")]
+    i_review = ids.index(BR.BRIEF_REVIEW_ID)
     first_chapter = next(i for i, s in enumerate(plan) if s.chapter == 1)
-    assert i_draft < i_review < first_chapter
-    assert plan[i_review].deps == (BR.BRIEF_DRAFT_ID,)
+    assert drafts and max(drafts) < i_review < first_chapter
+    assert plan[i_review].deps == (plan[max(drafts)].id,)
     # 第一章的首步依赖简述确认
     assert BR.BRIEF_REVIEW_ID in plan[first_chapter].deps
 
@@ -62,11 +63,11 @@ def test_brief_review_is_forced_manual_gate_even_on_autopilot(tmp_path):
     assert G.resolve_gate(step, skip).gate == G.GATE_SKIP
 
 
-def test_brief_draft_has_no_handler_yet_so_it_blocks(tmp_path):
+def test_brief_draft_handler_is_registered_and_review_is_checkpoint(tmp_path):
     from novel_writer import runner
-    assert "brief_draft" not in runner.DEFAULT_PY_HANDLERS
-    assert "checkpoint" == next(s for s in pipeline.build_plan(_create(tmp_path, "outline_first"))
-                                if s.id == BR.BRIEF_REVIEW_ID).handler
+    assert BR.BRIEF_DRAFT_ID in runner.DEFAULT_PY_HANDLERS
+    assert next(s for s in pipeline.build_plan(_create(tmp_path, "outline_first"))
+                if s.id == BR.BRIEF_REVIEW_ID).handler == "checkpoint"
 
 
 def test_create_persists_mode_and_direct_is_default(tmp_path):
