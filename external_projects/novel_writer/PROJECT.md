@@ -96,6 +96,7 @@ novel_writer/
 ├── skills/               23 个 skill（原样，未修改）
 ├── entrypoints/          create_novel / list_novels / health（+ _common）；M1: run_novel（worker）、smoke_real_llm；M5: advance_all_auto
 ├── docs/  tests/  data/(novels 与 shelf.json 不进版本库)  config/  reports/
+│   （完稿后修改：novel_writer/revision_flow/ + entrypoints/post_revision.py，说明见 docs/revision_flow.md）
 ```
 
 ## 运行与维护
@@ -106,6 +107,7 @@ novel_writer/
 
 ## 变更记录
 
+- 2026-11-14：完稿后修改流程 revision_flow（P0–P5，设计见 `next_doc/novel_writer_post_completion_revision_plan.md`，说明见 `docs/revision_flow.md`）。原稿 v001 只读快照 + 哈希清单；设定变更支持 retcon / from_chapter 两种时间语义，由作者逐次选择；所有修改先预览后确认，结果写入新版本 vNNN，成功定稿后才成为 head；章节反馈经 LLM 分诊后同样进入预览流程；派生物与一致性只给出重跑建议。上限（单次章数、LLM 调用数、单章尝试次数、字数比例）存于 `_revision/settings.json`。独立于写作流水线：不改动 steps / state / worker / 挡位逻辑。新增 `novel_writer/revision_flow/`、`entrypoints/post_revision.py`、`tests/test_revision_flow.py`（18 例通过）。未做：界面、LLM 语义筛选、运行中取消、真实 LLM 验证。
 - 2026-11-07：G5 不限次数重试。问题：整本运行（G5）中 `ch11.revise_loop` 的 agent 提前结束、没有写出回执，自动重跑与重置几轮后，修复次数用尽，worker 打印「数据修复已用尽仍未通过，已停下」并停止，G5 不再重置。根因判断为 agent 执行时收到错误的 LLM 输出并误以为任务已结束（不是路径问题：output 目录存在但为空）。修改：`worker.py` 的 G5 分支删除「修复次数用尽 → return」的停止条件，修复用尽后直接进入重置等待，只在作者暂停/停止时停下。同步更新 `docs/repair_engine.md`。测试：`tests/test_auto_retry.py` 与 `tests/test_repair.py` 共 17 例，16 通过；`test_failure_message_in_inbox_mentions_retries` 在改动前即失败（既有，与本次无关）。未做：未为「G5 连续失败多次仍继续重跑」补专门的自动化测试；未在真实 LLM 下验证长时间运行的成本；「同一错误连续出现则暂停并通知作者」仍未实施（作者明确要求不停）。
 - 2026-11-05：文本编码损坏改走修复流程，Python 步骤也支持修复。原因：`第37章_检查报告.md` 含非法字节（中文标点 E3 80 xx 的末字节被替换为 `?`），`revise_loop`（Python 步骤）读取时抛 `TextEncodingError`，自动重跑 3 次（同一代码、同一文件）必然失败，通用修复又因为要先读输入文件而同样失败。修改：`textio.TextEncodingError` 携带 `path`，新增 `read_text_lenient`；`runner.run_step` 把编码错误转成修复请求（校验器 `text_encoding`，文件为出错文件），所有步骤类型通用；`repair.py` 新增 `text_encoding` 校验（逐文件检查能否读取），修复提示词中以 U+FFFD 展示损坏字节并说明如何恢复，通用修复的输入范围也不再因为坏文件而抛错。测试：`tests/test_encoding_repair.py`（6 例）。全量 1022 通过，4 个既有失败与本次无关。
   未做：G5 对「修复也修不好」的同一错误仍会无限次重置（退避封顶 300 秒）；「同一错误连续出现则暂停并通知作者」尚未实施。
