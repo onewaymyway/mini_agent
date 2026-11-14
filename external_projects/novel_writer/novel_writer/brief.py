@@ -55,7 +55,8 @@ def brief_draft_step(act: int, start: int, end: int, deps: Tuple[str, ...]) -> S
 def brief_review_step(deps: Tuple[str, ...]) -> S.StepDef:
     return S.StepDef(
         id=BRIEF_REVIEW_ID, title="章节简述确认（等待作者确认，O2 实现中）", stage="p2", category=S.CAT_CHECKPOINT,
-        executor=S.EXECUTOR_PYTHON, handler="checkpoint", inputs=(), outputs=(), deps=deps,
+        executor=S.EXECUTOR_PYTHON, handler="checkpoint",
+        inputs=(f"{BRIEF_DIR_REL}/第*章.json",), outputs=(), deps=deps,   # 简述任何改动都会让确认失效
     )
 
 
@@ -219,12 +220,12 @@ def _prompt(ws: Workspace, act: int, start: int, end: int, blueprint_entries: Li
 
 # ─────────────────────────────── 处理器 ───────────────────────────────
 
-def h_brief_draft(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:
+def generate_act(ws: Workspace, act: int, start: int, end: int, invoker, *, feedback: str = "",
+                 step_id: str = "brief") -> Dict[str, Any]:
+    """生成第 act 幕（start–end 章）的全部简述；通过校验后才落盘。feedback 为作者对本幕的修改意见。"""
     if invoker is None:
         raise RuntimeError("未配置执行器（invoker），无法生成章节简述")
     from novel_writer import blueprint_store as BS
-    from novel_writer.workspace import Workspace as _W  # noqa: F401  (保持导入一致)
-    act, start, end = step.extra["act"], step.extra["start"], step.extra["end"]
     blueprint = BS.load_for_ws(ws, strict=True) or {}
     chapters = [c for c in blueprint.get("chapters") or [] if isinstance(c, dict) and isinstance(c.get("id"), int)
                 and start <= c["id"] <= end]
@@ -245,18 +246,25 @@ def h_brief_draft(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invo
         out_dir.mkdir(parents=True, exist_ok=True)
         out_file = out_dir / f"brief_act_{act:02d}.json"
         prompt = _prompt(ws, act, start, end, chapters, prev, names, foreshadow, out_file, last_error)
-        invoker(skill="novel-planner", prompt=prompt, export_dir=out_dir, step_id=f"{step.id}#{attempt}")
+        if feedback.strip():
+            prompt += "\n【作者对本幕的修改意见（必须落实，关键内容仍须具体）】\n" + feedback.strip() + "\n"
+        invoker(skill="novel-planner", prompt=prompt, export_dir=out_dir, step_id=f"{step_id}#{attempt}")
         if not out_file.is_file():
             last_error = ["没有写出简述 JSON 文件"]
             continue
         items, errs = parse_act_output(out_file.read_text(encoding="utf-8"), numbers, titles, names, foreshadow, act)
         if not errs:
-            for b in items:
-                save_brief(ws, b)
+            for item in items:
+                save_brief(ws, item)
             _write_index(ws)
             return {"summary": f"第{act}幕：已生成第{start}–{end}章简述（{len(items)} 章）", "chapters": numbers}
         last_error = errs
     raise RuntimeError(f"第{act}幕简述未通过校验：" + "；".join(last_error[:8]))
+
+
+def h_brief_draft(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:
+    return generate_act(ws, step.extra["act"], step.extra["start"], step.extra["end"], invoker,
+                        feedback=str(step.extra.get("feedback") or ""), step_id=step.id)
 
 
 def _write_index(ws: Workspace) -> None:
