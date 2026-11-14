@@ -35,6 +35,9 @@ GARBLE_MODES = ("off", "report", "rerun")
 
 SCHEMA_VERSION = 1
 
+WRITING_MODES = ("direct", "outline_first")          # 直写 / 大纲先行
+BRIEF_CHANGE_POLICIES = ("ask", "auto_rewrite")     # 简述修改后：由作者决定 / 自动重写
+
 DEFAULT_SETTINGS: Dict[str, Any] = {
     "schema_version": SCHEMA_VERSION,
     "gear": "G0",
@@ -77,6 +80,9 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     # 逐幕滚动规划（默认开启）：蓝图缺少某幕的章节条目时，在进入该幕前自动插入 plan_act:N（LLM 逐章规划，
     # 读取上一幕的幕末报告）与 blueprint_extend:N（确定性并入）。设为 false 则不插入，缺条目时第 N 章会报明确错误。
     "plan_act_auto": True,
+    # 大纲先行（O0）：writing_mode 每本书单独选择，默认直写；brief_change_policy 决定简述修改后已写章节的处理
+    "writing_mode": "direct",
+    "brief_change_policy": "ask",
     # 写作备注严格检查（默认关闭，保持现状只给提示）：开启后，机器校验把备注的「位置/结构」问题
     # （备注块之后仍有正文、出现多个备注块、章节里混入 [full output saved …] 工具截断提示）升级为硬问题，
     # 由修改循环让 agent 当场改掉；备注的字段格式问题仍只是提示。
@@ -127,6 +133,10 @@ def validate_settings(data: Dict[str, Any]) -> Dict[str, Any]:
     for name, value in merged["budget"].items():
         if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 1):
             raise SettingsError(f"预算 {name!r} 必须是正整数或 null（不限），当前 {value!r}")
+    if merged["writing_mode"] not in WRITING_MODES:
+        raise SettingsError(f"writing_mode 必须是 {list(WRITING_MODES)} 之一，当前 {merged['writing_mode']!r}")
+    if merged["brief_change_policy"] not in BRIEF_CHANGE_POLICIES:
+        raise SettingsError(f"brief_change_policy 必须是 {list(BRIEF_CHANGE_POLICIES)} 之一")
     for _k in ("ledger_auto_repair", "plan_act_auto", "notes_strict"):
         if not isinstance(merged[_k], bool):
             raise SettingsError(f"{_k} 必须是 true/false")

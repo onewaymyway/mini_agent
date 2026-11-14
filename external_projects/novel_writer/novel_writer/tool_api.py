@@ -46,6 +46,7 @@ def create_novel(
     gear: str = "G0",
     quality: str = "standard",
     pause_after_ideation: bool = False,
+    writing_mode: str = "direct",
     total_chapters_planned: int = 0,
     novels_dir: Optional[str] = None,
     index_file: Optional[str] = None,
@@ -59,11 +60,31 @@ def create_novel(
         root = Path(workspace).expanduser() if custom else base / workspace_dir_name(title)
         ws = Workspace(root)
         result = ws.init(title, gear=gear, quality=quality, total_chapters_planned=total_chapters_planned)
-        if pause_after_ideation:
-            ws.save_settings({**ws.settings(), "pause_after_ideation": True})
+        if pause_after_ideation or writing_mode != "direct":
+            ws.save_settings({**ws.settings(), "pause_after_ideation": bool(pause_after_ideation),
+                              "writing_mode": writing_mode})
         if custom:
             shelf.register(ws.root, index_file=Path(index_file) if index_file else None)
         return _ok(result)
+
+    return _guard(run)
+
+
+def set_writing_mode(workspace: str, mode: str) -> Dict[str, Any]:
+    """设置写作模式（direct 直写 / outline_first 大纲先行）。已经开始写作的书不能切换。"""
+    def run() -> Dict[str, Any]:
+        from novel_writer import settings as _settings_mod
+        settings_mod = _settings_mod
+        from novel_writer import state as _state
+        ws = _workspace_or_raise(workspace)
+        started = [k for k, v in (_state.load_state(ws).get("steps") or {}).items()
+                   if (v or {}).get("status") not in (None, "", "pending", "stale")]
+        if started:
+            raise settings_mod.SettingsError(f"已经开始运行（如 {started[0]}），不能切换写作模式")
+        if mode not in _settings_mod.WRITING_MODES:
+            raise settings_mod.SettingsError(f"writing_mode 必须是 {list(_settings_mod.WRITING_MODES)} 之一")
+        saved = ws.save_settings({**ws.settings(), "writing_mode": mode})
+        return _ok({"writing_mode": saved["writing_mode"]})
 
     return _guard(run)
 

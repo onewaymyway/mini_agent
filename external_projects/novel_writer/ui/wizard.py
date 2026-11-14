@@ -42,6 +42,12 @@ def page_wizard() -> None:
                 values[key] = st.text_area(label, height=90, key=f"w_{key}")
             else:
                 values[key] = st.text_input(label, key=f"w_{key}", placeholder=_GENRE_HINT if key == "genre" else "")
+        mode_pick = st.radio(
+            "写作模式（每本书单独选择）",
+            ["直写（默认：逐章直接生成正文）", "大纲先行（先出全部章节简述，确认后再写正文）"],
+            index=0, key="w_writing_mode",
+            help="大纲先行：先生成每章 300–600 字的场景简述，经你确认修改后再写正文；关键内容不允许偏离。",
+        )
         submitted = st.form_submit_button("创建小说", type="primary")
 
     if not submitted:
@@ -49,9 +55,13 @@ def page_wizard() -> None:
     if not title.strip():
         st.warning("请填写书名")
         return
+    # 大纲先行的简述生成与确认页（O1/O2）尚未完成：现阶段一律按直写创建，避免建出无法继续的书
+    if mode_pick.startswith("大纲先行"):
+        st.info("大纲先行模式还在开发中（简述生成与确认页未完成），本书将按直写创建。")
     created = tool_api.create_novel(
         title.strip(), workspace=workspace.strip() or None, gear=gear, quality=quality,
         total_chapters_planned=int(total), pause_after_ideation=bool(pause),
+        writing_mode="direct",
     )
     if not created["ok"]:
         st.error(created["error"]["message"])

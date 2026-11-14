@@ -89,6 +89,12 @@ def build_plan(ws: Workspace) -> List[S.StepDef]:
     if ws.settings().get("pause_after_ideation"):
         # 构思完成后停下，等作者审核（可通过「构思修订」提意见，修订后审核自动重新打开）
         plan.append(S.ideation_review_step())
+    from novel_writer import brief as _BRIEF
+    if _BRIEF.is_outline_first(ws.settings()):
+        # 大纲先行：先生成全部章节简述并经作者确认，之后才进入章节写作（章节首步依赖 brief_review）
+        bd = _BRIEF.brief_draft_step((plan[-1].id,))
+        br = _BRIEF.brief_review_step((bd.id,))
+        plan += [bd, br]
 
     _settings = ws.settings()
     quality = _settings.get("quality", "standard")

@@ -360,3 +360,4 @@ python -m pytest tests/test_m6.py -q        # M6 测试（15 个）
 - 灵感构思工作室（独立项目类型）：见 `brainstorm_studio.md`（B0 已完成）。
 
 - 完稿后修改流程（独立于写作流水线，版本化、预览确认、设定变更两种时间语义）：见 `revision_flow.md`（P0–P5 已完成，界面待接入）。
+- 大纲先行模式（每章 300–600 字简述 → 确认 → 写正文）：见 `outline_first.md`（O0 已完成，O1–O5 实施中）。

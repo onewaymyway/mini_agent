@@ -61,6 +61,11 @@ class GateDecision:
 
 def resolve_gate(step: S.StepDef, settings: Dict[str, Any]) -> GateDecision:
     override = (settings.get("step_overrides") or {}).get(step.id)
+    if step.id == "brief_review":
+        # 章节简述确认：大纲先行模式下无论挡位如何都由作者确认（只允许显式跳过）
+        if override == GATE_SKIP:
+            return GateDecision(GATE_SKIP, "override")
+        return GateDecision(GATE_REVIEW, "brief_switch")
     if step.id == S.IDEATION_REVIEW_ID:
         # 构思审核开关：开启后无论挡位如何都要作者确认（只允许显式跳过）
         if override == GATE_SKIP:
