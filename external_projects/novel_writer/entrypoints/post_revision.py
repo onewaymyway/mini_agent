@@ -69,6 +69,8 @@ def main(argv=None) -> int:
     sp.add_argument("--preview", required=True)
     sp = sub.add_parser("resume")
     sp.add_argument("--run", required=True)
+    sp = sub.add_parser("stop")
+    sp.add_argument("--run", required=True)
     sp = sub.add_parser("triage")
     sp.add_argument("--base", required=True)
     sp.add_argument("--chapter", type=int, required=True)
@@ -119,6 +121,9 @@ def main(argv=None) -> int:
             return _out(CH.confirm_preview(ws, args.preview))
         if args.cmd == "run":
             return _out(executor.start(ws, args.preview, _invoker()))
+        if args.cmd == "stop":
+            executor.request_stop(ws, args.run)
+            return _out({"stop_requested": args.run})
         if args.cmd == "resume":
             return _out(executor.resume(ws, args.run, _invoker()))
         if args.cmd == "triage":

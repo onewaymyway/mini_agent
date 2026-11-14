@@ -279,6 +279,20 @@ def build_preview(ws, base_version: str, change_ids: List[str], invoker=None) ->
             slot = per_chapter.setdefault(n, {"number": n, "title": info["title"], "changes": [], "hits": []})
             slot["changes"].append(c["id"])
             slot["hits"].extend(h for h in info["hits"] if h not in slot["hits"])
+    settings = CFG.load(ws)
+    if invoker is not None and settings["review_scope"] == "all":
+        # 全书候选：未命中词的章节也交给 LLM 判定（指代类设定变更靠这个发现）
+        all_chapters = _chapter_texts(version_dir(ws, base_version))
+        for c in changes:
+            if c["kind"] != "setting":
+                continue
+            for ch_info in all_chapters:
+                if c["mode"] == "from_chapter" and ch_info["number"] < c["effective_from"]:
+                    continue
+                slot = per_chapter.setdefault(ch_info["number"], {"number": ch_info["number"], "title": ch_info["title"],
+                                                                  "changes": [], "hits": []})
+                if c["id"] not in slot["changes"]:
+                    slot["changes"].append(c["id"])
     rows = [per_chapter[n] for n in sorted(per_chapter)]
     for row in rows:
         row["excluded"] = False
@@ -295,7 +309,6 @@ def build_preview(ws, base_version: str, change_ids: List[str], invoker=None) ->
         for row in rows:
             if row["review"] is None:
                 warnings.append(f"第{row['number']}章语义判定失败，已保留在预览中，请人工确认")
-    settings = CFG.load(ws)
     active = [r for r in rows if not r["excluded"]]
     preview = {
         "id": pid, "created_at": _now(), "confirmed": False,

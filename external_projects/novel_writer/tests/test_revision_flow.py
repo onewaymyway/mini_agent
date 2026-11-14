@@ -417,3 +417,65 @@ def test_preview_without_invoker_keeps_all_chapters(tmp_path):
     pv = CH.build_preview(ws, "v001", [c["id"]])
     assert pv["review"]["done"] is False
     assert all(not r["excluded"] for r in pv["chapters"])
+
+
+# ─────────────────────────── 候选范围 all 与运行中停止 ───────────────────────────
+
+def test_review_scope_all_finds_indirect_reference(tmp_path):
+    ws = _novel(tmp_path, total=5)
+    # 第5章只用指代，不含定位词（须在建立基线前写入）
+    ch5 = next(c for c in ws.list_chapters() if c.number == 5)
+    ch5.path.write_text("# 第5章\n\n他把那枚信物收进怀里，什么也没说。\n", encoding="utf-8")
+    _baseline(ws)
+    c = CH.save_change(ws, _setting())
+    hits_only = CH.build_preview(ws, "v001", [c["id"]], invoker=ReviewInvoker())
+    assert 5 not in [r["number"] for r in hits_only["chapters"]]
+    CFG.update(ws, {"review_scope": "all"})
+    inv = ReviewInvoker({5: True})
+    pv = CH.build_preview(ws, "v001", [c["id"]], invoker=inv)
+    rows = {r["number"]: r for r in pv["chapters"]}
+    assert 5 in rows and rows[5]["hits"] == [] and rows[5]["excluded"] is False
+    assert pv["review"]["calls"] == 5
+
+
+def test_review_scope_all_respects_from_chapter(tmp_path):
+    ws = _novel(tmp_path, total=5)
+    _baseline(ws)
+    CFG.update(ws, {"review_scope": "all"})
+    c = CH.save_change(ws, _setting(mode="from_chapter", effective_from=4, after_terms=["银钥匙"]))
+    pv = CH.build_preview(ws, "v001", [c["id"]], invoker=ReviewInvoker())
+    assert sorted(r["number"] for r in pv["chapters"]) == [4, 5]
+
+
+def test_review_scope_rejects_unknown_value(tmp_path):
+    ws = _novel(tmp_path)
+    with pytest.raises(FlowError, match="hits 或 all"):
+        CFG.update(ws, {"review_scope": "some"})
+
+
+class StopAfterFirst(RewriteInvoker):
+    def __call__(self, **kw):
+        super().__call__(**kw)
+        if len(self.calls) == 1:
+            executor.request_stop(self.ws, executor.list_runs(self.ws)[-1]["id"])
+
+
+def test_stop_request_pauses_between_chapters_and_resume_completes(tmp_path):
+    ws = _novel(tmp_path)
+    _baseline(ws)
+    pv = _ready_preview(ws)
+    inv = StopAfterFirst("玉佩", "银钥匙")
+    inv.ws = ws
+    run = executor.start(ws, pv["id"], inv)
+    assert run["status"] == "stopped" and run["done"] == [1]
+    run = executor.resume(ws, run["id"], RewriteInvoker("玉佩", "银钥匙"))
+    assert run["status"] == "done" and run["done"] == [1, 2, 3, 4]
+
+
+def test_stop_only_for_running(tmp_path):
+    ws = _novel(tmp_path)
+    _baseline(ws)
+    pv = _ready_preview(ws)
+    run = executor.start(ws, pv["id"], RewriteInvoker("玉佩", "银钥匙"))
+    with pytest.raises(FlowError, match="运行中"):
+        executor.request_stop(ws, run["id"])

@@ -138,13 +138,29 @@ def _find_output(out_dir: Path, name: str) -> Optional[Path]:
 
 # ─────────────────────────────── 运行 ───────────────────────────────
 
-def start(ws, preview_id: str, invoker: Invoker) -> Dict[str, Any]:
-    """从已确认的预览新建运行：派生目标版本并开始改写。"""
+def precheck_start(ws, preview_id: str) -> Dict[str, Any]:
+    """启动前的同步检查（界面在后台线程启动前调用，把可预见的错误直接告诉作者）。"""
     preview = CH.load_preview(ws, preview_id)
     if not preview["confirmed"]:
         raise FlowError("预览尚未确认，不能执行")
-    if any(r["preview_id"] == preview_id and r["status"] in ("running", "paused_limit") for r in list_runs(ws)):
+    if any(r["preview_id"] == preview_id and r["status"] in ("running", "paused_limit", "stopped") for r in list_runs(ws)):
         raise FlowError("该预览已有未完成的运行，请续跑或丢弃")
+    if not [c for c in preview["chapters"] if not c.get("excluded")]:
+        raise FlowError("预览中没有可改写的章节")
+    return preview
+
+
+def precheck_resume(ws, run_id: str) -> Dict[str, Any]:
+    run = load_run(ws, run_id)
+    if run["status"] not in ("paused_limit", "stopped"):
+        raise FlowError(f"只有因上限暂停或被停止的运行可以续跑（当前状态：{run['status']}）")
+    return run
+
+
+def start(ws, preview_id: str, invoker: Invoker) -> Dict[str, Any]:
+    """从已确认的预览新建运行：派生目标版本并开始改写。"""
+    precheck_start(ws, preview_id)
+    preview = CH.load_preview(ws, preview_id)
     target = V.derive(ws, preview["base_version"], note=f"修改：{preview_id}")
     active = [c["number"] for c in preview["chapters"] if not c.get("excluded")]
     run = {
@@ -156,10 +172,21 @@ def start(ws, preview_id: str, invoker: Invoker) -> Dict[str, Any]:
     return _execute(ws, run, invoker)
 
 
-def resume(ws, run_id: str, invoker: Invoker) -> Dict[str, Any]:
+def _stop_flag(ws, rid: str):
+    return _runs_dir(ws) / f"{rid}.stop"
+
+
+def request_stop(ws, run_id: str) -> None:
+    """请求停止运行：写入停止标记，执行器在当前章节结束后停下（状态 stopped，可续跑）。"""
     run = load_run(ws, run_id)
-    if run["status"] != "paused_limit":
-        raise FlowError(f"只有因上限暂停的运行可以续跑（当前状态：{run['status']}）")
+    if run["status"] != "running":
+        raise FlowError(f"只有运行中的任务可以停止（当前状态：{run['status']}）")
+    _stop_flag(ws, run_id).write_text(_now(), encoding="utf-8")
+
+
+def resume(ws, run_id: str, invoker: Invoker) -> Dict[str, Any]:
+    run = precheck_resume(ws, run_id)
+    _stop_flag(ws, run_id).unlink(missing_ok=True)
     run["status"] = "running"
     _save_run(ws, run)
     return _execute(ws, run, invoker)
@@ -178,6 +205,11 @@ def _execute(ws, run: Dict[str, Any], invoker: Invoker) -> Dict[str, Any]:
     for n in run["queue"]:
         if n in run["done"]:
             continue
+        if _stop_flag(ws, run["id"]).exists():
+            run["status"] = "stopped"
+            run["log"].append(f"{_now()} 已按请求停止；续跑时从第{n}章继续")
+            _save_run(ws, run)
+            return run
         if session_done >= settings["max_chapters_per_run"] or run["llm_calls"] >= settings["max_llm_calls_per_run"]:
             run["status"] = "paused_limit"
             run["log"].append(f"{_now()} 达到上限，暂停；续跑时从第{n}章继续")

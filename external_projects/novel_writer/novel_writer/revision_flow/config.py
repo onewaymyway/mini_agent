@@ -12,6 +12,7 @@ DEFAULTS: Dict[str, Any] = {
     "length_ratio_min": 0.7,           # 改写后字数 / 原字数 下限
     "length_ratio_max": 1.3,           # 改写后字数 / 原字数 上限
     "stop_on_failure": True,           # 某章失败即停止（保证后续章节不依赖未完成的前文）
+    "review_scope": "hits",            # 候选范围：hits=只判定命中定位词的章节；all=全书逐章判定（设定变更，成本高）
 }
 
 # (类型, 最小, 最大)
@@ -22,6 +23,7 @@ _BOUNDS: Dict[str, tuple] = {
     "length_ratio_min": (0.1, 1.0, float),
     "length_ratio_max": (1.0, 3.0, float),
     "stop_on_failure": (None, None, bool),
+    "review_scope": (None, None, str),
 }
 
 
@@ -38,6 +40,9 @@ def validate(patch: Dict[str, Any]) -> Dict[str, Any]:
         if kind is bool:
             if not isinstance(value, bool):
                 raise FlowError(f"{key} 必须是布尔值")
+        elif kind is str:
+            if value not in ("hits", "all"):
+                raise FlowError(f"{key} 只能是 hits 或 all")
         else:
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise FlowError(f"{key} 必须是数字")
