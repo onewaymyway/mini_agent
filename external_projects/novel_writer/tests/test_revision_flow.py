@@ -538,3 +538,62 @@ def test_dead_owner_lock_is_recovered(tmp_path):
     executor.save_json(executor._lock_path(ws, rid), {"pid": 4194300, "at": "x"})  # 几乎不可能存在的 pid
     assert executor.recover_interrupted(ws) == [rid]
     assert not executor._lock_path(ws, rid).exists()
+
+
+# ─────────────────────────── 实时进度日志 ───────────────────────────
+
+def test_preview_logs_each_chapter_decision(tmp_path):
+    from novel_writer.revision_flow import jobs
+    ws = _novel(tmp_path)
+    _baseline(ws)
+    c = CH.save_change(ws, _setting())
+    lines = []
+    pv = CH.build_preview(ws, "v001", [c["id"]], invoker=ReviewInvoker({3: False}), progress=lines.append)
+    text = "\n".join(lines)
+    assert "语义判定：共 4 个候选章节" in text
+    assert "第3章" in text and "不涉及，默认排除" in text
+    assert "第1章" in text and "涉及，保留" in text
+    assert "预览完成" in text and pv["id"] in pv["id"]
+
+
+def test_make_invoker_streams_agent_output_into_job_log(tmp_path):
+    from novel_writer import outlog
+    from novel_writer.revision_flow import jobs
+    ws = _novel(tmp_path)
+
+    def fake(**kw):
+        sink = outlog.current_line_sink()
+        assert sink is not None
+        sink("正在阅读原文")
+        sink("写入第1章")
+
+    jobs.start(ws, "t_stream", lambda progress: jobs.make_invoker(ws, "t_stream", fake)(
+        skill="revision-editor", prompt="p", export_dir=tmp_path, step_id="s") or {"ok": True})
+    import time
+    for _ in range(100):
+        if jobs.status(ws, "t_stream")["state"] != "running":
+            break
+        time.sleep(0.05)
+    assert jobs.status(ws, "t_stream")["state"] == "done"
+    log = jobs.tail(ws, "t_stream")
+    assert "│ 正在阅读原文" in log and "│ 写入第1章" in log
+    assert outlog.current_line_sink() is None  # 调用结束后恢复
+
+
+def test_job_failure_is_recorded(tmp_path):
+    from novel_writer.revision_flow import jobs
+    import time
+    ws = _novel(tmp_path)
+
+    def boom(progress):
+        progress("开始")
+        raise RuntimeError("模型不可用")
+
+    jobs.start(ws, "t_fail", boom)
+    for _ in range(100):
+        if jobs.status(ws, "t_fail")["state"] != "running":
+            break
+        time.sleep(0.05)
+    st_ = jobs.status(ws, "t_fail")
+    assert st_["state"] == "failed" and "模型不可用" in st_["error"]
+    assert "失败：模型不可用" in jobs.tail(ws, "t_fail")

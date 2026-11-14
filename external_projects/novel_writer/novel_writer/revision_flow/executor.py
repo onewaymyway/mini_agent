@@ -160,8 +160,8 @@ def precheck_resume(ws, run_id: str) -> Dict[str, Any]:
     return run
 
 
-def start(ws, preview_id: str, invoker: Invoker) -> Dict[str, Any]:
-    """从已确认的预览新建运行：派生目标版本并开始改写。"""
+def start(ws, preview_id: str, invoker: Invoker, progress=None) -> Dict[str, Any]:
+    """从已确认的预览新建运行：派生目标版本并开始改写。progress(text) 接收实时进度。"""
     precheck_start(ws, preview_id)
     preview = CH.load_preview(ws, preview_id)
     target = V.derive(ws, preview["base_version"], note=f"修改：{preview_id}")
@@ -231,19 +231,21 @@ def request_stop(ws, run_id: str) -> None:
     _stop_flag(ws, run_id).write_text(_now(), encoding="utf-8")
 
 
-def resume(ws, run_id: str, invoker: Invoker) -> Dict[str, Any]:
+def resume(ws, run_id: str, invoker: Invoker, progress=None) -> Dict[str, Any]:
     run = precheck_resume(ws, run_id)
     _stop_flag(ws, run_id).unlink(missing_ok=True)
     run["status"] = "running"
     _save_run(ws, run)
     _acquire(ws, run_id)
     try:
-        return _execute(ws, run, invoker)
+        return _execute(ws, run, invoker, progress)
     finally:
         _release(ws, run_id)
 
 
-def _execute(ws, run: Dict[str, Any], invoker: Invoker) -> Dict[str, Any]:
+def _execute(ws, run: Dict[str, Any], invoker: Invoker, progress=None) -> Dict[str, Any]:
+    say = progress or (lambda _t: None)
+    say(f"运行 {run['id']}：目标版本 {run['target_version']}，待改写 {len(run['queue']) - len(run['done'])} 章")
     settings = CFG.load(ws)
     preview = CH.load_preview(ws, run["preview_id"])
     by_id = {c["id"]: c for c in CH.list_changes(ws)}
@@ -257,6 +259,7 @@ def _execute(ws, run: Dict[str, Any], invoker: Invoker) -> Dict[str, Any]:
         if n in run["done"]:
             continue
         if _stop_flag(ws, run["id"]).exists():
+            say("收到停止请求，在本章开始前停下")
             run["status"] = "stopped"
             run["log"].append(f"{_now()} 已按请求停止；续跑时从第{n}章继续")
             _save_run(ws, run)
@@ -266,7 +269,7 @@ def _execute(ws, run: Dict[str, Any], invoker: Invoker) -> Dict[str, Any]:
             run["log"].append(f"{_now()} 达到上限，暂停；续跑时从第{n}章继续")
             _save_run(ws, run)
             return run
-        ok, errors = _rewrite_chapter(ws, run, n, files, applicable_by_chapter.get(n, []), settings, invoker)
+        ok, errors = _rewrite_chapter(ws, run, n, files, applicable_by_chapter.get(n, []), settings, invoker, say)
         session_done += 1
         if errors == [LIMIT_MARK]:
             run["status"] = "paused_limit"
@@ -275,6 +278,7 @@ def _execute(ws, run: Dict[str, Any], invoker: Invoker) -> Dict[str, Any]:
             return run
         if ok:
             run["done"].append(n)
+            say(f"第{n}章改写完成（已完成 {len(run['done'])}/{len(run['queue'])}）")
         else:
             run["failed"] = {"chapter": n, "errors": errors}
             run["log"].append(f"{_now()} 第{n}章失败：{'; '.join(errors)[:300]}")
@@ -287,7 +291,7 @@ def _execute(ws, run: Dict[str, Any], invoker: Invoker) -> Dict[str, Any]:
     return _finish(ws, run, preview)
 
 
-def _rewrite_chapter(ws, run, n, files, applicable, settings, invoker) -> Tuple[bool, List[str]]:
+def _rewrite_chapter(ws, run, n, files, applicable, settings, invoker, say=lambda _t: None) -> Tuple[bool, List[str]]:
     if n not in files:
         return False, [f"目标版本中找不到第{n}章"]
     ch = files[n]
@@ -303,23 +307,28 @@ def _rewrite_chapter(ws, run, n, files, applicable, settings, invoker) -> Tuple[
         prompt = build_prompt(chapter_no=n, title=ch.title, source=ch.path, prev_path=prev_path,
                               out_dir=out_dir, applicable=applicable, errors=errors)
         run["llm_calls"] += 1
+        say(f"第{n}章（{ch.title}）第{attempt}次尝试：调用模型改写")
         try:
             invoker(skill=SKILL, prompt=prompt, export_dir=out_dir, step_id=f"rf_{run['id']}_{n}_{attempt}")
         except Exception as exc:  # 框架异常计为一次失败尝试
             errors = [f"执行器异常：{exc}"]
             run["log"].append(f"{_now()} 第{n}章第{attempt}次尝试异常：{exc}")
+            say(f"  执行器异常：{exc}")
             continue
         out_file = _find_output(out_dir, ch.path.name)
         if out_file is None:
             errors = ["没有在输出目录写出章节文件"]
+            say("  没有写出章节文件，准备重试")
             continue
         revised, _ = read_text_lenient(out_file)
         errors = check_rewrite(original, revised, applicable, settings)
         if not errors:
             atomic_write_text(ch.path, revised)
             run["log"].append(f"{_now()} 第{n}章改写完成（第{attempt}次尝试）")
+            say(f"  校验通过，已写入（字数 {count_words(revised)}，原文 {count_words(original)}）")
             return True, []
         run["log"].append(f"{_now()} 第{n}章第{attempt}次尝试未通过：{'; '.join(errors)[:200]}")
+        say(f"  校验未通过：{'；'.join(errors)}")
     return False, errors
 
 

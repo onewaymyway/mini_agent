@@ -9,14 +9,15 @@ from __future__ import annotations
 
 import json
 import threading
+import uuid
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Dict, Optional
 
 import streamlit as st
 
 from novel_writer.revision_flow import changes as CH
 from novel_writer.revision_flow import config as CFG
-from novel_writer.revision_flow import derived, executor, feedback
+from novel_writer.revision_flow import derived, executor, feedback, jobs
 from novel_writer.revision_flow import versions as V
 from novel_writer.revision_flow.common import FlowError, sub_dir
 from novel_writer.workspace import Workspace
@@ -44,23 +45,56 @@ def _try(fn: Callable[..., Any], *args, **kwargs) -> Optional[Any]:
     return None
 
 
-def _background(label: str, target: Callable[[], None]) -> None:
-    def runner():
-        try:
-            target()
-        except Exception as exc:  # 后台异常记入会话，页面下次刷新时显示
-            st.session_state.setdefault("rv_bg_errors", []).append(f"{label}：{exc}")
-    threading.Thread(target=runner, daemon=True).start()
-    st.info(f"已在后台开始：{label}。可以切换到其它页面，稍后回来刷新查看进度。")
-
-
-def _show_bg_errors() -> None:
-    for msg in st.session_state.pop("rv_bg_errors", []):
-        st.error(msg)
-
-
 def _status(s: str) -> str:
     return _STATUS_LABEL.get(s, s)
+
+
+
+_JOB_STATE = {"running": "运行中", "done": "已完成", "failed": "失败", "unknown": "未开始"}
+
+
+def _job_panel(root: Workspace, name: str, title: str, on_done: Callable[[Dict[str, Any]], None]) -> None:
+    """实时日志面板：运行中每 1.5 秒刷新日志；结束后刷新一次整页并调用 on_done（只执行一次）。"""
+    def body():
+        info = jobs.status(root, name)
+        state = info.get("state", "unknown")
+        st.markdown(f"**{title}**　状态：{_JOB_STATE.get(state, state)}")
+        if info.get("error"):
+            st.error(info["error"])
+        st.code(jobs.tail(root, name) or "（等待输出…）", language=None)
+        if state in ("done", "failed") and not st.session_state.get(f"rv_seen_{name}"):
+            st.session_state[f"rv_seen_{name}"] = True
+            if state == "done":
+                on_done(info.get("result") or {})
+            st.rerun()
+    interval = None if jobs.status(root, name).get("state") in ("done", "failed") else 1.5
+    st.fragment(run_every=interval)(body)()
+
+
+def _job_running(root: Workspace, name: str) -> bool:
+    return jobs.status(root, name).get("state") == "running"
+
+
+def _preview_job(ws: Workspace, name: str, base: str, pick: list, use_llm: bool, progress) -> Dict[str, Any]:
+    invoker = jobs.make_invoker(ws, name, _invoker()) if use_llm else None
+    pv = CH.build_preview(ws, base, pick, invoker=invoker, progress=progress)
+    return {"preview_id": pv["id"]}
+
+
+def _run_job(ws: Workspace, name: str, pid: str, progress) -> Dict[str, Any]:
+    run = executor.start(ws, pid, jobs.make_invoker(ws, name, _invoker()), progress=progress)
+    return {"run_id": run["id"], "status": run["status"]}
+
+
+def _resume_job(ws: Workspace, name: str, rid: str, progress) -> Dict[str, Any]:
+    run = executor.resume(ws, rid, jobs.make_invoker(ws, name, _invoker()), progress=progress)
+    return {"run_id": run["id"], "status": run["status"]}
+
+
+def _triage_job(ws: Workspace, name: str, base: str, chapter: int, text: str, sel: str, progress) -> Dict[str, Any]:
+    rec = feedback.triage(ws, base, chapter, text, jobs.make_invoker(ws, name, _invoker()),
+                          selection=sel, progress=progress)
+    return {"triage_id": rec["id"], "status": rec["status"]}
 
 
 # ─────────────────────────────── 版本 ───────────────────────────────
@@ -151,10 +185,16 @@ def _tab_changes(ws: str) -> None:
     pick = st.multiselect("变更", [c["id"] for c in changes if c["status"] in ("draft", "confirmed")],
                           key="rv_p_changes")
     use_llm = st.checkbox("做 LLM 语义判定（会调用模型，判定不涉及的章节默认排除）", value=True, key="rv_p_review")
-    if st.button("生成预览", key="rv_p_make", disabled=not pick):
-        pv = _try(CH.build_preview, root, base, pick, invoker=_invoker() if use_llm else None)
-        if pv:
-            st.session_state["rv_preview"] = pv["id"]
+    if st.button("生成预览", key="rv_p_make", disabled=not pick or _job_running(root, st.session_state.get("rv_job_preview", "-"))):
+        name = f"preview_{uuid.uuid4().hex[:8]}"
+        try:
+            jobs.start(root, name, _preview_job, root, name, base, pick, use_llm)
+            st.session_state["rv_job_preview"] = name
+        except Exception as exc:
+            st.error(f"无法开始：{exc}")
+    if st.session_state.get("rv_job_preview"):
+        _job_panel(root, st.session_state["rv_job_preview"], "生成预览",
+                   lambda res: st.session_state.__setitem__("rv_preview", res.get("preview_id")))
     pid = st.session_state.get("rv_preview")
     if not pid:
         return
@@ -188,7 +228,6 @@ def _split(text: str):
 
 def _tab_runs(ws: str) -> None:
     root = Workspace(ws)
-    _show_bg_errors()
     recovered = executor.recover_interrupted(root)
     if recovered:
         st.warning(f"以下运行所在进程已结束，已标记为「已中断」，可续跑：{', '.join(recovered)}")
@@ -200,9 +239,11 @@ def _tab_runs(ws: str) -> None:
     if previews:
         st.markdown("**开始运行**")
         pid = st.selectbox("已确认的预览", previews, key="rv_r_pick")
-        if st.button("在后台开始改写", key="rv_r_start"):
+        if st.button("开始改写", key="rv_r_start"):
             if _try(executor.precheck_start, root, pid):
-                _background(f"改写（{pid}）", lambda: executor.start(root, pid, _invoker()))
+                name = f"run_{uuid.uuid4().hex[:8]}"
+                jobs.start(root, name, _run_job, root, name, pid)
+                st.session_state["rv_job_run"] = name
     else:
         st.info("还没有已确认的预览。")
     runs = executor.list_runs(root)
@@ -221,7 +262,11 @@ def _tab_runs(ws: str) -> None:
             st.info("已请求停止，当前章节结束后生效。")
     if run["status"] in executor.RESUMABLE and c2.button("续跑", key="rv_r_resume"):
         if _try(executor.precheck_resume, root, rid):
-            _background(f"续跑（{rid}）", lambda: executor.resume(root, rid, _invoker()))
+            name = f"resume_{uuid.uuid4().hex[:8]}"
+            jobs.start(root, name, _resume_job, root, name, rid)
+            st.session_state["rv_job_run"] = name
+    if st.session_state.get("rv_job_run"):
+        _job_panel(root, st.session_state["rv_job_run"], "改写进度", lambda res: None)
     if run["status"] == "failed" and run.get("failed"):
         st.error(f"第{run['failed']['chapter']}章失败：{'；'.join(run['failed']['errors'])}")
     if run.get("derived_marks"):
@@ -244,10 +289,12 @@ def _tab_feedback(ws: str) -> None:
     fb = st.text_area("对本章的意见", key="rv_f_text")
     sel = st.text_area("选中的段落（可选）", key="rv_f_sel")
     if st.button("分诊（会调用模型）", key="rv_f_triage", disabled=not fb.strip()):
-        with st.spinner("分诊中…"):
-            rec = _try(feedback.triage, root, base, int(chapter), fb, _invoker(), selection=sel)
-        if rec:
-            st.session_state["rv_triage"] = rec["id"]
+        name = f"triage_{uuid.uuid4().hex[:8]}"
+        jobs.start(root, name, _triage_job, root, name, base, int(chapter), fb, sel)
+        st.session_state["rv_job_triage"] = name
+    if st.session_state.get("rv_job_triage"):
+        _job_panel(root, st.session_state["rv_job_triage"], "分诊进度",
+                   lambda res: st.session_state.__setitem__("rv_triage", res.get("triage_id")))
     tid = st.session_state.get("rv_triage")
     if not tid:
         return

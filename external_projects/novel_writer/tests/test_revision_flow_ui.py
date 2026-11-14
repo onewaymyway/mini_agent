@@ -103,4 +103,28 @@ def test_runs_tab_lists_confirmed_preview_and_start_is_queued(tmp_path, monkeypa
     at = _run(ws, monkeypatch)
     assert not at.exception
     assert pv["id"] in at.selectbox(key="rv_r_pick").options
-    assert any(b.label == "在后台开始改写" for b in at.button)
+    assert any(b.label == "开始改写" for b in at.button)
+
+
+def test_preview_job_streams_log_and_sets_preview(tmp_path, monkeypatch):
+    import time
+    from novel_writer.revision_flow import jobs
+    ws = _novel(tmp_path)
+    V.init_baseline(ws)
+    c = CH.save_change(ws, {"kind": "setting", "title": "换", "before": "玉佩", "after": "银钥匙",
+                            "reason": "", "terms": ["玉佩"], "mode": "retcon"})
+    at = _run(ws, monkeypatch)
+    at.checkbox(key="rv_p_review").uncheck().run()
+    at.multiselect(key="rv_p_changes").set_value([c["id"]]).run()
+    [b for b in at.button if b.label == "生成预览"][0].click().run()
+    name = at.session_state["rv_job_preview"]
+    for _ in range(100):
+        if jobs.status(ws, name).get("state") in ("done", "failed"):
+            break
+        time.sleep(0.1)
+    assert jobs.status(ws, name)["state"] == "done"
+    log = jobs.tail(ws, name)
+    assert "预览" in log and "完成" in log
+    at.run()
+    assert not at.exception
+    assert at.session_state["rv_preview"]

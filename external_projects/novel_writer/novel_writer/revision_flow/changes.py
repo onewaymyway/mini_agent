@@ -211,17 +211,21 @@ def _parse_review(raw: str) -> Dict[str, Any]:
 
 
 def semantic_review(ws, rows: List[Dict[str, Any]], changes: Dict[str, Dict[str, Any]], version_root: Path,
-                    invoker, pid: str) -> Dict[str, int]:
+                    invoker, pid: str, progress=None) -> Dict[str, int]:
     """对每个候选章节做一次 LLM 判定。结果写入 row["review"]；判定失败的章节保持未判定（不排除）。
     返回 {"calls": 调用次数, "failed": 失败章数}。"""
+    say = progress or (lambda _t: None)
     files = {ch.number: ch.path for ch in Workspace(version_root).list_chapters()}
     calls = failed = 0
+    say(f"语义判定：共 {len(rows)} 个候选章节")
     for row in rows:
         path = files.get(row["number"])
         if path is None:
             row["review"] = None
             failed += 1
+            say(f"第{row['number']}章：找不到章节文件，跳过")
             continue
+        say(f"第{row['number']}章（{row['title']}）：开始判定，命中词 {'、'.join(row['hits']) or '无'}")
         group = [changes[cid] for cid in row["changes"]]
         errors: List[str] = []
         verdict = None
@@ -232,30 +236,36 @@ def semantic_review(ws, rows: List[Dict[str, Any]], changes: Dict[str, Dict[str,
             prompt = _review_prompt(chapter_no=row["number"], chapter_path=path, changes=group,
                                     out_file=out_file, errors=errors)
             calls += 1
+            say(f"  第{attempt}次尝试：调用模型")
             try:
                 invoker(skill="revision-editor", prompt=prompt, export_dir=out_dir,
                         step_id=f"review_{pid}_{row['number']}_{attempt}")
             except Exception as exc:
                 errors = [f"执行器异常：{exc}"]
+                say(f"  执行器异常：{exc}")
                 continue
             if not out_file.is_file():
                 errors = ["没有写出 review.json"]
+                say("  未写出判定文件，准备重试")
                 continue
             try:
                 verdict = _parse_review(out_file.read_text(encoding="utf-8"))
                 break
             except (FlowError, UnicodeDecodeError) as exc:
                 errors = [str(exc)]
+                say(f"  判定结果不合法：{exc}")
         if verdict is None:
             row["review"] = None
             failed += 1
+            say(f"第{row['number']}章：判定失败，保留在预览中，请人工确认")
         else:
             row["review"] = verdict
             row["excluded"] = not verdict["affected"]
+            say(f"第{row['number']}章：{'涉及，保留' if verdict['affected'] else '不涉及，默认排除'}；理由：{verdict['reason'] or '（无）'}")
     return {"calls": calls, "failed": failed}
 
 
-def build_preview(ws, base_version: str, change_ids: List[str], invoker=None) -> Dict[str, Any]:
+def build_preview(ws, base_version: str, change_ids: List[str], invoker=None, progress=None) -> Dict[str, Any]:
     """为一组变更生成预览，并保存到 _revision/preview/<id>.json。返回预览内容。
     传入 invoker 时做 LLM 语义判定：判定为不涉及的章节默认排除（作者可用 set_excluded 加回）。"""
     if not change_ids:
@@ -302,9 +312,11 @@ def build_preview(ws, base_version: str, change_ids: List[str], invoker=None) ->
             "chapters": [{k: r[k] for k in ("number", "title", "changes", "hits")} for r in rows]}
     pid = "prv_" + hashlib.sha1(json.dumps(body, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:10]
     review_info = {"calls": 0, "failed": 0, "done": False}
+    say = progress or (lambda _t: None)
+    say(f"预览 {pid}：基础版本 {base_version}，候选 {len(rows)} 章，变更 {len(changes)} 条")
     if invoker is not None and rows:
         by_id = {c["id"]: c for c in changes}
-        info = semantic_review(ws, rows, by_id, version_dir(ws, base_version), invoker, pid)
+        info = semantic_review(ws, rows, by_id, version_dir(ws, base_version), invoker, pid, progress=say)
         review_info = {**info, "done": True}
         for row in rows:
             if row["review"] is None:
@@ -318,6 +330,7 @@ def build_preview(ws, base_version: str, change_ids: List[str], invoker=None) ->
         "runs_needed": max(1, -(-len(active) // settings["max_chapters_per_run"])),
     }
     save_json(sub_dir(ws, "preview") / f"{pid}.json", preview)
+    say(f"预览完成：保留 {len(active)} 章，排除 {len(rows) - len(active)} 章，预计调用 {preview['estimated_llm_calls']} 次")
     return preview
 
 

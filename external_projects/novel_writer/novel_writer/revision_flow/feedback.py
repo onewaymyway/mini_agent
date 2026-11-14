@@ -83,7 +83,7 @@ def _parse(raw: str, chapter_no: int) -> Dict[str, Any]:
 
 
 def triage(ws, base_version: str, chapter_no: int, feedback: str, invoker: Invoker,
-           selection: str = "") -> Dict[str, Any]:
+           selection: str = "", progress=None) -> Dict[str, Any]:
     """对某章的意见做分诊，保存为 pending 记录并返回。"""
     if not str(feedback or "").strip():
         raise FlowError("请写下对本章的意见")
@@ -96,7 +96,10 @@ def triage(ws, base_version: str, chapter_no: int, feedback: str, invoker: Invok
     work = _triage_dir(ws) / tid
     errors: List[str] = []
     result: Optional[Dict[str, Any]] = None
+    say = progress or (lambda _t: None)
+    say(f"分诊：第{chapter_no}章，意见 {len(feedback)} 字")
     for attempt in range(1, MAX_ATTEMPTS + 1):
+        say(f"第{attempt}次尝试：调用模型判断意见类别")
         out_dir = work / f"attempt{attempt:02d}"
         out_dir.mkdir(parents=True, exist_ok=True)
         out_file = out_dir / "triage.json"
@@ -112,10 +115,12 @@ def triage(ws, base_version: str, chapter_no: int, feedback: str, invoker: Invok
             continue
         try:
             result = _parse(out_file.read_text(encoding="utf-8"), chapter_no)
+            say(f"分类结果：{'章内修改' if result['kind'] == 'chapter' else '设定变更'}；理由：{result['reason']}")
             break
         except (FlowError, UnicodeDecodeError) as exc:
             errors = [str(exc)]
             result = None
+            say(f"结果不合法：{exc}")
     record = {
         "id": tid, "created_at": _now(), "base_version": base_version, "chapter": chapter_no,
         "feedback": feedback, "selection": selection, "status": "pending" if result else "failed",
