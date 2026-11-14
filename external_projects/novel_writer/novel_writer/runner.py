@@ -640,6 +640,8 @@ from novel_writer.ideation_review import HANDLERS as _IDEATION_HANDLERS  # noqa:
 DEFAULT_PY_HANDLERS.update(_IDEATION_HANDLERS)
 from novel_writer.brief import HANDLERS as _BRIEF_HANDLERS  # noqa: E402  大纲先行：章节简述生成（O1）
 DEFAULT_PY_HANDLERS.update(_BRIEF_HANDLERS)
+from novel_writer.brief_check import h_brief_check as _h_brief_check  # noqa: E402  大纲先行：关键内容核对（O3）
+DEFAULT_PY_HANDLERS.update({"brief_check": _h_brief_check})
 
 
 # ── 单步总入口 ─────────────────────────────────────────────────────────────

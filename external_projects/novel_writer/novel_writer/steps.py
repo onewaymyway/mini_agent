@@ -312,7 +312,7 @@ def init_style_b_step() -> StepDef:
 
 
 def chapter_steps(n: int, title: str, *, total: Optional[int], prev_last: str,
-                  quality: str = "standard") -> List[StepDef]:
+                  quality: str = "standard", outline: bool = False) -> List[StepDef]:
     """第 n 章的单章循环（W1–W14）。
 
     返回的步骤按**线性顺序**排列，第一个步骤依赖 `prev_last`（上一个步骤 id）。
@@ -346,13 +346,24 @@ def chapter_steps(n: int, title: str, *, total: Optional[int], prev_last: str,
                 instructions=(f"写第 {n} 章正文。严格遵循上下文包与章前情节清单。\n"
                               "写作备注按 chapter-writer 技能「输出格式」的统一模板，写在正文文件的最末尾（只写一次）；"
                               "不要把备注写进回执，回执 summary 只需一句话。"
-                              "不要把工具返回的「[full output saved …]」提示或被截断的内容写进章节文件。"),
+                              "不要把工具返回的「[full output saved …]」提示或被截断的内容写进章节文件。"
+                              + (f"【大纲先行】本章已确认的章节简述（大纲规划/章节简述/第{n:03d}章.json）是结构依据：\n"
+                                 "关键内容（must_events / must_states / must_foreshadow / must_hook）必须在正文中具体实现，不得偏离；"
+                                 "非关键内容（场景细节、措辞、次要对话）可以发挥，但偏离之处会被记录。" if outline else "")),
                 inputs=(rel("context_pack", n=n), rel("style_hint", n=n), rel("chapter_tasks", n=n),
-                        rel("quota_file", n=n)),
+                        rel("quota_file", n=n)) + ((f"大纲规划/章节简述/第{n:03d}章.json",) if outline else ()),
                 outputs=(chapter_text,), deps=(p("style_hint"),), **common),
+    ]
+    if outline:
+        # 大纲先行（O3）：写作后逐条核对关键内容；未实现则修正本章，仍不达标则交给作者
+        steps.append(StepDef(id=p("brief_check"), title=f"第{n}章：关键内容核对（简述）", stage=_stage_of(n),
+                             category=CAT_CHAPTER_REVIEW, executor=EXECUTOR_PYTHON, handler="brief_check",
+                             inputs=(chapter_text, f"大纲规划/章节简述/第{n:03d}章.json"),
+                             deps=(p("write_chapter"),), **common))
+    steps += [
         StepDef(id=p("machine_check"), title=f"第{n}章：机器校验", stage=_stage_of(n), category=CAT_CHAPTER_REVIEW,
                 executor=EXECUTOR_PYTHON, handler="machine_check", inputs=(chapter_text,),
-                deps=(p("write_chapter"),), **common),
+                deps=(p("brief_check") if outline else p("write_chapter"),), **common),
         StepDef(id=p("review"), title=f"第{n}章：完章核查", stage=_stage_of(n), category=CAT_CHAPTER_REVIEW,
                 executor=EXECUTOR_SKILL, skill="chapter-review",
                 instructions=(f"对第 {n} 章做一致性核查。问题清单的每一条必须以 🔴（硬错误）或 🟡（建议）开头，"
@@ -377,7 +388,7 @@ def chapter_steps(n: int, title: str, *, total: Optional[int], prev_last: str,
     # 乱码守卫（写作后、机器校验前）：命中乱码则自动重新生成，三次仍失败挂起给作者
     guard = StepDef(id=p("garble_guard"), title=f"第{n}章：乱码守卫", stage=_stage_of(n), category=CAT_CHAPTER_REVIEW,
                     executor=EXECUTOR_PYTHON, handler="garble_guard", inputs=(chapter_text,),
-                    deps=(p("write_chapter"),), **common)
+                    deps=(p("brief_check") if outline else p("write_chapter"),), **common)
     idx = next(i for i, s_ in enumerate(steps) if s_.id == p("machine_check"))
     steps[idx] = replace(steps[idx], deps=(guard.id,))
     steps.insert(idx, guard)

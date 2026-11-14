@@ -43,6 +43,10 @@ def is_outline_first(settings: dict) -> bool:
 
 # ─────────────────────────────── 步骤定义 ───────────────────────────────
 
+def brief_chapter_rel(n: int) -> str:
+    return f"{BRIEF_DIR_REL}/第{n:03d}章.json"
+
+
 def brief_draft_step(act: int, start: int, end: int, deps: Tuple[str, ...]) -> S.StepDef:
     return S.StepDef(
         id=f"{BRIEF_DRAFT_ID}:{act}", title=f"第{act}幕：生成章节简述（第{start}–{end}章）",
@@ -74,21 +78,31 @@ def brief_md_path(ws: Workspace, n: int) -> Path:
     return brief_dir(ws) / f"第{n:03d}章.md"
 
 
+def deviations_path(ws: Workspace, n: int) -> Path:
+    return brief_dir(ws) / "偏离" / f"第{n:03d}章.json"
+
+
+def load_deviations(ws: Workspace, n: int) -> List[Dict[str, Any]]:
+    data = read_json(deviations_path(ws, n), default=[])
+    return data if isinstance(data, list) else []
+
+
 def load_brief(ws: Workspace, n: int) -> Optional[Dict[str, Any]]:
     data = read_json(brief_json_path(ws, n), default=None)
     return data if isinstance(data, dict) else None
 
 
-def render_md(b: Dict[str, Any]) -> str:
+def render_md(b: Dict[str, Any], deviations: Optional[List[Dict[str, Any]]] = None) -> str:
     k = b["key"]
+    devs = b.get("deviations", []) if deviations is None else deviations
     lines = [f"# 第{b['chapter']}章 {b['title']}", "", "## 叙述简述", "", b["narrative"].strip(), "",
              "## 关键内容（写作不得偏离）", "", "**必须发生的事件**"]
     lines += [f"- {e}" for e in k["must_events"]]
     lines += ["", "**人物状态变化**"] + [f"- {s['who']}：{s['change']}" for s in k["must_states"]]
     lines += ["", "**伏笔动作**"] + ([f"- {f}" for f in k["must_foreshadow"]] or ["- 无"])
     lines += ["", f"**章末钩子**：{k['must_hook']}", "", "## 偏离记录", ""]
-    lines += [f"- {d['where']}：{d['original']} → {d['change']}（原因：{d['reason']}）" for d in b.get("deviations", [])]
-    if not b.get("deviations"):
+    lines += [f"- {d['where']}：{d['original']} → {d['change']}（原因：{d['reason']}）" for d in devs]
+    if not devs:
         lines.append("（暂无）")
     return "\n".join(lines) + "\n"
 
@@ -96,7 +110,8 @@ def render_md(b: Dict[str, Any]) -> str:
 def save_brief(ws: Workspace, b: Dict[str, Any]) -> None:
     n = b["chapter"]
     atomic_write_json(brief_json_path(ws, n), b)
-    atomic_write_text(brief_md_path(ws, n), render_md(b))
+    # 偏离记录单独存放：写作后追加偏离不会改动简述 JSON，因而不会让确认失效或让写作步骤过期
+    atomic_write_text(brief_md_path(ws, n), render_md(b, load_deviations(ws, n)))
 
 
 # ─────────────────────────────── 校验（确定性） ───────────────────────────────

@@ -146,7 +146,7 @@ def build_plan(ws: Workspace) -> List[S.StepDef]:
             ending = _with_deps(S.ending_design_step(), (last,))
             plan.append(ending)
             last = ending.id
-        chapter = S.chapter_steps(n, "", total=total, prev_last=last, quality=quality)
+        chapter = S.chapter_steps(n, "", total=total, prev_last=last, quality=quality, outline=outline)
         plan += chapter
         last = chapter[-1].id
         if n == S.OPENING_CHAPTERS and total >= S.OPENING_CHAPTERS:
