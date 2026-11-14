@@ -47,6 +47,7 @@ def create_novel(
     quality: str = "standard",
     pause_after_ideation: bool = False,
     writing_mode: str = "direct",
+    brief_change_policy: str = "ask",
     total_chapters_planned: int = 0,
     novels_dir: Optional[str] = None,
     index_file: Optional[str] = None,
@@ -60,9 +61,9 @@ def create_novel(
         root = Path(workspace).expanduser() if custom else base / workspace_dir_name(title)
         ws = Workspace(root)
         result = ws.init(title, gear=gear, quality=quality, total_chapters_planned=total_chapters_planned)
-        if pause_after_ideation or writing_mode != "direct":
+        if pause_after_ideation or writing_mode != "direct" or brief_change_policy != "ask":
             ws.save_settings({**ws.settings(), "pause_after_ideation": bool(pause_after_ideation),
-                              "writing_mode": writing_mode})
+                              "writing_mode": writing_mode, "brief_change_policy": brief_change_policy})
         if custom:
             shelf.register(ws.root, index_file=Path(index_file) if index_file else None)
         return _ok(result)

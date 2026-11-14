@@ -36,6 +36,7 @@ def render_writing(ws: str) -> None:
     c2.metric("配额", d["quota"])
     c3.metric("偏离", f"{(d['words'] / d['quota'] - 1):+.0%}" if d["quota"] and d["words"] else "—")
 
+    _render_brief(ws, n)
     entry = d["entry"] or {}
     with st.expander("蓝图要求", expanded=True):
         st.markdown(f"**功能**：{entry.get('function') or '—'}")
@@ -77,6 +78,28 @@ def render_writing(ws: str) -> None:
             r = tool_api.write_author_note(ws, f"ch{n:02d}.write_chapter", note)
             st.success("已保存") if r["ok"] else _se(r)
         st.caption("运行请到「总控台」：可以用 ▶ 运行到检查点 推进本章及之后的步骤。")
+
+
+def _render_brief(ws: str, n: int) -> None:
+    """大纲先行：本章已确认的简述、关键内容与偏离记录（直写模式不显示）。"""
+    from novel_writer import brief_sync
+    from novel_writer.workspace import Workspace
+    view = brief_sync.chapter_brief_view(Workspace(ws), n)
+    if view is None:
+        return
+    b = view["brief"]
+    k = b["key"]
+    with st.expander("📚 本章简述（大纲先行）", expanded=False):
+        if view["changed"]:
+            st.warning("简述在本章写成后被修改过，请到「📚 章节简述」页选择 重写 / 保留 / 忽略。")
+        st.markdown(b["narrative"])
+        st.markdown("**必须发生的事件**\n" + "\n".join(f"- {e}" for e in k["must_events"]))
+        st.markdown("**人物状态变化**\n" + "\n".join(f"- {s['who']}：{s['change']}" for s in k["must_states"]))
+        st.markdown("**伏笔动作**\n" + ("\n".join(f"- {f}" for f in k["must_foreshadow"]) or "- 无"))
+        st.markdown(f"**章末钩子**：{k['must_hook']}")
+        if view["deviations"]:
+            st.markdown("**偏离记录**\n" + "\n".join(
+                f"- {d['where']}：{d['original']} → {d['change']}（原因：{d['reason']}）" for d in view["deviations"]))
 
 
 def _render_assist(ws: str, n: int) -> None:

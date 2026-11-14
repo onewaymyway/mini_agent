@@ -204,6 +204,17 @@ def _changed_section(root: Workspace) -> None:
                         st.rerun()
 
 
+def _policy_control(root: Workspace) -> None:
+    labels = {"ask": "由我决定（逐章 重写 / 保留 / 忽略）", "auto_rewrite": "自动重写（确认简述时提交）"}
+    cur = (root.settings() or {}).get("brief_change_policy", "ask")
+    pick = st.radio("简述修改后已写章节的处理策略", list(labels), index=list(labels).index(cur),
+                    format_func=lambda k: labels[k], horizontal=True, key="br_policy")
+    if pick != cur:
+        root.save_settings({**root.settings(), "brief_change_policy": pick})
+        jobs.log(root, OPS, f"策略改为 {pick}")
+        st.rerun()
+
+
 def page_briefs() -> None:
     ws = require_ws()
     if not ws:
@@ -211,6 +222,7 @@ def page_briefs() -> None:
     root = Workspace(ws)
     st.header("📚 章节简述")
     st.caption("大纲先行模式：每章 300–600 字场景简述 + 关键内容（写作不得偏离）。确认后才进入正文写作。")
+    _policy_control(root)
     _job_box(root)
     if st.session_state.get("br_result"):
         res = st.session_state.pop("br_result")

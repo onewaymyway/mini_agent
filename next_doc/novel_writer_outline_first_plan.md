@@ -1,8 +1,8 @@
 # novel_writer「大纲先行」模式实施计划
 
-> 状态：设计已确认。O0–O4 已完成（见 `external_projects/novel_writer/docs/outline_first.md`）；O5 待实施。每期完成后更新本文件与 `external_projects/novel_writer/docs/`，并打包。
+> 状态：设计已确认。O0–O5 全部完成（见 `external_projects/novel_writer/docs/outline_first.md`）。每期完成后更新本文件与 `external_projects/novel_writer/docs/`，并打包。
 >
-> O0 实施时的两处调整：① 模式与策略存放在 `studio_settings`（与 `pause_after_ideation` 一致），不是 `项目状态/workspace_config.json`；② 向导的大纲先行选项在 O2 完成前仍按直写创建。
+> O0 实施时的调整：模式与策略存放在 `studio_settings`（与 `pause_after_ideation` 一致），不是 `项目状态/workspace_config.json`。向导的大纲先行选项已在 O5 开放。
 
 ## 0. 已确认的决策
 
@@ -92,4 +92,4 @@
 - O2 简述确认页：完成（版本历史、编辑、单章反馈改写、整幕重排、确认冻结、确认失效）
 - O3 写作接入与关键内容校验：完成（写作输入、核对步骤、定向修正两次、偏离记录、交作者）
 - O4 简述修改后的已写章节：完成（写作依据哈希、ask 逐章保留/忽略/重写、auto_rewrite 确认时自动提交；**偏离原计划**：重写复用「作者反馈修订循环」请求而非 revision_flow 执行器，见下）
-- O5 界面收尾与文档：待实施
+- O5 界面收尾与文档：完成（向导开放并可选策略、简述页可切换策略、写作页「本章简述」入口、文档与使用流程）

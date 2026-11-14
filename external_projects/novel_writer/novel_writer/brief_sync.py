@@ -243,3 +243,17 @@ def apply_policy(ws: Workspace) -> Dict[str, Any]:
         except Exception as exc:  # 单章失败不影响其它章（失败隔离），原因留给作者
             failed[row["chapter"]] = str(exc)
     return {"policy": policy, "submitted": submitted, "failed": failed}
+
+
+# ─────────────────────────────── 写作页查看（O5） ───────────────────────────────
+
+def chapter_brief_view(ws: Workspace, n: int) -> Optional[Dict[str, Any]]:
+    """写作页「简述」入口所需数据：本章简述、偏离记录、与写作依据是否一致。直写模式或没有简述返回 None。"""
+    if not BR.is_outline_first(ws.settings() or {}):
+        return None
+    b = BR.load_brief(ws, n)
+    if b is None:
+        return None
+    pending = next((r for r in affected(ws) if r["chapter"] == n), None)
+    return {"brief": b, "deviations": BR.load_deviations(ws, n),
+            "changed": pending is not None, "diff": (pending or {}).get("diff", [])}

@@ -48,6 +48,12 @@ def page_wizard() -> None:
             index=0, key="w_writing_mode",
             help="大纲先行：先生成每章 300–600 字的场景简述，经你确认修改后再写正文；关键内容不允许偏离。",
         )
+        policy_pick = st.radio(
+            "简述修改后，已写章节怎么处理（仅大纲先行有效）",
+            ["由我决定（默认：逐章选择 重写 / 保留 / 忽略）", "自动重写（确认简述时自动提交受影响章节的重写）"],
+            index=0, key="w_brief_policy",
+            help="直写模式没有简述，此项无效。之后可在「章节简述」页修改。",
+        )
         submitted = st.form_submit_button("创建小说", type="primary")
 
     if not submitted:
@@ -55,13 +61,12 @@ def page_wizard() -> None:
     if not title.strip():
         st.warning("请填写书名")
         return
-    # 大纲先行的简述生成与确认页（O1/O2）尚未完成：现阶段一律按直写创建，避免建出无法继续的书
-    if mode_pick.startswith("大纲先行"):
-        st.info("大纲先行模式还在开发中（简述生成与确认页未完成），本书将按直写创建。")
+    outline = mode_pick.startswith("大纲先行")
     created = tool_api.create_novel(
         title.strip(), workspace=workspace.strip() or None, gear=gear, quality=quality,
         total_chapters_planned=int(total), pause_after_ideation=bool(pause),
-        writing_mode="direct",
+        writing_mode="outline_first" if outline else "direct",
+        brief_change_policy="auto_rewrite" if policy_pick.startswith("自动") else "ask",
     )
     if not created["ok"]:
         st.error(created["error"]["message"])
