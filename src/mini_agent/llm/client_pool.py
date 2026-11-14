@@ -48,11 +48,17 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, TYPE_CHECKING
 
 from .base import LLMClient, LLMConfig, LLMResponse, LLMRateLimitError, LLMError, resolve_trust_env, mask_api_key
 from . import deadline as _deadline
+from .key_state import (
+    FileKeyState, KeyLease, KeyStateBackend, MemoryKeyState, STATE_FILENAME,
+    checkout_least_loaded, gc_key_state, get_file_backend, key_id, key_record,
+    pick_least_loaded, prune_leases,
+)
 
 if TYPE_CHECKING:
     from mini_agent.config import AppConfig
@@ -116,11 +122,17 @@ class ApiKeyPool:
         rotation: str = "passive",
         switch_on: Optional[set[str]] = None,
         cooldown: float = 60.0,
+        store: Optional[KeyStateBackend] = None,
     ) -> None:
         if not keys:
             raise ValueError("ApiKeyPool requires at least one key")
         self._states: list[KeyState] = [KeyState(k) for k in keys]
         self._rotation = rotation
+        # least_loaded 的状态放在 store 里（文件后端可跨进程共享；未指定则为进程内内存）。
+        # passive / round_robin 维持原有的进程内语义。
+        self._store: Optional[KeyStateBackend] = (
+            (store or MemoryKeyState()) if rotation == "least_loaded" else None
+        )
         self._switch_on: set[str] = switch_on or {"LLMRateLimitError", "LLMPermanentError"}
         self._cooldown = cooldown
         self._idx = 0          # 当前 key 索引（round_robin 用）
@@ -141,6 +153,60 @@ class ApiKeyPool:
                 self._advance()
             return self._states[self._idx].key
 
+    def checkout(self) -> KeyLease:
+        """取一把 key 并登记租约。调用结束后必须对应调用 checkin，无论成功或失败。"""
+        if self._rotation != "least_loaded":
+            return KeyLease(self.acquire_key(), None)
+        key, lease_id = self._tx(
+            lambda data, now: checkout_least_loaded(data, self._keys(), now)
+        )
+        return KeyLease(key, lease_id)
+
+    def checkin(self, lease: KeyLease) -> None:
+        """释放租约。非 least_loaded 模式或无租约时为空操作。"""
+        if self._store is None or lease.lease_id is None:
+            return
+        lid = lease.lease_id
+        kid = key_id(lease.key)
+
+        def fn(data: dict, now: float) -> None:
+            rec = data["keys"].get(kid)
+            if rec is not None:
+                rec["leases"].pop(lid, None)
+
+        self._tx(fn)
+
+    def _keys(self) -> list[str]:
+        return [s.key for s in self._states]
+
+    def _tx(self, fn):
+        """在 store 上执行一次事务；fn(data, now)。事务开始时顺带清理过期租约与陈旧记录。"""
+        now = time.time()
+
+        def wrapped(data: dict):
+            gc_key_state(data, now)
+            return fn(data, now)
+
+        return self._store.transact(wrapped)
+
+    def _least_snapshot(self) -> list[dict]:
+        def fn(data: dict, now: float) -> list[dict]:
+            out = []
+            for k in self._keys():
+                rec = key_record(data, key_id(k))
+                prune_leases(rec, now)
+                cool = max(0.0, rec["cooldown_until"] - now)
+                out.append({
+                    "key_suffix": k[-8:],
+                    "available": cool <= 0,
+                    "cooldown_remaining": round(cool, 1),
+                    "fail_count": rec["fail_count"],
+                    "inflight": len(rec["leases"]),
+                })
+            return out
+
+        return self._tx(fn)
+
     def on_error(self, key: str, exc: Exception) -> Optional[str]:
         """
         报告某个 key 出错。若错误命中 switch_on，则切换到下一个可用 key。
@@ -150,6 +216,22 @@ class ApiKeyPool:
         """
         if not self._should_switch(exc):
             return None
+
+        if self._rotation == "least_loaded":
+            def fn(data: dict, now: float) -> Optional[str]:
+                rec = key_record(data, key_id(key))
+                rec["cooldown_until"] = now + self._cooldown
+                rec["fail_count"] += 1
+                logger.warning(
+                    "ApiKeyPool: key %s cooled down for %.0fs (%s: %s)",
+                    mask_api_key(key), self._cooldown, type(exc).__name__, exc,
+                )
+                return pick_least_loaded(data, self._keys(), now, exclude=key)
+
+            next_key = self._tx(fn)
+            if next_key is not None:
+                logger.info("ApiKeyPool: switched to key %s", mask_api_key(next_key))
+            return next_key
 
         with self._lock:
             # 找到出错的 key，设置冷却
@@ -171,6 +253,15 @@ class ApiKeyPool:
 
     def on_success(self, key: str) -> None:
         """key 调用成功，重置失败计数。"""
+        if self._rotation == "least_loaded":
+            def fn(data: dict, now: float) -> None:
+                rec = key_record(data, key_id(key))
+                if rec["fail_count"] > 0:
+                    rec["fail_count"] = 0
+                    rec["cooldown_until"] = 0.0
+
+            self._tx(fn)
+            return
         with self._lock:
             for state in self._states:
                 if state.key == key and state.fail_count > 0:
@@ -179,11 +270,15 @@ class ApiKeyPool:
 
     def all_exhausted(self) -> bool:
         """所有 key 均在冷却中。"""
+        if self._rotation == "least_loaded":
+            return not any(s["available"] for s in self._least_snapshot())
         with self._lock:
             return not any(s.is_available for s in self._states)
 
     def next_available_in(self) -> float:
         """返回最快一个 key 解除冷却还需等待的秒数。"""
+        if self._rotation == "least_loaded":
+            return min(s["cooldown_remaining"] for s in self._least_snapshot())
         with self._lock:
             now = time.monotonic()
             waits = [max(0.0, s.cooldown_until - now) for s in self._states]
@@ -191,6 +286,8 @@ class ApiKeyPool:
 
     def snapshot(self) -> list[dict]:
         """返回所有 key 状态快照（供日志/状态栏使用）。"""
+        if self._rotation == "least_loaded":
+            return self._least_snapshot()
         with self._lock:
             now = time.monotonic()
             return [
@@ -754,7 +851,8 @@ class LLMClientPool:
                 switch_on_set = set(switch_on_raw) | {"LLMPermanentError"}
                 key_pool = ApiKeyPool(
                     keys=api_keys,
-                    rotation=item.get("key_rotation", "passive"),
+                    rotation=item.get("key_rotation", "least_loaded"),
+                    store=_key_store_for(cfg),
                     switch_on=switch_on_set,
                     cooldown=float(item.get("key_cooldown", 60.0)),
                 )
@@ -800,20 +898,17 @@ class LLMClientPool:
             # key 都已耗尽/冷却）时才会真正把异常向上抛出，交给
             # retry_policy / call_with_pool 的 fallback 逻辑处理。
             while True:
-                # 获取当前 key（round_robin 模式下每次推进）
-                if key_pool:
-                    current_key = key_pool.acquire_key()
-                    # 若当前 client 的 key 与 pool 给出的 key 不同，重建 client
-                    if current_key != entry.config.api_key:
-                        entry.rebuild_client_with_key(current_key)
+                # 取 key：least_loaded 下按在途数 + 冷却状态挑选并登记租约；其余模式沿用原逻辑
+                lease = key_pool.checkout() if key_pool else None
+                if lease is not None and lease.key != entry.config.api_key:
+                    entry.rebuild_client_with_key(lease.key)
 
                 try:
                     resp = call_fn(entry.client)
-                    if key_pool:
-                        key_pool.on_success(entry.config.api_key)
-                    return resp
-
                 except Exception as exc:
+                    # 异常路径同样必须释放租约，否则在途计数会泄漏
+                    if lease is not None:
+                        key_pool.checkin(lease)
                     if not key_pool:
                         raise
                     old_key = entry.config.api_key
@@ -832,10 +927,14 @@ class LLMClientPool:
                     if on_switch_key:
                         on_switch_key(old_key[-8:], new_key[-8:], exc)
                     entry.rebuild_client_with_key(new_key)
-                    # 不立即 return，而是回到循环开头用新 key 重新尝试；
-                    # 若这次依然失败，会再次进入 except 分支，继续尝试
-                    # 下一把 key（不算入 retry_policy 的退避等待）
+                    # 回到循环开头用新 key 重试（不算入 retry_policy 的退避等待）
                     continue
+
+                if lease is not None:
+                    key_pool.checkin(lease)
+                if key_pool:
+                    key_pool.on_success(entry.config.api_key)
+                return resp
 
         return retry_policy.call_with_retry(call_fn=_single_call, on_retry=on_retry)
 
@@ -879,6 +978,21 @@ class LLMClientPool:
             # 条目显式写 trust_env 优先，否则沿用全局 llm_network.trust_env
             trust_env=bool(item.get("trust_env", resolve_trust_env(cfg))),
         )
+
+
+def _key_store_for(cfg: "AppConfig") -> KeyStateBackend:
+    """least_loaded 状态存放位置：主项目根下 .agent/llm_key_state.json。
+
+    外部项目通过 _resolve_stats_scope 解析到主项目根，因此 daemon 与外部项目进程
+    会读写同一个文件，实现跨进程共享。无项目根时退化为进程内内存后端。
+    """
+    try:
+        root, _origin = _resolve_stats_scope(cfg)
+    except Exception:
+        root = None
+    if root:
+        return get_file_backend(Path(root) / ".agent" / STATE_FILENAME)
+    return MemoryKeyState()
 
 
 def _get_env_api_key(provider: str) -> str:
@@ -988,10 +1102,26 @@ def build_pool_with_primary(cfg: "AppConfig", primary: LLMConfig) -> "LLMClientP
 
     base = LLMClientPool.from_config(cfg)
     primary_identity = (primary.provider, primary.model, primary.base_url, primary.api_key)
-    primary_entry = ProviderEntry(config=primary, client=create_client(primary), key_pool=None)
+
+    # 修复：原实现把主 entry 固定为 key_pool=None，并按 identity 去掉链上同名条目，
+    # 导致子任务在主 provider 上只用第一把 key，多 key 轮转整体失效。
+    # 现在由主 entry “认领”链上持有 primary.api_key 的那个多 key 池（同 provider），
+    # 共享池的状态（经 store 跨进程同步），并把被认领的条目从备选中移除。
+    absorbed = next(
+        (
+            e for e in base._entries
+            if e.key_pool is not None
+            and e.config.provider == primary.provider
+            and any(s.key == primary.api_key for s in e.key_pool._states)
+        ),
+        None,
+    )
+    primary_pool = absorbed.key_pool if absorbed is not None else None
+    primary_entry = ProviderEntry(config=primary, client=create_client(primary), key_pool=primary_pool)
     rest = [
         e for e in base._entries
-        if (e.config.provider, e.config.model, e.config.base_url, e.config.api_key) != primary_identity
+        if e is not absorbed
+        and (e.config.provider, e.config.model, e.config.base_url, e.config.api_key) != primary_identity
     ]
     pool = LLMClientPool(
         entries=[primary_entry] + rest,

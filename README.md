@@ -58,7 +58,7 @@ cp providers.json.example providers.json
       "provider": "anthropic",
       "model": "claude-opus-4-7",
       "api_keys": ["sk-ant-key-1-...", "sk-ant-key-2-..."],
-      "key_rotation": "passive",
+      "key_rotation": "least_loaded",
       "key_switch_on": ["LLMRateLimitError"],
       "key_cooldown": 60
     }

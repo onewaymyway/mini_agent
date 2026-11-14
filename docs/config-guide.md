@@ -356,7 +356,7 @@ API key 等敏感配置存放在独立的 **`providers.json`** 中（已加入 `
       "provider": "anthropic",
       "model": "claude-opus-4-7",
       "api_keys": ["sk-ant-aaa", "sk-ant-bbb"],
-      "key_rotation": "passive"
+      "key_rotation": "least_loaded"
     },
     {
       "provider": "openai",

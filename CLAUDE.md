@@ -477,9 +477,10 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 
 - 核心模块：`src/mini_agent/llm/client_pool.py`
 - **ApiKeyPool**：同一 provider 的多 API Key 管理
-  - 轮转策略：`passive`（遇错切换，默认）和 `round_robin`（每次请求轮转）
+  - 轮转策略：`least_loaded`（在途请求最少优先，默认，状态跨进程共享）、`passive`（遇错切换）和 `round_robin`（每次请求轮转；后两者仅进程内生效）
   - 切换触发条件（`key_switch_on`）：默认 `["LLMRateLimitError"]`，可扩展为认证失败等
   - 冷却机制：key 被切换后进入冷却期（`key_cooldown`，默认 60s）
+  - 跨进程共享：least_loaded 状态写入主项目 `.agent/llm_key_state.json`（文件锁 + 原子替换，仅存 key 摘要）；外部项目需已注册才能解析到主项目根
 - **LLMClientPool**：多套 LLM 配置的故障转移链
   - `llm_fallback_chain`：有序配置列表，第一条为主配置
   - fallback 触发条件（`fallback_on`）：默认 `["LLMRateLimitError", "LLMTimeoutError", "LLMProviderError"]`

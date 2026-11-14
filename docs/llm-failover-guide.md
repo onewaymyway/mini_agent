@@ -6,7 +6,7 @@ mini-agent 提供两层互补的容错机制，解决 LLM 调用的可靠性问�
 
 | 机制 | 解决的问题 | 触发时机 |
 |------|-----------|---------|
-| **ApiKeyPool** 多 key 轮转 | 单 provider 的 API key 频率限制 | 遇到 `RateLimitError`，立即切换，无等待 |
+| **ApiKeyPool** 多 key 轮转 | 单 provider 的 API key 频率限制 | 默认按“在途请求最少”分摊到各 key（`least_loaded`）；遇到 `RateLimitError` 立即切换，并把限流状态跨进程共享 |
 | **LLMClientPool** 配置 fallback | provider 完全不可用、跨 provider 降级；账号级 403 | 当前配置所有重试用完仍失败；或遇到 `LLMPermanentError`（401/403） |
 
 两层机制覆盖的调用范围见 [覆盖范围与后台调用](#覆盖范围与后台调用)：主对话、后台摘要/画像/记忆回填/压缩、cron 与 Objective 子 Agent、以及 `override_*` 调用，都会经过同一条 fallback 链。
@@ -160,7 +160,25 @@ CLI 参数  >  agent_config.json  >  providers.json chain[0]  >  环境变量  >
 
 ### 轮转策略
 
-#### `passive`（被动切换，默认）
+#### `least_loaded`（最少在途优先，默认）
+
+每次请求从**未冷却**的 key 中选择当前**在途请求最少**的一把；在途数相同时选择**最久未被使用**的。
+并发任务（主对话、子任务、cron、外部项目）会自然分摊到全部 key 上，不再集中在第一把。
+
+```
+任务 A 请求: key-A（在途 0 → 1）
+任务 B 请求: key-B（key-A 在途 1，key-B 在途 0）
+任务 C 请求: key-C
+任务 A 完成: key-A 在途归 0，下一次请求会优先选中它
+```
+
+每次调用都会登记一个**租约**，调用结束（无论成功或失败）即释放。租约 900 秒后自动失效，
+进程崩溃遗留的租约不会永久占用负载。遇到 `key_switch_on` 中的错误时，被限流的 key 进入冷却，
+冷却期间不再被选中。
+
+适合场景：绝大多数场景，尤其是多任务、多进程并发。状态跨进程共享，见 [跨进程共享状态](#跨进程共享状态)。
+
+#### `passive`（被动切换）
 
 正常情况只使用当前 key；遇到触发条件才切换。
 
@@ -227,6 +245,43 @@ CLI 参数  >  agent_config.json  >  providers.json chain[0]  >  环境变量  >
 
 ---
 
+## 跨进程共享状态
+
+`least_loaded` 的在途计数与冷却状态写入文件，同一主项目下的所有进程共享：
+
+```
+<主项目根>/.agent/llm_key_state.json        状态
+<主项目根>/.agent/llm_key_state.json.lock   文件锁
+```
+
+**哪些调用共享这份状态**：主对话、cron 与 Objective 子任务、orchestrator 的 SubAgent、
+LLMHelper 旁路调用，以及以子进程运行的外部项目——只要它们解析到同一个主项目根。
+
+**主项目根的解析顺序**：
+
+1. 外部项目（根目录存在 `project.yaml`）：先读取环境变量 `MINI_AGENT_MAIN_PROJECT_ROOT`，
+   再查外部项目注册表（`~/.agent/external_projects.json` 中的 `main_project_root`）。
+2. 主项目：就是它自己的项目根。
+3. 解析不到主项目根时（如嵌入式使用、测试）：退化为进程内内存状态，不跨进程。
+
+> ⚠️ **外部项目需要先注册**。未注册的外部项目会解析不到主项目根，状态写入它自己目录下的
+> `.agent/llm_key_state.json`，与主项目**不共享**限流状态。这种情况下它仍能正常轮转，只是看不到主项目的在途负载。
+> 当前 daemon 不会设置 `MINI_AGENT_MAIN_PROJECT_ROOT`，因此外部项目目前依赖注册表。
+
+**安全与可靠性**：
+
+- 文件里只保存 key 的 SHA-256 摘要（16 位），**不含明文 key**。
+- 读写期间持有文件锁（POSIX `flock`，Windows `msvcrt`），写入先写临时文件再原子替换。
+- 文件损坏或无法解析时按空状态处理，不影响调用本身。
+
+**已知边界**：
+
+- 状态按 **key** 记录，不区分模型。同一把 key 上不同模型的限流会相互影响。
+- 租约超过 900 秒仍未释放时会被视为失效，只影响负载统计，不影响正在进行的调用。
+- 要重置全部轮转状态，在相关进程停止后删除上述文件即可。
+
+---
+
 ## 配置 Fallback 链（LLMClientPool）
 
 ### fallback_chain 结构
@@ -257,7 +312,7 @@ CLI 参数  >  agent_config.json  >  providers.json chain[0]  >  环境变量  >
 | `max_tokens` | int | 主配置值 | 最大输出 token 数 |
 | `temperature` | float | 0.0 | 温度参数 |
 | `timeout` | int | 120 | 请求超时（秒） |
-| `key_rotation` | string | `"passive"` | key 轮转策略（`passive` / `round_robin`） |
+| `key_rotation` | string | `"least_loaded"` | key 轮转策略（`least_loaded` / `passive` / `round_robin`）。`least_loaded` 状态跨进程共享；`passive` / `round_robin` 仅在当前进程内生效 |
 | `key_switch_on` | list | `["LLMRateLimitError"]` | 触发 key 切换的错误类名称 |
 | `key_cooldown` | float | 60.0 | key 冷却时间（秒） |
 
@@ -304,6 +359,7 @@ fallback 链只有在调用真正经过 `LLMClientPool` 时才有效。下面是
 - **基类转发**：`LLMClient.chat_with_retry()`（`llm/base.py`）发现 client 被 pool 托管（`client._fallback_pool` 已设置）时，直接转发给 `LLMClientPool.chat_with_retry()`，由 pool 执行重试与 fallback。调用方不需要知道 pool 的存在。
 - **不会递归**：pool 内部调用的是 `client.chat()`，不会再回到 `chat_with_retry`。
 - **子 Agent 的首选配置不变**：`attach_fallback_pool(agent, cfg, llm_cfg)` 把 `llm_cfg`（任务指定的 model 等覆盖项）作为首选，再把 `llm_fallback_chain` 中其余条目接在后面，因此不会改变任务原本使用的模型。
+- **子任务的多 key 池**：`build_pool_with_primary`（cron / Objective / SubAgent 共用）会让首选配置“认领”链上持有其 api_key 的多 key 池，因此子任务同样享有 key 轮转；被认领的条目不会在备选中重复出现。此前这些子任务只使用第一把 key。
 - **旧的单链行为**：只有在 `llm_fallback_chain` 为空时，才退化为只含主配置的单条链。
 
 > 如果你在新代码里仍然看到 `LLMConfig.from_app_config(cfg)` + `create_client()` 直接发起调用，那是绕过 fallback 的信号，应改用 `LLMHelper` 或 `attach_fallback_pool`。
@@ -454,7 +510,7 @@ for cfg_dict in [
                         api_key=cfg_dict.get("api_key",""), ...)
     key_pool = None
     if len(cfg_dict.get("api_keys", [])) > 1:
-        key_pool = ApiKeyPool(keys=cfg_dict["api_keys"], rotation="passive")
+        key_pool = ApiKeyPool(keys=cfg_dict["api_keys"], rotation="least_loaded")  # 默认策略；跨进程共享需传入 store，见 _key_store_for
     entries.append(ProviderEntry(config=llm_cfg, client=create_client(llm_cfg),
                                  key_pool=key_pool))
 
@@ -670,6 +726,7 @@ storage()` 一致，但聚合语义不同（健康度快照是"取当天最新�
 | `providers.json` | **敏感配置**（API key），加入 .gitignore，不提交 |
 | `providers.json.example` | 配置模板，可提交到 git 供团队参考 |
 | `src/mini_agent/llm/client_pool.py` | ApiKeyPool、ProviderEntry、LLMClientPool 实现；`build_pool_with_primary`、`attach_fallback_pool` |
+| `src/mini_agent/llm/key_state.py` | `least_loaded` 的共享状态：租约、冷却、文件后端（跨进程）与内存后端 |
 | `src/mini_agent/config.py` | `_load_providers_config`、`_merge_providers_into_chain`、`load_config` |
 | `src/mini_agent/agent/llm_control.py` | `_call_llm` 通过 `LLMClientPool.call_with_pool` 调用，并同步 `cfg.model` / `cfg.llm_provider` |
 | `src/mini_agent/llm/base.py` | `LLMClient.chat_with_retry`：pool 托管时转发给 pool |
@@ -701,3 +758,11 @@ storage()` 一致，但聚合语义不同（健康度快照是"取当天最新�
 - 外部项目的调用写入主项目计数文件，origin 标记为 `external:<项目名>`。
 - skill 入口（`capability_call`）标记为 `skill`；后台摘要、画像、回填等标记为 `background`；子 Agent 标记为 `cron` / `objective` / `subagent`。
 - 修复看板"读取失败：ReadTimeout"：接口改为窗口读取 + 线程池执行 + 单次读取；文件由自动压缩保持有界。
+
+**2026-11：least_loaded 轮转与跨进程共享**
+
+- 新增 `key_rotation: "least_loaded"`（在途请求最少优先），并设为默认；`passive` / `round_robin` 保持原有行为。
+- 每把 key 的在途计数（租约）与冷却状态写入 `<主项目根>/.agent/llm_key_state.json`，同一主项目下的所有进程共享，文件仅保存 key 摘要。
+- 修复子任务（cron / Objective / SubAgent）只使用第一把 key 的问题：`build_pool_with_primary` 现在认领链上的多 key 池。
+- 外部项目的 LLM 调用接入同一套机制（需已注册，见“跨进程共享状态”）。
+
