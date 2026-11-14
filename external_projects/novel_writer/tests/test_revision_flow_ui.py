@@ -117,7 +117,7 @@ def test_preview_job_streams_log_and_sets_preview(tmp_path, monkeypatch):
     at.checkbox(key="rv_p_review").uncheck().run()
     at.multiselect(key="rv_p_changes").set_value([c["id"]]).run()
     [b for b in at.button if b.label == "生成预览"][0].click().run()
-    name = at.session_state["rv_job_preview"]
+    name = at.session_state["rv_active"]["name"]
     for _ in range(100):
         if jobs.status(ws, name).get("state") in ("done", "failed"):
             break
@@ -145,3 +145,39 @@ def test_every_action_writes_start_and_result_to_ops_log(tmp_path, monkeypatch):
     at2.selectbox(key="rv_s_scope").set_value("all")
     [b for b in at2.button if b.label == "保存设置"][0].click().run()
     assert "保存设置：完成" in jobs.tail(ws, "ops")
+
+
+def test_only_one_task_panel_and_it_shows_newest_first(tmp_path, monkeypatch):
+    import time
+    from novel_writer.revision_flow import jobs
+    ws = _novel(tmp_path)
+    V.init_baseline(ws)
+    c = CH.save_change(ws, {"kind": "setting", "title": "换", "before": "玉佩", "after": "银钥匙",
+                            "reason": "", "terms": ["玉佩"], "mode": "retcon"})
+    at = _run(ws, monkeypatch)
+    at.checkbox(key="rv_p_review").uncheck().run()
+    at.multiselect(key="rv_p_changes").set_value([c["id"]]).run()
+    [b for b in at.button if b.label == "生成预览"][0].click().run()
+    name = at.session_state["rv_active"]["name"]
+    for _ in range(100):
+        if jobs.status(ws, name).get("state") in ("done", "failed"):
+            break
+        time.sleep(0.1)
+    at.run()
+    assert not at.exception
+    # 顶部唯一面板：代码块里最新一行在最前
+    code = at.code[0].value
+    lines = code.splitlines()
+    assert "完成" in lines[0] or "预览完成" in lines[0] or "完成" in lines[1]
+    assert sum(1 for m in at.markdown if "状态：" in m.value) == 1
+
+
+def test_busy_blocks_second_job(tmp_path, monkeypatch):
+    ws = _novel(tmp_path)
+    V.init_baseline(ws)
+    at = _run(ws, monkeypatch)
+    at.session_state["rv_active"] = {"name": "fake_running", "label": "假任务", "kind": "preview"}
+    from novel_writer.revision_flow import jobs
+    jobs.status_path(ws, "fake_running").write_text('{"state": "running"}', encoding="utf-8")
+    at.run()
+    assert [b for b in at.button if b.label == "生成预览"] == [] or all(b.disabled for b in at.button if b.label == "生成预览")

@@ -67,28 +67,29 @@ def _ops_panel(root: Workspace) -> None:
         st.code(jobs.tail(root, OPS_JOB, 300) or "（暂无）", language=None)
 
 
-# ─────────────────────────────── 后台任务面板 ───────────────────────────────
+# ─────────────────────────────── 后台任务（单一任务槽 + 顶部面板） ───────────────────────────────
 
-def _job_panel(root: Workspace, name: str, title: str, on_done: Callable[[Dict[str, Any]], None]) -> None:
-    """实时日志面板：运行中每 1.5 秒刷新；结束后刷新整页并调用 on_done（只执行一次）。"""
-    def body():
-        info = jobs.status(root, name)
-        state = info.get("state", "unknown")
-        st.markdown(f"**{title}**　状态：{_JOB_STATE.get(state, state)}")
-        if info.get("error"):
-            st.error(info["error"])
-        st.code(jobs.tail(root, name) or "（等待输出…）", language=None)
-        if state in ("done", "failed") and not st.session_state.get(f"rv_seen_{name}"):
-            st.session_state[f"rv_seen_{name}"] = True
-            if state == "done":
-                on_done(info.get("result") or {})
-            st.rerun()
-    done = jobs.status(root, name).get("state") in ("done", "failed")
-    st.fragment(run_every=None if done else 1.5)(body)()
+_ACTIVE = "rv_active"   # {"name", "label", "kind"}：同一时间只允许一个后台任务
+LOG_LINES = 400
 
 
-def _start_job(root: Workspace, label: str, session_key: str, fn: Callable[..., Any], *args: Any) -> None:
-    name = f"{session_key.replace('rv_job_', '')}_{uuid.uuid4().hex[:8]}"
+def _active(root: Workspace) -> Optional[Dict[str, Any]]:
+    slot = st.session_state.get(_ACTIVE)
+    if not slot:
+        return None
+    return slot
+
+
+def _busy(root: Workspace) -> bool:
+    slot = _active(root)
+    return bool(slot) and jobs.status(root, slot["name"]).get("state") == "running"
+
+
+def _start_job(root: Workspace, label: str, kind: str, fn: Callable[..., Any], *args: Any) -> None:
+    if _busy(root):
+        st.warning("已有后台任务在运行，请等它结束后再开始。")
+        return
+    name = f"{kind}_{uuid.uuid4().hex[:8]}"
     jobs.log(root, OPS_JOB, f"▶ {label}：已提交后台任务 {name}")
     try:
         jobs.start(root, name, fn, root, name, *args)
@@ -96,11 +97,47 @@ def _start_job(root: Workspace, label: str, session_key: str, fn: Callable[..., 
         jobs.log(root, OPS_JOB, f"✘ {label}：无法启动：{exc}")
         st.error(f"无法开始：{exc}")
         return
-    st.session_state[session_key] = name
+    st.session_state[_ACTIVE] = {"name": name, "label": label, "kind": kind}
 
 
-def _job_running(root: Workspace, name: Optional[str]) -> bool:
-    return bool(name) and jobs.status(root, name).get("state") == "running"
+_JOB_STATE = {"running": "运行中", "done": "已完成", "failed": "失败", "unknown": "未开始"}
+
+
+def _apply_result(kind: str, result: Dict[str, Any]) -> None:
+    if kind == "preview" and result.get("preview_id"):
+        st.session_state["rv_preview"] = result["preview_id"]
+    elif kind == "triage" and result.get("triage_id"):
+        st.session_state["rv_triage"] = result["triage_id"]
+
+
+def _task_panel(root: Workspace) -> None:
+    """页面顶部的唯一后台任务面板：实时日志（最新在最上）、进度、耗时。"""
+    slot = _active(root)
+    if not slot:
+        return
+    name = slot["name"]
+    done = jobs.status(root, name).get("state") in ("done", "failed")
+
+    def body():
+        info = jobs.status(root, name)
+        state = info.get("state", "unknown")
+        started = info.get("started_at", "")
+        lines = jobs.tail(root, name, LOG_LINES).splitlines()
+        st.markdown(f"**{slot['label']}**　状态：{_JOB_STATE.get(state, state)}　"
+                    f"开始于 {started}　已输出 {len(lines)} 行（最新在上）")
+        if info.get("error"):
+            st.error(info["error"])
+        st.code("\n".join(reversed(lines)) or "（已提交，等待第一行输出…）", language=None)
+        if state in ("done", "failed") and not st.session_state.get(f"rv_seen_{name}"):
+            st.session_state[f"rv_seen_{name}"] = True
+            if state == "done":
+                _apply_result(slot["kind"], info.get("result") or {})
+            st.rerun()
+        if state in ("done", "failed") and st.button("关闭面板", key=f"rv_close_{name}"):
+            st.session_state.pop(_ACTIVE, None)
+            st.rerun()
+
+    st.fragment(run_every=None if done else 1.5)(body)()
 
 
 def _preview_job(ws: Workspace, name: str, base: str, pick: list, use_llm: bool, progress) -> Dict[str, Any]:
@@ -219,12 +256,8 @@ def _tab_changes(root: Workspace) -> None:
     pick = st.multiselect("变更", [c["id"] for c in changes if c["status"] in ("draft", "confirmed")],
                           key="rv_p_changes")
     use_llm = st.checkbox("做 LLM 语义判定（会调用模型，判定不涉及的章节默认排除）", value=True, key="rv_p_review")
-    busy = _job_running(root, st.session_state.get("rv_job_preview"))
-    if st.button("生成预览", key="rv_p_make", disabled=not pick or busy):
-        _start_job(root, "生成预览", "rv_job_preview", _preview_job, base, pick, use_llm)
-    if st.session_state.get("rv_job_preview"):
-        _job_panel(root, st.session_state["rv_job_preview"], "生成预览进度",
-                   lambda res: st.session_state.__setitem__("rv_preview", res.get("preview_id")))
+    if st.button("生成预览", key="rv_p_make", disabled=not pick or _busy(root)):
+        _start_job(root, "生成预览", "preview", _preview_job, base, pick, use_llm)
     pid = st.session_state.get("rv_preview")
     if not pid:
         return
@@ -267,15 +300,12 @@ def _tab_runs(root: Workspace) -> None:
     st.markdown("**开始改写**")
     if previews:
         pid = st.selectbox("已确认的预览", previews, key="rv_r_pick")
-        busy = _job_running(root, st.session_state.get("rv_job_run"))
-        if st.button("开始改写", key="rv_r_start", disabled=busy):
+        if st.button("开始改写", key="rv_r_start", disabled=_busy(root)):
             if _act(root, f"检查预览 {pid}", executor.precheck_start, root, pid,
                     summarize=lambda p: f"待改写 {sum(1 for r in p['chapters'] if not r['excluded'])} 章"):
-                _start_job(root, f"开始改写（{pid}）", "rv_job_run", _run_job, pid)
+                _start_job(root, f"开始改写（{pid}）", "run", _run_job, pid)
     else:
         st.info("还没有已确认的预览。")
-    if st.session_state.get("rv_job_run"):
-        _job_panel(root, st.session_state["rv_job_run"], "改写进度", lambda res: None)
 
     runs = executor.list_runs(root)
     if not runs:
@@ -291,10 +321,10 @@ def _tab_runs(root: Workspace) -> None:
     if run["status"] == "running" and c1.button("请求停止", key="rv_r_stop"):
         _act(root, f"请求停止 {rid}", executor.request_stop, root, rid,
              summarize=lambda _: "将在当前章节结束后生效")
-    if run["status"] in executor.RESUMABLE and c2.button("续跑", key="rv_r_resume"):
+    if run["status"] in executor.RESUMABLE and c2.button("续跑", key="rv_r_resume", disabled=_busy(root)):
         if _act(root, f"检查续跑 {rid}", executor.precheck_resume, root, rid,
                 summarize=lambda r: f"从未完成章节继续，已完成 {len(r['done'])} 章"):
-            _start_job(root, f"续跑（{rid}）", "rv_job_run", _resume_job, rid)
+            _start_job(root, f"续跑（{rid}）", "run", _resume_job, rid)
     if run["status"] == "failed" and run.get("failed"):
         st.error(f"第{run['failed']['chapter']}章失败：{'；'.join(run['failed']['errors'])}")
     if run.get("derived_marks"):
@@ -315,13 +345,9 @@ def _tab_feedback(root: Workspace) -> None:
     chapter = st.number_input("章号", min_value=1, value=1, step=1, key="rv_f_ch")
     fb = st.text_area("对本章的意见", key="rv_f_text")
     sel = st.text_area("选中的段落（可选）", key="rv_f_sel")
-    busy = _job_running(root, st.session_state.get("rv_job_triage"))
-    if st.button("分诊（会调用模型）", key="rv_f_triage", disabled=not fb.strip() or busy):
-        _start_job(root, f"分诊第{int(chapter)}章", "rv_job_triage", _triage_job,
+    if st.button("分诊（会调用模型）", key="rv_f_triage", disabled=not fb.strip() or _busy(root)):
+        _start_job(root, f"分诊第{int(chapter)}章", "triage", _triage_job,
                    base, int(chapter), fb, sel)
-    if st.session_state.get("rv_job_triage"):
-        _job_panel(root, st.session_state["rv_job_triage"], "分诊进度",
-                   lambda res: st.session_state.__setitem__("rv_triage", res.get("triage_id")))
     tid = st.session_state.get("rv_triage")
     if not tid:
         return
@@ -389,6 +415,7 @@ def page_post_revision() -> None:
     root = Workspace(ws)
     st.header("📝 完稿修改")
     st.caption("完稿后的版本化修改：原稿只读，每次修改生成新版本。独立于写作流水线。")
+    _task_panel(root)
     tabs = st.tabs(["📌 版本", "🧾 变更与预览", "▶ 运行", "💬 章节反馈", "⚙ 设置"])
     renders = [_tab_versions, _tab_changes, _tab_runs, _tab_feedback, _tab_settings]
     for tab, render in zip(tabs, renders):
