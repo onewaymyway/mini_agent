@@ -164,7 +164,10 @@ def start(ws, preview_id: str, invoker: Invoker, progress=None) -> Dict[str, Any
     """从已确认的预览新建运行：派生目标版本并开始改写。progress(text) 接收实时进度。"""
     precheck_start(ws, preview_id)
     preview = CH.load_preview(ws, preview_id)
+    say = progress or (lambda _t: None)
+    say(f"检查通过：预览 {preview_id}，基础版本 {preview['base_version']}，变更 {', '.join(preview['change_ids'])}")
     target = V.derive(ws, preview["base_version"], note=f"修改：{preview_id}")
+    say(f"已从 {preview['base_version']} 派生新版本 {target}（原稿不改动，所有改写只写入 {target}）")
     active = [c["number"] for c in preview["chapters"] if not c.get("excluded")]
     run = {
         "id": _new_run_id(ws), "preview_id": preview_id, "base_version": preview["base_version"],
@@ -269,7 +272,10 @@ def _execute(ws, run: Dict[str, Any], invoker: Invoker, progress=None) -> Dict[s
             run["log"].append(f"{_now()} 达到上限，暂停；续跑时从第{n}章继续")
             _save_run(ws, run)
             return run
-        ok, errors = _rewrite_chapter(ws, run, n, files, applicable_by_chapter.get(n, []), settings, invoker, say)
+        applicable = applicable_by_chapter.get(n, [])
+        titles = "、".join(c["title"] for c in applicable) or "无"
+        say(f"第{n}章：适用变更 {titles}，开始改写（第 {len(run['done']) + 1}/{len(run['queue'])} 章）")
+        ok, errors = _rewrite_chapter(ws, run, n, files, applicable, settings, invoker, say)
         session_done += 1
         if errors == [LIMIT_MARK]:
             run["status"] = "paused_limit"
@@ -288,7 +294,7 @@ def _execute(ws, run: Dict[str, Any], invoker: Invoker, progress=None) -> Dict[s
                 return run
         _save_run(ws, run)
 
-    return _finish(ws, run, preview)
+    return _finish(ws, run, preview, say)
 
 
 def _rewrite_chapter(ws, run, n, files, applicable, settings, invoker, say=lambda _t: None) -> Tuple[bool, List[str]]:
@@ -332,7 +338,7 @@ def _rewrite_chapter(ws, run, n, files, applicable, settings, invoker, say=lambd
     return False, errors
 
 
-def _finish(ws, run, preview) -> Dict[str, Any]:
+def _finish(ws, run, preview, say=lambda _t: None) -> Dict[str, Any]:
     if len(run["done"]) != len(run["queue"]):
         run["status"] = "failed"
         _save_run(ws, run)
@@ -349,6 +355,7 @@ def _finish(ws, run, preview) -> Dict[str, Any]:
     run["status"] = "done"
     run["finished_at"] = _now()
     from novel_writer.revision_flow import derived
+    say(f"全部 {len(run['done'])} 章改写完成，已写入修订记录、定稿 {target}，并设为 head")
     kinds = [CH.load_change(ws, cid)["kind"] for cid in preview["change_ids"]]
     run["derived_marks"] = derived.stale_items(run["done"], kinds)
     _save_run(ws, run)

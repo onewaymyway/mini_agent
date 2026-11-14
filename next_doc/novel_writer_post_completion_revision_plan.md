@@ -90,5 +90,6 @@ Change {
 | 候选发现 | 完成 | review_scope=all 全书逐章判定 |
 | 中断恢复 | 完成 | pid 锁 + recover_interrupted；运行页自动识别并可续跑 |
 | 实时进度 | 完成 | jobs.py：后台任务 + 逐行日志；预览、改写、续跑、分诊均可实时看到过程 |
+| 操作日志 | 完成 | 所有按钮统一记录开始、结果与失败原因（jobs/ops.log） |
 
 默认上限见 `docs/revision_flow.md`。确认的时间语义与版本策略按第 2、3 节实现。

@@ -128,3 +128,20 @@ def test_preview_job_streams_log_and_sets_preview(tmp_path, monkeypatch):
     at.run()
     assert not at.exception
     assert at.session_state["rv_preview"]
+
+
+def test_every_action_writes_start_and_result_to_ops_log(tmp_path, monkeypatch):
+    from novel_writer.revision_flow import jobs
+    ws = _novel(tmp_path)
+    at = _run(ws, monkeypatch)
+    at.number_input(key="rv_s_ch").set_value(9)
+    [b for b in at.button if b.label == "保存设置"][0].click().run()
+    log = jobs.tail(ws, "ops")
+    assert "▶ 保存设置：开始" in log and "✔ 保存设置：完成" in log
+    # 失败也要可见：非法值经表单走到 CFG.update 的校验
+    at.number_input(key="rv_s_ch").set_value(9)
+    CFG.update(ws, {"max_chapters_per_run": 9})
+    at2 = _run(ws, monkeypatch)
+    at2.selectbox(key="rv_s_scope").set_value("all")
+    [b for b in at2.button if b.label == "保存设置"][0].click().run()
+    assert "保存设置：完成" in jobs.tail(ws, "ops")

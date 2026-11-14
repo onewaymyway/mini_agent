@@ -30,7 +30,8 @@
     ├── runs/run_*.lock       运行期间的归属锁（记录持有进程号；进程结束后残留，用于识别中断）
     ├── runs/<run>/chNNN/attemptKK/out/   每次尝试的执行器产出（便于排查）
     ├── triage/tri_*.json     章节反馈分诊记录
-    └── jobs/<任务>.log       实时进度日志（逐行，带时间戳）；<任务>.status.json 为 running / done / failed
+    ├── jobs/<任务>.log       实时进度日志（逐行，带时间戳）；<任务>.status.json 为 running / done / failed
+    └── jobs/ops.log          操作日志：界面每个按钮的开始、结果（含摘要）或失败原因
 ```
 
 ## 可配置上限（`_revision/settings.json`，当前通过 CLI 修改，界面后续接入）
@@ -89,6 +90,7 @@ python entrypoints/post_revision.py --novel <dir> discard --version v003        
 | P4 派生物与对比导出 | 完成（重跑需手动） | `derived.py` | 派生物建议清单、版本逐文件差异、按版本导出 |
 | P5 撤销与丢弃 | 完成 | `versions.py` | `discard`（仅叶子版本，不能丢弃 v001）、`undo_head` |
 | 实时进度 | 完成 | `jobs.py` | 生成预览、开始改写、续跑、分诊都在后台线程执行，界面每 1.5 秒刷新日志：每章开始判定、每次尝试、判定结果、校验结果，以及 agent 的逐行输出（经框架的行接收器实时写入） |
+| 操作日志 | 完成 | `ui/post_revision.py` | 每个按钮都经过统一的 `_act`，开始 / 完成（含结果摘要）/ 失败都写入 `jobs/ops.log`，页面底部可展开查看；后台任务另有各自的实时日志 |
 | 界面 | 完成 | `ui/post_revision.py` | 导航「📝 完稿修改」：版本（基线、校验、差异、导出、撤销）/ 变更与预览（排除、确认）/ 运行（后台执行、停止、续跑、派生物建议与日志）/ 章节反馈（分诊、采纳）/ 设置 |
 
 ## 已知限制
@@ -108,6 +110,6 @@ python entrypoints/post_revision.py --novel <dir> discard --version v003        
 
 ## 测试
 
-`tests/test_revision_flow.py`（34 例）与 `tests/test_revision_flow_ui.py`（6 例，AppTest 冒烟）覆盖：基线门禁与只读、配置校验、变更校验、两种语义的章节集合与警告、
+`tests/test_revision_flow.py`（33 例）与 `tests/test_revision_flow_ui.py`（8 例，AppTest 冒烟）覆盖：基线门禁与只读、配置校验、变更校验、两种语义的章节集合与警告、
 预览确认门禁、retcon / from_chapter 执行、原稿不被触碰、校验失败重试、失败即停、上限暂停与续跑、
 基于 head 的二次修改与撤销、分诊（设定 / 章内 / 坏 JSON 重试 / 失败不可采纳）、版本差异、按版本导出、语义判定与排除、全书候选、停止与续跑、模拟崩溃后的中断识别与恢复、存活与死亡进程的锁判定。界面测试覆盖渲染、表单保存、后台生成预览与日志写入（使用不调用 LLM 的路径）；日志流与 agent 输出的映射由 jobs 单元测试覆盖。
