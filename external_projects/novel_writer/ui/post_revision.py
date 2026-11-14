@@ -24,6 +24,7 @@ from ui.components import require_ws
 
 _STATUS_LABEL = {
     "running": "运行中", "paused_limit": "已达上限（可续跑）", "stopped": "已停止（可续跑）",
+    "interrupted": "已中断（可续跑）",
     "done": "已完成", "failed": "失败", "draft": "草稿", "confirmed": "已确认", "applied": "已应用",
 }
 
@@ -188,6 +189,9 @@ def _split(text: str):
 def _tab_runs(ws: str) -> None:
     root = Workspace(ws)
     _show_bg_errors()
+    recovered = executor.recover_interrupted(root)
+    if recovered:
+        st.warning(f"以下运行所在进程已结束，已标记为「已中断」，可续跑：{', '.join(recovered)}")
     previews = []
     for p in sorted(sub_dir(root, "preview").glob("prv_*.json")):
         d = json.loads(p.read_text(encoding="utf-8"))
@@ -215,7 +219,7 @@ def _tab_runs(ws: str) -> None:
     if run["status"] == "running" and c1.button("请求停止", key="rv_r_stop"):
         if _try(executor.request_stop, root, rid):
             st.info("已请求停止，当前章节结束后生效。")
-    if run["status"] in ("paused_limit", "stopped") and c2.button("续跑", key="rv_r_resume"):
+    if run["status"] in executor.RESUMABLE and c2.button("续跑", key="rv_r_resume"):
         if _try(executor.precheck_resume, root, rid):
             _background(f"续跑（{rid}）", lambda: executor.resume(root, rid, _invoker()))
     if run["status"] == "failed" and run.get("failed"):

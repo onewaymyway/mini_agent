@@ -107,6 +107,7 @@ novel_writer/
 
 ## 变更记录
 
+- 2026-11-14（第四轮）：运行中断恢复：运行期间写 pid 锁，进程结束后残留的 running 运行被识别为 interrupted 并可续跑（运行页自动执行）。测试 36 例（引擎 30 + 界面 6）。
 - 2026-11-14（第三轮）：新增界面「📝 完稿修改」（ui/post_revision.py，导航已接入 app.py，仅新增一项导航）；候选范围 review_scope=all（全书逐章判定，找回纯指代章节）；运行可请求停止并续跑；执行入口前置检查（precheck_start / precheck_resume）。测试 33 例（引擎 27 + 界面 6）。
 - 2026-11-14（第二轮）：补上 LLM 语义判定（preview --review）与确认前的章节排除（exclude）；执行只改未排除章节。未做：界面、运行中取消、真实 LLM 验证。
 - 2026-11-14：完稿后修改流程 revision_flow（P0–P5，设计见 `next_doc/novel_writer_post_completion_revision_plan.md`，说明见 `docs/revision_flow.md`）。原稿 v001 只读快照 + 哈希清单；设定变更支持 retcon / from_chapter 两种时间语义，由作者逐次选择；所有修改先预览后确认，结果写入新版本 vNNN，成功定稿后才成为 head；章节反馈经 LLM 分诊后同样进入预览流程；派生物与一致性只给出重跑建议。上限（单次章数、LLM 调用数、单章尝试次数、字数比例）存于 `_revision/settings.json`。独立于写作流水线：不改动 steps / state / worker / 挡位逻辑。新增 `novel_writer/revision_flow/`、`entrypoints/post_revision.py`、`tests/test_revision_flow.py`（18 例通过）。未做：界面、LLM 语义筛选、运行中取消、真实 LLM 验证。

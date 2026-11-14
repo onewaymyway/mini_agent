@@ -88,5 +88,6 @@ Change {
 | P5 | 完成 | discard / undo_head；界面已接入（📝 完稿修改）；运行中停止为协作式 |
 | 界面 | 完成 | ui/post_revision.py，五个分页，后台线程执行 |
 | 候选发现 | 完成 | review_scope=all 全书逐章判定 |
+| 中断恢复 | 完成 | pid 锁 + recover_interrupted；运行页自动识别并可续跑 |
 
 默认上限见 `docs/revision_flow.md`。确认的时间语义与版本策略按第 2、3 节实现。

@@ -479,3 +479,62 @@ def test_stop_only_for_running(tmp_path):
     run = executor.start(ws, pv["id"], RewriteInvoker("玉佩", "银钥匙"))
     with pytest.raises(FlowError, match="运行中"):
         executor.request_stop(ws, run["id"])
+
+
+# ─────────────────────────── 运行中断与恢复 ───────────────────────────
+
+class SimulatedCrash(BaseException):
+    """模拟进程被强制结束：BaseException 不会被执行器的 except Exception 捕获。"""
+
+
+class CrashOnSecond(RewriteInvoker):
+    def __call__(self, **kw):
+        super().__call__(**kw)
+        if len(self.calls) == 2:
+            raise SimulatedCrash()
+
+
+def test_crash_is_recovered_as_interrupted_then_resumed(tmp_path):
+    ws = _novel(tmp_path)
+    _baseline(ws)
+    pv = _ready_preview(ws)
+    with pytest.raises(SimulatedCrash):
+        executor.start(ws, pv["id"], CrashOnSecond("玉佩", "银钥匙"))
+    run = executor.list_runs(ws)[-1]
+    assert run["status"] == "running" and run["done"] == [1]
+    assert not executor._lock_path(ws, run["id"]).exists()  # finally 已清锁，模拟“残留状态”
+    assert executor.recover_interrupted(ws) == [run["id"]]
+    assert executor.load_run(ws, run["id"])["status"] == "interrupted"
+    assert executor.recover_interrupted(ws) == []  # 幂等
+    run = executor.resume(ws, run["id"], RewriteInvoker("玉佩", "银钥匙"))
+    assert run["status"] == "done" and run["done"] == [1, 2, 3, 4]
+    assert V.verify(ws, run["target_version"]) == []
+
+
+def test_live_owner_is_not_recovered(tmp_path):
+    ws = _novel(tmp_path)
+    _baseline(ws)
+    pv = _ready_preview(ws)
+    run = executor.start(ws, pv["id"], RewriteInvoker("玉佩", "银钥匙"))  # 已完成，锁已释放
+    rid = executor.list_runs(ws)[-1]["id"]
+    data = executor.load_run(ws, rid)
+    data["status"] = "running"
+    executor.save_json(executor._runs_dir(ws) / f"{rid}.json", data)
+    executor._acquire(ws, rid)  # 当前进程持有 → 视为仍在运行
+    assert executor.recover_interrupted(ws) == []
+    executor._release(ws, rid)
+
+
+def test_dead_owner_lock_is_recovered(tmp_path):
+    ws = _novel(tmp_path)
+    _baseline(ws)
+    pv = _ready_preview(ws)
+    run = executor.start(ws, pv["id"], RewriteInvoker("玉佩", "银钥匙"))
+    rid = run["id"]
+    data = executor.load_run(ws, rid)
+    data["status"] = "running"
+    data["done"] = [1]
+    executor.save_json(executor._runs_dir(ws) / f"{rid}.json", data)
+    executor.save_json(executor._lock_path(ws, rid), {"pid": 4194300, "at": "x"})  # 几乎不可能存在的 pid
+    assert executor.recover_interrupted(ws) == [rid]
+    assert not executor._lock_path(ws, rid).exists()

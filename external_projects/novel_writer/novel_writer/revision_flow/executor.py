@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import datetime as _dt
+import os
 import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -27,6 +28,8 @@ from novel_writer.workspace import Workspace, count_words
 
 SKILL = "revision-editor"
 LIMIT_MARK = "__LIMIT__"
+RESUMABLE = ("paused_limit", "stopped", "interrupted")
+ACTIVE_STATUSES = ("running",) + RESUMABLE
 Invoker = Callable[..., Any]
 
 
@@ -143,7 +146,7 @@ def precheck_start(ws, preview_id: str) -> Dict[str, Any]:
     preview = CH.load_preview(ws, preview_id)
     if not preview["confirmed"]:
         raise FlowError("预览尚未确认，不能执行")
-    if any(r["preview_id"] == preview_id and r["status"] in ("running", "paused_limit", "stopped") for r in list_runs(ws)):
+    if any(r["preview_id"] == preview_id and r["status"] in ACTIVE_STATUSES for r in list_runs(ws)):
         raise FlowError("该预览已有未完成的运行，请续跑或丢弃")
     if not [c for c in preview["chapters"] if not c.get("excluded")]:
         raise FlowError("预览中没有可改写的章节")
@@ -152,8 +155,8 @@ def precheck_start(ws, preview_id: str) -> Dict[str, Any]:
 
 def precheck_resume(ws, run_id: str) -> Dict[str, Any]:
     run = load_run(ws, run_id)
-    if run["status"] not in ("paused_limit", "stopped"):
-        raise FlowError(f"只有因上限暂停或被停止的运行可以续跑（当前状态：{run['status']}）")
+    if run["status"] not in RESUMABLE:
+        raise FlowError(f"只有因上限暂停、被停止或已中断的运行可以续跑（当前状态：{run['status']}）")
     return run
 
 
@@ -170,6 +173,50 @@ def start(ws, preview_id: str, invoker: Invoker) -> Dict[str, Any]:
     }
     _save_run(ws, run)
     return _execute(ws, run, invoker)
+
+
+# ─────────────────────────── 运行归属（锁文件）与中断恢复 ───────────────────────────
+
+def _lock_path(ws, rid: str):
+    return _runs_dir(ws) / f"{rid}.lock"
+
+
+def _acquire(ws, rid: str) -> None:
+    """运行期间写入 pid 锁；进程被强制结束时锁残留，之后由 recover_interrupted 识别。"""
+    save_json(_lock_path(ws, rid), {"pid": os.getpid(), "at": _now()})
+
+
+def _release(ws, rid: str) -> None:
+    _lock_path(ws, rid).unlink(missing_ok=True)
+
+
+def _owner_alive(ws, rid: str) -> bool:
+    data = load_json(_lock_path(ws, rid), default=None)
+    if not isinstance(data, dict) or not isinstance(data.get("pid"), int):
+        return False
+    try:
+        os.kill(data["pid"], 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:   # 进程存在，只是不属于当前用户
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def recover_interrupted(ws) -> List[str]:
+    """把「状态为 running 但持有进程已不存在」的运行标记为 interrupted（可续跑）。返回被标记的运行号。"""
+    recovered: List[str] = []
+    for run in list_runs(ws):
+        if run["status"] != "running" or _owner_alive(ws, run["id"]):
+            continue
+        run["status"] = "interrupted"
+        run["log"].append(f"{_now()} 运行所在进程已结束（可能是服务重启），标记为已中断；续跑时从未完成的章节重新开始")
+        _save_run(ws, run)
+        _release(ws, run["id"])
+        recovered.append(run["id"])
+    return recovered
 
 
 def _stop_flag(ws, rid: str):
@@ -189,7 +236,11 @@ def resume(ws, run_id: str, invoker: Invoker) -> Dict[str, Any]:
     _stop_flag(ws, run_id).unlink(missing_ok=True)
     run["status"] = "running"
     _save_run(ws, run)
-    return _execute(ws, run, invoker)
+    _acquire(ws, run_id)
+    try:
+        return _execute(ws, run, invoker)
+    finally:
+        _release(ws, run_id)
 
 
 def _execute(ws, run: Dict[str, Any], invoker: Invoker) -> Dict[str, Any]:
