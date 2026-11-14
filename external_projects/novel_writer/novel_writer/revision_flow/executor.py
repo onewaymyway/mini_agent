@@ -21,7 +21,7 @@ from novel_writer.fsutil import atomic_write_text
 from novel_writer.revision_flow import changes as CH
 from novel_writer.revision_flow import config as CFG
 from novel_writer.revision_flow import versions as V
-from novel_writer.revision_flow.common import FlowError, load_json, save_json, sub_dir, version_dir
+from novel_writer.revision_flow.common import FlowError, load_json, revision_root, save_json, sub_dir, version_dir
 from novel_writer.textio import read_text_lenient
 from novel_writer.workspace import Workspace, count_words
 
@@ -51,6 +51,8 @@ def _save_run(ws, run: Dict[str, Any]) -> None:
 
 
 def list_runs(ws) -> List[Dict[str, Any]]:
+    if not (revision_root(ws) / "runs").is_dir():
+        return []
     out = []
     for p in sorted(_runs_dir(ws).glob("run_*.json")):
         d = load_json(p, default=None)
@@ -144,9 +146,10 @@ def start(ws, preview_id: str, invoker: Invoker) -> Dict[str, Any]:
     if any(r["preview_id"] == preview_id and r["status"] in ("running", "paused_limit") for r in list_runs(ws)):
         raise FlowError("该预览已有未完成的运行，请续跑或丢弃")
     target = V.derive(ws, preview["base_version"], note=f"修改：{preview_id}")
+    active = [c["number"] for c in preview["chapters"] if not c.get("excluded")]
     run = {
         "id": _new_run_id(ws), "preview_id": preview_id, "base_version": preview["base_version"],
-        "target_version": target, "status": "running", "queue": [c["number"] for c in preview["chapters"]],
+        "target_version": target, "status": "running", "queue": active,
         "done": [], "failed": None, "llm_calls": 0, "log": [], "created_at": _now(),
     }
     _save_run(ws, run)

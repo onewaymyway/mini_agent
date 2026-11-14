@@ -17,11 +17,14 @@ from typing import Any, Dict, List, Optional
 
 from novel_writer.revision_flow import config as CFG
 from novel_writer.revision_flow import versions as V
-from novel_writer.revision_flow.common import FlowError, load_json, save_json, sub_dir, version_dir
+from pathlib import Path
+
+from novel_writer.revision_flow.common import FlowError, load_json, revision_root, save_json, sub_dir, version_dir
 from novel_writer.textio import read_text_lenient
 from novel_writer.workspace import Workspace
 
 MODES = ("retcon", "from_chapter")
+REVIEW_ATTEMPTS = 2
 KINDS = ("setting", "chapter")
 TARGET_KINDS = ("character", "world_rule", "plot_thread", "timeline_fact", "chapter_outline", "other")
 
@@ -114,7 +117,10 @@ def load_change(ws, cid: str) -> Dict[str, Any]:
 
 def list_changes(ws) -> List[Dict[str, Any]]:
     out = []
-    for p in sorted(_change_dir(ws).glob("chg_*.json")):
+    folder = revision_root(ws) / "changes"
+    if not folder.is_dir():
+        return out
+    for p in sorted(folder.glob("chg_*.json")):
         d = load_json(p, default=None)
         if isinstance(d, dict):
             out.append(d)
@@ -169,8 +175,89 @@ def affected_for_change(change: Dict[str, Any], chapters: List[Dict[str, Any]]) 
 
 # ─────────────────────────────── 预览与确认 ───────────────────────────────
 
-def build_preview(ws, base_version: str, change_ids: List[str]) -> Dict[str, Any]:
-    """为一组变更生成预览，并保存到 _revision/preview/<id>.json。返回预览内容。"""
+_REVIEW_NAME = "review.json"
+
+
+def _review_prompt(*, chapter_no: int, chapter_path: Path, changes: List[Dict[str, Any]], out_file: Path,
+                   errors: List[str]) -> str:
+    lines = []
+    for c in changes:
+        if c["kind"] == "setting":
+            lines.append(f"- 设定变更「{c['title']}」：旧设定「{c['before']}」→ 新设定「{c['after']}」"
+                         f"（定位词：{'、'.join(c['terms'])}）")
+        else:
+            lines.append(f"- 章节修改意见：{c['instruction']}")
+    parts = [
+        f"【任务】阅读第{chapter_no}章，判断它是否真的涉及下列变更。注意：有的章节会用指代而不直接出现定位词"
+        "（如“他父亲”“那件信物”），这种情况也算涉及；只出现同字但指不同事物的，不算涉及。",
+        f"【章节路径】{chapter_path}（请完整阅读）",
+        "【变更】\n" + "\n".join(lines),
+        f"【输出】把一个 JSON 对象写入文件：{out_file}\n"
+        "格式：{\"affected\": true 或 false, \"reason\": \"一句话理由\"}\n只写 JSON，不要代码围栏，不要多余文字。",
+    ]
+    if errors:
+        parts.append("【上一次输出未通过校验】\n" + "\n".join(f"- {e}" for e in errors))
+    return "\n\n".join(parts) + "\n"
+
+
+def _parse_review(raw: str) -> Dict[str, Any]:
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise FlowError(f"不是合法 JSON：{exc}") from None
+    if not isinstance(data, dict) or not isinstance(data.get("affected"), bool):
+        raise FlowError("affected 必须是布尔值")
+    return {"affected": data["affected"], "reason": str(data.get("reason") or "").strip()}
+
+
+def semantic_review(ws, rows: List[Dict[str, Any]], changes: Dict[str, Dict[str, Any]], version_root: Path,
+                    invoker, pid: str) -> Dict[str, int]:
+    """对每个候选章节做一次 LLM 判定。结果写入 row["review"]；判定失败的章节保持未判定（不排除）。
+    返回 {"calls": 调用次数, "failed": 失败章数}。"""
+    files = {ch.number: ch.path for ch in Workspace(version_root).list_chapters()}
+    calls = failed = 0
+    for row in rows:
+        path = files.get(row["number"])
+        if path is None:
+            row["review"] = None
+            failed += 1
+            continue
+        group = [changes[cid] for cid in row["changes"]]
+        errors: List[str] = []
+        verdict = None
+        for attempt in range(1, REVIEW_ATTEMPTS + 1):
+            out_dir = sub_dir(ws, "review") / pid / f"ch{row['number']:03d}" / f"attempt{attempt:02d}"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_file = out_dir / _REVIEW_NAME
+            prompt = _review_prompt(chapter_no=row["number"], chapter_path=path, changes=group,
+                                    out_file=out_file, errors=errors)
+            calls += 1
+            try:
+                invoker(skill="revision-editor", prompt=prompt, export_dir=out_dir,
+                        step_id=f"review_{pid}_{row['number']}_{attempt}")
+            except Exception as exc:
+                errors = [f"执行器异常：{exc}"]
+                continue
+            if not out_file.is_file():
+                errors = ["没有写出 review.json"]
+                continue
+            try:
+                verdict = _parse_review(out_file.read_text(encoding="utf-8"))
+                break
+            except (FlowError, UnicodeDecodeError) as exc:
+                errors = [str(exc)]
+        if verdict is None:
+            row["review"] = None
+            failed += 1
+        else:
+            row["review"] = verdict
+            row["excluded"] = not verdict["affected"]
+    return {"calls": calls, "failed": failed}
+
+
+def build_preview(ws, base_version: str, change_ids: List[str], invoker=None) -> Dict[str, Any]:
+    """为一组变更生成预览，并保存到 _revision/preview/<id>.json。返回预览内容。
+    传入 invoker 时做 LLM 语义判定：判定为不涉及的章节默认排除（作者可用 set_excluded 加回）。"""
     if not change_ids:
         raise FlowError("请至少选择一条变更")
     V.get_entry(ws, base_version)
@@ -193,17 +280,48 @@ def build_preview(ws, base_version: str, change_ids: List[str]) -> Dict[str, Any
             slot["changes"].append(c["id"])
             slot["hits"].extend(h for h in info["hits"] if h not in slot["hits"])
     rows = [per_chapter[n] for n in sorted(per_chapter)]
+    for row in rows:
+        row["excluded"] = False
+        row["review"] = None
 
-    body = {"base_version": base_version, "change_ids": sorted(change_ids), "chapters": rows}
+    body = {"base_version": base_version, "change_ids": sorted(change_ids),
+            "chapters": [{k: r[k] for k in ("number", "title", "changes", "hits")} for r in rows]}
     pid = "prv_" + hashlib.sha1(json.dumps(body, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:10]
+    review_info = {"calls": 0, "failed": 0, "done": False}
+    if invoker is not None and rows:
+        by_id = {c["id"]: c for c in changes}
+        info = semantic_review(ws, rows, by_id, version_dir(ws, base_version), invoker, pid)
+        review_info = {**info, "done": True}
+        for row in rows:
+            if row["review"] is None:
+                warnings.append(f"第{row['number']}章语义判定失败，已保留在预览中，请人工确认")
     settings = CFG.load(ws)
+    active = [r for r in rows if not r["excluded"]]
     preview = {
         "id": pid, "created_at": _now(), "confirmed": False,
         "base_version": base_version, "change_ids": sorted(change_ids),
-        "chapters": rows, "warnings": warnings,
-        "estimated_llm_calls": len(rows),
-        "runs_needed": max(1, -(-len(rows) // settings["max_chapters_per_run"])),
+        "chapters": rows, "warnings": warnings, "review": review_info,
+        "estimated_llm_calls": len(active) + review_info["calls"],
+        "runs_needed": max(1, -(-len(active) // settings["max_chapters_per_run"])),
     }
+    save_json(sub_dir(ws, "preview") / f"{pid}.json", preview)
+    return preview
+
+
+def set_excluded(ws, pid: str, number: int, excluded: bool) -> Dict[str, Any]:
+    """作者在确认前调整某章是否参与修改。确认后的预览不可修改。"""
+    preview = load_preview(ws, pid)
+    if preview["confirmed"]:
+        raise FlowError("预览已确认，不能再调整章节范围")
+    rows = [r for r in preview["chapters"] if r["number"] == number]
+    if not rows:
+        raise FlowError(f"预览中没有第{number}章")
+    rows[0]["excluded"] = bool(excluded)
+    if not any(not r["excluded"] for r in preview["chapters"]):
+        raise FlowError("至少需要保留一章")
+    active = [r for r in preview["chapters"] if not r["excluded"]]
+    preview["estimated_llm_calls"] = len(active) + preview["review"]["calls"]
+    preview["runs_needed"] = max(1, -(-len(active) // CFG.load(ws)["max_chapters_per_run"]))
     save_json(sub_dir(ws, "preview") / f"{pid}.json", preview)
     return preview
 

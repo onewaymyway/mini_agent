@@ -6,7 +6,8 @@
     python entrypoints/post_revision.py --novel <dir> status
     python entrypoints/post_revision.py --novel <dir> settings [--set k=v ...]  # 查看/修改上限
     python entrypoints/post_revision.py --novel <dir> change-add --json f.json  # P1 新建变更
-    python entrypoints/post_revision.py --novel <dir> preview --base v001 --changes chg_xxx [...]
+    python entrypoints/post_revision.py --novel <dir> preview --base v001 --changes chg_xxx [--review]
+    python entrypoints/post_revision.py --novel <dir> exclude --preview prv_xxx --chapter 3 [--include]
     python entrypoints/post_revision.py --novel <dir> confirm --preview prv_xxx
     python entrypoints/post_revision.py --novel <dir> run --preview prv_xxx     # P2 执行（会调用 LLM）
     python entrypoints/post_revision.py --novel <dir> resume --run run_xxx
@@ -57,6 +58,11 @@ def main(argv=None) -> int:
     sp = sub.add_parser("preview")
     sp.add_argument("--base", required=True)
     sp.add_argument("--changes", nargs="+", required=True)
+    sp.add_argument("--review", action="store_true", help="做 LLM 语义判定（会调用 LLM）")
+    sp = sub.add_parser("exclude")
+    sp.add_argument("--preview", required=True)
+    sp.add_argument("--chapter", type=int, required=True)
+    sp.add_argument("--include", action="store_true", help="加回被排除的章节")
     sp = sub.add_parser("confirm")
     sp.add_argument("--preview", required=True)
     sp = sub.add_parser("run")
@@ -105,7 +111,10 @@ def main(argv=None) -> int:
             with open(args.json, encoding="utf-8") as fh:
                 return _out(CH.save_change(ws, json.load(fh)))
         if args.cmd == "preview":
-            return _out(CH.build_preview(ws, args.base, args.changes))
+            inv = _invoker() if args.review else None
+            return _out(CH.build_preview(ws, args.base, args.changes, invoker=inv))
+        if args.cmd == "exclude":
+            return _out(CH.set_excluded(ws, args.preview, args.chapter, not args.include))
         if args.cmd == "confirm":
             return _out(CH.confirm_preview(ws, args.preview))
         if args.cmd == "run":

@@ -48,7 +48,8 @@ python entrypoints/post_revision.py --novel <dir> baseline            # P0 创�
 python entrypoints/post_revision.py --novel <dir> status
 python entrypoints/post_revision.py --novel <dir> settings --set max_chapters_per_run=10
 python entrypoints/post_revision.py --novel <dir> change-add --json change.json   # P1
-python entrypoints/post_revision.py --novel <dir> preview --base v001 --changes chg_xxx
+python entrypoints/post_revision.py --novel <dir> preview --base v001 --changes chg_xxx [--review]
+python entrypoints/post_revision.py --novel <dir> exclude --preview prv_xxx --chapter 3 [--include]  # 确认前调整章节范围
 python entrypoints/post_revision.py --novel <dir> confirm --preview prv_xxx
 python entrypoints/post_revision.py --novel <dir> run --preview prv_xxx           # P2（调用 LLM）
 python entrypoints/post_revision.py --novel <dir> resume --run run_xxx            # 因上限暂停后续跑
@@ -76,7 +77,8 @@ python entrypoints/post_revision.py --novel <dir> discard --version v003        
 |---|---|---|---|
 | P0 完稿版本基线 | 完成 | `versions.py`、`common.py`、`config.py` | 终审门禁、只读快照、哈希清单、校验 |
 | P1 变更与预览 | 完成 | `changes.py` | 两种时间语义、受影响章节（子串匹配）、预览与确认 |
-| P2 滚动改写 | 完成（语义筛选未做） | `executor.py` | 章序滚动、单章校验与重试、失败隔离、上限暂停与续跑 |
+| P1+ LLM 语义判定 | 完成 | `changes.py` | `preview --review`：对每个候选章节判定是否真涉及变更（识别指代、排除同字误报）；判定为不涉及的默认排除，确认前可用 `exclude` 调整；判定失败的章节保留并警告 |
+| P2 滚动改写 | 完成 | `executor.py` | 章序滚动、单章校验与重试、失败隔离、上限暂停与续跑；只改写未被排除的章节 |
 | P3 章节反馈分诊 | 完成 | `feedback.py` | LLM 分诊为 chapter / setting；作者确认后才生成变更 |
 | P4 派生物与对比导出 | 完成（重跑需手动） | `derived.py` | 派生物建议清单、版本逐文件差异、按版本导出 |
 | P5 撤销与丢弃 | 完成 | `versions.py` | `discard`（仅叶子版本，不能丢弃 v001）、`undo_head` |
@@ -84,12 +86,13 @@ python entrypoints/post_revision.py --novel <dir> discard --version v003        
 
 ## 已知限制
 
-- **受影响章节用子串匹配**：`terms` 以文本包含判断，会漏掉指代（如“他父亲”），也可能误报同名或同字。
-  方案中的 LLM 语义筛选（过滤误报、识别指代）**尚未实现**，预览里的章节清单需作者自行核对。
+- **候选章节仍由子串匹配产生**：语义判定只能在候选内做减法。若一章只用指代、完全不含定位词，它不会进入候选，
+  因而不会被判定。对此可以用 `terms` 补充常见指代词，或在后续版本加入全书扫描式的候选发现。
+- **语义判定依赖 LLM 的判断**：判定结果会写入预览，作者应核对被排除与保留的章节理由（`review.reason`）。
 - **执行器未在真实 LLM 下验证**：测试使用桩执行器（按提示中的路径读取原文并替换），调用约定与 `llm_convert` 一致，
   但实际写作质量与提示遵循情况需本机用真实模型跑一次。
 - **派生物不自动重跑**：一致性、人物索引、伏笔账本、全书终审报告只给出 `derived_marks` 建议，由作者决定何时重跑。
-- **没有运行中取消**：只能等运行因上限或失败停下后再丢弃/续跑。
+- **没有运行中取消**：只能等运行因上限或失败停下后再丢弃/续跑（执行是同步的，取消需要单独的后台化改造）。
 - **滚动改写会累积漂移**：后面章节只看到前一章的最新文本，远处章节的一致性依赖一致性检查兜底。
 - **Windows 下的只读与删除**：已加权限修正，但只在 Linux 上测试过。
 - 流程完全不读写流水线状态；若作者在完稿后又回去用流水线重跑章节，那是独立于本流程的操作，两者不会自动同步。

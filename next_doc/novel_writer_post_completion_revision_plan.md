@@ -81,7 +81,8 @@ Change {
 |---|---|---|
 | P0 | 完成 | versions.py：终审门禁、只读 v001、哈希清单、校验 |
 | P1 | 完成 | changes.py：两种时间语义、预览、确认；定位用子串匹配 |
-| P2 | 完成（缺 LLM 语义筛选） | executor.py：滚动改写、单章校验重试、失败隔离、上限暂停续跑；语义筛选未做 |
+| P1+ | 完成 | changes.py：preview --review 做 LLM 语义判定，不涉及的章节默认排除，确认前可 exclude/include |
+| P2 | 完成 | executor.py：滚动改写、单章校验重试、失败隔离、上限暂停续跑、只改未排除章节 |
 | P3 | 完成 | feedback.py：分诊 + 作者采纳 |
 | P4 | 完成（重跑手动） | derived.py：派生物建议、版本差异、按版本导出 |
 | P5 | 完成（界面未做） | discard / undo_head；界面与运行中取消待做 |

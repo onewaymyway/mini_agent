@@ -346,3 +346,74 @@ def test_export_version_writes_inside_version(tmp_path):
     _baseline(ws)
     result = derived.export_version(ws, "v001")
     assert result is not None
+
+
+# ─────────────────────────── P1+ LLM 语义判定与排除 ───────────────────────────
+
+class ReviewInvoker:
+    """按章节号给出判定：verdicts = {章号: True/False}；缺省视为涉及。bad：返回不合法 JSON 的章号集合。"""
+
+    def __init__(self, verdicts=None, bad=()):
+        self.verdicts = verdicts or {}
+        self.bad = set(bad)
+        self.calls = 0
+
+    def __call__(self, *, skill, prompt, export_dir, step_id):
+        self.calls += 1
+        out = re.search(r"写入文件：\s*(\S+)", prompt).group(1)
+        num = int(re.search(r"第(\d+)章", prompt).group(1))
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
+        if num in self.bad:
+            Path(out).write_text("乱写", encoding="utf-8")
+        else:
+            Path(out).write_text(json.dumps({"affected": self.verdicts.get(num, True), "reason": "测试"},
+                                            ensure_ascii=False), encoding="utf-8")
+
+
+def test_semantic_review_excludes_unaffected_by_default(tmp_path):
+    ws = _novel(tmp_path)
+    _baseline(ws)
+    c = CH.save_change(ws, _setting())
+    pv = CH.build_preview(ws, "v001", [c["id"]], invoker=ReviewInvoker({3: False}))
+    rows = {r["number"]: r for r in pv["chapters"]}
+    assert rows[3]["excluded"] is True and rows[3]["review"]["affected"] is False
+    assert rows[1]["excluded"] is False
+    assert pv["review"]["calls"] == 4 and pv["review"]["done"] is True
+    CH.confirm_preview(ws, pv["id"])
+    run = executor.start(ws, pv["id"], RewriteInvoker("玉佩", "银钥匙"))
+    assert run["queue"] == [1, 2, 4] and run["done"] == [1, 2, 4]
+    assert "玉佩" in _chapter_text(ws, "v002", 3)  # 被排除的章节保持原文
+
+
+def test_author_can_include_excluded_chapter_before_confirm(tmp_path):
+    ws = _novel(tmp_path)
+    _baseline(ws)
+    c = CH.save_change(ws, _setting())
+    pv = CH.build_preview(ws, "v001", [c["id"]], invoker=ReviewInvoker({3: False}))
+    pv = CH.set_excluded(ws, pv["id"], 3, False)
+    assert pv["estimated_llm_calls"] == 8  # 4 章改写 + 4 次语义判定
+    pv = CH.set_excluded(ws, pv["id"], 2, True)
+    assert [r["number"] for r in pv["chapters"] if not r["excluded"]] == [1, 3, 4]
+    CH.confirm_preview(ws, pv["id"])
+    with pytest.raises(FlowError, match="已确认"):
+        CH.set_excluded(ws, pv["id"], 1, True)
+
+
+def test_review_failure_keeps_chapter_and_warns(tmp_path):
+    ws = _novel(tmp_path)
+    _baseline(ws)
+    c = CH.save_change(ws, _setting())
+    pv = CH.build_preview(ws, "v001", [c["id"]], invoker=ReviewInvoker(bad={2}))
+    row = next(r for r in pv["chapters"] if r["number"] == 2)
+    assert row["review"] is None and row["excluded"] is False
+    assert any("第2章语义判定失败" in w for w in pv["warnings"])
+    assert pv["review"]["failed"] == 1
+
+
+def test_preview_without_invoker_keeps_all_chapters(tmp_path):
+    ws = _novel(tmp_path)
+    _baseline(ws)
+    c = CH.save_change(ws, _setting())
+    pv = CH.build_preview(ws, "v001", [c["id"]])
+    assert pv["review"]["done"] is False
+    assert all(not r["excluded"] for r in pv["chapters"])
