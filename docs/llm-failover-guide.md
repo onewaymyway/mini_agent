@@ -636,6 +636,18 @@ daemon 模式下，`LLMClientPool.snapshot()` / `ApiKeyPool.snapshot()` 这两�
 里（见 `docs/kanban-dashboard-guide.md`）。这一步不涉及任何新增持久化，
 纯粹是把已经在内存里的状态读出来展示。
 
+### API Key 轮转状态（看板）
+
+看板"🧠 自我状态"tab 中，"🔀 LLM 故障转移状态"下方新增"🔄 API Key 轮转状态"区块：
+
+- 顶部指标：Key 总数、可用数、在途请求数、冷却中数量；全部冷却时给出错误提示，部分冷却时给出警告。
+- 每个多 key 池一张表：key 末尾 8 位、可用/冷却状态、在途请求数、失败次数、冷却剩余秒数、最近使用时间。
+- `least_loaded` 池标注为"🔗 跨进程共享"，在途数来自共享状态文件，因此子任务、cron、外部项目的请求都能看到；
+  `passive` / `round_robin` 池标注为"⚠️ 仅本进程"，在途数显示为 `—`。
+
+数据来源是只读端点 `GET /v1/self/key_rotation_status`。该端点不记录历史，只反映当前时刻的状态；
+"最近一小时切换次数"等趋势信息请参考上方的调用统计。
+
 ### 轻量调用计数（方向 B.2）
 
 在 B.1 只读暴露状态之外，"这个 daemon 今天到底调用了多少次 LLM、大概
@@ -765,4 +777,9 @@ storage()` 一致，但聚合语义不同（健康度快照是"取当天最新�
 - 每把 key 的在途计数（租约）与冷却状态写入 `<主项目根>/.agent/llm_key_state.json`，同一主项目下的所有进程共享，文件仅保存 key 摘要。
 - 修复子任务（cron / Objective / SubAgent）只使用第一把 key 的问题：`build_pool_with_primary` 现在认领链上的多 key 池。
 - 外部项目的 LLM 调用接入同一套机制（需已注册，见“跨进程共享状态”）。
+
+**2026-11：看板增加 API Key 轮转状态区块**
+
+- 新增只读端点 `GET /v1/self/key_rotation_status` 与看板区块，展示每个多 key 池的 key 级状态（least_loaded 池读取跨进程共享状态）。
+- `least_loaded` 状态快照新增 `last_used` 字段。
 

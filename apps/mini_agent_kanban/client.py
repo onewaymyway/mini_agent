@@ -712,6 +712,10 @@ class AgentClient:
         "🧠 自我状态"tab"🔀 LLM 故障转移状态"区块展示。"""
         return self._get("/self/llm_pool_status")
 
+    def key_rotation_status(self):
+        """多 key 轮转状态（least_loaded 池为跨进程共享数据），供\"🧠 自我状态\"tab\"🔄 API Key 轮转状态\"区块展示。"""
+        return self._get("/self/key_rotation_status")
+
     def llm_call_stats(self, days: int = 7):
         """[kanban_perception_gaps_improvement_plan.md 方向 B.2] 按天聚合的
         LLM 调用计数（调用次数/成功失败数/切换次数/token 用量/平均耗时），

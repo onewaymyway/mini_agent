@@ -800,6 +800,25 @@ async def get_self_llm_pool_status(request: Request):
     return {**snap, "enabled": True}
 
 
+# ── API Key 轮转状态（看板轮转可观测）──────────────────────────────────────
+@router.get("/self/key_rotation_status")
+async def get_self_key_rotation_status(request: Request):
+    """GET /v1/self/key_rotation_status — 多 key 轮转状态（只读）。
+
+    返回 {enabled, totals, pools: [{label, active, rotation, shared, keys: [...]}]}。
+    keys 中每项含 key_suffix（末尾 8 位）、available、cooldown_remaining、
+    fail_count、inflight（在途租约数，仅 shared 池有效）、last_used（epoch 秒）。
+    未配置多 key 池时 enabled=false，不报错。
+    """
+    bridge = _bridge(request)
+    from mini_agent.perception.sentinel import read_key_rotation_snapshot
+    import asyncio
+
+    pool = getattr(bridge.agent, "_client_pool", None) if bridge.agent else None
+    # 读共享状态文件是同步 IO，放到线程池执行，避免阻塞事件循环
+    return await asyncio.to_thread(read_key_rotation_snapshot, pool)
+
+
 # ── 外部项目聚合状态视图（external_projects_workspace_plan.md 阶段 4）─────────
 # 背景：daemon 作为"大管家"看外部项目现在情况如何，不要求外部项目主动
 # 连接汇报（原则三），而是读注册表 + 读各项目自己的账本/health_check。

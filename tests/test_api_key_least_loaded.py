@@ -181,3 +181,49 @@ def test_external_project_resolves_to_main_root_store(tmp_path, monkeypatch):
     monkeypatch.setenv("MINI_AGENT_MAIN_PROJECT_ROOT", str(main))
     store = _key_store_for(SimpleNamespace(project_root=str(ext)))
     assert store._path == (main / ".agent" / STATE_FILENAME).resolve()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 看板轮转快照（read_key_rotation_snapshot）
+# ─────────────────────────────────────────────────────────────────────────────
+
+from mini_agent.perception.sentinel import read_key_rotation_snapshot
+
+
+def test_rotation_snapshot_reports_shared_inflight_and_cooldown(tmp_path):
+    path = tmp_path / ".agent" / STATE_FILENAME
+    other_process = ApiKeyPool(KEYS, rotation="least_loaded", store=FileKeyState(path))
+    lease = other_process.checkout()                       # 模拟另一个进程占用一把 key
+    other_process.on_error("k2" if lease.key != "k2" else "k3", LLMRateLimitError("x"))
+
+    viewer = ApiKeyPool(KEYS, rotation="least_loaded", store=FileKeyState(path))
+    pool = LLMClientPool(entries=[ProviderEntry(
+        config=SimpleNamespace(api_key=KEYS[0], provider="p", model="m"),
+        client=SimpleNamespace(), key_pool=viewer)])
+
+    snap = read_key_rotation_snapshot(pool)
+    assert snap["enabled"] is True
+    p = snap["pools"][0]
+    assert p["shared"] is True and p["rotation"] == "least_loaded"
+    assert snap["totals"]["keys"] == 3
+    assert snap["totals"]["inflight"] == 1                 # 看得见另一进程的在途租约
+    assert snap["totals"]["cooling"] == 1
+    assert sum(1 for k in p["keys"] if k["inflight"]) == 1
+
+
+def test_rotation_snapshot_marks_passive_pool_as_process_local():
+    passive = ApiKeyPool(KEYS, rotation="passive", switch_on={"LLMRateLimitError"})
+    pool = LLMClientPool(entries=[ProviderEntry(
+        config=SimpleNamespace(api_key="k1", provider="p", model="m"),
+        client=SimpleNamespace(), key_pool=passive)])
+    snap = read_key_rotation_snapshot(pool)
+    assert snap["pools"][0]["shared"] is False
+    assert snap["totals"]["inflight"] == 0
+
+
+def test_rotation_snapshot_disabled_without_multikey_pool():
+    entry = ProviderEntry(config=SimpleNamespace(api_key="k", provider="p", model="m"),
+                          client=SimpleNamespace(), key_pool=None)
+    snap = read_key_rotation_snapshot(LLMClientPool(entries=[entry]))
+    assert snap["enabled"] is False
+    assert read_key_rotation_snapshot(None)["enabled"] is False

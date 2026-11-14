@@ -9490,6 +9490,9 @@ def render_self_tab(client: AgentClient):
     _render_llm_pool_status(client)
 
     st.divider()
+    _render_key_rotation_status(client)
+
+    st.divider()
     _render_growth_health_trend(client)
     # [kanban_perception_gaps_improvement_plan.md 方向 D.2] 记忆库增长
     # 趋势——`growth_health_trend.jsonl` 里已经有 total_entries 等字段，
@@ -9712,6 +9715,55 @@ def _render_llm_pool_status(client: AgentClient) -> None:
                              breakdown.get("by_source") or {}, "来源")
             _breakdown_table("按项目（main = 主项目；external:* = 外部项目调用）",
                              breakdown.get("by_origin") or {}, "项目")
+
+
+# [看板轮转可观测] "🔄 API Key 轮转状态"——展示每个多 key 池的 key 级状态。
+# least_loaded 池的数据来自跨进程共享状态文件，因此子任务、cron、外部项目的
+# 在途请求都能在这里看到；passive / round_robin 池只显示本进程状态并标注。
+def _render_key_rotation_status(client: AgentClient) -> None:
+    import pandas as pd
+    from datetime import datetime
+
+    st.markdown("**🔄 API Key 轮转状态**")
+    data = client.key_rotation_status() or {}
+    if "_error" in data:
+        st.caption(f"读取失败：{data['_error']}")
+        return
+    pools = data.get("pools") or []
+    if not data.get("enabled") or not pools:
+        st.caption("未配置多 key 轮转（只配置单个 key 的 provider 不会显示在这里）。")
+        return
+
+    totals = data.get("totals") or {}
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Key 总数", totals.get("keys", 0))
+    c2.metric("可用", totals.get("available", 0))
+    c3.metric("在途请求", totals.get("inflight", 0))
+    c4.metric("冷却中", totals.get("cooling", 0))
+    if totals.get("keys", 0) and not totals.get("available", 0):
+        st.error("⚠️ 所有 key 均在冷却中，下一次请求将等待或切换到备用配置")
+    elif totals.get("cooling", 0):
+        st.warning(f"部分 key 处于冷却中（{totals.get('cooling', 0)} 把），流量已分摊到其余 key")
+
+    for pool in pools:
+        shared = bool(pool.get("shared"))
+        badge = "🔗 跨进程共享" if shared else "⚠️ 仅本进程（不跨进程）"
+        head = "（当前激活）" if pool.get("active") else ""
+        st.markdown(f"{'🟢' if pool.get('active') else '⚪'} **{pool.get('label', '')}**{head}"
+                    f"　·　策略 `{pool.get('rotation', '')}`　·　{badge}")
+        rows = []
+        for k in pool.get("keys") or []:
+            last = k.get("last_used") or 0
+            rows.append({
+                "key 末尾": k.get("key_suffix", ""),
+                "状态": "🟢 可用" if k.get("available") else "🔴 冷却",
+                "在途请求": k.get("inflight", 0) if shared else "—",
+                "失败次数": k.get("fail_count", 0),
+                "冷却剩余(s)": k.get("cooldown_remaining", 0),
+                "最近使用": datetime.fromtimestamp(last).strftime("%H:%M:%S") if last else "—",
+            })
+        if rows:
+            st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════

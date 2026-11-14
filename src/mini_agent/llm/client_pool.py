@@ -202,6 +202,7 @@ class ApiKeyPool:
                     "cooldown_remaining": round(cool, 1),
                     "fail_count": rec["fail_count"],
                     "inflight": len(rec["leases"]),
+                    "last_used": rec["last_used"],
                 })
             return out
 

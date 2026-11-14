@@ -184,6 +184,56 @@ def _scan_quarantine_backlog(paths: "AgentPaths") -> dict:
     return result
 
 
+def read_key_rotation_snapshot(client_pool) -> dict:
+    """[看板轮转可观测] 汇总所有多 key 池的轮转状态。
+
+    least_loaded 池读取共享状态（跨进程，与外部项目/子任务是同一份数据）；
+    passive / round_robin 池只有进程内状态，结果里用 shared=False 标注。
+    没有任何多 key 池时返回 enabled=False，不是错误。
+    """
+    empty = {"enabled": False, "pools": [], "totals": {"keys": 0, "available": 0,
+                                                       "cooling": 0, "inflight": 0}}
+    if client_pool is None:
+        return empty
+    try:
+        from mini_agent.llm.key_state import FileKeyState
+
+        pools: list[dict] = []
+        for idx, entry in enumerate(client_pool._entries):
+            kp = entry.key_pool
+            if kp is None:
+                continue
+            if kp._rotation == "least_loaded":
+                keys = kp._least_snapshot()
+                shared = isinstance(kp._store, FileKeyState)
+            else:
+                keys = kp.snapshot()
+                shared = False
+            pools.append({
+                "label": entry.label,
+                "active": idx == client_pool._current_idx,
+                "rotation": kp._rotation,
+                "shared": shared,
+                "keys": keys,
+            })
+
+        totals = {"keys": 0, "available": 0, "cooling": 0, "inflight": 0}
+        for p in pools:
+            for k in p["keys"]:
+                totals["keys"] += 1
+                if k.get("available"):
+                    totals["available"] += 1
+                else:
+                    totals["cooling"] += 1
+                if p["shared"]:
+                    totals["inflight"] += int(k.get("inflight", 0))
+        return {"enabled": bool(pools), "pools": pools, "totals": totals}
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where="mini_agent.perception.sentinel.read_key_rotation_snapshot")
+        return empty
+
+
 def read_llm_pool_snapshot(client_pool) -> Optional[dict]:
     """[方向 B.1] 读取 LLMClientPool.snapshot()，并额外标注
     `switched_from_preferred`（当前激活的 entry 是否不是 fallback_chain
