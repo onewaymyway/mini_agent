@@ -12,6 +12,7 @@ request:
 browser:
   required: true
   wait_selector: "relative-time"
+  site: github
 parse:
   list_selector: "article.Box-row"
   fields:
