@@ -22,5 +22,6 @@ parse:
   fields:
     title: self
     url: "@href"
+    published_at: "ancestor"
 policy: {max_items: 30}
 tags: [36氪, 科技, 商业]

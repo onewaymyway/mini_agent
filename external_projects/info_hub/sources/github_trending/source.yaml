@@ -9,6 +9,9 @@ schedule: {every: 6h}
 request:
   url: https://github.com/trending
   headers: {User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"}
+browser:
+  required: true
+  wait_selector: "relative-time"
 parse:
   list_selector: "article.Box-row"
   fields:
@@ -16,5 +19,6 @@ parse:
     url: "h2 a@href"
     summary: "p"
     heat: "span.d-inline-block.float-sm-right"
+    published_at: "relative-time@datetime"
 policy: {max_items: 25}
 tags: [GitHub, 开源, 技术]

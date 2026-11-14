@@ -29,3 +29,9 @@ sites:
     login_url: https://36kr.com/
     check_url: https://36kr.com/
     expired_pattern: /login
+  github:
+    # GitHub Trending 无需登录；此处只为满足 browser.site 必填。expired_pattern 正常不会命中。
+    name: GitHub
+    login_url: https://github.com/
+    check_url: https://github.com/trending
+    expired_pattern: /login
