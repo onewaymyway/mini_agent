@@ -166,6 +166,31 @@ def _split(text: str):
     return [t.strip() for t in str(text or "").replace("，", ",").split(",") if t.strip()]
 
 
+_DIFF_MAX_CHARS = 300_000
+
+
+def _diff_view() -> None:
+    """git 风格差异：先列出变化文件，再逐行展示所选文件（或全部）的 +/- 内容。"""
+    res = st.session_state.get("rv_diff_result")
+    if not res:
+        return
+    rows = res["rows"]
+    changed = [r for r in rows if r["status"] != "same"]
+    st.markdown(f"**{res['a']} → {res['b']}**　{len(changed)} 个文件有变化")
+    if not changed:
+        st.info("两个版本的内容完全相同。")
+        return
+    st.dataframe([{"文件": r["path"], "状态": {"changed": "修改", "added": "新增", "removed": "删除"}[r["status"]],
+                   "新增行": r["added"], "删除行": r["removed"]} for r in changed],
+                 hide_index=True, use_container_width=True)
+    pick = st.selectbox("查看文件", ["全部文件"] + [r["path"] for r in changed], key="rv_diff_file")
+    text = derived.format_diff(rows, None if pick == "全部文件" else pick)
+    if len(text) > _DIFF_MAX_CHARS:
+        st.warning(f"差异较长（{len(text)} 字符），仅显示前 {_DIFF_MAX_CHARS} 字符；请选择单个文件查看。")
+        text = text[:_DIFF_MAX_CHARS]
+    st.code(text, language="diff")
+
+
 # ─────────────────────────────── 版本 ───────────────────────────────
 
 def _tab_versions(root: Workspace) -> None:
@@ -203,12 +228,12 @@ def _tab_versions(root: Workspace) -> None:
     d1, d2 = st.columns(2)
     a = d1.selectbox("旧版本", ids, index=0, key="rv_diff_a")
     b = d2.selectbox("新版本", ids, index=len(ids) - 1, key="rv_diff_b")
-    if st.button("查看差异", key="rv_diff"):
+    if st.button("查看差异", key="rv_diff", disabled=a == b):
         rows = _act(root, f"比较 {a} 与 {b}", derived.diff_versions, root, a, b,
                     summarize=lambda r: f"{sum(1 for x in r if x['status'] != 'same')} 个文件有差异")
         if rows is not None:
-            changed = [r for r in rows if r["status"] != "same"]
-            st.dataframe(changed or [{"结果": "两个版本完全相同"}], hide_index=True, use_container_width=True)
+            st.session_state["rv_diff_result"] = {"a": a, "b": b, "rows": rows}
+    _diff_view()
     st.markdown("**导出**")
     ex = st.selectbox("导出版本", ids, key="rv_export_pick")
     if st.button("导出该版本", key="rv_export"):

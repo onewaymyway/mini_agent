@@ -597,3 +597,22 @@ def test_job_failure_is_recorded(tmp_path):
     st_ = jobs.status(ws, "t_fail")
     assert st_["state"] == "failed" and "模型不可用" in st_["error"]
     assert "失败：模型不可用" in jobs.tail(ws, "t_fail")
+
+
+def test_diff_text_is_git_style_with_hunks(tmp_path):
+    ws = _novel(tmp_path)
+    _baseline(ws)
+    pv = _ready_preview(ws)
+    executor.start(ws, pv["id"], RewriteInvoker("玉佩", "银钥匙"))
+    rows = derived.diff_versions(ws, "v001", "v002")
+    changed = next(r for r in rows if r["status"] == "changed" and r["path"].startswith("正文/第01章"))
+    d = changed["diff"]
+    assert d.startswith("diff --git a/正文/第01章")
+    assert "--- a/正文/第01章" in d and "+++ b/正文/第01章" in d
+    assert "@@" in d
+    assert any(ln.startswith("-") and "玉佩" in ln for ln in d.splitlines())
+    assert any(ln.startswith("+") and "银钥匙" in ln for ln in d.splitlines())
+    assert changed["added"] >= 1 and changed["removed"] >= 1
+    same = [r for r in rows if r["status"] == "same"]
+    assert all(r["diff"] == "" for r in same)
+    assert "银钥匙" in derived.format_diff(rows, changed["path"])

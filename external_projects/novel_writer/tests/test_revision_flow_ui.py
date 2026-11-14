@@ -181,3 +181,22 @@ def test_busy_blocks_second_job(tmp_path, monkeypatch):
     jobs.status_path(ws, "fake_running").write_text('{"state": "running"}', encoding="utf-8")
     at.run()
     assert [b for b in at.button if b.label == "生成预览"] == [] or all(b.disabled for b in at.button if b.label == "生成预览")
+
+
+def test_diff_button_shows_git_style_content(tmp_path, monkeypatch):
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent))
+    from test_revision_flow import RewriteInvoker, _baseline, _ready_preview
+    from novel_writer.revision_flow import executor
+    ws = _novel(tmp_path)
+    _baseline(ws)
+    pv = _ready_preview(ws)
+    executor.start(ws, pv["id"], RewriteInvoker("玉佩", "银钥匙"))
+    at = _run(ws, monkeypatch)
+    at.selectbox(key="rv_diff_a").set_value("v001")
+    at.selectbox(key="rv_diff_b").set_value("v002")
+    [b for b in at.button if b.label == "查看差异"][0].click().run()
+    assert not at.exception
+    diffs = [c.value for c in at.code if "diff --git" in c.value]
+    assert diffs, "应显示 git 风格差异"
+    assert "+" in diffs[0] and "银钥匙" in diffs[0] and "-" in diffs[0]

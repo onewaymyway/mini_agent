@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import difflib
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from novel_writer.revision_flow import changes as CH
 from novel_writer.revision_flow import versions as V
@@ -35,8 +35,25 @@ def stale_items(done_chapters: List[int], change_kinds: List[str]) -> List[Dict[
     return marks
 
 
-def diff_versions(ws, a: str, b: str, *, context: int = 2, with_text: bool = False) -> List[Dict[str, Any]]:
-    """逐文件比较版本 a 与 b。返回 [{path, status, added, removed, diff?}]。status: same/changed/added/removed。"""
+def _git_style_block(path: str, a: str, b: str, status: str, la: List[str], lb: List[str], context: int) -> str:
+    """生成单个文件的 git 风格差异块（diff --git 头 + unified 正文）。"""
+    fa = "/dev/null" if status == "added" else f"a/{path}"
+    fb = "/dev/null" if status == "removed" else f"b/{path}"
+    header = [f"diff --git a/{path} b/{path}"]
+    if status == "added":
+        header.append("new file mode 100644")
+    elif status == "removed":
+        header.append("deleted file mode 100644")
+    body = list(difflib.unified_diff(la, lb, fromfile=fa, tofile=fb, n=context, lineterm=""))
+    return "\n".join(header + body)
+
+
+def diff_versions(ws, a: str, b: str, *, context: int = 3) -> List[Dict[str, Any]]:
+    """逐文件比较版本 a 与 b。
+
+    返回 [{path, status, added, removed, diff}]：status 为 same / changed / added / removed；
+    diff 为 git 风格的 unified diff 文本（same 时为空串）。added / removed 统计的是行数。
+    """
     ra, rb = version_dir(ws, a), version_dir(ws, b)
     fa, fb = set(list_content_files(ra)), set(list_content_files(rb))
     out: List[Dict[str, Any]] = []
@@ -49,17 +66,20 @@ def diff_versions(ws, a: str, b: str, *, context: int = 2, with_text: bool = Fal
             la = read_text_lenient(ra / rel)[0].splitlines()
             lb = read_text_lenient(rb / rel)[0].splitlines()
             status = "same" if la == lb else "changed"
-        added = removed = 0
-        for line in difflib.ndiff(la, lb):
-            if line.startswith("+ "):
-                added += 1
-            elif line.startswith("- "):
-                removed += 1
-        item: Dict[str, Any] = {"path": rel, "status": status, "added": added, "removed": removed}
-        if with_text and status != "same":
-            item["diff"] = "\n".join(difflib.unified_diff(la, lb, a, b, n=context, lineterm=""))
-        out.append(item)
+        if status == "same":
+            out.append({"path": rel, "status": "same", "added": 0, "removed": 0, "diff": ""})
+            continue
+        block = _git_style_block(rel, a, b, status, la, lb, context)
+        added = sum(1 for ln in block.splitlines() if ln.startswith("+") and not ln.startswith("+++"))
+        removed = sum(1 for ln in block.splitlines() if ln.startswith("-") and not ln.startswith("---"))
+        out.append({"path": rel, "status": status, "added": added, "removed": removed, "diff": block})
     return out
+
+
+def format_diff(rows: List[Dict[str, Any]], path: Optional[str] = None) -> str:
+    """把差异行拼成一段文本：path 为空时拼接全部有变化的文件。"""
+    blocks = [r["diff"] for r in rows if r.get("diff") and (path is None or r["path"] == path)]
+    return "\n".join(blocks)
 
 
 def export_version(ws, vid: str) -> Dict[str, Any]:
