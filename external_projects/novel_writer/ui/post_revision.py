@@ -70,7 +70,8 @@ def _ops_panel(root: Workspace) -> None:
 # ─────────────────────────────── 后台任务（单一任务槽 + 顶部面板） ───────────────────────────────
 
 _ACTIVE = "rv_active"   # {"name", "label", "kind"}：同一时间只允许一个后台任务
-LOG_LINES = 400
+LOG_LINES = 2000
+TAIL_LINES = 40
 
 
 def _active(root: Workspace) -> Optional[Dict[str, Any]]:
@@ -111,7 +112,7 @@ def _apply_result(kind: str, result: Dict[str, Any]) -> None:
 
 
 def _task_panel(root: Workspace) -> None:
-    """页面顶部的唯一后台任务面板：实时日志（最新在最上）、进度、耗时。"""
+    """页面顶部的唯一后台任务面板：实时日志（按时间顺序，最新在最下）、进度、耗时。"""
     slot = _active(root)
     if not slot:
         return
@@ -124,10 +125,14 @@ def _task_panel(root: Workspace) -> None:
         started = info.get("started_at", "")
         lines = jobs.tail(root, name, LOG_LINES).splitlines()
         st.markdown(f"**{slot['label']}**　状态：{_JOB_STATE.get(state, state)}　"
-                    f"开始于 {started}　已输出 {len(lines)} 行（最新在上）")
+                    f"开始于 {started}　已输出 {len(lines)} 行（最新在下）")
         if info.get("error"):
             st.error(info["error"])
-        st.code("\n".join(reversed(lines)) or "（已提交，等待第一行输出…）", language=None)
+        st.code("\n".join(lines[-TAIL_LINES:]) or "（已提交，等待第一行输出…）", language=None)
+        if len(lines) > TAIL_LINES:
+            st.caption(f"以上是最近 {TAIL_LINES} 行，完整日志见下方。")
+        with st.expander("完整日志"):
+            st.code("\n".join(lines) or "（暂无）", language=None)
         if state in ("done", "failed") and not st.session_state.get(f"rv_seen_{name}"):
             st.session_state[f"rv_seen_{name}"] = True
             if state == "done":

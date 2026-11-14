@@ -147,7 +147,7 @@ def test_every_action_writes_start_and_result_to_ops_log(tmp_path, monkeypatch):
     assert "保存设置：完成" in jobs.tail(ws, "ops")
 
 
-def test_only_one_task_panel_and_it_shows_newest_first(tmp_path, monkeypatch):
+def test_only_one_task_panel_and_newest_line_at_bottom(tmp_path, monkeypatch):
     import time
     from novel_writer.revision_flow import jobs
     ws = _novel(tmp_path)
@@ -165,10 +165,11 @@ def test_only_one_task_panel_and_it_shows_newest_first(tmp_path, monkeypatch):
         time.sleep(0.1)
     at.run()
     assert not at.exception
-    # 顶部唯一面板：代码块里最新一行在最前
+    # 顶部唯一面板：按时间顺序，最新一行在最下
     code = at.code[0].value
     lines = code.splitlines()
-    assert "完成" in lines[0] or "预览完成" in lines[0] or "完成" in lines[1]
+    assert lines[0].startswith("[") and "开始" in lines[0]
+    assert "完成" in lines[-1]
     assert sum(1 for m in at.markdown if "状态：" in m.value) == 1
 
 
