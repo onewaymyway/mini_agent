@@ -146,7 +146,12 @@ def visual_text_pass(project_dir: Path, text_llm: TextLLM, *, only_missing: bool
                 kind == "character" and not ent.get("voice_profile"))
             if only_missing and not needs:
                 summary["skipped"].append(eid)
-                joblog.log(project_dir, "assets", f"跳过 {name}（设定已完整）")
+                # 设定已齐全却仍是「缺失」（如导入的旧项目）：转为待审核，才能人工通过；不自动通过
+                item = get_item(review, key)
+                if item.get("text_status") == "missing":
+                    item.update(text_status="pending", last_error=None)
+                    save_review(project_dir, review)
+                joblog.log(project_dir, "assets", f"跳过 {name}（设定已完整，待人工审核）")
                 continue
             joblog.log(project_dir, "assets", f"G-2 补全：{name}（{eid}）")
             try:

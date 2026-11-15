@@ -51,3 +51,20 @@ def test_version_dir_project_reads_text_from_working_copy(tmp_path, monkeypatch)
     assert (proj / "source" / "normalized" / "设定" / "人物" / "角色").is_dir()
     assert not (proj / "source" / "normalized" / "正文" / "_drafts").exists()
     assert "这是一段很长的正文" in cio.source_text(proj, 1)
+
+
+def test_author_written_visual_goes_to_pending_not_missing(tmp_path, monkeypatch):
+    """作者已写定 visual.anchor_en 与声音的角色，设定已齐全：应为待审核，而不是永远「缺失」。"""
+    from novel_to_video.steps import global_visual as GV
+    base = build_version_dir(tmp_path)
+    ch = base / "大纲规划" / "人物设定" / "角色" / "char_001.md"
+    ch.write_text(ch.read_text(encoding="utf-8").replace(
+        'psychology:', 'visual: {"gender":"male","anchor_en":"a lean man in grey overalls","voice":{"timbre":"低沉","pace":"慢"}}\npsychology:', 1),
+        encoding="utf-8")
+    monkeypatch.setenv("NOVEL_TO_VIDEO_PROVIDERS", "stub")
+    res = tool_api.create_project_from_source(str(tmp_path / "out"), str(base), title="t")
+    proj = Path(res["data"]["project_dir"])
+    rows = {r["id"]: r for r in GV.visual_status(proj)["rows"] if r["kind"] == "character"}
+    assert rows["char_001"]["text_status"] == "pending"
+    assert "visual_anchor_en" not in rows["char_001"]["missing_fields"]
+    assert rows["char_002"]["text_status"] == "missing"           # 没写定的仍需 G-2

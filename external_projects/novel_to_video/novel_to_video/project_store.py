@@ -280,8 +280,17 @@ def create_project(
         "schema_version": SCHEMA_VERSION, "locations": result.locations,
     })
     write_json_atomic(proj / "global" / "props.json", {"schema_version": SCHEMA_VERSION, "props": []})
+    # 导出里作者已写定视觉锚点与声音的角色：设定已齐全，直接进入「待审核」（仍需人工通过，不自动通过）；
+    # 否则状态停在「缺失」，G-2 会跳过它们（设定已完整），永远无法进入待审核。
+    review_items = {}
+    for c in result.characters:
+        if c.get("visual_anchor_en") and c.get("voice_profile"):
+            review_items[f"character:{c['id']}"] = {
+                "text_status": "pending", "portrait_status": "missing",
+                "portrait_version": 0, "last_error": None, "updated_at": timestamp,
+            }
     write_json_atomic(proj / "global" / "review.json", {
-        "schema_version": SCHEMA_VERSION, "items": {},
+        "schema_version": SCHEMA_VERSION, "items": review_items,
     })
     write_yaml_atomic(proj / "chapters" / "index.yaml", {
         "schema_version": SCHEMA_VERSION,
