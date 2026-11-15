@@ -397,3 +397,15 @@ def seed_diff(root: str, a: int, b: int) -> Dict[str, Any]:
 def seed_restore(root: str, ver: int) -> Dict[str, Any]:
     from novel_writer.brainstorm import seed_draft as SD
     return _guard(lambda: {"ver": SD.restore(_ws(root), int(ver))})
+
+
+def seed_adopt_plan(root: str, ver=None, sections=None) -> Dict[str, Any]:
+    """预览采用结果（不登记任何提议）。"""
+    from novel_writer.brainstorm import seed_adopt as AD
+    return _guard(lambda: AD.plan(_ws(root), ver, sections))
+
+
+def seed_adopt(root: str, ver=None, sections=None) -> Dict[str, Any]:
+    """把构思稿转成一批待确认提议（不写卡片）。"""
+    from novel_writer.brainstorm import seed_adopt as AD
+    return _guard(lambda: AD.adopt(_ws(root), ver, sections))
