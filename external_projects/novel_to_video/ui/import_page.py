@@ -75,12 +75,16 @@ def page_import() -> None:
         r_p = st.number_input("镜头规划自动修正次数", min_value=0, max_value=ps.MAX_AUTO_FIX_RETRIES,
                               value=ps.DEFAULT_AUTO_FIX_RETRIES, step=1, key="imp_retry_p")
         retry_opts = {"script_max_retries": int(r_s), "shots_max_retries": int(r_p)}
+        mode_label = st.radio("渲染方式（创建后不可更改）", ["视频（小场景视频，默认）", "动态漫（场景图 + 动效 + 配音字幕）"],
+                              key="imp_mode", help="动态漫不调用视频生成接口：每个镜头是一张场景图，配音与字幕叠加，镜头之间有动效与转场。")
+        mode_opts = {"render_mode": "still"} if mode_label.startswith("动态漫") else {}
         root = st.text_input("项目存放目录", value=DEFAULT_PROJECTS_ROOT, key="imp_root")
 
     if st.button("检查导出目录", type="primary", disabled=not src.strip(), key="imp_check"):
         res = tool_api.create_project_from_source(
             root, src.strip(), title=title.strip() or None,
-            chapter_spec=spec.strip() or None, options={"target_chapter_duration_sec": int(duration), **retry_opts},
+            chapter_spec=spec.strip() or None,
+            options={"target_chapter_duration_sec": int(duration), **retry_opts, **mode_opts},
             dry_run=True,
         )
         st.session_state["imp_result"] = res
@@ -101,7 +105,8 @@ def page_import() -> None:
     if st.button("创建项目", type="primary", key="imp_create"):
         created = tool_api.create_project_from_source(
             root, src.strip(), title=title.strip() or None,
-            chapter_spec=spec.strip() or None, options={"target_chapter_duration_sec": int(duration), **retry_opts},
+            chapter_spec=spec.strip() or None,
+            options={"target_chapter_duration_sec": int(duration), **retry_opts, **mode_opts},
         )
         if created["ok"]:
             st.success(f"项目已创建：{created['data']['project_dir']}")

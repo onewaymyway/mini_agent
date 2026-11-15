@@ -163,6 +163,14 @@ def page_gear() -> None:
         (st.success if res["ok"] else st.error)("已保存" if res["ok"] else res["error"]["message"])
     st.caption("只影响 edge-tts 配音。若要使用指定代理地址，请在项目配置 tts.edge_tts_proxy 中填写。")
 
+    from novel_to_video import render_mode as RM
+    st.markdown("#### 渲染方式与动态漫设置")
+    mode_now = RM.mode_of(proj_cfg)
+    st.caption("渲染方式：" + ("动态漫（场景图 + 动效 + 配音字幕）" if mode_now == RM.STILL else "视频（小场景视频）")
+               + "。创建后不可更改。")
+    if mode_now == RM.STILL:
+        _still_settings_section(pdir, proj_cfg)
+
     st.markdown("#### 检查点策略")
     st.dataframe([{"检查点": cp, **{g: ("自动" if pol["table"][g][cp] == "auto" else "手动") for g in pol["gears"]}}
                   for cp in pol["table"]["G0"]], hide_index=True, width='stretch')
@@ -188,6 +196,83 @@ def page_gear() -> None:
         st.write(f"已完成：{d['done']}　等待中：{d['pending']}　需重新合成：{d['stale']}")
         if d["final_stale"]:
             st.warning("全书成片已过期，需重新合成")
+
+
+MOTION_LABEL = {
+    "auto_alternate": "推近与拉远交替（默认）", "push_in": "缓慢推近", "pull_out": "缓慢拉远", "none": "静止",
+    "pan_left": "向左平移", "pan_right": "向右平移", "pan_up": "向上平移", "pan_down": "向下平移", "drift": "轻微晃动",
+}
+TRANSITION_LABEL = {"fade": "淡化（黑场过渡，默认）", "dissolve": "叠化（画面重叠）", "cut": "硬切"}
+STRENGTH_LABEL = {"slow": "慢（默认）", "medium": "中"}
+
+
+def _shots_with_stills(pdir) -> dict:
+    """{显示名: (章节号, 镜头id)}：已有场景图的镜头。"""
+    from pathlib import Path
+    from novel_to_video import chapter_io as cio
+    from novel_to_video import project_store as ps
+    out = {}
+    try:
+        chapters = ps.load_project(Path(pdir))["chapters"]
+    except Exception:  # noqa: BLE001 - 项目索引不可读时不列出镜头
+        return out
+    for ch in chapters:
+        no = int(ch["no"])
+        try:
+            shots = cio.load_shots(Path(pdir), no).get("shots") or []
+        except Exception:  # noqa: BLE001
+            continue
+        for sh in shots:
+            if sh.get("still_file"):
+                out[f"第 {no} 章 · {sh['id']}"] = (no, sh["id"])
+    return out
+
+
+def _still_settings_section(pdir, proj_cfg) -> None:
+    from novel_to_video import render_mode as RM
+    from novel_to_video.media import motion as MO
+    cfg = RM.still_settings(proj_cfg)
+    m_keys = list(MO.MOTIONS)
+    s_keys = list(MO.STRENGTHS)
+    t_keys = list(RM.TRANSITIONS)
+    c1, c2 = st.columns(2)
+    motion = c1.selectbox("镜内动效", m_keys, index=m_keys.index(cfg["motion"]),
+                          format_func=lambda k: MOTION_LABEL.get(k, k), key="still_motion")
+    strength = c2.selectbox("动效强度", s_keys, index=s_keys.index(cfg["motion_strength"]),
+                            format_func=lambda k: STRENGTH_LABEL.get(k, k), key="still_strength")
+    c3, c4, c5 = st.columns(3)
+    trans = c3.selectbox("镜间转场", t_keys, index=t_keys.index(cfg["transition"]),
+                         format_func=lambda k: TRANSITION_LABEL.get(k, k), key="still_trans")
+    tsec = c4.number_input("转场时长（秒）", min_value=0.1, max_value=float(RM.MAX_TRANSITION_SEC), step=0.1,
+                           value=float(cfg["transition_sec"]), key="still_tsec",
+                           help=f"淡化最长 {RM.MAX_TRANSITION_SEC} 秒；叠化最长 {RM.MAX_DISSOLVE_SEC} 秒（镜头配音后的静音余量）。")
+    silent = c5.number_input("无配音镜头时长（秒）", min_value=1.0, max_value=60.0, step=0.5,
+                             value=float(cfg["silent_shot_sec"]), key="still_silent")
+    st.caption("动效、强度与时长变化后，已生成的动效片段会按新设置重建；转场只影响章节合成。"
+               "修改后请重新运行章节，或重新合成章节。")
+    if st.button("保存动态漫设置", key="still_save"):
+        r = tool_api.set_still_settings(pdir, motion=motion, motion_strength=strength, transition=trans,
+                                        transition_sec=float(tsec), silent_shot_sec=float(silent))
+        (st.success if r["ok"] else st.error)("已保存" if r["ok"] else r["error"]["message"])
+
+    st.markdown("#### 预览动效")
+    st.caption("选一张已生成场景图的镜头，用上面的设置（未保存也可以）生成约 3 秒的预览，用于挑选动效。"
+               "预览不写入章节，也不影响审核。")
+    shots_map = _shots_with_stills(pdir)
+    if not shots_map:
+        st.caption("还没有场景图。先运行章节，场景图生成并进入审核后即可预览。")
+        return
+    pick = st.selectbox("镜头", list(shots_map), key="still_prev_pick")
+    if st.button("预览动效", key="still_prev_go"):
+        from pathlib import Path
+        no, sid = shots_map[pick]
+        r = tool_api.preview_motion(pdir, no, sid, motion=motion, motion_strength=strength, transition=trans,
+                                    transition_sec=float(tsec))
+        if r["ok"]:
+            st.video(str(Path(pdir) / r["data"]["path"]))
+            st.caption(f"预览时长约 {r['data']['seconds']} 秒")
+        else:
+            st.error(r["error"]["message"])
 
 
 def _parse(pdir, spec):

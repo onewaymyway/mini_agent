@@ -270,6 +270,63 @@ def run_stills(project_dir: str, no: int, *, image_provider: Optional[str] = Non
     return _ok(res)
 
 
+def set_still_settings(project_dir: str, *, motion: str, motion_strength: str, transition: str,
+                       transition_sec: float, silent_shot_sec: float) -> Dict[str, Any]:
+    """动态漫设置：镜内动效、强度、镜间转场、转场时长、无配音镜头时长。仅动态漫项目可用。
+    动效、强度与时长变化后，已生成的片段会按新设置重建（缓存键包含这些值）；
+    转场变化只影响章节合成。修改后请重新运行章节或重新合成。"""
+    from . import render_mode as RM
+    from .media import motion as MO
+    pdir = Path(project_dir)
+    try:
+        proj = ps.read_json(pdir / "project.json")
+    except (OSError, ValueError) as exc:
+        return _fail(str(exc))
+    if RM.mode_of(proj) != RM.STILL:
+        return _fail("只有动态漫模式的项目才有这些设置")
+    cfg = {**RM.STILL_DEFAULTS, **(proj.get("still") or {}),
+           "motion": motion, "motion_strength": motion_strength, "transition": transition,
+           "transition_sec": transition_sec, "silent_shot_sec": silent_shot_sec}
+    try:
+        if motion not in MO.MOTIONS:
+            raise ValueError(f"未知的动效：{motion!r}")
+        if motion_strength not in MO.STRENGTHS:
+            raise ValueError(f"未知的动效强度：{motion_strength!r}")
+        RM.validate_transition(cfg)
+        sec = float(silent_shot_sec)
+        if not 0 < sec <= 60:
+            raise ValueError("无配音镜头的时长必须在 0 到 60 秒之间")
+        cfg["silent_shot_sec"] = sec
+        cfg["transition_sec"] = float(transition_sec)
+    except (ValueError, TypeError) as exc:
+        return _fail(str(exc))
+    proj["still"] = cfg
+    ps.write_json_atomic(pdir / "project.json", proj)
+    ps.append_progress(pdir, f"动态漫设置更新：动效 {motion}（{motion_strength}），转场 {transition}")
+    return _ok(cfg)
+
+
+def preview_motion(project_dir: str, no: int, sid: str, *, motion: str, motion_strength: str,
+                   transition: str, transition_sec: float) -> Dict[str, Any]:
+    """「预览动效」：用镜头的场景图生成约 3 秒的预览（两段 1.5 秒 + 所选转场）。不改变章节与审核状态。"""
+    from . import render_mode as RM
+    from .steps import motion_preview as MP
+    pdir = Path(project_dir)
+    try:
+        proj = ps.read_json(pdir / "project.json")
+    except (OSError, ValueError) as exc:
+        return _fail(str(exc))
+    if RM.mode_of(proj) != RM.STILL:
+        return _fail("只有动态漫模式的项目才能预览动效")
+    cfg = {**RM.STILL_DEFAULTS, **(proj.get("still") or {}),
+           "motion": motion, "motion_strength": motion_strength, "transition": transition,
+           "transition_sec": float(transition_sec)}
+    try:
+        return _ok(MP.build_preview(pdir, int(no), sid, cfg))
+    except Exception as exc:  # noqa: BLE001 - 界面需要可读的错误
+        return _fail(f"预览失败：{exc}")
+
+
 def chapter_view(project_dir: str, no: int) -> Dict[str, Any]:
     try:
         return _ok(cp.chapter_view(Path(project_dir), no))

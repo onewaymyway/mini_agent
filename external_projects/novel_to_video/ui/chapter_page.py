@@ -308,8 +308,12 @@ def _shot_card(pdir: str, no: int, sh: dict, all_chars: list) -> None:
     with st.container(border=True):
         left, right = st.columns([1, 2])
         with left:
+            if sh.get("still") and (root / sh["still"]).is_file():
+                st.image(str(root / sh["still"]), caption="场景图（审核对象）", width="stretch")
             if sh.get("clip") and (root / sh["clip"]).is_file():
                 st.video(str(root / sh["clip"]))
+            elif sh.get("still"):
+                st.caption("动效片段尚未合成")
             else:
                 st.caption("暂无视频")
             if sh.get("audio") and (root / sh["audio"]).is_file():

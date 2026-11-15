@@ -335,6 +335,9 @@ def chapter_view(project_dir: Path, no: int) -> Dict[str, Any]:
             "state": states.get(sh["id"], "missing"),
             "clip": str((cdir / "clips" / f"{sh['id']}.mp4").relative_to(project_dir))
             if (cdir / "clips" / f"{sh['id']}.mp4").is_file() else None,
+            # 动态漫：当前版本的场景图（审核对象）；视频模式为 None
+            "still": str((cdir / sh["still_file"]).relative_to(project_dir))
+            if sh.get("still_file") and (cdir / sh["still_file"]).is_file() else None,
             "audio": str((cdir / "audio" / f"{sh['id']}.wav").relative_to(project_dir))
             if (cdir / "audio" / f"{sh['id']}.wav").is_file() else None,
         })

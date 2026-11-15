@@ -85,6 +85,7 @@
 - 动态漫模式 S5（2026-11-15）：镜内动效补充平移（pan_left / pan_right / pan_up / pan_down，缩放固定，取景框沿余量线性移动）与晃动（drift，正弦摆动，不越界）。强度 slow / medium 同时决定可移动余量。golden 字符串 + 数值求值检查位置边界与起止 + 真实渲染。测试 `tests/test_still_motions_s5.py`（18 例）。S4 的一条断言改为用 `spiral` 作为未知动效的例子。
 - 动态漫模式 S6（2026-11-15）：镜间转场 fade（逐段黑场淡入淡出，时长不变，音频仅 0.02 秒淡变）与 cut（硬切）；`render_mode.validate_transition` 校验设置。动态漫字幕改用配音真实块时长（`build_cues(exact=True)`），视频模式的估算方式不变。默认转场为淡化。测试 `tests/test_still_transition_s6.py`（11 例）。叠化（S7）、recompose 适配（S9）、界面（S8）未做。
 - 动态漫模式 S7（2026-11-15）：镜间叠化 dissolve。画面重叠 transition_sec 秒，前一镜头音频裁掉同样时长（正好是配音后的静音余量），配音起点与画面起点一致，片段无需重新渲染。`transition_sec` 上限 0.4 秒（余量长度）。`media/ffmpeg.py` 的 `concat_dissolve` / `dissolve_timeline` / `effective_dissolve`；字幕时间轴共用同一时长。测试 `tests/test_still_dissolve_s7.py`（7 例，含音频起点检查）。与计划 7.3 的差异见计划文档第 12 节。recompose 适配（S9）、界面（S8）未做。
+- 动态漫模式 S8（2026-11-15）：界面。创建页选择渲染方式（默认视频，创建后不可改）；挡位页新增「渲染方式与动态漫设置」（动效、强度、转场、转场时长、无配音时长，非法值拒绝）与「预览动效」（约 3 秒，写入 exports/previews，不影响章节与审核）；章节页动态漫镜头显示场景图。接口 `tool_api.set_still_settings` / `preview_motion`；`steps/motion_preview.py`；`chapter_view` 增加 `still`。测试 `tests/test_ui_still_s8.py`（19 例）。
 - 标签改名（2026-11-02）：「🚦 挡位与队列」改为「🛠️ 设置与队列」，页面标题改为「设置与批量队列」，因为该页主要承载各项设置与批量队列。
 
 ## 已知限制
