@@ -54,6 +54,8 @@ DEFAULT_OPTIONS: Dict[str, Any] = {
             "edge_tts_proxy": None},   # None = 系统代理；"direct" = 强制直连；或指定代理地址
     # 字幕：章节合成时烧录台词（旁白 / 说话人：对白）。font_size 为空时按画面高度自动取值。
     "subtitles": {"enabled": True, "font_size": None},
+    # 章节封面：每章视频最前面加一段「小说名 / 第N章 / 章节标题」封面（背景图专门生成，文字程序绘制）。默认关闭。
+    "chapter_cover": {"enabled": False, "book_title": None, "layout": "center", "duration_sec": 3.0},
     "character_looks_enabled": True,    # 角色多形象（换装/受伤等）：默认开启，可在挡位页关闭
     "location_presplit_enabled": True,  # 地点细化 L4：区域预拆解（提议场景点 → 用户确认后写入），默认开启
     "location_spots_enabled": True,     # 地点细化（场景点）：镜头规划识别「现有地点不能直接用」并规划新场景点；默认开启，可在挡位页关闭

@@ -1048,6 +1048,33 @@ def set_subtitles(project_dir: str, enabled: bool, font_size: Optional[int] = No
     return _ok(cfg)
 
 
+def set_chapter_cover(project_dir: str, enabled: bool, *, book_title: Optional[str] = None,
+                      layout: Optional[str] = None, duration_sec: Optional[float] = None) -> Dict[str, Any]:
+    """章节封面设置（默认关闭）。book_title 为空时用项目书名；下次合成章节时生效，已生成的背景图会沿用。"""
+    from .media.cover import LAYOUTS
+    pdir = Path(project_dir)
+    if layout is not None and layout not in LAYOUTS:
+        return _fail(f"未知封面布局：{layout}（可选 {', '.join(LAYOUTS)}）")
+    if duration_sec is not None and not (1.0 <= float(duration_sec) <= 8.0):
+        return _fail("封面时长应在 1–8 秒之间")
+    try:
+        proj = ps.read_json(pdir / "project.json")
+    except (OSError, ValueError) as exc:
+        return _fail(str(exc))
+    cfg = {**(ps.DEFAULT_OPTIONS["chapter_cover"]), **(proj.get("chapter_cover") or {})}
+    cfg["enabled"] = bool(enabled)
+    if book_title is not None:
+        cfg["book_title"] = book_title.strip() or None
+    if layout is not None:
+        cfg["layout"] = layout
+    if duration_sec is not None:
+        cfg["duration_sec"] = float(duration_sec)
+    proj["chapter_cover"] = cfg
+    ps.write_json_atomic(pdir / "project.json", proj)
+    ps.append_progress(pdir, f"章节封面：{'开启' if enabled else '关闭'}（下次合成章节时生效）")
+    return _ok(cfg)
+
+
 def set_video_proxy(project_dir: str, use_system_proxy: bool) -> Dict[str, Any]:
     """视频接口（创建、查询）与视频下载是否使用系统代理。默认 False：直连，不读取系统代理。
     只影响视频相关请求；配音的网络方式见 set_tts_proxy。"""

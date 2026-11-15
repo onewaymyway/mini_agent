@@ -162,6 +162,24 @@ def page_gear() -> None:
         res = tool_api.set_subtitles(pdir, bool(sub_on), int(sub_size) or None)
         (st.success if res["ok"] else st.error)("已保存（重新运行本章后生效）" if res["ok"] else res["error"]["message"])
 
+    st.markdown("#### 章节封面")
+    from novel_to_video.media.cover import LAYOUTS as _COVER_LAYOUTS
+    ccfg = {**ps.DEFAULT_OPTIONS["chapter_cover"], **(proj_cfg.get("chapter_cover") or {})}
+    cc_on = st.checkbox("每章视频开头加章节封面", value=bool(ccfg.get("enabled")), key="gear_cc_on",
+                        help="默认关闭（与以前一致）。开启后每章合成时专门生成一张无文字的封面背景图（调用一次生图接口，"
+                             "已生成的会沿用），再由程序叠加小说名、第 N 章和章节标题，作为章节视频的开头静帧。")
+    cc1, cc2, cc3 = st.columns(3)
+    cc_title = cc1.text_input("小说名（留空用项目书名）", value=ccfg.get("book_title") or "", key="gear_cc_title")
+    cc_layout = cc2.selectbox("布局", list(_COVER_LAYOUTS), index=list(_COVER_LAYOUTS).index(ccfg.get("layout", "center")),
+                              key="gear_cc_layout")
+    cc_sec = cc3.number_input("封面时长（秒）", min_value=1.0, max_value=8.0, step=0.5,
+                              value=float(ccfg.get("duration_sec") or 3.0), key="gear_cc_sec")
+    if st.button("保存章节封面设置", key="gear_cc_save"):
+        res = tool_api.set_chapter_cover(pdir, bool(cc_on), book_title=cc_title, layout=cc_layout,
+                                         duration_sec=float(cc_sec))
+        (st.success if res["ok"] else st.error)(
+            "已保存（下次合成章节时生效；已完成的章节点「重新合成本章」）" if res["ok"] else res["error"]["message"])
+
     st.markdown("#### 配音网络")
     cur_proxy = (proj_cfg.get("tts") or {}).get("edge_tts_proxy")
     modes = ["系统代理（默认）", "强制直连（不使用任何代理）"]

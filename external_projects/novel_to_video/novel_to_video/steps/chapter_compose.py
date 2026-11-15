@@ -150,7 +150,8 @@ def _recompose_still(project_dir: Path, no: int) -> Dict[str, Any]:
     return result
 
 
-def run_compose(project_dir: Path, no: int) -> Dict[str, Any]:
+def run_compose(project_dir: Path, no: int, image=None) -> Dict[str, Any]:
+    """image：生图接口，仅用于首次生成章节封面背景（设置里开启章节封面时）；不传则只用已有背景图。"""
     shots = load_shots(project_dir, no)
     states = shot_states(project_dir, no)
     not_ready = [sid for sid, st in states.items() if st != "approved"]
@@ -183,6 +184,12 @@ def run_compose(project_dir: Path, no: int) -> Dict[str, Any]:
                 **sub.burn(raw, out, cues, total, fmt.width, fmt.height, cdir / "subs", settings["font_size"])}
         raw.unlink(missing_ok=True)
         shutil.rmtree(cdir / "subs", ignore_errors=True)
+    # 章节封面（设置里开启才有，默认关闭）：封面叠字每次合成都按当前设置重绘；字幕已烧录在正片里，加封面不影响字幕时间轴
+    from . import chapter_cover as CC
+    cover = CC.ensure_chapter_cover(project_dir, no, image)
+    if cover is not None:
+        CC.prepend_cover(cover, out, CC.chapter_cover_settings(project_dir)["duration_sec"])
+        info["cover"] = True
     mark_stage(project_dir, no, "compose", "done")
     return {"waiting": [], "output": str(out), "duration": round(mf.probe_duration(out), 2),
             "subtitles": info}

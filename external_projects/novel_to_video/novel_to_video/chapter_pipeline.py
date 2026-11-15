@@ -137,7 +137,7 @@ def run_chapter(project_dir: Path, no: int, *, text_llm: TextLLM, image: ImagePr
             return stop("waiting_review", f"{len(pending)} 个小场景等待审核", pending=pending, states=states)
 
         with joblog.heartbeat(project_dir, "chapter", f"第 {no} 章 C-9 章节合成"):
-            comp = run_compose(project_dir, no)
+            comp = run_compose(project_dir, no, image)
         if comp.get("waiting"):
             return stop("waiting_review", "等待审核：" + "、".join(comp["waiting"]))
         return stop("done", f"章节视频已生成（{comp['duration']} 秒）", output=comp["output"],
@@ -199,7 +199,7 @@ def _still_tail(project_dir: Path, no: int, image: ImageProvider, stop) -> Dict[
         return stop("failed", f"以下镜头动效片段合成失败，修正后重跑：{', '.join(seg['failed'])}", failed=seg["failed"])
 
     with joblog.heartbeat(project_dir, "chapter", f"第 {no} 章 C-9 章节合成"):
-        comp = run_compose(project_dir, no)
+        comp = run_compose(project_dir, no, image)
     if comp.get("waiting"):
         return stop("waiting_review", "等待审核：" + "、".join(comp["waiting"]))
     return stop("done", f"章节视频已生成（{comp['duration']} 秒）", output=comp["output"],

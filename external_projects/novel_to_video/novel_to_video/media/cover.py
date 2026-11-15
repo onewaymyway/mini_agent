@@ -96,3 +96,57 @@ def render_cover(bg: Path, out: Path, title: str, layout: str = DEFAULT_LAYOUT) 
     out.parent.mkdir(parents=True, exist_ok=True)
     img.save(out, format="PNG")
     return out
+
+
+def render_chapter_cover(bg: Path, out: Path, book_title: str, chapter_no: int, chapter_title: str,
+                         layout: str = DEFAULT_LAYOUT) -> Path:
+    """章节封面叠字：小说名（小）、「第 N 章」（大）、章节标题（大，自动换行）。文字全部由程序绘制。
+    布局与整书封面一致（center / bottom_bar / top_classic）；背景图由生图接口生成，要求无文字。"""
+    if layout not in LAYOUTS:
+        raise CoverError(f"未知封面布局：{layout}（可选 {', '.join(LAYOUTS)}）")
+    if not bg.is_file():
+        raise CoverError(f"缺少背景图：{bg.name}")
+    book_title = (book_title or "").strip()
+    chapter_title = (chapter_title or "").strip()
+    no_text = f"第{int(chapter_no)}章"
+
+    img = Image.open(bg).convert("RGB").resize((_mf.W, _mf.H), Image.LANCZOS)
+    draw = ImageDraw.Draw(img, "RGBA")
+    path = resolve_font()
+    f_book = ImageFont.truetype(path, size=44)
+    f_no = ImageFont.truetype(path, size=88)
+    f_title = ImageFont.truetype(path, size=64)
+    max_w = int(_mf.W * 0.84)
+
+    rows = []      # (文字, 字体, 行高)
+    if book_title:
+        for ln in _wrap(draw, f"《{book_title}》", f_book, max_w)[:2]:
+            rows.append((ln, f_book, int(f_book.size * 1.5)))
+    rows.append((no_text, f_no, int(f_no.size * 1.35)))
+    for ln in _wrap(draw, chapter_title, f_title, max_w)[:3]:
+        rows.append((ln, f_title, int(f_title.size * 1.35)))
+    block_h = sum(r[2] for r in rows)
+
+    if layout == "center":
+        top = int(_mf.H * 0.40) - block_h // 2
+        draw.rectangle((0, top - 44, _mf.W, top + block_h + 44), fill=(0, 0, 0, 120))
+    elif layout == "bottom_bar":
+        top = int(_mf.H * 0.80) - block_h // 2
+        draw.rectangle((0, top - 40, _mf.W, top + block_h + 40), fill=(0, 0, 0, 150))
+    else:  # top_classic：描边，无蒙层
+        top = int(_mf.H * 0.22) - block_h // 2
+
+    y = top
+    for text, font, lh in rows:
+        w = draw.textlength(text, font=font)
+        x = (_mf.W - w) / 2
+        if layout == "top_classic":
+            for dx in (-3, 0, 3):
+                for dy in (-3, 0, 3):
+                    draw.text((x + dx, y + dy), text, font=font, fill=(0, 0, 0, 255))
+        draw.text((x, y), text, font=font, fill=(255, 255, 255, 255))
+        y += lh
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    img.save(out, format="PNG")
+    return out
