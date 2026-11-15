@@ -1048,6 +1048,64 @@ def set_subtitles(project_dir: str, enabled: bool, font_size: Optional[int] = No
     return _ok(cfg)
 
 
+def _clean_title(text: str, what: str) -> str:
+    t = " ".join(str(text or "").split())          # 去掉首尾空白，内部换行与连续空白并成一个空格
+    if not t:
+        raise ValueError(f"{what}不能为空")
+    if len(t) > 80:
+        raise ValueError(f"{what}最长 80 个字符")
+    return t
+
+
+def _queue_busy(pdir: Path) -> bool:
+    from . import runtime as _rt_mod
+    return _rt_mod.read_state(pdir).get("state") in ("running", "stopping")
+
+
+def rename_project(project_dir: str, title: str) -> Dict[str, Any]:
+    """修改小说名（project.json 的 title）。项目目录名、已生成素材与章节进度都不动；
+    章节封面与整书封面里的小说名在下次合成时按新名字重绘（整书封面标题在整书合成页单独设置）。"""
+    pdir = Path(project_dir)
+    if _queue_busy(pdir):
+        return _fail("队列正在运行，请停止后再修改名字")
+    try:
+        new = _clean_title(title, "小说名")
+        proj = ps.read_json(pdir / "project.json")
+    except (OSError, ValueError) as exc:
+        return _fail(str(exc))
+    old = proj.get("title")
+    proj["title"] = new
+    ps.write_json_atomic(pdir / "project.json", proj)
+    ps.append_progress(pdir, f"小说名：{old} → {new}")
+    return _ok({"title": new, "old": old})
+
+
+def rename_chapters(project_dir: str, titles: Dict[int, str]) -> Dict[str, Any]:
+    """批量修改章节名（chapters/index.yaml）。只改显示名：不影响剧本、镜头、素材与审核状态
+    （剧本的缓存键不含章名）；章节封面里的章名在下次合成时重绘。titles 为 {章号: 新章名}，只写有变化的。"""
+    pdir = Path(project_dir)
+    if _queue_busy(pdir):
+        return _fail("队列正在运行，请停止后再修改名字")
+    try:
+        cleaned = {int(no): _clean_title(t, f"第 {no} 章章名") for no, t in (titles or {}).items()}
+        idx = cio.load_index(pdir)
+    except (OSError, ValueError) as exc:
+        return _fail(str(exc))
+    rows = {c["no"]: c for c in idx.get("chapters", [])}
+    unknown = [n for n in cleaned if n not in rows]
+    if unknown:
+        return _fail("章节不存在：" + "、".join(map(str, sorted(unknown))))
+    changed = []
+    for no, new in cleaned.items():
+        if rows[no].get("title") != new:
+            changed.append({"no": no, "old": rows[no].get("title"), "new": new})
+            rows[no]["title"] = new
+    if changed:
+        ps.write_yaml_atomic(pdir / "chapters" / "index.yaml", idx)
+        ps.append_progress(pdir, "章节名修改：" + "；".join(f"第 {c['no']} 章 {c['old']} → {c['new']}" for c in changed))
+    return _ok({"changed": changed})
+
+
 def set_chapter_cover(project_dir: str, enabled: bool, *, book_title: Optional[str] = None,
                       layout: Optional[str] = None, duration_sec: Optional[float] = None) -> Dict[str, Any]:
     """章节封面设置（默认关闭）。book_title 为空时用项目书名；下次合成章节时生效，已生成的背景图会沿用。"""

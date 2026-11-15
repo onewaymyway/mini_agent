@@ -47,6 +47,7 @@ def page_cockpit() -> None:
     _live_panel(pdir)
     _start_controls(pdir, d)
     _chapter_table(d)
+    _rename_panel(pdir, d)
     _gates(d)
     from ui.joblog_panel import render_job_panel
     st.subheader("最近日志")
@@ -124,6 +125,44 @@ def _chapter_table(d: dict) -> None:
             "说明": c["message"],
         })
     st.dataframe(rows, width="stretch", hide_index=True)
+
+
+def _rename_panel(pdir: str, d: dict) -> None:
+    """修改小说名与章节名。只改显示名，不影响已生成的剧本、素材和审核；队列运行中不可修改。"""
+    busy = d["run"]["busy"]
+    with st.expander("✏️ 修改小说名与章节名"):
+        if busy:
+            st.info("队列正在运行，停止后才能修改名字。")
+        st.caption("只改名字：不会重新生成剧本、素材或视频。章节封面与整书封面里的名字在下次合成时按新名字重绘"
+                   "（已完成的章节点「重新合成本章」）；整书封面的标题在整书合成页单独设置。")
+        c1, c2 = st.columns([4, 1])
+        title = c1.text_input("小说名", value=d.get("title") or "", key="ck_book_title", disabled=busy)
+        c2.write("")
+        if c2.button("保存小说名", key="ck_book_title_save", disabled=busy):
+            r = tool_api.rename_project(pdir, title)
+            (st.success if r["ok"] else st.error)("已保存小说名" if r["ok"] else r["error"]["message"])
+            if r["ok"]:
+                st.rerun()
+        ov = tool_api.chapters_overview(pdir)
+        if not ov["ok"]:
+            st.error(ov["error"]["message"])
+            return
+        rows = [{"章号": r["no"], "章名": r["title"] or ""} for r in ov["data"]]
+        edited = st.data_editor(rows, key="ck_chapter_titles", hide_index=True, width="stretch", disabled=busy,
+                                column_config={"章号": st.column_config.NumberColumn(disabled=True),
+                                               "章名": st.column_config.TextColumn(max_chars=80)})
+        if st.button("保存章节名", key="ck_chapter_titles_save", disabled=busy):
+            old = {r["章号"]: r["章名"] for r in rows}
+            diff = {int(r["章号"]): r["章名"] for r in edited if (r["章名"] or "") != old.get(r["章号"], "")}
+            if not diff:
+                st.info("没有修改。")
+            else:
+                r = tool_api.rename_chapters(pdir, diff)
+                if r["ok"]:
+                    st.success(f"已修改 {len(r['data']['changed'])} 章的章名")
+                    st.rerun()
+                else:
+                    st.error(r["error"]["message"])
 
 
 def _gates(d: dict) -> None:
