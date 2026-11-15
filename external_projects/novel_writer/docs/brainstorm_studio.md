@@ -423,3 +423,19 @@
 测试：`tests/test_brainstorm_b9.py`（仅文件模式可用、提示词、确认前不落卡、登记校验、冲突检测、options 不可替换、差异预览、端到端）。
 
 注意：模型能否正确输出完整的模块数据，需要在真实模型上验证。
+
+
+## 一句话起稿（进行中，设计：`next_doc/novel_writer_brainstorm_seed_draft_plan.md`）
+
+用户给一句话想法 → 一次生成整体构思稿（命题、故事走向、世界观、角色、核心剧情、待定问题）→ 整稿或分部分反馈反复修正 → 满意后采用（转成待确认提议）。分期 S0–S4，**当前完成 S0**。
+
+### S0：构思稿数据与版本（`brainstorm/seed_draft.py`，不调用模型）
+
+- **草稿层独立**：版本存放在 `_studio/seed_draft/vNNN.json`（只增不删；含 kind = seed / revise / restore、原因、时间、起稿想法与约束）。**不写卡片**（测试断言卡片哈希不变）。
+- **六个部分**：`premise`、`storyline`（一句话主线 + 起承转合）、`world`、`cast`、`plot`、`open_questions`；后四者结构与卡片模块一致，复用卡片校验。必须齐全；命题非空、至少一个角色、至少一幕；所有问题一次性列出。
+- **宽松输入**：角色列表自动编号 c1…；待定问题文字自动编号 q1…；世界观 rules/locations/factions 的文字自动包成 `{text}`。
+- **版本**：`save_version`（校验失败不写任何文件）、`load`、`versions`、`restore`（回退 = 旧内容记为新版本）。
+- **差异**：`changed_sections`、`section_diff`（统一 diff），S2 的范围守卫与 S4 的对比使用。
+- **映射**：`to_card_modules` 给出可与卡片比较的模块数据；`storyline` 没有对应卡片，S3 采用时计划存为一条 AI 灵感（标签「故事走向」）。
+
+测试：`tests/test_brainstorm_seed_s0.py`（19 例）。S0 尚无界面与接口，S1–S4 完成后才可使用。
