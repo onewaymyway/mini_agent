@@ -188,4 +188,4 @@ def test_page_has_handoff_tab(tmp_path, monkeypatch):
     at.session_state["bs_root"] = root
     at.run()
     assert not at.exception, at.exception
-    assert [t.label for t in at.tabs][-1] == "交接"
+    assert [t.label for t in at.tabs][-2] == "交接"

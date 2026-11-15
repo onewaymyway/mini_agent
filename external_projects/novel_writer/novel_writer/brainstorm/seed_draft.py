@@ -218,3 +218,65 @@ def to_card_modules(draft: Dict[str, Any]) -> Dict[str, Any]:
     clean = validate_draft(draft)
     return {"premise": clean["premise"], "world": clean["world"], "cast": clean["cast"],
             "plot": clean["plot"], "open_questions": clean["open_questions"]}
+
+
+# ─────────────────────────────── 阅读视图（S4 使用，只读） ───────────────────────────────
+
+_CAST_FIELD_LABELS = {"role": "定位", "want": "想要", "need": "需要", "flaw": "缺陷", "lie": "谎言", "arc": "弧线"}
+_WORLD_LABELS = {"rules": "规则", "locations": "地点", "factions": "势力", "timeline": "时间线", "taboos": "禁忌"}
+
+
+def _item_line(it: Any) -> str:
+    if isinstance(it, str):
+        return it
+    if isinstance(it, dict):
+        text = _text(it.get("text")) or "（空）"
+        return f"{text}（代价：{it['cost']}）" if _text(it.get("cost")) else text
+    return str(it)
+
+
+def draft_markdown(draft: Dict[str, Any]) -> str:
+    """把构思稿渲染成阅读用的 Markdown。只读：不改动数据，不做校验（存储时已校验）。"""
+    out: List[str] = []
+    out.append("### 核心命题\n\n" + (_text(draft.get("premise")) or "（空）") + "\n")
+
+    story = draft.get("storyline") or {}
+    out.append("### 故事走向\n")
+    for k in STORYLINE_KEYS:
+        out.append(f"- **{STORYLINE_LABELS[k]}**：{_text(story.get(k)) or '（空）'}")
+
+    world = draft.get("world") or {}
+    out.append("\n### 世界观\n")
+    for key, label in _WORLD_LABELS.items():
+        items = world.get(key) or []
+        out.append(f"**{label}**")
+        if items:
+            out.extend(f"- {_item_line(it)}" for it in items)
+        else:
+            out.append("- （无）")
+        out.append("")
+
+    out.append("### 角色\n")
+    for cid, card in (draft.get("cast") or {}).items():
+        card = card if isinstance(card, dict) else {}
+        head = _text(card.get("name")) or cid
+        parts = [f"{lab}：{_text(card.get(k))}" for k, lab in _CAST_FIELD_LABELS.items() if _text(card.get(k))]
+        out.append(f"- **{head}**" + (f"（{'；'.join(parts)}）" if parts else ""))
+
+    plot = draft.get("plot") or {}
+    out.append("\n### 核心剧情\n")
+    for act in plot.get("acts") or []:
+        out.append(f"**{_text(act.get('title')) or '（未命名幕）'}**")
+        out.extend(f"- {b}" for b in act.get("beats") or [])
+        out.append("")
+    out.append("**转折**")
+    out.extend(f"- {t}" for t in plot.get("twists") or [])
+    out.append("")
+    out.append("**结局候选**")
+    out.extend(f"- {e}" for e in plot.get("endings") or [])
+
+    out.append("\n### 待定问题\n")
+    for q in draft.get("open_questions") or []:
+        mark = "（已关闭）" if isinstance(q, dict) and q.get("closed") else ""
+        out.append(f"- {q.get('text', '') if isinstance(q, dict) else q}{mark}")
+    return "\n".join(out) + "\n"

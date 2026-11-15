@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Dict
 
 import streamlit as st
 
 from novel_writer.brainstorm import api as BA
 from novel_writer.brainstorm import chat as CH
+from novel_writer.brainstorm import seed_draft as SD
 from novel_writer.intake import INTAKE_FIELDS
 from ui.components import show_error
 
@@ -834,6 +836,220 @@ def _snapshot_box(root: str) -> None:
             show_error(r) if not r["ok"] else st.rerun()
 
 
+# ── 🌱 一句话起稿（S4）──
+
+_SEED_KIND_LABEL = {"seed": "起稿", "revise": "修订", "restore": "回退"}
+
+
+def _plan_value_text(val: Any) -> str:
+    if isinstance(val, str):
+        return val
+    return json.dumps(val, ensure_ascii=False, indent=2)
+
+
+@st.fragment(run_every=1)
+def _live_seed(root: str, run_id: str) -> None:
+    res = BA.seed_state(root, run_id)
+    if not res["ok"]:
+        show_error(res)
+        return
+    data = res["data"]
+    running = data["status"] == "running"
+    st.markdown("**任务过程**" + ("（进行中……）" if running else "（已完成）"))
+    _render_events(data["events"], key_prefix=f"seed_{run_id}")
+    if not running:
+        st.session_state["bs_seed_last"] = run_id
+        st.session_state.pop("bs_seed_run", None)
+        st.rerun(scope="app")
+
+
+def _finished_seed(root: str, run_id: str) -> None:
+    res = BA.seed_state(root, run_id)
+    if not res["ok"]:
+        return
+    data = res["data"]
+    with st.expander(f"上一次任务的过程（{len(data['events'])} 条）", expanded=False):
+        _render_events(data["events"], key_prefix=f"seed_done_{run_id}")
+    if data["status"] == "error":
+        st.error("任务失败：" + str(data.get("error", "")))
+        return
+    if data["status"] != "done":
+        return
+    r = data["result"]
+    # 同一次任务的结果只应用一次：之后的重跑不能把作者正在看的版本拉回最新
+    if st.session_state.get("bs_seed_applied") != run_id:
+        st.session_state["bs_seed_applied"] = run_id
+        st.session_state["bs_seed_view"] = r["ver"]
+    if "changed" in r:
+        changed = "、".join(SD.SECTION_LABELS[s] for s in r["changed"]) or "无"
+        st.success(f"修订完成：已保存为 v{r['ver']:03d}，改动的部分：{changed}。（草稿层，尚未写入卡片）")
+        if r.get("affects"):
+            names = "、".join(SD.SECTION_LABELS[s] for s in r["affects"])
+            st.info(f"模型提示：{names} 可能需要跟着调整（未自动修改，需要的话再发一次反馈）。")
+    else:
+        st.success(f"起稿完成：已保存为 v{r['ver']:03d}。（草稿层，尚未写入卡片）")
+
+
+def _seed_start_box(root: str, has_versions: bool, busy: bool) -> None:
+    with st.expander("🌱 一句话起稿：从一个简单想法生成整体构思稿", expanded=not has_versions):
+        st.caption("一次生成六个部分：核心命题、故事走向、世界观、角色、核心剧情、待定问题。"
+                   "只存进草稿层，**不会写入卡片**；每次起稿新增一个版本，旧版本保留。")
+        idea = st.text_area("一句话想法", key="bs_seed_idea", height=80, max_chars=2000,
+                            placeholder="例如：一个靠典当记忆维持运转的港口城市")
+        cons = st.text_input("额外要求（可空）", key="bs_seed_cons", placeholder="例如：要悬疑，不要后宫")
+        if st.button("▶ 起稿", key="bs_seed_go", disabled=busy or not idea.strip()):
+            r = BA.seed_start(root, idea.strip(), cons.strip())
+            if r["ok"]:
+                st.session_state["bs_seed_run"] = r["data"]["run"]
+                st.session_state.pop("bs_seed_last", None)
+                st.rerun()
+            show_error(r)
+
+
+def _seed_version_label(v: Dict[str, Any]) -> str:
+    when = str(v.get("at", ""))[:16].replace("T", " ")
+    return f"v{v['ver']:03d} · {_SEED_KIND_LABEL.get(v.get('kind', ''), v.get('kind', ''))} · {when}"
+
+
+def _seed_read_box(root: str, versions: list, busy: bool) -> None:
+    nums = [v["ver"] for v in versions]
+    by_num = {v["ver"]: v for v in versions}
+    if st.session_state.get("bs_seed_view") not in nums:
+        st.session_state["bs_seed_view"] = nums[-1]
+    view = st.selectbox("查看版本", nums, format_func=lambda n: _seed_version_label(by_num[n]), key="bs_seed_view")
+    rec = BA.seed_get(root, view)
+    if not rec["ok"]:
+        show_error(rec)
+        return
+    with st.container(border=True):
+        seed_idea = rec["data"]["seed"].get("idea", "")
+        st.caption(f"想法：{seed_idea or '（无）'} · 原因：{rec['data']['reason'] or '（无）'}")
+        st.markdown(SD.draft_markdown(rec["data"]["draft"]))
+
+    st.markdown("#### 反馈修订")
+    st.caption(f"以 v{view:03d} 为基础修订，新结果追加为新版本。只改选中的部分，其余部分由程序保留原样。")
+    secs = st.multiselect("只改这些部分（留空 = 整稿反馈）", list(SD.SECTIONS),
+                          format_func=lambda s: SD.SECTION_LABELS[s], key="bs_seed_secs")
+    fb = st.text_area("你的反馈", key="bs_seed_fb", height=80, placeholder="例如：更黑暗一点 / 世界观改成架空近未来")
+    if st.button("▶ 按反馈修订", key="bs_seed_rev_go", disabled=busy or not fb.strip()):
+        r = BA.seed_revise_start(root, fb.strip(), secs or None, base_ver=view)
+        if r["ok"]:
+            st.session_state["bs_seed_run"] = r["data"]["run"]
+            st.session_state.pop("bs_seed_last", None)
+            st.rerun()
+        show_error(r)
+
+    _seed_compare_box(root, nums, view, busy)
+    _seed_adopt_box(root, view, busy)
+
+
+def _seed_compare_box(root: str, nums: list, view: int, busy: bool) -> None:
+    st.markdown("#### 版本对比与回退")
+    if len(nums) < 2:
+        st.caption("至少两个版本才能对比。")
+    else:
+        st.session_state.setdefault("bs_seed_da", nums[-2])
+        st.session_state.setdefault("bs_seed_db", nums[-1])
+        for k in ("bs_seed_da", "bs_seed_db"):
+            if st.session_state[k] not in nums:
+                st.session_state[k] = nums[-2] if k == "bs_seed_da" else nums[-1]
+        c1, c2 = st.columns(2)
+        a = c1.selectbox("旧版", nums, format_func=lambda n: f"v{n:03d}", key="bs_seed_da")
+        b = c2.selectbox("新版", nums, format_func=lambda n: f"v{n:03d}", key="bs_seed_db")
+        if a != b:
+            df = BA.seed_diff(root, a, b)
+            if not df["ok"]:
+                show_error(df)
+            else:
+                ch = df["data"]["changed"]
+                st.caption("改动的部分：" + ("、".join(SD.SECTION_LABELS[s] for s in ch) if ch else "无"))
+                for s in ch:
+                    with st.expander(SD.SECTION_LABELS[s]):
+                        st.code(df["data"]["diffs"][s], language="diff")
+    st.button(f"↩ 回退到 v{view:03d}", key="bs_seed_restore", disabled=busy,
+              help="把该版本的内容记为一个新版本，历史不删除。",
+              on_click=_seed_restore_cb, args=(root, view))
+    if st.session_state.get("bs_seed_restore_err"):
+        show_error(st.session_state.pop("bs_seed_restore_err"))
+
+
+def _seed_restore_cb(root: str, view: int) -> None:
+    # 回调在控件创建之前执行，才能修改它的 key（在控件之后改会报错）
+    r = BA.seed_restore(root, view)
+    if r["ok"]:
+        st.session_state["bs_seed_view"] = r["data"]["ver"]
+    else:
+        st.session_state["bs_seed_restore_err"] = r
+
+
+def _seed_adopt_box(root: str, view: int, busy: bool) -> None:
+    st.markdown("#### 采用到卡片（转成待确认提议）")
+    st.caption("不会直接写卡片：每个部分生成提议，进入「对话」标签的待确认提议里逐条采纳；卡片已有不同内容的会标冲突。")
+    asecs = st.multiselect("采用哪些部分", list(SD.SECTIONS), default=list(SD.SECTIONS),
+                           format_func=lambda s: SD.SECTION_LABELS[s], key="bs_seed_asecs")
+    c1, c2 = st.columns(2)
+    if c1.button("预览采用结果", key="bs_seed_plan_go", disabled=busy or not asecs):
+        st.session_state["bs_seed_plan"] = {"ver": view, "sections": list(asecs), "res": BA.seed_adopt_plan(root, view, asecs)}
+    plan = st.session_state.get("bs_seed_plan")
+    current = plan if plan and plan["ver"] == view and plan["sections"] == list(asecs) else None
+    if current:
+        pr = current["res"]
+        if not pr["ok"]:
+            show_error(pr)
+            current = None
+        else:
+            _seed_plan_box(pr["data"])
+    ready = bool(current and current["res"]["data"]["items"])
+    if c2.button("登记为待确认提议", key="bs_seed_adopt_go", disabled=busy or not ready,
+                 type="primary"):
+        r = BA.seed_adopt(root, view, list(asecs))
+        if r["ok"]:
+            d = r["data"]
+            st.session_state.pop("bs_seed_plan", None)
+            st.success(f"已登记 {len(d['proposals'])} 条待确认提议（冲突 {d['conflicts']} 条）。"
+                       f"请到「对话」标签的待确认提议中逐条采纳。")
+        else:
+            show_error(r)
+
+
+def _seed_plan_box(p: Dict[str, Any]) -> None:
+    items = p["items"]
+    conflicts = sum(1 for i in items if i.get("conflict"))
+    st.caption(f"预览：将生成 {len(items)} 条提议，其中冲突 {conflicts} 条；跳过 {len(p['skipped'])} 条。")
+    if p["skipped"]:
+        st.caption("跳过：" + "；".join(p["skipped"][:8]))
+    for it in items:
+        head = f"{_KIND_LABEL.get(it['module'], it['module'])} · {_OP_LABEL.get(it['op'], it['op'])}"
+        if it.get("target") not in (None, ""):
+            head += f" · 目标 {it['target']}"
+        if it.get("conflict"):
+            head += " ⚠ 冲突"
+        with st.container(border=True):
+            st.markdown(f"**{head}**")
+            st.code(_plan_value_text(it["value"]), language=None)
+            if it.get("conflict"):
+                st.caption(it["conflict"])
+
+
+def _seed_tab(root: str) -> None:
+    res = BA.seed_versions(root)
+    if not res["ok"]:
+        show_error(res)
+        return
+    versions = res["data"]["versions"]
+    running = st.session_state.get("bs_seed_run")
+    _seed_start_box(root, bool(versions), busy=bool(running))
+    if running:
+        _live_seed(root, running)
+        return
+    if st.session_state.get("bs_seed_last"):
+        _finished_seed(root, st.session_state["bs_seed_last"])
+    if not versions:
+        st.info("还没有构思稿。先在上方写下一句话想法，再点「起稿」。")
+        return
+    _seed_read_box(root, versions, busy=False)
+
+
 def page_brainstorm() -> None:
     st.header("💡 灵感构思工作室")
     st.caption("独立于小说项目：先把灵感、题材、世界观与剧情打磨成构思包，之后再据此创建小说。")
@@ -841,7 +1057,7 @@ def page_brainstorm() -> None:
     root = _current_root()
     if not root:
         return
-    tabs = st.tabs(["对话", "题材卡", "灵感池", "发散", "世界观", "角色", "剧情", "质检", "交接"])
+    tabs = st.tabs(["对话", "题材卡", "灵感池", "发散", "世界观", "角色", "剧情", "质检", "交接", "🌱 起稿"])
     with tabs[0]:
         _dialogue_tab(root)
     with tabs[1]:
@@ -860,3 +1076,5 @@ def page_brainstorm() -> None:
         _check_tab(root)
     with tabs[8]:
         _handoff_tab(root)
+    with tabs[9]:
+        _seed_tab(root)
