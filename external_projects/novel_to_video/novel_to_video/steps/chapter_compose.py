@@ -10,14 +10,14 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from .. import cancel, joblog
 from ..chapter_io import chapter_dir, load_entities, load_shots, mark_stage, set_chapter_status
 from .. import render_mode as RM
 from ..media import ffmpeg as mf
 from ..media import subtitles as sub
-from ..project_store import read_json
+from ..project_store import read_json, write_json_atomic
 from .. import shot_review as sr
 from ..shot_review import shot_states
 from ..video_format import load as load_format
@@ -43,6 +43,64 @@ def speaker_names(project_dir: Path) -> Dict[str, str]:
         if c.get("id") and names:
             out[c["id"]] = str(names[0])
     return out
+
+
+COMPOSE_KEY_FILE = "compose_key.json"
+
+
+def compose_fingerprint(project_dir: Path, no: int) -> str:
+    """章节合成的输入指纹：镜头素材键、剧本、格式、字幕、动态漫转场、章节封面设置。
+    任一变化都会得到不同的指纹，从而触发重新合成；未变化则可以跳过 C-9。"""
+    from ..video_format import load as _load_fmt
+    from .. import render_mode as _RM
+    from . import chapter_cover as _CC
+    from ..chapter_io import sha12
+    project_dir = Path(project_dir)
+    meta = read_json(project_dir / "project.json")
+    still = _RM.mode_of(meta) == _RM.STILL
+    key_field = "still_key" if still else "clip_key"
+    shots = load_shots(project_dir, no).get("shots", [])
+    cdir = chapter_dir(project_dir, no)
+    script = cdir / "script.md"
+    script_hash = sha12(script.read_text(encoding="utf-8")) if script.is_file() else "no-script"
+    parts = [script_hash, str(_load_fmt(project_dir).key)]
+    parts += [f"{sh['id']}:{sh.get(key_field)}:{sh.get('duration_sec')}" for sh in shots]
+    parts.append(repr(sorted(subtitle_settings(project_dir).items())))
+    parts.append(repr(sorted((_RM.still_settings(meta) if still else {}).items())))
+    parts.append(repr(sorted(_CC.chapter_cover_settings(project_dir).items())))
+    return sha12(*parts)
+
+
+def _compose_record(project_dir: Path, no: int) -> Dict[str, Any]:
+    path = chapter_dir(project_dir, no) / COMPOSE_KEY_FILE
+    return (read_json(path) or {}) if path.is_file() else {}
+
+
+def _is_current(project_dir: Path, no: int, fingerprint: str) -> bool:
+    """指纹一致，且章节封面（若已开启）确实已加入成片：没有背景图时封面可能未生成，不能当作已是最新。"""
+    from . import chapter_cover as _CC
+    rec = _compose_record(project_dir, no)
+    if rec.get("key") != fingerprint:
+        return False
+    if _CC.chapter_cover_settings(project_dir).get("enabled") and not rec.get("cover_applied"):
+        return False
+    return True
+
+
+def is_up_to_date(project_dir: Path, no: int) -> bool:
+    """章节已合成、成片存在、所有镜头已通过审核，且输入指纹与上次合成时一致。
+    队列用它跳过已完成且未修改的章节（不需要初始化引擎）。"""
+    try:
+        project_dir = Path(project_dir)
+        out = chapter_dir(project_dir, no) / f"chapter_{no:03d}.mp4"
+        if not out.is_file():
+            return False
+        states = shot_states(project_dir, no)
+        if not states or any(st != "approved" for st in states.values()):
+            return False
+        return _is_current(project_dir, no, compose_fingerprint(project_dir, no))
+    except (OSError, ValueError, KeyError):
+        return False
 
 
 def recompose_chapter(project_dir: Path, no: int) -> Dict[str, Any]:
@@ -98,7 +156,7 @@ def recompose_chapter(project_dir: Path, no: int) -> Dict[str, Any]:
             mf.mux_clip(raw, None, clip, float(sh.get("duration_sec") or 4))
             joblog.log(project_dir, "chapter", f"第 {no} 章 镜头 {sid}：无配音，按镜头时长重新合成画面")
 
-    result = run_compose(project_dir, no)
+    result = run_compose(project_dir, no, force=True)
     if result.get("output"):
         set_chapter_status(project_dir, no, "done", "章节视频已重新合成（未重新生成视频）")
         if (project_dir / "exports" / "video.mp4").is_file():
@@ -140,7 +198,7 @@ def _recompose_still(project_dir: Path, no: int) -> Dict[str, Any]:
     seg = run_segments(project_dir, no)
     if seg["failed"]:
         raise RuntimeError("动效片段合成失败：" + "、".join(seg["failed"]))
-    result = run_compose(project_dir, no)
+    result = run_compose(project_dir, no, force=True)
     if result.get("output"):
         set_chapter_status(project_dir, no, "done", "章节视频已重新合成（场景图未重新生成）")
         if (project_dir / "exports" / "video.mp4").is_file():
@@ -150,8 +208,9 @@ def _recompose_still(project_dir: Path, no: int) -> Dict[str, Any]:
     return result
 
 
-def run_compose(project_dir: Path, no: int, image=None) -> Dict[str, Any]:
-    """image：生图接口，仅用于首次生成章节封面背景（设置里开启章节封面时）；不传则只用已有背景图。"""
+def run_compose(project_dir: Path, no: int, image=None, *, force: bool = False) -> Dict[str, Any]:
+    """image：生图接口，仅用于首次生成章节封面背景（设置里开启章节封面时）；不传则只用已有背景图。
+    force：忽略指纹缓存，强制重新合成（手动“重新合成”使用）。未变化时直接跳过，不重做拼接与字幕。"""
     shots = load_shots(project_dir, no)
     states = shot_states(project_dir, no)
     not_ready = [sid for sid, st in states.items() if st != "approved"]
@@ -159,6 +218,13 @@ def run_compose(project_dir: Path, no: int, image=None) -> Dict[str, Any]:
         mark_stage(project_dir, no, "compose", "waiting", "等待审核：" + "、".join(not_ready))
         return {"waiting": not_ready}
     cdir = chapter_dir(project_dir, no)
+    fingerprint = compose_fingerprint(project_dir, no)
+    out_existing = cdir / f"chapter_{no:03d}.mp4"
+    if not force and out_existing.is_file() and _is_current(project_dir, no, fingerprint):
+        mark_stage(project_dir, no, "compose", "done")
+        joblog.log(project_dir, "chapter", f"第 {no} 章 C-9 合成：输入未变化，沿用已有成片，跳过合成")
+        return {"waiting": [], "output": str(out_existing), "duration": round(mf.probe_duration(out_existing), 2),
+                "subtitles": {}, "skipped": True}
     clips = [cdir / "clips" / f"{sh['id']}.mp4" for sh in shots["shots"]]
     missing = [str(p.name) for p in clips if not p.is_file()]
     if missing:
@@ -190,6 +256,7 @@ def run_compose(project_dir: Path, no: int, image=None) -> Dict[str, Any]:
     if cover is not None:
         CC.prepend_cover(cover, out, CC.chapter_cover_settings(project_dir)["duration_sec"])
         info["cover"] = True
+    write_json_atomic(cdir / COMPOSE_KEY_FILE, {"key": fingerprint, "cover_applied": bool(info.get("cover"))})
     mark_stage(project_dir, no, "compose", "done")
     return {"waiting": [], "output": str(out), "duration": round(mf.probe_duration(out), 2),
             "subtitles": info}

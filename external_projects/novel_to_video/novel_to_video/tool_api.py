@@ -519,10 +519,25 @@ def _run_queue_locked(project_dir: str, numbers: Optional[List[int]] = None, *,
                 image = make_image_provider(prov.get("image"), image_cfg=_image_cfg(pdir))
                 return _ap.prepare_chapter_assets(pdir, no, llm, image)
 
+    # 已完成且输入未变化的章节直接跳过：不初始化引擎、不进入流水线，也不重做合成
+    from .steps import chapter_compose as _cc
+    from . import joblog as _jl
+    unchanged = []
+    todo = []
+    for no in targets:
+        if _cc.is_up_to_date(pdir, no):
+            unchanged.append(no)
+            _jl.log(pdir, "queue", f"队列：第 {no} 章已完成且未修改，跳过")
+        else:
+            todo.append(no)
+    if not todo:
+        return _ok({"results": {}, "halted": None, "gear": g, "elapsed_sec": 0.0,
+                    "skipped_unchanged": unchanged})
     try:
-        out = _batch.run_queue(pdir, targets, gear=g, run_one=run_one, prepare=prepare)
+        out = _batch.run_queue(pdir, todo, gear=g, run_one=run_one, prepare=prepare)
     except _gates.GateError as exc:
         return _fail(str(exc))
+    out["skipped_unchanged"] = unchanged
     return _ok(out)
 
 

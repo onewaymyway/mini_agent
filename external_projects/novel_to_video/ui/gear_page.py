@@ -36,17 +36,39 @@ def page_gear() -> None:
     cur = st.selectbox("挡位", pol["gears"], index=pol["gears"].index(cur_gear),
                        format_func=lambda g: f"{g} · {GEAR_HELP[g]}", key="gear_pick")
     budget = {}
+    # 上次保存的预算作为控件初值；未保存过的项才用默认值。key 带项目路径，切换项目时控件重新取值。
+    saved = _meta.get("budget") or {}
+    kpre = f"gear_budget_{pdir}"
+
+    def _int(name: str, default: int) -> int:
+        v = saved.get(name)
+        return int(v) if v not in (None, "") else default
+
+    def _float(name: str, default: float) -> float:
+        v = saved.get(name)
+        return float(v) if v not in (None, "") else default
+
     if cur in ("G3", "G4", "G5", "G6"):
         if still_mode:
             # 动态漫不调用视频接口：只设图像（场景图与素材）与耗时上限
             c2, c3 = st.columns(2)
-            budget["max_image_calls"] = c2.number_input("图像调用上限（场景图与素材）", min_value=0, value=20, step=1)
-            budget["max_minutes"] = c3.number_input("耗时上限（分钟）", min_value=0.0, value=120.0, step=10.0)
+            budget["max_image_calls"] = c2.number_input("图像调用上限（场景图与素材）", min_value=0,
+                                                        value=_int("max_image_calls", 20), step=1,
+                                                        key=f"{kpre}_img")
+            budget["max_minutes"] = c3.number_input("耗时上限（分钟）", min_value=0.0,
+                                                    value=_float("max_minutes", 120.0), step=10.0,
+                                                    key=f"{kpre}_min")
         else:
             c1, c2, c3 = st.columns(3)
-            budget["max_video_calls"] = c1.number_input("视频调用上限", min_value=0, value=20, step=1)
-            budget["max_image_calls"] = c2.number_input("图像调用上限", min_value=0, value=20, step=1)
-            budget["max_minutes"] = c3.number_input("耗时上限（分钟）", min_value=0.0, value=120.0, step=10.0)
+            budget["max_video_calls"] = c1.number_input("视频调用上限", min_value=0,
+                                                        value=_int("max_video_calls", 20), step=1,
+                                                        key=f"{kpre}_vid")
+            budget["max_image_calls"] = c2.number_input("图像调用上限（场景图与素材）", min_value=0,
+                                                        value=_int("max_image_calls", 20), step=1,
+                                                        key=f"{kpre}_img")
+            budget["max_minutes"] = c3.number_input("耗时上限（分钟）", min_value=0.0,
+                                                    value=_float("max_minutes", 120.0), step=10.0,
+                                                    key=f"{kpre}_min")
     if st.button("保存挡位"):
         res = tool_api.set_gear(pdir, cur, budget or None)
         (st.success if res["ok"] else st.error)(res["data"] if res["ok"] else res["error"]["message"])
