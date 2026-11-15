@@ -451,6 +451,21 @@ def page_chapters() -> None:
     render_llm_trace(pdir, chapter=no, key_prefix=f"trace_ch{no}")
     if v["shots"]:
         st.markdown("#### 小场景逐镜审核")
+        waiting_n = sum(1 for sh in v["shots"] if sh.get("state") in ("pending", "stale"))
+        if st.button(f"一键通过全部待审核（{waiting_n} 个）", key=f"approve_all_{no}", type="primary",
+                     disabled=waiting_n == 0, help="只通过已生成、待审核的镜头；没有内容或生成失败的会跳过。通过后再点「运行本章流水线」继续。"):
+            res = tool_api.approve_all_shots(pdir, no)
+            if res["ok"]:
+                d = res["data"]
+                st.session_state["approve_all_flash"] = (
+                    f"已通过 {len(d['approved'])} 个" + (f"，跳过 {len(d['skipped'])} 个：" + "、".join(
+                        f"{x['id']}（{x['reason']}）" for x in d["skipped"][:8]) if d["skipped"] else ""))
+                st.rerun()
+            else:
+                st.error(res["error"]["message"])
+        flash = st.session_state.pop("approve_all_flash", None)
+        if flash:
+            st.success(flash + "。可点上方「运行第 %d 章流水线」继续。" % no)
         _plan_warnings(pdir, no, v)
         _render_big_scenes(pdir, no, v)
     else:

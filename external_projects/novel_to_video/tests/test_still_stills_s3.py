@@ -200,3 +200,19 @@ def test_video_review_unchanged_for_video_projects(tmp_path):
     assert sr.asset_file(video, 1, sh) == video / "chapters/001/clips" / f"{sh['id']}.mp4"
     with pytest.raises(ValueError, match="视频"):
         sr.approve(video, 1, sh["id"])
+
+
+def test_approve_all_shots_one_click(tmp_path, monkeypatch):
+    """一键通过本章所有待审核场景图：已通过的不动，缺图/失败的跳过，通过后流水线不再因审核等待。"""
+    monkeypatch.setenv("NOVEL_TO_VIDEO_PROVIDERS", "stub")
+    proj = _project(tmp_path)
+    _prepare(proj)
+    cs.run_stills(proj, 1, StubImageProvider())
+    before = sr.shot_states(proj, 1)
+    assert any(v == "pending" for v in before.values())
+    r = tool_api.approve_all_shots(str(proj), 1)
+    assert r["ok"], r
+    assert sorted(r["data"]["approved"]) == sorted(k for k, v in before.items() if v == "pending")
+    assert all(v == "approved" for v in sr.shot_states(proj, 1).values())
+    again = tool_api.approve_all_shots(str(proj), 1)             # 再点一次：无事可做，不报错
+    assert again["ok"] and again["data"]["approved"] == []

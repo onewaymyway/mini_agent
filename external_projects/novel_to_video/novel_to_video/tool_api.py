@@ -367,6 +367,26 @@ def review_shot(project_dir: str, no: int, sid: str, action: str, note: str = ""
     return _ok(data)
 
 
+def approve_all_shots(project_dir: str, no: int) -> Dict[str, Any]:
+    """一键通过本章所有「待审核 / 需重新审核」的镜头（场景图或小场景视频，随渲染方式而定）。
+    已通过的不动；尚未生成资产或生成失败的镜头跳过并说明，不会误通过。"""
+    pdir = Path(project_dir)
+    try:
+        states = sr.shot_states(pdir, no)
+        approved, skipped = [], []
+        for sid, state in states.items():
+            if state in ("pending", "stale"):
+                sr.approve(pdir, no, sid)
+                approved.append(sid)
+            elif state in ("missing", "failed"):
+                skipped.append({"id": sid, "reason": "还没有可审核的内容" if state == "missing" else "生成或规划失败"})
+        _joblog.log(pdir, "chapter", f"第 {no} 章一键通过审核：通过 {len(approved)} 个，跳过 {len(skipped)} 个",
+                    level="ok" if approved else "info")
+    except Exception as exc:
+        return _fail(str(exc))
+    return _ok({"approved": approved, "skipped": skipped})
+
+
 def edit_shot(project_dir: str, no: int, sid: str, *, visual_hint_en: Optional[str] = None,
               visual_hint_zh: Optional[str] = None, block_texts: Optional[Dict[int, str]] = None,
               character_ids: Optional[List[str]] = None) -> Dict[str, Any]:
