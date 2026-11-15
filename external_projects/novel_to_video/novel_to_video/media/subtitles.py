@@ -68,11 +68,16 @@ def _block_seconds(block: Dict[str, Any]) -> float:
 
 
 def build_cues(shots: Sequence[Dict[str, Any]], clip_seconds: Sequence[float],
-               speaker_names: Dict[str, str], gap: float = GAP_SEC) -> Tuple[List[Cue], float]:
+               speaker_names: Dict[str, str], gap: float = GAP_SEC, *,
+               exact: bool = False) -> Tuple[List[Cue], float]:
     """按镜头顺序生成字幕时间轴。返回 (cues, 总时长)。
 
     clip_seconds 与 shots 一一对应，是每个镜头在章节视频里的真实时长；镜头内的块时长
     按镜头时长等比缩放，保证字幕不会超出画面、也不会在画面结束后仍显示。
+
+    exact=True（动态漫模式）：镜头内的块按配音的真实时长排列（块之间为配音拼接的间隔 gap），
+    不做缩放。镜头的配音从镜头起点开始，因此字幕起点与配音起点一致。
+    缺少真实时长的块退回估算方式。
     """
     if len(shots) != len(clip_seconds):
         raise SubtitleError(f"镜头数 {len(shots)} 与视频片段数 {len(clip_seconds)} 不一致")
@@ -80,6 +85,10 @@ def build_cues(shots: Sequence[Dict[str, Any]], clip_seconds: Sequence[float],
     t = 0.0
     for sh, clip_dur in zip(shots, clip_seconds):
         clip_dur = float(clip_dur)
+        if exact and _has_exact_durations(sh):
+            cues.extend(_exact_cues(sh, t, clip_dur, speaker_names, gap))
+            t += clip_dur
+            continue
         blocks = [b for b in (sh.get("blocks") or []) if (b.get("text") or "").strip()]
         durs = [_block_seconds(b) for b in blocks]
         speech = sum(durs) + gap * max(0, len(durs) - 1)
@@ -94,6 +103,26 @@ def build_cues(shots: Sequence[Dict[str, Any]], clip_seconds: Sequence[float],
             cur = cur + d * scale + gap * scale
         t += clip_dur
     return cues, round(t, 3)
+
+
+def _has_exact_durations(sh: Dict[str, Any]) -> bool:
+    blocks = sh.get("blocks") or []
+    return bool(blocks) and all(float(b.get("duration") or 0) > 0 for b in blocks)
+
+
+def _exact_cues(sh: Dict[str, Any], t: float, clip_dur: float, speaker_names: Dict[str, str],
+                gap: float) -> List[Cue]:
+    out: List[Cue] = []
+    cur = t
+    end_limit = t + clip_dur
+    for b in sh.get("blocks") or []:
+        d = float(b["duration"])
+        text = cue_text(b, speaker_names) if (b.get("text") or "").strip() else ""
+        start, end = cur, min(cur + d, end_limit)
+        if text and end > start + 1e-3:
+            out.append(Cue(round(start, 3), round(end, 3), text))
+        cur += d + gap
+    return out
 
 
 def timeline_segments(cues: Sequence[Cue], total: float) -> List[Tuple[Optional[str], float]]:

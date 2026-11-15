@@ -146,6 +146,41 @@ def concat(clips: List[Path], out: Path) -> Path:
     return out
 
 
+FADE_AUDIO_SEC = 0.02   # 音频只做极短的淡变，防止爆音；不做明显淡化，避免吃掉台词的起头
+
+
+def concat_fade(clips: List[Path], durations: Sequence[float], out: Path, fade_sec: float) -> Path:
+    """逐段淡入淡出（画面从黑场淡入、淡出到黑场）后拼接。时长不变：淡化不重叠，字幕时间轴保持一致。
+    淡化时长不超过片段时长的一半。"""
+    if not clips:
+        raise MediaError("没有可拼接的片段")
+    if len(clips) != len(durations):
+        raise MediaError("片段数与时长数不一致")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    n = len(clips)
+    inputs: List[str] = []
+    for c in clips:
+        inputs += ["-i", str(c)]
+    parts: List[str] = []
+    labels: List[str] = []
+    for i, d in enumerate(durations):
+        f = min(float(fade_sec), float(d) / 2)
+        if f > 0:
+            vf = (f"[{i}:v]fade=t=in:st=0:d={f:.3f},"
+                  f"fade=t=out:st={max(d - f, 0):.3f}:d={f:.3f},setsar=1[v{i}]")
+        else:
+            vf = f"[{i}:v]setsar=1[v{i}]"
+        af = (f"[{i}:a]afade=t=in:st=0:d={FADE_AUDIO_SEC},"
+              f"afade=t=out:st={max(d - FADE_AUDIO_SEC, 0):.3f}:d={FADE_AUDIO_SEC}[a{i}]")
+        parts += [vf, af]
+        labels += [f"[v{i}]", f"[a{i}]"]
+    fc = ";".join(parts) + ";" + "".join(labels) + f"concat=n={n}:v=1:a=1[outv][outa]"
+    _run([ffmpeg(), "-y", *inputs, "-filter_complex", fc, "-map", "[outv]", "-map", "[outa]",
+          "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+          "-c:a", "aac", "-ar", str(AUDIO_RATE), "-ac", "1", str(out)])
+    return out
+
+
 def to_wav(src: Path, dst: Path) -> Path:
     dst.parent.mkdir(parents=True, exist_ok=True)
     _run([ffmpeg(), "-y", "-i", str(src), "-ar", str(AUDIO_RATE), "-ac", "1", str(dst)])

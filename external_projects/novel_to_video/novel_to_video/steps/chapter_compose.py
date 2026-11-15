@@ -14,6 +14,7 @@ from typing import Any, Dict
 
 from .. import cancel, joblog
 from ..chapter_io import chapter_dir, load_entities, load_shots, mark_stage, set_chapter_status
+from .. import render_mode as RM
 from ..media import ffmpeg as mf
 from ..media import subtitles as sub
 from ..project_store import read_json
@@ -104,6 +105,15 @@ def recompose_chapter(project_dir: Path, no: int) -> Dict[str, Any]:
     return result
 
 
+def _join(clips, out: Path, *, still: bool, cfg: Dict[str, Any]) -> None:
+    """拼接镜头片段。动态漫且转场为淡化时，逐段淡入淡出（时长不变）；否则硬切，与视频模式相同。"""
+    if still and cfg.get("transition") == "fade":
+        durations = [mf.probe_duration(c) for c in clips]
+        mf.concat_fade(clips, durations, out, float(cfg["transition_sec"]))
+    else:
+        mf.concat(clips, out)
+
+
 def run_compose(project_dir: Path, no: int) -> Dict[str, Any]:
     shots = load_shots(project_dir, no)
     states = shot_states(project_dir, no)
@@ -118,14 +128,20 @@ def run_compose(project_dir: Path, no: int) -> Dict[str, Any]:
         raise RuntimeError(f"缺少小场景视频：{', '.join(missing)}")
     out = cdir / f"chapter_{no:03d}.mp4"
     settings = subtitle_settings(project_dir)
+    meta = read_json(project_dir / "project.json")
+    still = RM.mode_of(meta) == RM.STILL
+    tcfg = RM.still_settings(meta)
+    if still:
+        RM.validate_transition(tcfg)     # 动态漫的转场设置非法时直接报错，不产生半成品
     if not settings["enabled"]:
-        mf.concat(clips, out)
+        _join(clips, out, still=still, cfg=tcfg)
         info: Dict[str, Any] = {"enabled": False}
     else:
         raw = cdir / "chapter_nosub.mp4"
-        mf.concat(clips, raw)
+        _join(clips, raw, still=still, cfg=tcfg)
         durations = [mf.probe_duration(c) for c in clips]
-        cues, total = sub.build_cues(shots["shots"], durations, speaker_names(project_dir))
+        # 动态漫：字幕按配音的真实时长排列（exact）；视频模式保持原来的估算方式
+        cues, total = sub.build_cues(shots["shots"], durations, speaker_names(project_dir), exact=still)
         fmt = load_format(project_dir)
         info = {"enabled": True,
                 **sub.burn(raw, out, cues, total, fmt.width, fmt.height, cdir / "subs", settings["font_size"])}

@@ -1,6 +1,6 @@
 # novel_to_video 动态漫模式（still 渲染）改进计划
 
-> 状态：**方案已确认（2026-11-15）；S1–S5 已完成，S6 起待实施**。按第 8 节分期实施，每期更新文档并打包改动文件（保持目录结构）。
+> 状态：**方案已确认（2026-11-15）；S1–S6 已完成，S7 起待实施**。按第 8 节分期实施，每期更新文档并打包改动文件（保持目录结构）。
 > 关联文档：`next_doc/novel_to_video_external_project_plan.md`（总体设计）、`next_doc/novel_to_video_location_spots_plan.md`（地点细化）。
 > 项目路径：`external_projects/novel_to_video/`。
 
@@ -244,3 +244,13 @@
   - 测试：`tests/test_still_motions_s5.py`（18 例）。除 golden 字符串外，还把滤镜中的 x/y 表达式代入数值逐帧求值，检查：平移的起止位置正确、单调、不超出余量；另一轴保持居中；晃动不越界且确实在移动；medium 的余量大于 slow；真实 ffmpeg 渲染三种新动效时长正确。
   - S4 中一条断言把 `pan_left` 当作「不支持」的例子，已改为真正不存在的 `spiral`。
   - 动效名称目前为：auto_alternate（默认）、push_in、pull_out、none、pan_left、pan_right、pan_up、pan_down、drift。界面的选择项在 S8。
+- **S6 镜间转场（淡化 / 硬切）与字幕精确时间轴：完成（2026-11-15）**
+  - `media/ffmpeg.py` 新增 `concat_fade`：每个镜头画面从黑场淡入、淡出到黑场（时长 `transition_sec`，不超过镜头时长的一半）；音频只做 0.02 秒的极短淡变，防止爆音。淡化不重叠，因此总时长与字幕时间轴都不变。
+  - 淡出发生在镜头末尾的 0.4 秒配音余量里，不会切掉台词。
+  - `render_mode.py`：`validate_transition` 校验设置（fade 时长须在 0–1 秒之间，cut 不需要时长；非法值在合成前报错）。
+  - `media/subtitles.py`：`build_cues(exact=True)` 用配音的真实块时长排列字幕（块之间为配音拼接的 0.2 秒间隔），不再按字数估算后缩放；缺少真实时长时退回估算。
+  - `steps/chapter_compose.py`：仅动态漫使用淡化与精确字幕；视频模式的拼接与字幕时间轴保持原样。
+  - 默认转场为淡化（`still.transition = fade`）。S4 的整章测试现在也会走淡化路径，时长检查照常通过。
+  - 偏差与说明：计划 7.3 中的「叠化」（需要重叠与时长补偿）留给 S7；本阶段的淡化按第一版方案实现（黑场过渡、不重叠）。
+  - 未做（后续阶段）：叠化（S7）；`recompose_chapter` 的动态漫适配（S9）；界面（S8）。
+  - 测试：`tests/test_still_transition_s6.py`（11 例）：转场设置校验；淡化后的总时长与单音轨；用真实 ffmpeg 抽帧检查镜头边界（淡化时变暗，硬切时保持明亮）；过短镜头的淡化钳制；字幕精确时间轴（块间隔、空块占位、镜头间偏移、末尾裁剪、缺时长退回估算）、视频模式估算不变；配音文件的真实时长与记录值相差不超过 1 帧；淡化与硬切的合成时长一致、字幕起点与镜头起点相差不超过 1 帧；非法转场设置导致合成报错。

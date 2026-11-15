@@ -35,11 +35,28 @@ STILL_DEFAULTS: Dict[str, Any] = {
 }
 
 
+TRANSITIONS = ("fade", "cut")
+MAX_TRANSITION_SEC = 1.0
+
+
 def still_settings(meta: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """动态漫设置：项目里保存的值覆盖默认值；旧项目没有该节时全部取默认。"""
     merged = dict(STILL_DEFAULTS)
     merged.update((meta or {}).get("still") or {})
     return merged
+
+
+def validate_transition(cfg: Dict[str, Any]) -> None:
+    """镜间转场设置必须合法：fade 时长在 (0, 1] 秒之间；cut 不需要时长。"""
+    if cfg.get("transition") not in TRANSITIONS:
+        raise ValueError(f"镜间转场必须是 {' / '.join(TRANSITIONS)} 之一，收到：{cfg.get('transition')!r}")
+    if cfg["transition"] == "fade":
+        try:
+            sec = float(cfg.get("transition_sec"))
+        except (TypeError, ValueError):
+            raise ValueError("淡化时长必须是数字（秒）") from None
+        if not 0 < sec <= MAX_TRANSITION_SEC:
+            raise ValueError(f"淡化时长必须在 0 到 {MAX_TRANSITION_SEC} 秒之间，收到：{sec}")
 
 
 def normalize(value: Any) -> str:
