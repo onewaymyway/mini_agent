@@ -249,6 +249,27 @@ def run_chapters(project_dir: str, numbers: Optional[List[int]] = None, *,
     return _ok(results)
 
 
+def run_stills(project_dir: str, no: int, *, image_provider: Optional[str] = None) -> Dict[str, Any]:
+    """C-8a：为动态漫项目的一章生成场景图（仅 still 项目）。整章流水线的接入在 S4。"""
+    from . import render_mode as RM
+    from .steps import chapter_stills as cs
+    pdir = Path(project_dir)
+    try:
+        if RM.mode_of(ps.read_json(pdir / "project.json")) != RM.STILL:
+            return _fail("场景图步骤只用于动态漫模式的项目")
+        prov = make_image_provider(image_provider or _project_providers(pdir).get("image"),
+                                   image_cfg=_image_cfg(pdir))
+    except ProviderError as exc:
+        return _fail(str(exc))
+    except Exception as exc:  # noqa: BLE001 - 界面需要可读的错误
+        return _fail(f"场景图生成前检查失败：{exc}")
+    try:
+        res = cs.run_stills(pdir, no, prov)
+    except Exception as exc:  # noqa: BLE001
+        return _fail(f"场景图生成失败：{type(exc).__name__}：{exc}")
+    return _ok(res)
+
+
 def chapter_view(project_dir: str, no: int) -> Dict[str, Any]:
     try:
         return _ok(cp.chapter_view(Path(project_dir), no))

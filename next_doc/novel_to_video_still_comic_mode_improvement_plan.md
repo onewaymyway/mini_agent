@@ -1,6 +1,6 @@
 # novel_to_video 动态漫模式（still 渲染）改进计划
 
-> 状态：**方案已确认（2026-11-15）；S1、S2 已完成，S3 起待实施**。按第 8 节分期实施，每期更新文档并打包改动文件（保持目录结构）。
+> 状态：**方案已确认（2026-11-15）；S1、S2、S3 已完成，S4 起待实施**。按第 8 节分期实施，每期更新文档并打包改动文件（保持目录结构）。
 > 关联文档：`next_doc/novel_to_video_external_project_plan.md`（总体设计）、`next_doc/novel_to_video_location_spots_plan.md`（地点细化）。
 > 项目路径：`external_projects/novel_to_video/`。
 
@@ -222,3 +222,11 @@
   - `chapter_pipeline.py`：`_current_stage` 按项目模式取阶段；`run_chapter` 在任何模型调用之前检查门禁，动态漫模式整章直接标记为失败（原因写明待实现阶段），不进入运行状态。S3、S4 实现后，门禁随 `STILL_IMPLEMENTED` 放开。
   - 界面 `ui/chapter_page.py` 增加两个阶段的显示名称（只读）。创建页的渲染方式选择放在 S8。
   - 测试：`tests/test_render_mode_s2.py`（13 例）；全量回归见 `PROJECT.md` 记录。
+- **S3 C-8a 场景图生成与审核：完成（2026-11-15）**
+  - 新增 `steps/chapter_stills.py`：`run_stills` 为每个镜头生成一张场景图。提示词沿用 C-7 的 `prompt_en`；参考图沿用视频模式的规则（角色最多 2、地点 1、有余量才加道具），并由接口截断到 3 张，超出的文件记入日志；尺寸 `ratio = 9:16`、`size = 1K`。
+  - 输出 `chapters/NNN/stills/<镜头>_vNNN.png`，版本递增，旧图保留；镜头的 `still_file` 指向当前版本，`still_key = hash(提示词, 参考图, 画幅, 尺寸)`，任一变化才重新生成。
+  - `shot_review.py` 按渲染方式取审核对象：视频用 `clip_key` / `clips/`（行为不变），动态漫用 `still_key` / `still_file` / `still_error`。驳回时不删除旧图，只清空当前版本指针，下次生成新版本；已通过的镜头在提示词变化后变为 stale。
+  - `tool_api.run_stills(project_dir, no)`：仅动态漫项目可用，视频项目返回错误。
+  - 整章流水线（`run_chapter`）在 S3 不接入：动态漫整章仍由 S2 的门禁拒绝，接入在 S4（与动效片段一起）。
+  - 测试：`tests/test_still_stills_s3.py`（14 例）：生成与版本、幂等、待审核状态、参考图上限、定妆图缺失拦截、单镜头失败、审核前拒绝、提示词变化后 stale、驳回保留历史并生成新版本、全部通过、接口的模式边界、视频审核不变。
+  - 未做：批量与修改回退（batch / revision）对动态漫的适配（S9），界面的场景图审核页（S8）。

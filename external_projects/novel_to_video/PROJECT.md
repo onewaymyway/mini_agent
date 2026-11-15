@@ -80,6 +80,7 @@
 - 图像网络开关（2026-11-02）：生图请求与图片下载新增“使用系统代理”，项目配置 `image.use_system_proxy`，默认 False（直连，不读取 HTTP_PROXY/HTTPS_PROXY 与系统代理）；挡位页“图像网络”区域可修改。开启后，常规重试仍失败时才额外尝试一次绕过代理直连。修复：图片下载原先直接调用 `requests.get`，不受 session 控制，代理残留时要多次超时后才兜底。`gen_image_with_text` skill 的 `AgnesImageClient` 同步增加 `use_system_proxy` 参数，默认 False；命令行 `gen_image.py` 也因此默认直连，需要代理时传入该参数。测试 `tests/test_image_proxy_switch.py`（6 项）。
 - 动态漫模式 S1（2026-11-15，计划 `next_doc/novel_to_video_still_comic_mode_improvement_plan.md`）：图像接口支持参考图（`extra_body.image`，data URI）。每次最多 3 张（按顺序截断并返回被丢弃的文件），长边超过 1024 像素等比缩小，缺失或损坏的参考图在发请求前报错。无参考图时请求体与之前一致。测试 `tests/test_image_reference_s1.py`（16 例）。尚未接入流水线（S2 起）。
 - 动态漫模式 S2（2026-11-15）：新增 `render_mode.py`，项目字段 `render_mode`（`video` 默认 / `still`），创建时校验，创建后无修改接口（只读）。流水线阶段表按模式取；动态漫整章在任何模型调用之前门禁拒绝（标记失败并写明待实现阶段）。视频模式的阶段表与行为不变。旧项目无该字段，按视频处理。测试 `tests/test_render_mode_s2.py`（13 例）。
+- 动态漫模式 S3（2026-11-15）：C-8a 场景图（`steps/chapter_stills.py`）。每个镜头生成一张场景图（`stills/<镜头>_vNNN.png`，版本递增，旧图保留），参考图沿用视频模式规则并由接口截断到 3 张，超出的记入日志。镜头审核按渲染方式取对象：动态漫用 `still_key` / `still_file`，驳回只清空当前版本指针；视频审核行为不变。`tool_api.run_stills` 仅动态漫项目可用。整章流水线接入在 S4。测试 `tests/test_still_stills_s3.py`（14 例）。
 - 标签改名（2026-11-02）：「🚦 挡位与队列」改为「🛠️ 设置与队列」，页面标题改为「设置与批量队列」，因为该页主要承载各项设置与批量队列。
 
 ## 已知限制
