@@ -787,7 +787,11 @@ def start_chapter_portraits_background(project_dir: str, chapter: Optional[int] 
     if not ids["ok"]:
         return ids
     if not ids["data"]:
-        return _ok({"started": False, "message": "没有需要生成定妆图的补建素材（设定未通过的项需要先通过设定）。"})
+        msg = "没有需要生成定妆图的补建素材（设定未通过的项需要先通过设定）。"
+        _joblog.log(Path(project_dir), "assets", "一键生成定妆图：" + msg, level="warn")
+        return _ok({"started": False, "message": msg})
+    _joblog.log(Path(project_dir), "assets",
+                f"一键生成定妆图：共 {len(ids['data'])} 项（{'、'.join(ids['data'][:8])}{'…' if len(ids['data']) > 8 else ''}），已转入后台")
     res = _start_job(project_dir, name="assets_portrait", label=f"补建素材定妆图（{len(ids['data'])} 项）",
                      scope="assets", fn=lambda: _unwrap(run_portraits(project_dir, ids=ids["data"])))
     if res.get("ok"):

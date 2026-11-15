@@ -88,3 +88,15 @@ def test_start_portraits_reports_nothing_to_do(tmp_path):
     proj = _project(tmp_path)
     res = tool_api.start_chapter_portraits_background(str(proj), 99)
     assert res["ok"] and res["data"]["started"] is False
+
+
+def test_one_click_portraits_write_assets_log(tmp_path, monkeypatch):
+    """一键生成定妆图要在 assets 日志里留痕（含没有可生成项的情况），界面日志面板据此显示。"""
+    from novel_to_video import joblog
+    monkeypatch.setenv("NOVEL_TO_VIDEO_PROVIDERS", "stub")
+    proj = _project(tmp_path)
+    _add_drafts(proj)
+    r = tool_api.start_chapter_portraits_background(str(proj), 1)      # 设定都未通过 → 无可生成项
+    assert r["ok"] and r["data"]["started"] is False
+    msgs = [e.get("message", "") for e in joblog.tail(proj, 50, ["assets"])]
+    assert any("一键生成定妆图" in m for m in msgs), msgs

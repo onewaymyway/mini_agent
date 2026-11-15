@@ -39,6 +39,9 @@ def render_batch_bar(pdir: str, chapter: Optional[int] = None, *, key_prefix: st
         r = tool_api.batch_review(pdir, "portrait", chapter)
         _report_batch(r, "定妆图")
         st.rerun()
+    # 定妆图在后台生成，日志（scope=assets）就近显示在按钮下方；章节页的日志面板只含章节/队列日志，看不到这里
+    from ui.joblog_panel import render_job_panel
+    render_job_panel(pdir, ["assets"], title="定妆图生成日志", height=200)
 
 
 def _report_batch(r: dict, label: str) -> None:
@@ -89,9 +92,7 @@ def page_auto_added() -> None:
     pdir = _pick_project(root)
     if not pdir:
         return
-    from ui.joblog_panel import render_job_panel
     render_batch_bar(pdir, chapter=None, key_prefix="batch_all")
     n = render_auto_added(pdir)
     if not tool_api.auto_added_queue(pdir)["data"]:
         st.info("当前没有待审核的补建角色。剧本中出现库里没有的说话人时，运行章节流水线到 C-5 会自动起草。")
-    render_job_panel(pdir, ["assets"], title="定妆图生成日志", height=200)

@@ -27,6 +27,7 @@
 | Phase 5 加固 | **已完成（2026-11-01）；真实 API 冒烟待本机执行** | 项目运行锁与遗留回收（SIGKILL 子进程演练）；key 池切换演练并修复 3 处真实缺陷；真实 API 冒烟脚本；测试 267 项通过（1 项需真实导出环境变量跳过）；章节各阶段（文本模型、逐镜视频、配音）的过程日志；G-3/视频的 skill 输出（重试、失败、轮询）同步进入界面日志；驾驶舱；实时日志；图像/视频改为调用 mini_agent 的 Agnes skill，key 从 providers.json 解析|
 | 修补：版本目录导入（2026-11-15） | **已完成（离线测试验证）** | 直接选 novel_writer 的 `_versions/vNNN/`（或工作区）导入时，原先报 MISSING_CHARACTERS（阻断）/MISSING_LOCATIONS：该目录是原始布局（`大纲规划/人物设定/…`），导入器只认导出包布局（`设定/人物/…`）。新增 `layout_adapt.py`：检测到「有大纲规划/、无设定/」即把正文、章节总结、角色、人设卡、角色索引、地点详情复制成导出包布局的副本（内容不变，跳过 `正文/_drafts`），沿用 `working_dir` 机制；不再提示 NO_README / NO_FULL_TEXT；新增 info `WORKSPACE_LAYOUT_CONVERTED` 与 warning `RAW_VERSION_TEXT`（版本目录正文未清洗，可能含写作备注）。测试 `tests/test_workspace_layout_import.py`（2 例） |
 | 修补：已写定设定的角色显示「设定缺失」（2026-11-15） | **已完成（离线测试验证）** | 作者在角色文件里写定了视觉锚点与声音时，G-2 判为「设定已完整」而跳过，审核状态却停在 missing，无法进入待审核、也点不了「通过设定」。现在：新建项目时这类角色直接为 pending；G-2 跳过时若状态仍是 missing 也转为 pending（兼容已建项目，重新点一次 G-2 即可）。仍需人工通过，不自动通过；没写定的角色仍由 G-2 补全。测试并入 `tests/test_workspace_layout_import.py` |
+| 修补：补建角色页一键生成定妆图无日志（2026-11-15） | **已完成（离线测试；页面需本机 streamlit 目视确认）** | 章节页「补建角色（需要你确认）」的日志面板只含章节/队列日志，定妆图日志属 assets 作用域而看不到。现在 `render_batch_bar` 在按钮下方自带「定妆图生成日志」面板（章节页与补建角色审核页共用，审核页底部的重复面板已移除）；没有可生成项时也写入日志说明原因，开始时记录对象数量。测试并入 `tests/test_batch_review.py` |
 
 ## 当前能力（Phase 0–5）
 
