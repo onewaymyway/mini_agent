@@ -59,7 +59,7 @@ def test_zoom_filter_golden_none_and_medium_strength():
 
 def test_zoom_filter_rejects_unsupported_motion_and_strength():
     with pytest.raises(ValueError):
-        MO.zoom_filter("pan_left", frames=10, w=720, h=1280, fps=24)
+        MO.zoom_filter("spiral", frames=10, w=720, h=1280, fps=24)
     with pytest.raises(ValueError):
         MO.zoom_filter("push_in", frames=10, w=720, h=1280, fps=24, strength="wild")
 

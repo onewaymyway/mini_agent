@@ -82,6 +82,7 @@
 - 动态漫模式 S2（2026-11-15）：新增 `render_mode.py`，项目字段 `render_mode`（`video` 默认 / `still`），创建时校验，创建后无修改接口（只读）。流水线阶段表按模式取；动态漫整章在任何模型调用之前门禁拒绝（标记失败并写明待实现阶段）。视频模式的阶段表与行为不变。旧项目无该字段，按视频处理。测试 `tests/test_render_mode_s2.py`（13 例）。
 - 动态漫模式 S3（2026-11-15）：C-8a 场景图（`steps/chapter_stills.py`）。每个镜头生成一张场景图（`stills/<镜头>_vNNN.png`，版本递增，旧图保留），参考图沿用视频模式规则并由接口截断到 3 张，超出的记入日志。镜头审核按渲染方式取对象：动态漫用 `still_key` / `still_file`，驳回只清空当前版本指针；视频审核行为不变。`tool_api.run_stills` 仅动态漫项目可用。整章流水线接入在 S4。测试 `tests/test_still_stills_s3.py`（14 例）。
 - 动态漫模式 S4（2026-11-15）：C-8b 动效片段（`media/motion.py`、`steps/chapter_segments.py`）。场景图 + 配音 → `clips/<镜头>.mp4`，C-9 合成沿用视频模式。时长 = 配音 + 0.4 秒，不设上下限；无配音镜头用 `still.silent_shot_sec`（默认 3 秒）。镜内动效：auto_alternate（默认，推近/拉远交替）、push_in、pull_out、none；强度 slow / medium。整章流水线已接入动态漫（场景图 → 审核 → 片段 → 合成），门禁放开。项目选项新增 `still` 节。测试 `tests/test_still_segments_s4.py`（16 例）。未做：平移/晃动（S5）、镜间转场（S6/S7）、重新合成与批量/回退适配（S9）、界面（S8）。
+- 动态漫模式 S5（2026-11-15）：镜内动效补充平移（pan_left / pan_right / pan_up / pan_down，缩放固定，取景框沿余量线性移动）与晃动（drift，正弦摆动，不越界）。强度 slow / medium 同时决定可移动余量。golden 字符串 + 数值求值检查位置边界与起止 + 真实渲染。测试 `tests/test_still_motions_s5.py`（18 例）。S4 的一条断言改为用 `spiral` 作为未知动效的例子。
 - 标签改名（2026-11-02）：「🚦 挡位与队列」改为「🛠️ 设置与队列」，页面标题改为「设置与批量队列」，因为该页主要承载各项设置与批量队列。
 
 ## 已知限制

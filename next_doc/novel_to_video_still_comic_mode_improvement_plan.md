@@ -1,6 +1,6 @@
 # novel_to_video 动态漫模式（still 渲染）改进计划
 
-> 状态：**方案已确认（2026-11-15）；S1–S4 已完成，S5 起待实施**。按第 8 节分期实施，每期更新文档并打包改动文件（保持目录结构）。
+> 状态：**方案已确认（2026-11-15）；S1–S5 已完成，S6 起待实施**。按第 8 节分期实施，每期更新文档并打包改动文件（保持目录结构）。
 > 关联文档：`next_doc/novel_to_video_external_project_plan.md`（总体设计）、`next_doc/novel_to_video_location_spots_plan.md`（地点细化）。
 > 项目路径：`external_projects/novel_to_video/`。
 
@@ -238,3 +238,9 @@
   - 偏差说明：S2 中「动态漫整章在模型调用前被拒绝」的测试已改为「门禁已放开，流程进入新阶段」。
   - 未做（后续阶段）：平移与晃动动效（S5）；镜间转场（S6、S7）；动态漫的重新合成 `recompose_chapter` 仍依赖 `clips/raw`，需要在 S9 适配为“按现有场景图重建片段”；批量与修改回退的动态漫适配（S9）；界面（S8）。
   - 测试：`tests/test_still_segments_s4.py`（16 例）：动效选择与滤镜 golden、设置默认值、真实 ffmpeg 渲染（时长、尺寸、静音）、片段步骤（时长跟随配音、交替动效、幂等、无场景图跳过、场景图变化后重建、无配音默认时长、设置改变动效）、动态漫整章完整流程（等待素材 → 等待审核 → 完成，章节时长与片段之和一致，尺寸跟随项目格式）。
+- **S5 平移与晃动动效：完成（2026-11-15）**
+  - `media/motion.py` 新增：`pan_left`、`pan_right`、`pan_up`、`pan_down`（画面缩放固定，取景框沿可移动余量线性移动）；`drift`（取景框沿余量做正弦摆动，幅度为余量的 20%–80%，不超出画面）。
+  - 强度沿用 slow（约 8%）与 medium（约 15%）：强度越大，平移的可移动余量越大。
+  - 测试：`tests/test_still_motions_s5.py`（18 例）。除 golden 字符串外，还把滤镜中的 x/y 表达式代入数值逐帧求值，检查：平移的起止位置正确、单调、不超出余量；另一轴保持居中；晃动不越界且确实在移动；medium 的余量大于 slow；真实 ffmpeg 渲染三种新动效时长正确。
+  - S4 中一条断言把 `pan_left` 当作「不支持」的例子，已改为真正不存在的 `spiral`。
+  - 动效名称目前为：auto_alternate（默认）、push_in、pull_out、none、pan_left、pan_right、pan_up、pan_down、drift。界面的选择项在 S8。
