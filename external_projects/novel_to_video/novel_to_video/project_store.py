@@ -58,6 +58,8 @@ DEFAULT_OPTIONS: Dict[str, Any] = {
     "location_spots_enabled": True,     # 地点细化（场景点）：镜头规划识别「现有地点不能直接用」并规划新场景点；默认开启，可在挡位页关闭
     "gear": "G0",
     "budget": {"max_video_calls": None, "max_image_calls": None, "max_minutes": None},
+    # 渲染方式：video = 小场景视频（默认）；still = 动态漫。创建后只读（见 render_mode.py）
+    "render_mode": "video",
 }
 
 
@@ -225,6 +227,9 @@ def create_project(
     book_title = (title or result.source_title).strip() or "novel"
     opts = json.loads(json.dumps(DEFAULT_OPTIONS))
     opts.update(options or {})
+    # 校验放在创建目录之前：非法的渲染方式不留下任何文件
+    from . import render_mode as RM
+    opts["render_mode"] = RM.normalize(opts.get("render_mode"))
 
     all_nos = [c["no"] for c in result.chapters]
     selected = set(parse_chapter_spec(chapter_spec, all_nos))

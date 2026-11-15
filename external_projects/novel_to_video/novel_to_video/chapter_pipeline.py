@@ -33,7 +33,9 @@ from .steps.global_visual import StepError
 from .providers.factory import ProviderError
 from .media.ffmpeg import MediaError
 
-STAGES = ["script", "shots", "assets", "audio", "prompts", "clips", "compose"]
+from . import render_mode as RM  # noqa: E402
+
+STAGES = RM.stages_for(RM.VIDEO)  # 视频模式的阶段表（保留旧名称，兼容既有引用）
 
 
 def _result(status: str, message: str = "", **extra: Any) -> Dict[str, Any]:
@@ -51,7 +53,14 @@ def run_chapter(project_dir: Path, no: int, *, text_llm: TextLLM, image: ImagePr
     cio.chapter_dir(project_dir, no).mkdir(parents=True, exist_ok=True)
     cio.set_chapter_status(project_dir, no, "running")
     joblog.log(project_dir, "chapter", f"第 {no} 章开始运行")
-    art_style = read_json(project_dir / "project.json").get("art_style")
+    proj_meta = read_json(project_dir / "project.json")
+    art_style = proj_meta.get("art_style")
+    mode = RM.mode_of(proj_meta)
+    reason = RM.unsupported_reason(mode)
+    if reason:  # 门禁：在任何模型调用之前拒绝，不把章节留在 running
+        cio.set_chapter_status(project_dir, no, "failed", reason)
+        joblog.log(project_dir, "chapter", f"第 {no} 章未运行：{reason}", level="error")
+        return _result("failed", reason)
 
     def stop(status: str, message: str, **extra) -> Dict[str, Any]:
         cio.set_chapter_status(project_dir, no, status, message)
@@ -155,15 +164,18 @@ STAGE_NAMES = {
     "script": "C-1/C-2 剧本", "shots": "C-3/C-4 镜头规划", "assets": "C-5 补建角色",
     "audio": "C-6 配音", "prompts": "C-7 提示词", "clips": "C-8 小场景视频",
     "compose": "C-9 章节合成",
+    "stills": "C-8a 场景图", "segments": "C-8b 动效片段",
 }
 
 
 def _current_stage(project_dir: Path, no: int) -> str:
     done = cio.load_state(project_dir, no).get("stages", {})
-    for st in STAGES:
+    mode = RM.mode_of(read_json(Path(project_dir) / "project.json"))
+    stages = RM.stages_for(mode)
+    for st in stages:
         if done.get(st, {}).get("status") != "done":
             return st
-    return "compose"
+    return stages[-1]
 
 
 def _read_yaml(path: Path) -> Optional[Dict[str, Any]]:

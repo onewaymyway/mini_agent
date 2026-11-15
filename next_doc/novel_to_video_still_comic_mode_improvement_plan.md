@@ -1,6 +1,6 @@
 # novel_to_video 动态漫模式（still 渲染）改进计划
 
-> 状态：**方案已确认（2026-11-15）；S1 已完成，S2 起待实施**。按第 8 节分期实施，每期更新文档并打包改动文件（保持目录结构）。
+> 状态：**方案已确认（2026-11-15）；S1、S2 已完成，S3 起待实施**。按第 8 节分期实施，每期更新文档并打包改动文件（保持目录结构）。
 > 关联文档：`next_doc/novel_to_video_external_project_plan.md`（总体设计）、`next_doc/novel_to_video_location_spots_plan.md`（地点细化）。
 > 项目路径：`external_projects/novel_to_video/`。
 
@@ -215,3 +215,10 @@
   - `StubImageProvider` 同样做截断与校验，并在 `reference_log` 中记录参考图文件名（不含 base64）。
   - 测试：`tests/test_image_reference_s1.py`（16 例）。
   - 现有四个生图调用方（角色定妆、全书素材、地点、片头背景）未传参考图，不受影响。
+- **S2 渲染方式字段与流水线阶段表：完成（2026-11-15）**
+  - 新增 `novel_to_video/render_mode.py`：`RENDER_MODES = (video, still)`，默认 `video`；`STAGES` 按模式给出阶段表（视频模式与改动前完全一致；动态漫为 script → shots → assets → audio → prompts → stills → segments → compose）；`unsupported_reason` 门禁。
+  - `project_store.py`：`DEFAULT_OPTIONS` 增加 `render_mode: "video"`；`create_project` 在创建任何目录之前校验，非法值报错且不留下文件。旧项目没有该字段，按视频处理。
+  - 创建后只读：没有任何修改接口（`tool_api` 与 `project_store` 中均不存在 `set_render_mode`），现有的各个 `set_*` 开关保留该字段。
+  - `chapter_pipeline.py`：`_current_stage` 按项目模式取阶段；`run_chapter` 在任何模型调用之前检查门禁，动态漫模式整章直接标记为失败（原因写明待实现阶段），不进入运行状态。S3、S4 实现后，门禁随 `STILL_IMPLEMENTED` 放开。
+  - 界面 `ui/chapter_page.py` 增加两个阶段的显示名称（只读）。创建页的渲染方式选择放在 S8。
+  - 测试：`tests/test_render_mode_s2.py`（13 例）；全量回归见 `PROJECT.md` 记录。

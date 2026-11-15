@@ -16,7 +16,7 @@ STATUS_LABEL = {"pending": "待生成", "running": "运行中", "waiting_assets"
 SHOT_LABEL = {"missing": "未生成", "pending": "待审", "approved": "已通过", "stale": "需重审",
               "failed": "失败"}
 STAGE_LABEL = {"script": "C-1/2 剧本", "shots": "C-3/4 镜头规划", "assets": "C-5 素材补全",
-               "audio": "C-6 配音", "prompts": "C-7 提示词与一致性", "clips": "C-8 小场景视频",
+               "audio": "C-6 配音", "prompts": "C-7 提示词与一致性", "clips": "C-8 小场景视频", "stills": "C-8a 场景图", "segments": "C-8b 动效片段",
                "compose": "C-9 章节合成"}
 
 
