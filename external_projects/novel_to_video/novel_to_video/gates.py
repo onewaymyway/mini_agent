@@ -10,6 +10,10 @@
   补建角色               手动  手动  手动  自动补建，完成后汇总
   全书合成（F-1）        始终手动，任何挡位都不可跳过
 
+G6（全自动）在 G3 的基础上，队列会替用户完成所有「需要人动手」的素材工作：按本章镜头用到的角色/地点/道具
+自动补全视觉与声音设定、确认性别、通过设定、生成并通过定妆图；失败的章节自动重试（最多 3 次）；
+一章结束自动开始下一章。预算上限与 G3 一样必填。
+
 注意：小场景逐镜审核在 G0–G2 始终保留；G3 只在“视频生成校验通过”时自动通过，
 这里的“自动通过”是指由代码依据机械校验结果置为 approved，并记入 review.json。
 """
@@ -18,7 +22,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-GEARS = ("G0", "G1", "G2", "G3", "G4", "G5")
+GEARS = ("G0", "G1", "G2", "G3", "G4", "G5", "G6")
 DEFAULT_GEAR = "G0"
 
 # 检查点：manual | auto
@@ -35,13 +39,23 @@ _POLICY: Dict[str, Dict[str, str]] = {
            "shot_review": "auto", "chapter_compose": "auto", "auto_add": "auto"},
     "G5": {"asset_text": "auto", "asset_portrait": "auto", "chapter_script": "auto",
            "shot_review": "auto", "chapter_compose": "auto", "auto_add": "auto"},
+    "G6": {"asset_text": "auto", "asset_portrait": "auto", "chapter_script": "auto",
+           "shot_review": "auto", "chapter_compose": "auto", "auto_add": "auto"},
 }
 
+# 小场景/场景图审核由代码依据机械校验自动通过的挡位
+AUTO_REVIEW_GEARS = ("G3", "G4", "G5", "G6")
+# 必须配置预算上限的挡位（付费接口无人值守）
+BUDGET_GEARS = ("G3", "G6")
+# 队列自动完成全书素材（设定补全、性别、定妆图）的挡位
+FULL_AUTO_GEARS = ("G6",)
+
 # G4/G5 的失败恢复策略（有上限，避免在付费接口上无限重试）
-RETRY_LIMITS = {"G3": 0, "G4": 1, "G5": 3}
+RETRY_LIMITS = {"G3": 0, "G4": 1, "G5": 3, "G6": 3}
 RECOVERY = {
     "G4": "失败后换策略一次：降低口播块长度（重新切分镜头）后重跑该章",
     "G5": "失败后重置该章失败阶段并重试，最多 3 次，仍失败则停止并记录",
+    "G6": "同 G5 的失败重试（最多 3 次）；另外素材（设定、性别、定妆图）由队列自动补全并确认",
 }
 
 # 任何挡位都不可跳过的检查点
@@ -81,11 +95,11 @@ def _budget_keys(mode: str) -> tuple:
 
 def require_budget(budget: Dict[str, Any], usage: Dict[str, int], minutes_used: float, gear: str,
                    mode: str = "video") -> None:
-    """G3 及以上必须配置预算上限；超出上限时抛出 GateError。
+    """G3 与 G6 必须配置预算上限；超出上限时抛出 GateError。
 
     usage: {"video": n, "image": n}；minutes_used: 已用分钟数。mode 为项目的渲染方式。
     """
-    if normalize_gear(gear) != "G3":
+    if normalize_gear(gear) not in BUDGET_GEARS:
         return
     validate_budget(budget, gear, mode)
     limits = {"max_video_calls": "video", "max_image_calls": "image"}
@@ -102,8 +116,8 @@ def validate_budget(budget: Dict[str, Any], gear: str, mode: str = "video") -> N
     """只检查预算是否“已配置”（G3 必填）；上限为 0 是合法配置，表示立即停止。
     是否超限属于运行时检查，由 require_budget 负责，不在保存设置时拦截。
     动态漫模式不要求视频调用上限。"""
-    if normalize_gear(gear) != "G3":
+    if normalize_gear(gear) not in BUDGET_GEARS:
         return
     missing = [k for k in _budget_keys(mode) if budget.get(k) in (None, "")]
     if missing:
-        raise GateError("G3 挡位必须设置预算上限：" + "、".join(missing))
+        raise GateError(f"{normalize_gear(gear)} 挡位必须设置预算上限：" + "、".join(missing))

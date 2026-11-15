@@ -16,6 +16,7 @@ GEAR_HELP = {
     "G3": "全自动：机械校验通过的镜头自动通过；必须设置预算上限",
     "G4": "托管：全自动，失败后换一次策略（收紧口播块）；必须设置预算上限",
     "G5": "不停机：全自动，失败后自动重置重试最多 3 次；必须设置预算上限；全书合成仍需人工确认",
+    "G6": "全流程自动：按章自动补设定/性别、生成并通过定妆图，再场景图、配音、合成；失败自动重试 3 次；一章完成自动开始下一章；必须设置预算上限；全书合成仍需人工确认",
 }
 
 
@@ -35,7 +36,7 @@ def page_gear() -> None:
     cur = st.selectbox("挡位", pol["gears"], index=pol["gears"].index(cur_gear),
                        format_func=lambda g: f"{g} · {GEAR_HELP[g]}", key="gear_pick")
     budget = {}
-    if cur in ("G3", "G4", "G5"):
+    if cur in ("G3", "G4", "G5", "G6"):
         if still_mode:
             # 动态漫不调用视频接口：只设图像（场景图与素材）与耗时上限
             c2, c3 = st.columns(2)

@@ -444,7 +444,7 @@ from . import revision as _rev
 
 
 def set_gear(project_dir: str, gear: str, budget: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """设置挡位与预算。G3 必须同时给出预算上限，否则拒绝保存（动态漫模式不需要视频上限）。"""
+    """设置挡位与预算。G3 / G6 必须同时给出预算上限，否则拒绝保存（动态漫模式不需要视频上限）。"""
     from . import render_mode as RM
     pdir = Path(project_dir)
     try:
@@ -507,8 +507,20 @@ def _run_queue_locked(project_dir: str, numbers: Optional[List[int]] = None, *,
         r = run_chapter(project_dir, no)
         return r["data"] if r["ok"] else {"status": "failed", "message": r["error"]["message"]}
 
+    prepare = None
+    if g in _gates.FULL_AUTO_GEARS:
+        def prepare(no: int) -> Dict[str, Any]:
+            """G6：自动补全本章镜头用到的素材（性别、设定、定妆图）。引擎初始化失败时抛出，由队列按失败处理。"""
+            from . import auto_prepare as _ap
+            from . import joblog as _jl
+            prov = _project_providers(pdir)
+            with _jl.heartbeat(pdir, "assets", f"G6 第 {no} 章自动补素材"):
+                llm = make_text_llm(prov.get("text"))
+                image = make_image_provider(prov.get("image"), image_cfg=_image_cfg(pdir))
+                return _ap.prepare_chapter_assets(pdir, no, llm, image)
+
     try:
-        out = _batch.run_queue(pdir, targets, gear=g, run_one=run_one)
+        out = _batch.run_queue(pdir, targets, gear=g, run_one=run_one, prepare=prepare)
     except _gates.GateError as exc:
         return _fail(str(exc))
     return _ok(out)

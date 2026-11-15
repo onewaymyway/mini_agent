@@ -23,7 +23,7 @@ STATUS_LABEL = {
 RUN_LABEL = {"idle": "空闲", "running": "运行中", "stopping": "正在停止", "halted": "已停止",
              "done": "已完成", "failed": "失败"}
 GEAR_LABEL = {"G0": "G0 手动", "G1": "G1 引导", "G2": "G2 半自动", "G3": "G3 全自动",
-              "G4": "G4 托管", "G5": "G5 不停机"}
+              "G4": "G4 托管", "G5": "G5 不停机", "G6": "G6 全流程自动"}
 
 
 def page_cockpit() -> None:

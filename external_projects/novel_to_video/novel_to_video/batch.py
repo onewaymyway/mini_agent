@@ -114,6 +114,35 @@ def _recover_failure(project_dir: Path, no: int, gear: str, res: Dict[str, Any],
     return res
 
 
+MAX_PREPARE_ROUNDS = 3
+
+
+def _prepare_and_rerun(project_dir: Path, no: int, gear: str, budget: Dict[str, Any], res: Dict[str, Any],
+                       run_one, prepare) -> Dict[str, Any]:
+    """G6：章节停在 waiting_assets（缺设定/缺定妆图/等待确认）时，自动补齐素材并重跑本章。
+    每轮之前检查停止请求与预算；某轮没有任何进展（没有新通过的设定或新生成的定妆图）即停止，不空转。"""
+    rounds = 0
+    while res.get("status") == "waiting_assets" and rounds < MAX_PREPARE_ROUNDS:
+        if rt.stop_requested(project_dir):
+            break
+        reason = check_budget(project_dir, gear, budget)
+        if reason:
+            res["message"] = f"{res.get('message') or ''}（自动补素材已停止：{reason}）"
+            break
+        rounds += 1
+        joblog.log(project_dir, "queue", f"G6：第 {no} 章等待素材，自动补全（第 {rounds} 轮）")
+        info = prepare(no) or {}
+        progressed = bool(info.get("progress"))
+        res = run_one(no)
+        res["auto_prepared"] = info
+        if not progressed:
+            joblog.log(project_dir, "queue", f"G6：第 {no} 章自动补素材没有新进展，停止重试", level="warn")
+            break
+    if rounds:
+        append_progress(project_dir, f"G6 第 {no} 章自动补素材 {rounds} 轮，结果：{res.get('status')}")
+    return res
+
+
 def _switch_strategy(project_dir: Path, no: int) -> None:
     """G4 策略切换：把镜头口播块上限收紧一半，触发重新切分。"""
     from .chapter_io import MAX_BLOCK_CHARS
@@ -132,10 +161,12 @@ def _reset_failed_stage(project_dir: Path, no: int) -> None:
     cio.save_state(project_dir, no, state)
 
 
-def run_queue(project_dir: Path, numbers: List[int], *, gear: str, run_one) -> Dict[str, Any]:
+def run_queue(project_dir: Path, numbers: List[int], *, gear: str, run_one, prepare=None) -> Dict[str, Any]:
     """依次运行章节。run_one(no) -> {"status": ..., "message": ...}，由调用方注入（便于测试）。
 
     每章前检查预算；超限则停止后续章节，已完成章节保留。
+    prepare(no) -> dict：仅 G6 使用，由调用方注入。章节停在「等待素材」时，自动补全本章所需的设定、性别、
+    定妆图并确认，然后重新运行本章（最多 MAX_PREPARE_ROUNDS 轮，避免在付费接口上无限循环）。
     """
     proj = read_json(project_dir / "project.json")
     budget = proj.get("budget") or {}
@@ -158,13 +189,18 @@ def run_queue(project_dir: Path, numbers: List[int], *, gear: str, run_one) -> D
         joblog.log(project_dir, "queue", f"队列：开始第 {no} 章（挡位 {gear}）")
         try:
             res = run_one(no)
+            if gear in gates.FULL_AUTO_GEARS and prepare is not None:
+                res = _prepare_and_rerun(project_dir, no, gear, budget, res, run_one, prepare)
+            prepared = res.get("auto_prepared")
             res = _recover_failure(project_dir, no, gear, res, run_one, budget, results)
-            if gear in ("G3", "G4", "G5") and res.get("status") == "waiting_review":
+            if gear in gates.AUTO_REVIEW_GEARS and res.get("status") == "waiting_review":
                 approved = auto_approve_shots(project_dir, no)
                 res["auto_approved"] = approved
                 if approved:
                     res = run_one(no)  # 自动通过后继续推进到合成
                     res["auto_approved"] = approved
+            if prepared and "auto_prepared" not in res:
+                res["auto_prepared"] = prepared      # 重跑会换掉结果字典，G6 的素材补全摘要要保留
         except cancel.Cancelled:
             # 用户立即停止：本章停在当前阶段（章节已回到断点），后续章节不再开始
             _add_minutes(project_dir, (time.monotonic() - t0) / 60.0)
