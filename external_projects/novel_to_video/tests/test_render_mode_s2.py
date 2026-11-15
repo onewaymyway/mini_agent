@@ -48,9 +48,10 @@ def test_legacy_project_without_field_is_video():
     assert RM.mode_of(None) == "video"
 
 
-def test_still_is_not_runnable_until_stages_are_implemented():
-    reason = RM.unsupported_reason("still")
-    assert reason and "尚未实现" in reason and "stills" in reason
+def test_still_stages_all_implemented_after_s4():
+    # S4 完成后动态漫的全部阶段均已实现，整章门禁放开
+    assert RM.unsupported_reason("still") is None
+    assert RM.STILL_IMPLEMENTED == frozenset(RM.stages_for("still"))
     assert RM.unsupported_reason("video") is None
 
 
@@ -115,21 +116,22 @@ def test_current_stage_video_unchanged(tmp_path):
     assert cp._current_stage(pdir, 1) == "compose"   # 全部完成 → 最后一个阶段
 
 
-# ---------- 整章门禁：动态漫在任何模型调用之前被拒绝
+# ---------- 动态漫整章：门禁已放开，流程进入场景图阶段（S3/S4）
 
-class ExplodingLLM:
-    name = "exploding"
-
-    def ask(self, prompt, system=None):
-        raise AssertionError("动态漫门禁失败：不应调用文本模型")
-
-
-def test_still_chapter_refused_before_any_model_call(tmp_path):
-    res = _create(tmp_path, options={"render_mode": "still"})
+def test_still_chapter_runs_into_the_new_flow(tmp_path):
+    from conftest import build_export
+    from novel_to_video.providers.text import RuleTextLLM
+    from novel_to_video.steps import global_visual as gv
+    from test_chapter_pipeline import CHAPTER_TEXT, ChapterLLM
+    src = build_export(tmp_path / "src", chapters=(1,))
+    (src / "正文" / "第001章 测试章1.md").write_text(CHAPTER_TEXT, encoding="utf-8")
+    res = tool_api.create_project_from_source(str(tmp_path / "out"), str(src), title="测试",
+                                              options={"render_mode": "still"})
     pdir = Path(res["data"]["project_dir"])
-    out = cp.run_chapter(pdir, 1, text_llm=ExplodingLLM(), image=StubImageProvider(),
+    gv.visual_text_pass(pdir, RuleTextLLM())
+    gv.portrait_pass(pdir, StubImageProvider())
+    # 与视频模式相同：先补建新出现的角色，因此第一次运行停在素材确认，而不是被拒绝
+    out = cp.run_chapter(pdir, 1, text_llm=ChapterLLM(), image=StubImageProvider(),
                          video=StubVideoProvider(), tts=SilenceTTS())
-    assert out["status"] == "failed" and "尚未实现" in out["message"]
-    row = cio.chapter_row(pdir, 1)       # 章节状态记在 chapters/index.yaml
-    assert row["status"] == "failed" and "尚未实现" in row["message"]
-    assert not cio.load_state(pdir, 1).get("stages")   # 没有任何阶段被标记为运行
+    assert out["status"] == "waiting_assets", out
+    assert "尚未实现" not in out["message"]

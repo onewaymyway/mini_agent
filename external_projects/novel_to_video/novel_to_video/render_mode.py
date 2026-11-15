@@ -22,8 +22,24 @@ STAGES: Dict[str, List[str]] = {
     STILL: ["script", "shots", "assets", "audio", "prompts", "stills", "segments", "compose"],
 }
 
-# 动态漫模式中已经实现的阶段。S3 增加 stills，S4 增加 segments；未实现前整章不启动。
-STILL_IMPLEMENTED: frozenset = frozenset()
+# 动态漫模式中已经实现的阶段。S3 增加 stills，S4 增加 segments；全部实现后整章可以运行。
+STILL_IMPLEMENTED: frozenset = frozenset(STAGES[STILL])
+
+# 动态漫模式的设置（项目 still 节）。transition 与 transition_sec 在 S6/S7 使用。
+STILL_DEFAULTS: Dict[str, Any] = {
+    "motion": "auto_alternate",      # 镜内动效：auto_alternate / push_in / pull_out / none（S5 追加更多）
+    "motion_strength": "slow",       # slow / medium
+    "transition": "fade",            # 镜间转场：fade / cut（S7 追加 dissolve）
+    "transition_sec": 0.4,
+    "silent_shot_sec": 3,            # 没有配音的镜头使用的时长（秒）
+}
+
+
+def still_settings(meta: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """动态漫设置：项目里保存的值覆盖默认值；旧项目没有该节时全部取默认。"""
+    merged = dict(STILL_DEFAULTS)
+    merged.update((meta or {}).get("still") or {})
+    return merged
 
 
 def normalize(value: Any) -> str:

@@ -1,6 +1,6 @@
 # novel_to_video 动态漫模式（still 渲染）改进计划
 
-> 状态：**方案已确认（2026-11-15）；S1、S2、S3 已完成，S4 起待实施**。按第 8 节分期实施，每期更新文档并打包改动文件（保持目录结构）。
+> 状态：**方案已确认（2026-11-15）；S1–S4 已完成，S5 起待实施**。按第 8 节分期实施，每期更新文档并打包改动文件（保持目录结构）。
 > 关联文档：`next_doc/novel_to_video_external_project_plan.md`（总体设计）、`next_doc/novel_to_video_location_spots_plan.md`（地点细化）。
 > 项目路径：`external_projects/novel_to_video/`。
 
@@ -230,3 +230,11 @@
   - 整章流水线（`run_chapter`）在 S3 不接入：动态漫整章仍由 S2 的门禁拒绝，接入在 S4（与动效片段一起）。
   - 测试：`tests/test_still_stills_s3.py`（14 例）：生成与版本、幂等、待审核状态、参考图上限、定妆图缺失拦截、单镜头失败、审核前拒绝、提示词变化后 stale、驳回保留历史并生成新版本、全部通过、接口的模式边界、视频审核不变。
   - 未做：批量与修改回退（batch / revision）对动态漫的适配（S9），界面的场景图审核页（S8）。
+- **S4 C-8b 动效片段与整章接入：完成（2026-11-15）**
+  - 新增 `media/motion.py`：`resolve_motion`（auto_alternate 按章内镜头序号交替，偶数推近、奇数拉远）、`zoom_filter`（纯函数生成 zoompan 滤镜，供 golden 测试）、`render_segment`（场景图 + 配音或静音 → 片段）。场景图先放大到 2 倍再缩放，减少抖动；动效强度 slow ≈ 8%、medium ≈ 15%。S4 实现 auto_alternate / push_in / pull_out / none，平移与晃动在 S5。
+  - 新增 `steps/chapter_segments.py`：`run_segments` 为已有场景图的镜头生成 `clips/<镜头>.mp4`，C-9 合成沿用视频模式的读取位置。时长 = 配音时长 + 0.4 秒，不设上下限、不裁剪；无配音镜头使用 `silent_shot_sec`（默认 3 秒）。缓存键包含场景图键，场景图重新生成后片段自动重建。
+  - `chapter_pipeline.py`：动态漫在提示词阶段之后分流到 `_still_tail`：场景图 → 审核（全部通过才继续）→ 动效片段 → 章节合成。`STILL_IMPLEMENTED` 包含全部动态漫阶段，S2 的整章门禁随之放开。
+  - `render_mode.py` 增加 `STILL_DEFAULTS` 与 `still_settings()`；项目选项新增 `still` 节（motion、motion_strength、transition、transition_sec、silent_shot_sec）。transition 在 S6 使用。旧项目没有该节时取默认值。
+  - 偏差说明：S2 中「动态漫整章在模型调用前被拒绝」的测试已改为「门禁已放开，流程进入新阶段」。
+  - 未做（后续阶段）：平移与晃动动效（S5）；镜间转场（S6、S7）；动态漫的重新合成 `recompose_chapter` 仍依赖 `clips/raw`，需要在 S9 适配为“按现有场景图重建片段”；批量与修改回退的动态漫适配（S9）；界面（S8）。
+  - 测试：`tests/test_still_segments_s4.py`（16 例）：动效选择与滤镜 golden、设置默认值、真实 ffmpeg 渲染（时长、尺寸、静音）、片段步骤（时长跟随配音、交替动效、幂等、无场景图跳过、场景图变化后重建、无配音默认时长、设置改变动效）、动态漫整章完整流程（等待素材 → 等待审核 → 完成，章节时长与片段之和一致，尺寸跟随项目格式）。

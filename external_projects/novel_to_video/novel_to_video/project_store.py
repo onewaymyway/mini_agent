@@ -14,6 +14,7 @@ import re
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from . import render_mode as RM
 from typing import Any, Dict, List, Optional
 
 import yaml
@@ -60,6 +61,7 @@ DEFAULT_OPTIONS: Dict[str, Any] = {
     "budget": {"max_video_calls": None, "max_image_calls": None, "max_minutes": None},
     # 渲染方式：video = 小场景视频（默认）；still = 动态漫。创建后只读（见 render_mode.py）
     "render_mode": "video",
+    "still": dict(RM.STILL_DEFAULTS),   # 动态漫设置（动效、转场、无配音时长）
 }
 
 
@@ -228,7 +230,6 @@ def create_project(
     opts = json.loads(json.dumps(DEFAULT_OPTIONS))
     opts.update(options or {})
     # 校验放在创建目录之前：非法的渲染方式不留下任何文件
-    from . import render_mode as RM
     opts["render_mode"] = RM.normalize(opts.get("render_mode"))
 
     all_nos = [c["no"] for c in result.chapters]

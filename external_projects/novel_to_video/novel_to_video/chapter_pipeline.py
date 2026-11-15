@@ -116,6 +116,9 @@ def run_chapter(project_dir: Path, no: int, *, text_llm: TextLLM, image: ImagePr
         if pr["failed"]:
             return stop("failed", f"提示词一致性检查未通过：{', '.join(pr['failed'])}")
 
+        if mode == RM.STILL:
+            return _still_tail(project_dir, no, image, stop)
+
         clips = run_clips(project_dir, no, video)      # 每个镜头自带心跳与镜头标签（见 chapter_clips）
         joblog.log(project_dir, "chapter", f"第 {no} 章 C-8 小场景视频：生成 {len(clips.get('generated', []))} 个，失败 {len(clips.get('failed', []))} 个",
                    level="warn" if clips.get("failed") else "info")
@@ -166,6 +169,41 @@ STAGE_NAMES = {
     "compose": "C-9 章节合成",
     "stills": "C-8a 场景图", "segments": "C-8b 动效片段",
 }
+
+
+def _still_tail(project_dir: Path, no: int, image: ImageProvider, stop) -> Dict[str, Any]:
+    """动态漫模式：C-8a 场景图 → 审核 → C-8b 动效片段 → C-9 合成（合成读取 clips/，与视频模式共用）。"""
+    from .steps.chapter_segments import run_segments
+    from .steps.chapter_stills import run_stills
+
+    stills = run_stills(project_dir, no, image)
+    joblog.log(project_dir, "chapter", f"第 {no} 章 C-8a 场景图：生成 {len(stills.get('generated', []))} 个，"
+               f"失败 {len(stills.get('failed', []))} 个", level="warn" if stills.get("failed") else "info")
+    if stills.get("blocked"):
+        return stop("waiting_assets", "缺少定妆图，请先到全书素材页生成并通过：" + "、".join(stills["blocked"]),
+                    waiting=stills["blocked"])
+    if stills.get("stopped"):
+        return stop("failed", f"场景图生成被停止：{stills['stopped']}")
+    if stills["failed"]:
+        return stop("failed", f"以下镜头场景图生成失败，修正后重跑：{', '.join(stills['failed'])}",
+                    failed=stills["failed"])
+
+    states = shot_states(project_dir, no)
+    if any(st != "approved" for st in states.values()):
+        pending = [sid for sid, st in states.items() if st != "approved"]
+        return stop("waiting_review", f"{len(pending)} 个场景图等待审核", pending=pending, states=states)
+
+    with joblog.heartbeat(project_dir, "chapter", f"第 {no} 章 C-8b 动效片段"):
+        seg = run_segments(project_dir, no)
+    if seg["failed"]:
+        return stop("failed", f"以下镜头动效片段合成失败，修正后重跑：{', '.join(seg['failed'])}", failed=seg["failed"])
+
+    with joblog.heartbeat(project_dir, "chapter", f"第 {no} 章 C-9 章节合成"):
+        comp = run_compose(project_dir, no)
+    if comp.get("waiting"):
+        return stop("waiting_review", "等待审核：" + "、".join(comp["waiting"]))
+    return stop("done", f"章节视频已生成（{comp['duration']} 秒）", output=comp["output"],
+                duration=comp["duration"])
 
 
 def _current_stage(project_dir: Path, no: int) -> str:
