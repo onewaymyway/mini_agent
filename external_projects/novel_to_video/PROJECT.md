@@ -28,6 +28,7 @@
 | 修补：版本目录导入（2026-11-15） | **已完成（离线测试验证）** | 直接选 novel_writer 的 `_versions/vNNN/`（或工作区）导入时，原先报 MISSING_CHARACTERS（阻断）/MISSING_LOCATIONS：该目录是原始布局（`大纲规划/人物设定/…`），导入器只认导出包布局（`设定/人物/…`）。新增 `layout_adapt.py`：检测到「有大纲规划/、无设定/」即把正文、章节总结、角色、人设卡、角色索引、地点详情复制成导出包布局的副本（内容不变，跳过 `正文/_drafts`），沿用 `working_dir` 机制；不再提示 NO_README / NO_FULL_TEXT；新增 info `WORKSPACE_LAYOUT_CONVERTED` 与 warning `RAW_VERSION_TEXT`（版本目录正文未清洗，可能含写作备注）。测试 `tests/test_workspace_layout_import.py`（2 例） |
 | 修补：已写定设定的角色显示「设定缺失」（2026-11-15） | **已完成（离线测试验证）** | 作者在角色文件里写定了视觉锚点与声音时，G-2 判为「设定已完整」而跳过，审核状态却停在 missing，无法进入待审核、也点不了「通过设定」。现在：新建项目时这类角色直接为 pending；G-2 跳过时若状态仍是 missing 也转为 pending（兼容已建项目，重新点一次 G-2 即可）。仍需人工通过，不自动通过；没写定的角色仍由 G-2 补全。测试并入 `tests/test_workspace_layout_import.py` |
 | 修补：补建角色页一键生成定妆图无日志（2026-11-15） | **已完成（离线测试；页面需本机 streamlit 目视确认）** | 章节页「补建角色（需要你确认）」的日志面板只含章节/队列日志，定妆图日志属 assets 作用域而看不到。现在 `render_batch_bar` 在按钮下方自带「定妆图生成日志」面板（章节页与补建角色审核页共用，审核页底部的重复面板已移除）；没有可生成项时也写入日志说明原因，开始时记录对象数量。测试并入 `tests/test_batch_review.py` |
+| 修补：C-8a 场景图 TypeError reference_images（2026-11-15） | **已完成（离线测试；真实接口待本机冒烟）** | `SkillImageProvider.generate()` 没有 `reference_images` 参数，而 C-8a 场景图会传参考图，真实 provider 下必报 TypeError（stub 与直连实现都有该参数，所以测试没发现）。现在有参考图时走 skill 的 `edit_image`（与直连实现同样校验、缩小、最多 3 张；无效参考图不发请求，视为不可重试错误），无参考图仍走 `generate_image`；返回 `ref_count` / `dropped_refs`。测试并入 `tests/test_image_reference_s1.py` |
 
 ## 当前能力（Phase 0–5）
 

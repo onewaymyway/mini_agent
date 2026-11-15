@@ -198,3 +198,41 @@ def test_stub_without_references_unchanged(tmp_path):
 def test_stub_missing_reference_is_error(tmp_path):
     r = StubImageProvider().generate("x", tmp_path / "o.png", reference_images=[tmp_path / "no.png"])
     assert not r.ok and r.non_retryable
+
+
+def test_skill_image_provider_accepts_references(tmp_path):
+    """回归：SkillImageProvider.generate() 曾不接受 reference_images，导致 C-8a 场景图 TypeError。
+    有参考图走 skill 的 edit_image（data URI 列表，最多 3 张）；无参考图仍走 generate_image；无效参考图不发请求。"""
+    from novel_to_video.providers.skill_providers import SkillImageProvider
+
+    calls = []
+
+    class FakeClient:
+        model = "m"
+
+        def generate_image(self, **kw):
+            calls.append(("gen", kw))
+            Path(kw["save_path"]).write_bytes(b"x")
+            return {"success": True}
+
+        def edit_image(self, **kw):
+            calls.append(("edit", kw))
+            Path(kw["save_path"]).write_bytes(b"x")
+            return {"success": True}
+
+    prov = SkillImageProvider.__new__(SkillImageProvider)
+    prov.client = FakeClient()
+    prov.use_system_proxy = False
+    refs = [_img(tmp_path / f"r{i}.png") for i in range(4)]
+
+    r = prov.generate("p", tmp_path / "o1.png", ratio="16:9", size="1K", reference_images=refs)
+    assert r.ok and r.ref_count == 3 and len(r.dropped_refs) == 1
+    kind, kw = calls[-1]
+    assert kind == "edit" and len(kw["image_url"]) == 3 and kw["image_url"][0].startswith("data:image")
+
+    r = prov.generate("p", tmp_path / "o2.png", ratio="16:9", size="1K")
+    assert r.ok and r.ref_count == 0 and calls[-1][0] == "gen"
+
+    n = len(calls)
+    r = prov.generate("p", tmp_path / "o3.png", reference_images=[tmp_path / "missing.png"])
+    assert not r.ok and r.non_retryable and len(calls) == n

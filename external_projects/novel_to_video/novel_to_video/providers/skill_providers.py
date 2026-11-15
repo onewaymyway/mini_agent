@@ -9,11 +9,11 @@ from __future__ import annotations
 import contextlib
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 from .. import cancel, joblog
 
-from .image import ImageProvider, ImageResult
+from .image import ImageProvider, ImageResult, ReferenceError, prepare_references
 from .skill_bridge import build_pool, modules
 from .video import VideoProvider, VideoResult
 
@@ -77,25 +77,40 @@ class SkillImageProvider(ImageProvider):
                                                           use_system_proxy=self.use_system_proxy)
 
     def generate(self, prompt: str, save_path: Path, *, ratio: Optional[str] = None,
-                 size: str = "1024x1024") -> ImageResult:
+                 size: str = "1024x1024",
+                 reference_images: Optional[Sequence[Path]] = None) -> ImageResult:
         save_path = Path(save_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
         tier = _image_tier(size)
-        joblog.bound_log(f"图像接口请求：档位 {tier}，比例 {ratio or '默认'}，模型 {self.client.model}")
+        # 参考图：与直连实现同样的校验、缩小与 3 张上限；无效则不发请求（不消耗 key 与重试）
+        refs: List[str] = []
+        dropped: List[Path] = []
+        if reference_images:
+            try:
+                refs, dropped = prepare_references(reference_images)
+            except ReferenceError as exc:
+                return ImageResult(ok=False, error=str(exc), non_retryable=True)
+        info = {"ref_count": len(refs), "dropped_refs": [str(p) for p in dropped]}
+        joblog.bound_log(f"图像接口请求：档位 {tier}，比例 {ratio or '默认'}，模型 {self.client.model}"
+                         + (f"，参考图 {len(refs)} 张" if refs else ""))
         t0 = time.monotonic()
         try:
             with contextlib.redirect_stdout(joblog.console_tee()):  # skill 的重试与失败信息写入日志
                 # 经 cancel.call：用户停止时立即返回，不等待图像接口
-                result = cancel.call(self.client.generate_image, prompt=prompt, size=tier, ratio=ratio,
-                                     save_path=str(save_path))
+                if refs:       # 有参考图：走 skill 的图生图/多图合成（image 为 data URI 列表）
+                    result = cancel.call(self.client.edit_image, image_url=refs, prompt=prompt, size=tier,
+                                         ratio=ratio, save_path=str(save_path))
+                else:
+                    result = cancel.call(self.client.generate_image, prompt=prompt, size=tier, ratio=ratio,
+                                         save_path=str(save_path))
         except Exception as exc:  # 网络等底层异常也要包装成结果，避免中断整批任务
             joblog.bound_log(f"图像接口异常：{type(exc).__name__}: {exc}", level="error")
-            return ImageResult(ok=False, error=f"{type(exc).__name__}: {exc}")
+            return ImageResult(ok=False, error=f"{type(exc).__name__}: {exc}", **info)
         joblog.bound_log(f"图像接口返回，用时 {time.monotonic() - t0:.1f} 秒")
         if result.get("success") and save_path.is_file():
-            return ImageResult(ok=True, path=str(save_path))
+            return ImageResult(ok=True, path=str(save_path), **info)
         text, non_retryable = _failure(result)
-        return ImageResult(ok=False, error=text, non_retryable=non_retryable)
+        return ImageResult(ok=False, error=text, non_retryable=non_retryable, **info)
 
 
 # use_system_proxy 默认 False：视频创建、查询与下载都不读取系统代理（环境变量与 Windows 注册表）。
