@@ -461,26 +461,37 @@ def import_source(source_dir: str | Path, title: Optional[str] = None,
                             fingerprint="", issues=issues)
 
     from .name_normalize import has_escape, normalize_tree
+    from .layout_adapt import convert_workspace_layout, is_workspace_layout
     import tempfile
     fingerprint = _fingerprint(root)
     working = root
     tmp_ctx = None
     normalized_info = None
-    if has_escape(root):
+    is_ws = is_workspace_layout(root)
+    if is_ws or has_escape(root):
         if normalize_into is not None:
             dest = Path(normalize_into)
         else:
             tmp_ctx = tempfile.TemporaryDirectory(prefix="n2v_norm_")
             dest = Path(tmp_ctx.name) / "norm"
         try:
-            normalized_info = normalize_tree(root, dest)
+            normalized_info = (convert_workspace_layout(root, dest) if is_ws
+                               else normalize_tree(root, dest))
         except FileExistsError:
             # 已有规范化副本：直接复用，避免重复复制
             normalized_info = {"copied": 0, "renamed": -1, "examples": [], "skipped_links": 0, "reused": True}
         working = dest
-        issues.append(ImportIssue(LEVEL_INFO, "NAME_ESCAPE_NORMALIZED",
-                                  f"导出目录名/文件名为转义形式（#U…），已在规范化副本中解析"
-                                  f"（复制 {normalized_info.get('copied', 0)} 个文件）"))
+        if is_ws:
+            issues.append(ImportIssue(LEVEL_INFO, "WORKSPACE_LAYOUT_CONVERTED",
+                                      f"检测到 novel_writer 版本目录/工作区布局（大纲规划/…），已转换为导出包布局的副本"
+                                      f"（复制 {normalized_info.get('copied', 0)} 个文件）"))
+            issues.append(ImportIssue(LEVEL_WARNING, "RAW_VERSION_TEXT",
+                                      "正文来自版本目录的原稿，未经「导出最终稿」清洗，可能含写作备注等元信息；"
+                                      "如需干净正文，请先在 novel_writer 导出最终稿再导入"))
+        else:
+            issues.append(ImportIssue(LEVEL_INFO, "NAME_ESCAPE_NORMALIZED",
+                                      f"导出目录名/文件名为转义形式（#U…），已在规范化副本中解析"
+                                      f"（复制 {normalized_info.get('copied', 0)} 个文件）"))
     try:
         return _import_working(root, working, title, issues, fingerprint)
     finally:
@@ -494,9 +505,11 @@ def _import_working(root: Path, working: Path, title: Optional[str], issues: Lis
     chapters = _load_chapters(root_for_read, issues)
     characters = _load_characters(root_for_read, issues)
     locations = _load_locations(root_for_read, issues)
-    _export_notes(root_for_read, issues)
+    from_workspace = any(i.code == "WORKSPACE_LAYOUT_CONVERTED" for i in issues)
+    if not from_workspace:      # 版本目录本来就没有 README / 合稿，不再提示
+        _export_notes(root_for_read, issues)
 
-    if not (root_for_read / "小说_全书合稿.txt").is_file():
+    if not from_workspace and not (root_for_read / "小说_全书合稿.txt").is_file():
         issues.append(ImportIssue(LEVEL_INFO, "NO_FULL_TEXT", "导出目录没有 小说_全书合稿.txt（不影响导入）"))
 
     return ImportResult(

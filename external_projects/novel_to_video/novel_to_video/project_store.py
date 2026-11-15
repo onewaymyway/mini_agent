@@ -255,7 +255,12 @@ def create_project(
     working_rel = None
     src_path = Path(result.source_dir)
     from .name_normalize import has_escape, normalize_tree
-    if src_path.is_dir() and has_escape(src_path):
+    from .layout_adapt import convert_workspace_layout, is_workspace_layout
+    if src_path.is_dir() and is_workspace_layout(src_path):
+        # 版本目录/工作区布局：转换为导出包布局的副本落盘到项目内
+        convert_workspace_layout(src_path, proj / "source" / "normalized")
+        working_rel = "source/normalized"
+    elif src_path.is_dir() and has_escape(src_path):
         # 转义导出：把规范化副本落盘到项目内，之后所有读取都指向它（导入时的临时副本会被删除）
         normalize_tree(src_path, proj / "source" / "normalized")
         working_rel = "source/normalized"
