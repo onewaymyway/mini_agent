@@ -1,6 +1,6 @@
 # novel_to_video 动态漫模式（still 渲染）改进计划
 
-> 状态：**方案已确认（2026-11-15）；S1–S6 已完成，S7 起待实施**。按第 8 节分期实施，每期更新文档并打包改动文件（保持目录结构）。
+> 状态：**方案已确认（2026-11-15）；S1–S7 已完成，S8 起待实施**。按第 8 节分期实施，每期更新文档并打包改动文件（保持目录结构）。
 > 关联文档：`next_doc/novel_to_video_external_project_plan.md`（总体设计）、`next_doc/novel_to_video_location_spots_plan.md`（地点细化）。
 > 项目路径：`external_projects/novel_to_video/`。
 
@@ -254,3 +254,10 @@
   - 偏差与说明：计划 7.3 中的「叠化」（需要重叠与时长补偿）留给 S7；本阶段的淡化按第一版方案实现（黑场过渡、不重叠）。
   - 未做（后续阶段）：叠化（S7）；`recompose_chapter` 的动态漫适配（S9）；界面（S8）。
   - 测试：`tests/test_still_transition_s6.py`（11 例）：转场设置校验；淡化后的总时长与单音轨；用真实 ffmpeg 抽帧检查镜头边界（淡化时变暗，硬切时保持明亮）；过短镜头的淡化钳制；字幕精确时间轴（块间隔、空块占位、镜头间偏移、末尾裁剪、缺时长退回估算）、视频模式估算不变；配音文件的真实时长与记录值相差不超过 1 帧；淡化与硬切的合成时长一致、字幕起点与镜头起点相差不超过 1 帧；非法转场设置导致合成报错。
+- **S7 叠化（dissolve）：完成（2026-11-15）**
+  - 与计划 7.3 的差异：计划设想把每个片段加长 T/2 再重叠。实际实现不改动片段，而是利用每个镜头配音后已有的 0.4 秒静音余量：相邻镜头的画面重叠 T 秒，前一镜头的音频尾部裁掉 T 秒（正好是静音）。这样配音起点仍与画面起点一致，且无需重新渲染片段。代价是 `transition_sec` 的上限为 0.4 秒（余量长度），超过会切到台词，因此设置校验直接拒绝。
+  - `media/ffmpeg.py`：`effective_dissolve`（实际叠化时长，不超过最短镜头的一半）、`dissolve_timeline`（各镜头在章节时间轴上占用的时长，总和 = sum(d) − (n−1)·t）、`concat_dissolve`（xfade dissolve 画面叠化，音频 atrim 后拼接）。拼接与字幕共用同一个实际叠化时长。
+  - `render_mode.py`：`TRANSITIONS` 增加 dissolve；`TAIL_MARGIN_SEC = 0.4` 作为共享常量（`chapter_segments` 同用）；叠化时长校验范围 (0, 0.4]。
+  - `steps/chapter_compose.py`：动态漫选择 dissolve 时，字幕时间轴使用 `dissolve_timeline`，拼接使用 `concat_dissolve`。淡化与硬切路径不变，视频模式不变。
+  - 测试：`tests/test_still_dissolve_s7.py`（7 例）：设置校验；时间轴数值（起点、总时长、极短镜头钳制）；真实拼接的总时长与音频长度；叠化中途画面在两镜头亮度之间，前后为各自镜头；音频：第二段音调从 1.0 秒开始（容差 0.05 秒，考虑 AAC 固定延迟）；整章的时长与字幕起点（容差 1 帧）。
+  - 未做（后续阶段）：`recompose_chapter` 的动态漫适配（S9）；界面（S8）。

@@ -84,6 +84,7 @@
 - 动态漫模式 S4（2026-11-15）：C-8b 动效片段（`media/motion.py`、`steps/chapter_segments.py`）。场景图 + 配音 → `clips/<镜头>.mp4`，C-9 合成沿用视频模式。时长 = 配音 + 0.4 秒，不设上下限；无配音镜头用 `still.silent_shot_sec`（默认 3 秒）。镜内动效：auto_alternate（默认，推近/拉远交替）、push_in、pull_out、none；强度 slow / medium。整章流水线已接入动态漫（场景图 → 审核 → 片段 → 合成），门禁放开。项目选项新增 `still` 节。测试 `tests/test_still_segments_s4.py`（16 例）。未做：平移/晃动（S5）、镜间转场（S6/S7）、重新合成与批量/回退适配（S9）、界面（S8）。
 - 动态漫模式 S5（2026-11-15）：镜内动效补充平移（pan_left / pan_right / pan_up / pan_down，缩放固定，取景框沿余量线性移动）与晃动（drift，正弦摆动，不越界）。强度 slow / medium 同时决定可移动余量。golden 字符串 + 数值求值检查位置边界与起止 + 真实渲染。测试 `tests/test_still_motions_s5.py`（18 例）。S4 的一条断言改为用 `spiral` 作为未知动效的例子。
 - 动态漫模式 S6（2026-11-15）：镜间转场 fade（逐段黑场淡入淡出，时长不变，音频仅 0.02 秒淡变）与 cut（硬切）；`render_mode.validate_transition` 校验设置。动态漫字幕改用配音真实块时长（`build_cues(exact=True)`），视频模式的估算方式不变。默认转场为淡化。测试 `tests/test_still_transition_s6.py`（11 例）。叠化（S7）、recompose 适配（S9）、界面（S8）未做。
+- 动态漫模式 S7（2026-11-15）：镜间叠化 dissolve。画面重叠 transition_sec 秒，前一镜头音频裁掉同样时长（正好是配音后的静音余量），配音起点与画面起点一致，片段无需重新渲染。`transition_sec` 上限 0.4 秒（余量长度）。`media/ffmpeg.py` 的 `concat_dissolve` / `dissolve_timeline` / `effective_dissolve`；字幕时间轴共用同一时长。测试 `tests/test_still_dissolve_s7.py`（7 例，含音频起点检查）。与计划 7.3 的差异见计划文档第 12 节。recompose 适配（S9）、界面（S8）未做。
 - 标签改名（2026-11-02）：「🚦 挡位与队列」改为「🛠️ 设置与队列」，页面标题改为「设置与批量队列」，因为该页主要承载各项设置与批量队列。
 
 ## 已知限制

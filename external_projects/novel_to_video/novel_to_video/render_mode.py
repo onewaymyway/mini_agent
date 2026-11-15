@@ -35,8 +35,12 @@ STILL_DEFAULTS: Dict[str, Any] = {
 }
 
 
-TRANSITIONS = ("fade", "cut")
-MAX_TRANSITION_SEC = 1.0
+TRANSITIONS = ("fade", "cut", "dissolve")
+MAX_TRANSITION_SEC = 1.0                 # 淡化的上限（黑场过渡）
+# 每个镜头在配音之后的静音余量（秒）。叠化把相邻镜头的画面重叠在这段静音里，因此时长不能超过它。
+# steps/chapter_segments.py 使用同一个值。
+TAIL_MARGIN_SEC = 0.4
+MAX_DISSOLVE_SEC = TAIL_MARGIN_SEC
 
 
 def still_settings(meta: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -47,16 +51,20 @@ def still_settings(meta: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def validate_transition(cfg: Dict[str, Any]) -> None:
-    """镜间转场设置必须合法：fade 时长在 (0, 1] 秒之间；cut 不需要时长。"""
+    """镜间转场设置必须合法：fade 时长在 (0, 1] 秒，dissolve 在 (0, 0.4] 秒之间；cut 不需要时长。"""
     if cfg.get("transition") not in TRANSITIONS:
         raise ValueError(f"镜间转场必须是 {' / '.join(TRANSITIONS)} 之一，收到：{cfg.get('transition')!r}")
-    if cfg["transition"] == "fade":
-        try:
-            sec = float(cfg.get("transition_sec"))
-        except (TypeError, ValueError):
-            raise ValueError("淡化时长必须是数字（秒）") from None
-        if not 0 < sec <= MAX_TRANSITION_SEC:
-            raise ValueError(f"淡化时长必须在 0 到 {MAX_TRANSITION_SEC} 秒之间，收到：{sec}")
+    kind = cfg["transition"]
+    if kind == "cut":
+        return
+    try:
+        sec = float(cfg.get("transition_sec"))
+    except (TypeError, ValueError):
+        raise ValueError("转场时长必须是数字（秒）") from None
+    limit = MAX_DISSOLVE_SEC if kind == "dissolve" else MAX_TRANSITION_SEC
+    if not 0 < sec <= limit:
+        label = "叠化" if kind == "dissolve" else "淡化"
+        raise ValueError(f"{label}时长必须在 0 到 {limit} 秒之间，收到：{sec}")
 
 
 def normalize(value: Any) -> str:

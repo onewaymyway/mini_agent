@@ -181,6 +181,61 @@ def concat_fade(clips: List[Path], durations: Sequence[float], out: Path, fade_s
     return out
 
 
+def effective_dissolve(durations: Sequence[float], dissolve_sec: float) -> float:
+    """实际使用的叠化时长：不超过最短镜头的一半（极短镜头不会被叠化吃掉）。拼接与字幕共用这一个值。"""
+    if not durations:
+        return 0.0
+    return min(float(dissolve_sec), min(float(d) for d in durations) / 2)
+
+
+def dissolve_timeline(durations: Sequence[float], dissolve_sec: float) -> List[float]:
+    """叠化时各镜头在章节时间轴上占用的时长：除最后一个镜头外，每个镜头都让出实际叠化时长
+    （下一个镜头从这里开始）。返回值之和即章节总时长 = sum(d) - (n-1) * t。"""
+    if not durations:
+        return []
+    t = effective_dissolve(durations, dissolve_sec)
+    out = [float(d) - t for d in durations[:-1]]
+    return out + [float(durations[-1])]
+
+
+def concat_dissolve(clips: List[Path], durations: Sequence[float], out: Path, dissolve_sec: float) -> Path:
+    """相邻镜头画面叠化（xfade dissolve）。画面重叠 dissolve_sec 秒；音频把前一个镜头的尾部
+    （静音余量）裁掉同样的时长，使每个镜头的配音仍从它在时间轴上的起点开始。
+    要求 dissolve_sec 不超过每个镜头的静音余量（见 render_mode.TAIL_MARGIN_SEC），否则会切到台词。"""
+    if not clips:
+        raise MediaError("没有可拼接的片段")
+    if len(clips) != len(durations):
+        raise MediaError("片段数与时长数不一致")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    n = len(clips)
+    if n == 1:
+        return concat(clips, out)
+    t = effective_dissolve(durations, dissolve_sec)
+    inputs: List[str] = []
+    for c in clips:
+        inputs += ["-i", str(c)]
+    parts: List[str] = []
+    for i in range(n):
+        parts.append(f"[{i}:v]setsar=1[v{i}]")
+        if i < n - 1:
+            parts.append(f"[{i}:a]atrim=0:{float(durations[i]) - t:.3f},asetpts=PTS-STARTPTS[a{i}]")
+        else:
+            parts.append(f"[{i}:a]asetpts=PTS-STARTPTS[a{i}]")
+    cur, length = "[v0]", float(durations[0])
+    for k in range(1, n):
+        offset = length - t                       # 第 k 个镜头在时间轴上的起点
+        label = "[outv]" if k == n - 1 else f"[vx{k}]"
+        parts.append(f"{cur}[v{k}]xfade=transition=dissolve:duration={t:.3f}:offset={offset:.3f}{label}")
+        cur = label
+        length += float(durations[k]) - t
+    parts.append("".join(f"[a{i}]" for i in range(n)) + f"concat=n={n}:v=0:a=1[outa]")
+    fc = ";".join(parts)
+    _run([ffmpeg(), "-y", *inputs, "-filter_complex", fc, "-map", "[outv]", "-map", "[outa]",
+          "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+          "-c:a", "aac", "-ar", str(AUDIO_RATE), "-ac", "1", str(out)])
+    return out
+
+
 def to_wav(src: Path, dst: Path) -> Path:
     dst.parent.mkdir(parents=True, exist_ok=True)
     _run([ffmpeg(), "-y", "-i", str(src), "-ar", str(AUDIO_RATE), "-ac", "1", str(dst)])

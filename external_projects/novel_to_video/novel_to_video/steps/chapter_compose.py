@@ -106,12 +106,23 @@ def recompose_chapter(project_dir: Path, no: int) -> Dict[str, Any]:
 
 
 def _join(clips, out: Path, *, still: bool, cfg: Dict[str, Any]) -> None:
-    """拼接镜头片段。动态漫且转场为淡化时，逐段淡入淡出（时长不变）；否则硬切，与视频模式相同。"""
+    """拼接镜头片段。动态漫：淡化（逐段黑场，时长不变）或叠化（画面重叠）；否则硬切，与视频模式相同。"""
     if still and cfg.get("transition") == "fade":
         durations = [mf.probe_duration(c) for c in clips]
         mf.concat_fade(clips, durations, out, float(cfg["transition_sec"]))
+    elif still and cfg.get("transition") == "dissolve":
+        durations = [mf.probe_duration(c) for c in clips]
+        mf.concat_dissolve(clips, durations, out, float(cfg["transition_sec"]))
     else:
         mf.concat(clips, out)
+
+
+def _timeline_durations(clips, *, still: bool, cfg: Dict[str, Any]):
+    """字幕时间轴使用的每个镜头时长：叠化时每个镜头（除最后一个）让出重叠部分；其它情况与片段时长相同。"""
+    durations = [mf.probe_duration(c) for c in clips]
+    if still and cfg.get("transition") == "dissolve":
+        return mf.dissolve_timeline(durations, float(cfg["transition_sec"]))
+    return durations
 
 
 def run_compose(project_dir: Path, no: int) -> Dict[str, Any]:
@@ -139,7 +150,7 @@ def run_compose(project_dir: Path, no: int) -> Dict[str, Any]:
     else:
         raw = cdir / "chapter_nosub.mp4"
         _join(clips, raw, still=still, cfg=tcfg)
-        durations = [mf.probe_duration(c) for c in clips]
+        durations = _timeline_durations(clips, still=still, cfg=tcfg)
         # 动态漫：字幕按配音的真实时长排列（exact）；视频模式保持原来的估算方式
         cues, total = sub.build_cues(shots["shots"], durations, speaker_names(project_dir), exact=still)
         fmt = load_format(project_dir)

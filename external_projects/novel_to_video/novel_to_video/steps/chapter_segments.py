@@ -24,7 +24,7 @@ from ..media import motion as MO
 from ..project_store import read_json
 
 SEGMENT_KEY_VERSION = "segment-v1"
-TAIL_MARGIN_SEC = 0.4      # 与视频模式的配音余量一致
+TAIL_MARGIN_SEC = RM.TAIL_MARGIN_SEC
 
 
 def segment_seconds(project_dir: Path, no: int, sid: str, silent_sec: float) -> Tuple[float, bool]:
