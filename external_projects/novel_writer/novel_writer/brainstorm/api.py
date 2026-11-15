@@ -382,3 +382,18 @@ def seed_versions(root: str) -> Dict[str, Any]:
 def seed_get(root: str, ver: Optional[int] = None) -> Dict[str, Any]:
     from novel_writer.brainstorm import seed_draft as SD
     return _guard(lambda: SD.load(_ws(root), ver))
+
+
+def seed_revise_start(root: str, feedback: str, sections=None, base_ver=None, generator=None) -> Dict[str, Any]:
+    from novel_writer.brainstorm import seed_revise as SR
+    return _guard(lambda: {"run": SR.start_run(_ws(root), feedback, sections, base_ver=base_ver, generator=generator)})
+
+
+def seed_diff(root: str, a: int, b: int) -> Dict[str, Any]:
+    from novel_writer.brainstorm import seed_revise as SR
+    return _guard(lambda: SR.diff(_ws(root), int(a), int(b)))
+
+
+def seed_restore(root: str, ver: int) -> Dict[str, Any]:
+    from novel_writer.brainstorm import seed_draft as SD
+    return _guard(lambda: {"ver": SD.restore(_ws(root), int(ver))})

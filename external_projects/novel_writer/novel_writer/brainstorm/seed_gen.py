@@ -157,27 +157,32 @@ def _run_files(ws: BrainstormWorkspace, run_id: str):
 
 
 def start_run(ws: BrainstormWorkspace, idea: str, constraints: str = "", *, generator: Optional[Generator] = None) -> str:
-    """校验输入后在后台起稿，返回运行编号。有未结束的起稿任务时拒绝（避免并发写版本）。"""
-    import threading
+    """校验输入后在后台起稿，返回运行编号。有未结束的起稿/修订任务时拒绝（避免并发写版本）。"""
     ws.meta()
     if not (idea or "").strip():
         raise BrainstormError("请先写下你的想法")
+    return start_task(ws, lambda w, log: run(w, idea, constraints, generator=generator, log=log), prefix="s")
+
+
+def start_task(ws: BrainstormWorkspace, fn: Callable[[BrainstormWorkspace, Callable[[str, str], None]], Any],
+               *, prefix: str = "s") -> str:
+    """在后台线程执行 fn(ws, log)，状态与过程日志写入 _studio/seed_runs/。起稿与反馈修订共用（同一时间只允许一个）。"""
+    import threading
     base = ws.root / RUNS_DIR
     if base.is_dir():
         for p in base.glob("*.json"):
             if (read_json(p, default={}) or {}).get("status") == "running":
-                raise BrainstormError("已有起稿任务在运行，请等它结束")
-    run_id = "s" + uuid.uuid4().hex[:8]
+                raise BrainstormError("已有起稿/修订任务在运行，请等它结束")
+    run_id = prefix + uuid.uuid4().hex[:8]
     status_path, log_path = _run_files(ws, run_id)
     status_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.write_text("", encoding="utf-8")
     atomic_write_json(status_path, {"run": run_id, "status": "running", "started_at": _now()})
-    threading.Thread(target=_job, args=(str(ws.root), run_id, idea, constraints, generator),
-                     daemon=True, name=f"seed-{run_id}").start()
+    threading.Thread(target=_job, args=(str(ws.root), run_id, fn), daemon=True, name=f"seed-{run_id}").start()
     return run_id
 
 
-def _job(root: str, run_id: str, idea: str, constraints: str, generator) -> None:
+def _job(root: str, run_id: str, fn) -> None:
     from novel_writer.brainstorm.runlog import Capture
     ws = BrainstormWorkspace(root)
     status_path, log_path = _run_files(ws, run_id)
@@ -188,7 +193,7 @@ def _job(root: str, run_id: str, idea: str, constraints: str, generator) -> None
 
     try:
         with Capture(lambda e: write(e.get("kind", "info"), e.get("text", ""))):
-            result = run(ws, idea, constraints, generator=generator, log=write)
+            result = fn(ws, write)
         atomic_write_json(status_path, {"run": run_id, "status": "done", "finished_at": _now(), "result": result})
     except Exception as exc:  # noqa: BLE001 - 失败要写进日志与状态，界面才能显示
         write("error", f"{type(exc).__name__}：{exc}")
