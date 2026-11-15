@@ -28,15 +28,24 @@ def page_gear() -> None:
     pol = tool_api.gear_policy()["data"]
     import json
     from pathlib import Path
-    cur_gear = json.loads((Path(pdir) / "project.json").read_text(encoding="utf-8")).get("gear", "G0")
+    from novel_to_video import render_mode as RM
+    _meta = json.loads((Path(pdir) / "project.json").read_text(encoding="utf-8"))
+    cur_gear = _meta.get("gear", "G0")
+    still_mode = RM.mode_of(_meta) == RM.STILL
     cur = st.selectbox("挡位", pol["gears"], index=pol["gears"].index(cur_gear),
                        format_func=lambda g: f"{g} · {GEAR_HELP[g]}", key="gear_pick")
     budget = {}
     if cur in ("G3", "G4", "G5"):
-        c1, c2, c3 = st.columns(3)
-        budget["max_video_calls"] = c1.number_input("视频调用上限", min_value=0, value=20, step=1)
-        budget["max_image_calls"] = c2.number_input("图像调用上限", min_value=0, value=20, step=1)
-        budget["max_minutes"] = c3.number_input("耗时上限（分钟）", min_value=0.0, value=120.0, step=10.0)
+        if still_mode:
+            # 动态漫不调用视频接口：只设图像（场景图与素材）与耗时上限
+            c2, c3 = st.columns(2)
+            budget["max_image_calls"] = c2.number_input("图像调用上限（场景图与素材）", min_value=0, value=20, step=1)
+            budget["max_minutes"] = c3.number_input("耗时上限（分钟）", min_value=0.0, value=120.0, step=10.0)
+        else:
+            c1, c2, c3 = st.columns(3)
+            budget["max_video_calls"] = c1.number_input("视频调用上限", min_value=0, value=20, step=1)
+            budget["max_image_calls"] = c2.number_input("图像调用上限", min_value=0, value=20, step=1)
+            budget["max_minutes"] = c3.number_input("耗时上限（分钟）", min_value=0.0, value=120.0, step=10.0)
     if st.button("保存挡位"):
         res = tool_api.set_gear(pdir, cur, budget or None)
         (st.success if res["ok"] else st.error)(res["data"] if res["ok"] else res["error"]["message"])
@@ -163,7 +172,6 @@ def page_gear() -> None:
         (st.success if res["ok"] else st.error)("已保存" if res["ok"] else res["error"]["message"])
     st.caption("只影响 edge-tts 配音。若要使用指定代理地址，请在项目配置 tts.edge_tts_proxy 中填写。")
 
-    from novel_to_video import render_mode as RM
     st.markdown("#### 渲染方式与动态漫设置")
     mode_now = RM.mode_of(proj_cfg)
     st.caption("渲染方式：" + ("动态漫（场景图 + 动效 + 配音字幕）" if mode_now == RM.STILL else "视频（小场景视频）")

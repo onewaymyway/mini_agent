@@ -47,10 +47,15 @@ def _add_minutes(project_dir: Path, minutes: float) -> None:
     write_json_atomic(path, data)
 
 
+def _mode(project_dir: Path) -> str:
+    from . import render_mode as RM
+    return RM.mode_of(read_json(project_dir / "project.json"))
+
+
 def check_budget(project_dir: Path, gear: str, budget: Dict[str, Any]) -> Optional[str]:
     """返回 None 表示可以继续，否则返回停止原因。非 G3 不做预算强制。"""
     try:
-        gates.require_budget(budget, _usage(project_dir), _minutes_used(project_dir), gear)
+        gates.require_budget(budget, _usage(project_dir), _minutes_used(project_dir), gear, mode=_mode(project_dir))
     except gates.GateError as exc:
         return str(exc)
     return None
@@ -59,13 +64,16 @@ def check_budget(project_dir: Path, gear: str, budget: Dict[str, Any]) -> Option
 def auto_approve_shots(project_dir: Path, no: int) -> List[str]:
     """G3：对满足机械条件的镜头自动通过，返回本次自动通过的镜头 id。"""
     shots = cio.load_shots(project_dir, no).get("shots", [])
-    cdir = cio.chapter_dir(project_dir, no)
+    mode = sr.project_mode(project_dir)
+    key, err = sr._FIELDS[mode]
     approved: List[str] = []
     for sh in shots:
         sid = sh["id"]
-        if sh.get("clip_error") or sh.get("error") or sh.get("consistency") not in (None, "pass"):
+        if sh.get(err) or sh.get("error") or sh.get("consistency") not in (None, "pass"):
             continue
-        if not sh.get("clip_key") or not (cdir / "clips" / f"{sid}.mp4").is_file():
+        # 视频：需要 clip_key 与视频文件；动态漫：需要当前场景图（动效片段在合成前再生成）
+        f = sr.asset_file(project_dir, no, sh, mode)
+        if not sh.get(key) or f is None or not f.is_file():
             continue
         if sr.shot_states(project_dir, no).get(sid) == "approved":
             continue
@@ -132,7 +140,7 @@ def run_queue(project_dir: Path, numbers: List[int], *, gear: str, run_one) -> D
     proj = read_json(project_dir / "project.json")
     budget = proj.get("budget") or {}
     gear = gates.normalize_gear(gear)
-    gates.validate_budget(budget, gear)
+    gates.validate_budget(budget, gear, _mode(project_dir))
     results: Dict[int, Dict[str, Any]] = {}
     halted: Optional[str] = None
     started = time.monotonic()

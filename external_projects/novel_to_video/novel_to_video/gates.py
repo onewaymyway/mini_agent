@@ -72,27 +72,38 @@ def policy_table() -> Dict[str, Dict[str, str]]:
     return {g: dict(v) for g, v in _POLICY.items()}
 
 
-def require_budget(budget: Dict[str, Any], usage: Dict[str, int], minutes_used: float, gear: str) -> None:
+def _budget_keys(mode: str) -> tuple:
+    """动态漫模式不调用视频接口，只需要图像与耗时上限（见 render_mode.py）。"""
+    if mode == "still":
+        return ("max_image_calls", "max_minutes")
+    return ("max_video_calls", "max_image_calls", "max_minutes")
+
+
+def require_budget(budget: Dict[str, Any], usage: Dict[str, int], minutes_used: float, gear: str,
+                   mode: str = "video") -> None:
     """G3 及以上必须配置预算上限；超出上限时抛出 GateError。
 
-    usage: {"video": n, "image": n}；minutes_used: 已用分钟数。
+    usage: {"video": n, "image": n}；minutes_used: 已用分钟数。mode 为项目的渲染方式。
     """
     if normalize_gear(gear) != "G3":
         return
-    validate_budget(budget, gear)
+    validate_budget(budget, gear, mode)
     limits = {"max_video_calls": "video", "max_image_calls": "image"}
     for lim, kind in limits.items():
+        if lim not in _budget_keys(mode):
+            continue
         if usage.get(kind, 0) >= int(budget[lim]):
             raise GateError(f"预算已用尽：{kind} 调用 {usage.get(kind, 0)} / {budget[lim]}")
     if minutes_used >= float(budget["max_minutes"]):
         raise GateError(f"预算已用尽：耗时 {minutes_used:.1f} / {budget['max_minutes']} 分钟")
 
 
-def validate_budget(budget: Dict[str, Any], gear: str) -> None:
+def validate_budget(budget: Dict[str, Any], gear: str, mode: str = "video") -> None:
     """只检查预算是否“已配置”（G3 必填）；上限为 0 是合法配置，表示立即停止。
-    是否超限属于运行时检查，由 require_budget 负责，不在保存设置时拦截。"""
+    是否超限属于运行时检查，由 require_budget 负责，不在保存设置时拦截。
+    动态漫模式不要求视频调用上限。"""
     if normalize_gear(gear) != "G3":
         return
-    missing = [k for k in ("max_video_calls", "max_image_calls", "max_minutes") if budget.get(k) in (None, "")]
+    missing = [k for k in _budget_keys(mode) if budget.get(k) in (None, "")]
     if missing:
         raise GateError("G3 挡位必须设置预算上限：" + "、".join(missing))

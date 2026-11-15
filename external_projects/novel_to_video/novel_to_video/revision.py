@@ -40,9 +40,16 @@ def _shot_index(shots: List[Dict[str, Any]], sid: str) -> int:
 
 
 def invalidate(project_dir: Path, no: int, sid: str, level: str, *, touch_script: bool = True) -> Dict[str, Any]:
-    """按层级清理下游产物。返回被清理的文件与被重置的镜头，便于日志与界面展示。"""
+    """按层级清理下游产物。返回被清理的文件与被重置的镜头，便于日志与界面展示。
+
+    视频模式：清理视频与 clip_key。动态漫模式：清理动效片段与场景图指针（旧场景图保留作为历史，
+    下次运行生成新版本），音频与提示词的清理与视频模式相同。
+    """
     if level not in LEVELS:
         raise ValueError(f"未知修改层级：{level}")
+    from . import render_mode as RM
+    from .shot_review import project_mode
+    still = project_mode(project_dir) == RM.STILL
     cdir = cio.chapter_dir(project_dir, no)
     shots_doc = cio.load_shots(project_dir, no)
     shots = shots_doc.get("shots", [])
@@ -55,8 +62,14 @@ def invalidate(project_dir: Path, no: int, sid: str, level: str, *, touch_script
         s = sh["id"]
         _touch(cdir / "clips" / f"{s}.mp4")
         removed.append(f"clips/{s}.mp4")
-        sh["clip_key"] = None
-        sh.pop("clip_error", None)
+        if still:
+            sh["still_key"] = None
+            sh["still_file"] = None          # 指针清空，旧图保留
+            sh.pop("still_error", None)
+            sh["segment_key"] = None
+        else:
+            sh["clip_key"] = None
+            sh.pop("clip_error", None)
         if level in ("prompt", "dialogue", "shot_plan"):
             sh["prompt_en"] = None
             sh["consistency"] = None
@@ -109,6 +122,26 @@ def propagate_chapter_stale(project_dir: Path, no: int, reason: str) -> Dict[str
         mark_final_stale(project_dir, reason=f"第 {no} 章变更")
         marked_final = True
     return {"chapter_stale": marked_chapter, "final_stale": marked_final}
+
+
+def mark_still_settings_changed(project_dir: Path, *, segments: bool, transition: bool) -> Dict[str, Any]:
+    """动态漫设置变化后的过期标记（只改状态，不删文件，不动场景图）：
+    segments：动效、强度或无配音时长变化 → 各章的动效片段需要重建；
+    transition：转场变化 → 各章需要重新合成。
+    已生成章节视频的章节与全书成片标记为 stale；重新运行或重新合成后恢复。"""
+    marked: List[int] = []
+    if not (segments or transition):
+        return {"chapters": marked}
+    reason = "动态漫设置已修改：" + ("动效片段" if segments else "") + ("、" if segments and transition else "") + ("转场" if transition else "")
+    for row in cio.load_index(project_dir).get("chapters", []):
+        no = int(row["no"])
+        cdir = cio.chapter_dir(project_dir, no)
+        if segments and cio.load_state(project_dir, no).get("stages", {}).get("segments"):
+            cio.mark_stage(project_dir, no, "segments", "stale", reason)
+        if (cdir / f"chapter_{no:03d}.mp4").is_file():
+            propagate_chapter_stale(project_dir, no, reason=reason)
+            marked.append(no)
+    return {"chapters": marked}
 
 
 def mark_final_stale(project_dir: Path, reason: str) -> None:

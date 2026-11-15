@@ -59,6 +59,9 @@ def recompose_chapter(project_dir: Path, no: int) -> Dict[str, Any]:
     shots = load_shots(project_dir, no)
     if not shots.get("shots"):
         raise RuntimeError("本章还没有镜头，请先运行本章流水线")
+    from .. import render_mode as RM
+    if RM.mode_of(read_json(project_dir / "project.json")) == RM.STILL:
+        return _recompose_still(project_dir, no)
     # 门槛看审核记录与镜头内容是否一致（clip_key），不看 clips 里的文件是否存在：
     # 重新合成本来就会重建这些文件，所以它们缺失并不代表未通过审核。
     review = sr.load_shot_review(project_dir, no)["items"]
@@ -123,6 +126,28 @@ def _timeline_durations(clips, *, still: bool, cfg: Dict[str, Any]):
     if still and cfg.get("transition") == "dissolve":
         return mf.dissolve_timeline(durations, float(cfg["transition_sec"]))
     return durations
+
+
+def _recompose_still(project_dir: Path, no: int) -> Dict[str, Any]:
+    """动态漫的重新合成：场景图与配音不变，按当前设置重建动效片段（不调用图像、视频或配音接口），再合成。"""
+    from .chapter_segments import run_segments
+    states = shot_states(project_dir, no)
+    not_ready = [sid for sid, st in states.items() if st != "approved"]
+    if not_ready:
+        raise RuntimeError(f"还有 {len(not_ready)} 个场景图未通过审核，不能重新合成：" + "、".join(not_ready))
+    mf.use_project_format(project_dir)
+    joblog.log(project_dir, "chapter", f"第 {no} 章 重新合成：不调用图像、视频与配音接口，按当前设置重建动效片段")
+    seg = run_segments(project_dir, no)
+    if seg["failed"]:
+        raise RuntimeError("动效片段合成失败：" + "、".join(seg["failed"]))
+    result = run_compose(project_dir, no)
+    if result.get("output"):
+        set_chapter_status(project_dir, no, "done", "章节视频已重新合成（场景图未重新生成）")
+        if (project_dir / "exports" / "video.mp4").is_file():
+            from ..revision import mark_final_stale
+            mark_final_stale(project_dir, reason=f"第 {no} 章已重新合成")
+        joblog.log(project_dir, "chapter", f"第 {no} 章 重新合成完成：{result['output']}", level="ok")
+    return result
 
 
 def run_compose(project_dir: Path, no: int) -> Dict[str, Any]:

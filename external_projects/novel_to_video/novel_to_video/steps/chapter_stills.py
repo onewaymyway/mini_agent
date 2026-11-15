@@ -16,6 +16,7 @@ from typing import Any, Dict, List
 
 from .. import cancel, joblog
 from .. import video_format
+from ..call_log import log_call
 from ..chapter_io import chapter_dir, load_entities, load_shots, mark_stage, save_shots, sha12
 from ..providers.image import ImageProvider
 from .chapter_assets import missing_portraits
@@ -73,6 +74,8 @@ def run_stills(project_dir: Path, no: int, image: ImageProvider) -> Dict[str, An
         with joblog.task_label(label), joblog.heartbeat(project_dir, "chapter", f"{label} 场景图生成"):
             res = image.generate(sh["prompt_en"], out, ratio=fmt.aspect_ratio, size=STILL_SIZE,
                                  reference_images=refs)
+        log_call(project_dir, {"kind": "image", "provider": image.name, "entity": sh["id"], "stage": "stills",
+                               "ok": res.ok, "refs": res.ref_count})   # 计入图像预算
         if res.dropped_refs:
             joblog.log(project_dir, "chapter",
                        f"{label}：参考图超过 3 张，已丢弃 {len(res.dropped_refs)} 张：" + "、".join(Path(p).name for p in res.dropped_refs),

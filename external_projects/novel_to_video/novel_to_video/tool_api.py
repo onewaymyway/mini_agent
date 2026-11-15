@@ -300,10 +300,19 @@ def set_still_settings(project_dir: str, *, motion: str, motion_strength: str, t
         cfg["transition_sec"] = float(transition_sec)
     except (ValueError, TypeError) as exc:
         return _fail(str(exc))
+    old = {**RM.STILL_DEFAULTS, **(proj.get("still") or {})}
     proj["still"] = cfg
     ps.write_json_atomic(pdir / "project.json", proj)
     ps.append_progress(pdir, f"动态漫设置更新：动效 {motion}（{motion_strength}），转场 {transition}")
-    return _ok(cfg)
+    seg_keys = ("motion", "motion_strength", "silent_shot_sec")
+    tr_keys = ("transition", "transition_sec")
+    from . import revision as RV
+    stale = RV.mark_still_settings_changed(
+        pdir,
+        segments=any(old[k] != cfg[k] for k in seg_keys),
+        transition=any(old[k] != cfg[k] for k in tr_keys),
+    )
+    return _ok({**cfg, "stale_chapters": stale["chapters"]})
 
 
 def preview_motion(project_dir: str, no: int, sid: str, *, motion: str, motion_strength: str,
@@ -415,13 +424,14 @@ from . import revision as _rev
 
 
 def set_gear(project_dir: str, gear: str, budget: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """设置挡位与预算。G3 必须同时给出三项预算上限，否则拒绝保存。"""
+    """设置挡位与预算。G3 必须同时给出预算上限，否则拒绝保存（动态漫模式不需要视频上限）。"""
+    from . import render_mode as RM
     pdir = Path(project_dir)
     try:
         g = _gates.normalize_gear(gear)
         proj = ps.read_json(pdir / "project.json")
         new_budget = {**(proj.get("budget") or {}), **(budget or {})}
-        _gates.validate_budget(new_budget, g)
+        _gates.validate_budget(new_budget, g, RM.mode_of(proj))
     except (_gates.GateError, OSError, ValueError) as exc:
         return _fail(str(exc))
     proj["gear"] = g
