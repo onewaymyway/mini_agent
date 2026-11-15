@@ -1,0 +1,210 @@
+"""一句话起稿 S1：由一句话想法一次生成整体构思稿，写入草稿层新版本（不写卡片）。
+
+  * 手动触发；直接调用 LLMHelper（单轮、无工具），与「整理对话」同一模式。
+  * 模型输出 JSON → 解析（容忍代码围栏、前后文字，必要时 json_repair）→ `seed_draft.validate_draft` 校验。
+  * 校验失败带着错误重试一次；仍失败则不写任何版本，模型原始输出存档并完整显示在过程日志里。
+  * 后台线程运行，过程日志逐条写入 `_studio/seed_runs/<id>.jsonl`（界面每秒刷新）。
+"""
+from __future__ import annotations
+
+import datetime as _dt
+import json
+import re
+import uuid
+from typing import Any, Callable, Dict, List, Optional
+
+from novel_writer.brainstorm import cards as C
+from novel_writer.brainstorm import distill as DS
+from novel_writer.brainstorm import seed_draft as SD
+from novel_writer.brainstorm.workspace import BrainstormError, BrainstormWorkspace
+from novel_writer.fsutil import atomic_write_json, atomic_write_text, read_json
+
+Generator = Callable[[str], str]
+MAX_ATTEMPTS = 2
+IDEA_MAX = 2000
+RUNS_DIR = "_studio/seed_runs"
+
+SYSTEM_PROMPT = ("你是小说构思助手。根据作者给出的一句话想法，一次性写出一份整体构思稿。"
+                 "只输出一个 JSON 对象，不要调用任何工具，不要写文件，不要输出 JSON 之外的文字。")
+
+SCHEMA = """{
+  "premise": "核心命题（一两句话：这个故事究竟在讲什么、探讨什么）",
+  "storyline": {"logline": "一句话主线", "opening": "起", "development": "承", "turn": "转", "ending": "合"},
+  "world": {
+    "rules": [{"text": "世界规则", "cost": "代价（可省略）"}],
+    "locations": [{"text": "地点及其作用"}],
+    "factions": [{"text": "势力及其立场"}],
+    "timeline": ["关键历史事件"],
+    "taboos": ["禁忌/不可触碰的设定"]
+  },
+  "cast": [{"name": "名字", "role": "定位", "want": "想要", "need": "真正需要", "flaw": "缺陷", "lie": "相信的谎言", "arc": "成长弧线"}],
+  "plot": {"acts": [{"title": "幕标题", "beats": ["该幕的关键转折点"]}], "twists": ["反转"], "endings": ["结局候选"]},
+  "open_questions": ["尚未决定、需要作者拍板的问题"]
+}"""
+
+GUIDE = ("篇幅要求：这是「大致的雏形」，不是详细设定。规则 3–6 条，地点 2–5 个，势力 2–4 个，时间线 2–5 条，禁忌 1–3 条；"
+         "角色 3–6 个（主角必须有 want / need / flaw）；剧情 3–5 幕，每幕 2–4 个转折点；反转 1–3 个；结局候选 2–3 个；"
+         "待定问题 3–6 个（诚实列出你替作者做了假设、需要他确认的地方）。每条一两句话，具体、不要空泛口号。"
+         "六个部分必须齐全。")
+
+
+def _now() -> str:
+    return _dt.datetime.now().isoformat(timespec="seconds")
+
+
+# ─────────────────────────────── 提示词与解析 ───────────────────────────────
+
+def _brief_context(ws: BrainstormWorkspace) -> str:
+    brief = C.get_module(ws, "brief")
+    filled = {k: v for k, v in brief.items() if str(v).strip()}
+    if not filled:
+        return ""
+    return "【题材卡（作者已填，必须遵守）】\n" + "\n".join(f"- {k}：{v}" for k, v in filled.items())
+
+
+def build_prompt(ws: BrainstormWorkspace, idea: str, constraints: str = "", errors: Optional[List[str]] = None) -> str:
+    parts = [f"【作者的想法】\n{idea.strip()}"]
+    if constraints.strip():
+        parts.append(f"【作者的额外要求（必须遵守）】\n{constraints.strip()}")
+    ctx = _brief_context(ws)
+    if ctx:
+        parts.append(ctx)
+    parts.append("【输出格式】只输出一个 JSON 对象，结构如下：\n" + SCHEMA)
+    parts.append(GUIDE)
+    if errors:
+        parts.append("【上一次输出未通过校验，请修正后重新输出完整 JSON】\n" + "\n".join(f"- {e}" for e in errors))
+    return "\n\n".join(parts) + "\n"
+
+
+def parse_output(reply: str, *, repaired: Optional[List[str]] = None) -> Dict[str, Any]:
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", (reply or "").strip()).strip()
+    first, last = text.find("{"), text.rfind("}")
+    if first < 0:
+        raise BrainstormError("模型输出里没有 JSON 对象")
+    err: Optional[Exception] = None
+    data: Any = None
+    if last > first:
+        try:
+            data = json.loads(text[first:last + 1])
+        except json.JSONDecodeError as exc:
+            err = exc
+    else:
+        err = ValueError("缺少结尾的 }（输出可能被截断）")
+    if err is not None:
+        data = DS._repair_json(text[first:])
+        if not isinstance(data, dict):
+            raise BrainstormError(f"模型输出不是合法 JSON：{err}")
+        if repaired is not None:
+            repaired.append(str(err))
+    if not isinstance(data, dict):
+        raise BrainstormError("模型输出的 JSON 不是对象")
+    return data
+
+
+def _save_raw(ws: BrainstormWorkspace, raw: Any) -> str:
+    rel = f"_studio/seed_draft/raw_{_dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    atomic_write_text(ws.root / rel, str(raw))
+    return rel
+
+
+def _emit(log, kind: str, text: str) -> None:
+    if log is not None:
+        log(kind, text)
+
+
+# ─────────────────────────────── 运行 ───────────────────────────────
+
+def run(ws: BrainstormWorkspace, idea: str, constraints: str = "", *, generator: Optional[Generator] = None,
+        log: Optional[Callable[[str, str], None]] = None) -> Dict[str, Any]:
+    idea, constraints = (idea or "").strip(), (constraints or "").strip()
+    if not idea:
+        raise BrainstormError("请先写下你的想法")
+    if len(idea) > IDEA_MAX:
+        raise BrainstormError(f"想法太长（{len(idea)} 字，上限 {IDEA_MAX}）；起稿只需要一个简单的想法")
+    if generator is None:
+        from novel_writer.brainstorm.spark import helper_generator
+        generator = lambda p: helper_generator(p, system=SYSTEM_PROMPT, timeout=600)  # noqa: E731
+    errors: List[str] = []
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        prompt = build_prompt(ws, idea, constraints, errors)
+        _emit(log, "info", f"第 {attempt}/{MAX_ATTEMPTS} 次：提示词 {len(prompt)} 字，开始调用模型")
+        raw = generator(prompt)
+        _emit(log, "info", f"模型返回 {len(str(raw))} 字，解析并校验")
+        repaired: List[str] = []
+        try:
+            draft = parse_output(raw, repaired=repaired)
+            SD.validate_draft(draft)
+        except BrainstormError as exc:
+            rel = _save_raw(ws, raw)
+            _emit(log, "error", f"未通过：{exc}\n模型原始输出（已存档 {rel}）：\n{raw}")
+            errors = [str(exc)]
+            continue
+        if repaired:
+            rel = _save_raw(ws, raw)
+            _emit(log, "warning", f"输出不是严格合法的 JSON（{repaired[0]}），已用 json_repair 修复；原始输出已存档 {rel}")
+        ver = SD.save_version(ws, draft, kind="seed", reason="一句话起稿" if attempt == 1 else "一句话起稿（重试后通过）",
+                              seed={"idea": idea, "constraints": constraints})
+        _emit(log, "info", f"构思稿已保存为 v{ver:03d}（草稿层，尚未写入卡片）")
+        return {"ver": ver, "attempts": attempt, "repaired": bool(repaired)}
+    raise BrainstormError(f"起稿失败：{MAX_ATTEMPTS} 次都未通过校验（{errors[0]}）；没有写入任何版本，原始输出已存档")
+
+
+# ─────────────────────────────── 后台运行与日志 ───────────────────────────────
+
+def _run_files(ws: BrainstormWorkspace, run_id: str):
+    base = ws.root / RUNS_DIR
+    return base / f"{run_id}.json", base / f"{run_id}.jsonl"
+
+
+def start_run(ws: BrainstormWorkspace, idea: str, constraints: str = "", *, generator: Optional[Generator] = None) -> str:
+    """校验输入后在后台起稿，返回运行编号。有未结束的起稿任务时拒绝（避免并发写版本）。"""
+    import threading
+    ws.meta()
+    if not (idea or "").strip():
+        raise BrainstormError("请先写下你的想法")
+    base = ws.root / RUNS_DIR
+    if base.is_dir():
+        for p in base.glob("*.json"):
+            if (read_json(p, default={}) or {}).get("status") == "running":
+                raise BrainstormError("已有起稿任务在运行，请等它结束")
+    run_id = "s" + uuid.uuid4().hex[:8]
+    status_path, log_path = _run_files(ws, run_id)
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text("", encoding="utf-8")
+    atomic_write_json(status_path, {"run": run_id, "status": "running", "started_at": _now()})
+    threading.Thread(target=_job, args=(str(ws.root), run_id, idea, constraints, generator),
+                     daemon=True, name=f"seed-{run_id}").start()
+    return run_id
+
+
+def _job(root: str, run_id: str, idea: str, constraints: str, generator) -> None:
+    from novel_writer.brainstorm.runlog import Capture
+    ws = BrainstormWorkspace(root)
+    status_path, log_path = _run_files(ws, run_id)
+
+    def write(kind: str, text: str) -> None:
+        with log_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"t": _now(), "kind": kind, "text": text}, ensure_ascii=False) + "\n")
+
+    try:
+        with Capture(lambda e: write(e.get("kind", "info"), e.get("text", ""))):
+            result = run(ws, idea, constraints, generator=generator, log=write)
+        atomic_write_json(status_path, {"run": run_id, "status": "done", "finished_at": _now(), "result": result})
+    except Exception as exc:  # noqa: BLE001 - 失败要写进日志与状态，界面才能显示
+        write("error", f"{type(exc).__name__}：{exc}")
+        atomic_write_json(status_path, {"run": run_id, "status": "error", "finished_at": _now(), "error": str(exc)})
+
+
+def run_state(ws: BrainstormWorkspace, run_id: str) -> Dict[str, Any]:
+    status_path, log_path = _run_files(ws, run_id)
+    status = read_json(status_path, default=None)
+    if not isinstance(status, dict):
+        raise BrainstormError(f"找不到起稿任务：{run_id}")
+    events = []
+    if log_path.is_file():
+        for line in log_path.read_text(encoding="utf-8").splitlines():
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return {**status, "events": events}

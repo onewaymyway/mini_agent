@@ -360,3 +360,25 @@ def lore_list(root: str) -> Dict[str, Any]:
 def lore_read(root: str, rel: str) -> Dict[str, Any]:
     from novel_writer.brainstorm import lore as LO
     return _guard(lambda: LO.read_doc(_ws(root), rel))
+
+
+# ── 一句话起稿（S1）──
+
+def seed_start(root: str, idea: str, constraints: str = "", generator=None) -> Dict[str, Any]:
+    from novel_writer.brainstorm import seed_gen as SG
+    return _guard(lambda: {"run": SG.start_run(_ws(root), idea, constraints, generator=generator)})
+
+
+def seed_state(root: str, run_id: str) -> Dict[str, Any]:
+    from novel_writer.brainstorm import seed_gen as SG
+    return _guard(lambda: SG.run_state(_ws(root), run_id))
+
+
+def seed_versions(root: str) -> Dict[str, Any]:
+    from novel_writer.brainstorm import seed_draft as SD
+    return _guard(lambda: {"versions": SD.versions(_ws(root))})
+
+
+def seed_get(root: str, ver: Optional[int] = None) -> Dict[str, Any]:
+    from novel_writer.brainstorm import seed_draft as SD
+    return _guard(lambda: SD.load(_ws(root), ver))
