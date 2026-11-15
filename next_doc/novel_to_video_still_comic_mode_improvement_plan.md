@@ -1,6 +1,6 @@
 # novel_to_video 动态漫模式（still 渲染）改进计划
 
-> 状态：**方案已确认（2026-11-15），尚未实施**。按第 8 节分期实施，每期更新文档并打包改动文件（保持目录结构）。
+> 状态：**方案已确认（2026-11-15）；S1 已完成，S2 起待实施**。按第 8 节分期实施，每期更新文档并打包改动文件（保持目录结构）。
 > 关联文档：`next_doc/novel_to_video_external_project_plan.md`（总体设计）、`next_doc/novel_to_video_location_spots_plan.md`（地点细化）。
 > 项目路径：`external_projects/novel_to_video/`。
 
@@ -205,3 +205,13 @@
 4. 「预览动效」按钮放在挡位页（见 5.6）。
 
 实施从 S1 开始，按第 8 节分期进行。
+
+## 12. 实施进度
+
+- **S1 图像接口参考图参数：完成（2026-11-15）**
+  - `providers/image.py`：`ImageProvider.generate` 新增可选参数 `reference_images`；`MAX_REFERENCE_IMAGES = 3`；超过 3 张按原顺序保留前 3 张，其余记入 `ImageResult.dropped_refs`（由调用方记日志）；每张参考图长边超过 1024 像素时等比缩小后编码为 PNG 的 data URI；参考图缺失或损坏在发请求前报错（`non_retryable`），不消耗 key 与重试次数。
+  - 无参考图时请求体与改动前逐字节一致（测试锁定）；有参考图时写入 `extra_body.image`，`response_format`、`ratio`、`size` 保持不变。
+  - 重试沿用同一份编码结果，请求体相同。
+  - `StubImageProvider` 同样做截断与校验，并在 `reference_log` 中记录参考图文件名（不含 base64）。
+  - 测试：`tests/test_image_reference_s1.py`（16 例）。
+  - 现有四个生图调用方（角色定妆、全书素材、地点、片头背景）未传参考图，不受影响。

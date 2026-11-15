@@ -78,6 +78,7 @@
 - 地点细化 L2（2026-11-02，同样默认关闭）：C-1 剧本规则要求场次标题写到「区域·场所·时间」；C-2 对只写区域名的场次给 warning（不判失败）；开关切换后剧本缓存自动重算。关闭时提示词与校验逐字节不变。测试 `tests/test_location_spots_l2.py`（9 项）。L3 已完成（同日）：C-7 场景点提示词注明所属区域；同区域近似名提示；全书素材页按区域分组。测试 `tests/test_location_spots_l3.py`（5 项）。L4 已完成（默认开启，项目选项 `location_presplit_enabled`，全书素材页可关闭）：对区域级地点提议场景点候选，用户勾选确认后才写入地点库；全书素材页提供「提议场景点 / 确认写入」操作入口。测试 `tests/test_location_presplit.py`（9 项）与 `tests/test_location_presplit_ui.py`（2 项）。
 - 默认开关调整（2026-11-02）：角色多形象 `character_looks_enabled`、地点细化 `location_spots_enabled`、区域预拆解 `location_presplit_enabled` 默认开启；挡位页可关闭。视频网络的系统代理 `video.use_system_proxy` 是网络方式，仍默认关闭。修复：默认开启地点细化后，章节页会遇到只有 message 没有拆分字段的新提示，原代码因此报错，现已直接显示这些提示。相关测试已更新（显式关闭或断言默认值），新增 `test_chapter_page_shows_new_plan_warnings_without_crashing`。
 - 图像网络开关（2026-11-02）：生图请求与图片下载新增“使用系统代理”，项目配置 `image.use_system_proxy`，默认 False（直连，不读取 HTTP_PROXY/HTTPS_PROXY 与系统代理）；挡位页“图像网络”区域可修改。开启后，常规重试仍失败时才额外尝试一次绕过代理直连。修复：图片下载原先直接调用 `requests.get`，不受 session 控制，代理残留时要多次超时后才兜底。`gen_image_with_text` skill 的 `AgnesImageClient` 同步增加 `use_system_proxy` 参数，默认 False；命令行 `gen_image.py` 也因此默认直连，需要代理时传入该参数。测试 `tests/test_image_proxy_switch.py`（6 项）。
+- 动态漫模式 S1（2026-11-15，计划 `next_doc/novel_to_video_still_comic_mode_improvement_plan.md`）：图像接口支持参考图（`extra_body.image`，data URI）。每次最多 3 张（按顺序截断并返回被丢弃的文件），长边超过 1024 像素等比缩小，缺失或损坏的参考图在发请求前报错。无参考图时请求体与之前一致。测试 `tests/test_image_reference_s1.py`（16 例）。尚未接入流水线（S2 起）。
 - 标签改名（2026-11-02）：「🚦 挡位与队列」改为「🛠️ 设置与队列」，页面标题改为「设置与批量队列」，因为该页主要承载各项设置与批量队列。
 
 ## 已知限制
