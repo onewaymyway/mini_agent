@@ -621,6 +621,15 @@ def _character_brief(chars: Dict[str, Any], present: List[str]) -> str:
     return CS.brief_for(chars, present)
 
 
+def h_characters_complete(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:
+    """人物档案齐全门禁：人设卡与角色档案一一对应。缺失时抛 CharacterSyncError（带 upstream_step），
+    由 worker 自动重跑 build_characters，再回到本门禁。"""
+    from novel_writer import character_sync as CSY
+    rep = CSY.ensure(ws)
+    n = len(rep.get("cards") or [])
+    return {"summary": f"人物档案齐全：{n} 张人设卡均已建档（{rep.get('store_count', 0)} 个角色档案）"}
+
+
 def h_characters_refresh(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:
     """人物档案刷新（确定性）：校验全部角色文件，重生成正文与索引；内容无变化不写盘。"""
     from novel_writer import character_store as CS
@@ -1095,6 +1104,7 @@ CHAPTER_HANDLERS = {
     "garble_guard_alt": h_garble_guard_alt,
     "plot_merge": h_plot_merge,
     "characters_refresh": h_characters_refresh,
+    "characters_complete": h_characters_complete,
     "blueprint_split": h_blueprint_split,
     "plot_import": h_plot_import,
     "machine_check": h_machine_check,

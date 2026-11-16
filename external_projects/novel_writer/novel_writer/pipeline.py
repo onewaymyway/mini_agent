@@ -125,6 +125,10 @@ def build_plan(ws: Workspace) -> List[S.StepDef]:
             plan.append(ending)
             last = ending.id
         briefs = act_list or [(1, 1, total)]
+        # 人物档案齐全门禁：章节简述依赖它（缺人物档案时先自动补建，不在缺人物的情况下生成简述）
+        gate = S.characters_complete_step()
+        plan.append(gate)
+        last = gate.id
         for a, s_, e_ in briefs:
             bd = _BRIEF.brief_draft_step(a, s_, e_, (last,))
             plan.append(bd)

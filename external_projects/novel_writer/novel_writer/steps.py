@@ -185,7 +185,7 @@ def build_characters_step(card_names: Sequence[str]) -> StepDef:
     return StepDef(
         id="build_characters", title="建立人物档案", stage="p1", category=CAT_BUILD,
         executor=EXECUTOR_SKILL, skill="character-manager",
-        instructions=("把人设卡转换为角色文件：为每张人设卡在角色目录下建立一个角色文件（一卡一文件，"
+        instructions=("把人设卡转换为角色文件：为人设卡目录中的全部人设卡（包括本计划没有列出的角色，以目录为准）在角色目录下建立角色文件（一卡一文件，"
                       "id 取 char_ 加三位编号），把身份、外形、心理、行为边界、能力、弧线写入对应字段；人设卡中的「外形规格」必须逐项写入 visual（gender 必填、发型、体型、默认装扮、配饰、声音、英文锚点），不能只保留一句外貌描述；"
                       "state_log 为空数组，current_state.as_of_chapter 为 0；"
                       "「他会做 / 他不会做」写入 behavior_guide.will_do / wont_do。\n" + LAYOUT_RULES),
@@ -193,6 +193,17 @@ def build_characters_step(card_names: Sequence[str]) -> StepDef:
         outputs=outputs,
         deps=tuple(f"design_character:{n}" for n in card_names),
         extra=extra,
+    )
+
+
+def characters_complete_step() -> StepDef:
+    """人物档案齐全门禁（确定性）：每张人设卡都必须有对应的角色档案。大纲先行模式下，章节简述依赖它。
+    缺档案时自动修复（重跑 build_characters），而不是让章节简述在缺人物的情况下运行。"""
+    return StepDef(
+        id="characters_complete", title="人物档案齐全检查", stage="p1", category=CAT_BUILD,
+        executor=EXECUTOR_PYTHON, handler="characters_complete",
+        inputs=(rel("characters"),), outputs=(),
+        deps=("characters_refresh",),
     )
 
 
