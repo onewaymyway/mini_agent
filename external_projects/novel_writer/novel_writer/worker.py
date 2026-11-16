@@ -275,10 +275,12 @@ def upstream_from_error(error: Any) -> Optional[str]:
     return None
 
 
-def _schedule_upstream_repair(ws: Workspace, target: S.StepDef, index: Dict[str, S.StepDef]) -> bool:
-    """失败步骤的根因在上游（state 里有 upstream_step）：把上游设为待重跑并请求运行它，
-    再把本步骤设回待执行（上游通过后会自动轮到它）。同一上游最多自动修复 MAX_UPSTREAM_REPAIRS 次，防止死循环。
-    返回 True 表示已安排；False 表示没有上游、上游不存在或已超过次数。"""
+def _schedule_upstream_repair(ws: Workspace, target: S.StepDef, index: Dict[str, S.StepDef], *,
+                              invoker, settings: Dict[str, Any], handlers, executed: List[Dict[str, Any]],
+                              run_token: Optional[str]) -> bool:
+    """失败步骤的根因在上游：本轮直接重跑上游（不依赖控制指令经循环转交），上游通过后把本步骤设回待执行，
+    循环会在下一轮执行它。修复次数只计本次运行（run_token 变化即清零），上游通过后也清零；同一次运行内
+    连续失败超过 MAX_UPSTREAM_REPAIRS 次则停止并说明。返回 True 表示已修复上游并待重跑本步骤。"""
     state = st.get_step_state(ws, target.id)
     up = state.get("upstream_step") or upstream_from_error(state.get("error"))
     if not up:
@@ -287,15 +289,23 @@ def _schedule_upstream_repair(ws: Workspace, target: S.StepDef, index: Dict[str,
     if up not in index:
         st.log_line(ws, f"⏹ {target.id}：上游步骤「{up}」不在本次计划中，无法自动重跑")
         return False
-    n = int(st.get_step_state(ws, up).get("upstream_repairs") or 0)
+    up_state = st.get_step_state(ws, up)
+    n = int(up_state.get("upstream_repairs") or 0) if up_state.get("upstream_run") == run_token else 0
     if n >= MAX_UPSTREAM_REPAIRS:
-        st.log_line(ws, f"⏹ {up} 已自动修复 {n} 次仍不通过，停止自动修复，请人工检查")
+        st.log_line(ws, f"⏹ {up} 在本次运行中已自动修复 {n} 次仍不通过，停止自动修复，请人工检查（见上方 {up} 的失败原因）")
         return False
-    st.update_step(ws, up, status=st.ST_PENDING, upstream_repairs=n + 1,
-                   note=f"由下游步骤「{target.id}」发现依赖未完成，自动重跑（第 {n + 1} 次）")
+    st.update_step(ws, up, upstream_repairs=n + 1, upstream_run=run_token)
+    st.log_line(ws, f"🔁 {target.id} 的根因在上游「{up}」：立即重跑上游（第 {n + 1} 次）")
+    up_status = R.run_step(ws, index[up], invoker=invoker, settings=settings, handlers=handlers)
+    executed.append({"step": up, "title": index[up].title, "status": up_status,
+                     "summary": st.get_step_state(ws, up).get("summary") or st.get_step_state(ws, up).get("error") or "",
+                     "auto_retries": 0, "timed_out": False, "reason": f"为 {target.id} 自动修复上游"})
+    if up_status != st.ST_PASSED:
+        st.log_line(ws, f"⏹ 上游「{up}」重跑后仍未通过（{up_status}），停止自动修复，请先处理它的失败原因")
+        return False
+    st.update_step(ws, up, upstream_repairs=0)                           # 上游通过：修复次数清零
     st.update_step(ws, target.id, status=st.ST_PENDING, no_retry=None, upstream_step=None, error=None)
-    st.write_control(ws, run_step=up)
-    st.log_line(ws, f"🔁 {target.id} 的根因在上游「{up}」：已自动重跑上游（第 {n + 1} 次），通过后再重跑 {target.id}")
+    st.log_line(ws, f"✔ 上游「{up}」已通过，{target.id} 将重新执行")
     return True
 
 
@@ -422,7 +432,8 @@ def _loop(
             return status
         if mode != "single" and status == st.ST_FAILED and _deterministic_failure(ws, target):
             # 确定性错误（原地重跑结果不变）：根因在上游步骤的，先自动重跑上游，再重跑本步骤
-            if _schedule_upstream_repair(ws, target, index):
+            if _schedule_upstream_repair(ws, target, index, invoker=invoker, settings=settings, handlers=handlers,
+                                         executed=executed, run_token=started_at):
                 continue
             st.log_line(ws, f"⏹ {target.id} 是确定性错误，且无法自动修复，已停止。"
                             f"原因：{str(st.get_step_state(ws, target.id).get('error') or '')[:300]}")
@@ -522,7 +533,8 @@ def _loop(
             st.update_step(ws, target.id, upstream_repairs=0)      # 上游已通过：修复次数重新计算
         if mode != "single" and status_after == st.ST_FAILED and _deterministic_failure(ws, target):
             # 刚运行完即失败、且是确定性错误（根因在上游）：立即安排上游重跑，不再直接返回失败
-            if _schedule_upstream_repair(ws, target, index):
+            if _schedule_upstream_repair(ws, target, index, invoker=invoker, settings=settings, handlers=handlers,
+                                         executed=executed, run_token=started_at):
                 continue
             st.log_line(ws, f"⏹ {target.id} 失败且无法安排上游自动修复，已停止（见上方原因）")
         if relentless and status_after == st.ST_FAILED and not _deterministic_failure(ws, target):
