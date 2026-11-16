@@ -62,6 +62,7 @@ def _feedback_loop_only(monkeypatch):
     """本文件测的是「校验失败 → 反馈模型修正」流程。关闭对白自动修复（见 test_dialogue_repair.py），
     让坏对白仍然走反馈路径。"""
     monkeypatch.setattr(CS, "DIALOGUE_REPAIR_MIN_SIMILARITY", 1.01)
+    monkeypatch.setattr(CS, "PARTIAL_FIX_ENABLED", False)   # 本文件测整段反馈修正；部分修正见 test_shots_optimization.py
 
 
 @pytest.fixture
@@ -108,7 +109,7 @@ def test_every_attempt_is_traced_and_logged_in_full(proj):
     rows = llm_trace.tail(proj, chapter=1, steps=["C-3"])
     assert len(rows) == 2 and "第 1 次修正" in rows[0]["label"]
     warn = [x["message"] for x in joblog.tail(proj, scopes=["chapter"]) if x["level"] == "warn"]
-    assert any("自动把问题反馈给模型修正（第 1/5 次）" in m and "我们快走。" in m for m in warn), warn
+    assert any("自动把问题反馈给模型修正（第 1/5 次" in m and "我们快走。" in m for m in warn), warn
 
 
 def test_gives_up_after_retries_and_reports_all_issues(proj):

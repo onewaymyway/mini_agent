@@ -325,6 +325,29 @@ def shots_prompt(script: str, characters: list, locations: list, *, props: list 
     )
 
 
+def shots_partial_fix_prompt(script: str, characters: list, bad_shots: dict, issues: list) -> str:
+    """部分修正：只有个别镜头未通过校验时，只请模型重写这些镜头；其余镜头保持不变，由代码合并。
+    bad_shots：{序号(从 1 起): 原镜头对象}。输出 {"fixed": [{"index": 序号, "shot": 镜头对象}]}，序号必须完全一致。"""
+    chars = [{"id": c["id"], "name": (c.get("names") or [""])[0], "gender": c.get("gender")} for c in characters]
+    lines = [
+        "TASK=shots_partial_fix",
+        "下面列出的镜头在校验中未通过，其余镜头已通过校验，不需要处理。",
+        "只重写列出的镜头，不要输出其他镜头。输出一个 JSON 对象，不要任何其他文字：",
+        '{"fixed": [{"index": 序号, "shot": 镜头对象}]}',
+        "- 每个 index 必须与下面的序号一致，且每个序号都要给出；",
+        "- shot 的结构与原镜头相同（scene_no、blocks、字段等）；",
+        "- 对白 text 必须是剧本对白行中的连续原文：可以截取其中连续的一段，不能删字、改字、拼接不相邻的句子；",
+        "- 原句太长时，把它拆成两个口播块或两个镜头，各取一段连续原文。",
+        "",
+        "问题清单：",
+    ]
+    lines += [f"- {i['message']}" for i in issues]
+    lines += ["", "剧本（本段）：", script, "", "角色库：", json.dumps(chars, ensure_ascii=False),
+              "", "需要重写的镜头（序号: 原内容）：",
+              json.dumps({str(k): v for k, v in bad_shots.items()}, ensure_ascii=False, indent=2)]
+    return "\n".join(lines)
+
+
 def shots_fix_prompt(script: str, characters: list, locations: list, prev_output: str, issues: list, *,
                     props: list | None = None, looks_enabled: bool = False, max_chars_per_shot: int = 0, expected_shots: int = 0, min_chars_per_shot: int = 0,
                     spots_enabled: bool = False) -> str:

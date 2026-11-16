@@ -455,8 +455,10 @@ def replan_shots(project_dir: str, no: int) -> Dict[str, Any]:
             if f.is_file():
                 f.unlink()
                 removed.append(name)
-        # 进度：只保留剧本阶段，其余阶段回到未运行
+        shutil.rmtree(cdir / "shots_parts", ignore_errors=True)     # 段级检查点一并清空，重新规划从头开始
+        # 进度：只保留剧本阶段，其余阶段回到未运行；失败升级级别归零
         state = cio.load_state(pdir, no)
+        state["shots_escalation"] = 0
         state["stages"] = {k: v for k, v in (state.get("stages") or {}).items() if k == "script"}
         cio.save_state(pdir, no, state)
         cio.set_chapter_status(pdir, no, "pending", "已重新规划，等待运行（将从 C-3 开始）")
