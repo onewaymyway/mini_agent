@@ -368,3 +368,31 @@ def reject(ws: BrainstormWorkspace, pid: str) -> Dict[str, Any]:
     item.update(status="rejected", decided_at=_now())
     _save(ws, items)
     return item
+
+
+def _batch_decide(ws: BrainstormWorkspace, decide) -> Dict[str, Any]:
+    """对全部待确认的提议逐条处理（按登记顺序）。单条失败不影响其它条：失败的保持 pending 并记录原因。
+    返回 {done: [pid...], failed: [{pid, label, error}...]}。"""
+    done: List[str] = []
+    failed: List[Dict[str, Any]] = []
+    for item in list_items(ws, "pending"):
+        pid = item["pid"]
+        try:
+            decide(ws, pid)
+            done.append(pid)
+        except Exception as exc:  # noqa: BLE001 - 批量处理：逐条记录，不中断
+            failed.append({"pid": pid, "module": item.get("module"), "op": item.get("op"), "error": str(exc)})
+    return {"done": done, "failed": failed}
+
+
+def accept_all(ws: BrainstormWorkspace) -> Dict[str, Any]:
+    """全部采纳。过期或校验不过的单条保持待确认（原因写在 error 中），其余照常采纳。"""
+    out = _batch_decide(ws, lambda w, pid: accept(w, pid))
+    return {"accepted": out["done"], "failed": out["failed"]}
+
+
+def reject_all(ws: BrainstormWorkspace) -> Dict[str, Any]:
+    """全部拒绝（只改提议状态，不写卡片）。"""
+    out = _batch_decide(ws, lambda w, pid: reject(w, pid))
+    return {"rejected": out["done"], "failed": out["failed"]}
+

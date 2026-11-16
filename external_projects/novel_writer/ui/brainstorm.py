@@ -549,6 +549,7 @@ def _dialogue_tab(root: str) -> None:
     if pending["data"]:
         st.subheader(f"待确认的提议（{len(pending['data'])}）")
         st.caption("AI 的建议不会自动生效。采纳后才会写入卡片。")
+        _proposal_batch_bar(root, len(pending["data"]))
     for item in pending["data"]:
         with st.container(border=True):
             label = f"{_OP_LABEL.get(item['op'], item['op'])}{_KIND_LABEL.get(item['module'], item['module'])}"
@@ -589,6 +590,34 @@ def _dialogue_tab(root: str) -> None:
             if c2.button("拒绝", key=f"bs_rej_{item['pid']}"):
                 r = BA.reject_proposal(root, item["pid"])
                 show_error(r) if not r["ok"] else st.rerun()
+
+
+def _proposal_batch_bar(root: str, n: int) -> None:
+    """全部采纳 / 全部拒绝。需要先勾选确认；结果（成功与失败的条数及原因）显示在下一次刷新时。"""
+    flash = st.session_state.pop("bs_batch_flash", None)
+    if flash:
+        ok_msg, failed = flash
+        st.success(ok_msg)
+        if failed:
+            st.warning(f"{len(failed)} 条未处理，仍在待确认中：")
+            for f in failed[:20]:
+                st.caption(f"· {f['module']}/{f['op']}：{f['error']}")
+    confirm = st.checkbox(f"我已确认，处理全部 {n} 条待确认提议", key="bs_batch_ok")
+    c1, c2 = st.columns(2)
+    if c1.button(f"全部采纳（{n}）", key="bs_accept_all", disabled=not confirm, type="primary"):
+        r = BA.accept_all_proposals(root)
+        if r["ok"]:
+            d = r["data"]
+            st.session_state["bs_batch_flash"] = (f"已采纳 {len(d['accepted'])} 条", d["failed"])
+            st.rerun()
+        show_error(r)
+    if c2.button(f"全部拒绝（{n}）", key="bs_reject_all", disabled=not confirm):
+        r = BA.reject_all_proposals(root)
+        if r["ok"]:
+            d = r["data"]
+            st.session_state["bs_batch_flash"] = (f"已拒绝 {len(d['rejected'])} 条", d["failed"])
+            st.rerun()
+        show_error(r)
 
 
 _WORLD_LABEL = {"rules": "规则", "locations": "地点", "factions": "势力", "timeline": "时间线", "taboos": "禁忌"}

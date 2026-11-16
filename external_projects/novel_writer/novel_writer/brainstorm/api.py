@@ -163,6 +163,15 @@ def reject_proposal(root: str, pid: str) -> Dict[str, Any]:
     return _guard(lambda: PR.reject(_ws(root), pid))
 
 
+def accept_all_proposals(root: str) -> Dict[str, Any]:
+    """全部待确认的提议逐条采纳；失败的保持待确认并给出原因。"""
+    return _guard(lambda: PR.accept_all(_ws(root)))
+
+
+def reject_all_proposals(root: str) -> Dict[str, Any]:
+    return _guard(lambda: PR.reject_all(_ws(root)))
+
+
 # ── B3：世界观、角色、质检 ──
 from novel_writer.brainstorm import checks as K  # noqa: E402
 from novel_writer.brainstorm import edit as E  # noqa: E402
