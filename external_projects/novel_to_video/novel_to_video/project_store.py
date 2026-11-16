@@ -27,8 +27,8 @@ PROGRESS_FILE = "PROGRESS.md"
 DEFAULT_ART_STYLE = ("cinematic realistic, dystopian sci-fi, muted cold palette, "
                      "soft volumetric light, high detail")
 
-DEFAULT_AUTO_FIX_RETRIES = 5   # 校验失败后自动修正的默认次数；项目里显式写 0 表示不修正、直接失败
-MAX_AUTO_FIX_RETRIES = 5       # 界面与接口允许设置的上限
+DEFAULT_AUTO_FIX_RETRIES = 15  # 校验失败后自动修正的默认次数；项目里显式写 0 表示不修正、直接失败
+MAX_AUTO_FIX_RETRIES = 50      # 界面与接口允许设置的上限
 
 # 视频接口的等待与重试（可在挡位页调整）
 # use_system_proxy：视频创建/查询/下载是否使用系统代理。默认 False（直连）；

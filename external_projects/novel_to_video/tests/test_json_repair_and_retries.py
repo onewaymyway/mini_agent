@@ -30,22 +30,22 @@ def test_unrepairable_text_still_raises_step_error():
         parse_json_object("没有任何结构的普通文字")
 
 
-def test_default_retries_is_five():
-    assert ps.DEFAULT_AUTO_FIX_RETRIES == 5
-    assert ps.DEFAULT_OPTIONS["script_max_retries"] == 5
-    assert ps.DEFAULT_OPTIONS["shots_max_retries"] == 5
+def test_default_retries_is_fifteen():
+    assert ps.DEFAULT_AUTO_FIX_RETRIES == 15
+    assert ps.DEFAULT_OPTIONS["script_max_retries"] == 15
+    assert ps.DEFAULT_OPTIONS["shots_max_retries"] == 15
 
 
-def test_retries_cap_is_five(tmp_path):
+def test_retries_cap_is_fifty(tmp_path):
     (tmp_path / "project.json").write_text(json.dumps({}), encoding="utf-8")
-    assert tool_api.set_shots_retries(str(tmp_path), 5)["ok"]
-    assert tool_api.set_script_retries(str(tmp_path), 5)["ok"]
-    assert not tool_api.set_shots_retries(str(tmp_path), 6)["ok"]
+    assert tool_api.set_shots_retries(str(tmp_path), 50)["ok"]
+    assert tool_api.set_script_retries(str(tmp_path), 50)["ok"]
+    assert not tool_api.set_shots_retries(str(tmp_path), 51)["ok"]
 
 
-def test_legacy_project_without_key_uses_five(tmp_path):
+def test_legacy_project_without_key_uses_fifteen(tmp_path):
     (tmp_path / "project.json").write_text(json.dumps({}), encoding="utf-8")
-    assert ps.auto_fix_retries(tmp_path, "shots_max_retries") == 5
+    assert ps.auto_fix_retries(tmp_path, "shots_max_retries") == 15
 
 
 def test_explicit_zero_still_disables(tmp_path):
