@@ -235,9 +235,91 @@ def _prompt(ws: Workspace, act: int, start: int, end: int, blueprint_entries: Li
 
 # ─────────────────────────────── 处理器 ───────────────────────────────
 
+def _invoke_info(res: Any) -> Dict[str, Any]:
+    """执行器返回值（InvokeResult）→ 诊断信息。旧式执行器返回 None 时按成功处理。"""
+    if res is None:
+        return {"ok": True, "error": "", "timed_out": False, "output_path": ""}
+    return {"ok": bool(getattr(res, "ok", True)), "error": str(getattr(res, "error", "") or ""),
+            "timed_out": bool(getattr(res, "timed_out", False)), "output_path": str(getattr(res, "output_path", "") or "")}
+
+
+def _tail(path: str, n: int = 400) -> str:
+    if not path:
+        return ""
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    return text[-n:].strip()
+
+
+def _extract_chapters_json(text: str) -> Optional[str]:
+    """从执行器的输出文本中找出第一个含 chapters 键的 JSON 对象（容忍前后说明文字与代码围栏）。"""
+    dec = json.JSONDecoder()
+    for m in list(re.finditer(r"\{", text or ""))[:200]:
+        try:
+            obj, _ = dec.raw_decode(text[m.start():])
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and "chapters" in obj:
+            return json.dumps(obj, ensure_ascii=False)
+    return None
+
+
+def _salvage(out_dir: Path, out_file: Path, output_path: str) -> Optional[str]:
+    """写文件失败时的补救：目录里别的 JSON、或执行器完整输出中的 JSON 若结构合法，即采用。"""
+    for cand in sorted(out_dir.glob("*.json")):
+        if cand == out_file:
+            continue
+        text = _extract_chapters_json(cand.read_text(encoding="utf-8", errors="replace"))
+        if text:
+            return text
+    if output_path and Path(output_path).is_file():
+        return _extract_chapters_json(Path(output_path).read_text(encoding="utf-8", errors="replace"))
+    return None
+
+
+def _missing_file_reason(info: Dict[str, Any], out_dir: Path, out_file: Path) -> str:
+    """没有写出文件时，说明具体发生了什么（不是只报「没有写出」）。"""
+    files = sorted(p.name for p in out_dir.iterdir() if p.name != "invoke.json") if out_dir.is_dir() else []
+    parts = [f"没有写出简述文件 {out_file.name}（目录内容：{'、'.join(files) if files else '空'}）"]
+    if not info["ok"]:
+        parts.append(f"执行器返回失败：{info['error'] or '未给出原因'}")
+    else:
+        parts.append("执行器已结束，但回复中没有可用的简述 JSON，也没有调用写文件")
+        tail = _tail(info["output_path"], 300)
+        if tail:
+            parts.append(f"执行器输出末尾：「{tail}」")
+    return "；".join(parts)
+
+
+def _fix_instruction(info: Dict[str, Any], out_file: Path) -> str:
+    if not info["ok"]:
+        return (f"上一次执行器报错（{info['error'] or '未给出原因'}）。本次请先确保输出文件可写："
+                f"用写文件工具把完整 JSON 保存到绝对路径 {out_file}（目录已存在），不要只在回复中输出。")
+    return (f"上一次执行器结束时没有保存文件。本次必须用写文件工具把完整 JSON 保存到绝对路径 {out_file}，"
+            "不要只在回复中输出 JSON，也不要改用其它文件名。")
+
+
+def _final_hint(info: Dict[str, Any], out_dir: Path) -> str:
+    """最终失败时的处理建议：按最后一次的失败类型给出可执行的步骤。"""
+    if info["timed_out"]:
+        return ("本步骤时限已到，已停止重试。处理：在设置中调大该步骤的时限，或缩小本幕的章节范围后重新运行。")
+    if not info["ok"]:
+        return ("执行器调用失败。处理：1）确认 mini_agent 可用（运行环境能导入 mini_agent）；"
+                "2）确认 novel-planner 技能存在且允许写文件；3）根据上面的错误信息修复后重新运行此步骤。")
+    return (f"执行器没有保存简述文件。处理：1）检查 {out_dir} 下的执行记录（invoke.json、reply.txt）；"
+            "2）确认 novel-planner 技能的工具权限包含写文件；"
+            "3）若执行器的回复里已有完整 JSON，可把它保存为 "
+            f"{out_dir / 'brief_act_*.json'} 后重新运行此步骤（会直接校验，不再调用模型）。")
+
+
 def generate_act(ws: Workspace, act: int, start: int, end: int, invoker, *, feedback: str = "",
                  step_id: str = "brief") -> Dict[str, Any]:
-    """生成第 act 幕（start–end 章）的全部简述；通过校验后才落盘。feedback 为作者对本幕的修改意见。"""
+    """生成第 act 幕（start–end 章）的全部简述；通过校验后才落盘。feedback 为作者对本幕的修改意见。
+
+    每次尝试都记录执行器结果（invoke.json）与回复（reply.txt）。写文件失败时先尝试从回复或目录中
+    补救出合法 JSON；超时不再重试；失败原因与对应的处理建议都写进错误信息与下一次提示词。"""
     if invoker is None:
         raise RuntimeError("未配置执行器（invoker），无法生成章节简述")
     from novel_writer import blueprint_store as BS
@@ -255,26 +337,44 @@ def generate_act(ws: Workspace, act: int, start: int, end: int, invoker, *, feed
         prev = load_brief(ws, n)
         if prev:
             break
-    last_error: List[str] = []
+    errors: List[str] = []
+    info: Dict[str, Any] = {"ok": True, "error": "", "timed_out": False, "output_path": ""}
+    out_dir = ws.root / "_studio" / "brief_runs" / f"act{act:02d}"
+    attempts = 0
     for attempt in range(1, MAX_ATTEMPTS + 1):
+        attempts = attempt
         out_dir = ws.root / "_studio" / "brief_runs" / f"act{act:02d}" / f"attempt{attempt:02d}"
         out_dir.mkdir(parents=True, exist_ok=True)
         out_file = out_dir / f"brief_act_{act:02d}.json"
-        prompt = _prompt(ws, act, start, end, chapters, prev, names, foreshadow, out_file, last_error)
+        prompt = _prompt(ws, act, start, end, chapters, prev, names, foreshadow, out_file, errors)
         if feedback.strip():
             prompt += "\n【作者对本幕的修改意见（必须落实，关键内容仍须具体）】\n" + feedback.strip() + "\n"
-        invoker(skill="novel-planner", prompt=prompt, export_dir=out_dir, step_id=f"{step_id}#{attempt}")
+        res = invoker(skill="novel-planner", prompt=prompt, export_dir=out_dir, step_id=f"{step_id}#{attempt}")
+        info = _invoke_info(res)
+        atomic_write_json(out_dir / "invoke.json", {"attempt": attempt, **info, "out_file": str(out_file)})
+        if info["timed_out"]:
+            raise RuntimeError(f"第{act}幕简述失败（第 {attempt} 次）：步骤时限已到，执行器被强制终止。"
+                               + _final_hint(info, out_dir))
         if not out_file.is_file():
-            last_error = ["没有写出简述 JSON 文件"]
-            continue
+            reply = _tail(info["output_path"], 20000)
+            if reply:
+                atomic_write_text(out_dir / "reply.txt", reply)
+            salvaged = _salvage(out_dir, out_file, info["output_path"])
+            if salvaged is None:
+                errors = [_missing_file_reason(info, out_dir, out_file), _fix_instruction(info, out_file)]
+                continue
+            atomic_write_text(out_file, salvaged)
         items, errs = parse_act_output(out_file.read_text(encoding="utf-8"), numbers, titles, names, foreshadow, act)
         if not errs:
             for item in items:
                 save_brief(ws, item)
             _write_index(ws)
-            return {"summary": f"第{act}幕：已生成第{start}–{end}章简述（{len(items)} 章）", "chapters": numbers}
-        last_error = errs
-    raise RuntimeError(f"第{act}幕简述未通过校验：" + "；".join(last_error[:8]))
+            return {"summary": f"第{act}幕：已生成第{start}–{end}章简述（{len(items)} 章）", "chapters": numbers,
+                    "attempts": attempts}
+        errors = errs
+    shown = errors[:8]
+    raise RuntimeError(f"第{act}幕简述未通过校验（已尝试 {attempts} 次）：" + "；".join(shown)
+                       + "。" + _final_hint(info, out_dir))
 
 
 def h_brief_draft(ws: Workspace, step: S.StepDef, settings: Dict[str, Any], invoker=None) -> Dict[str, Any]:
