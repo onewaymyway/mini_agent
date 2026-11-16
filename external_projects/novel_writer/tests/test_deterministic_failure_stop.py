@@ -42,3 +42,18 @@ def test_upstream_repair_is_capped(monkeypatch):
     monkeypatch.setattr(W.st, "log_line", lambda ws, text: None)
     index = {"build_characters": SimpleNamespace(id="build_characters"), "brief_draft:1": down}
     assert W._schedule_upstream_repair(None, down, index) is False
+
+
+def test_upstream_is_recognised_from_error_text_when_structured_field_missing(monkeypatch):
+    """状态里没有 upstream_step（旧版本写入的状态）：按错误文字识别上游，仍然自动重跑。"""
+    down = SimpleNamespace(id="brief_draft:1")
+    states = {"brief_draft:1": {"error": "CharacterSyncError: 人物档案未同步：人设卡 9 个，角色档案 1 个"},
+              "build_characters": {}}
+    controls = []
+    monkeypatch.setattr(W.st, "get_step_state", lambda ws, sid: dict(states.get(sid, {})))
+    monkeypatch.setattr(W.st, "update_step", lambda ws, sid, **kw: None)
+    monkeypatch.setattr(W.st, "write_control", lambda ws, **kw: controls.append(kw))
+    monkeypatch.setattr(W.st, "log_line", lambda ws, text: None)
+    index = {"build_characters": SimpleNamespace(id="build_characters"), "brief_draft:1": down}
+    assert W._schedule_upstream_repair(None, down, index) is True
+    assert controls == [{"run_step": "build_characters"}]

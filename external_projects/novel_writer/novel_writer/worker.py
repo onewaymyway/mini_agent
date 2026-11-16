@@ -265,11 +265,22 @@ def _repair_and_rerun(ws: Workspace, target: S.StepDef, *, invoker, settings: Di
 MAX_UPSTREAM_REPAIRS = 3
 
 
+def upstream_from_error(error: Any) -> Optional[str]:
+    """兜底：状态里没有结构化的 upstream_step 时，按已知的错误特征识别上游（如人物未建档 → build_characters）。"""
+    from novel_writer import character_sync as CSY
+    text = str(error or "")
+    for marker, step_id in CSY.UPSTREAM_MARKERS.items():
+        if marker in text:
+            return step_id
+    return None
+
+
 def _schedule_upstream_repair(ws: Workspace, target: S.StepDef, index: Dict[str, S.StepDef]) -> bool:
     """失败步骤的根因在上游（state 里有 upstream_step）：把上游设为待重跑并请求运行它，
     再把本步骤设回待执行（上游通过后会自动轮到它）。同一上游最多自动修复 MAX_UPSTREAM_REPAIRS 次，防止死循环。
     返回 True 表示已安排；False 表示没有上游、上游不存在或已超过次数。"""
-    up = st.get_step_state(ws, target.id).get("upstream_step")
+    state = st.get_step_state(ws, target.id)
+    up = state.get("upstream_step") or upstream_from_error(state.get("error"))
     if not up or up not in index:
         return False
     n = int(st.get_step_state(ws, up).get("upstream_repairs") or 0)
@@ -404,7 +415,7 @@ def _loop(
             if AP.handle_waiting(ws, target, status, relentless=relentless):
                 continue
             return status
-        if (relentless or autopilot) and status == st.ST_FAILED and _deterministic_failure(ws, target):
+        if mode != "single" and status == st.ST_FAILED and _deterministic_failure(ws, target):
             # 确定性错误（原地重跑结果不变）：根因在上游步骤的，先自动重跑上游，再重跑本步骤
             if _schedule_upstream_repair(ws, target, index):
                 continue

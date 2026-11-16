@@ -17,6 +17,7 @@ from novel_writer import character_store as CST
 
 CARD_DIR_REL = "大纲规划/人物设定/人设卡"
 BUILD_STEP = "build_characters"          # 「建立人物档案」步骤：人设卡 → 角色档案
+UPSTREAM_MARKERS = {"人物档案未同步": BUILD_STEP}   # 错误文字 → 应先重跑的上游步骤（兜底识别）
 
 
 class CharacterSyncError(RuntimeError):
