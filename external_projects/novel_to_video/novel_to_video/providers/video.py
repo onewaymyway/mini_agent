@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import base64
 import mimetypes
-import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
+from .. import cancel
 from ..media import ffmpeg as mf
 from .keypool import KeyPool, is_non_retryable, is_rate_limit
 
@@ -50,7 +50,7 @@ class AgnesVideoProvider(VideoProvider):
     name = "agnes"
 
     def __init__(self, pool: KeyPool, *, base: str = AGNES_BASE, query: str = AGNES_QUERY,
-                 model: str = AGNES_VIDEO_MODEL, session=None, sleep=time.sleep,
+                 model: str = AGNES_VIDEO_MODEL, session=None, sleep=cancel.sleep,
                  poll_interval: float = 5.0, max_wait: int = 1800, max_retries: int = 3):
         self.pool = pool
         self.base, self.query = base, query
@@ -82,7 +82,7 @@ class AgnesVideoProvider(VideoProvider):
                 self._sleep(min(wait, 120))
                 continue
             try:
-                resp = self.session.post(f"{self.base}/videos", json=payload,
+                resp = cancel.call(self.session.post, f"{self.base}/videos", json=payload,
                                          headers=self._headers(key), timeout=120)
                 status, text = resp.status_code, resp.text or ""
             except Exception as exc:
@@ -119,7 +119,7 @@ class AgnesVideoProvider(VideoProvider):
                 self._sleep(min(max(wait, 0.1), 120))
                 waited += max(wait, 0.1)
                 continue
-            resp = self.session.get(self.query, params={"video_id": video_id, "model_name": self.model},
+            resp = cancel.call(self.session.get, self.query, params={"video_id": video_id, "model_name": self.model},
                                     headers=self._headers(key), timeout=60)
             if is_rate_limit(resp.status_code, resp.text or ""):
                 self.pool.report_rate_limit(key)  # 冷却并切换，下一轮用新 key
@@ -159,7 +159,7 @@ class AgnesVideoProvider(VideoProvider):
             return VideoResult(False, error=msg, non_retryable=fatal)
         try:
             url = self._poll(vid)
-            raw = self.session.get(url, timeout=300)
+            raw = cancel.call(self.session.get, url, timeout=300)
             raw.raise_for_status()
         except Exception as exc:
             return VideoResult(False, error=f"视频下载/轮询失败：{exc}")

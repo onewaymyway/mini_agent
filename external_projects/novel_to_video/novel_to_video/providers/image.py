@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import base64
 import io
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, List, Optional, Sequence, Tuple
 
+from .. import cancel
 from .keypool import KeyPool, is_non_retryable, is_rate_limit
 
 AGNES_IMAGE_ENDPOINT = "https://apihub.agnes-ai.com/v1/images/generations"
@@ -94,7 +94,7 @@ class AgnesImageProvider(ImageProvider):
 
     def __init__(self, pool: KeyPool, *, endpoint: str = AGNES_IMAGE_ENDPOINT,
                  model: str = AGNES_IMAGE_MODEL, timeout: int = 300, max_retries: int = 3,
-                 session=None, sleep=time.sleep):
+                 session=None, sleep=cancel.sleep):   # 可中断的等待：停止时立即返回
         self.pool = pool
         self.endpoint = endpoint
         self.model = model
@@ -139,8 +139,8 @@ class AgnesImageProvider(ImageProvider):
                     continue
                 return ImageResult(False, error="所有 API key 均在冷却中", non_retryable=False)
             try:
-                resp = self.session.post(
-                    self.endpoint, json=payload, timeout=self.timeout,
+                resp = cancel.call(  # 经 cancel.call：用户停止时立即返回，不等待网络
+                    self.session.post, self.endpoint, json=payload, timeout=self.timeout,
                     headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
                 )
                 status, text = resp.status_code, resp.text or ""

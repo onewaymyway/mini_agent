@@ -83,7 +83,7 @@ def ensure_chapter_cover(project_dir: Path, no: int, image=None) -> Optional[Pat
         from .. import video_format
         fmt = video_format.load(project_dir)
         with joblog.heartbeat(project_dir, "chapter", f"第 {no} 章 章节封面背景图"):
-            res = image.generate(_bg_prompt(project_dir, no, title), bg, ratio=fmt.aspect_ratio)
+            res = cancel.call(image.generate, _bg_prompt(project_dir, no, title), bg, ratio=fmt.aspect_ratio)
         log_call(project_dir, {"kind": "image", "provider": getattr(image, "name", "?"), "entity": f"chapter_cover_{no}",
                                "stage": "chapter_cover", "ok": res.ok, "error": (res.error or "")[:300] or None})
         if not res.ok:

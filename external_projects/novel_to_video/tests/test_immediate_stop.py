@@ -210,3 +210,72 @@ def test_chapter_stop_is_not_recorded_as_failure(project, monkeypatch):
         out = _run(project, ChapterLLM())
     assert out["status"] == "stopped"
     assert cio.chapter_row(project, 1)["status"] != "failed"
+
+
+# ----------------------------------------------------------------- 直连 Agnes 接口（图像 / 视频）
+
+class _HangSession:
+    """模拟网络请求卡住：post / get 一直不返回。"""
+    def post(self, *a, **k):
+        time.sleep(30)
+
+    def get(self, *a, **k):
+        time.sleep(30)
+
+
+class _ProcessingResp:
+    ok = True
+    status_code = 200
+    text = "{}"
+
+    def json(self):
+        return {"status": "processing"}
+
+
+class _ProcessingSession:
+    """视频任务一直处于排队/生成中：用于验证轮询间隔可被停止打断。"""
+    def get(self, *a, **k):
+        return _ProcessingResp()
+
+
+def test_agnes_image_request_is_interrupted(tmp_path):
+    from novel_to_video.providers.image import AgnesImageProvider
+    from novel_to_video.providers.keypool import KeyPool
+
+    cancel.begin(tmp_path)
+    with cancel.bind(tmp_path):
+        prov = AgnesImageProvider(KeyPool(["k"]), session=_HangSession())
+        _delayed(cancel.request, 0.3, tmp_path)
+        t0 = time.monotonic()
+        with pytest.raises(cancel.Cancelled):
+            prov.generate("测试提示词", tmp_path / "out.png")
+        assert time.monotonic() - t0 < MAX_STOP_LATENCY
+
+
+def test_agnes_video_request_is_interrupted(tmp_path):
+    from novel_to_video.providers.keypool import KeyPool
+    from novel_to_video.providers.video import AgnesVideoProvider
+
+    cancel.begin(tmp_path)
+    with cancel.bind(tmp_path):
+        prov = AgnesVideoProvider(KeyPool(["k"]), session=_HangSession())
+        _delayed(cancel.request, 0.3, tmp_path)
+        t0 = time.monotonic()
+        with pytest.raises(cancel.Cancelled):
+            prov.generate("测试提示词", tmp_path / "out.mp4", seconds=4, reference_images=[])
+        assert time.monotonic() - t0 < MAX_STOP_LATENCY
+
+
+def test_agnes_video_poll_interval_is_interrupted(tmp_path):
+    """轮询间隔默认用 cancel.sleep：停止后不再等满 poll_interval（这里设为 30 秒）。"""
+    from novel_to_video.providers.keypool import KeyPool
+    from novel_to_video.providers.video import AgnesVideoProvider
+
+    cancel.begin(tmp_path)
+    with cancel.bind(tmp_path):
+        prov = AgnesVideoProvider(KeyPool(["k"]), session=_ProcessingSession(), poll_interval=30)
+        _delayed(cancel.request, 0.3, tmp_path)
+        t0 = time.monotonic()
+        with pytest.raises(cancel.Cancelled):
+            prov._poll("vid_1")
+        assert time.monotonic() - t0 < MAX_STOP_LATENCY
