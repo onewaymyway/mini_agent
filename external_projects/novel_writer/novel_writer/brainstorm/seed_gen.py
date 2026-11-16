@@ -156,9 +156,9 @@ def _norm_target(v: Any) -> Optional[int]:
     return n
 
 
-def run(ws: BrainstormWorkspace, idea: str, constraints: str = "", *, target_chapters: Any = None,
-        structure: Optional[str] = None, generator: Optional[Generator] = None,
-        log: Optional[Callable[[str, str], None]] = None) -> Dict[str, Any]:
+def _run_body(ws: BrainstormWorkspace, idea: str, constraints: str = "", *, target_chapters: Any = None,
+              structure: Optional[str] = None, generator: Optional[Generator] = None,
+              log: Optional[Callable[[str, str], None]] = None) -> Dict[str, Any]:
     idea, constraints = (idea or "").strip(), (constraints or "").strip()
     target = _norm_target(target_chapters)
     structure = (structure or "").strip() or None
@@ -201,15 +201,45 @@ def _run_files(ws: BrainstormWorkspace, run_id: str):
     return base / f"{run_id}.json", base / f"{run_id}.jsonl"
 
 
+def run(ws: BrainstormWorkspace, idea: str, constraints: str = "", *, target_chapters: Any = None,
+        structure: Optional[str] = None, generator: Optional[Generator] = None,
+        log: Optional[Callable[[str, str], None]] = None, _rid: Optional[str] = None) -> Dict[str, Any]:
+    """起稿（同步）。每次调用都记入输入记录（seed_history），结束时写入结果或失败原因。"""
+    from novel_writer.brainstorm import seed_history as H
+    payload = {"idea": idea or "", "constraints": constraints or "", "target_chapters": target_chapters,
+               "structure": structure}
+    rid = _rid or H.submitted(ws, "seed", payload)
+    try:
+        res = _run_body(ws, idea, constraints, target_chapters=target_chapters, structure=structure,
+                        generator=generator, log=log)
+    except BaseException as exc:
+        H.outcome(ws, rid, "failed", error=str(exc))
+        raise
+    H.outcome(ws, rid, "done", ver=res["ver"])
+    return res
+
+
 def start_run(ws: BrainstormWorkspace, idea: str, constraints: str = "", *, target_chapters: Any = None,
               structure: Optional[str] = None, generator: Optional[Generator] = None) -> str:
-    """校验输入后在后台起稿，返回运行编号。有未结束的起稿/修订任务时拒绝（避免并发写版本）。"""
+    """校验输入后在后台起稿，返回运行编号。有未结束的起稿/修订任务时拒绝（避免并发写版本）。
+    每次提交（包括未通过校验的）都记入输入记录。"""
+    from novel_writer.brainstorm import seed_history as H
     ws.meta()
-    if not (idea or "").strip():
-        raise BrainstormError("请先写下你的想法")
-    _norm_target(target_chapters)
-    return start_task(ws, lambda w, log: run(w, idea, constraints, target_chapters=target_chapters, structure=structure,
-                                             generator=generator, log=log), prefix="s")
+    rid = H.submitted(ws, "seed", {"idea": idea or "", "constraints": constraints or "",
+                                   "target_chapters": target_chapters, "structure": structure})
+    try:
+        if not (idea or "").strip():
+            raise BrainstormError("请先写下你的想法")
+        _norm_target(target_chapters)
+    except BrainstormError as exc:
+        H.outcome(ws, rid, "rejected", error=str(exc))
+        raise
+    try:
+        return start_task(ws, lambda w, log: run(w, idea, constraints, target_chapters=target_chapters, structure=structure,
+                                                 generator=generator, log=log, _rid=rid), prefix="s")
+    except BrainstormError as exc:
+        H.outcome(ws, rid, "rejected", error=str(exc))
+        raise
 
 
 def start_task(ws: BrainstormWorkspace, fn: Callable[[BrainstormWorkspace, Callable[[str, str], None]], Any],

@@ -148,9 +148,9 @@ def _revise_section(ws, base_ver, old, seed, sec, feedback, generator, log) -> D
                           "没有写入任何版本；已通过的部分已保存为检查点，下次修订会复用")
 
 
-def run(ws: BrainstormWorkspace, feedback: str, sections: Optional[List[str]] = None, *,
-        base_ver: Optional[int] = None, generator: Optional[SG.Generator] = None,
-        log: Optional[Callable[[str, str], None]] = None) -> Dict[str, Any]:
+def _run_body(ws: BrainstormWorkspace, feedback: str, sections: Optional[List[str]] = None, *,
+              base_ver: Optional[int] = None, generator: Optional[SG.Generator] = None,
+              log: Optional[Callable[[str, str], None]] = None) -> Dict[str, Any]:
     feedback = (feedback or "").strip()
     if not feedback:
         raise BrainstormError("请写下你的反馈")
@@ -206,16 +206,42 @@ def run(ws: BrainstormWorkspace, feedback: str, sections: Optional[List[str]] = 
             "repaired": False}
 
 
+def run(ws: BrainstormWorkspace, feedback: str, sections: Optional[List[str]] = None, *,
+        base_ver: Optional[int] = None, generator: Optional[SG.Generator] = None,
+        log: Optional[Callable[[str, str], None]] = None, _rid: Optional[str] = None) -> Dict[str, Any]:
+    """修订（同步）。每次调用都记入输入记录（seed_history），结束时写入结果或失败原因。"""
+    from novel_writer.brainstorm import seed_history as H
+    payload = {"feedback": feedback or "", "sections": list(sections or []), "base_ver": base_ver}
+    rid = _rid or H.submitted(ws, "revise", payload)
+    try:
+        res = _run_body(ws, feedback, sections, base_ver=base_ver, generator=generator, log=log)
+    except BaseException as exc:
+        H.outcome(ws, rid, "failed", error=str(exc))
+        raise
+    H.outcome(ws, rid, "done", ver=res["ver"])
+    return res
+
+
 def start_run(ws: BrainstormWorkspace, feedback: str, sections: Optional[List[str]] = None, *,
               base_ver: Optional[int] = None, generator: Optional[SG.Generator] = None) -> str:
-    """输入先同步校验（反馈、范围、基础版本存在），再后台运行。"""
+    """输入先同步校验（反馈、范围、基础版本存在），再后台运行。每次提交（包括未通过校验的）都记入输入记录。"""
+    from novel_writer.brainstorm import seed_history as H
     ws.meta()
-    if not (feedback or "").strip():
-        raise BrainstormError("请写下你的反馈")
-    check_scope(sections)
-    SD.load(ws, base_ver)
-    return SG.start_task(ws, lambda w, log: run(w, feedback, sections, base_ver=base_ver, generator=generator, log=log),
-                         prefix="r")
+    rid = H.submitted(ws, "revise", {"feedback": feedback or "", "sections": list(sections or []), "base_ver": base_ver})
+    try:
+        if not (feedback or "").strip():
+            raise BrainstormError("请写下你的反馈")
+        check_scope(sections)
+        SD.load(ws, base_ver)
+    except BrainstormError as exc:
+        H.outcome(ws, rid, "rejected", error=str(exc))
+        raise
+    try:
+        return SG.start_task(ws, lambda w, log: run(w, feedback, sections, base_ver=base_ver, generator=generator,
+                                                    log=log, _rid=rid), prefix="r")
+    except BrainstormError as exc:
+        H.outcome(ws, rid, "rejected", error=str(exc))
+        raise
 
 
 def diff(ws: BrainstormWorkspace, a: int, b: int) -> Dict[str, Any]:

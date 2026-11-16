@@ -376,6 +376,12 @@ def seed_state(root: str, run_id: str) -> Dict[str, Any]:
     return _guard(lambda: SG.run_state(_ws(root), run_id))
 
 
+def seed_inputs(root: str) -> Dict[str, Any]:
+    """起稿 / 修订的输入记录：每次提交的完整输入、状态与结果（新到旧）。"""
+    from novel_writer.brainstorm import seed_history as H
+    return _guard(lambda: {"entries": H.history(_ws(root))})
+
+
 def seed_versions(root: str) -> Dict[str, Any]:
     from novel_writer.brainstorm import seed_draft as SD
     return _guard(lambda: {"versions": SD.versions(_ws(root))})

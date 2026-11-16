@@ -1053,6 +1053,44 @@ def _seed_tab(root: str) -> None:
         st.info("还没有构思稿。先在上方写下一句话想法，再点「起稿」。")
         return
     _seed_read_box(root, versions, busy=False)
+    _seed_inputs_box(root)
+
+
+_INPUT_KIND = {"seed": "起稿", "revise": "修订"}
+_INPUT_STATUS = {"submitted": "运行中", "done": "成功", "failed": "失败", "rejected": "未通过校验"}
+
+
+def _seed_inputs_box(root: str) -> None:
+    """输入记录：每次起稿 / 修订的原始输入（不截断）、状态与结果，便于回看。"""
+    res = BA.seed_inputs(root)
+    if not res["ok"]:
+        show_error(res)
+        return
+    entries = res["data"]["entries"]
+    with st.expander(f"📜 输入记录（{len(entries)} 次）"):
+        if not entries:
+            st.caption("还没有起稿或修订记录。")
+            return
+        rows = []
+        for e in entries:
+            inp = e.get("input") or {}
+            if e["kind"] == "seed":
+                detail = f"想法：{inp.get('idea', '')}"
+                if inp.get("constraints"):
+                    detail += f"\n额外要求：{inp['constraints']}"
+                if inp.get("target_chapters"):
+                    detail += f"\n目标章数：{inp['target_chapters']}"
+                if inp.get("structure"):
+                    detail += f"\n结构偏好：{inp['structure']}"
+            else:
+                secs = "、".join(SD.SECTION_LABELS.get(s, s) for s in inp.get("sections") or []) or "整稿"
+                detail = f"反馈：{inp.get('feedback', '')}\n范围：{secs}\n基于：" + (
+                    f"v{inp['base_ver']:03d}" if inp.get("base_ver") else "最新版本")
+            result = (f"v{e['ver']:03d}" if e.get("ver") else "") + (f"{e['error']}" if e.get("error") else "")
+            rows.append({"提交时间": e.get("submitted_at", ""), "类型": _INPUT_KIND.get(e["kind"], e["kind"]),
+                         "输入（完整）": detail, "状态": _INPUT_STATUS.get(e["status"], e["status"]),
+                         "结果": result or "—"})
+        st.dataframe(rows, width="stretch", hide_index=True)
 
 
 def page_brainstorm() -> None:
