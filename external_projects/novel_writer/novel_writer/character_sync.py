@@ -20,7 +20,12 @@ BUILD_STEP = "build_characters"          # 「建立人物档案」步骤：人�
 
 
 class CharacterSyncError(RuntimeError):
-    no_retry = True                      # 确定性错误：worker 不自动重跑
+    """确定性错误：worker 不会原地重跑，而是（若有 upstream_step）先重跑上游步骤，再重跑本步骤。"""
+    no_retry = True
+
+    def __init__(self, message: str, *, upstream_step: Optional[str] = None):
+        super().__init__(message)
+        self.upstream_step = upstream_step
 
 
 def _card_names(ws) -> List[str]:
@@ -85,7 +90,8 @@ def ensure(ws) -> Dict[str, Any]:
             f"人物档案未同步：人设卡 {len(rep['cards'])} 个，角色档案 {rep['store_count']} 个，"
             f"缺少：{'、'.join(rep['missing_in_store'][:12])}"
             f"{'…' if len(rep['missing_in_store']) > 12 else ''}。"
-            f"处理：先运行「{BUILD_STEP}」（建立人物档案）步骤把全部人设卡建档，再重跑本步骤。")
+            f"处理：系统会自动重跑「{BUILD_STEP}」（建立人物档案）把全部人设卡建档，然后重跑本步骤。",
+            upstream_step=BUILD_STEP)
     if rep["stale_index"]:
         CST.refresh(Path(ws.path("characters_dir")), Path(ws.path("characters")))   # 确定性：只重建索引
         rep = audit(ws)

@@ -714,6 +714,8 @@ def run_step(
         status, fields = st.ST_FAILED, {"error": f"{type(exc).__name__}: {exc}"}
         if getattr(exc, "no_retry", False):
             fields["no_retry"] = True     # 确定性错误：worker 不再自动重跑
+        if getattr(exc, "upstream_step", None):
+            fields["upstream_step"] = exc.upstream_step   # 根因在上游步骤：worker 应先重跑它
 
     if GW.mode_of(settings) == "rerun":
         # 乱码守卫 B 层：可能把通过改写为失败 / 待执行 / 挂起，必须在记录写入者之前完成归因

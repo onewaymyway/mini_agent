@@ -262,6 +262,28 @@ def _repair_and_rerun(ws: Workspace, target: S.StepDef, *, invoker, settings: Di
     return status
 
 
+MAX_UPSTREAM_REPAIRS = 3
+
+
+def _schedule_upstream_repair(ws: Workspace, target: S.StepDef, index: Dict[str, S.StepDef]) -> bool:
+    """失败步骤的根因在上游（state 里有 upstream_step）：把上游设为待重跑并请求运行它，
+    再把本步骤设回待执行（上游通过后会自动轮到它）。同一上游最多自动修复 MAX_UPSTREAM_REPAIRS 次，防止死循环。
+    返回 True 表示已安排；False 表示没有上游、上游不存在或已超过次数。"""
+    up = st.get_step_state(ws, target.id).get("upstream_step")
+    if not up or up not in index:
+        return False
+    n = int(st.get_step_state(ws, up).get("upstream_repairs") or 0)
+    if n >= MAX_UPSTREAM_REPAIRS:
+        st.log_line(ws, f"⏹ {up} 已自动修复 {n} 次仍不通过，停止自动修复，请人工检查")
+        return False
+    st.update_step(ws, up, status=st.ST_PENDING, upstream_repairs=n + 1,
+                   note=f"由下游步骤「{target.id}」发现依赖未完成，自动重跑（第 {n + 1} 次）")
+    st.update_step(ws, target.id, status=st.ST_PENDING, no_retry=None, upstream_step=None, error=None)
+    st.write_control(ws, run_step=up)
+    st.log_line(ws, f"🔁 {target.id} 的根因在上游「{up}」：已自动重跑上游（第 {n + 1} 次），通过后再重跑 {target.id}")
+    return True
+
+
 def _deterministic_failure(ws: Workspace, target: S.StepDef) -> bool:
     """失败原因是确定性的（如人物档案未同步、文件损坏）：重跑结果不会变，不应被不停机模式反复重置。"""
     return bool(st.get_step_state(ws, target.id).get("no_retry"))
@@ -382,9 +404,11 @@ def _loop(
             if AP.handle_waiting(ws, target, status, relentless=relentless):
                 continue
             return status
-        if relentless and status == st.ST_FAILED and _deterministic_failure(ws, target):
-            # 确定性错误（重置重跑结果不变）：不停机也不再自动重置，明确停下来让作者处理
-            st.log_line(ws, f"⏹ {target.id} 是确定性错误，自动重置没有意义，已停止。"
+        if (relentless or autopilot) and status == st.ST_FAILED and _deterministic_failure(ws, target):
+            # 确定性错误（原地重跑结果不变）：根因在上游步骤的，先自动重跑上游，再重跑本步骤
+            if _schedule_upstream_repair(ws, target, index):
+                continue
+            st.log_line(ws, f"⏹ {target.id} 是确定性错误，且无法自动修复，已停止。"
                             f"原因：{str(st.get_step_state(ws, target.id).get('error') or '')[:300]}")
             return st.ST_FAILED
         if relentless and status == st.ST_FAILED:
