@@ -50,12 +50,18 @@ def register_proxy_tools(registry: ToolRegistry, paths) -> None:
         if not p.exists():
             return json.dumps({"status": "no_data", "message": "No proxy pool data yet — call proxy_refresh first."})
         import time as _time
+        from datetime import datetime, timezone as _tz
 
         data = json.loads(p.read_text(encoding="utf-8"))
+        gen_at = data.get("generated_at", 0)
+        if isinstance(gen_at, str):
+            gen_epoch = datetime.fromisoformat(gen_at).replace(tzinfo=_tz.utc).timestamp()
+        else:
+            gen_epoch = gen_at
         return json.dumps(
             {
                 "status": "ok",
-                "generated_minutes_ago": round((_time.time() - data.get("generated_at", 0)) / 60, 1),
+                "generated_minutes_ago": round((_time.time() - gen_epoch) / 60, 1),
                 "nodes_ok": data.get("nodes_ok"),
                 "nodes_found": data.get("nodes_found"),
                 "protocol_breakdown": data.get("protocol_breakdown", {}),
