@@ -31,8 +31,14 @@ from novel_writer.fsutil import atomic_write_json, read_json
 SECTIONS = ("premise", "storyline", "world", "cast", "plot", "open_questions")
 SECTION_LABELS = {"premise": "核心命题", "storyline": "故事走向", "world": "世界观", "cast": "角色",
                   "plot": "核心剧情", "open_questions": "待定问题"}
-STORYLINE_KEYS = ("logline", "opening", "development", "turn", "ending")
-STORYLINE_LABELS = {"logline": "一句话主线", "opening": "起", "development": "承", "turn": "转", "ending": "合"}
+# 故事走向（v2）：一句话主线 + 结构（类型、章数、幕）+ 线索（每条线索各自的起承转合，角色可不同）
+STORYLINE_KEYS = ("logline", "structure", "threads")
+ARC_KEYS = ("opening", "development", "turn", "ending")          # 起 承 转 合（每条线索各自一套）
+ARC_LABELS = {"opening": "起", "development": "承", "turn": "转", "ending": "合"}
+ROLES = ("main", "sub", "character", "mystery")
+ROLE_LABELS = {"main": "主线", "sub": "支线", "character": "角色线", "mystery": "悬念线"}
+LONG_FORM_CHAPTERS = 50                                          # 超过此章数视为长篇：至少 3 幕、2 条线索
+_CH_RANGE = re.compile(r"(\d+)\s*[–\-~—至到]\s*(\d+)")
 KINDS = ("seed", "revise", "restore")
 _VER_RE = re.compile(r"^v(\d{3})\.json$")
 
@@ -75,6 +81,8 @@ def normalize_draft(raw: Any) -> Dict[str, Any]:
             else:
                 fixed.append(q)
         out["open_questions"] = fixed
+    if "storyline" in out:
+        out["storyline"] = _migrate_storyline(out["storyline"])
     world = out.get("world")
     if isinstance(world, dict):
         for key in ("rules", "locations", "factions"):
@@ -84,7 +92,16 @@ def normalize_draft(raw: Any) -> Dict[str, Any]:
     return out
 
 
-def validate_draft(raw: Any) -> Dict[str, Any]:
+def _migrate_storyline(v: Any) -> Any:
+    """旧版故事走向（logline + 起承转合四格）→ 新结构：一条主线、结构未指定。"""
+    if isinstance(v, dict) and "threads" not in v and any(k in v for k in ARC_KEYS):
+        return {"logline": v.get("logline", ""),
+                "structure": {"type": "起承转合（旧版）", "total_chapters": None, "acts": []},
+                "threads": [{"name": "主线", "role": "main", **{k: v.get(k, "") for k in ARC_KEYS}, "meets": []}]}
+    return v
+
+
+def validate_draft(raw: Any, *, consistency: bool = True) -> Dict[str, Any]:
     """校验并返回规范化后的构思稿；六个部分必须齐全，且各自合法。不合法抛 BrainstormError（列出全部问题）。"""
     data = normalize_draft(raw)
     errors: List[str] = []
@@ -111,24 +128,92 @@ def validate_draft(raw: Any) -> Dict[str, Any]:
                     raise BrainstormError("核心剧情至少需要一幕")
         except BrainstormError as exc:
             errors.append(f"{SECTION_LABELS[sec]}：{exc}")
+    if consistency and not errors and "storyline" in clean and "plot" in clean:
+        want = [a["title"] for a in clean["storyline"]["structure"]["acts"]]
+        got = [a.get("title") for a in clean["plot"]["acts"]]
+        if want and got != want:
+            errors.append(f"核心剧情的幕与故事走向的结构不一致：结构为「{'、'.join(want)}」，剧情为「{'、'.join(map(str, got))}」，两者的幕标题与顺序必须相同")
     if errors:
         raise BrainstormError("构思稿未通过校验：" + "；".join(errors))
     return {s: clean[s] for s in SECTIONS}
 
 
-def _validate_storyline(v: Any) -> Dict[str, str]:
+def _validate_storyline(v: Any) -> Dict[str, Any]:
     if not isinstance(v, dict):
         raise BrainstormError("故事走向必须是对象")
     unknown = set(v) - set(STORYLINE_KEYS)
     if unknown:
-        raise BrainstormError("含未知字段：" + "、".join(sorted(unknown)))
-    out = {}
-    for k in STORYLINE_KEYS:
-        t = _text(v.get(k))
-        if not t:
-            raise BrainstormError(f"缺少「{STORYLINE_LABELS[k]}」")
-        out[k] = t
-    return out
+        raise BrainstormError("故事走向含未知字段：" + "、".join(sorted(unknown)))
+    logline = _text(v.get("logline"))
+    if not logline:
+        raise BrainstormError("缺少「一句话主线」")
+    st = v.get("structure")
+    if not isinstance(st, dict):
+        raise BrainstormError("「结构」必须是对象（类型、总章数、幕）")
+    stype = _text(st.get("type"))
+    if not stype:
+        raise BrainstormError("缺少「结构类型」")
+    total = st.get("total_chapters")
+    if total in (None, ""):
+        total = None
+    else:
+        try:
+            total = int(total)
+        except (TypeError, ValueError):
+            raise BrainstormError("「总章数」必须是整数")
+        if total < 1:
+            raise BrainstormError("「总章数」必须大于 0")
+    acts_raw = st.get("acts") or []
+    if not isinstance(acts_raw, list):
+        raise BrainstormError("「幕」必须是列表")
+    acts = []
+    for i, a in enumerate(acts_raw, 1):
+        if not isinstance(a, dict):
+            raise BrainstormError(f"第 {i} 幕必须是对象")
+        title = _text(a.get("title"))
+        if not title:
+            raise BrainstormError(f"第 {i} 幕缺少标题")
+        acts.append({"title": title, "chapters": _text(a.get("chapters")), "goal": _text(a.get("goal"))})
+    if total and acts:
+        spans = []
+        for a in acts:
+            m = _CH_RANGE.search(a["chapters"])
+            if not m:
+                raise BrainstormError(f"第「{a['title']}」幕缺少章节范围（如 1–30）")
+            spans.append((int(m.group(1)), int(m.group(2))))
+        if spans[0][0] != 1 or spans[-1][1] != total or any(spans[i + 1][0] != spans[i][1] + 1 for i in range(len(spans) - 1)):
+            raise BrainstormError(f"各幕章节范围必须连续覆盖 1–{total}")
+    threads_raw = v.get("threads")
+    if not isinstance(threads_raw, list) or not threads_raw:
+        raise BrainstormError("至少需要一条故事线索（threads）")
+    threads, names = [], set()
+    for i, t in enumerate(threads_raw, 1):
+        if not isinstance(t, dict):
+            raise BrainstormError(f"线索 #{i} 必须是对象")
+        name = _text(t.get("name"))
+        if not name:
+            raise BrainstormError(f"线索 #{i} 缺少名称")
+        if name in names:
+            raise BrainstormError(f"线索名重复：{name}")
+        names.add(name)
+        role = _text(t.get("role"))
+        if role not in ROLES:
+            raise BrainstormError(f"线索「{name}」的类型必须是 {'/'.join(ROLES)} 之一")
+        arc = {}
+        for k in ARC_KEYS:
+            arc[k] = _text(t.get(k))
+            if not arc[k]:
+                raise BrainstormError(f"线索「{name}」缺少「{ARC_LABELS[k]}」")
+        meets = [str(x).strip() for x in (t.get("meets") or []) if str(x).strip()]
+        threads.append({"name": name, "role": role, **arc, "meets": meets})
+    if not any(t["role"] == "main" for t in threads):
+        raise BrainstormError("至少需要一条主线（role 为 main）")
+    if total and total > LONG_FORM_CHAPTERS:
+        if len(acts) < 3:
+            raise BrainstormError(f"长篇（超过 {LONG_FORM_CHAPTERS} 章）至少需要 3 幕")
+        if len(threads) < 2:
+            raise BrainstormError(f"长篇（超过 {LONG_FORM_CHAPTERS} 章）至少需要 2 条线索")
+    return {"logline": logline, "structure": {"type": stype, "total_chapters": total, "acts": acts}, "threads": threads}
 
 
 # ─────────────────────────────── 版本 ───────────────────────────────
@@ -179,7 +264,8 @@ def save_version(ws: BrainstormWorkspace, draft: Any, *, kind: str, reason: str,
         raise BrainstormError(f"版本文件已存在：v{n:03d}")
     draft_dir(ws).mkdir(parents=True, exist_ok=True)
     atomic_write_json(path, {"ver": n, "kind": kind, "reason": (reason or "").strip(), "at": now_iso(),
-                             "seed": {"idea": _text(seed.get("idea")), "constraints": _text(seed.get("constraints"))},
+                             "seed": {"idea": _text(seed.get("idea")), "constraints": _text(seed.get("constraints")),
+                                      "target_chapters": seed.get("target_chapters"), "structure": seed.get("structure")},
                              "draft": clean})
     ws.touch()
     return n
@@ -209,8 +295,24 @@ def section_diff(old: Dict[str, Any], new: Dict[str, Any], sec: str) -> str:
 
 # ─────────────────────────────── 与卡片的映射（S3 使用） ───────────────────────────────
 
-def storyline_text(story: Dict[str, str]) -> str:
-    return "\n".join(f"{STORYLINE_LABELS[k]}：{story[k]}" for k in STORYLINE_KEYS)
+def storyline_lines(story: Dict[str, Any]) -> List[str]:
+    """故事走向的纯文字行（卡片灵感与阅读视图共用）。"""
+    st = story.get("structure") or {}
+    total = st.get("total_chapters")
+    head = f"结构：{st.get('type', '')}" + (f"（约 {total} 章）" if total else "")
+    lines = [f"一句话主线：{story.get('logline', '')}", head]
+    for i, a in enumerate(st.get("acts") or [], 1):
+        rng = f"，{a['chapters']}" if a.get("chapters") else ""
+        lines.append(f"第 {i} 幕「{a.get('title', '')}」{rng}：{a.get('goal', '')}".rstrip("：").rstrip())
+    for t in story.get("threads") or []:
+        arc = "；".join(f"{ARC_LABELS[k]}：{t.get(k, '')}" for k in ARC_KEYS)
+        meets = f"（交汇：{'、'.join(t['meets'])}）" if t.get("meets") else ""
+        lines.append(f"线索「{t.get('name', '')}」（{ROLE_LABELS.get(t.get('role'), t.get('role', ''))}）：{arc}{meets}")
+    return lines
+
+
+def storyline_text(story: Dict[str, Any]) -> str:
+    return "\n".join(storyline_lines(story))
 
 
 def to_card_modules(draft: Dict[str, Any]) -> Dict[str, Any]:
@@ -242,8 +344,7 @@ def draft_markdown(draft: Dict[str, Any]) -> str:
 
     story = draft.get("storyline") or {}
     out.append("### 故事走向\n")
-    for k in STORYLINE_KEYS:
-        out.append(f"- **{STORYLINE_LABELS[k]}**：{_text(story.get(k)) or '（空）'}")
+    out.extend(f"- {line}" for line in storyline_lines(story))
 
     world = draft.get("world") or {}
     out.append("\n### 世界观\n")

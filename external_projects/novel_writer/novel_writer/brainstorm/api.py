@@ -364,9 +364,11 @@ def lore_read(root: str, rel: str) -> Dict[str, Any]:
 
 # ── 一句话起稿（S1）──
 
-def seed_start(root: str, idea: str, constraints: str = "", generator=None) -> Dict[str, Any]:
+def seed_start(root: str, idea: str, constraints: str = "", generator=None, *, target_chapters=None,
+               structure=None) -> Dict[str, Any]:
     from novel_writer.brainstorm import seed_gen as SG
-    return _guard(lambda: {"run": SG.start_run(_ws(root), idea, constraints, generator=generator)})
+    return _guard(lambda: {"run": SG.start_run(_ws(root), idea, constraints, target_chapters=target_chapters,
+                                               structure=structure, generator=generator)})
 
 
 def seed_state(root: str, run_id: str) -> Dict[str, Any]:

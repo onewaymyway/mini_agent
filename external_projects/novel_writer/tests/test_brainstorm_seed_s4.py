@@ -27,7 +27,8 @@ def test_markdown_contains_all_six_parts_in_order():
 def test_markdown_shows_content_and_labels():
     md = SD.draft_markdown(SD.validate_draft(good()))
     assert "记忆是港口的货币" in md
-    assert "**起**：她发现母亲的记忆被卖" in md
+    assert "结构：起承转合（旧版）" in md                       # 旧版故事走向迁移为一条主线
+    assert "线索「主线」（主线）：起：她发现母亲的记忆被卖" in md
     assert "典当越多越健忘（代价：失去自我）" in md
     assert "**海棠**（定位：主角；想要：找回母亲）" in md
     assert "- 港口为何吞噬记忆？" in md

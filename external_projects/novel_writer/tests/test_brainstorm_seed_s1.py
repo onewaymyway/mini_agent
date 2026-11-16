@@ -35,7 +35,7 @@ def test_success_writes_seed_version_not_cards(ws):
     out = SG.run(ws, "记忆是货币的港口", "要悬疑", generator=Gen(good()))
     assert out == {"ver": 1, "attempts": 1, "repaired": False}
     v = SD.load(ws)
-    assert v["kind"] == "seed" and v["seed"] == {"idea": "记忆是货币的港口", "constraints": "要悬疑"}
+    assert v["kind"] == "seed" and v["seed"]["idea"] == "记忆是货币的港口" and v["seed"]["constraints"] == "要悬疑"
     assert C.content_hash(ws) == before
 
 

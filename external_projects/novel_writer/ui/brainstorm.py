@@ -897,8 +897,13 @@ def _seed_start_box(root: str, has_versions: bool, busy: bool) -> None:
         idea = st.text_area("一句话想法", key="bs_seed_idea", height=80, max_chars=2000,
                             placeholder="例如：一个靠典当记忆维持运转的港口城市")
         cons = st.text_input("额外要求（可空）", key="bs_seed_cons", placeholder="例如：要悬疑，不要后宫")
+        c1, c2 = st.columns(2)
+        tgt = c1.number_input("目标章数（0 = 让模型判断）", min_value=0, max_value=2000, value=0, step=10, key="bs_seed_target")
+        struct = c2.selectbox("结构偏好", ["让模型判断", "三幕", "多幕长篇", "群像", "多线并行", "非线性", "连载卷式"],
+                              key="bs_seed_struct")
         if st.button("▶ 起稿", key="bs_seed_go", disabled=busy or not idea.strip()):
-            r = BA.seed_start(root, idea.strip(), cons.strip())
+            r = BA.seed_start(root, idea.strip(), cons.strip(), target_chapters=int(tgt) or None,
+                              structure=None if struct == "让模型判断" else struct)
             if r["ok"]:
                 st.session_state["bs_seed_run"] = r["data"]["run"]
                 st.session_state.pop("bs_seed_last", None)

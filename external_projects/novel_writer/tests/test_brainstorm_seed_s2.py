@@ -13,6 +13,19 @@ from novel_writer.brainstorm import seed_revise as SR
 from novel_writer.brainstorm.workspace import BrainstormError, BrainstormWorkspace
 from test_brainstorm_seed_s0 import good
 from test_brainstorm_seed_s1 import Gen
+import re
+
+
+class ByGen:
+    """按提示词里的「当前的『部分』」返回对应部分（整稿修订时每个部分一次调用）。"""
+    def __init__(self, full):
+        self.full, self.prompts = full, []
+
+    def __call__(self, prompt):
+        self.prompts.append(prompt)
+        label = re.search(r"当前的「(.+?)」", prompt).group(1)
+        sec = next(k for k, v in SD.SECTION_LABELS.items() if v == label)
+        return json.dumps({sec: self.full[sec]}, ensure_ascii=False)
 
 
 @pytest.fixture
@@ -48,27 +61,26 @@ def test_section_revise_changes_only_selected(ws):
     assert v["kind"] == "revise" and "世界观" in v["reason"] and v["seed"]["idea"] == "记忆当货币"
 
 
-def test_out_of_scope_changes_discarded_with_warning(ws):
+def test_out_of_scope_changes_are_ignored(ws):
+    """v2：每个部分单独请求，范围外的内容不会被采用（只读取本部分的键）。"""
     old = cur(ws)
-    reply = {"world": {**old["world"], "taboos": ["新禁忌"]}, "premise": "偷偷改了命题", "plot": old["plot"]}
-    logs = []
-    out = SR.run(ws, "改禁忌", ["world"], generator=Gen(reply), log=lambda k, t: logs.append((k, t)))
-    assert out["discarded"] == ["premise"]                       # plot 与原稿相同，不算越界
+    reply = {"world": {**old["world"], "taboos": ["新禁忌"]}, "premise": "偷偷改了命题"}
+    out = SR.run(ws, "改禁忌", ["world"], generator=Gen(reply))
+    assert out["discarded"] == []
     assert cur(ws)["premise"] == old["premise"] and cur(ws)["world"]["taboos"] == ["新禁忌"]
-    assert any(k == "warning" and "核心命题" in t for k, t in logs)
 
 
 def test_missing_scoped_section_retries_with_error(ws):
     g = Gen({"premise": "x"}, {"world": {**cur(ws)["world"], "taboos": ["T"]}})
     out = SR.run(ws, "改", ["world"], generator=g)
-    assert out["attempts"] == 2 and "缺少需要修改的部分" in g.prompts[1] and "世界观" in g.prompts[1]
+    assert out["attempts"] == 2 and "输出缺少「世界观」" in g.prompts[1]
 
 
 def test_whole_feedback_may_change_multiple_sections(ws):
     d = with_cast_list(cur(ws))
     d["premise"] = "更黑暗的命题"
     d["plot"]["endings"] = ["全员沉没"]
-    out = SR.run(ws, "整体更黑暗", None, generator=Gen(d))
+    out = SR.run(ws, "整体更黑暗", None, generator=ByGen(d))
     assert out["changed"] == ["premise", "plot"] and out["discarded"] == []
     assert "整稿" in SD.load(ws)["reason"]
 
@@ -104,19 +116,18 @@ def test_affects_hint_filtered(ws):
     assert cur(ws)["cast"] == SD.load(ws, 1)["draft"]["cast"]
 
 
-def test_unknown_key_in_output_is_error(ws):
+def test_extra_keys_in_section_reply_are_ignored(ws):
     w = {**cur(ws)["world"], "taboos": ["T"]}
-    g = Gen({"world": w, "mystery": 1}, {"world": w})
-    out = SR.run(ws, "改", ["world"], generator=g)
-    assert out["attempts"] == 2 and "未知键" in g.prompts[1]
+    out = SR.run(ws, "改", ["world"], generator=Gen({"world": w, "mystery": 1}))
+    assert out["attempts"] == 1 and "mystery" not in cur(ws)
 
 
 def test_prompt_has_feedback_scope_seed_and_cast_ids(ws):
     g = Gen({"world": {**cur(ws)["world"], "taboos": ["T"]}})
     SR.run(ws, "世界观改成近未来", ["world"], generator=g)
     p = g.prompts[0]
-    assert "世界观改成近未来" in p and "只允许修改：世界观" in p and "记忆当货币" in p and "要悬疑" in p
-    assert '"id": "c1"' in p
+    assert "世界观改成近未来" in p and "当前的「世界观」" in p and "记忆当货币" in p and "要悬疑" in p
+    assert "只修改与反馈有关" in p
 
 
 def test_input_validation(ws):
