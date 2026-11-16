@@ -45,10 +45,15 @@ def test_stale_index_is_refreshed_deterministically(ws, monkeypatch):
     assert calls and rep.get("refreshed_index") is True
 
 
-def test_corrupt_profile_is_reported_not_auto_fixed(ws, monkeypatch):
-    monkeypatch.setattr(CST, "load_records", lambda base: ({}, ["char_003.md: key 缺失"]))
-    with pytest.raises(CSY.CharacterSyncError, match="损坏"):
-        CSY.ensure(ws)
+def test_corrupt_non_character_file_is_quarantined_not_blocking(ws):
+    """角色目录里混入的非角色文件（如 system_voice.md）：不再卡住流程，移入 _quarantine（可移回）。"""
+    base = Path(ws.path("characters_dir"))
+    (base / "system_voice.md").write_text("这不是角色记录\n第 6 行格式错误\n", encoding="utf-8")
+    rep = CSY.ensure(ws)
+    assert rep["quarantined"] == ["system_voice.md"]
+    assert not (base / "system_voice.md").exists()
+    moved = list((base / "_quarantine").glob("*/system_voice.md"))
+    assert moved and moved[0].read_text(encoding="utf-8").startswith("这不是角色记录")
 
 
 def test_names_are_real_names_not_ids(ws, monkeypatch):

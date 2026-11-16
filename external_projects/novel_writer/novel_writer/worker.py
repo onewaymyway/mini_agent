@@ -262,6 +262,11 @@ def _repair_and_rerun(ws: Workspace, target: S.StepDef, *, invoker, settings: Di
     return status
 
 
+def _deterministic_failure(ws: Workspace, target: S.StepDef) -> bool:
+    """失败原因是确定性的（如人物档案未同步、文件损坏）：重跑结果不会变，不应被不停机模式反复重置。"""
+    return bool(st.get_step_state(ws, target.id).get("no_retry"))
+
+
 def _generic_repair_and_rerun(ws: Workspace, target: S.StepDef, *, invoker, settings: Dict[str, Any],
                               handlers, budget) -> Optional[str]:
     """通用修复：步骤多次自动重跑仍失败时，把失败原因和步骤的输入文件交给 LLM 修复，然后重跑该步骤。
@@ -377,6 +382,11 @@ def _loop(
             if AP.handle_waiting(ws, target, status, relentless=relentless):
                 continue
             return status
+        if relentless and status == st.ST_FAILED and _deterministic_failure(ws, target):
+            # 确定性错误（重置重跑结果不变）：不停机也不再自动重置，明确停下来让作者处理
+            st.log_line(ws, f"⏹ {target.id} 是确定性错误，自动重置没有意义，已停止。"
+                            f"原因：{str(st.get_step_state(ws, target.id).get('error') or '')[:300]}")
+            return st.ST_FAILED
         if relentless and status == st.ST_FAILED:
             # 先修复、后重置：失败步骤若还有修复机会，立即交给 LLM 修复并重跑，不等待重置间隔
             repaired = _repair_before_reset(ws, target, invoker=invoker, settings=settings, handlers=handlers,
@@ -468,7 +478,7 @@ def _loop(
 
         if autopilot and status_after in (st.ST_WAITING_REVIEW, st.ST_WAITING_USER):
             continue  # 托管：下一轮循环里自动处理
-        if relentless and status_after == st.ST_FAILED:
+        if relentless and status_after == st.ST_FAILED and not _deterministic_failure(ws, target):
             continue  # 不停机：下一轮循环顶部重置该步骤并继续
         if status_after in (st.ST_FAILED, st.ST_BLOCKED, st.ST_WAITING_REVIEW, st.ST_WAITING_USER):
             return status_after

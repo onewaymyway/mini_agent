@@ -8,6 +8,8 @@
 """
 from __future__ import annotations
 
+import shutil
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -57,11 +59,27 @@ def audit(ws) -> Dict[str, Any]:
 
 
 def ensure(ws) -> Dict[str, Any]:
-    """依赖人物的步骤开始前调用。能确定性修复的直接修复；不能修复的抛 CharacterSyncError。"""
+    """依赖人物的步骤开始前调用，全部自动完成，不需要人工介入：
+    1. 损坏的文件先尝试确定性修复（格式不规范但含义明确的重写为规范格式）；
+    2. 仍然不合格的文件移入 角色/_quarantine/<时间>/（只是移开，不删除，可以移回）；
+    3. 索引与档案对不上则重建索引；
+    4. 人设卡有、档案缺失的，无法自动建档，抛 CharacterSyncError（不可自动重跑）。"""
+    base = Path(ws.path("characters_dir"))
+    quarantined: List[str] = []
+    repaired: List[str] = []
+    if CST.load_records(base)[1] or CST.invalid_files(base):
+        repaired = CST.repair_dir(base)
+        bad = CST.invalid_files(base)
+        if bad:
+            qdir = base / "_quarantine" / time.strftime("%Y%m%d%H%M%S")
+            qdir.mkdir(parents=True, exist_ok=True)
+            for f in bad:
+                shutil.move(str(f), str(qdir / f.name))
+                quarantined.append(f.name)
     rep = audit(ws)
+    rep["repaired"], rep["quarantined"] = repaired, quarantined
     if rep["problems"]:
-        raise CharacterSyncError("人物档案有损坏的文件，无法自动修复：" + "；".join(rep["problems"][:6])
-                                 + "。请修复或删除这些文件后，再运行「建立人物档案」。")
+        raise CharacterSyncError("人物档案仍有无法解析的文件：" + "；".join(rep["problems"][:6]))
     if rep["missing_in_store"]:
         raise CharacterSyncError(
             f"人物档案未同步：人设卡 {len(rep['cards'])} 个，角色档案 {rep['store_count']} 个，"
