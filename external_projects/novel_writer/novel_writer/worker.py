@@ -290,6 +290,12 @@ def _schedule_upstream_repair(ws: Workspace, target: S.StepDef, index: Dict[str,
         st.log_line(ws, f"⏹ {target.id}：上游步骤「{up}」不在本次计划中，无法自动重跑")
         return False
     up_state = st.get_step_state(ws, up)
+    up_at, down_at = str(up_state.get("updated_at") or ""), str(state.get("updated_at") or "")
+    if up_state.get("status") == st.ST_PASSED and down_at and up_at > down_at:
+        # 上游已在本步骤失败之后通过：失败记录是旧的，不要再重跑上游，直接让本步骤重新执行
+        st.update_step(ws, target.id, status=st.ST_PENDING, no_retry=None, upstream_step=None, error=None)
+        st.log_line(ws, f"✔ 上游「{up}」已在「{target.id}」失败之后通过，无需再次重跑上游，「{target.id}」将重新执行")
+        return True
     n = int(up_state.get("upstream_repairs") or 0) if up_state.get("upstream_run") == run_token else 0
     if n >= MAX_UPSTREAM_REPAIRS:
         st.log_line(ws, f"⏹ {up} 在本次运行中已自动修复 {n} 次仍不通过，停止自动修复，请人工检查（见上方 {up} 的失败原因）")

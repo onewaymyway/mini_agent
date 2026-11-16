@@ -88,3 +88,15 @@ def test_text_fallback_triggers_direct_upstream_rerun(monkeypatch):
     ran = _patch(monkeypatch, states)
     assert _call(down, {"build_characters": up, "characters_complete": down}) is True
     assert ran == ["build_characters"]
+
+
+def test_upstream_already_passed_after_downstream_failure_is_not_rerun(monkeypatch):
+    """上游在下游失败之后已经通过：不重跑上游，只让下游重新执行（日志里出现的「多跑一次建档」）。"""
+    up = SimpleNamespace(id="build_characters", title="建档")
+    down = SimpleNamespace(id="brief_draft:1", title="简述")
+    states = States({"brief_draft:1": {"error": "人物档案未同步", "updated_at": "2026-11-16T21:00:00"},
+                     "build_characters": {"status": "passed", "updated_at": "2026-11-16T21:27:14"}})
+    ran = _patch(monkeypatch, states)
+    assert _call(down, {"build_characters": up, "brief_draft:1": down}) is True
+    assert ran == []
+    assert any(sid == "brief_draft:1" and kw.get("status") == W.st.ST_PENDING for sid, kw in states.updates)
