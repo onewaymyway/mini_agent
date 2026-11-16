@@ -118,8 +118,9 @@ def save_brief(ws: Workspace, b: Dict[str, Any]) -> None:
 # ─────────────────────────────── 校验（确定性） ───────────────────────────────
 
 def known_names(ws: Workspace) -> List[str]:
-    d = ws.path("characters_dir")
-    return sorted({p.stem for p in d.glob("*.md")}) if d.is_dir() else []
+    """人物姓名（不是文件名/id）。must_states 的 who 只能用姓名。"""
+    from novel_writer import character_sync as CSY
+    return CSY.names(ws)
 
 
 def known_foreshadow(ws: Workspace) -> List[str]:
@@ -330,7 +331,8 @@ def _load_accepted(ws: Workspace, act: int, numbers: List[int]) -> Dict[int, Dic
 
 
 def _split_output(raw: str, numbers: List[int], titles: Dict[int, str], names: List[str],
-                  foreshadow: List[str], act: int) -> Tuple[Dict[int, Dict[str, Any]], Dict[int, List[str]], List[str]]:
+                  foreshadow: List[str], act: int, id_map: Optional[Dict[str, str]] = None
+                  ) -> Tuple[Dict[int, Dict[str, Any]], Dict[int, List[str]], List[str]]:
     """逐章校验：通过的章节单独保留，未通过的章节只带自己的问题。返回 (通过的章, 每章的问题, 其它问题)。"""
     try:
         data = json.loads(raw)
@@ -347,6 +349,10 @@ def _split_output(raw: str, numbers: List[int], titles: Dict[int, str], names: L
         if not isinstance(n, int) or n not in numbers:
             extra.append(f"多余的章节 {n!r}（不在本次需要的范围内，已忽略）")
             continue
+        # 模型常把角色 id（char_002）写进 who：确定性地还原为姓名，而不是整章退回
+        for st in ((it.get("key") or {}).get("must_states") or []) if isinstance(it.get("key"), dict) else []:
+            if isinstance(st, dict) and st.get("who") in (id_map or {}):
+                st["who"] = id_map[st["who"]]
         it.setdefault("title", titles.get(n, ""))          # 与 parse_act_output 的规范化保持一致
         it["act"] = act
         it.setdefault("deviations", [])
@@ -388,6 +394,8 @@ def generate_act(ws: Workspace, act: int, start: int, end: int, invoker, *, feed
     if invoker is None:
         raise RuntimeError("未配置执行器（invoker），无法生成章节简述")
     from novel_writer import blueprint_store as BS
+    from novel_writer import character_sync as CSY
+    CSY.ensure(ws)                                   # 人物档案未同步时先报错（不可自动重跑），不进入模型调用
     blueprint = BS.load_for_ws(ws, strict=True) or {}
     chapters = [c for c in blueprint.get("chapters") or [] if isinstance(c, dict) and isinstance(c.get("id"), int)
                 and start <= c["id"] <= end]
@@ -397,6 +405,7 @@ def generate_act(ws: Workspace, act: int, start: int, end: int, invoker, *, feed
     if missing_entries:
         raise RuntimeError(f"第{act}幕蓝图缺少章节条目 {missing_entries}，请先完成 plan_act / blueprint_extend")
     names, foreshadow = known_names(ws), known_foreshadow(ws)
+    id_map = CSY.id_to_name(ws)
     prev = None
     for n in range(start - 1, 0, -1):
         prev = load_brief(ws, n)
@@ -438,7 +447,8 @@ def generate_act(ws: Workspace, act: int, start: int, end: int, invoker, *, feed
                 kind = "invoke" if not info["ok"] else "missing"
                 continue
             atomic_write_text(out_file, salvaged)
-        good, bad, extra = _split_output(out_file.read_text(encoding="utf-8"), remaining, titles, names, foreshadow, act)
+        good, bad, extra = _split_output(out_file.read_text(encoding="utf-8"), remaining, titles, names, foreshadow, act,
+                                         id_map=id_map)
         for n, item in good.items():
             atomic_write_json(accepted_dir / f"ch{n:03d}.json", item)
             accepted[n] = item

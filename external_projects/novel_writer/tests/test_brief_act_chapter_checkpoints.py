@@ -14,6 +14,9 @@ def env(tmp_path, monkeypatch):
     ws = SimpleNamespace(root=tmp_path)
     monkeypatch.setattr(BS, "load_for_ws", lambda ws, strict=False: {"chapters": [{"id": 1, "title": "甲"}, {"id": 2, "title": "乙"}]})
     monkeypatch.setattr(B, "known_names", lambda ws: [])
+    from novel_writer import character_sync as _CSY
+    monkeypatch.setattr(_CSY, "ensure", lambda ws: {})
+    monkeypatch.setattr(_CSY, "id_to_name", lambda ws: {})
     monkeypatch.setattr(B, "known_foreshadow", lambda ws: ["fs_001"])
     monkeypatch.setattr(B, "load_brief", lambda ws, n: None)
     saved = []
