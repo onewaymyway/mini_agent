@@ -20,6 +20,7 @@ from novel_to_video.providers.tts import SilenceTTS
 from novel_to_video.providers.video import StubVideoProvider
 from novel_to_video.steps import global_visual as gv
 from novel_to_video.steps.chapter_script import run_script
+from novel_to_video.steps import chapter_shots as CS
 from novel_to_video.steps.chapter_shots import collect_shot_issues, run_shots
 from novel_to_video.steps.global_visual import StepError
 
@@ -54,6 +55,13 @@ class Seq:
         if "TASK=script" in prompt and "TASK=shots" not in prompt:
             return SCRIPT
         return self.outs[min(len(self.calls) - 1, len(self.outs) - 1)]
+
+
+@pytest.fixture(autouse=True)
+def _feedback_loop_only(monkeypatch):
+    """本文件测的是「校验失败 → 反馈模型修正」流程。关闭对白自动修复（见 test_dialogue_repair.py），
+    让坏对白仍然走反馈路径。"""
+    monkeypatch.setattr(CS, "DIALOGUE_REPAIR_MIN_SIMILARITY", 1.01)
 
 
 @pytest.fixture

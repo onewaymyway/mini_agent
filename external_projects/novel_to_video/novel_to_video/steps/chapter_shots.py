@@ -280,6 +280,76 @@ def _speaker_hint(script_speaker: str, characters: List[Dict[str, Any]]) -> str:
             f"角色库：{known}")
 
 
+DIALOGUE_REPAIR_MIN_SIMILARITY = 0.7   # 对白自动修复的最低相似度（按原始字符计算，见 _best_script_span）
+
+
+def _best_script_span(text: str, script_lines: List[Dict[str, str]]) -> Optional[Dict[str, Any]]:
+    """在剧本各对白行中找与 text 最相似的一段「连续原文」。
+
+    做法：对每一行做 difflib 匹配，取第一个与最后一个匹配字符之间的子串作为候选（它一定是该行的连续原文），
+    相似度 = 2·匹配字数 /（text 长度 + 候选长度）。返回 {speaker, text, score}，没有像样的候选返回 None。"""
+    from difflib import SequenceMatcher
+    target = re.sub(r"\s", "", text)
+    if not target:
+        return None
+    best: Optional[Dict[str, Any]] = None
+    for ln in script_lines:
+        line = ln["text"]
+        if not line.strip():
+            continue
+        blocks = [b for b in SequenceMatcher(None, target, line, autojunk=False).get_matching_blocks() if b.size]
+        if not blocks:
+            continue
+        lo = blocks[0].b
+        hi = blocks[-1].b + blocks[-1].size
+        # 候选两端若紧邻标点（如句末“。”），一并纳入：标点不影响“连续原文”，但保证替换后的对白完整
+        while hi < len(line) and not re.sub(r"[\s，。！？；：、“”‘’「」『』\"'（）()—\-…]", "", line[hi]):
+            hi += 1
+        while lo > 0 and not re.sub(r"[\s，。！？；：、“”‘’「」『』\"'（）()—\-…]", "", line[lo - 1]):
+            lo -= 1
+        span = line[lo:hi]
+        matched = sum(b.size for b in blocks)
+        score = 2 * matched / (len(target) + len(re.sub(r"\s", "", span)))
+        if best is None or score > best["score"]:
+            best = {"speaker": ln["speaker"], "text": span.strip(), "score": score}
+    return best
+
+
+def repair_dialogue_texts(raw_shots: List[Dict[str, Any]], script_lines: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+    """自动修复对白：模型给出的对白不是剧本中的连续原文时，若剧本里有足够相似的连续原文，就替换为该原文。
+
+    只改 text，不改说话人与镜头结构；替换前后都记录在返回的列表中（before / after / score），由调用方写入日志。
+    相似度低于 DIALOGUE_REPAIR_MIN_SIMILARITY 的不修复，交给原有的校验与反馈修正流程处理。
+    原地修改 raw_shots。"""
+    script_norm = norm("\n".join(ln["text"] for ln in script_lines))
+    repairs: List[Dict[str, Any]] = []
+    for si, rs in enumerate(raw_shots, start=1):
+        for bj, rb in enumerate(rs.get("blocks") or [], start=1):
+            if rb.get("type") != "dialogue":
+                continue
+            text = str(rb.get("text") or "").strip()
+            if not text or norm(text) in script_norm:
+                continue
+            best = _best_script_span(text, script_lines)
+            if not best or best["score"] < DIALOGUE_REPAIR_MIN_SIMILARITY:
+                continue
+            new_text = best["text"]
+            if not norm(new_text) or norm(new_text) not in script_norm:
+                continue
+            rb["text"] = new_text
+            repairs.append({"shot": si, "block": bj, "before": text, "after": new_text,
+                            "speaker": best["speaker"], "score": round(best["score"], 2)})
+    return repairs
+
+
+def _script_dialogue_lines(script: str) -> List[Dict[str, str]]:
+    try:
+        return [{"speaker": ln["speaker"], "text": ln["text"]}
+                for sc in parse_script(script) for ln in sc["lines"] if ln["type"] == "dialogue"]
+    except Exception:
+        return []
+
+
 def collect_shot_issues(raw_shots: List[Dict[str, Any]], script: str,
                         characters: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     """一次性找出镜头规划里的全部问题（而不是遇到第一个就停），用于把完整问题清单反馈给模型自动修正。
@@ -444,10 +514,20 @@ def _plan_segment(project_dir: Path, no: int, text_llm: TextLLM, script: str, pr
         built, obj, issues = None, None, []
         try:
             obj = parse_json_object(raw)
+            # 先自动修复对白：模型拼接/改写的对白若有足够相似的连续原文，替换为原文（并记录）
+            repairs = repair_dialogue_texts(obj.get("shots") or [], _script_dialogue_lines(script))
+            for rp in repairs:
+                joblog.log(project_dir, "chapter",
+                           f"第 {no} 章 C-3 对白已自动修复为剧本原文（镜头 {rp['shot']} 口播 {rp['block']}，相似度 {rp['score']}）："
+                           f"“{rp['before'][:40]}” → “{rp['after'][:40]}”（{rp['speaker']}）", level="warn")
             issues = collect_shot_issues(obj.get("shots") or [], script, characters)
             if not issues:
                 built = validate_and_build(obj.get("shots") or [], script, locations, characters, no, block_limit=limit,
                                            props=props, looks_enabled=looks_on, spots_enabled=spots_on)
+                built.setdefault("plan_warnings", []).extend(
+                    {"kind": "dialogue_repaired",
+                     "message": f"对白已自动替换为剧本原文（镜头 {rp['shot']}）：“{rp['before'][:30]}” → “{rp['after'][:30]}”，请核对"}
+                    for rp in repairs)
                 if spots_on:
                     # 新场景识别：标题写到具体场所、镜头却挂在对不上的已有地点上 → 先反馈给模型修正；
                     # 自动修正次数用尽则只记为警告，不让整章失败
