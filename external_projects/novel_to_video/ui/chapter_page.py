@@ -396,6 +396,27 @@ def _recompose_section(pdir: str, no: int, v: dict) -> None:
     render_job_panel(pdir, ["chapter"], title="重新合成日志", height=220, limit=120)
 
 
+def _reset_chapter_section(pdir: str, no: int) -> None:
+    """整章重置：删除本章全部生成产物（含剧本），下次运行从 C-1 剧本重新开始。全书设定与原文保留。"""
+    busy = tool_api.cockpit_status(pdir)["data"]["run"]["busy"]
+    with st.expander("♻️ 整章重置（从剧本重新生成）"):
+        if busy:
+            st.info("队列正在运行，停止后才能整章重置。")
+        st.caption("删除本章的剧本、镜头、配音、提示词、场景图、视频与封面，章节回到待运行，下次运行从剧本重新生成。"
+                   "章节原文、全书角色与地点设定、其他章节不受影响。此操作不可撤销。")
+        sure = st.checkbox(f"我确认清除第 {no} 章的全部生成产物，并从剧本重新生成", key=f"reset_ok_ch{no}", disabled=busy)
+        if st.button("整章重置", key=f"reset_btn_ch{no}", disabled=busy or not sure):
+            r = tool_api.reset_chapter(pdir, no)
+            if r["ok"]:
+                msg = f"第 {no} 章已整章重置（清除 {len(r['data']['removed'])} 项产物），下次运行从剧本开始"
+                if r["data"]["final_marked_stale"]:
+                    msg += "；全书成片已标记为过期，需重新合成"
+                st.toast(msg)
+                st.rerun()
+            else:
+                st.error(r["error"]["message"])
+
+
 def _recompose_all(pdir: str, overview: list) -> None:
     """批量重新合成：所有已合成过的章节（done / stale）。"""
     targets = [r["no"] for r in overview if r.get("status") in ("done", "stale")]
@@ -439,6 +460,7 @@ def page_chapters() -> None:
         st.markdown("#### 章节成片")
         st.video(str(Path(pdir) / v["output"]))
     _recompose_section(pdir, no, v)
+    _reset_chapter_section(pdir, no)
     _script_review(v)
     _missing_locations(v)
     _missing_props(v)

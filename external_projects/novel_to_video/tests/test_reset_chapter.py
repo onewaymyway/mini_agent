@@ -62,3 +62,12 @@ def test_reset_unknown_chapter_fails_without_creating_dirs(project):
     r = tool_api.reset_chapter(str(project), 999)
     assert not r["ok"]
     assert not cio.chapter_dir(project, 999).exists()
+
+
+def test_chapter_page_module_exposes_reset_section():
+    # 章节生产页与驾驶舱共用同一后端 reset_chapter；这里确认页面渲染函数存在且调用的是该接口
+    import inspect
+    from ui import chapter_page
+    src = inspect.getsource(chapter_page._reset_chapter_section)
+    assert "tool_api.reset_chapter" in src
+    assert "_reset_chapter_section(pdir, no)" in inspect.getsource(chapter_page.page_chapters)
