@@ -9,6 +9,9 @@
 自动通过的条件（G3 小场景）：
   clip 文件存在、无 clip_error、镜头 consistency == pass、音频已存在。
 不满足时保持 pending，由人工处理。
+
+G6 不跳过失败的章节：失败后持续重试（见 _recover_failure），直到成功、用户停止、预算用尽或达到可选的单章重试上限；
+后几种情况整个队列停下，不再开始后面的章节。
 """
 
 from __future__ import annotations
@@ -52,10 +55,12 @@ def _mode(project_dir: Path) -> str:
     return RM.mode_of(read_json(project_dir / "project.json"))
 
 
-def check_budget(project_dir: Path, gear: str, budget: Dict[str, Any]) -> Optional[str]:
-    """返回 None 表示可以继续，否则返回停止原因。非 G3 不做预算强制。"""
+def check_budget(project_dir: Path, gear: str, budget: Dict[str, Any], extra_minutes: float = 0.0) -> Optional[str]:
+    """返回 None 表示可以继续，否则返回停止原因。只有 G3 / G6 做预算强制。
+    extra_minutes：本章已经运行、但还没有记入 batch_runs.json 的分钟数（章内反复重试时耗时要实时计入）。"""
     try:
-        gates.require_budget(budget, _usage(project_dir), _minutes_used(project_dir), gear, mode=_mode(project_dir))
+        gates.require_budget(budget, _usage(project_dir), _minutes_used(project_dir) + max(0.0, extra_minutes), gear,
+                             mode=_mode(project_dir))
     except gates.GateError as exc:
         return str(exc)
     return None
@@ -89,26 +94,74 @@ def auto_approve_shots(project_dir: Path, no: int) -> List[str]:
     return approved
 
 
+def _since(t0: Optional[float]) -> float:
+    """自 t0（time.monotonic 起点）以来的分钟数；t0 为 None 时为 0。"""
+    return 0.0 if t0 is None else (time.monotonic() - t0) / 60.0
+
+
+def _sleep(seconds: float) -> None:
+    time.sleep(seconds)
+
+
+def _wait_or_stop(project_dir: Path, seconds: float) -> bool:
+    """重试前的等待。每 0.5 秒检查一次停止请求；等待期间被要求停止则返回 False。"""
+    left = float(seconds)
+    while left > 0:
+        if rt.stop_requested(project_dir):
+            return False
+        step = min(0.5, left)
+        _sleep(step)
+        left -= step
+    return not rt.stop_requested(project_dir)
+
+
 def _recover_failure(project_dir: Path, no: int, gear: str, res: Dict[str, Any], run_one,
-                     budget: Dict[str, Any], results: Dict[int, Dict[str, Any]]) -> Dict[str, Any]:
-    """G4 / G5 的失败恢复，次数有上限。
+                     budget: Dict[str, Any], results: Dict[int, Dict[str, Any]],
+                     t0: Optional[float] = None) -> Dict[str, Any]:
+    """失败恢复，由挡位决定策略与次数（gates.retry_limit）。
 
     G4：失败后降低口播块长度并重跑一次（策略切换）。
     G5：失败后清除失败阶段标记，重试至多 3 次。
-    其余挡位不恢复，直接返回失败。每次重试前都重新检查预算。
+    G6：同 G5 的做法，但不设固定次数上限，重试之间等待（逐步拉长，可被停止请求打断），
+        直到成功、用户停止、预算用尽或达到预算里的 max_chapter_retries。
+    其余挡位不恢复，直接返回失败。每次重试前都重新检查停止请求与预算（章内耗时实时计入）。
+
+    仍然失败时，G6 会在结果里写入 g6_halt（队列据此停止，而不是跳到下一章）。
     """
-    limit = gates.RETRY_LIMITS.get(gear, 0)
+    limit = gates.retry_limit(gear, budget)
+    persistent = gear in gates.FULL_AUTO_GEARS          # G6：持续重试
     attempts = 0
-    while res.get("status") == "failed" and attempts < limit:
-        if check_budget(project_dir, gear, budget):
+    halt: Optional[str] = None
+    while res.get("status") == "failed" and (limit is None or attempts < limit):
+        if rt.stop_requested(project_dir):
+            halt = cancel.STOP_MESSAGE
+            break
+        reason = check_budget(project_dir, gear, budget, _since(t0))
+        if reason:
+            halt = reason
             break
         attempts += 1
+        if persistent:
+            wait = gates.retry_backoff_sec(attempts)
+            joblog.log(project_dir, "queue",
+                       f"G6：第 {no} 章失败（{res.get('message') or '未知原因'}），{wait:g} 秒后第 {attempts} 次重试",
+                       level="warn")
+            if not _wait_or_stop(project_dir, wait):
+                attempts -= 1
+                halt = cancel.STOP_MESSAGE
+                break
         if gear == "G4":
             _switch_strategy(project_dir, no)
         else:
             _reset_failed_stage(project_dir, no)
         res = run_one(no)
         res["recovery"] = {"gear": gear, "attempts": attempts}
+    if persistent and res.get("status") == "failed":
+        if halt is None and limit is not None and attempts >= limit:
+            halt = f"第 {no} 章已重试 {attempts} 次仍失败（已达单章重试上限 {limit} 次）"
+        elif halt is not None and halt != cancel.STOP_MESSAGE:
+            halt = f"{halt}；第 {no} 章仍未成功（{res.get('message') or '未知原因'}）"
+        res["g6_halt"] = halt or f"第 {no} 章失败，G6 不跳过失败章节，队列已停止"
     if attempts:
         append_progress(project_dir, f"第 {no} 章 {gear} 失败恢复 {attempts} 次，结果：{res.get('status')}")
     return res
@@ -118,20 +171,25 @@ MAX_PREPARE_ROUNDS = 3
 
 
 def _prepare_and_rerun(project_dir: Path, no: int, gear: str, budget: Dict[str, Any], res: Dict[str, Any],
-                       run_one, prepare) -> Dict[str, Any]:
+                       run_one, prepare, t0: Optional[float] = None) -> Dict[str, Any]:
     """G6：章节停在 waiting_assets（缺设定/缺定妆图/等待确认）时，自动补齐素材并重跑本章。
     每轮之前检查停止请求与预算；某轮没有任何进展（没有新通过的设定或新生成的定妆图）即停止，不空转。"""
     rounds = 0
     while res.get("status") == "waiting_assets" and rounds < MAX_PREPARE_ROUNDS:
         if rt.stop_requested(project_dir):
             break
-        reason = check_budget(project_dir, gear, budget)
+        reason = check_budget(project_dir, gear, budget, _since(t0))
         if reason:
             res["message"] = f"{res.get('message') or ''}（自动补素材已停止：{reason}）"
             break
         rounds += 1
         joblog.log(project_dir, "queue", f"G6：第 {no} 章等待素材，自动补全（第 {rounds} 轮）")
-        info = prepare(no) or {}
+        try:
+            info = prepare(no) or {}
+        except Exception as exc:  # noqa: BLE001 - 引擎初始化等失败按本章失败处理，由失败恢复继续重试，不拖垮整个队列
+            joblog.log(project_dir, "queue", f"G6：第 {no} 章自动补素材出错：{type(exc).__name__}：{exc}", level="error")
+            res = {"status": "failed", "message": f"自动补素材出错：{type(exc).__name__}：{exc}"}
+            break
         progressed = bool(info.get("progress"))
         res = run_one(no)
         res["auto_prepared"] = info
@@ -188,11 +246,18 @@ def run_queue(project_dir: Path, numbers: List[int], *, gear: str, run_one, prep
         rt.begin_chapter(project_dir, no)
         joblog.log(project_dir, "queue", f"队列：开始第 {no} 章（挡位 {gear}）")
         try:
-            res = run_one(no)
-            if gear in gates.FULL_AUTO_GEARS and prepare is not None:
-                res = _prepare_and_rerun(project_dir, no, gear, budget, res, run_one, prepare)
+            def run_and_prepare(n: int) -> Dict[str, Any]:
+                """跑一章；G6 下停在「等待素材」时自动补素材并重跑。失败恢复的每次重试也走这里，
+                这样某章重试成功后紧接着遇到缺素材，同样会被自动补齐，而不是停在半途被跳过。"""
+                r = run_one(n)
+                if gear in gates.FULL_AUTO_GEARS and prepare is not None:
+                    r = _prepare_and_rerun(project_dir, n, gear, budget, r, run_one, prepare, t0)
+                return r
+
+            res = run_and_prepare(no)
             prepared = res.get("auto_prepared")
-            res = _recover_failure(project_dir, no, gear, res, run_one, budget, results)
+            res = _recover_failure(project_dir, no, gear, res, run_and_prepare, budget, results, t0)
+            prepared = res.get("auto_prepared") or prepared      # 重试过程中补的素材也要保留摘要
             if gear in gates.AUTO_REVIEW_GEARS and res.get("status") == "waiting_review":
                 approved = auto_approve_shots(project_dir, no)
                 res["auto_approved"] = approved
@@ -218,6 +283,12 @@ def run_queue(project_dir: Path, numbers: List[int], *, gear: str, run_one, prep
                    level={"done": "ok", "failed": "error"}.get(res.get("status"), "info"))
         if res.get("status") == "stopped":   # 章节流水线报告了手动停止
             halted = cancel.STOP_MESSAGE
+            break
+        if gear in gates.FULL_AUTO_GEARS and res.get("status") == "failed":
+            # G6 不跳过失败章节：重试没能让它成功（用户停止 / 预算用尽 / 达到单章重试上限）时整个队列停下，
+            # 后面的章节不再开始；修正原因（或调高预算）后重新运行即可从这一章继续。
+            halted = res.get("g6_halt") or f"第 {no} 章失败，G6 不跳过失败章节，队列已停止"
+            joblog.log(project_dir, "queue", f"G6：队列在第 {no} 章停止 —— {halted}", level="error")
             break
     return {"results": results, "halted": halted, "gear": gear,
             "elapsed_sec": round(time.monotonic() - started, 2)}

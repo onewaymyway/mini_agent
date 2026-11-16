@@ -13,6 +13,8 @@
 G6（全自动）在 G3 的基础上，队列会替用户完成所有「需要人动手」的素材工作：按本章镜头用到的角色/地点/道具
 自动补全视觉与声音设定、确认性别、通过设定、生成并通过定妆图；失败的章节自动重试（最多 3 次）；
 一章结束自动开始下一章。预算上限与 G3 一样必填。
+G6 **不跳过失败的章节**：某章失败后持续重试（间隔逐步拉长），直到成功、用户停止、预算用尽，或达到预算里可选的
+「单章最多重试次数」；后两种情况整个队列停下并说明原因，而不是继续做后面的章节。
 
 注意：小场景逐镜审核在 G0–G2 始终保留；G3 只在“视频生成校验通过”时自动通过，
 这里的“自动通过”是指由代码依据机械校验结果置为 approved，并记入 review.json。
@@ -50,13 +52,20 @@ BUDGET_GEARS = ("G3", "G6")
 # 队列自动完成全书素材（设定补全、性别、定妆图）的挡位
 FULL_AUTO_GEARS = ("G6",)
 
-# G4/G5 的失败恢复策略（有上限，避免在付费接口上无限重试）
-RETRY_LIMITS = {"G3": 0, "G4": 1, "G5": 3, "G6": 3}
+# 失败恢复的重试次数上限。None = 不设固定上限（只受停止请求、预算与可选的单章重试上限约束）。
+# G4/G5 有固定上限，避免在付费接口上无限重试；G6 持续重试、不跳过失败章节，由必填的预算兜底。
+RETRY_LIMITS = {"G3": 0, "G4": 1, "G5": 3, "G6": None}
 RECOVERY = {
     "G4": "失败后换策略一次：降低口播块长度（重新切分镜头）后重跑该章",
     "G5": "失败后重置该章失败阶段并重试，最多 3 次，仍失败则停止并记录",
-    "G6": "同 G5 的失败重试（最多 3 次）；另外素材（设定、性别、定妆图）由队列自动补全并确认",
+    "G6": "失败的章节持续重试、不跳过（直到成功、用户停止或预算用尽）；另外素材（设定、性别、定妆图）由队列自动补全并确认",
 }
+
+# 预算里可选的「单章最多重试次数」：仅 G6 使用；缺省或 0 表示不限制次数
+CHAPTER_RETRY_KEY = "max_chapter_retries"
+# 重试之间的等待秒数：第 n 次重试前等待 min(MAX, BASE * n)，避免在付费接口上连续猛砸
+RETRY_BACKOFF_BASE_SEC = 5.0
+RETRY_BACKOFF_MAX_SEC = 60.0
 
 # 任何挡位都不可跳过的检查点
 # 任何挡位都不可跳过的检查点：全书合成（F-1 与人工确认）
@@ -72,6 +81,26 @@ def normalize_gear(gear: Optional[str]) -> str:
     if g not in GEARS:
         raise GateError(f"未知挡位：{gear}（可选 {', '.join(GEARS)}）")
     return g
+
+
+def retry_limit(gear: str, budget: Optional[Dict[str, Any]] = None) -> Optional[int]:
+    """失败恢复的重试上限；None 表示不设固定上限。
+    G6 默认不设上限，预算里的 max_chapter_retries（正整数）可以给它加一个上限；其余挡位用 RETRY_LIMITS。"""
+    g = normalize_gear(gear)
+    limit = RETRY_LIMITS.get(g, 0)
+    if limit is None:
+        raw = (budget or {}).get(CHAPTER_RETRY_KEY)
+        try:
+            n = int(raw) if raw not in (None, "") else 0
+        except (TypeError, ValueError):
+            n = 0
+        return n if n > 0 else None
+    return limit
+
+
+def retry_backoff_sec(attempt: int) -> float:
+    """第 attempt 次（从 1 开始）重试前的等待秒数。"""
+    return min(RETRY_BACKOFF_MAX_SEC, RETRY_BACKOFF_BASE_SEC * max(1, attempt))
 
 
 def is_auto(gear: str, checkpoint: str) -> bool:

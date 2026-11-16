@@ -65,7 +65,11 @@ BUDGET = {"max_video_calls": 99, "max_image_calls": 99, "max_minutes": 99}
 def test_g6_policy_and_budget():
     assert "G6" in gates.GEARS and gates.is_auto("G6", "shot_review") and gates.is_auto("G6", "asset_portrait")
     assert gates.is_auto("G6", "final_compose") is False          # 全书合成仍须人工确认
-    assert gates.RETRY_LIMITS["G6"] == 3
+    assert gates.RETRY_LIMITS["G6"] is None                         # G6 不设固定重试上限（不跳过失败章节）
+    assert gates.retry_limit("G6", {}) is None
+    assert gates.retry_limit("G6", {"max_chapter_retries": 7}) == 7
+    assert gates.retry_limit("G6", {"max_chapter_retries": 0}) is None   # 0 = 不限制
+    assert gates.retry_limit("G5", {"max_chapter_retries": 7}) == 3      # 上限设置只对 G6 生效
     with pytest.raises(gates.GateError, match="G6 挡位必须设置预算上限"):
         gates.validate_budget({}, "G6")
 

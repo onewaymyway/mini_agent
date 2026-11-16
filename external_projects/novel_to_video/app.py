@@ -24,6 +24,7 @@ from ui.gear_page import page_gear  # noqa: E402
 from ui.chapter_page import page_chapters  # noqa: E402
 from ui.import_page import page_import  # noqa: E402
 from ui.projects_page import page_projects  # noqa: E402
+from ui.video_page import page_videos  # noqa: E402
 
 PAGES = {
     "🧭 驾驶舱": page_cockpit,
@@ -31,6 +32,7 @@ PAGES = {
     "📚 项目列表": page_projects,
     "🎭 全书素材": page_assets,
     "🎬 章节生产": page_chapters,
+    "📺 章节视频": page_videos,
     "🛠️ 设置与队列": page_gear,
     "🧩 补建角色审核": page_auto_added,
     "🎞️ 全书合成": page_final,

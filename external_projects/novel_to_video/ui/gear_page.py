@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import streamlit as st
 
+from novel_to_video import gates
 from novel_to_video import project_store as ps
 from novel_to_video import tool_api
 from ui.common import DEFAULT_PROJECTS_ROOT
@@ -16,7 +17,7 @@ GEAR_HELP = {
     "G3": "全自动：机械校验通过的镜头自动通过；必须设置预算上限",
     "G4": "托管：全自动，失败后换一次策略（收紧口播块）；必须设置预算上限",
     "G5": "不停机：全自动，失败后自动重置重试最多 3 次；必须设置预算上限；全书合成仍需人工确认",
-    "G6": "全流程自动：按章自动补设定/性别、生成并通过定妆图，再场景图、配音、合成；失败自动重试 3 次；一章完成自动开始下一章；必须设置预算上限；全书合成仍需人工确认",
+    "G6": "全流程自动：按章自动补设定/性别、生成并通过定妆图，再场景图、配音、合成；失败的章节持续重试、不跳过（直到成功、手动停止或预算用尽）；一章完成自动开始下一章；必须设置预算上限；全书合成仍需人工确认",
 }
 
 
@@ -69,6 +70,12 @@ def page_gear() -> None:
             budget["max_minutes"] = c3.number_input("耗时上限（分钟）", min_value=0.0,
                                                     value=_float("max_minutes", 120.0), step=10.0,
                                                     key=f"{kpre}_min")
+    if cur == "G6":
+        budget[gates.CHAPTER_RETRY_KEY] = st.number_input(
+            "单章最多重试次数（0 = 不限制）", min_value=0, value=_int(gates.CHAPTER_RETRY_KEY, 0), step=1,
+            key=f"{kpre}_retry",
+            help="G6 不会跳过失败的章节：失败后持续重试（间隔逐步拉长到最长 60 秒），直到成功、你点击停止或预算用尽。"
+                 "填写大于 0 的数字则在重试这么多次后停下整个队列（同样不会去做后面的章节），修正原因后重新运行即可继续。")
     if st.button("保存挡位"):
         res = tool_api.set_gear(pdir, cur, budget or None)
         (st.success if res["ok"] else st.error)(res["data"] if res["ok"] else res["error"]["message"])

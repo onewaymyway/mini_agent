@@ -550,6 +550,67 @@ def invalidate_shot(project_dir: str, no: int, sid: str, level: str) -> Dict[str
     return _ok(data)
 
 
+_DURATION_CACHE: Dict[tuple, Optional[float]] = {}
+
+
+def _video_duration(path: Path) -> Optional[float]:
+    """成片时长（秒）。以（路径、修改时间、大小）为键缓存，章节很多时刷新列表不会反复调用 ffprobe；读不到返回 None。"""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    key = (str(path), st.st_mtime_ns, st.st_size)
+    if key not in _DURATION_CACHE:
+        try:
+            from .media import ffmpeg as _mf
+            _DURATION_CACHE[key] = round(_mf.probe_duration(path), 2)
+        except Exception:  # noqa: BLE001 - 没有 ffprobe 或文件损坏：只是少显示时长，不影响列表
+            _DURATION_CACHE[key] = None
+    return _DURATION_CACHE[key]
+
+
+def chapter_videos(project_dir: str) -> Dict[str, Any]:
+    """所有章节的视频完成情况（含未选中章节），供「章节视频」页展示与连续播放。
+
+    每章：no/title/selected/status/message/updated_at、video（相对项目目录的成片路径，没有则 None）、
+    size_mb、duration_sec、stale（成片已存在但与当前素材不一致，通常是改动后还没重新合成）。
+    summary：章数、已选中数、已完成数（成片存在且是最新）、过期数、失败数、等待数、已完成成片总时长。
+    """
+    pdir = Path(project_dir)
+    try:
+        rows = ps.load_project(pdir)["chapters"]
+    except Exception as exc:
+        return _fail(f"读取项目失败：{exc}")
+    from .steps import chapter_compose as _cc
+    items: List[Dict[str, Any]] = []
+    for r in rows:
+        no = r["no"]
+        out = cio.chapter_dir(pdir, no) / f"chapter_{no:03d}.mp4"
+        has = out.is_file()
+        stale = has and not _cc.is_up_to_date(pdir, no)
+        items.append({
+            "no": no, "title": r.get("title") or "", "selected": bool(r.get("selected")),
+            "status": r.get("status") or "pending", "message": r.get("message") or "",
+            "updated_at": r.get("updated_at") or "",
+            "video": str(out.relative_to(pdir)) if has else None,
+            "size_mb": round(out.stat().st_size / 1048576, 2) if has else None,
+            "duration_sec": _video_duration(out) if has else None,
+            "stale": bool(stale),
+        })
+    ready = [i for i in items if i["video"] and not i["stale"]]
+    waiting = ("waiting_assets", "waiting_review")
+    summary = {
+        "total": len(items),
+        "selected": sum(1 for i in items if i["selected"]),
+        "done": len(ready),
+        "stale": sum(1 for i in items if i["stale"]),
+        "failed": sum(1 for i in items if i["status"] == "failed" and not (i["video"] and not i["stale"])),
+        "waiting": sum(1 for i in items if i["status"] in waiting and not (i["video"] and not i["stale"])),
+        "total_duration_sec": round(sum(i["duration_sec"] or 0 for i in ready), 2),
+    }
+    return _ok({"chapters": items, "summary": summary})
+
+
 def final_status(project_dir: str) -> Dict[str, Any]:
     pdir = Path(project_dir)
     try:
