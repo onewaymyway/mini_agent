@@ -38,6 +38,8 @@ ARC_LABELS = {"opening": "起", "development": "承", "turn": "转", "ending": "
 ROLES = ("main", "sub", "character", "mystery")
 ROLE_LABELS = {"main": "主线", "sub": "支线", "character": "角色线", "mystery": "悬念线"}
 LONG_FORM_CHAPTERS = 50                                          # 超过此章数视为长篇：至少 3 幕、2 条线索
+# 模型常在幕标题前加序号（「第一幕：」「1.」「一、」），比较与保存时去掉，避免同一幕因写法不同而校验失败
+_ACT_PREFIX = re.compile(r"^\s*(第[一二三四五六七八九十百\d]+[幕章部节]\s*[：:、.\-—]?\s*|\d+\s*[.、:：]\s*|[一二三四五六七八九十]+\s*[、.：:]\s*)")
 _CH_RANGE = re.compile(r"(\d+)\s*[–\-~—至到]\s*(\d+)")
 KINDS = ("seed", "revise", "restore")
 _VER_RE = re.compile(r"^v(\d{3})\.json$")
@@ -92,6 +94,13 @@ def normalize_draft(raw: Any) -> Dict[str, Any]:
     return out
 
 
+def strip_act_title(title: str) -> str:
+    """去掉幕标题前的序号（「第一幕：」等）。去掉后为空则保留原文。"""
+    t = _text(title)
+    core = _ACT_PREFIX.sub("", t).strip()
+    return core or t
+
+
 def _migrate_storyline(v: Any) -> Any:
     """旧版故事走向（logline + 起承转合四格）→ 新结构：一条主线、结构未指定。"""
     if isinstance(v, dict) and "threads" not in v and any(k in v for k in ARC_KEYS):
@@ -130,6 +139,9 @@ def validate_draft(raw: Any, *, consistency: bool = True) -> Dict[str, Any]:
             errors.append(f"{SECTION_LABELS[sec]}：{exc}")
     if consistency and not errors and "storyline" in clean and "plot" in clean:
         want = [a["title"] for a in clean["storyline"]["structure"]["acts"]]
+        for a in clean["plot"]["acts"]:
+            if isinstance(a, dict):
+                a["title"] = strip_act_title(a.get("title") or "")
         got = [a.get("title") for a in clean["plot"]["acts"]]
         if want and got != want:
             errors.append(f"核心剧情的幕与故事走向的结构不一致：结构为「{'、'.join(want)}」，剧情为「{'、'.join(map(str, got))}」，两者的幕标题与顺序必须相同")
@@ -170,7 +182,7 @@ def _validate_storyline(v: Any) -> Dict[str, Any]:
     for i, a in enumerate(acts_raw, 1):
         if not isinstance(a, dict):
             raise BrainstormError(f"第 {i} 幕必须是对象")
-        title = _text(a.get("title"))
+        title = strip_act_title(a.get("title"))
         if not title:
             raise BrainstormError(f"第 {i} 幕缺少标题")
         acts.append({"title": title, "chapters": _text(a.get("chapters")), "goal": _text(a.get("goal"))})

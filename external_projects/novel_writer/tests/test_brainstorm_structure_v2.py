@@ -155,3 +155,13 @@ def test_card_plot_keeps_act_chapter_ranges():
     mod = C.validate_module("plot", {"acts": [{"title": "潮起", "chapters": "1–20", "beats": ["入局"]}],
                                      "twists": [], "endings": []})
     assert mod["acts"][0]["chapters"] == "1–20"
+
+
+def test_act_numbering_prefixes_do_not_break_title_match():
+    d = long_draft()
+    d["plot"]["acts"] = [{"title": "第一幕：潮起", "beats": ["转折"]}, {"title": "2. 暗涌", "beats": ["转折"]},
+                         {"title": "第三幕 潮落", "beats": ["转折"]}]
+    clean = SD.validate_draft(d)
+    assert [a["title"] for a in clean["plot"]["acts"]] == ["潮起", "暗涌", "潮落"]
+    d["storyline"]["structure"]["acts"][0]["title"] = "第一幕：潮起"
+    assert SD.validate_draft(d)["storyline"]["structure"]["acts"][0]["title"] == "潮起"
