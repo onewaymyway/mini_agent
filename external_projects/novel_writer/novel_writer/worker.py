@@ -513,6 +513,10 @@ def _loop(
 
         if autopilot and status_after in (st.ST_WAITING_REVIEW, st.ST_WAITING_USER):
             continue  # 托管：下一轮循环里自动处理
+        if mode != "single" and status_after == st.ST_FAILED and _deterministic_failure(ws, target):
+            # 刚运行完即失败、且是确定性错误（根因在上游）：立即安排上游重跑，不再直接返回失败
+            if _schedule_upstream_repair(ws, target, index):
+                continue
         if relentless and status_after == st.ST_FAILED and not _deterministic_failure(ws, target):
             continue  # 不停机：下一轮循环顶部重置该步骤并继续
         if status_after in (st.ST_FAILED, st.ST_BLOCKED, st.ST_WAITING_REVIEW, st.ST_WAITING_USER):
