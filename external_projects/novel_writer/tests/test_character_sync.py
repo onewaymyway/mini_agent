@@ -84,3 +84,13 @@ def test_passed_design_step_without_card_file_blocks_the_gate(ws, monkeypatch):
     with pytest.raises(CSY.CharacterSyncError) as ei:
         CSY.ensure(ws)
     assert ei.value.upstream_step == "design_character:母亲" and "母亲" in str(ei.value)
+
+
+def test_gate_check_never_writes(ws, monkeypatch):
+    """门禁只读：损坏文件不被移动，索引不被刷新。"""
+    base = Path(ws.path("characters_dir"))
+    bad = base / "system_voice.md"
+    bad.write_text("不是角色记录\n", encoding="utf-8")
+    with pytest.raises(CSY.CharacterSyncError):
+        CSY.check(ws)
+    assert bad.exists() and not (base / "_quarantine").exists()

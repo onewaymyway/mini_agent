@@ -80,6 +80,29 @@ def audit(ws) -> Dict[str, Any]:
     }
 
 
+def check(ws) -> Dict[str, Any]:
+    """门禁用的只读检查：不修复、不移动、不刷新索引（写文件会让建档步骤的产物变化，引起无谓的重跑）。
+    不通过时抛 CharacterSyncError，并给出应先重跑的上游步骤。"""
+    rep = audit(ws)
+    if rep["problems"]:
+        raise CharacterSyncError("人物档案有无法解析的文件（门禁只检查，不修改）："
+                                 + "；".join(rep["problems"][:6]) + "。请修复后重跑「建立人物档案」。")
+    if rep["designed_without_card"]:
+        name = rep["designed_without_card"][0]
+        raise CharacterSyncError(
+            f"人设卡缺失：「{name}」的人设设计步骤已通过，但人设卡目录里没有它的文件"
+            f"（缺少：{'、'.join(rep['designed_without_card'][:12])}）。"
+            f"处理：系统会自动重跑「人设设计：{name}」重新生成人设卡，然后重跑人物档案。",
+            upstream_step=f"design_character:{name}")
+    if rep["missing_in_store"]:
+        raise CharacterSyncError(
+            f"人物档案未同步：人设卡 {len(rep['cards'])} 个，角色档案 {rep['store_count']} 个，"
+            f"缺少：{'、'.join(rep['missing_in_store'][:12])}。"
+            f"处理：系统会自动重跑「{BUILD_STEP}」（建立人物档案）把全部人设卡建档，然后重跑本步骤。",
+            upstream_step=BUILD_STEP)
+    return rep
+
+
 def ensure(ws) -> Dict[str, Any]:
     """依赖人物的步骤开始前调用，全部自动完成，不需要人工介入：
     1. 损坏的文件先尝试确定性修复（格式不规范但含义明确的重写为规范格式）；

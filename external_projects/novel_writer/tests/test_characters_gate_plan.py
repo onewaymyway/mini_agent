@@ -22,7 +22,7 @@ def test_build_step_covers_every_card_on_disk():
 
 
 def test_gate_handler_passes_with_summary(monkeypatch):
-    monkeypatch.setattr(CSY, "ensure", lambda ws: {"cards": ["林远"], "store_count": 1})
+    monkeypatch.setattr(CSY, "check", lambda ws: {"cards": ["林远"], "store_count": 1})
     out = CO.h_characters_complete(None, S.characters_complete_step(), {})
     assert "1 张人设卡均已建档" in out["summary"]
 
@@ -30,7 +30,7 @@ def test_gate_handler_passes_with_summary(monkeypatch):
 def test_gate_handler_raises_upstream_error_when_profiles_missing(monkeypatch):
     def boom(ws):
         raise CSY.CharacterSyncError("人物档案未同步", upstream_step=CSY.BUILD_STEP)
-    monkeypatch.setattr(CSY, "ensure", boom)
+    monkeypatch.setattr(CSY, "check", boom)
     with pytest.raises(CSY.CharacterSyncError) as ei:
         CO.h_characters_complete(None, S.characters_complete_step(), {})
     assert ei.value.upstream_step == "build_characters"

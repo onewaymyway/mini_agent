@@ -625,7 +625,7 @@ def h_characters_complete(ws: Workspace, step: S.StepDef, settings: Dict[str, An
     """人物档案齐全门禁：人设卡与角色档案一一对应。缺失时抛 CharacterSyncError（带 upstream_step），
     由 worker 自动重跑 build_characters，再回到本门禁。"""
     from novel_writer import character_sync as CSY
-    rep = CSY.ensure(ws)
+    rep = CSY.check(ws)                       # 只读：门禁不写文件
     n = len(rep.get("cards") or [])
     return {"summary": f"人物档案齐全：{n} 张人设卡均已建档（{rep.get('store_count', 0)} 个角色档案）"}
 

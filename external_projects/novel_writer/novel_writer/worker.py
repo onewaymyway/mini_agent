@@ -405,6 +405,12 @@ def _loop(
             control = st.read_control(ws)
 
         requested = control.get("run_step")
+        done_here = {e.get("step") for e in executed if e.get("status") == st.ST_PASSED}
+        if requested and requested in done_here:
+            # 残留的「运行指定步骤」指令：该步骤本次运行已经通过，不能再被它拉起（否则会反复重跑）
+            st.write_control(ws, run_step=None)
+            st.log_line(ws, f"ℹ 忽略残留的运行指令：{requested} 本次运行已通过")
+            requested = None
         target: Optional[S.StepDef] = None
         if requested and requested in index:
             # 作者明确点了「运行」：即使该步骤已经结束（例如之前运行过的修订请求），也要重新运行它，
