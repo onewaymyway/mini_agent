@@ -57,3 +57,11 @@ def test_upstream_is_recognised_from_error_text_when_structured_field_missing(mo
     index = {"build_characters": SimpleNamespace(id="build_characters"), "brief_draft:1": down}
     assert W._schedule_upstream_repair(None, down, index) is True
     assert controls == [{"run_step": "build_characters"}]
+
+
+def test_text_marker_alone_counts_as_upstream_blocked(monkeypatch):
+    """门禁是 python 步骤：即使状态里没有 no_retry，错误文字「人物档案未同步」也识别为上游阻塞。"""
+    target = SimpleNamespace(id="characters_complete")
+    monkeypatch.setattr(W.st, "get_step_state",
+                        lambda ws, sid: {"error": "CharacterSyncError: 人物档案未同步：缺少：母亲"})
+    assert W._deterministic_failure(None, target) is True

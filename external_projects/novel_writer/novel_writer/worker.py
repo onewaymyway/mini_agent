@@ -281,7 +281,11 @@ def _schedule_upstream_repair(ws: Workspace, target: S.StepDef, index: Dict[str,
     返回 True 表示已安排；False 表示没有上游、上游不存在或已超过次数。"""
     state = st.get_step_state(ws, target.id)
     up = state.get("upstream_step") or upstream_from_error(state.get("error"))
-    if not up or up not in index:
+    if not up:
+        st.log_line(ws, f"⏹ {target.id}：失败原因中没有可识别的上游步骤，无法自动修复")
+        return False
+    if up not in index:
+        st.log_line(ws, f"⏹ {target.id}：上游步骤「{up}」不在本次计划中，无法自动重跑")
         return False
     n = int(st.get_step_state(ws, up).get("upstream_repairs") or 0)
     if n >= MAX_UPSTREAM_REPAIRS:
@@ -297,7 +301,8 @@ def _schedule_upstream_repair(ws: Workspace, target: S.StepDef, index: Dict[str,
 
 def _deterministic_failure(ws: Workspace, target: S.StepDef) -> bool:
     """失败原因是确定性的（如人物档案未同步、文件损坏）：重跑结果不会变，不应被不停机模式反复重置。"""
-    return bool(st.get_step_state(ws, target.id).get("no_retry"))
+    state = st.get_step_state(ws, target.id)
+    return bool(state.get("no_retry")) or upstream_from_error(state.get("error")) is not None
 
 
 def _generic_repair_and_rerun(ws: Workspace, target: S.StepDef, *, invoker, settings: Dict[str, Any],
@@ -513,10 +518,13 @@ def _loop(
 
         if autopilot and status_after in (st.ST_WAITING_REVIEW, st.ST_WAITING_USER):
             continue  # 托管：下一轮循环里自动处理
+        if status_after == st.ST_PASSED and st.get_step_state(ws, target.id).get("upstream_repairs"):
+            st.update_step(ws, target.id, upstream_repairs=0)      # 上游已通过：修复次数重新计算
         if mode != "single" and status_after == st.ST_FAILED and _deterministic_failure(ws, target):
             # 刚运行完即失败、且是确定性错误（根因在上游）：立即安排上游重跑，不再直接返回失败
             if _schedule_upstream_repair(ws, target, index):
                 continue
+            st.log_line(ws, f"⏹ {target.id} 失败且无法安排上游自动修复，已停止（见上方原因）")
         if relentless and status_after == st.ST_FAILED and not _deterministic_failure(ws, target):
             continue  # 不停机：下一轮循环顶部重置该步骤并继续
         if status_after in (st.ST_FAILED, st.ST_BLOCKED, st.ST_WAITING_REVIEW, st.ST_WAITING_USER):
