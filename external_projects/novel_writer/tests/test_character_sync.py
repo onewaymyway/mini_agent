@@ -71,3 +71,16 @@ def test_model_id_in_who_is_mapped_to_name_before_validation():
     good, bad, _ = B._split_output(raw, [1], {1: "甲"}, ["林远"], [], 1, id_map={"char_002": "林远"})
     assert 1 in good and not bad
     assert good[1]["key"]["must_states"][0]["who"] == "林远"
+
+
+def test_passed_design_step_without_card_file_blocks_the_gate(ws, monkeypatch):
+    """人设设计已通过、人设卡文件却不在目录：门禁必须报错并指向重跑人设设计（不能因为卡少了就通过）。"""
+    from novel_writer import state as _st
+    _cards(ws, "林远")
+    _store(monkeypatch, {"char_001": {"name": "林远"}})
+    monkeypatch.setattr(_st, "load_state", lambda w: {"steps": {
+        "design_character:林远": {"status": "passed"},
+        "design_character:母亲": {"status": "passed"}}})
+    with pytest.raises(CSY.CharacterSyncError) as ei:
+        CSY.ensure(ws)
+    assert ei.value.upstream_step == "design_character:母亲" and "母亲" in str(ei.value)

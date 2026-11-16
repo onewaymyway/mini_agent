@@ -47,6 +47,21 @@ def _index_ids(index_path: Path) -> set:
     return ids
 
 
+def designed_names(ws) -> List[str]:
+    """人设设计步骤（design_character:<名字>）已经通过的角色。它们的人设卡必须存在；
+    人设卡文件不在目录里，说明卡被移动、删除或写到了别处——不能因此悄悄少算一张。"""
+    from novel_writer import state as _st
+    try:
+        steps = _st.load_state(ws).get("steps") or {}
+    except (KeyError, AttributeError, TypeError):      # 工作区没有步骤状态（如孤立的工具调用）：只做文件检查
+        return []
+    out = []
+    for sid, entry in steps.items():
+        if sid.startswith("design_character:") and (entry or {}).get("status") == _st.ST_PASSED:
+            out.append(sid.split(":", 1)[1])
+    return sorted(set(out))
+
+
 def audit(ws) -> Dict[str, Any]:
     """只检查，不修改。返回三处的数量与不一致的明细。"""
     base, index = Path(ws.path("characters_dir")), Path(ws.path("characters"))
@@ -58,6 +73,7 @@ def audit(ws) -> Dict[str, Any]:
         "store_count": len(chars),
         "index_rows": len(_index_ids(index)),
         "missing_in_store": [c for c in cards if c not in store_names],
+        "designed_without_card": [n for n in designed_names(ws) if n not in cards],
         "orphan_in_store": sorted(n for n in store_names if cards and n not in cards),
         "stale_index": _index_ids(index) != set(chars.keys()),
         "problems": problems,
@@ -86,6 +102,13 @@ def ensure(ws) -> Dict[str, Any]:
     rep["repaired"], rep["quarantined"] = repaired, quarantined
     if rep["problems"]:
         raise CharacterSyncError("人物档案仍有无法解析的文件：" + "；".join(rep["problems"][:6]))
+    if rep["designed_without_card"]:
+        name = rep["designed_without_card"][0]
+        raise CharacterSyncError(
+            f"人设卡缺失：「{name}」的人设设计步骤已通过，但人设卡目录里没有它的文件"
+            f"（缺少：{'、'.join(rep['designed_without_card'][:12])}）。"
+            f"处理：系统会自动重跑「人设设计：{name}」重新生成人设卡，然后重跑人物档案。",
+            upstream_step=f"design_character:{name}")
     if rep["missing_in_store"]:
         raise CharacterSyncError(
             f"人物档案未同步：人设卡 {len(rep['cards'])} 个，角色档案 {rep['store_count']} 个，"
