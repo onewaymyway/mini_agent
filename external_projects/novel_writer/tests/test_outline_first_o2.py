@@ -62,7 +62,7 @@ def test_valid_edit_snapshots_old_version_and_saves(ws):
 
 def test_invalid_edit_writes_nothing(ws):
     before = BR.load_brief(ws, 2)
-    r = BRV.save_edit(ws, 2, _edit_payload(narrative="短"), reason="x")
+    r = BRV.save_edit(ws, 2, _edit_payload(narrative=""), reason="x")
     assert not r["ok"] and any("叙述简述" in e for e in r["errors"])
     assert BR.load_brief(ws, 2) == before and BRV.versions(ws, 2) == []
 
@@ -150,7 +150,7 @@ def test_feedback_rewrite_saves_new_version_and_reports_neighbors(ws):
 
 def test_feedback_rewrite_retries_then_fails_without_writing(ws):
     before = BR.load_brief(ws, 2)
-    bad = good(2, narrative="短")
+    bad = good(2, narrative="")                    # 叙述为空：仍是硬性校验失败（字数只是提示）
     with pytest.raises(FlowError, match="未通过校验"):
         BRV.rewrite_chapter(ws, 2, "改", RewriteInvoker(brief=bad))
     assert BR.load_brief(ws, 2) == before and BRV.versions(ws, 2) == []

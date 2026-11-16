@@ -35,7 +35,7 @@ def test_failed_invoker_reason_is_reported_and_fed_back(env):
     with pytest.raises(RuntimeError) as ei:
         B.generate_act(env, 1, 1, 1, inv)
     msg = str(ei.value)
-    assert "执行器返回失败：模型接口 503" in msg and "已尝试 2 次" in msg and "处理：" in msg
+    assert "执行器返回失败：模型接口 503" in msg and "已尝试 3 次" in msg and "处理：" in msg
     assert "模型接口 503" in inv.prompts[1] and "写文件工具" in inv.prompts[1]   # 下一次提示词带上原因与做法
 
 

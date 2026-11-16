@@ -38,10 +38,14 @@ def test_valid_brief_passes():
     assert ok_errs(good(1)) == []
 
 
-@pytest.mark.parametrize("n_chars,expect", [(299, True), (300, False), (600, False), (601, True)])
-def test_narrative_length_bounds(n_chars, expect):
-    errs = ok_errs(good(1, narrative="甲" * n_chars))
-    assert any("叙述简述" in e for e in errs) == expect
+@pytest.mark.parametrize("n_chars", [1, 299, 300, 600, 601, 1500])
+def test_narrative_length_is_advisory_not_an_error(n_chars):
+    assert ok_errs(good(1, narrative="甲" * n_chars)) == []
+    assert (BR.length_note("甲" * n_chars) is None) == (300 <= n_chars <= 600)
+
+
+def test_empty_narrative_is_an_error():
+    assert any("叙述简述为空" in e for e in ok_errs(good(1, narrative="   ")))
 
 
 def test_key_content_must_be_present():
@@ -62,14 +66,16 @@ def test_unknown_character_and_foreshadow_are_rejected():
     errs = ok_errs(b, names=("李凌云",), fs=("F1",))
     assert any("陌生人" in e for e in errs)
     assert any("F9" in e and "不在伏笔账本" in e for e in errs)
-    assert any("bad" in e and "格式" in e for e in errs)
+    assert any("bad" in e and "不在伏笔账本" in e for e in errs)
 
 
 def test_empty_name_and_ledger_skip_their_checks():
     b = good(1)
     b["key"]["must_states"] = [{"who": "谁都行", "change": "x"}]
-    b["key"]["must_foreshadow"] = ["F42"]
+    b["key"]["must_foreshadow"] = []
     assert ok_errs(b, names=(), fs=()) == []
+    b["key"]["must_foreshadow"] = ["F42"]                 # 账本为空时不能自造编号
+    assert any("账本为空" in e for e in ok_errs(b, names=(), fs=()))
 
 
 def test_generated_brief_must_not_carry_deviation_records():
@@ -149,19 +155,19 @@ def test_draft_generates_and_saves_all_chapters_of_the_act(ws):
 
 def test_invalid_output_is_retried_once_with_errors(ws):
     bad = json.loads(_act_json([1, 2, 3]))
-    bad["chapters"][0]["narrative"] = "太短"
+    bad["chapters"][0]["key"]["must_hook"] = ""
     inv = ActInvoker([json.dumps(bad, ensure_ascii=False), _act_json([1, 2, 3])])
     BR.h_brief_draft(ws, BR.brief_draft_step(1, 1, 3, ()), ws.settings(), invoker=inv)
     assert inv.calls == 2
     assert "未通过校验" not in inv.prompts[0]
-    assert "叙述简述 2 字" in inv.prompts[1]  # 第二次提示带上了上一轮的错误
+    assert "must_hook 不能为空" in inv.prompts[1]  # 第二次提示带上了上一轮的错误
 
 
 def test_two_failures_raise_and_write_nothing(ws):
     inv = ActInvoker(["坏", "还是坏"])
     with pytest.raises(RuntimeError, match="未通过校验"):
         BR.h_brief_draft(ws, BR.brief_draft_step(1, 1, 3, ()), ws.settings(), invoker=inv)
-    assert inv.calls == 2
+    assert inv.calls == 3
     assert not BR.brief_json_path(ws, 1).exists()
 
 
