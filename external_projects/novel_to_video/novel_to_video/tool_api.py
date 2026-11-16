@@ -398,6 +398,36 @@ def edit_shot(project_dir: str, no: int, sid: str, *, visual_hint_en: Optional[s
     return _ok(data)
 
 
+def reset_chapter(project_dir: str, no: int) -> Dict[str, Any]:
+    """整章重置：删除本章 chapters/NNN/ 下的全部生成产物（剧本、剧本校验、镜头、逐镜审核、配音、
+    提示词与场景图、小场景视频、字幕、章节成片与封面、进度文件），章节回到「待运行」，下一次运行从 C-1 剧本开始。
+
+    不删除：章节原文（位于 novel_writer 导出目录）、全书级设定与角色/地点确认记录（global/）、其他章节。
+    运行中（队列或后台任务占用项目）时拒绝执行。全书成片若已生成，标记为过期，需重新合成。"""
+    import shutil
+    pdir = Path(project_dir)
+    if _rt.read_state(pdir).get("state") in ("running", "stopping"):
+        return _fail("队列正在运行，请先立即停止，再整章重置")
+    try:
+        cio.chapter_row(pdir, no)              # 章节不存在时直接报错，不创建目录
+    except KeyError:
+        return _fail(f"章节不存在：{no}")
+    cdir = cio.chapter_dir(pdir, no)
+    removed: List[str] = []
+    if cdir.exists():
+        removed = sorted(p.name for p in cdir.iterdir())
+        shutil.rmtree(cdir)
+    cdir.mkdir(parents=True, exist_ok=True)
+    cio.save_state(pdir, no, {"stages": {}})
+    cio.set_chapter_status(pdir, no, "pending", "已整章重置，等待运行（将从 C-1 剧本开始）")
+    had_final = (pdir / "exports" / "video.mp4").is_file()
+    if had_final:
+        _rev.mark_final_stale(pdir, reason=f"第 {no} 章已整章重置")
+    ps.append_progress(pdir, f"第 {no} 章已整章重置：清除 {len(removed)} 项生成产物，等待从剧本重新生成")
+    _joblog.log(pdir, "chapter", f"第 {no} 章 整章重置：已清除 {len(removed)} 项生成产物（{', '.join(removed) or '无'}），等待从剧本重新生成", level="warn")
+    return _ok({"removed": removed, "final_marked_stale": had_final})
+
+
 def replan_shots(project_dir: str, no: int) -> Dict[str, Any]:
     """重新规划本章镜头：清空本章所有由镜头派生的产物，把进度回到 C-3 之前。
 

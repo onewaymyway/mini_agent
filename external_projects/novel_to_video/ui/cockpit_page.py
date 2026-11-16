@@ -47,6 +47,7 @@ def page_cockpit() -> None:
     _live_panel(pdir)
     _start_controls(pdir, d)
     _chapter_table(d)
+    _reset_panel(pdir, d)
     _rename_panel(pdir, d)
     _gates(d)
     from ui.joblog_panel import render_job_panel
@@ -125,6 +126,33 @@ def _chapter_table(d: dict) -> None:
             "说明": c["message"],
         })
     st.dataframe(rows, width="stretch", hide_index=True)
+
+
+def _reset_panel(pdir: str, d: dict) -> None:
+    """章节流水线的整章重置：删除该章全部生成产物，下次运行从剧本重新生成。全书设定与原文保留。"""
+    busy = d["run"]["busy"]
+    if not d["chapters"]:
+        return
+    with st.expander("♻️ 整章重置（从剧本重新生成）"):
+        if busy:
+            st.info("队列正在运行，停止后才能整章重置。")
+        st.caption("删除所选章节的剧本、镜头、配音、提示词、场景图、视频与封面，章节回到待运行，下次运行从剧本重新生成。"
+                   "章节原文、全书角色与地点设定、其他章节不受影响。此操作不可撤销。")
+        labels = {c["no"]: f"第 {c['no']} 章 {c['title'] or ''}".rstrip() for c in d["chapters"]}
+        no = st.selectbox("选择章节", options=list(labels), format_func=lambda n: labels[n],
+                          key="ck_reset_no", disabled=busy)
+        sure = st.checkbox(f"我确认清除第 {no} 章的全部生成产物，并从剧本重新生成", key=f"ck_reset_ok_{no}", disabled=busy)
+        if st.button("整章重置", key="ck_reset_btn", disabled=busy or not sure, type="secondary"):
+            r = tool_api.reset_chapter(pdir, int(no))
+            if r["ok"]:
+                n = len(r["data"]["removed"])
+                msg = f"第 {no} 章已整章重置（清除 {n} 项产物），下次运行从剧本开始"
+                if r["data"]["final_marked_stale"]:
+                    msg += "；全书成片已标记为过期，需重新合成"
+                st.toast(msg)
+                st.rerun()
+            else:
+                st.error(r["error"]["message"])
 
 
 def _rename_panel(pdir: str, d: dict) -> None:
