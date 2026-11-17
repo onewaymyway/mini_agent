@@ -46,7 +46,8 @@ class Cue:
 
 def cue_text(block: Dict[str, Any], speaker_names: Dict[str, str]) -> str:
     """一个台词块的字幕文案：旁白原样；对白前加说话人名。"""
-    text = (block.get("text") or "").strip()
+    # 一个字幕条是一句话：口播文本里的换行/制表符压成空格，避免渲染时折行度量出错
+    text = " ".join((block.get("text") or "").split())
     if not text:
         return ""
     if block.get("type") == "dialogue":

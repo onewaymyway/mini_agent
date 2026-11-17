@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -40,17 +41,25 @@ def resolve_font() -> str:
     raise CoverError("找不到中文字体，请设置环境变量 NOVEL_TO_VIDEO_FONT 指向 .ttf/.ttc 文件")
 
 
+_CTRL_RE = re.compile(r"[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2064\ufeff]")
+
+
 def _wrap(draw: ImageDraw.ImageDraw, text: str, font, max_w: int) -> list:
-    lines, cur = [], ""
-    for ch in text:
-        trial = cur + ch
-        if draw.textlength(trial, font=font) > max_w and cur:
+    """按像素宽度折行。PIL 的 textlength 不能度量含换行的文本（会抛 can't measure length of multiline text），
+    所以先按换行拆成段落、清掉控制/零宽字符，再逐段折行；换行本身作为强制分行。"""
+    lines: list = []
+    for para in re.split(r"[\r\n]+", _CTRL_RE.sub("", text or "").replace("\t", " ")):
+        para = para.strip()
+        cur = ""
+        for ch in para:
+            trial = cur + ch
+            if draw.textlength(trial, font=font) > max_w and cur:
+                lines.append(cur)
+                cur = ch
+            else:
+                cur = trial
+        if cur:
             lines.append(cur)
-            cur = ch
-        else:
-            cur = trial
-    if cur:
-        lines.append(cur)
     return lines
 
 
