@@ -46,6 +46,7 @@ def page_cockpit() -> None:
         st.info(f"👉 当前步骤：**{nxt['title']}**　—　{nxt['reason']}　（前往「{nxt['page']}」）")
     _live_panel(pdir)
     _start_controls(pdir, d)
+    _timeline_panel(pdir)
     _chapter_table(d)
     _reset_panel(pdir, d)
     _rename_panel(pdir, d)
@@ -91,6 +92,59 @@ def _live_panel(pdir: str) -> None:
         with st.expander("本次运行记录", expanded=run["busy"]):
             for h in reversed(run["history"]):
                 st.write(f"{h['at']}　第 {h['chapter']} 章 → {STATUS_LABEL.get(h['status'], h['status'])}　{h.get('message', '')}")
+
+
+_TL_STATUS = {"ok": "✔ 完成", "failed": "✘ 失败", "stopped": "⏹ 已停止", "running": "⏳ 进行中",
+              "interrupted": "⚠ 中断（无结束记录）", "done": "✔ 完成", "waiting_review": "⏸ 等待审核",
+              "waiting_assets": "⏸ 等待素材"}
+
+
+def _hms(ts) -> str:
+    return str(ts)[11:19] if ts else "—"
+
+
+def _dur(sec) -> str:
+    if sec is None:
+        return "—"
+    sec = float(sec)
+    return f"{sec:.1f} 秒" if sec < 60 else f"{int(sec // 60)} 分 {int(sec % 60)} 秒"
+
+
+def _timeline_panel(pdir: str) -> None:
+    """运行时间线：每章每次尝试的主步骤开始/结束时间、用时、状态、完整失败原因，以及重试记录。默认收起。"""
+    with st.expander("⏱ 运行时间线（步骤用时 / 失败重试）", expanded=False):
+        res = tool_api.run_timeline(pdir)
+        if not res["ok"]:
+            st.error(res["error"]["message"])
+            return
+        data = res["data"]
+        if not data:
+            st.caption("还没有带时间的运行记录（运行一次章节后出现）。")
+            return
+        nos = sorted(data, reverse=True)
+        no = st.selectbox("章节", nos, format_func=lambda n: f"第 {n} 章", key="tl_chapter")
+        c = data[no]
+        st.write(f"累计用时 **{_dur(c['total_seconds'])}**　·　尝试 **{len(c['attempts'])}** 次　·　重试 **{c['retry_count']}** 次")
+        retries = {r["attempt"]: r for r in c["retries"]}
+        for a in reversed(c["attempts"]):
+            st.markdown(f"**第 {a['attempt']} 次尝试**　{_TL_STATUS.get(a['status'], a['status'])}　"
+                        f"{_hms(a['started_at'])} → {_hms(a['ended_at'])}　用时 {_dur(a.get('seconds'))}")
+            rows = [{"步骤": s["stage"], "开始": _hms(s.get("started_at")), "结束": _hms(s.get("ended_at")),
+                     "用时": _dur(s.get("seconds")), "状态": _TL_STATUS.get(s["status"], s["status"])}
+                    for s in a["stages"]]
+            if rows:
+                st.dataframe(rows, width="stretch", hide_index=True)
+            for s in a["stages"]:
+                if s.get("error"):
+                    st.markdown(f"步骤 {s['stage']} 失败原因（完整）：")
+                    st.code(str(s["error"]), language=None)
+            if a.get("error"):
+                st.markdown("本次尝试失败原因（完整）：")
+                st.code(str(a["error"]), language=None)
+            nxt = retries.get(a["attempt"])   # 第 n 次重试是“第 n 次尝试失败之后”的动作
+            if nxt:
+                st.caption(f"↻ {_hms(nxt['at'])} 决定重试（第 {nxt['attempt']} 次），等待 {nxt.get('wait_sec') or 0:g} 秒，"
+                           f"计划 {_hms(nxt.get('next_at'))} 开始下一次尝试")
 
 
 def _start_controls(pdir: str, d: dict) -> None:

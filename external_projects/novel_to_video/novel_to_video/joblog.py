@@ -183,13 +183,27 @@ HEARTBEAT_SEC = 30.0   # 长时间阶段每隔多少秒写一条“仍在进行�
 
 
 @contextmanager
-def heartbeat(project_dir: Path, scope: str, label: str, every: Optional[float] = None):
+def heartbeat(project_dir: Path, scope: str, label: str, every: Optional[float] = None, *,
+              chapter: Optional[int] = None, stage: Optional[str] = None):
     """包住一段可能很慢（网络请求、模型推理）的调用：每隔 every 秒写一条“仍在进行”，
     结束时写“完成（x 秒）”或“异常结束”。这样卡住时日志里能看到卡在哪一步、已经等了多久。"""
     interval = HEARTBEAT_SEC if every is None else every
     stop = threading.Event()
     start = time.monotonic()
     log(project_dir, scope, f"{label}：开始")
+    structured = chapter is not None and stage is not None
+    started_at = datetime.now().isoformat(timespec="seconds")
+    if structured:   # 结构化事件：供运行时间线汇总（见 timeline.py）；不影响原有文字日志
+        log(project_dir, scope, f"{label}：开始", event="stage_start", chapter=chapter, stage=stage,
+            started_at=started_at)
+
+    def _end_event(status: str, error: Optional[str] = None) -> None:
+        if structured:
+            log(project_dir, scope, f"{label}：{ {'ok': '完成', 'stopped': '已停止'}.get(status, '失败') }",
+                level={"ok": "info", "stopped": "warn"}.get(status, "error"),
+                event="stage_end", chapter=chapter, stage=stage, status=status, started_at=started_at,
+                ended_at=datetime.now().isoformat(timespec="seconds"),
+                seconds=round(time.monotonic() - start, 1), error=error)
 
     def _beat():
         while not stop.wait(interval):
@@ -203,9 +217,12 @@ def heartbeat(project_dir: Path, scope: str, label: str, every: Optional[float] 
         stop.set()
         if type(exc).__name__ == "Cancelled":   # 用户主动停止：不是错误
             log(project_dir, scope, f"{label}：已停止（{time.monotonic() - start:.1f} 秒）", level="warn")
+            _end_event("stopped")
         else:
             log(project_dir, scope, f"{label}：异常结束（{time.monotonic() - start:.1f} 秒）", level="error")
+            _end_event("failed", f"{type(exc).__name__}: {exc}")
         raise
     else:
         stop.set()
         log(project_dir, scope, f"{label}：完成（{time.monotonic() - start:.1f} 秒）", level="info")
+        _end_event("ok")

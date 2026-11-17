@@ -17,7 +17,7 @@ G6 不跳过失败的章节：失败后持续重试（见 _recover_failure），
 from __future__ import annotations
 
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -152,11 +152,18 @@ def _recover_failure(project_dir: Path, no: int, gear: str, res: Dict[str, Any],
             wait = gates.retry_backoff_sec(attempts)
             joblog.log(project_dir, "queue",
                        f"G6：第 {no} 章失败（{res.get('message') or '未知原因'}），{wait:g} 秒后第 {attempts} 次重试",
-                       level="warn")
+                       level="warn", event="retry", chapter=no, attempt=attempts, error=res.get("message"),
+                       wait_sec=wait, at=datetime.now().isoformat(timespec="seconds"),
+                       next_at=(datetime.now() + timedelta(seconds=wait)).isoformat(timespec="seconds"))
             if not _wait_or_stop(project_dir, wait):
                 attempts -= 1
                 halt = cancel.STOP_MESSAGE
                 break
+        else:   # G4/G5 也记录重试事件，运行时间线才能完整展示
+            joblog.log(project_dir, "queue", f"{gear}：第 {no} 章失败（{res.get('message') or '未知原因'}），立即第 {attempts} 次重试",
+                       level="warn", event="retry", chapter=no, attempt=attempts, error=res.get("message"),
+                       wait_sec=0, at=datetime.now().isoformat(timespec="seconds"),
+                       next_at=datetime.now().isoformat(timespec="seconds"))
         if gear == "G4":
             _switch_strategy(project_dir, no)
         else:

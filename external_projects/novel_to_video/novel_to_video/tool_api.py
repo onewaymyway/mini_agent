@@ -772,6 +772,18 @@ def cockpit_status(project_dir: str) -> Dict[str, Any]:
         return _fail(f"读取驾驶舱失败：{exc}")
 
 
+def run_timeline(project_dir: str) -> Dict[str, Any]:
+    """章节流水线运行时间线（驾驶舱“运行时间线”面板使用）。"""
+    try:
+        from . import timeline as _tl
+        pdir = Path(project_dir)
+        from . import runlock as _rl2, runtime as _rt2
+        busy = (_rt2.read_state(pdir).get("state") in ("running", "stopping")) or bool(_rl2.inspect(pdir)["held"])
+        return _ok(_tl.build_timeline(pdir, busy=busy))
+    except Exception as exc:
+        return _fail(f"读取运行时间线失败：{exc}")
+
+
 def start_queue_background(project_dir: str, numbers: Optional[List[int]] = None,
                            gear: Optional[str] = None) -> Dict[str, Any]:
     """在后台线程运行队列（驾驶舱使用）。锁被占用时立即返回失败，不阻塞界面。"""

@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -52,7 +53,8 @@ def run_chapter(project_dir: Path, no: int, *, text_llm: TextLLM, image: ImagePr
         return _result("failed", "该章节未被选中，请先在项目设置中选中")
     cio.chapter_dir(project_dir, no).mkdir(parents=True, exist_ok=True)
     cio.set_chapter_status(project_dir, no, "running")
-    joblog.log(project_dir, "chapter", f"第 {no} 章开始运行")
+    joblog.log(project_dir, "chapter", f"第 {no} 章开始运行", event="chapter_start", chapter=no,
+               started_at=datetime.now().isoformat(timespec="seconds"))
     proj_meta = read_json(project_dir / "project.json")
     art_style = proj_meta.get("art_style")
     mode = RM.mode_of(proj_meta)
@@ -65,7 +67,9 @@ def run_chapter(project_dir: Path, no: int, *, text_llm: TextLLM, image: ImagePr
     def stop(status: str, message: str, **extra) -> Dict[str, Any]:
         cio.set_chapter_status(project_dir, no, status, message)
         joblog.log(project_dir, "chapter", f"第 {no} 章结束：{status}　{message}",
-                   level={"done": "ok", "failed": "error"}.get(status, "warn"))
+                   level={"done": "ok", "failed": "error"}.get(status, "warn"),
+                   event="chapter_end", chapter=no, status=status, error=message if status == "failed" else None,
+                   ended_at=datetime.now().isoformat(timespec="seconds"))
         return _result(status, message, **extra)
 
     def halt() -> Dict[str, Any]:
@@ -77,11 +81,13 @@ def run_chapter(project_dir: Path, no: int, *, text_llm: TextLLM, image: ImagePr
             pass
         cio.set_chapter_status(project_dir, no, "pending", "已手动停止：重新运行本章即可从断点继续")
         joblog.log(project_dir, "chapter",
-                   f"第 {no} 章已立即停止（用户请求），停在：{STAGE_NAMES.get(stage, stage)}", level="warn")
+                   f"第 {no} 章已立即停止（用户请求），停在：{STAGE_NAMES.get(stage, stage)}", level="warn",
+                   event="chapter_end", chapter=no, status="stopped", error=None,
+                   ended_at=datetime.now().isoformat(timespec="seconds"))
         return _result("stopped", "已手动停止")
 
     try:
-        with joblog.heartbeat(project_dir, "chapter", f"第 {no} 章 C-1/C-2 剧本"):
+        with joblog.heartbeat(project_dir, "chapter", f"第 {no} 章 C-1/C-2 剧本", chapter=no, stage="C-1/C-2 剧本"):
             sc = run_script(project_dir, no, text_llm, force=force_script)
         joblog.log(project_dir, "chapter", f"第 {no} 章 C-1/C-2 剧本：{sc['status']}",
                    level="ok" if sc["status"] == "pass" else "warn")
@@ -89,12 +95,12 @@ def run_chapter(project_dir: Path, no: int, *, text_llm: TextLLM, image: ImagePr
             msgs = [i["message"] for i in sc.get("issues", []) if i["level"] == "error"]
             return stop("failed", "剧本校验未通过：" + "；".join(msgs[:3]), issues=sc.get("issues", []))
 
-        with joblog.heartbeat(project_dir, "chapter", f"第 {no} 章 C-3/C-4 镜头规划"):
+        with joblog.heartbeat(project_dir, "chapter", f"第 {no} 章 C-3/C-4 镜头规划", chapter=no, stage="C-3/C-4 镜头规划"):
             _sh = run_shots(project_dir, no, text_llm)
         joblog.log(project_dir, "chapter", f"第 {no} 章 C-3/C-4 镜头规划：{_sh.get('shots')} 个镜头"
                    + ("（沿用已有规划）" if _sh.get("skipped") else ""))
 
-        with joblog.heartbeat(project_dir, "chapter", f"第 {no} 章 C-5 补建角色"):
+        with joblog.heartbeat(project_dir, "chapter", f"第 {no} 章 C-5 补建角色", chapter=no, stage="C-5 补建角色"):
             assets = run_assets(project_dir, no, text_llm, image)
         if assets["waiting"]:
             joblog.log(project_dir, "chapter", f"第 {no} 章 C-5 等待补建角色确认：{len(assets['waiting'])} 项", level="warn")
@@ -102,14 +108,14 @@ def run_chapter(project_dir: Path, no: int, *, text_llm: TextLLM, image: ImagePr
             return stop("waiting_assets", "等待补建角色确认：" + "；".join(assets["waiting"]),
                         waiting=assets["waiting"])
 
-        with joblog.heartbeat(project_dir, "chapter", f"第 {no} 章 C-6 配音"):
+        with joblog.heartbeat(project_dir, "chapter", f"第 {no} 章 C-6 配音", chapter=no, stage="C-6 配音"):
             audio = run_audio(project_dir, no, tts, text_llm)
         joblog.log(project_dir, "chapter", f"第 {no} 章 C-6 配音完成" + (f"，{len(audio['errors'])} 个镜头口播过长" if audio["errors"] else ""),
                    level="warn" if audio["errors"] else "ok")
         if audio["errors"]:
             return stop("failed", f"镜头口播过长，需拆分：{', '.join(audio['errors'])}", errors=audio["errors"])
 
-        with joblog.heartbeat(project_dir, "chapter", f"第 {no} 章 C-7 提示词"):
+        with joblog.heartbeat(project_dir, "chapter", f"第 {no} 章 C-7 提示词", chapter=no, stage="C-7 提示词"):
             pr = run_prompts(project_dir, no, art_style)
         joblog.log(project_dir, "chapter", f"第 {no} 章 C-7 提示词一致性：{'未通过 ' + str(len(pr['failed'])) + ' 个' if pr['failed'] else '通过'}",
                    level="warn" if pr["failed"] else "ok")
@@ -136,7 +142,7 @@ def run_chapter(project_dir: Path, no: int, *, text_llm: TextLLM, image: ImagePr
             pending = [sid for sid, st in states.items() if st != "approved"]
             return stop("waiting_review", f"{len(pending)} 个小场景等待审核", pending=pending, states=states)
 
-        with joblog.heartbeat(project_dir, "chapter", f"第 {no} 章 C-9 章节合成"):
+        with joblog.heartbeat(project_dir, "chapter", f"第 {no} 章 C-9 章节合成", chapter=no, stage="C-9 章节合成"):
             comp = run_compose(project_dir, no, image)
         if comp.get("waiting"):
             return stop("waiting_review", "等待审核：" + "、".join(comp["waiting"]))
@@ -193,12 +199,12 @@ def _still_tail(project_dir: Path, no: int, image: ImageProvider, stop) -> Dict[
         pending = [sid for sid, st in states.items() if st != "approved"]
         return stop("waiting_review", f"{len(pending)} 个场景图等待审核", pending=pending, states=states)
 
-    with joblog.heartbeat(project_dir, "chapter", f"第 {no} 章 C-8b 动效片段"):
+    with joblog.heartbeat(project_dir, "chapter", f"第 {no} 章 C-8b 动效片段", chapter=no, stage="C-8b 动效片段"):
         seg = run_segments(project_dir, no)
     if seg["failed"]:
         return stop("failed", f"以下镜头动效片段合成失败，修正后重跑：{', '.join(seg['failed'])}", failed=seg["failed"])
 
-    with joblog.heartbeat(project_dir, "chapter", f"第 {no} 章 C-9 章节合成"):
+    with joblog.heartbeat(project_dir, "chapter", f"第 {no} 章 C-9 章节合成", chapter=no, stage="C-9 章节合成"):
         comp = run_compose(project_dir, no, image)
     if comp.get("waiting"):
         return stop("waiting_review", "等待审核：" + "、".join(comp["waiting"]))
