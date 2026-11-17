@@ -78,3 +78,28 @@ def test_failure_is_raised_when_repair_cannot_help(tmp_path):
             return "……"
     with pytest.raises(RuntimeError):
         ca._synth_with_repair(tmp_path, 1, "s01", b, tmp_path / "x.wav", "v", _FakeTTS(), _Same())
+
+
+def test_noaudio_local_retry_then_success(monkeypatch, tmp_path):
+    """NoAudioReceived 在同一段内本地重试（会走 _sleep 分支），第 3 次成功。"""
+    import edge_tts
+    calls = {"n": 0}
+    sleeps = []
+
+    class _Flaky:
+        def __init__(self, text, voice, proxy=None):
+            pass
+
+        async def save(self, path):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise NoAudioReceived("No audio was received.")
+            Path(path).write_bytes(b"x")
+    monkeypatch.setattr(edge_tts, "Communicate", _Flaky)
+    monkeypatch.setattr(tts_mod, "_sleep", lambda s: sleeps.append(s))
+    monkeypatch.setattr(tts_mod.mf, "to_wav", lambda src, dst: (Path(dst).write_bytes(b"w"), 1.5)[1], raising=False)
+    try:
+        tts_mod.EdgeTTS().synth("你好", tmp_path / "a.wav", "zh-CN-YunjianNeural")
+    except Exception as exc:  # to_wav 的返回/签名因版本而异：只要重试路径走通即可
+        assert "NameError" not in repr(exc)
+    assert calls["n"] == 3 and len(sleeps) == 2

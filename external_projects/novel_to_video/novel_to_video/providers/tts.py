@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 
@@ -203,6 +204,10 @@ class ChainTTS(TTSProvider):
         self.last_engine = None
         parts = [f"{n} 失败（{err}）" for n, err in self.last_errors.items()]
         raise RuntimeError("；".join(parts))
+
+
+def _sleep(sec: float) -> None:   # 单独成函数，便于测试替换
+    time.sleep(sec)
 
 
 NO_AUDIO_LOCAL_RETRIES = 2   # NoAudioReceived 在同一段内最多再试几次（之后交给 LLM 改写文本）
