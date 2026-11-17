@@ -191,7 +191,7 @@ def compose_book(project_dir: Path, *, gear: str, transition: str = "cut",
                                cover_sec=float(cov.get("duration_sec", 3.0)), transition=transition)
     except BaseException as exc:
         joblog.step_end(project_dir, "final", "F-3 拼接", "stopped" if type(exc).__name__ == "Cancelled" else "failed",
-                        f"{type(exc).__name__}: {exc}")
+                        f"{type(exc).__name__}: {exc}", joblog.format_tb(exc))
         raise
     joblog.step_end(project_dir, "final", "F-3 拼接")
     joblog.step_start(project_dir, "final", "F-4 成片校验")

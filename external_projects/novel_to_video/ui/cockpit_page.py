@@ -124,6 +124,13 @@ def _timeline_panel(pdir: str) -> None:
             _book_timeline(pdir, ["final"], "还没有全书合成的运行记录（渲染封面 / 合成全书后出现）。")
 
 
+def _show_tb(tb) -> None:
+    """显示异常堆栈（没有堆栈的失败，如模型/接口返回错误而非抛异常，不显示）。"""
+    if tb:
+        st.caption("异常堆栈：")
+        st.code(str(tb), language="python")
+
+
 def _book_timeline(pdir: str, scopes: list, empty: str) -> None:
     res = tool_api.book_run_timeline(pdir, scopes)
     if not res["ok"]:
@@ -145,9 +152,11 @@ def _book_timeline(pdir: str, scopes: list, empty: str) -> None:
             if s.get("error") and s["error"] != r.get("error"):
                 st.markdown(f"步骤「{s['stage']}」失败原因（完整）：")
                 st.code(str(s["error"]), language=None)
+                _show_tb(s.get("traceback"))
         if r.get("error"):
             st.markdown("失败原因（完整）：")
             st.code(str(r["error"]), language=None)
+            _show_tb(r.get("traceback"))
 
 
 def _chapter_timeline(pdir: str) -> None:
@@ -176,6 +185,7 @@ def _chapter_timeline(pdir: str) -> None:
             if s.get("error"):
                 st.markdown(f"步骤 {s['stage']} 失败原因（完整）：")
                 st.code(str(s["error"]), language=None)
+                _show_tb(s.get("traceback"))
         if a.get("error"):
             st.markdown("本次尝试失败原因（完整）：")
             st.code(str(a["error"]), language=None)

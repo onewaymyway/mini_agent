@@ -195,7 +195,7 @@ def visual_text_pass(project_dir: Path, text_llm: TextLLM, *, only_missing: bool
                 joblog.step_end(project_dir, "assets", _stage)
             except Exception as exc:
                 joblog.log(project_dir, "assets", f"G-2 失败：{name}：{exc}", level="error")
-                joblog.step_end(project_dir, "assets", _stage, "failed", f"{type(exc).__name__}: {exc}")
+                joblog.step_end(project_dir, "assets", _stage, "failed", f"{type(exc).__name__}: {exc}", joblog.format_tb(exc))
                 review = load_review(project_dir)
                 get_item(review, key)["last_error"] = f"G-2 失败：{exc}"
                 save_review(project_dir, review)

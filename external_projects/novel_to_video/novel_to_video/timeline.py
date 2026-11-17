@@ -90,9 +90,11 @@ def build_book_timeline(project_dir: Path, *, busy: bool = False, now: Optional[
             st = next((x for x in reversed(r["steps"]) if x["stage"] == ev.get("stage") and x["status"] == "running"), None)
             if st is None:
                 continue
-            st.update(ended_at=ev.get("ended_at") or ev.get("ts"), status=ev.get("status") or "ok", error=ev.get("error"))
+            st.update(ended_at=ev.get("ended_at") or ev.get("ts"), status=ev.get("status") or "ok", error=ev.get("error"),
+                      traceback=ev.get("traceback"))
         elif kind == "run_end":
-            r.update(ended_at=ev.get("ended_at") or ev.get("ts"), status=ev.get("status") or "ok", error=ev.get("error"))
+            r.update(ended_at=ev.get("ended_at") or ev.get("ts"), status=ev.get("status") or "ok", error=ev.get("error"),
+                     traceback=ev.get("traceback"))
 
     result: List[Dict[str, Any]] = []
     last_open = next((rid for rid in reversed(order) if runs[rid]["status"] == "running"), None)
@@ -108,6 +110,7 @@ def build_book_timeline(project_dir: Path, *, busy: bool = False, now: Optional[
                 pass
             elif r["status"] in ("failed", "stopped"):
                 st["status"], st["error"] = r["status"], st["error"] or r["error"]
+                st["traceback"] = st.get("traceback") or r.get("traceback")
                 st["ended_at"] = st["ended_at"] or r["ended_at"]
             else:
                 st["status"] = "interrupted"
@@ -166,10 +169,12 @@ def build_timeline(project_dir: Path, *, busy: bool = False, now: Optional[datet
                 st = {"stage": ev.get("stage"), "started_at": ev.get("started_at")}
                 a["stages"].append(st)
             st.update(ended_at=ev.get("ended_at") or ev.get("ts"), seconds=ev.get("seconds"),
-                      status=ev.get("status") or "ok", error=ev.get("error"))
+                      status=ev.get("status") or "ok", error=ev.get("error"), traceback=ev.get("traceback"))
         elif kind == "chapter_end":
             a = current(c, ev.get("ts"))
             a.update(ended_at=ev.get("ended_at") or ev.get("ts"), status=ev.get("status") or "ok", error=ev.get("error"))
+            if a["status"] == "failed":      # 本次尝试的堆栈取最后一个失败步骤的堆栈
+                a["traceback"] = next((x.get("traceback") for x in reversed(a["stages"]) if x.get("traceback")), None)
         elif kind == "retry":
             c["retries"].append({"attempt": ev.get("attempt"), "at": ev.get("at") or ev.get("ts"),
                                  "error": ev.get("error"), "wait_sec": ev.get("wait_sec"), "next_at": ev.get("next_at")})

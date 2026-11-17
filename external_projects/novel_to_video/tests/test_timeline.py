@@ -121,3 +121,39 @@ def test_incremental_reader_sees_new_events_and_partial_line(tmp_path):
     assert timeline.build_timeline(tmp_path)[5]["attempts"][0]["status"] == "done"
     logf.write_text("", encoding="utf-8")                                                    # 日志被清空：重读
     assert timeline.build_timeline(tmp_path) == {}
+
+
+def test_traceback_is_recorded_and_shown_through_timeline(tmp_path):
+    def inner():
+        raise ValueError("底层错误")
+
+    def outer():
+        try:
+            inner()
+        except ValueError as exc:
+            raise RuntimeError("上层包装") from exc
+
+    joblog.log(tmp_path, "chapter", "开始", event="chapter_start", chapter=7, started_at="2026-11-17T08:00:00")
+    _stage(tmp_path, 7, "C-9 章节合成", fail=None)
+    try:
+        with joblog.heartbeat(tmp_path, "chapter", "第 7 章 C-6 配音", chapter=7, stage="C-6 配音"):
+            outer()
+    except RuntimeError:
+        pass
+    joblog.log(tmp_path, "chapter", "结束", level="error", event="chapter_end", chapter=7, status="failed", error="C-6 配音：上层包装")
+    a = timeline.build_timeline(tmp_path)[7]["attempts"][0]
+    tb = a["stages"][1]["traceback"]
+    assert "Traceback" in tb and "inner" in tb and "outer" in tb and "ValueError: 底层错误" in tb and "上层包装" in tb
+    assert a["traceback"] == tb and a["stages"][0].get("traceback") is None
+
+
+def test_book_run_traceback(tmp_path):
+    @joblog.tracked_run("final", "F-3/F-4 全书合成")
+    def run(pdir):
+        joblog.step_start(pdir, "final", "F-3 拼接")
+        raise RuntimeError("ffmpeg 退出码 1")
+    with pytest.raises(RuntimeError):
+        run(tmp_path)
+    r = timeline.build_book_timeline(tmp_path)[0]
+    assert "Traceback" in r["traceback"] and "RuntimeError: ffmpeg 退出码 1" in r["traceback"]
+    assert r["steps"][0]["traceback"] == r["traceback"]

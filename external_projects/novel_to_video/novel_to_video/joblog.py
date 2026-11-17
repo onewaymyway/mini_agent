@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+import traceback
 from collections import deque
 from contextlib import contextmanager
 from datetime import datetime
@@ -197,13 +198,13 @@ def heartbeat(project_dir: Path, scope: str, label: str, every: Optional[float] 
         log(project_dir, scope, f"{label}：开始", event="stage_start", chapter=chapter, stage=stage,
             started_at=started_at)
 
-    def _end_event(status: str, error: Optional[str] = None) -> None:
+    def _end_event(status: str, error: Optional[str] = None, tb: Optional[str] = None) -> None:
         if structured:
             log(project_dir, scope, f"{label}：{ {'ok': '完成', 'stopped': '已停止'}.get(status, '失败') }",
                 level={"ok": "info", "stopped": "warn"}.get(status, "error"),
                 event="stage_end", chapter=chapter, stage=stage, status=status, started_at=started_at,
                 ended_at=datetime.now().isoformat(timespec="seconds"),
-                seconds=round(time.monotonic() - start, 1), error=error)
+                seconds=round(time.monotonic() - start, 1), error=error, traceback=tb)
 
     def _beat():
         while not stop.wait(interval):
@@ -219,8 +220,9 @@ def heartbeat(project_dir: Path, scope: str, label: str, every: Optional[float] 
             log(project_dir, scope, f"{label}：已停止（{time.monotonic() - start:.1f} 秒）", level="warn")
             _end_event("stopped")
         else:
-            log(project_dir, scope, f"{label}：异常结束（{time.monotonic() - start:.1f} 秒）", level="error")
-            _end_event("failed", f"{type(exc).__name__}: {exc}")
+            log(project_dir, scope, f"{label}：异常结束（{time.monotonic() - start:.1f} 秒）", level="error",
+                traceback=format_tb(exc))
+            _end_event("failed", f"{type(exc).__name__}: {exc}", format_tb(exc))
         raise
     else:
         stop.set()
@@ -231,6 +233,21 @@ def heartbeat(project_dir: Path, scope: str, label: str, every: Optional[float] 
 # ---------------------------------------------------------------- 全书级运行（素材/合成）的结构化事件
 # run_start/run_end 包住一次整体运行（如“G-3 定妆图生成”），step_start/step_end 是其中的逐项步骤。
 # 它们与章节流水线的 stage_* 事件互不干扰，由 timeline.build_book_timeline 汇总。
+
+_TB_LIMIT = 20000
+
+
+def format_tb(exc: Optional[BaseException] = None) -> Optional[str]:
+    """异常的完整堆栈文本（含 from 链）；没有异常对象时取当前正在处理的异常。过长时保留末尾（最内层的调用点）。"""
+    try:
+        tb = ("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)) if exc is not None
+              else traceback.format_exc())
+    except Exception:  # noqa: BLE001
+        return None
+    if not tb or tb.strip() == "NoneType: None":
+        return None
+    return tb if len(tb) <= _TB_LIMIT else "…（前面的堆栈已省略）\n" + tb[-_TB_LIMIT:]
+
 
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
@@ -243,13 +260,14 @@ def step_start(project_dir: Path, scope: str, stage: str) -> None:
             stage=stage, started_at=_now())
 
 
-def step_end(project_dir: Path, scope: str, stage: str, status: str = "ok", error: Optional[str] = None) -> None:
+def step_end(project_dir: Path, scope: str, stage: str, status: str = "ok", error: Optional[str] = None,
+             tb: Optional[str] = None) -> None:
     run = getattr(_TLS, "run", None)
     if run:
         log(project_dir, scope, f"{run[1]}：{stage} {'完成' if status == 'ok' else '失败' if status == 'failed' else '已停止'}",
             level="info" if status == "ok" else "warn" if status == "stopped" else "error",
             event="step_end", run=run[1], run_id=run[0], stage=stage, status=status, ended_at=_now(),
-            error=error)
+            error=error, traceback=tb)
 
 
 def _summary_status(res: Any) -> tuple:
@@ -277,7 +295,7 @@ def tracked_run(scope: str, run: str):
             _TLS.run = (run_id, run)
             started = _now()
             log(project_dir, scope, f"{run}：开始", event="run_start", run=run, run_id=run_id, started_at=started)
-            status, error = "ok", None
+            status, error, tb = "ok", None, None
             try:
                 res = fn(project_dir, *args, **kwargs)
                 status, error = _summary_status(res)
@@ -286,13 +304,13 @@ def tracked_run(scope: str, run: str):
                 if type(exc).__name__ == "Cancelled":
                     status = "stopped"
                 else:
-                    status, error = "failed", f"{type(exc).__name__}: {exc}"
+                    status, error, tb = "failed", f"{type(exc).__name__}: {exc}", format_tb(exc)
                 raise
             finally:
                 log(project_dir, scope, f"{run}：{ {'ok': '完成', 'stopped': '已停止'}.get(status, '失败') }",
                     level={"ok": "info", "stopped": "warn"}.get(status, "error"),
                     event="run_end", run=run, run_id=run_id, status=status, started_at=started,
-                    ended_at=_now(), error=error)
+                    ended_at=_now(), error=error, traceback=tb)
                 _TLS.run = prev
         return wrapper
     return deco
