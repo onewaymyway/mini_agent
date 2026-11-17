@@ -347,6 +347,27 @@ def repair_dialogue_texts(raw_shots: List[Dict[str, Any]], script_lines: List[Di
     return repairs
 
 
+NARRATOR_NAMES = ("旁白", "解说", "画外音", "叙述", "叙述者", "旁述", "画外")
+
+
+def is_narrator_name(name: Any) -> bool:
+    return str(name or "").strip().strip("：:（）() ") in NARRATOR_NAMES
+
+
+def normalize_narrator_blocks(raw_shots: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """“旁白”不是角色：模型把说话人写成旁白（或解说/画外音）的 dialogue 块，改为 narration 块，
+    避免 C-5 把“旁白”当成要补建的角色。文本不变；原地修改，返回被改记录。"""
+    fixed: List[Dict[str, Any]] = []
+    for si, rs in enumerate(raw_shots, start=1):
+        for bj, rb in enumerate(rs.get("blocks") or [], start=1):
+            if rb.get("type") == "dialogue" and (is_narrator_name(rb.get("speaker_name")) or is_narrator_name(rb.get("speaker_id"))):
+                rb["type"] = "narration"
+                rb.pop("speaker_id", None)
+                rb.pop("speaker_name", None)
+                fixed.append({"shot": si, "block": bj, "text": str(rb.get("text") or "")[:30]})
+    return fixed
+
+
 def drop_unspeakable_blocks(raw_shots: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """自动清理：删除只有标点/符号（无可朗读文字）的口播块，它们无法配音（edge-tts 会 NoAudioReceived）。
     被删块没有任何语音内容，删除不影响剧情；某镜头删光后由 collect_shot_issues 提示模型补写。原地修改，返回被删记录。"""
@@ -676,6 +697,10 @@ def _plan_segment(project_dir: Path, no: int, text_llm: TextLLM, script: str, pr
                 joblog.log(project_dir, "chapter",
                            f"第 {no} 章 C-3 对白已自动修复为剧本原文（镜头 {rp['shot']} 口播 {rp['block']}，相似度 {rp['score']}）："
                            f"“{rp['before'][:40]}” → “{rp['after'][:40]}”（{rp['speaker']}）", level="warn")
+            for nf in normalize_narrator_blocks(obj.get("shots") or []):
+                joblog.log(project_dir, "chapter",
+                           f"第 {no} 章 C-3 说话人“旁白”不是角色，已改为旁白块（镜头 {nf['shot']} 口播 {nf['block']}）：{nf['text']}",
+                           level="warn")
             for dp in drop_unspeakable_blocks(obj.get("shots") or []):
                 joblog.log(project_dir, "chapter",
                            f"第 {no} 章 C-3 已删除无可朗读文字的口播块（镜头 {dp['shot']} 口播 {dp['block']}）：{dp['text']!r}",

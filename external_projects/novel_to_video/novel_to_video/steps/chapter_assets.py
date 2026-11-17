@@ -51,6 +51,29 @@ def _chapter_text(project_dir: Path, no: int) -> str:
         return ""
 
 
+ASK_JSON_RETRIES = 2   # 模型输出无法解析时，把错误反馈给模型重答的最多次数
+
+
+def _ask_json(project_dir: Path, text_llm: TextLLM, prompt: str, *, system: str, label: str, chapter_no: int) -> Dict[str, Any]:
+    """调用模型并解析 JSON。输出无效（空、重复符号、没有 JSON、被截断）时，把错误和上次输出开头反馈给模型，
+    让它按要求重答，最多 ASK_JSON_RETRIES 次；用尽后抛出最后一次的错误。"""
+    cur = prompt
+    for attempt in range(ASK_JSON_RETRIES + 1):
+        lb = label + (f"（第 {attempt} 次纠正）" if attempt else "")
+        raw = llm_trace.ask_traced(project_dir, text_llm, cur, system=system, scope="chapter", label=lb,
+                                   step="C-5", chapter=chapter_no)
+        try:
+            return parse_json_object(raw)
+        except StepError as exc:
+            if attempt >= ASK_JSON_RETRIES:
+                raise
+            joblog.log(project_dir, "chapter", f"{label}：模型输出无效，反馈错误让模型重答（{attempt + 1}/{ASK_JSON_RETRIES}）：{exc}",
+                       level="warn")
+            cur = (prompt + f"\n\n【上一次输出无效】错误：{exc}\n上一次输出的开头：{raw[:120]!r}\n"
+                   "请重新回答：只输出一个合法的 JSON 对象，不要输出重复符号、解释或代码块。")
+    raise StepError("unreachable")  # pragma: no cover
+
+
 def _infer_gender(project_dir: Path, text_llm: TextLLM, name: str, context: List[str], chapter_no: int,
                   chapter_text: str) -> Tuple[Optional[str], Optional[str]]:
     """补建角色的性别自动确定：把正文中提到该角色的段落交给模型二选一（male / female），不需要用户手动选。
@@ -62,10 +85,9 @@ def _infer_gender(project_dir: Path, text_llm: TextLLM, name: str, context: List
     excerpt = "\n".join(lines) if lines else chapter_text
     label = f"第 {chapter_no} 章 C-5 推断补建角色「{name}」性别"
     with joblog.timed(project_dir, "chapter", label):
-        raw = llm_trace.ask_traced(project_dir, text_llm, prompts.gender_infer_prompt(name, context, excerpt),
-                                   system=prompts.SYSTEM_VISUAL, scope="chapter", label=label,
-                                   step="C-5", chapter=chapter_no)
-    g = str(parse_json_object(raw).get("gender") or "").strip().lower()
+        obj = _ask_json(project_dir, text_llm, prompts.gender_infer_prompt(name, context, excerpt),
+                        system=prompts.SYSTEM_VISUAL, label=label, chapter_no=chapter_no)
+    g = str(obj.get("gender") or "").strip().lower()
     if g in ("male", "female"):
         return g, "模型依据正文推断"
     return None, None
@@ -75,10 +97,8 @@ def _draft_entity(project_dir: Path, text_llm: TextLLM, name: str, context: List
                   chapter_text: str = "") -> Dict[str, Any]:
     label = f"第 {chapter_no} 章 C-5 起草补建角色「{name}」设定"
     with joblog.timed(project_dir, "chapter", label):
-        raw = llm_trace.ask_traced(project_dir, text_llm, prompts.entity_draft_prompt(name, context),
-                                   system=prompts.SYSTEM_VISUAL, scope="chapter", label=label,
-                                   step="C-5", chapter=chapter_no)
-    obj = parse_json_object(raw)
+        obj = _ask_json(project_dir, text_llm, prompts.entity_draft_prompt(name, context),
+                        system=prompts.SYSTEM_VISUAL, label=label, chapter_no=chapter_no)
     anchor = str(obj.get("visual_anchor_en") or "").strip()
     voice = str(obj.get("voice_profile") or "").strip()
     if not anchor or not voice:
@@ -112,6 +132,13 @@ def run_assets(project_dir: Path, no: int, text_llm: TextLLM, image: ImageProvid
     chars = chars_doc["characters"]
     script = (chapter_dir(project_dir, no) / "script.md").read_text(encoding="utf-8")
 
+    # 0) “旁白”不是角色：已有镜头规划里把旁白写成对白说话人的块，改回旁白块（沿用旧规划时也能自愈）
+    from .chapter_shots import is_narrator_name, normalize_narrator_blocks
+    if normalize_narrator_blocks(shots["shots"]):
+        shots["new_speakers"] = [n for n in shots.get("new_speakers") or [] if not is_narrator_name(n)]
+        save_shots(project_dir, no, shots)
+        joblog.log(project_dir, "chapter", f"第 {no} 章 C-5 已把说话人为“旁白”的口播块改回旁白块，不再补建“旁白”角色", level="warn")
+
     # 1) 起草缺失的说话人
     by_name = {n: c["id"] for c in chars for n in c.get("names", [])}
     names_needed: List[str] = []
@@ -121,7 +148,7 @@ def run_assets(project_dir: Path, no: int, text_llm: TextLLM, image: ImageProvid
                 if b["speaker_name"] not in names_needed:
                     names_needed.append(b["speaker_name"])
     for n in shots.get("new_speakers") or []:
-        if n not in names_needed and n not in by_name:
+        if n not in names_needed and n not in by_name and not is_narrator_name(n):
             names_needed.append(n)
 
     drafted: List[str] = []

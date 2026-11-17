@@ -33,3 +33,31 @@ def test_collect_issues_flags_symbol_block_and_empty_shot():
     empty = [{"scene_no": 1, "blocks": []}]
     msgs = [i["message"] for i in sh.collect_shot_issues(empty, "### 场次 1｜城门\n旁白：天亮了。", [])]
     assert any("没有可朗读的口播块" in m for m in msgs)
+
+
+def test_narrator_dialogue_block_becomes_narration():
+    raw = [{"scene_no": 1, "blocks": [
+        {"type": "dialogue", "speaker_name": "旁白", "text": "他没有回头。"},
+        {"type": "dialogue", "speaker_name": "李明", "text": "走。"}]}]
+    fixed = sh.normalize_narrator_blocks(raw)
+    assert len(fixed) == 1
+    assert raw[0]["blocks"][0]["type"] == "narration" and "speaker_name" not in raw[0]["blocks"][0]
+    assert raw[0]["blocks"][1]["type"] == "dialogue"
+
+
+def test_ask_json_feeds_error_back_and_retries(tmp_path):
+    from novel_to_video.steps import chapter_assets as ca
+
+    class LLM:
+        name = "x"
+
+        def __init__(self):
+            self.prompts = []
+
+        def ask(self, prompt, system=""):
+            self.prompts.append(prompt)
+            return "!" * 500 if len(self.prompts) == 1 else '{"gender": "male"}'
+    llm = LLM()
+    obj = ca._ask_json(tmp_path, llm, "原提示", system="", label="测试", chapter_no=1)
+    assert obj == {"gender": "male"}
+    assert len(llm.prompts) == 2 and "上一次输出无效" in llm.prompts[1] and "没有 JSON" in llm.prompts[1]
