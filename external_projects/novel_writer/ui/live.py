@@ -73,6 +73,8 @@ def _last_run_table(last: dict, alive: bool = False) -> None:
     st.table([{
         "步骤": r.get("step", ""),
         "状态": f"{_STEP_MARK.get(r.get('status'), '•')} {r.get('status', '')}",
+        "开始": _clock(r.get("started_at")),
+        "结束": _clock(r.get("finished_at")),
         "耗时": f"{r['duration_sec']}s" if r.get("duration_sec") is not None else "—",
         "结果摘要": (r.get("summary") or "")
                     + (f"　🔧 已转存为 UTF-8：{len(r['encoding_fixed'])} 个文件" if r.get("encoding_fixed") else ""),

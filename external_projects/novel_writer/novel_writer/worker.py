@@ -303,8 +303,11 @@ def _schedule_upstream_repair(ws: Workspace, target: S.StepDef, index: Dict[str,
     st.update_step(ws, up, upstream_repairs=n + 1, upstream_run=run_token)
     st.log_line(ws, f"🔁 {target.id} 的根因在上游「{up}」：立即重跑上游（第 {n + 1} 次）")
     up_status = R.run_step(ws, index[up], invoker=invoker, settings=settings, handlers=handlers)
+    up_after = st.get_step_state(ws, up)
     executed.append({"step": up, "title": index[up].title, "status": up_status,
-                     "summary": st.get_step_state(ws, up).get("summary") or st.get_step_state(ws, up).get("error") or "",
+                     "started_at": up_after.get("started_at"), "finished_at": up_after.get("finished_at"),
+                     "duration_sec": up_after.get("duration_sec"),
+                     "summary": up_after.get("summary") or up_after.get("error") or "",
                      "auto_retries": 0, "timed_out": False, "reason": f"为 {target.id} 自动修复上游"})
     if up_status != st.ST_PASSED:
         st.log_line(ws, f"⏹ 上游「{up}」重跑后仍未通过（{up_status}），停止自动修复，请先处理它的失败原因")
@@ -532,6 +535,8 @@ def _loop(
         executed.append({
             "step": target.id, "title": target.title, "status": status_after,
             "summary": after.get("summary") or after.get("error") or "",
+            "started_at": after.get("started_at"),
+            "finished_at": after.get("finished_at"),
             "duration_sec": after.get("duration_sec"),
             "auto_retries": retries,
             "timed_out": bool(after.get("timed_out")),

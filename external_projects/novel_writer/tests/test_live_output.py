@@ -144,3 +144,11 @@ def test_cockpit_page_shows_live_panel(tmp_path):
     assert any("运行输出" in e.label for e in at.expander)
     assert any("运行结束" in m.value for m in list(at.info) + list(at.success) + list(at.warning))
     assert not any("正在运行（步骤" in m.value for m in at.info), "旧的只显示步骤名的提示应已移除"
+
+
+def test_executed_records_carry_step_start_and_end_times(tmp_path):
+    ws = new_book(tmp_path, gear="G0")
+    run_once(ws, FakeInvoker(ws.root))
+    rec = {r["step"]: r for r in st.read_last_run(ws)["executed"]}["plan_blueprint"]
+    assert rec["started_at"] and rec["finished_at"]
+    assert rec["started_at"] <= rec["finished_at"]
