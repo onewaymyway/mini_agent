@@ -60,3 +60,47 @@ def test_stopped_stage_and_old_logs_ignored(tmp_path):
     st = timeline.build_timeline(tmp_path)[3]["attempts"][0]["stages"][0]
     assert st["status"] == "stopped" and not st["error"]
     assert timeline.build_timeline(tmp_path / "none") == {}
+
+
+# ---------------------------------------------------------------- 全书素材 / 全书合成
+def test_book_run_with_steps_and_failure(tmp_path):
+    @joblog.tracked_run("assets", "G-3 定妆图生成")
+    def run(pdir):
+        joblog.step_start(pdir, "assets", "定妆图：林昼（char_001）")
+        joblog.step_end(pdir, "assets", "定妆图：林昼（char_001）")
+        joblog.step_start(pdir, "assets", "定妆图：孤影（char_002）")
+        joblog.step_end(pdir, "assets", "定妆图：孤影（char_002）", "failed", "image api 500: " + "y" * 600)
+        return {"done": ["char_001"], "failed": [{"id": "char_002", "error": "image api 500"}], "stopped": None}
+    run(tmp_path)
+    runs = timeline.build_book_timeline(tmp_path)
+    assert len(runs) == 1
+    r = runs[0]
+    assert r["run"] == "G-3 定妆图生成" and r["status"] == "failed" and "char_002" in r["error"]
+    assert [s["status"] for s in r["steps"]] == ["ok", "failed"]
+    assert r["steps"][1]["error"].count("y") == 600 and r["seconds"] is not None
+
+
+def test_book_run_exception_closes_open_step(tmp_path):
+    @joblog.tracked_run("final", "F-3/F-4 全书合成")
+    def run(pdir):
+        joblog.step_start(pdir, "final", "F-3 拼接")
+        raise RuntimeError("ffmpeg 退出码 1")
+    with pytest.raises(RuntimeError):
+        run(tmp_path)
+    r = timeline.build_book_timeline(tmp_path, scopes=["final"])[0]
+    assert r["status"] == "failed" and "ffmpeg 退出码 1" in r["error"]
+    assert r["steps"][0]["status"] == "failed" and "ffmpeg" in r["steps"][0]["error"]
+    assert timeline.build_book_timeline(tmp_path, scopes=["assets"]) == []
+
+
+def test_book_run_stopped_and_interrupted(tmp_path):
+    @joblog.tracked_run("assets", "G-2 文本设定补全")
+    def stopped(pdir):
+        return {"done": [], "failed": [], "stopped": "用户请求停止"}
+    stopped(tmp_path)
+    joblog.log(tmp_path, "assets", "开始", event="run_start", run="G-3 定妆图生成", run_id="dead0001", started_at="2026-11-17T08:00:00")
+    runs = {r["run"]: r for r in timeline.build_book_timeline(tmp_path)}
+    assert runs["G-2 文本设定补全"]["status"] == "stopped"
+    assert runs["G-3 定妆图生成"]["status"] == "interrupted"
+    live = {r["run"]: r for r in timeline.build_book_timeline(tmp_path, busy=True)}
+    assert live["G-3 定妆图生成"]["status"] == "running"

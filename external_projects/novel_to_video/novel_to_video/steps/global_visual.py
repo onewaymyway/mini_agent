@@ -122,6 +122,7 @@ def _repair_json(body: str) -> Optional[Dict[str, Any]]:
 
 # ---------------------------------------------------------------- G-2
 
+@joblog.tracked_run("assets", "G-2 文本设定补全")
 def visual_text_pass(project_dir: Path, text_llm: TextLLM, *, only_missing: bool = True,
                      ids: Optional[List[str]] = None) -> Dict[str, Any]:
     """为角色/地点补全 visual_anchor_en、voice_profile（角色）与 gender（角色，仅缺失时）。"""
@@ -154,6 +155,8 @@ def visual_text_pass(project_dir: Path, text_llm: TextLLM, *, only_missing: bool
                 joblog.log(project_dir, "assets", f"跳过 {name}（设定已完整，待人工审核）")
                 continue
             joblog.log(project_dir, "assets", f"G-2 补全：{name}（{eid}）")
+            _stage = f"补全：{name}（{eid}）"
+            joblog.step_start(project_dir, "assets", _stage)
             try:
                 if kind == "character":
                     prompt = prompts.character_prompt(ent, _persona_excerpt(project_dir, ent))
@@ -189,8 +192,10 @@ def visual_text_pass(project_dir: Path, text_llm: TextLLM, *, only_missing: bool
                 log_call(project_dir, {"kind": "text", "provider": text_llm.name, "entity": key, "ok": True})
                 summary["done"].append(eid)
                 joblog.log(project_dir, "assets", f"G-2 完成：{name}", level="ok")
+                joblog.step_end(project_dir, "assets", _stage)
             except Exception as exc:
                 joblog.log(project_dir, "assets", f"G-2 失败：{name}：{exc}", level="error")
+                joblog.step_end(project_dir, "assets", _stage, "failed", f"{type(exc).__name__}: {exc}")
                 review = load_review(project_dir)
                 get_item(review, key)["last_error"] = f"G-2 失败：{exc}"
                 save_review(project_dir, review)
@@ -207,6 +212,7 @@ def _portrait_rel(kind: str, eid: str, version: int) -> str:
     return f"global/assets/{kind}_{eid}{suffix}.png"
 
 
+@joblog.tracked_run("assets", "G-3 定妆图生成")
 def portrait_pass(project_dir: Path, image: ImageProvider, *, only_missing: bool = True,
                   ids: Optional[List[str]] = None, regenerate: bool = False) -> Dict[str, Any]:
     """为已有 visual_anchor_en 的角色/地点生成定妆图。
@@ -249,6 +255,8 @@ def portrait_pass(project_dir: Path, image: ImageProvider, *, only_missing: bool
                 joblog.log(project_dir, "assets", f"跳过 {name}（定妆图已存在）")
                 continue
             joblog.log(project_dir, "assets", f"G-3 生成定妆图：{name}（{kind}，{eid}）")
+            _stage = f"定妆图：{name}（{eid}）"
+            joblog.step_start(project_dir, "assets", _stage)
 
             version = int(item.get("portrait_version") or 0)
             if regenerate or not asset_exists or item.get("portrait_status") == "stale":
@@ -270,8 +278,10 @@ def portrait_pass(project_dir: Path, image: ImageProvider, *, only_missing: bool
                             portrait_version=version, last_error=None)
                 summary["done"].append(eid)
                 joblog.log(project_dir, "assets", f"G-3 完成：{name} → {rel}", level="ok")
+                joblog.step_end(project_dir, "assets", _stage)
             else:
                 joblog.log(project_dir, "assets", f"G-3 失败：{name}：{result.error}", level="error")
+                joblog.step_end(project_dir, "assets", _stage, "failed", str(result.error))
                 item.update(portrait_status="failed", last_error=f"G-3 失败：{result.error}")
                 summary["failed"].append({"id": eid, "error": result.error})
                 save_review(project_dir, review)
@@ -303,6 +313,8 @@ def _spot_sheets_pass(project_dir: Path, data: Dict[str, Any], ent: Dict[str, An
     if regenerate or item.get("portrait_status") == "stale" or not files_ok:
         version += 1
     joblog.log(project_dir, "assets", f"G-3 设定图生成：{name}（{len(ent['sheets'])} 张）")
+    _stage = f"设定图：{name}（{ent['id']}，{len(ent['sheets'])} 张）"
+    joblog.step_start(project_dir, "assets", _stage)
     res = LS.generate_spot_sheets(project_dir, ent, image, style, version=version,
                                   ratio=video_format.load(project_dir).aspect_ratio,
                                   only_missing=only_missing and not regenerate)
@@ -317,11 +329,13 @@ def _spot_sheets_pass(project_dir: Path, data: Dict[str, Any], ent: Dict[str, An
                     portrait_version=version, last_error=None)
         summary["done"].append(ent["id"])
         joblog.log(project_dir, "assets", f"G-3 设定图完成：{name}", level="ok")
+        joblog.step_end(project_dir, "assets", _stage)
     else:
         err = res["failed"][0]["error"] if res.get("failed") else (res.get("stopped") or "未知错误")
         item.update(portrait_status="failed", last_error=f"G-3 设定图失败：{err}")
         summary["failed"].append({"id": ent["id"], "error": err})
         joblog.log(project_dir, "assets", f"G-3 设定图失败：{name}：{err}", level="error")
+        joblog.step_end(project_dir, "assets", _stage, "failed", str(err))
         if res.get("stopped"):
             summary["stopped"] = res["stopped"]
     save_review(project_dir, review)

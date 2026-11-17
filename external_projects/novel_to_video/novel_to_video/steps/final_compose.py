@@ -93,6 +93,7 @@ def set_cover(project_dir: Path, *, enabled: bool, title: Optional[str] = None,
     return cov
 
 
+@joblog.tracked_run("final", "F-2 封面渲染")
 def render_cover_assets(project_dir: Path, *, bg_provider=None) -> Dict[str, Any]:
     mf.use_project_format(project_dir)
     """F-2：若缺少 cover_bg.png 则生成（需要 image provider），再叠字得到 cover.png。"""
@@ -151,6 +152,7 @@ def _chapter_snapshot(project_dir: Path, nos: List[int]) -> Dict[str, str]:
     return out
 
 
+@joblog.tracked_run("final", "F-3/F-4 全书合成")
 def compose_book(project_dir: Path, *, gear: str, transition: str = "cut",
                  use_cover: Optional[bool] = None) -> Dict[str, Any]:
     """F-3 + F-4。必须先通过 F-1 与人工确认；任何挡位都不跳过确认。"""
@@ -158,9 +160,13 @@ def compose_book(project_dir: Path, *, gear: str, transition: str = "cut",
     gear = gates.normalize_gear(gear)
     if gates.is_auto(gear, "final_compose"):  # 防御：策略表保证永远为 False
         raise FinalError("内部错误：全书合成不允许自动执行")
+    joblog.step_start(project_dir, "final", "F-1 章节就绪检查")
     fr = check_chapters_ready(project_dir)
     if not fr["ready"]:
-        raise FinalError("章节未全部就绪：" + "；".join(fr["problems"]))
+        _m = "章节未全部就绪：" + "；".join(fr["problems"])
+        joblog.step_end(project_dir, "final", "F-1 章节就绪检查", "failed", _m)
+        raise FinalError(_m)
+    joblog.step_end(project_dir, "final", "F-1 章节就绪检查")
     joblog.log(project_dir, "final", f"F-1 检查通过：{len(fr['chapters'])} 章均已完成")
     conf = confirm_state(project_dir)
     if not conf.get("confirmed"):
@@ -178,10 +184,20 @@ def compose_book(project_dir: Path, *, gear: str, transition: str = "cut",
     out = _exports(project_dir) / "video.mp4"
     joblog.log(project_dir, "final", f"F-3 开始拼接：{len(chapter_files)} 章" + ("，含封面" if enable_cover else "")
                + f"，转场 {transition}")
-    res = cf.compose_final(chapter_files, out,
-                           cover_png=cover_png if enable_cover else None,
-                           cover_sec=float(cov.get("duration_sec", 3.0)), transition=transition)
+    joblog.step_start(project_dir, "final", "F-3 拼接")
+    try:
+        res = cf.compose_final(chapter_files, out,
+                               cover_png=cover_png if enable_cover else None,
+                               cover_sec=float(cov.get("duration_sec", 3.0)), transition=transition)
+    except BaseException as exc:
+        joblog.step_end(project_dir, "final", "F-3 拼接", "stopped" if type(exc).__name__ == "Cancelled" else "failed",
+                        f"{type(exc).__name__}: {exc}")
+        raise
+    joblog.step_end(project_dir, "final", "F-3 拼接")
+    joblog.step_start(project_dir, "final", "F-4 成片校验")
     verdict = verify_final(out, res["expected"], expect_audio=True)
+    joblog.step_end(project_dir, "final", "F-4 成片校验", "ok" if verdict["ok"] else "failed",
+                    None if verdict["ok"] else "；".join(verdict["problems"]))
     joblog.log(project_dir, "final", f"F-4 成片校验：时长 {res['duration']} 秒（期望 {res['expected']}），"
                + ("通过" if verdict["ok"] else "未通过：" + "；".join(verdict["problems"])),
                level="ok" if verdict["ok"] else "error")

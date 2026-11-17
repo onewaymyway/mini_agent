@@ -111,40 +111,76 @@ def _dur(sec) -> str:
 
 
 def _timeline_panel(pdir: str) -> None:
-    """运行时间线：每章每次尝试的主步骤开始/结束时间、用时、状态、完整失败原因，以及重试记录。默认收起。"""
+    """运行时间线：章节流水线 / 全书素材 / 全书合成三个标签页，显示步骤起止时间、用时、状态、完整失败原因。默认收起。"""
     with st.expander("⏱ 运行时间线（步骤用时 / 失败重试）", expanded=False):
-        res = tool_api.run_timeline(pdir)
-        if not res["ok"]:
-            st.error(res["error"]["message"])
-            return
-        data = res["data"]
-        if not data:
-            st.caption("还没有带时间的运行记录（运行一次章节后出现）。")
-            return
-        nos = sorted(data, reverse=True)
-        no = st.selectbox("章节", nos, format_func=lambda n: f"第 {n} 章", key="tl_chapter")
-        c = data[no]
-        st.write(f"累计用时 **{_dur(c['total_seconds'])}**　·　尝试 **{len(c['attempts'])}** 次　·　重试 **{c['retry_count']}** 次")
-        retries = {r["attempt"]: r for r in c["retries"]}
-        for a in reversed(c["attempts"]):
-            st.markdown(f"**第 {a['attempt']} 次尝试**　{_TL_STATUS.get(a['status'], a['status'])}　"
-                        f"{_hms(a['started_at'])} → {_hms(a['ended_at'])}　用时 {_dur(a.get('seconds'))}")
-            rows = [{"步骤": s["stage"], "开始": _hms(s.get("started_at")), "结束": _hms(s.get("ended_at")),
-                     "用时": _dur(s.get("seconds")), "状态": _TL_STATUS.get(s["status"], s["status"])}
-                    for s in a["stages"]]
-            if rows:
-                st.dataframe(rows, width="stretch", hide_index=True)
-            for s in a["stages"]:
-                if s.get("error"):
-                    st.markdown(f"步骤 {s['stage']} 失败原因（完整）：")
-                    st.code(str(s["error"]), language=None)
-            if a.get("error"):
-                st.markdown("本次尝试失败原因（完整）：")
-                st.code(str(a["error"]), language=None)
-            nxt = retries.get(a["attempt"])   # 第 n 次重试是“第 n 次尝试失败之后”的动作
-            if nxt:
-                st.caption(f"↻ {_hms(nxt['at'])} 决定重试（第 {nxt['attempt']} 次），等待 {nxt.get('wait_sec') or 0:g} 秒，"
-                           f"计划 {_hms(nxt.get('next_at'))} 开始下一次尝试")
+        t_ch, t_as, t_fi = st.tabs(["章节流水线", "全书素材", "全书合成"])
+        with t_ch:
+            _chapter_timeline(pdir)
+        with t_as:
+            _book_timeline(pdir, ["assets", "gender"], "还没有全书素材的运行记录（运行设定补全 / 定妆图 / 性别检索后出现）。")
+        with t_fi:
+            _book_timeline(pdir, ["final"], "还没有全书合成的运行记录（渲染封面 / 合成全书后出现）。")
+
+
+def _book_timeline(pdir: str, scopes: list, empty: str) -> None:
+    res = tool_api.book_run_timeline(pdir, scopes)
+    if not res["ok"]:
+        st.error(res["error"]["message"])
+        return
+    runs = res["data"]
+    if not runs:
+        st.caption(empty)
+        return
+    for r in runs[:15]:
+        st.markdown(f"**{r['run']}**　{_TL_STATUS.get(r['status'], r['status'])}　"
+                    f"{str(r['started_at'])[5:16].replace('T', ' ')} → {_hms(r['ended_at'])}　用时 {_dur(r.get('seconds'))}")
+        rows = [{"步骤": s["stage"], "开始": _hms(s.get("started_at")), "结束": _hms(s.get("ended_at")),
+                 "用时": _dur(s.get("seconds")), "状态": _TL_STATUS.get(s["status"], s["status"])}
+                for s in r["steps"]]
+        if rows:
+            st.dataframe(rows, width="stretch", hide_index=True)
+        for s in r["steps"]:
+            if s.get("error") and s["error"] != r.get("error"):
+                st.markdown(f"步骤「{s['stage']}」失败原因（完整）：")
+                st.code(str(s["error"]), language=None)
+        if r.get("error"):
+            st.markdown("失败原因（完整）：")
+            st.code(str(r["error"]), language=None)
+
+
+def _chapter_timeline(pdir: str) -> None:
+    res = tool_api.run_timeline(pdir)
+    if not res["ok"]:
+        st.error(res["error"]["message"])
+        return
+    data = res["data"]
+    if not data:
+        st.caption("还没有带时间的运行记录（运行一次章节后出现）。")
+        return
+    nos = sorted(data, reverse=True)
+    no = st.selectbox("章节", nos, format_func=lambda n: f"第 {n} 章", key="tl_chapter")
+    c = data[no]
+    st.write(f"累计用时 **{_dur(c['total_seconds'])}**　·　尝试 **{len(c['attempts'])}** 次　·　重试 **{c['retry_count']}** 次")
+    retries = {r["attempt"]: r for r in c["retries"]}
+    for a in reversed(c["attempts"]):
+        st.markdown(f"**第 {a['attempt']} 次尝试**　{_TL_STATUS.get(a['status'], a['status'])}　"
+                    f"{_hms(a['started_at'])} → {_hms(a['ended_at'])}　用时 {_dur(a.get('seconds'))}")
+        rows = [{"步骤": s["stage"], "开始": _hms(s.get("started_at")), "结束": _hms(s.get("ended_at")),
+                 "用时": _dur(s.get("seconds")), "状态": _TL_STATUS.get(s["status"], s["status"])}
+                for s in a["stages"]]
+        if rows:
+            st.dataframe(rows, width="stretch", hide_index=True)
+        for s in a["stages"]:
+            if s.get("error"):
+                st.markdown(f"步骤 {s['stage']} 失败原因（完整）：")
+                st.code(str(s["error"]), language=None)
+        if a.get("error"):
+            st.markdown("本次尝试失败原因（完整）：")
+            st.code(str(a["error"]), language=None)
+        nxt = retries.get(a["attempt"])   # 第 n 次重试是“第 n 次尝试失败之后”的动作
+        if nxt:
+            st.caption(f"↻ {_hms(nxt['at'])} 决定重试（第 {nxt['attempt']} 次），等待 {nxt.get('wait_sec') or 0:g} 秒，"
+                       f"计划 {_hms(nxt.get('next_at'))} 开始下一次尝试")
 
 
 def _start_controls(pdir: str, d: dict) -> None:

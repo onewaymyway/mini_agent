@@ -226,3 +226,73 @@ def heartbeat(project_dir: Path, scope: str, label: str, every: Optional[float] 
         stop.set()
         log(project_dir, scope, f"{label}：完成（{time.monotonic() - start:.1f} 秒）", level="info")
         _end_event("ok")
+
+
+# ---------------------------------------------------------------- 全书级运行（素材/合成）的结构化事件
+# run_start/run_end 包住一次整体运行（如“G-3 定妆图生成”），step_start/step_end 是其中的逐项步骤。
+# 它们与章节流水线的 stage_* 事件互不干扰，由 timeline.build_book_timeline 汇总。
+
+def _now() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def step_start(project_dir: Path, scope: str, stage: str) -> None:
+    run = getattr(_TLS, "run", None)
+    if run:
+        log(project_dir, scope, f"{run[1]}：{stage} 开始", event="step_start", run=run[1], run_id=run[0],
+            stage=stage, started_at=_now())
+
+
+def step_end(project_dir: Path, scope: str, stage: str, status: str = "ok", error: Optional[str] = None) -> None:
+    run = getattr(_TLS, "run", None)
+    if run:
+        log(project_dir, scope, f"{run[1]}：{stage} {'完成' if status == 'ok' else '失败' if status == 'failed' else '已停止'}",
+            level="info" if status == "ok" else "warn" if status == "stopped" else "error",
+            event="step_end", run=run[1], run_id=run[0], stage=stage, status=status, ended_at=_now(),
+            error=error)
+
+
+def _summary_status(res: Any) -> tuple:
+    """从返回值里推断一次运行的结果：含 stopped → 已停止；含 failed 列表 → 部分失败（记为失败并列出原因）。"""
+    if isinstance(res, dict):
+        if res.get("stopped"):
+            return "stopped", str(res["stopped"])
+        failed = res.get("failed")
+        if failed and isinstance(failed, list):
+            lines = [f"{f.get('id')}: {f.get('error')}" if isinstance(f, dict) else str(f) for f in failed]
+            return "failed", "\n".join(lines)
+    return "ok", None
+
+
+def tracked_run(scope: str, run: str):
+    """装饰器：把以 project_dir 为第一个参数的整体运行记为一次 run（开始/结束时间、状态、失败原因）。"""
+    import functools
+    import uuid
+
+    def deco(fn):
+        @functools.wraps(fn)
+        def wrapper(project_dir, *args, **kwargs):
+            prev = getattr(_TLS, "run", None)
+            run_id = uuid.uuid4().hex[:8]
+            _TLS.run = (run_id, run)
+            started = _now()
+            log(project_dir, scope, f"{run}：开始", event="run_start", run=run, run_id=run_id, started_at=started)
+            status, error = "ok", None
+            try:
+                res = fn(project_dir, *args, **kwargs)
+                status, error = _summary_status(res)
+                return res
+            except BaseException as exc:
+                if type(exc).__name__ == "Cancelled":
+                    status = "stopped"
+                else:
+                    status, error = "failed", f"{type(exc).__name__}: {exc}"
+                raise
+            finally:
+                log(project_dir, scope, f"{run}：{ {'ok': '完成', 'stopped': '已停止'}.get(status, '失败') }",
+                    level={"ok": "info", "stopped": "warn"}.get(status, "error"),
+                    event="run_end", run=run, run_id=run_id, status=status, started_at=started,
+                    ended_at=_now(), error=error)
+                _TLS.run = prev
+        return wrapper
+    return deco

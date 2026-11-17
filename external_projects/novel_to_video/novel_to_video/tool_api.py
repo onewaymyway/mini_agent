@@ -784,6 +784,18 @@ def run_timeline(project_dir: str) -> Dict[str, Any]:
         return _fail(f"读取运行时间线失败：{exc}")
 
 
+def book_run_timeline(project_dir: str, scopes: Optional[List[str]] = None) -> Dict[str, Any]:
+    """全书素材/合成的运行时间线（驾驶舱“运行时间线”面板的后两个标签页使用）。"""
+    try:
+        from . import timeline as _tl
+        from . import jobs as _jb
+        pdir = Path(project_dir)
+        busy = _jb.status(pdir).get("state") in ("running", "stopping")
+        return _ok(_tl.build_book_timeline(pdir, busy=busy, scopes=scopes))
+    except Exception as exc:
+        return _fail(f"读取运行时间线失败：{exc}")
+
+
 def start_queue_background(project_dir: str, numbers: Optional[List[int]] = None,
                            gear: Optional[str] = None) -> Dict[str, Any]:
     """在后台线程运行队列（驾驶舱使用）。锁被占用时立即返回失败，不阻塞界面。"""

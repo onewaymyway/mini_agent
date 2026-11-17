@@ -41,6 +41,82 @@ def read_events(project_dir: Path) -> List[Dict[str, Any]]:
     return out
 
 
+def read_book_events(project_dir: Path) -> List[Dict[str, Any]]:
+    """全书级运行事件（素材/合成/性别）：run_start/run_end/step_start/step_end。"""
+    path = Path(project_dir) / LOG_FILE
+    if not path.is_file():
+        return []
+    out: List[Dict[str, Any]] = []
+    with path.open("r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if '"run_id"' not in line:
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if row.get("event") in ("run_start", "run_end", "step_start", "step_end") and row.get("run_id"):
+                out.append(row)
+    return out
+
+
+def build_book_timeline(project_dir: Path, *, busy: bool = False, now: Optional[datetime] = None,
+                        scopes: Optional[List[str]] = None, limit: int = 30) -> List[Dict[str, Any]]:
+    """全书素材/合成的运行时间线：按开始时间从新到旧返回最近 limit 次运行。
+    每次运行 {run_id, scope, run, started_at, ended_at, seconds, status, error, steps: [...]}，
+    step = {stage, started_at, ended_at, seconds, status, error}；
+    运行结束时仍未结束的步骤按该运行的结果记为 failed/stopped（失败原因沿用运行的原因）。"""
+    now = now or datetime.now()
+    runs: Dict[str, Dict[str, Any]] = {}
+    order: List[str] = []
+    for ev in read_book_events(project_dir):
+        rid, kind = ev["run_id"], ev["event"]
+        r = runs.get(rid)
+        if r is None:
+            r = runs[rid] = {"run_id": rid, "scope": ev.get("scope"), "run": ev.get("run"),
+                             "started_at": ev.get("started_at") or ev.get("ts"), "ended_at": None,
+                             "seconds": None, "status": "running", "error": None, "steps": []}
+            order.append(rid)
+        if kind == "step_start":
+            r["steps"].append({"stage": ev.get("stage"), "started_at": ev.get("started_at") or ev.get("ts"),
+                               "ended_at": None, "seconds": None, "status": "running", "error": None})
+        elif kind == "step_end":
+            st = next((x for x in reversed(r["steps"]) if x["stage"] == ev.get("stage") and x["status"] == "running"), None)
+            if st is None:
+                continue
+            st.update(ended_at=ev.get("ended_at") or ev.get("ts"), status=ev.get("status") or "ok", error=ev.get("error"))
+        elif kind == "run_end":
+            r.update(ended_at=ev.get("ended_at") or ev.get("ts"), status=ev.get("status") or "ok", error=ev.get("error"))
+
+    result: List[Dict[str, Any]] = []
+    last_open = next((rid for rid in reversed(order) if runs[rid]["status"] == "running"), None)
+    for rid in order:
+        r = runs[rid]
+        live = busy and rid == last_open
+        if r["status"] == "running" and not live:
+            r["status"] = "interrupted"
+        for st in r["steps"]:
+            if st["status"] != "running":
+                pass
+            elif live:
+                pass
+            elif r["status"] in ("failed", "stopped"):
+                st["status"], st["error"] = r["status"], st["error"] or r["error"]
+                st["ended_at"] = st["ended_at"] or r["ended_at"]
+            else:
+                st["status"] = "interrupted"
+            s0 = _parse(st["started_at"])
+            e0 = _parse(st["ended_at"]) or (now if st["status"] == "running" else None)
+            st["seconds"] = round((e0 - s0).total_seconds(), 1) if s0 and e0 else None
+        s1 = _parse(r["started_at"])
+        e1 = _parse(r["ended_at"]) or (now if r["status"] == "running" else None)
+        r["seconds"] = round((e1 - s1).total_seconds(), 1) if s1 and e1 else None
+        if not scopes or r["scope"] in scopes:
+            result.append(r)
+    result.sort(key=lambda x: x["started_at"] or "", reverse=True)
+    return result[:limit]
+
+
 def build_timeline(project_dir: Path, *, busy: bool = False, now: Optional[datetime] = None) -> Dict[int, Dict[str, Any]]:
     """返回 {章号: {attempts, retries, total_seconds, retry_count}}。
 

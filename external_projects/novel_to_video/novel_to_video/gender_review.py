@@ -44,6 +44,7 @@ def _load_texts(project_dir: Path) -> Dict[str, Any]:
     return {"chapters": chapters, "persona": persona}
 
 
+@joblog.tracked_run("gender", "性别线索检索")
 def suggest_all(project_dir: Path) -> Dict[str, Any]:
     chars = read_json(project_dir / "global" / "characters.json")["characters"]
     joblog.log(project_dir, "gender", f"性别线索检索开始：{len(chars)} 个角色")
