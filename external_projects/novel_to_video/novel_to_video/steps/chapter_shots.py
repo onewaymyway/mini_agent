@@ -29,7 +29,7 @@ from .. import prompts
 from ..chapter_io import (MAX_BLOCK_CHARS, SHOT_MAX_SEC, SHOT_MIN_SEC, SHOT_PLAN_SEC, chapter_dir, load_entities, load_shots,
                           mark_stage, norm, save_shots, sha12)
 from ..providers.text import TextLLM
-from ..providers.tts import CHARS_PER_SEC, estimate_seconds
+from ..providers.tts import CHARS_PER_SEC, estimate_seconds, has_speakable
 from ..project_store import auto_fix_retries, read_json, write_json_atomic, write_yaml_atomic
 from .chapter_script import parse_script, spoken_chars
 from .global_visual import StepError, parse_json_object
@@ -122,6 +122,8 @@ def validate_and_build(raw_shots: List[Dict[str, Any]], script: str, locations: 
             text = str(rb.get("text") or "").strip()
             if btype not in ("narration", "dialogue") or not text:
                 raise StepError(f"镜头口播块非法（type={btype}）")
+            if not has_speakable(text):
+                raise StepError(f"镜头口播块没有可朗读的文字（只有标点/符号）：{text[:20]!r}")
             if btype == "dialogue":
                 if norm(text) not in script_norm:
                     raise StepError(f"对白未在剧本中找到（疑似改写）：{text[:30]}")
@@ -345,6 +347,24 @@ def repair_dialogue_texts(raw_shots: List[Dict[str, Any]], script_lines: List[Di
     return repairs
 
 
+def drop_unspeakable_blocks(raw_shots: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """自动清理：删除只有标点/符号（无可朗读文字）的口播块，它们无法配音（edge-tts 会 NoAudioReceived）。
+    被删块没有任何语音内容，删除不影响剧情；某镜头删光后由 collect_shot_issues 提示模型补写。原地修改，返回被删记录。"""
+    dropped: List[Dict[str, Any]] = []
+    for si, rs in enumerate(raw_shots, start=1):
+        blocks = rs.get("blocks") or []
+        keep = []
+        for bj, rb in enumerate(blocks, start=1):
+            text = str(rb.get("text") or "")
+            if text.strip() and not has_speakable(text):
+                dropped.append({"shot": si, "block": bj, "text": text.strip()})
+            else:
+                keep.append(rb)
+        if len(keep) != len(blocks):
+            rs["blocks"] = keep
+    return dropped
+
+
 def _script_dialogue_lines(script: str) -> List[Dict[str, str]]:
     try:
         return [{"speaker": ln["speaker"], "text": ln["text"]}
@@ -370,6 +390,9 @@ def collect_shot_issues(raw_shots: List[Dict[str, Any]], script: str,
         script_lines = []
     char_by_id = {c["id"] for c in characters}
     for i, rs in enumerate(raw_shots, start=1):
+        if not (rs.get("blocks") or []):
+            issues.append({"message": f"第 {i} 个镜头没有可朗读的口播块（为空，或口播块只有标点/符号被清理）。"
+                                      "请为它补写至少一个包含汉字的口播块（narration 或 dialogue）。"})
         for j, rb in enumerate(rs.get("blocks") or [], start=1):
             where = f"第 {i} 个镜头的第 {j} 个口播块"
             btype = rb.get("type")
@@ -377,6 +400,10 @@ def collect_shot_issues(raw_shots: List[Dict[str, Any]], script: str,
             if btype not in ("narration", "dialogue") or not text:
                 issues.append({"message": f"{where}非法：type 只能是 narration 或 dialogue，text 不能为空（当前 type={btype}）。"
                                           f"请改为 narration 或 dialogue，并填入非空的 text。"})
+                continue
+            if not has_speakable(text):
+                issues.append({"message": f"{where}的文字“{text[:20]}”没有可朗读的文字（只有标点/符号），配音会失败。"
+                                          "请把它并入相邻口播块，或改写成包含汉字的完整口播，或删除这个口播块（镜头至少保留一个有文字的口播块）。"})
                 continue
             if btype != "dialogue":
                 continue
@@ -649,6 +676,10 @@ def _plan_segment(project_dir: Path, no: int, text_llm: TextLLM, script: str, pr
                 joblog.log(project_dir, "chapter",
                            f"第 {no} 章 C-3 对白已自动修复为剧本原文（镜头 {rp['shot']} 口播 {rp['block']}，相似度 {rp['score']}）："
                            f"“{rp['before'][:40]}” → “{rp['after'][:40]}”（{rp['speaker']}）", level="warn")
+            for dp in drop_unspeakable_blocks(obj.get("shots") or []):
+                joblog.log(project_dir, "chapter",
+                           f"第 {no} 章 C-3 已删除无可朗读文字的口播块（镜头 {dp['shot']} 口播 {dp['block']}）：{dp['text']!r}",
+                           level="warn")
             issues = collect_shot_issues(obj.get("shots") or [], script, characters)
             if not issues:
                 built = validate_and_build(obj.get("shots") or [], script, locations, characters, no, block_limit=limit,

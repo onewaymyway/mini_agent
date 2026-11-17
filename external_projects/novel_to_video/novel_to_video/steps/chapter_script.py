@@ -25,6 +25,7 @@ from .. import prompts
 from ..chapter_io import chapter_dir, chapter_row, norm, source_text, sha12, mark_stage
 from ..project_store import auto_fix_retries, read_json, write_yaml_atomic
 from ..providers.text import TextLLM
+from ..providers.tts import has_speakable
 from .location_spots import scene_places, spots_enabled
 
 SCENE_RE = re.compile(r"^###\s*场次\s*(\d+)\s*[｜|](.*)$")
@@ -95,9 +96,15 @@ def check_script(script_text: str, source: str, known_names: List[str], target_c
     unknown: Dict[str, List[int]] = {}   # 库中没有的说话人 → 出现的行号（每个说话人只提示一次）
     for sc in scenes:
         for ln in sc["lines"]:
+            if not has_speakable(ln["text"]):
+                # 配音引擎收不到可朗读文字会报 NoAudioReceived：在剧本阶段就拦下，并反馈给模型修正
+                kind = "对白" if ln["type"] == "dialogue" else "旁白"
+                issues.append({"level": "error", "message": (
+                    f"第 {ln['lineno']} 行{kind}“{ln['text'][:20]}”没有可朗读的文字（为空或只有标点/符号）。"
+                    "请把它并入前后相邻的一句话，或改写成包含汉字的完整口播，或直接删除这一行；不要单独写“……”“——”“？！”这类行")})
             if ln["type"] == "dialogue":
                 if not ln["text"]:
-                    issues.append({"level": "error", "message": f"第 {ln['lineno']} 行对白为空"})
+                    pass
                 elif norm(ln["text"]) not in src_norm:
                     issues.append({"level": "error",
                                    "message": f"第 {ln['lineno']} 行对白未在原文中找到（疑似改写或臆造）：{ln['text'][:30]}"})
