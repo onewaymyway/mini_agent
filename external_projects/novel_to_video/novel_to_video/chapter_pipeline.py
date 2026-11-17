@@ -103,7 +103,7 @@ def run_chapter(project_dir: Path, no: int, *, text_llm: TextLLM, image: ImagePr
                         waiting=assets["waiting"])
 
         with joblog.heartbeat(project_dir, "chapter", f"第 {no} 章 C-6 配音"):
-            audio = run_audio(project_dir, no, tts)
+            audio = run_audio(project_dir, no, tts, text_llm)
         joblog.log(project_dir, "chapter", f"第 {no} 章 C-6 配音完成" + (f"，{len(audio['errors'])} 个镜头口播过长" if audio["errors"] else ""),
                    level="warn" if audio["errors"] else "ok")
         if audio["errors"]:

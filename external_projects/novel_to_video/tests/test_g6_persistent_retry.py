@@ -33,13 +33,14 @@ def proj(tmp_path, monkeypatch):
     return Path(res["data"]["project_dir"])
 
 
-def _flaky(fail_times, ok_status="done"):
+def _flaky(fail_times, ok_status="done", vary=True):
     calls = {"n": 0}
 
     def run_one(no):
         calls["n"] += 1
         if calls["n"] <= fail_times:
-            return {"status": "failed", "message": "镜头规划校验未通过：模拟"}
+            # vary=True：每次失败信息不同（模拟在变化的故障）；False：完全相同的确定性故障
+            return {"status": "failed", "message": "镜头规划校验未通过：模拟" + (f"#{calls['n']}" if vary else "")}
         return {"status": ok_status}
     return run_one, calls
 
@@ -160,3 +161,12 @@ def test_g5_still_has_fixed_limit_and_does_not_halt(proj):
     assert seen == [1] * 4 + [2] * 4
     assert res["halted"] is None
     assert "g6_halt" not in res["results"][1]
+
+
+def test_g6_stops_when_same_failure_repeats(proj, no_sleep):
+    """确定性故障（信息完全相同）连续出现 SAME_FAILURE_LIMIT 次：停止盲目重试并说明原因，而不是重试上百次。"""
+    assert tool_api.set_gear(str(proj), "G6", BUDGET)["ok"]
+    run_one, calls = _flaky(1000, vary=False)
+    res = batch.run_queue(proj, [1], gear="G6", run_one=run_one)
+    assert res["halted"] and "同一错误已连续出现" in res["halted"]
+    assert calls["n"] == batch.SAME_FAILURE_LIMIT

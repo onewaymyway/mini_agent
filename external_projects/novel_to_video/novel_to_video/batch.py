@@ -115,6 +115,9 @@ def _wait_or_stop(project_dir: Path, seconds: float) -> bool:
     return not rt.stop_requested(project_dir)
 
 
+SAME_FAILURE_LIMIT = 5   # G6：完全相同的失败信息连续出现这么多次就停止重试并说明原因，避免无意义地重试上百次
+
+
 def _recover_failure(project_dir: Path, no: int, gear: str, res: Dict[str, Any], run_one,
                      budget: Dict[str, Any], results: Dict[int, Dict[str, Any]],
                      t0: Optional[float] = None) -> Dict[str, Any]:
@@ -132,7 +135,11 @@ def _recover_failure(project_dir: Path, no: int, gear: str, res: Dict[str, Any],
     persistent = gear in gates.FULL_AUTO_GEARS          # G6：持续重试
     attempts = 0
     halt: Optional[str] = None
+    same_count, last_msg = 1, res.get("message")
     while res.get("status") == "failed" and (limit is None or attempts < limit):
+        if persistent and same_count >= SAME_FAILURE_LIMIT:
+            halt = (f"同一错误已连续出现 {same_count} 次，重试没有任何变化（说明问题不会自行恢复，需要修复后再继续）")
+            break
         if rt.stop_requested(project_dir):
             halt = cancel.STOP_MESSAGE
             break
@@ -156,6 +163,9 @@ def _recover_failure(project_dir: Path, no: int, gear: str, res: Dict[str, Any],
             _reset_failed_stage(project_dir, no)
         res = run_one(no)
         res["recovery"] = {"gear": gear, "attempts": attempts}
+        msg = res.get("message")
+        same_count = same_count + 1 if (res.get("status") == "failed" and msg and msg == last_msg) else 1
+        last_msg = msg
     if persistent and res.get("status") == "failed":
         if halt is None and limit is not None and attempts >= limit:
             halt = f"第 {no} 章已重试 {attempts} 次仍失败（已达单章重试上限 {limit} 次）"

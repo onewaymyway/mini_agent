@@ -15,7 +15,7 @@ from typing import Any, Dict, List
 
 from .. import cancel, joblog
 from ..chapter_io import chapter_dir, requested_video_seconds, load_entities, load_shots, mark_stage, save_shots, sha12
-from ..providers.tts import TTSProvider, voice_for
+from ..providers.tts import TTSProvider, sanitize_tts_text, voice_for
 
 GAP_SEC = 0.2
 
@@ -42,7 +42,51 @@ def _concat_wavs(parts: List[Path], out: Path, gap: float) -> float:
     return total
 
 
-def run_audio(project_dir: Path, no: int, tts: TTSProvider) -> Dict[str, Any]:
+MAX_TEXT_REPAIR_ROUNDS = 2   # 单个口播块合成失败后，让 LLM 改写文本并重试的最多轮数
+
+_REPAIR_SYSTEM = "你是中文配音文本修复助手。只输出修复后的口播文本本身，不要解释、不要引号、不要 Markdown。"
+
+
+def _repair_prompt(text: str, voice: str, err: str) -> str:
+    return ("下面这段口播文本在调用 TTS（语音合成）时失败了，请根据错误信息与请求参数修复文本。\n"
+            "要求：保留原意与语气；只用汉字、字母、数字和常见中文标点；去掉表情、特殊符号、控制/零宽字符；"
+            "如果原文只有标点或符号，改写成一句简短、可朗读的自然口播；长度不要超过原文的 1.2 倍（最多 40 字）。\n"
+            f"音色：{voice}\n原文：{text!r}\n错误信息（含请求参数）：\n{err}\n\n只输出修复后的文本。")
+
+
+def _synth_with_repair(project_dir: Path, no: int, sid: str, b: Dict[str, Any], path: Path,
+                       voice: str, tts: TTSProvider, text_llm) -> float:
+    """合成一个口播块；失败时把错误和请求参数交给 LLM 改写文本后再试（最多 MAX_TEXT_REPAIR_ROUNDS 轮），
+    改写成功会写回块文本（原文保留在 text_original）。仍失败则抛出最后一次的完整错误。"""
+    last: Exception | None = None
+    for rnd in range(MAX_TEXT_REPAIR_ROUNDS + 1):
+        try:
+            return tts.synth(b["text"], path, voice)
+        except Exception as exc:  # noqa: BLE001 - 任何配音失败都进入修复流程
+            last = exc
+            joblog.log(project_dir, "chapter",
+                       f"第 {no} 章 C-6 配音 {sid}/{b['idx']:02d} 失败（第 {rnd + 1} 次）：{exc}", level="warn")
+            if rnd >= MAX_TEXT_REPAIR_ROUNDS:
+                break
+            new = ""
+            if text_llm is not None:
+                try:
+                    new = sanitize_tts_text(text_llm.ask(_repair_prompt(b["text"], voice, str(exc)),
+                                                         system=_REPAIR_SYSTEM).strip().strip("\"'“”"))
+                except Exception as llm_exc:  # noqa: BLE001
+                    joblog.log(project_dir, "chapter", f"第 {no} 章 C-6 LLM 修复文本失败：{llm_exc}", level="warn")
+            if not new:
+                new = sanitize_tts_text(b["text"])      # 没有 LLM 或 LLM 无输出：至少做规则清洗
+            if not new or new == b["text"]:
+                break                                   # 改不动，继续试也是同样的结果
+            joblog.log(project_dir, "chapter",
+                       f"第 {no} 章 C-6 配音 {sid}/{b['idx']:02d} 文本已修复：{b['text']!r} → {new!r}")
+            b.setdefault("text_original", b["text"])
+            b["text"] = new
+    raise last  # type: ignore[misc]
+
+
+def run_audio(project_dir: Path, no: int, tts: TTSProvider, text_llm=None) -> Dict[str, Any]:
     shots = load_shots(project_dir, no)
     if not shots or not shots.get("shots"):
         raise RuntimeError("缺少镜头规划")
@@ -64,7 +108,12 @@ def run_audio(project_dir: Path, no: int, tts: TTSProvider) -> Dict[str, Any]:
             key = sha12(b["text"], voice, tts.name)
             path = adir / f"{sh['id']}_b{b['idx']:02d}.wav"
             if not path.is_file() or b.get("audio_key") != key:
-                b["duration"] = tts.synth(b["text"], path, voice)
+                try:
+                    b["duration"] = _synth_with_repair(project_dir, no, sh["id"], b, path, voice, tts, text_llm)
+                except Exception:
+                    save_shots(project_dir, no, shots)   # 已修复的文本先落盘，下次重试不必重复修复
+                    raise
+                key = sha12(b["text"], voice, tts.name)   # 文本可能已被修复
                 engine = getattr(tts, "last_engine", None) or tts.name
                 engine_usage[engine] = engine_usage.get(engine, 0) + 1
                 b["engine"] = engine

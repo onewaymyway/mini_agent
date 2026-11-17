@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -76,7 +77,38 @@ def edge_tts_error_hint(exc: Exception) -> str:
                 f"原始错误：{raw}")
     if "Name or service not known" in text or "ClientConnectorDNSError" in text or "ClientConnectorError" in text:
         return (f"无法连接 edge-tts 服务（DNS/网络不通，当前版本 {ver}）。请检查网络或代理设置。原始错误：{raw}")
+    if "NoAudioReceived" in raw or "No audio was received" in text:
+        return (f"edge-tts 没有返回音频（当前版本 {ver}）。常见原因：①文本里没有可朗读的字符（只有标点/符号/表情/特殊字符）；"
+                "②文本含服务端不接受的字符；③服务端瞬时异常（可重试）。请对照下方“请求参数”检查文本与音色。"
+                f"原始错误：{raw}")
     return f"edge-tts 配音失败（当前版本 {ver}）：{raw}"
+
+
+_INVISIBLE_RE = re.compile(r"[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2064\ufeff]")
+_SPEAKABLE_RE = re.compile(r"[0-9A-Za-z\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]")
+
+
+def sanitize_tts_text(text: str) -> str:
+    """去掉控制字符、零宽字符等不可朗读内容（它们会让 edge-tts 收不到音频），并压缩空白。"""
+    return re.sub(r"\s+", " ", _INVISIBLE_RE.sub("", text or "")).strip()
+
+
+def has_speakable(text: str) -> bool:
+    """文本里是否有可朗读的字符（汉字/字母/数字）。只有标点、符号、表情时 edge-tts 会返回 NoAudioReceived。"""
+    return bool(_SPEAKABLE_RE.search(text or ""))
+
+
+def edge_request_params(text: str, voice: str, *, proxy, timeout, mp3: Path, sent_text: str | None = None) -> str:
+    """edge-tts 请求参数的可读描述，附在错误信息里便于排查。"""
+    sent = text if sent_text is None else sent_text
+    codes = " ".join(f"U+{ord(c):04X}" for c in sent if not _SPEAKABLE_RE.match(c) and not c.isspace())[:200]
+    return ("请求参数：" + json.dumps({
+        "text": text, "text_sent": sent, "text_len": len(text), "voice": voice,
+        "rate": "+0%", "volume": "+0%", "pitch": "+0Hz",
+        "proxy": proxy or "系统代理", "timeout_sec": timeout, "edge_tts_version": edge_tts_version(),
+        "output": str(mp3), "has_speakable_chars": has_speakable(sent),
+        "non_speakable_codepoints": codes or None,
+    }, ensure_ascii=False))
 
 
 # 与 novel-video-studio/scripts/tts_engine.py 保持一致的默认值
@@ -173,6 +205,7 @@ class ChainTTS(TTSProvider):
         raise RuntimeError("；".join(parts))
 
 
+NO_AUDIO_LOCAL_RETRIES = 2   # NoAudioReceived 在同一段内最多再试几次（之后交给 LLM 改写文本）
 PROXY_SYSTEM = None       # 默认：沿用系统/环境变量里的代理设置
 PROXY_DIRECT = "direct"   # 强制直连：忽略环境变量与系统代理
 
@@ -216,22 +249,35 @@ class EdgeTTS(TTSProvider):
 
         direct = (self.proxy or "").strip().lower() == PROXY_DIRECT
         explicit = None if (not self.proxy or direct) else self.proxy
+        sent = sanitize_tts_text(text)
+        params = edge_request_params(text, voice, proxy=self.proxy, timeout=self.timeout, mp3=mp3, sent_text=sent)
+        if not has_speakable(sent):
+            # 没有可朗读内容：发请求必然 NoAudioReceived，直接带参数报错，交由上层（LLM）改写文本
+            raise RuntimeError("edge-tts 未发送请求：文本里没有可朗读的字符（汉字/字母/数字）。" + params)
 
         async def _run():
-            comm = edge_tts.Communicate(text, voice, proxy=explicit)
+            comm = edge_tts.Communicate(sent, voice, proxy=explicit)
             await asyncio.wait_for(comm.save(str(mp3)), self.timeout)
 
-        try:
-            if direct:
-                with _no_system_proxy():
+        last_exc: Exception | None = None
+        for attempt in range(1 + NO_AUDIO_LOCAL_RETRIES):
+            try:
+                if direct:
+                    with _no_system_proxy():
+                        asyncio.run(_run())
+                else:
                     asyncio.run(_run())
-            else:
-                asyncio.run(_run())
-        except asyncio.TimeoutError as exc:
-            raise RuntimeError(f"edge-tts 在线请求超时（>{self.timeout}s）：网络不通、被墙或服务端无响应。"
-                               "可检查网络或代理设置后重试。") from exc
-        except Exception as exc:  # noqa: BLE001 - 把服务端拒绝翻译成可操作的说明
-            raise RuntimeError(edge_tts_error_hint(exc)) from exc
+                last_exc = None
+                break
+            except asyncio.TimeoutError as exc:
+                raise RuntimeError(f"edge-tts 在线请求超时（>{self.timeout}s）：网络不通、被墙或服务端无响应。"
+                                   "可检查网络或代理设置后重试。" + params) from exc
+            except Exception as exc:  # noqa: BLE001 - 把服务端拒绝翻译成可操作的说明
+                last_exc = exc
+                if type(exc).__name__ == "NoAudioReceived" and attempt < NO_AUDIO_LOCAL_RETRIES:
+                    _sleep(1.0 + attempt)   # 可能是服务端瞬时异常：同一参数短暂等待后再试，不整章重跑
+                    continue
+                raise RuntimeError(edge_tts_error_hint(exc) + " " + params) from exc
         mf.to_wav(mp3, out_wav)
         mp3.unlink(missing_ok=True)
         return mf.probe_duration(out_wav)
