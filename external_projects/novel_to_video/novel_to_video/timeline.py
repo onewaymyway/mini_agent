@@ -23,41 +23,47 @@ def _parse(ts: Optional[str]) -> Optional[datetime]:
         return None
 
 
-def read_events(project_dir: Path) -> List[Dict[str, Any]]:
+_CACHE: Dict[str, Dict[str, Any]] = {}   # 日志路径 -> {"offset": 已读字节数, "rows": 带 event 的行}
+
+
+def _structured_rows(project_dir: Path) -> List[Dict[str, Any]]:
+    """增量读取日志里带 event 的结构化行。界面每隔几秒自动刷新时，只解析上次之后新增的部分，
+    不会反复扫描整个（可能很大、含模型完整输出的）日志文件。日志被截断/替换时自动重读。"""
     path = Path(project_dir) / LOG_FILE
     if not path.is_file():
         return []
-    out: List[Dict[str, Any]] = []
-    with path.open("r", encoding="utf-8", errors="replace") as f:
-        for line in f:
-            if '"event"' not in line:    # 先做廉价过滤：日志里有大量模型完整输出的行
+    key = str(path.resolve())
+    size = path.stat().st_size
+    c = _CACHE.get(key)
+    if c is None or size < c["offset"]:
+        c = _CACHE[key] = {"offset": 0, "rows": []}
+    if size > c["offset"]:
+        with path.open("rb") as f:
+            f.seek(c["offset"])
+            chunk = f.read()
+        end = chunk.rfind(b"\n") + 1          # 只消费完整的行；最后一行可能还在写入
+        for raw in chunk[:end].splitlines():
+            if b'"event"' not in raw:
                 continue
             try:
-                row = json.loads(line)
+                row = json.loads(raw.decode("utf-8", errors="replace"))
             except ValueError:
                 continue
-            if row.get("event") and row.get("chapter") is not None:
-                out.append(row)
-    return out
+            if row.get("event"):
+                c["rows"].append(row)
+        c["offset"] += end
+    return c["rows"]
+
+
+def read_events(project_dir: Path) -> List[Dict[str, Any]]:
+    """章节流水线事件：chapter_start/chapter_end/stage_start/stage_end/retry。"""
+    return [r for r in _structured_rows(project_dir) if r.get("chapter") is not None]
 
 
 def read_book_events(project_dir: Path) -> List[Dict[str, Any]]:
     """全书级运行事件（素材/合成/性别）：run_start/run_end/step_start/step_end。"""
-    path = Path(project_dir) / LOG_FILE
-    if not path.is_file():
-        return []
-    out: List[Dict[str, Any]] = []
-    with path.open("r", encoding="utf-8", errors="replace") as f:
-        for line in f:
-            if '"run_id"' not in line:
-                continue
-            try:
-                row = json.loads(line)
-            except ValueError:
-                continue
-            if row.get("event") in ("run_start", "run_end", "step_start", "step_end") and row.get("run_id"):
-                out.append(row)
-    return out
+    return [r for r in _structured_rows(project_dir)
+            if r.get("event") in ("run_start", "run_end", "step_start", "step_end") and r.get("run_id")]
 
 
 def build_book_timeline(project_dir: Path, *, busy: bool = False, now: Optional[datetime] = None,

@@ -104,3 +104,20 @@ def test_book_run_stopped_and_interrupted(tmp_path):
     assert runs["G-3 定妆图生成"]["status"] == "interrupted"
     live = {r["run"]: r for r in timeline.build_book_timeline(tmp_path, busy=True)}
     assert live["G-3 定妆图生成"]["status"] == "running"
+
+
+def test_incremental_reader_sees_new_events_and_partial_line(tmp_path):
+    joblog.log(tmp_path, "chapter", "开始", event="chapter_start", chapter=5, started_at="2026-11-17T08:00:00")
+    assert len(timeline.build_timeline(tmp_path)[5]["attempts"]) == 1
+    logf = tmp_path / joblog.LOG_FILE
+    with logf.open("a", encoding="utf-8") as f:          # 写到一半的行：不应被消费，也不应报错
+        f.write('{"event": "stage_start", "chapter": 5, "stage": "C-6 配音", "started_a')
+    assert timeline.build_timeline(tmp_path)[5]["attempts"][0]["stages"] == []
+    with logf.open("a", encoding="utf-8") as f:          # 补全该行后，下一次读取能看到
+        f.write('t": "2026-11-17T08:00:05"}\n')
+    st = timeline.build_timeline(tmp_path, busy=True)[5]["attempts"][0]["stages"]
+    assert len(st) == 1 and st[0]["stage"] == "C-6 配音"
+    joblog.log(tmp_path, "chapter", "结束", event="chapter_end", chapter=5, status="done")   # 继续增量追加
+    assert timeline.build_timeline(tmp_path)[5]["attempts"][0]["status"] == "done"
+    logf.write_text("", encoding="utf-8")                                                    # 日志被清空：重读
+    assert timeline.build_timeline(tmp_path) == {}

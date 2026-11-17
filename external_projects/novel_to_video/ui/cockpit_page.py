@@ -110,8 +110,10 @@ def _dur(sec) -> str:
     return f"{sec:.1f} 秒" if sec < 60 else f"{int(sec // 60)} 分 {int(sec % 60)} 秒"
 
 
+@st.fragment(run_every=REFRESH_SECONDS)
 def _timeline_panel(pdir: str) -> None:
-    """运行时间线：章节流水线 / 全书素材 / 全书合成三个标签页，显示步骤起止时间、用时、状态、完整失败原因。默认收起。"""
+    """运行时间线：章节流水线 / 全书素材 / 全书合成三个标签页，显示步骤起止时间、用时、状态、完整失败原因。默认收起。
+    是 fragment，每 REFRESH_SECONDS 秒自动刷新自身（只重绘本面板，不打断其他输入）；日志按增量读取，刷新开销很小。"""
     with st.expander("⏱ 运行时间线（步骤用时 / 失败重试）", expanded=False):
         t_ch, t_as, t_fi = st.tabs(["章节流水线", "全书素材", "全书合成"])
         with t_ch:
