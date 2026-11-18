@@ -9,7 +9,7 @@ from ui.joblog_panel import is_busy, render_job_panel, render_page_status
 from article_to_video.paths import projects_root
 from article_to_video.planning import outline_edit as oe
 from article_to_video.planning.errors import PlanError
-from article_to_video.planning.runner import confirm_spine, load_digests, load_spine, plan_outline, save_spine
+from article_to_video.planning.runner import confirm_spine, load_digests, load_spine, plan_outline, save_spine, set_project_target
 from article_to_video.planning.chunks import section_catalog
 from article_to_video.project_store import list_projects, read_json
 from article_to_video.providers.text import make_text_llm, text_model_status
@@ -67,12 +67,15 @@ def _outline_body(pdir) -> None:
                        "也可以先改选「离线规则」生成一版。")
         overwrite = st.checkbox("覆盖已确认的大纲", value=False, disabled=not confirmed,
                                 help="大纲已确认时，默认禁止覆盖，避免丢失人工编辑")
+        reuse = st.checkbox("复用已有的分节摘要（断点续跑）", value=False,
+                            help="默认关闭：每次“重新生成”都从原文重新调用模型。"
+                                 "只有在上次生成中途失败、想接着做时才打开")
         if st.button("生成 / 重新生成", type="primary",
                      disabled=is_busy(pdir) or (engine == "miniagent" and not model_ok)):
-            def run(engine=engine, overwrite=overwrite):
+            def run(engine=engine, overwrite=overwrite, reuse=reuse):
                 llm = make_text_llm("miniagent") if engine == "miniagent" else None
                 plan_outline(pdir, engine="llm" if engine == "miniagent" else "rules",
-                             llm=llm, force=overwrite)
+                             llm=llm, force=overwrite, reuse_digests=reuse)
             if jobs.start(pdir, f"生成大纲（{ENGINE_LABELS[engine]}）", run, scope="outline"):
                 st.rerun()
             st.error("已有后台任务在运行，请稍候")
@@ -102,7 +105,8 @@ def _outline_body(pdir) -> None:
     } for p in spine["parts"]], use_container_width=True, hide_index=True)
 
     with st.form("outline_edit_form"):
-        target = st.slider("目标时长（分钟）", 3, 60, int(round(spine["target_minutes"])))
+        target = st.slider("目标时长（分钟）", 3.0, 60.0, float(spine["target_minutes"]), 0.5,
+                           help="与「⚙️ 设置」中的目标时长是同一个值，修改后两处都会更新")
         hooks = spine["hook_candidates"]
         hook = st.radio("开场钩子", list(range(len(hooks))), index=int(spine["selected_hook"]),
                         format_func=lambda i: hooks[i]) if hooks else None
@@ -110,6 +114,8 @@ def _outline_body(pdir) -> None:
                   for p in spine["parts"]]
         saved = st.form_submit_button("保存修改（会取消确认）")
     if saved:
+        if abs(target - float(spine["target_minutes"])) > 1e-9:
+            set_project_target(pdir, target)   # 同步项目设置，重新生成时也使用这个值
         def edit(s):
             s = oe.set_target_minutes(s, target)
             for i, t in enumerate(titles):

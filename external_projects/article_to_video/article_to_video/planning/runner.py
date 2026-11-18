@@ -83,11 +83,27 @@ def _validate_or_raise(spine: Dict[str, Any], ctx: Dict[str, Any], digests: List
     return result
 
 
+def set_project_target(project_dir: Path, minutes: float) -> float:
+    """统一的目标时长入口（大纲页与设置页共用）：写入项目设置；若已有大纲，同时更新大纲的预算。
+    返回实际生效的时长（已限制在 3～60 分钟，保留一位小数）。"""
+    from ..app_settings import set_field  # 延迟导入
+    value = round(max(3.0, min(60.0, float(minutes))), 1)
+    set_field(Path(project_dir), "settings", "target_minutes", value)
+    spine = load_spine(Path(project_dir))
+    if spine is not None and float(spine.get("target_minutes", 0)) != value:
+        from .outline_edit import set_target_minutes  # 延迟导入，避免循环
+        save_spine(Path(project_dir), set_target_minutes(spine, value))
+    return value
+
+
 def plan_outline(project_dir: Path, *, engine: str = "llm", llm=None,
-                 force: bool = False, now: Optional[datetime] = None) -> Dict[str, Any]:
+                 force: bool = False, reuse_digests: bool = True,
+                 now: Optional[datetime] = None) -> Dict[str, Any]:
     """S1 分节摘要 + S2 大纲。engine: rules（离线）| llm（需要 llm 实例）。
 
     已确认的大纲不会被覆盖，除非 force=True。LLM 失败时抛 PlanError，不写入任何结果。
+    reuse_digests：True（默认，流水线与断点续跑）时复用输入未变的分节摘要；
+    False（界面的“重新生成”）时丢弃全部已有摘要与部分结果，从原文重新生成。
     """
     project_dir = Path(project_dir)
     if engine not in ("rules", "llm"):
@@ -116,7 +132,10 @@ def plan_outline(project_dir: Path, *, engine: str = "llm", llm=None,
     joblog.bound_log(f"开始生成大纲：{'离线规则' if engine == 'rules' else '模型'}，共 {len(groups)} 组")
     # R5：断点续跑。已完成的组来自上次的部分结果（或上次成功的摘要），输入未变则直接复用
     old: Dict[str, Dict[str, Any]] = {}
-    if engine == "llm":
+    if engine == "llm" and not reuse_digests:
+        _partial_path(project_dir).unlink(missing_ok=True)
+        joblog.bound_log("重新生成：不复用已有分节摘要，全部组重新调用模型")
+    elif engine == "llm":
         old = {d["group_id"]: d for d in load_digests(project_dir)}
         old.update(_load_partial(project_dir))
     digests: List[Dict[str, Any]] = []
