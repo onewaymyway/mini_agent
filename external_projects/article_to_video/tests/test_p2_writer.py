@@ -1,4 +1,5 @@
 import json
+import re
 
 import pytest
 
@@ -46,21 +47,32 @@ def test_lexicon_is_applied_to_tts(tmp_path):
     assert s["beats"][0]["sentences"][1]["tts"] is None  # 没有替换的句子不留 tts
 
 
-def test_fabricated_number_triggers_retry_then_succeeds(tmp_path):
+def test_fabricated_number_is_repaired_locally_without_rewrite(tmp_path):
+    """R11：只有一个句子含编造的数字时，由模型局部修正该句，不整章重写。"""
     pdir = ready_project(tmp_path)
     state = {"n": 0}
 
     def responder(prompt):
         state["n"] += 1
         if state["n"] == 1:
-            return json.dumps({"beats": [{"source_refs": ["s01"], "sentences": [{"text": "投入达到9999亿元。"}]}]}, ensure_ascii=False)
-        return good_script(prompt)
+            obj = json.loads(good_script(prompt))           # 完整的稿件，只有一句含编造的数字
+            obj["beats"][0]["sentences"][0]["text"] = "投入达到9999亿元。"
+            return json.dumps(obj, ensure_ascii=False)
+        assert "【口播修正任务】" in prompt       # 第二次是局部修正，而不是整章重写
+        return _repair_all(prompt)
 
     llm = ScriptLLM(responder)
     saved = w.write_part(pdir, "P01", llm)
     assert llm.calls == 2
     text = json.dumps(saved, ensure_ascii=False)
-    assert "9999" not in text  # 第一次的错误输出没有进入结果
+    assert "9999" not in text  # 错误的句子已被修正，没有进入结果
+
+
+def _repair_all(prompt):
+    """测试用修正模型：把所有需要修正的句子替换为一句通用中文。"""
+    ids = re.findall(r"- id: (\S+)", prompt)
+    return json.dumps({"fixes": [{"id": i, "text": "这是口播中的一句话，用来说明本章的要点内容。"} for i in ids]},
+                      ensure_ascii=False)
 
 
 def test_permanent_fabrication_fails_without_writing(tmp_path):
@@ -69,7 +81,8 @@ def test_permanent_fabrication_fails_without_writing(tmp_path):
     llm = ScriptLLM(lambda p: bad)
     with pytest.raises(PlanError) as exc:
         w.write_part(pdir, "P01", llm)
-    assert llm.calls == w.MAX_ATTEMPTS
+    # 每次整章写稿后，局部修正返回的不是有效结构，随即回到整章重写：3 次整章 + 3 次修正
+    assert llm.calls == 2 * w.MAX_ATTEMPTS
     assert "9999" in str(exc.value)
     assert not (pdir / "parts" / "P01" / "script.json").exists()
     assert (pdir / "parts" / "P01" / "raw_last.txt").is_file()

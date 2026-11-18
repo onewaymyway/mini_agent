@@ -20,6 +20,7 @@ from ..planning.runner import load_spine
 from ..project_store import append_progress, load_project, now_iso, read_json, write_json_atomic
 from .budget import chars_for_minutes
 from .lexicon import apply_lexicon, load_lexicon
+from .repair import MAX_REPAIR_ROUNDS, repair_script
 from .validate import canonicalize_quotes, validate_script
 
 MAX_ATTEMPTS = 3
@@ -227,8 +228,25 @@ def write_part(project_dir: Path, part_id: str, llm, *, force: bool = False,
         script = normalize_script(obj, part, persona=persona, budget_chars=budget_chars,
                                   budget_minutes=budget_minutes, lexicon=lexicon)
         canonicalize_quotes(script, source)                 # R9：金句对齐到原文的规范写法
-        verdict = validate_script(script, source, part["section_ids"], check_pacing=(mode == "condensed"),
-                                  manual_quotes=must_quotes_for(spine, part["id"]))
+
+        def _check(sc):
+            return validate_script(sc, source, part["section_ids"], check_pacing=(mode == "condensed"),
+                                   manual_quotes=must_quotes_for(spine, part["id"]))
+
+        verdict = _check(script)
+        rounds = 0
+        while verdict["errors"] and not verdict["hard"] and rounds < MAX_REPAIR_ROUNDS:
+            # R11：句子级问题先做局部修正（只改出问题的句子），不整章重写
+            rounds += 1
+            joblog.bound_log(f"{part_id}：局部修正第 {rounds} 轮（{len(verdict['flags'])} 句）")
+            fixed = repair_script(llm, script, verdict["flags"], source, ask_cancel=cancel.check)
+            if fixed is None:
+                joblog.bound_log(f"{part_id}：局部修正的输出不是有效结构，改为整章重写", level="warn")
+                break
+            canonicalize_quotes(script, source)
+            verdict = _check(script)
+            joblog.bound_log(f"{part_id}：局部修正后剩余 {len(verdict['errors'])} 处问题",
+                             level="info" if verdict["errors"] else "ok")
         if verdict["errors"]:
             issues = verdict["errors"][:12]
             joblog.bound_log(f"{part_id}：稿件未通过校验（{issues[0]}），将重试", level="warn")

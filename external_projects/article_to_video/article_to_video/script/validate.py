@@ -38,10 +38,15 @@ def validate_script(
     manual_keys = {norm_key(q) for q in (manual_quotes or []) if norm_key(q)}
     errors: List[str] = []
     warnings: List[str] = []
+    flags: List[Dict[str, Any]] = []      # R11：句子级问题的位置，供局部修正使用
     src_key = norm_key(part_source_text)
     beats = script.get("beats") or []
     if not beats:
         errors.append("没有任何段落（beat）")
+
+    def flag(bid, si, kind, msg):
+        errors.append(msg)
+        flags.append({"beat": bid, "index": si, "kind": kind, "problem": msg})
 
     covered = set()
     total = 0
@@ -49,38 +54,38 @@ def validate_script(
         bid = b.get("id", "?")
         refs = b.get("source_refs") or []
         if not refs:
-            errors.append(f"{bid} 缺少 source_refs（原文来源）")
+            errors.append(f"{bid} 缺少 source_refs（原文来源）")      # 段落级：整章重写
         for r in refs:
             if r not in part_section_ids:
-                errors.append(f"{bid} 引用了不属于本章的小节 {r}")
+                errors.append(f"{bid} 引用了不属于本章的小节 {r}")    # 段落级：整章重写
             else:
                 covered.add(r)
         sentences = b.get("sentences") or []
         if not sentences:
-            errors.append(f"{bid} 没有句子")
-        for s in sentences:
+            errors.append(f"{bid} 没有句子")                          # 段落级：整章重写
+        for si, s in enumerate(sentences):
             t = str(s.get("text", "")).strip()
             if not t:
-                errors.append(f"{bid} 含空句")
+                flag(bid, si, "empty", f"{bid} 含空句")
                 continue
             n = count_chars(t)
             total += n
             if _MD.search(t):
-                errors.append(f"{bid} 含 Markdown 符号：{t[:24]}")
+                flag(bid, si, "markdown", f"{bid} 含 Markdown 符号：{t[:24]}")
             if _FORMULA.search(t):
-                errors.append(f"{bid} 含裸公式符号（应改为口述）：{t[:24]}")
+                flag(bid, si, "formula", f"{bid} 含裸公式符号（应改为口述）：{t[:24]}")
             if n > MAX_SENTENCE:
-                errors.append(f"{bid} 单句过长（{n} 字）：{t[:24]}")
+                flag(bid, si, "too_long", f"{bid} 单句过长（{n} 字）：{t[:24]}")
             elif n > WARN_SENTENCE:
                 warnings.append(f"{bid} 单句偏长（{n} 字）")
             for num in _NUM.findall(t):
                 if not numbers_supported(num, part_source_text):
-                    errors.append(f"{bid} 数字“{num}”在本章原文中找不到")
+                    flag(bid, si, "number", f"{bid} 数字“{num}”在本章原文中找不到")
             for w in _LATIN.findall(t):
                 if norm_key(w) not in src_key:
-                    errors.append(f"{bid} 英文词“{w}”在本章原文中找不到")
+                    flag(bid, si, "latin", f"{bid} 英文词“{w}”在本章原文中找不到")
             if s.get("quote") and locate(t, part_source_text) is None and norm_key(t) not in manual_keys:
-                errors.append(f"{bid} 标记为原文金句，但不是原文逐字片段：{t[:24]}")
+                flag(bid, si, "quote", f"{bid} 标记为原文金句，但不是原文逐字片段：{t[:24]}")
 
     uncovered = [sid for sid in part_section_ids if sid not in covered]
     if uncovered:
@@ -89,7 +94,9 @@ def validate_script(
     pacing: Optional[str] = None
     if check_pacing:
         pacing = pacing_issue(total, int(script.get("budget_chars") or 0))
-    return {"errors": errors, "warnings": warnings, "pacing": pacing, "total_chars": total}
+    hard = len(flags) < len(errors)         # 存在不属于单句的错误（段落或结构问题）
+    return {"errors": errors, "warnings": warnings, "pacing": pacing, "total_chars": total,
+            "flags": flags, "hard": hard}
 
 
 def canonicalize_quotes(script: Dict[str, Any], part_source_text: str) -> int:
