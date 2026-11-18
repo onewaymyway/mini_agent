@@ -11,10 +11,9 @@ from article_to_video.paths import projects_root
 from article_to_video.planning.errors import PlanError
 from article_to_video.planning.runner import load_spine
 from article_to_video.project_store import list_projects
-from article_to_video.render.themes import THEMES
 from article_to_video.script.writer import load_script
 from article_to_video.visual import storyboard as sbm
-from article_to_video.visual.config import load_visual_config, save_visual_config
+from article_to_video.visual.config import load_visual_config
 from article_to_video.visual.states import SCENE_TYPES
 from ui import jobs
 
@@ -22,34 +21,12 @@ _TYPE_LABELS = {"keypoint": "卡片", "list": "列表", "timeline": "时间线",
                 "table": "表格", "quote": "金句", "formula": "公式", "illustration": "插图"}
 
 
-def _visual_settings(pdir) -> None:
+def _visual_summary(pdir) -> None:
     cfg = load_visual_config(pdir)
-    with st.expander("视觉设置（风格、插图、主题）", expanded=False):
-        with st.form("visual_settings"):
-            anchor = st.text_area("风格锚（所有插图提示词的固定前缀，必须保留禁文字约束）",
-                                  value=cfg["bible"]["style_anchor"], height=80)
-            c1, c2, c3, c4 = st.columns(4)
-            images_on = c1.checkbox("启用 AI 插图", value=cfg["images"]["enabled"])
-            rate = c2.number_input("每分钟图片上限", min_value=0.0, max_value=6.0,
-                                   value=float(cfg["images"]["max_per_minute"]), step=0.5)
-            shots = c4.number_input("每张图的镜头数（一图多用）", min_value=1, max_value=3,
-                                    value=int(cfg["images"]["shots_per_image"]), step=1,
-                                    help="同一张生成图按不同取景用于多个镜头；1 表示不复用")
-            provider = c3.selectbox("生图服务", ["agnes", "stub"],
-                                    index=0 if cfg["images"]["provider"] == "agnes" else 1,
-                                    help="agnes 需要环境变量 AGNES_API_KEYS；stub 为离线占位图")
-            theme = st.selectbox("主题", list(THEMES), index=list(THEMES).index(cfg["theme"]))
-            if st.form_submit_button("保存视觉设置"):
-                res = save_visual_config(pdir, {
-                    "theme": theme, "bible": {"style_anchor": anchor},
-                    "images": {"enabled": images_on, "provider": provider,
-                               "max_per_minute": rate, "size": cfg["images"]["size"],
-                               "shots_per_image": int(shots)},
-                })
-                for w in res["warnings"]:
-                    st.warning(w)
-                st.success("已保存。已确认的分镜会因设置变化而过期，需要重新生成。")
-                st.rerun()
+    img = cfg["images"]
+    st.caption(f"生效的视觉设置：生图 {'开' if img['enabled'] else '关'}（{img['provider']}）　·　"
+               f"每分钟 {img['max_per_minute']} 张　·　每图 {img['shots_per_image']} 个镜头　·　"
+               f"风格锚「{cfg['bible']['style_anchor'][:24]}…」（在「⚙️ 设置」中修改）")
 
 
 def _scene_editor(pdir, part_id, sb, script) -> dict:
@@ -120,7 +97,7 @@ def _storyboard_body(pdir) -> None:
     if spine is None or not spine.get("confirmed"):
         st.info("请先在「🗺️ 大纲」生成并确认大纲（C0）。")
         return
-    _visual_settings(pdir)
+    _visual_summary(pdir)
 
     ready = [p for p in spine["parts"] if (load_script(pdir, p["id"]) or {}).get("confirmed")]
     if not ready:

@@ -58,7 +58,10 @@ def _outline_body(pdir) -> None:
 
     with st.expander("生成大纲", expanded=spine is None):
         model_ok, model_why = text_model_status()
-        engine = st.radio("生成方式", list(ENGINE_LABELS), format_func=ENGINE_LABELS.get, horizontal=True)
+        from article_to_video import app_settings as S  # 默认值来自「⚙️ 设置」（R4）
+        default_engine = "miniagent" if S.effective_group(pdir, "pipeline")["outline_engine"] == "llm" else "rules"
+        engine = st.radio("生成方式", list(ENGINE_LABELS), index=list(ENGINE_LABELS).index(default_engine),
+                          format_func=ENGINE_LABELS.get, horizontal=True)
         if engine == "miniagent" and not model_ok:
             st.warning(f"文本模型未就绪：{model_why}。请检查 mini_agent 的模型配置后重试；"
                        "也可以先改选「离线规则」生成一版。")

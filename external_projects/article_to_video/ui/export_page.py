@@ -7,99 +7,28 @@ import json
 import streamlit as st
 from ui.joblog_panel import render_job_panel, render_page_status
 
-from article_to_video.compose.config import load_compose_config, save_compose_config
 from article_to_video.compose.export import export_final, safe_filename
 from article_to_video.compose.part import compose_part, preview_part, video_dir
 from article_to_video.paths import projects_root
 from article_to_video.planning.runner import load_spine
 from article_to_video.project_store import list_projects, load_project
 from article_to_video.visual.storyboard import storyboard_status
-from article_to_video.compose.branding import resolve_bgm, save_bgm
-from article_to_video.project_store import load_project as _lp, update_branding
 from ui import jobs
 
 _SUB_LABELS = {"auto": "自动（卡片已呈现则隐藏）", "always": "始终显示", "off": "关闭"}
 _TR_LABELS = {"cut": "直接切换", "fade": "黑场淡入淡出", "dissolve": "叠化"}
 
 
-def _settings(pdir) -> None:
-    cfg = load_compose_config(pdir)
-    with st.expander("合成设置（转场、字幕、进度条）", expanded=False):
-        with st.form("compose_settings"):
-            c1, c2 = st.columns(2)
-            tr = c1.selectbox("章间转场", list(_TR_LABELS), index=list(_TR_LABELS).index(cfg["transition"]),
-                              format_func=lambda k: _TR_LABELS[k])
-            tsec = c2.number_input("转场时长（秒）", min_value=0.2, max_value=2.0,
-                                   value=float(cfg["transition_sec"]), step=0.1)
-            subs = st.selectbox("字幕", list(_SUB_LABELS), index=list(_SUB_LABELS).index(cfg["subtitles"]),
-                                format_func=lambda k: _SUB_LABELS[k])
-            c3, c4 = st.columns(2)
-            bar = c3.checkbox("显示进度条", value=cfg["progress_bar"])
-            label = c4.checkbox("显示章标签", value=cfg["chapter_label"])
-            if st.form_submit_button("保存合成设置"):
-                res = save_compose_config(pdir, {"transition": tr, "transition_sec": tsec, "subtitles": subs,
-                                                 "progress_bar": bar, "chapter_label": label})
-                for w in res["warnings"]:
-                    st.warning(w)
-                st.success("已保存。字幕与转场只影响合成，不需要重新渲染画面。")
-                st.rerun()
-
-
-_POS_LABELS = {"top_right": "右上", "top_left": "左上", "bottom_right": "右下", "bottom_left": "左下",
-               "center": "居中", "diagonal_tile": "斜向平铺（防裁剪）"}
-_MODE_LABELS = {"static": "固定", "drift": "缓慢漂移"}
-
-
-def _branding_form(pdir) -> None:
-    project = _lp(pdir)
-    from article_to_video.project_store import normalize_branding
-    b, _w = normalize_branding(project.get("branding"))
-    bgm_cfg, bgm_warn = resolve_bgm(pdir, project)
-    with st.expander("署名与水印（最后一步，不重渲染画面）", expanded=False):
-        with st.form("branding_form"):
-            author = st.text_input("作者名（留空则不署名）", value=b["author"])
-            url = st.text_input("来源链接（片尾可选）", value=b["source_url"])
-            c1, c2 = st.columns(2)
-            cr = b["credits"]
-            t_card = c1.checkbox("片头标题卡", value=cr["title_card"])
-            lower = c2.checkbox("下三分之一条", value=cr["lower_third"])
-            end = c1.checkbox("片尾卡", value=cr["end_card"])
-            corner = c2.checkbox("角标（作者）", value=cr["corner_tag"])
-            wm = b["watermark"]
-            st.markdown("**水印**")
-            c3, c4 = st.columns(2)
-            wm_on = c3.checkbox("启用水印", value=wm["enabled"])
-            wm_text = c4.text_input("水印文字", value=wm["text"])
-            c5, c6, c7 = st.columns(3)
-            pos = c5.selectbox("位置", list(_POS_LABELS), index=list(_POS_LABELS).index(wm["position"]),
-                               format_func=lambda k: _POS_LABELS[k])
-            mode = c6.selectbox("模式", list(_MODE_LABELS), index=list(_MODE_LABELS).index(wm["mode"]),
-                                format_func=lambda k: _MODE_LABELS[k])
-            opacity = c7.slider("透明度", 0.05, 1.0, float(wm["opacity"]), 0.05)
-            ai_on = st.checkbox("AI 生成声明（片尾与元数据）", value=b["ai_disclosure"]["enabled"])
-            ai_text = st.text_input("AI 声明文字", value=b["ai_disclosure"]["text"])
-            st.markdown("**背景音乐（可选，默认关闭；需要你提供本地音频）**")
-            c8, c9, c10 = st.columns([1, 2, 1])
-            bgm_on = c8.checkbox("启用 BGM", value=bool(bgm_cfg["enabled"]))
-            bgm_path = c9.text_input("音频路径（项目内，如 assets/bgm.mp3）",
-                                     value=str(project.get("bgm", {}).get("path") or ""))
-            bgm_vol = c10.number_input("音量", min_value=0.0, max_value=1.0, value=float(bgm_cfg["volume"]),
-                                       step=0.05)
-            if st.form_submit_button("保存署名与水印"):
-                update_branding(pdir, {
-                    "author": author, "source_url": url,
-                    "credits": {"title_card": t_card, "lower_third": lower, "end_card": end, "corner_tag": corner},
-                    "watermark": {**wm, "enabled": wm_on, "text": wm_text, "position": pos, "mode": mode,
-                                  "opacity": opacity},
-                    "ai_disclosure": {"enabled": ai_on, "text": ai_text},
-                })
-                res = save_bgm(pdir, enabled=bgm_on, rel_path=bgm_path, volume=bgm_vol)
-                for w in list(res["warnings"]) + _w:
-                    st.warning(w)
-                st.success("已保存。下次导出时只重做最后的水印步骤（画面与章视频不重算）。")
-                st.rerun()
-        if bgm_warn:
-            st.caption(bgm_warn[0])
+def _effective_summary(pdir) -> None:
+    from article_to_video import app_settings as S
+    cmp_ = S.effective_group(pdir, "compose")
+    br = S.effective_group(pdir, "branding")
+    bgm = S.effective_group(pdir, "bgm")
+    wm = br["watermark"]
+    wm_text = (f"水印「{wm['text']}」（{wm['position']}，{wm['mode']}）" if wm["enabled"] else "无水印")
+    st.caption(f"生效的合成设置：转场 {cmp_['transition']}（{cmp_['transition_sec']} 秒）　·　字幕 {cmp_['subtitles']}　·　"
+               f"{wm_text}　·　背景音乐 {'开' if bgm['enabled'] else '关'}"
+               "（在「⚙️ 设置」中修改；修改只影响导出，不重渲染画面）")
 
 
 _PREVIEW_VIDEO: dict = {}   # {项目|章|章视频修改时间: 预览文件}，章重新合成后旧预览自动失效
@@ -132,8 +61,7 @@ def _export_body(pdir) -> None:
     if spine is None or not spine.get("confirmed"):
         st.info("请先在「🗺️ 大纲」生成并确认大纲（C0）。")
         return
-    _settings(pdir)
-    _branding_form(pdir)
+    _effective_summary(pdir)
 
     job = jobs.status(pdir)
     busy = job is not None and job["state"] == "running"

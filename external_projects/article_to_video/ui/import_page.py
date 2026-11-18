@@ -68,32 +68,40 @@ def _import_body() -> None:
 
     upload = st.file_uploader("文章（Markdown）", type=["md", "markdown", "txt"])
 
+    from article_to_video import app_settings as S  # 表单默认值 = 全局默认（R4）
+    base_s = S.inherited_group("settings")
+    base_b = S.inherited_group("branding")
     with st.form("article_import_form"):
         c1, c2 = st.columns(2)
         title = c1.text_input("标题", help="留空则取文章第一个一级标题")
         author = c2.text_input("作者名", help="用于片头、片尾署名。留空时尝试从文章前言或文首“作者：”行读取")
 
         c3, c4, c5 = st.columns(3)
-        mode = c3.selectbox("模式", MODES, format_func=MODE_LABELS.get)
-        target = c4.slider("目标时长（分钟）", 3, 30, 10, help="仅「精简讲解」生效，其它模式忽略")
-        persona = c5.selectbox("解说视角", PERSONAS, format_func=PERSONA_LABELS.get)
+        mode = c3.selectbox("模式", MODES, index=MODES.index(base_s["mode"]), format_func=MODE_LABELS.get)
+        target = c4.slider("目标时长（分钟）", 3, 30, min(30, max(3, int(round(base_s["target_minutes"])))),
+                           help="仅「精简讲解」生效，其它模式忽略")
+        persona = c5.selectbox("解说视角", PERSONAS, index=PERSONAS.index(base_s["persona"]),
+                               format_func=PERSONA_LABELS.get)
 
         c6, c7 = st.columns(2)
-        orientation = c6.selectbox("画幅", ORIENTATIONS, format_func=ORIENTATION_LABELS.get)
-        resolution = c7.selectbox("分辨率", RESOLUTIONS, index=1)
+        orientation = c6.selectbox("画幅", ORIENTATIONS, index=ORIENTATIONS.index(base_s["video"]["orientation"]),
+                                   format_func=ORIENTATION_LABELS.get)
+        resolution = c7.selectbox("分辨率", RESOLUTIONS, index=RESOLUTIONS.index(base_s["video"]["resolution"]))
 
         st.markdown("**文字水印**（留空则不加水印；之后可在「📚 项目」里修改）")
         w1, w2, w3 = st.columns([3, 2, 2])
-        wm_text = w1.text_input("水印文字", max_chars=60, placeholder="例如：作者名 · 频道名")
-        wm_pos = w2.selectbox("位置", WATERMARK_POSITIONS, index=1, format_func=POSITION_LABELS.get)
-        wm_opacity = w3.slider("透明度", 0.05, 1.0, 0.35, 0.05)
+        wm_text = w1.text_input("水印文字", value=base_b["watermark"]["text"], max_chars=60,
+                                placeholder="例如：作者名 · 频道名")
+        wm_pos = w2.selectbox("位置", WATERMARK_POSITIONS, index=WATERMARK_POSITIONS.index(base_b["watermark"]["position"]),
+                              format_func=POSITION_LABELS.get)
+        wm_opacity = w3.slider("透明度", 0.05, 1.0, float(base_b["watermark"]["opacity"]), 0.05)
 
         st.markdown("**署名与声明**")
         k1, k2, k3, k4 = st.columns(4)
-        cr_title = k1.checkbox("片头标题卡署名", value=True)
-        cr_lower = k2.checkbox("下三分之一条", value=True)
-        cr_end = k3.checkbox("片尾卡", value=True)
-        ai_on = k4.checkbox("片尾 AI 生成声明", value=True)
+        cr_title = k1.checkbox("片头标题卡署名", value=base_b["credits"]["title_card"])
+        cr_lower = k2.checkbox("下三分之一条", value=base_b["credits"]["lower_third"])
+        cr_end = k3.checkbox("片尾卡", value=base_b["credits"]["end_card"])
+        ai_on = k4.checkbox("片尾 AI 生成声明", value=base_b["ai_disclosure"]["enabled"])
 
         submitted = st.form_submit_button("创建项目", type="primary")
 

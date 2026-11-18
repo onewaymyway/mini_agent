@@ -52,13 +52,17 @@ def render_cockpit_page() -> None:
 
     busy = run_state(pdir, None)["busy"]
 
+    from article_to_video import app_settings as S  # 默认值来自「⚙️ 设置」（R4）
+    pl = S.effective_group(pdir, "pipeline")
     with st.expander("挡位与预算", expanded=True):
-        gear = st.radio("挡位", ["G0", "G1", "G2"], horizontal=True, index=0)
+        st.caption("默认值来自「⚙️ 设置」的「流水线」分组；这里的修改只影响本次运行。")
+        gear = st.radio("挡位", ["G0", "G1", "G2"], horizontal=True, index=["G0", "G1", "G2"].index(pl["gear"]))
         st.caption(_GEAR_HELP[gear])
         c1, c2, c3 = st.columns(3)
         until = c1.selectbox("运行到", list(STAGES), index=len(STAGES) - 1)
-        max_images = c2.number_input("预算：最多生图次数（0 = 不限）", min_value=0, value=0, step=1)
-        max_minutes = c3.number_input("预算：最长耗时（分钟，0 = 不限）", min_value=0.0, value=0.0, step=5.0)
+        max_images = c2.number_input("预算：最多生图次数（0 = 不限）", min_value=0, value=int(pl["max_images"]), step=1)
+        max_minutes = c3.number_input("预算：最长耗时（分钟，0 = 不限）", min_value=0.0, value=float(pl["max_minutes"]),
+                                      step=5.0)
         c4, c5 = st.columns(2)
         approve = c4.checkbox("确认终审（允许导出）", value=False)
         merge_all = c5.checkbox("多期时导出全集合并版", value=False)
@@ -77,7 +81,7 @@ def render_cockpit_page() -> None:
                 prov = default_providers(pdir, offline=offline)
                 run_pipeline(pdir, until=until, gear=gear, max_images=mi, max_minutes=mm, approve=approve,
                              llm=prov["llm"], tts=prov["tts"], image_provider=prov["image"],
-                             merge_all=merge_all, outline_engine="rules" if offline else "llm")
+                             merge_all=merge_all, outline_engine="rules" if offline else pl["outline_engine"])
             if jobs.start(pdir, f"流水线 {gear}", run, scope="pipeline"):
                 st.rerun()
 

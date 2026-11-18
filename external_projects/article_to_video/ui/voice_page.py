@@ -6,7 +6,6 @@ import streamlit as st
 from ui.joblog_panel import render_job_panel, render_page_status
 
 from article_to_video.audio import synth as sy
-from article_to_video.audio.config import ENGINES, NARRATION_VOICES, QUOTE_VOICES, normalize_tts
 from article_to_video.paths import projects_root
 from article_to_video.planning.runner import load_spine
 from article_to_video.project_store import list_projects
@@ -54,27 +53,9 @@ def _voice_body(pdir) -> None:
         return
 
     cfg = sy.project_tts_config(pdir)
-    with st.expander("配音设置"):
-        with st.form("tts_settings"):
-            c1, c2 = st.columns(2)
-            narr = c1.selectbox("主讲音色", NARRATION_VOICES,
-                                index=NARRATION_VOICES.index(cfg["narration_voice"]))
-            quote = c2.selectbox("引文音色", QUOTE_VOICES, index=QUOTE_VOICES.index(cfg["quote_voice"]))
-            chain_text = st.text_input("引擎顺序（逗号分隔，前一个失败用下一个）",
-                                       value=",".join(cfg["engine_chain"]),
-                                       help=f"可选：{', '.join(ENGINES)}")
-            proxy = st.text_input("edge-tts 代理", value=cfg["edge_proxy"] or "",
-                                  help="留空=系统代理；填 direct=强制直连；或填代理地址")
-            max_q = st.slider("每章引文最多几句", 0, 10, cfg["max_quotes_per_part"])
-            if st.form_submit_button("保存设置"):
-                chain = [x.strip() for x in chain_text.split(",") if x.strip()]
-                _, warns = sy.update_tts_settings(pdir, {
-                    "narration_voice": narr, "quote_voice": quote, "engine_chain": chain,
-                    "edge_proxy": proxy or None, "max_quotes_per_part": max_q})
-                for w_ in warns:
-                    st.warning(w_)
-                st.success("已保存")
-                st.rerun()
+    st.caption(f"生效设置：主讲 {cfg['narration_voice']}　·　引文 {cfg['quote_voice']}　·　"
+               f"引擎 {' → '.join(cfg['engine_chain'])}　·　每章引文最多 {cfg['max_quotes_per_part']} 句"
+               "（在「⚙️ 设置」中修改）")
 
     st.subheader("后台配音")
     job = jobs.status(pdir)
