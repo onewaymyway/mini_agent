@@ -6,7 +6,7 @@ import pytest
 
 from article_to_video.planning.chunks import build_groups
 from article_to_video.planning.errors import PlanError
-from article_to_video.planning.runner import _context, load_digests, plan_outline, restore_digest_item
+from article_to_video.planning.runner import _context, load_digests, plan_outline
 from article_to_video.validators.coverage import validate_spine
 from article_to_video.validators.fidelity import dropped_entries
 from article_to_video.validators.outline_report import outline_report
@@ -89,35 +89,11 @@ def _first_sentence(pdir, group_id):
     raise AssertionError("no sentence")
 
 
-def test_restore_replaces_dropped_item_with_verified_source_fragment(tmp_path):
-    pdir = make_project(tmp_path)
-    def responder(prompt):
-        return json.dumps({"summary": "x", "core_claims": ["c"], "quotable": ["大概是这个意思"]}, ensure_ascii=False)
-    plan_outline(pdir, engine="llm", llm=ScriptedLLM(responder, covering_spine))
-    frag = _first_sentence(pdir, "g01")
-    digest = restore_digest_item(pdir, "g01", 0, frag.replace("，", ",").upper())   # 标点与大小写不同也能对齐
-    assert digest["dropped"] == []
-    assert len(digest["quotable"]) == 1 and digest["quotable"][0] in _ctx_text(pdir, "g01")
-    reloaded = load_digests(pdir)[0]
-    assert reloaded["quotable"] == digest["quotable"]
-
 
 def _ctx_text(pdir, group_id):
     ctx = _context(pdir)
     return next(g for g in build_groups(ctx["lines"], ctx["doc"]) if g["id"] == group_id)["text"]
 
-
-def test_restore_rejects_text_not_in_source(tmp_path):
-    pdir = make_project(tmp_path)
-    plan_outline(pdir, engine="llm", llm=ScriptedLLM(
-        lambda p: json.dumps({"summary": "x", "core_claims": ["c"], "quotable": ["编造ABC"]}, ensure_ascii=False),
-        covering_spine))
-    with pytest.raises(PlanError):
-        restore_digest_item(pdir, "g01", 0, "原文从未说过这句话XYZ")
-    with pytest.raises(PlanError):
-        restore_digest_item(pdir, "g01", 5, _first_sentence(pdir, "g01"))   # 序号越界
-    with pytest.raises(PlanError):
-        restore_digest_item(pdir, "g01", 0, "   ")
 
 
 def test_outline_page_shows_report_cards_and_restore_section(tmp_path, monkeypatch):
@@ -131,7 +107,7 @@ def test_outline_page_shows_report_cards_and_restore_section(tmp_path, monkeypat
     subs = [s.value for s in at.subheader]
     assert "大纲校验" in subs and "章节" in subs
     # 规则版大纲没有被剔除的条目，因此不显示恢复区
-    assert not any("被剔除" in s for s in subs)
+    assert not any("未在原文中找到" in s for s in subs)
     assert len(at.markdown) > 0
 
 
@@ -145,5 +121,5 @@ def test_outline_page_shows_restore_section_when_items_dropped(tmp_path, monkeyp
     at = AppTest.from_file(str(PROJECT_DIR / "app.py"), default_timeout=90).run()
     go_step(at, "🗺️ 大纲")
     assert not at.exception, [e.value for e in at.exception]
-    assert any("被剔除" in s.value for s in at.subheader)
-    assert any(b.label == "加入" for b in at.button)
+    assert any("未在原文中找到" in s.value for s in at.subheader)
+    assert any(b.label == "加入金句" for b in at.button)

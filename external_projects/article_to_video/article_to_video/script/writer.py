@@ -75,9 +75,16 @@ def _load_script(project_dir: Path, part_id: str) -> Optional[Dict[str, Any]]:
     return read_json(p) if p.is_file() else None
 
 
+def must_quotes_for(spine: Dict[str, Any], part_id: str) -> List[str]:
+    """大纲中指定到本章的金句（R10）：口播必须原样使用。"""
+    return [q["text"] for q in (spine or {}).get("quotes") or [] if q.get("part_id") == part_id and q.get("text")]
+
+
 def build_prompt(part: Dict[str, Any], source: str, *, persona: str, budget_chars: int,
-                 glossary: List[Dict[str, str]], prev_tail: str, issues: List[str]) -> str:
+                 glossary: List[Dict[str, str]], prev_tail: str, issues: List[str],
+                 must_quotes: List[str] = ()) -> str:
     gl = "\n".join(f"- {g['term']} → {g.get('zh', '')}" for g in glossary if g.get("term")) or "（无）"
+    musts = "\n".join(f"- {q}" for q in must_quotes) or "（无）"
     body = (
         "【口播稿任务】\n"
         f"PART_ID={part['id']}\n"
@@ -86,6 +93,7 @@ def build_prompt(part: Dict[str, Any], source: str, *, persona: str, budget_char
         f"PERSONA={persona}\n"
         f"章标题：{part['title']}　本章角色：{part.get('role', '')}　一句话：{part.get('one_line', '')}\n"
         f"上一章结尾（衔接用，不要重复）：{prev_tail or '（本章是第一章）'}\n\n"
+        "必须原样使用的金句（每条作为一个句子，quote=true，文字不得改动）：\n" + musts + "\n\n"
         "术语统一译法：\n" + gl + "\n\n"
         f"请把本章原文改写为口播稿，输出如下结构的 JSON（字数接近 BUDGET_CHARS，允许 ±15%）：\n{SCRIPT_SCHEMA}\n\n"
         "要求：\n"
@@ -188,6 +196,7 @@ def write_part(project_dir: Path, part_id: str, llm, *, force: bool = False,
     sha = hashlib.sha256("|".join([
         PROMPT_VERSION, json.dumps(part, ensure_ascii=False, sort_keys=True), source, persona,
         str(budget_chars), json.dumps(glossary, ensure_ascii=False, sort_keys=True),
+        json.dumps(must_quotes_for(spine, part["id"]), ensure_ascii=False),
         json.dumps(lexicon, ensure_ascii=False, sort_keys=True), prev_tail, mode,
     ]).encode("utf-8")).hexdigest()
     existing = _load_script(project_dir, part_id)
@@ -203,7 +212,8 @@ def write_part(project_dir: Path, part_id: str, llm, *, force: bool = False,
     for attempt in range(MAX_ATTEMPTS):
         cancel.check()
         prompt = build_prompt(part, source, persona=persona, budget_chars=budget_chars,
-                              glossary=glossary, prev_tail=prev_tail, issues=issues)
+                              glossary=glossary, prev_tail=prev_tail, issues=issues,
+                              must_quotes=must_quotes_for(spine, part["id"]))
         joblog.bound_log(f"{part_id}：调用模型写稿（第 {attempt + 1} 次，预算 {budget_chars} 字）")
         raw = llm.ask(prompt, system=SCRIPT_SYSTEM)
         cancel.check()
@@ -217,7 +227,8 @@ def write_part(project_dir: Path, part_id: str, llm, *, force: bool = False,
         script = normalize_script(obj, part, persona=persona, budget_chars=budget_chars,
                                   budget_minutes=budget_minutes, lexicon=lexicon)
         canonicalize_quotes(script, source)                 # R9：金句对齐到原文的规范写法
-        verdict = validate_script(script, source, part["section_ids"], check_pacing=(mode == "condensed"))
+        verdict = validate_script(script, source, part["section_ids"], check_pacing=(mode == "condensed"),
+                                  manual_quotes=must_quotes_for(spine, part["id"]))
         if verdict["errors"]:
             issues = verdict["errors"][:12]
             joblog.bound_log(f"{part_id}：稿件未通过校验（{issues[0]}），将重试", level="warn")
@@ -284,7 +295,8 @@ def save_script(project_dir: Path, part_id: str, script: Dict[str, Any],
     source = _part_source(project_dir, part["section_ids"])
     canonicalize_quotes(script, source)                     # R9：人工编辑的金句同样对齐原文
     verdict = validate_script(script, source, part["section_ids"],
-                              check_pacing=project.get("settings", {}).get("mode") == "condensed")
+                              check_pacing=project.get("settings", {}).get("mode") == "condensed",
+                              manual_quotes=must_quotes_for(spine, part["id"]))
     if verdict["errors"]:
         raise PlanError("口播稿不合格：" + "；".join(verdict["errors"][:8]))
     old = _load_script(project_dir, part_id)

@@ -31,7 +31,11 @@ def validate_script(
     part_section_ids: List[str],
     *,
     check_pacing: bool = True,
+    manual_quotes: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
+    """manual_quotes：大纲中人工加入、指定到本章的金句（R10）。它们不要求出现在原文中，
+    标记为金句的句子只要与其中之一内容相同即可。"""
+    manual_keys = {norm_key(q) for q in (manual_quotes or []) if norm_key(q)}
     errors: List[str] = []
     warnings: List[str] = []
     src_key = norm_key(part_source_text)
@@ -75,7 +79,7 @@ def validate_script(
             for w in _LATIN.findall(t):
                 if norm_key(w) not in src_key:
                     errors.append(f"{bid} 英文词“{w}”在本章原文中找不到")
-            if s.get("quote") and locate(t, part_source_text) is None:
+            if s.get("quote") and locate(t, part_source_text) is None and norm_key(t) not in manual_keys:
                 errors.append(f"{bid} 标记为原文金句，但不是原文逐字片段：{t[:24]}")
 
     uncovered = [sid for sid in part_section_ids if sid not in covered]

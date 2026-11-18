@@ -9,7 +9,8 @@ from ui.joblog_panel import is_busy, render_job_panel, render_page_status
 from article_to_video.paths import projects_root
 from article_to_video.planning import outline_edit as oe
 from article_to_video.planning.errors import PlanError
-from article_to_video.planning.runner import (confirm_spine, load_digests, load_spine, plan_outline, restore_digest_item,
+from article_to_video.planning.runner import (add_outline_quote, confirm_spine, dismiss_dropped, load_digests,
+                                             load_spine, plan_outline, promote_dropped_quote, remove_outline_quote,
                                              save_spine, set_project_target)
 from article_to_video.planning.chunks import section_catalog
 from article_to_video.project_store import list_projects, read_json
@@ -74,26 +75,73 @@ def _render_chapter_cards(spine, titles_by_id) -> None:
                        + ("……" if len(sections) > 6 else ""))
 
 
-def _render_dropped(pdir, digests) -> None:
-    """被剔除的摘要条目：列出，并允许输入原文中的片段手动恢复（同样经过对齐校验）。"""
-    entries = [(d["group_id"], i, item) for d in digests for i, item in enumerate(d.get("dropped") or [])]
-    if not entries:
-        return
-    st.subheader("被剔除的摘要条目（可手动恢复）")
-    st.caption("这些是模型给出、但在原文中找不到的金句或数字。可以从原文复制一段对应文字，系统会校验后加入。")
-    for gid, idx, item in entries:
-        kind = "数字" if item.get("kind") == "number" else "金句"
+def _part_labels(spine) -> dict:
+    return {p["id"]: f"{p['id']} {p['title']}" for p in spine["parts"]}
+
+
+def _render_quotes(pdir, spine) -> None:
+    """金句：直接输入即可加入，指定所属章节；所属章节的口播必须原样使用这些金句。"""
+    st.subheader("金句（写稿时原样使用）")
+    labels = _part_labels(spine)
+    quotes = spine.get("quotes") or []
+    if not quotes:
+        st.caption("还没有金句。可以直接输入，也可以从下方“模型给出但未在原文中找到的内容”中加入。")
+    for i, q in enumerate(quotes):
         with st.container(border=True):
-            st.write(f"**{gid} · {kind}**：{item.get('text', '')}")
+            st.write(f"“{q['text']}”")
             c1, c2 = st.columns([4, 1])
-            frag = c1.text_input("原文中的对应片段", key=f"frag_{gid}_{idx}", label_visibility="collapsed",
-                                 placeholder="从原文复制一段对应文字")
-            if c2.button("加入", key=f"restore_{gid}_{idx}"):
+            c1.caption(f"所属：{labels.get(q['part_id'], q['part_id'])}　·　来源：{q.get('origin', '人工')}")
+            if c2.button("删除", key=f"qdel_{i}"):
                 try:
-                    restore_digest_item(pdir, gid, idx, frag)
+                    remove_outline_quote(pdir, i)
                     st.rerun()
                 except PlanError as exc:
                     st.error(str(exc))
+    with st.form("add_quote_form", clear_on_submit=True):
+        text = st.text_input("金句文字", placeholder="直接输入，不需要先在原文中找到")
+        part_id = st.selectbox("所属章节", list(labels), format_func=labels.get)
+        submitted = st.form_submit_button("加入金句")
+    if submitted:
+        try:
+            add_outline_quote(pdir, text, part_id)
+            st.rerun()
+        except PlanError as exc:
+            st.error(str(exc))
+
+
+def _render_dropped(pdir, digests, spine) -> None:
+    """模型给出、但在原文中找不到的内容。金句可修改文字后加入大纲，或忽略；数字暂未接入口播，只能忽略。"""
+    entries = [(d, i, item) for d in digests for i, item in enumerate(d.get("dropped") or [])]
+    if not entries:
+        return
+    st.subheader("模型给出但未在原文中找到的内容")
+    st.caption("金句可以修改文字后直接加入大纲（会标注“人工”来源，不要求出现在原文中）；"
+               "数字目前没有接入口播，只能忽略。")
+    labels = _part_labels(spine)
+    ids = list(labels)
+    for digest, idx, item in entries:
+        gid = digest["group_id"]
+        with st.container(border=True):
+            if item.get("kind") == "number":
+                st.write(f"**{gid} · 数字**：{item.get('text', '')}（数字暂未接入口播）")
+                if st.button("忽略", key=f"dign_{gid}_{idx}"):
+                    dismiss_dropped(pdir, gid, idx)
+                    st.rerun()
+                continue
+            default = next((k for k, p in enumerate(spine["parts"])
+                            if set(p["section_ids"]) & set(digest.get("section_ids") or [])), 0)
+            text = st.text_input("金句文字（可修改）", value=item.get("text", ""), key=f"dtxt_{gid}_{idx}")
+            part_id = st.selectbox("加入到章节", ids, index=default, format_func=labels.get, key=f"dpart_{gid}_{idx}")
+            c1, c2 = st.columns(2)
+            if c1.button("加入金句", key=f"dadd_{gid}_{idx}"):
+                try:
+                    promote_dropped_quote(pdir, gid, idx, text, part_id)
+                    st.rerun()
+                except PlanError as exc:
+                    st.error(str(exc))
+            if c2.button("忽略", key=f"dign_{gid}_{idx}"):
+                dismiss_dropped(pdir, gid, idx)
+                st.rerun()
 
 
 def render_outline_page() -> None:
@@ -204,7 +252,8 @@ def _outline_body(pdir) -> None:
                 if _apply(pdir, lambda s, ci=ci, k=target_part: oe.restore_cut(s, ci, k, catalog)):
                     st.rerun()
 
-    _render_dropped(pdir, digests)
+    _render_quotes(pdir, spine)
+    _render_dropped(pdir, digests, spine)
 
     st.subheader("确认大纲（C0）")
     if st.button("确认大纲", type="primary", disabled=not report["ok"] or confirmed):

@@ -65,6 +65,9 @@ def outline_report(spine: Dict[str, Any], section_ids: List[str],
         buckets["duration"]["warn"].append(msg)
     for msg in _dropped_warnings(digests):
         buckets["fidelity"]["warn"].append(msg)
+    for q in spine.get("quotes") or []:          # R10：人工加入、不在原文中的金句只做提示
+        if q.get("origin") == "人工":
+            buckets["fidelity"]["warn"].append(f"人工加入的金句不在原文中，写稿时将按原样使用：{q.get('text', '')[:30]}")
 
     categories = []
     for key, name, hint in CATEGORIES:

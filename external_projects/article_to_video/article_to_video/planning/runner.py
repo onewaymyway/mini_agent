@@ -21,7 +21,7 @@ from ..validators.coverage import validate_spine
 from .chunks import build_groups, section_catalog
 from .errors import PlanError
 from .llm import llm_digest, llm_spine
-from ..validators.fidelity import locate, numbers_supported
+from ..validators.fidelity import locate
 from .prompts import PROMPT_VERSION
 from .rules import rules_digest, rules_spine, section_claims
 from .spine_math import recompute_budgets, renumber
@@ -84,41 +84,80 @@ def _validate_or_raise(spine: Dict[str, Any], ctx: Dict[str, Any], digests: List
     return result
 
 
-def restore_digest_item(project_dir: Path, group_id: str, index: int, fragment: str) -> Dict[str, Any]:
-    """R8 手动恢复：把某个被剔除的条目，换成用户在原文中选出的片段（同样经过对齐校验）。
-    成功后该条目从 dropped 中移除，片段加入该组的金句或数字。失败抛 PlanError，不写入任何结果。"""
+def _article_text(project_dir: Path) -> str:
+    return (Path(project_dir) / "source" / "article.md").read_text(encoding="utf-8")
+
+
+def _origin_of(text: str, article: str) -> str:
+    """金句来源标记：能在原文中找到（忽略标点与大小写）为“原文”，否则为“人工”。仅用于展示，不阻止加入。"""
+    return "原文" if locate(text, article) is not None else "人工"
+
+
+def add_outline_quote(project_dir: Path, text: str, part_id: str) -> Dict[str, Any]:
+    """在大纲中加入一条金句，指定所属章节。直接输入即可，不要求出现在原文中（会标注来源）。
+    写稿时，所属章节的口播必须原样使用这些金句。"""
     project_dir = Path(project_dir)
-    ctx = _context(project_dir)
-    groups = {g["id"]: g for g in build_groups(ctx["lines"], ctx["doc"])}
-    if group_id not in groups:
-        raise PlanError(f"找不到节组 {group_id}")
+    spine = load_spine(project_dir)
+    if spine is None:
+        raise PlanError("还没有大纲，请先生成大纲")
+    value = " ".join(str(text).split())
+    if not value:
+        raise PlanError("金句不能为空")
+    part_ids = [p["id"] for p in spine["parts"]]
+    if part_id not in part_ids:
+        raise PlanError("请选择所属章节")
+    quotes = spine.setdefault("quotes", [])
+    if any(q["text"] == value and q["part_id"] == part_id for q in quotes):
+        raise PlanError("这条金句已经在本章中")
+    quotes.append({"text": value, "part_id": part_id, "origin": _origin_of(value, _article_text(project_dir))})
+    save_spine(project_dir, spine)
+    joblog.log(project_dir, "outline", f"加入金句（{part_id}）：{value[:30]}", level="ok")
+    return spine
+
+
+def remove_outline_quote(project_dir: Path, index: int) -> Dict[str, Any]:
+    project_dir = Path(project_dir)
+    spine = load_spine(project_dir)
+    if spine is None or not 0 <= index < len(spine.get("quotes") or []):
+        raise PlanError("金句序号越界，请刷新页面")
+    spine["quotes"].pop(index)
+    save_spine(project_dir, spine)
+    return spine
+
+
+def _remove_dropped(project_dir: Path, group_id: str, index: int) -> Dict[str, Any]:
     data = read_json(project_dir / "plan" / "digests.json")
     digest = next((d for d in data.get("digests", []) if d.get("group_id") == group_id), None)
     if digest is None:
         raise PlanError(f"节组 {group_id} 还没有摘要")
     dropped = digest.get("dropped") or []
     if not 0 <= index < len(dropped):
-        raise PlanError("被剔除条目序号越界（可能已被处理，请刷新页面）")
-    item = dropped[index]
-    text = fragment.strip()
-    if not text:
-        raise PlanError("请先输入原文中的片段")
-    kind = item.get("kind", "quote")
-    if kind == "number":
-        if not numbers_supported(text, groups[group_id]["text"]):
-            raise PlanError("原文中找不到这些数字（按完整数字比较，例如 3.5 与 35 不相同）。请从原文复制一段")
-        found = text
-    else:
-        found = locate(text, groups[group_id]["text"], min_key=4)
-    if found is None:
-        raise PlanError("原文中找不到这段文字（忽略标点与大小写后仍不一致）。请从原文中复制一段")
-    key = "key_numbers" if kind == "number" else "quotable"
-    if found not in digest.setdefault(key, []):
-        digest[key].append(found)
-    digest["dropped"] = [d for i, d in enumerate(dropped) if i != index]
+        raise PlanError("这条被剔除的内容已经处理过，请刷新页面")
+    item = dropped.pop(index)
     write_json_atomic(project_dir / "plan" / "digests.json", data)
-    joblog.log(project_dir, "outline", f"节组 {group_id}：手动恢复{'数字' if kind == 'number' else '金句'}：{found[:30]}", level="ok")
-    return digest
+    return item
+
+
+def promote_dropped_quote(project_dir: Path, group_id: str, index: int, text: str, part_id: str) -> Dict[str, Any]:
+    """把摘要中被剔除的金句加入大纲（指定章节）。文字可以在加入前修改。"""
+    project_dir = Path(project_dir)
+    spine = load_spine(project_dir)
+    if spine is None:
+        raise PlanError("还没有大纲，请先生成大纲")
+    data = read_json(project_dir / "plan" / "digests.json")
+    digest = next((d for d in data.get("digests", []) if d.get("group_id") == group_id), None)
+    if digest is None or not 0 <= index < len(digest.get("dropped") or []):
+        raise PlanError("这条被剔除的内容已经处理过，请刷新页面")
+    if digest["dropped"][index].get("kind") == "number":
+        raise PlanError("数字暂未接入口播，只能忽略")
+    spine = add_outline_quote(project_dir, text, part_id)   # 先加入，失败时保留剔除列表中的条目
+    _remove_dropped(project_dir, group_id, index)
+    return spine
+
+
+def dismiss_dropped(project_dir: Path, group_id: str, index: int) -> None:
+    """忽略一条被剔除的内容（从列表中移除，不加入大纲）。"""
+    _remove_dropped(Path(project_dir), group_id, index)
 
 
 def set_project_target(project_dir: Path, minutes: float) -> float:
