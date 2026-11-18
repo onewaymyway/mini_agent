@@ -50,6 +50,19 @@ def _launch_error(args: Sequence[str], cwd, exc: OSError) -> str:
             f"参数 {len(args)} 个，工作目录 {cwd or '未指定'}，输出 {out}")
 
 
+_NOISE = ("libx264 @", "aac @", "frame=", "size=", "kb/s", "encoded", "video:", "Qavg", "Weighted", "Conversion failed")
+
+
+def _error_excerpt(stderr: str) -> str:
+    """从 ffmpeg 的 stderr 中挑出真正的错误行。编码统计（libx264 / aac 等）会把错误挤出末尾，
+    所以不能只取末尾 400 字符：先找含 error/invalid/failed 等关键词的行，再附上最后几行。"""
+    lines = [l.strip() for l in (stderr or "").splitlines() if l.strip()]
+    keys = ("error", "invalid", "failed", "no such", "too many", "cannot", "unable", "does not", "not supported")
+    hits = [l for l in lines if any(k in l.lower() for k in keys) and not any(n in l for n in _NOISE)]
+    picked = (hits[:8] + ["…"] + lines[-3:]) if hits else lines[-6:]
+    return " | ".join(picked)[-1500:]
+
+
 def _run(args: Sequence[str], cwd=None) -> str:
     # 经 cancel.run_process 运行：用户请求停止时立即终止 ffmpeg，而不是等它跑完
     try:
@@ -57,8 +70,7 @@ def _run(args: Sequence[str], cwd=None) -> str:
     except OSError as exc:
         raise MediaError(_launch_error(args, cwd, exc)) from exc
     if returncode != 0:
-        tail = (stderr or "")[-400:]
-        raise MediaError(f"{Path(args[0]).name} 失败：{tail.strip()}")
+        raise MediaError(f"{Path(args[0]).name} 失败（返回码 {returncode}）：{_error_excerpt(stderr)}")
     return stdout
 
 
@@ -188,8 +200,10 @@ def _run_filter_graph(clips: Sequence[Path], fc: str, out: Path, maps: Sequence[
     script.write_text(fc, encoding="utf-8")
     try:
         _run([ffmpeg(), "-y", *inputs, "-filter_complex_script", str(script), *maps, *codec, str(out)], cwd=cwd)
-    finally:
-        script.unlink(missing_ok=True)
+    except MediaError as exc:
+        # 失败时保留滤镜脚本与输入顺序，便于手动用 ffmpeg 复现
+        raise MediaError(f"{exc}\n  滤镜脚本已保留：{script}\n  工作目录：{cwd}") from exc
+    script.unlink(missing_ok=True)
 
 
 _CODEC = ["-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
