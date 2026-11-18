@@ -121,13 +121,18 @@ def _storyboard_body(pdir) -> None:
     cols = st.columns(4)
     cols[0].metric("状态", "已确认" if status["confirmed"] else ("已过期" if status["stale"] else
                                                                ("未确认" if status["exists"] else "未生成")))
-    cols[1].metric("需生成图片", f"{status['images']} / {status['allowance']}")
-    cols[2].metric("引擎", "模型版" if status.get("engine") == "llm" else "规则版")
+    if status["exists"]:
+        cols[1].metric("需生成图片", f"{status['images']} / {status['allowance']}",
+                       help="分镜计划生成的图片数 / 本章图片额度")
+        cols[2].metric("引擎", "模型版" if status.get("engine") == "llm" else "规则版")
+    else:  # 尚无分镜时没有“计划图片数”，不能把额度当作已计划的数量
+        cols[1].metric("需生成图片", "—", help=f"生成分镜后显示；本章图片额度 {status['allowance']}")
+        cols[2].metric("引擎", "—", help="生成分镜后显示所用引擎")
     if status["stale"]:
         st.warning("口播稿或视觉设置已变更，分镜已过期。重新生成会覆盖你在这里做的编辑。")
 
     engine_label = st.radio("分镜引擎", ["规则版（离线，确定）", "模型版（需要 mini_agent 模型）"],
-                            horizontal=True, key=f"eng_{part_id}")
+                            index=1, horizontal=True, key=f"eng_{part_id}")  # 默认：模型版
     engine = "llm" if engine_label.startswith("模型") else "rules"
     busy = job is not None and job["state"] == "running"
 
