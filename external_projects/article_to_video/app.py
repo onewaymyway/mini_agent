@@ -17,6 +17,7 @@ from ui.storyboard_page import render_storyboard_page  # noqa: E402
 from ui.export_page import render_export_page  # noqa: E402
 from ui.cockpit_page import render_cockpit_page  # noqa: E402
 from ui.projects_page import render_projects_page  # noqa: E402
+from ui.settings_page import render_settings_page  # noqa: E402
 
 st.set_page_config(page_title="article_to_video", page_icon="🎞️", layout="wide")
 
@@ -29,11 +30,12 @@ PAGES = {
     "🧭 驾驶舱": render_cockpit_page,
     "🎬 合成导出": render_export_page,
     "📚 项目": render_projects_page,
+    "⚙️ 设置": render_settings_page,
 }
 
 with st.sidebar:
     st.title("article_to_video")
-    st.caption("文章 → 讲解视频（P7：驾驶舱与自动化）")
+    st.caption("文章 → 讲解视频（R4：统一设置）")
     page = st.radio("页面", list(PAGES), label_visibility="collapsed")
 
 PAGES[page]()

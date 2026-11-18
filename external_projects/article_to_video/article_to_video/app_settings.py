@@ -324,3 +324,49 @@ def reset_group(project_dir: Path, group: str, now=None) -> None:
     project[group] = {}
     project["updated_at"] = now_iso(now)
     write_json_atomic(project_dir / "project.json", project)
+
+
+# ---------------------------------------------------------------- 修改影响（R4b）
+
+def flatten(d: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:
+    """嵌套字典展开为 {点分路径: 叶子值}；列表视为叶子。"""
+    out: Dict[str, Any] = {}
+    for k, v in d.items():
+        key = f"{prefix}.{k}" if prefix else k
+        if isinstance(v, dict):
+            out.update(flatten(v, key))
+        else:
+            out[key] = v
+    return out
+
+
+def changed_paths(before: Dict[str, Any], after: Dict[str, Any]) -> List[str]:
+    """两个生效分组之间值不同的字段路径（点分）。"""
+    a, b = flatten(before), flatten(after)
+    return sorted(k for k in set(a) | set(b) if a.get(k) != b.get(k))
+
+
+# 字段 → 受影响的阶段（前缀匹配，先匹配到的优先）。依据第 6–8 节与 P1–P7 的产物依赖关系。
+_IMPACT: List[Tuple[str, str]] = [
+    ("settings.mode", "大纲、口播稿、配音、分镜、画面、合成与导出（整体内容变化）"),
+    ("settings.persona", "口播稿、配音、分镜与合成（讲解视角）"),
+    ("settings.target_minutes", "大纲、口播稿、配音、分镜、画面与合成（时长预算）"),
+    ("settings.episode_max_minutes", "导出（分期方式）"),
+    ("settings.video", "分镜（画面尺寸）、画面渲染、章合成与导出"),
+    ("settings.tts", "配音、章合成与导出"),
+    ("visual", "分镜（插图预算与风格）、画面渲染、章合成与导出"),
+    ("compose.subtitles", "章合成与导出（字幕，不重渲染画面）"),
+    ("compose", "章合成与导出（转场、进度条、章标签，不重渲染画面）"),
+    ("branding", "成片导出的署名与水印（最后一步，不重渲染画面）"),
+    ("bgm", "成片导出的背景音乐（最后一步，不重渲染画面）"),
+    ("pipeline", "无：挡位与预算只影响之后的运行，不改动已生成的产物"),
+    ("logs", "无：日志设置不影响生成结果"),
+]
+
+
+def affected_stages(group: str, path: str) -> str:
+    key = f"{group}.{path}" if path else group
+    for prefix, text in _IMPACT:
+        if key == prefix or key.startswith(prefix + "."):
+            return text
+    return "后续阶段（请重新运行受影响的步骤）"
