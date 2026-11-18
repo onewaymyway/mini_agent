@@ -20,7 +20,9 @@ from ..script.writer import load_script
 from ..validators.visual import validate_storyboard
 from .config import image_allowance, load_visual_config
 from .director import DIRECTOR_VERSION, direct_part
+from .director_llm import LLM_PROMPT_VERSION, direct_part_llm
 from .normalize import normalize_scene
+from .sharing import allocate_shared_images, count_groups
 
 
 def _sb_path(pdir: Path, part_id: str) -> Path:
@@ -39,9 +41,11 @@ def _part_and_index(spine: Dict[str, Any], part_id: str):
 
 
 def _input_sha(pdir: Path, part_id: str, script: Dict[str, Any], part: Dict[str, Any],
-               cfg: Dict[str, Any]) -> str:
+               cfg: Dict[str, Any], engine: str = "rules") -> str:
     payload = {
         "director": DIRECTOR_VERSION,
+        "engine": engine,
+        "llm_prompt": LLM_PROMPT_VERSION if engine == "llm" else None,
         "script": script,
         "budget_minutes": part["budget_minutes"],
         "visual": cfg,
@@ -61,7 +65,8 @@ def _verdict(pdir: Path, part_id: str, sb: Dict[str, Any], script: Dict[str, Any
                                 cfg["images"]["enabled"])
     return validate_storyboard(sb, script, allowance=allowance,
                                style_anchor=cfg["bible"]["style_anchor"],
-                               images_enabled=cfg["images"]["enabled"])
+                               images_enabled=cfg["images"]["enabled"],
+                               shots_per_image=cfg["images"]["shots_per_image"])
 
 
 def storyboard_status(pdir: Path, part_id: str) -> Dict[str, Any]:
@@ -79,17 +84,21 @@ def storyboard_status(pdir: Path, part_id: str) -> Dict[str, Any]:
                                           cfg["images"]["enabled"])
     if sb is None:
         return status
-    current = _input_sha(pdir, part_id, script, part, cfg)
+    current = _input_sha(pdir, part_id, script, part, cfg, sb.get("engine", "rules"))
     status["stale"] = sb.get("input_sha") != current
     status["confirmed"] = bool(sb.get("confirmed")) and not status["stale"]
-    status["images"] = sum(1 for s in sb["scenes"] if s["type"] == "illustration")
+    status["images"] = count_groups(sb["scenes"])
+    status["engine"] = sb.get("engine", "rules")
     v = _verdict(pdir, part_id, sb, script, cfg, part)
     status["errors"], status["warnings"] = v["errors"], list(sb.get("warnings", [])) + v["warnings"]
     return status
 
 
-def plan_storyboard(pdir: Path, part_id: str, *, force: bool = False,
-                    now: Optional[datetime] = None) -> Dict[str, Any]:
+def plan_storyboard(pdir: Path, part_id: str, *, force: bool = False, now: Optional[datetime] = None,
+                    engine: str = "rules", llm=None) -> Dict[str, Any]:
+    """生成分镜。engine=rules（离线，确定性）或 llm（需要 llm 对象，失败抛 PlanError，不回退）。"""
+    if engine not in ("rules", "llm"):
+        raise PlanError(f"未知的分镜引擎：{engine}")
     pdir = Path(pdir)
     spine = load_spine(pdir)
     if spine is None:
@@ -101,14 +110,22 @@ def plan_storyboard(pdir: Path, part_id: str, *, force: bool = False,
     if script is None or not script.get("confirmed"):
         raise PlanError(f"请先确认 {part_id} 的口播稿（C1），再生成分镜")
     cfg = load_visual_config(pdir)
-    sha = _input_sha(pdir, part_id, script, part, cfg)
+    sha = _input_sha(pdir, part_id, script, part, cfg, engine)
     existing = load_storyboard(pdir, part_id)
     if existing and existing.get("input_sha") == sha and not force:
         return existing
+    if engine == "llm" and llm is None:
+        raise PlanError("模型版分镜需要文本模型（mini_agent 配置）")
     chapter = {"number": f"第 {idx + 1} 章", "title": part["title"], "one_line": part.get("one_line", "")}
     allowance = image_allowance(part["budget_minutes"], cfg["images"]["max_per_minute"],
                                 cfg["images"]["enabled"])
-    sb = direct_part(script, _blocks(pdir), chapter=chapter, allowance=allowance)
+    shots = cfg["images"]["shots_per_image"]
+    if engine == "llm":
+        sb = direct_part_llm(script, _blocks(pdir), part=part, chapter=chapter, allowance=allowance,
+                             shots_per_image=shots, llm=llm, images_enabled=cfg["images"]["enabled"],
+                             style_anchor=cfg["bible"]["style_anchor"])
+    else:
+        sb = direct_part(script, _blocks(pdir), chapter=chapter, allowance=allowance, shots_per_image=shots)
     sb["input_sha"] = sha
     sb["confirmed"] = False
     sb["confirmed_at"] = None
@@ -117,7 +134,32 @@ def plan_storyboard(pdir: Path, part_id: str, *, force: bool = False,
     sb["errors"] = v["errors"]
     sb["warnings"] = sb["warnings"] + v["warnings"]
     write_json_atomic(_sb_path(pdir, part_id), sb)
-    append_progress(pdir, f"生成分镜（规则版）{part_id}：{len(sb['scenes'])} 段，插图 {sb['images_planned']}/{allowance}", now)
+    label = "模型版" if engine == "llm" else "规则版"
+    append_progress(pdir, f"生成分镜（{label}）{part_id}：{len(sb['scenes'])} 段，图片 {sb['images_planned']}/{allowance}", now)
+    return sb
+
+
+def reallocate_images(pdir: Path, part_id: str, now: Optional[datetime] = None) -> Dict[str, Any]:
+    """重新自动分配一图多用（只改插图的组与取景，不动其它编辑）。分镜变为未确认。"""
+    pdir = Path(pdir)
+    sb = load_storyboard(pdir, part_id)
+    if sb is None:
+        raise PlanError("还没有分镜，请先生成")
+    cfg = load_visual_config(pdir)
+    shots = cfg["images"]["shots_per_image"]
+    scenes = [dict(s, image=dict(s["image"]) if s.get("image") else None) for s in sb["scenes"]]
+    allocate_shared_images(scenes, shots)
+    sb = dict(sb, scenes=scenes, confirmed=False, confirmed_at=None, images_planned=count_groups(scenes),
+              shots_per_image=shots)
+    spine = load_spine(pdir)
+    part, _ = _part_and_index(spine, part_id)
+    script = load_script(pdir, part_id)
+    v = _verdict(pdir, part_id, sb, script, cfg, part)
+    if v["errors"]:
+        raise PlanError("重新分配后不合格：" + "；".join(v["errors"][:6]))
+    sb["errors"] = []
+    write_json_atomic(_sb_path(pdir, part_id), sb)
+    append_progress(pdir, f"重新分配一图多用 {part_id}：图片 {sb['images_planned']} 张，每图最多 {shots} 个镜头", now)
     return sb
 
 
@@ -148,7 +190,7 @@ def save_storyboard(pdir: Path, part_id: str, raw: Dict[str, Any], now: Optional
     if v["errors"]:
         raise PlanError("分镜不合格：" + "；".join(v["errors"][:8]))
     sb["errors"] = []
-    sb["images_planned"] = sum(1 for s in scenes if s["type"] == "illustration")
+    sb["images_planned"] = count_groups(scenes)
     write_json_atomic(_sb_path(pdir, part_id), sb)
     append_progress(pdir, f"保存分镜编辑 {part_id}（未确认）", now)
     return sb

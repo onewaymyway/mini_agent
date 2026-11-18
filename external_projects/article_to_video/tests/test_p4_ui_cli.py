@@ -19,7 +19,7 @@ def test_storyboard_page_without_storyboard_shows_generate_button(monkeypatch, t
     at.sidebar.radio[0].set_value("🎞️ 分镜").run()
     assert not at.exception, [e.value for e in at.exception]
     assert any(h.value == "🎞️ 分镜（C2）" for h in at.header)
-    assert any(b.label == "生成分镜（规则版）" for b in at.button)
+    assert any(b.label == "生成分镜" for b in at.button)
 
 
 def test_storyboard_page_with_generated_storyboard_renders_scenes(monkeypatch, tmp_path):

@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from .sharing import allocate_shared_images, count_groups
 from .states import uniform_reveal
 
 TEXT_LIMIT = 60          # 单张卡文字上限（字）
@@ -190,8 +191,8 @@ def _break_runs(scenes: List[Dict[str, Any]], beats: Dict[str, Dict[str, Any]]) 
 
 
 def direct_part(script: Dict[str, Any], blocks: List[Dict[str, Any]], *, chapter: Dict[str, str],
-                allowance: int) -> Dict[str, Any]:
-    """为一章生成分镜（纯函数）。allowance 为本章插图额度。"""
+                allowance: int, shots_per_image: int = 1) -> Dict[str, Any]:
+    """为一章生成分镜（纯函数）。allowance 为本章可生成的图片数；每张图可用于 shots_per_image 个镜头。"""
     beats = {b["id"]: b for b in script["beats"]}
     candidates: List[int] = []
     for i, b in enumerate(script["beats"]):
@@ -202,13 +203,14 @@ def direct_part(script: Dict[str, Any], blocks: List[Dict[str, Any]], *, chapter
                 and any(not s.get("quote") for s in b["sentences"]):
             candidates.append(i)
     chosen: List[int]
-    if allowance <= 0 or not candidates:
+    cap = max(0, allowance) * max(1, shots_per_image)  # 一图多用：镜头数上限 = 图片额度 × 每图镜头数
+    if cap <= 0 or not candidates:
         chosen = []
-    elif len(candidates) <= allowance:
+    elif len(candidates) <= cap:
         chosen = candidates
     else:
-        step = len(candidates) / allowance
-        chosen = [candidates[int(k * step)] for k in range(allowance)]
+        step = len(candidates) / cap
+        chosen = [candidates[int(k * step)] for k in range(cap)]
 
     scenes: List[Dict[str, Any]] = []
     structure: List[str] = []
@@ -221,7 +223,8 @@ def direct_part(script: Dict[str, Any], blocks: List[Dict[str, Any]], *, chapter
         scenes.append(_build_beat(b, i, refs_blocks, illustrate=i in chosen))
 
     notes = _break_runs(scenes, beats)
-    used_images = sum(1 for s in scenes if s["type"] == "illustration")
+    allocate_shared_images(scenes, shots_per_image)
+    used_images = count_groups(scenes)
     return {
         "schema": 1,
         "part": script["part"],
@@ -230,7 +233,9 @@ def direct_part(script: Dict[str, Any], blocks: List[Dict[str, Any]], *, chapter
         "scenes": scenes,
         "source_structure": structure,
         "image_allowance": allowance,
+        "shots_per_image": max(1, shots_per_image),
         "images_planned": used_images,
+        "engine": "rules",
         "warnings": notes,
         "director": DIRECTOR_VERSION,
     }

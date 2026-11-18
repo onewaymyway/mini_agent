@@ -56,7 +56,7 @@ def test_second_render_reuses_everything_and_calls_no_provider(vpdir):
     provider = StubImageProvider()
     first = render_part(vpdir, "P02", provider=provider)
     calls = len(provider.calls)
-    assert calls == first["counts"]["illustration"] > 0
+    assert calls == first["counts"]["groups"] > 0   # 一图多用：生图次数 = 图片组数
     second = render_part(vpdir, "P02", provider=provider)
     assert second["counts"]["reused"] == len(second["scenes"])
     assert len(provider.calls) == calls
@@ -80,7 +80,8 @@ def test_missing_provider_degrades_illustrations_to_cards_with_reason(vpdir):
 def test_failed_generation_also_degrades_and_does_not_stop_the_part(vpdir):
     provider = FailingImageProvider()
     m = render_part(vpdir, "P02", provider=provider)
-    assert provider.calls == m["counts"]["fallback"] > 0
+    assert provider.calls == m["counts"]["groups"] > 0
+    assert m["counts"]["fallback"] >= m["counts"]["groups"]  # 组内镜头都随主图降级
     assert all(s["frames"] for s in m["scenes"] if s["rendered_as"] == "keypoint")
 
 

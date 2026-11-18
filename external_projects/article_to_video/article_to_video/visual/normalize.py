@@ -40,6 +40,8 @@ def normalize_scene(raw: Dict[str, Any], sentences: List[Dict[str, Any]]) -> Dic
             "focus_x": min(1.0, max(0.0, focus)),
             "version": int(img.get("version") or 0),
             "file": img.get("file"),
+            "group": img.get("group"),
+            "leader": bool(img.get("leader", False)),
         }
     reveal_raw = raw.get("reveal") or []
     sc["reveal"] = reveal_raw if _reveal_ok(reveal_raw, sc, sentences) else uniform_reveal(sc, len(sentences))

@@ -20,7 +20,8 @@ _STRUCT_TO_TYPES = {"chain": ("diagram",), "table": ("table",), "math": ("formul
 
 
 def validate_storyboard(sb: Dict[str, Any], script: Dict[str, Any], *, allowance: int,
-                        style_anchor: str, images_enabled: bool) -> Dict[str, List[str]]:
+                        style_anchor: str, images_enabled: bool,
+                        shots_per_image: int = 1) -> Dict[str, List[str]]:
     errors: List[str] = []
     warnings: List[str] = []
     beats = script["beats"]
@@ -60,17 +61,19 @@ def validate_storyboard(sb: Dict[str, Any], script: Dict[str, Any], *, allowance
         if kind == "formula" and not str(sc.get("formula") or "").strip():
             errors.append(f"{sid}：公式场景缺少公式内容")
         if kind == "illustration":
-            subject = str((sc.get("image") or {}).get("subject") or "").strip()
-            if not subject:
-                errors.append(f"{sid}：插图缺少画面主题")
-            for w in FORBIDDEN_WORDS:
-                if w in subject:
-                    errors.append(f"{sid}：插图主题含禁用词「{w}」（插图禁止文字类内容）")
-                    break
+            img = sc.get("image") or {}
+            if img.get("leader", True):  # 只有主图需要画面主题（组内其余镜头复用主图）
+                subject = str(img.get("subject") or "").strip()
+                if not subject:
+                    errors.append(f"{sid}：插图缺少画面主题")
+                for w in FORBIDDEN_WORDS:
+                    if w in subject:
+                        errors.append(f"{sid}：插图主题含禁用词「{w}」（插图禁止文字类内容）")
+                        break
+                if len(style_anchor) + len(subject) > MAX_PROMPT_CHARS:
+                    errors.append(f"{sid}：生图提示词超过 {MAX_PROMPT_CHARS} 字")
             if not images_enabled:
                 warnings.append(f"{sid}：生图已关闭，插图将按卡片绘制")
-            if len(style_anchor) + len(subject) > MAX_PROMPT_CHARS:
-                errors.append(f"{sid}：生图提示词超过 {MAX_PROMPT_CHARS} 字")
 
         beat = next((b for b in beats if b["id"] == sc.get("beat")), None)
         if beat is not None:
@@ -93,10 +96,19 @@ def validate_storyboard(sb: Dict[str, Any], script: Dict[str, Any], *, allowance
             errors.append(f"{scenes[i].get('id')}：相邻 {MAX_RUN} 段为同一画面类型「{window[0]}」，请调整")
             break
 
-    # V5：插图数量不超过本章额度
-    n_images = sum(1 for s in scenes if s.get("type") == "illustration")
-    if n_images > allowance:
-        errors.append(f"插图 {n_images} 张，超过本章额度 {allowance}（每分钟上限 × 章时长）")
+    # V5：需要生成的图片数（按组计）不超过本章额度；每组镜头数不超过每图上限，且只有一张主图
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for s in scenes:
+        if s.get("type") == "illustration":
+            img = s.get("image") or {}
+            groups.setdefault(img.get("group") or s.get("id"), []).append(s)
+    if len(groups) > allowance:
+        errors.append(f"需生成图片 {len(groups)} 张，超过本章额度 {allowance}（每分钟上限 × 章时长）")
+    for gid, members in groups.items():
+        if len(members) > shots_per_image:
+            errors.append(f"图片组 {gid} 有 {len(members)} 个镜头，超过每图上限 {shots_per_image}")
+        if len(members) > 1 and sum(1 for m in members if (m.get("image") or {}).get("leader")) != 1:
+            errors.append(f"图片组 {gid} 必须恰好有一个主图")
 
     # V4：原文中的结构是否被画面表达（提示，不阻止）
     types_present = {s.get("type") for s in scenes}

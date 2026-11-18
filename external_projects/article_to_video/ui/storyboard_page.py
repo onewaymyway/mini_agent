@@ -27,10 +27,13 @@ def _visual_settings(pdir) -> None:
         with st.form("visual_settings"):
             anchor = st.text_area("风格锚（所有插图提示词的固定前缀，必须保留禁文字约束）",
                                   value=cfg["bible"]["style_anchor"], height=80)
-            c1, c2, c3 = st.columns(3)
+            c1, c2, c3, c4 = st.columns(4)
             images_on = c1.checkbox("启用 AI 插图", value=cfg["images"]["enabled"])
-            rate = c2.number_input("每分钟插图上限", min_value=0.0, max_value=6.0,
+            rate = c2.number_input("每分钟图片上限", min_value=0.0, max_value=6.0,
                                    value=float(cfg["images"]["max_per_minute"]), step=0.5)
+            shots = c4.number_input("每张图的镜头数（一图多用）", min_value=1, max_value=3,
+                                    value=int(cfg["images"]["shots_per_image"]), step=1,
+                                    help="同一张生成图按不同取景用于多个镜头；1 表示不复用")
             provider = c3.selectbox("生图服务", ["agnes", "stub"],
                                     index=0 if cfg["images"]["provider"] == "agnes" else 1,
                                     help="agnes 需要环境变量 AGNES_API_KEYS；stub 为离线占位图")
@@ -39,7 +42,8 @@ def _visual_settings(pdir) -> None:
                 res = save_visual_config(pdir, {
                     "theme": theme, "bible": {"style_anchor": anchor},
                     "images": {"enabled": images_on, "provider": provider,
-                               "max_per_minute": rate, "size": cfg["images"]["size"]},
+                               "max_per_minute": rate, "size": cfg["images"]["size"],
+                               "shots_per_image": int(shots)},
                 })
                 for w in res["warnings"]:
                     st.warning(w)
@@ -131,20 +135,42 @@ def render_storyboard_page() -> None:
     cols = st.columns(4)
     cols[0].metric("状态", "已确认" if status["confirmed"] else ("已过期" if status["stale"] else
                                                                ("未确认" if status["exists"] else "未生成")))
-    cols[1].metric("插图", f"{status['images']} / {status['allowance']}")
+    cols[1].metric("需生成图片", f"{status['images']} / {status['allowance']}")
+    cols[2].metric("引擎", "模型版" if status.get("engine") == "llm" else "规则版")
     if status["stale"]:
         st.warning("口播稿或视觉设置已变更，分镜已过期。重新生成会覆盖你在这里做的编辑。")
 
-    c1, c2 = st.columns(2)
-    if c1.button("生成分镜（规则版）", disabled=status["exists"] and not status["stale"]):
-        try:
-            sbm.plan_storyboard(pdir, part_id)
+    engine_label = st.radio("分镜引擎", ["规则版（离线，确定）", "模型版（需要 mini_agent 模型）"],
+                            horizontal=True, key=f"eng_{part_id}")
+    engine = "llm" if engine_label.startswith("模型") else "rules"
+    busy = job is not None and job["state"] == "running"
+
+    def _generate(force: bool) -> None:
+        if engine == "rules":
+            try:
+                sbm.plan_storyboard(pdir, part_id, force=force)
+                st.rerun()
+            except PlanError as exc:
+                st.error(str(exc))
+            return
+        from article_to_video.providers.text import make_text_llm
+
+        def run():
+            sbm.plan_storyboard(pdir, part_id, force=force, engine="llm", llm=make_text_llm("miniagent"))
+
+        if jobs.start(pdir, f"模型生成分镜 {part_id}", run):
             st.rerun()
-        except PlanError as exc:
-            st.error(str(exc))
-    if status["exists"] and c2.button("重新生成（覆盖编辑）"):
+        st.error("已有后台任务在运行，请稍候")
+
+    c1, c2, c3 = st.columns(3)
+    if c1.button("生成分镜", disabled=(status["exists"] and not status["stale"]) or busy):
+        _generate(False)
+    if status["exists"] and c2.button("重新生成（覆盖编辑）", disabled=busy):
+        _generate(True)
+    if status["exists"] and c3.button("🔁 重新分配一图多用", disabled=busy,
+                                      help="只重新分配插图的图片组与取景，不改动文字与画面类型"):
         try:
-            sbm.plan_storyboard(pdir, part_id, force=True)
+            sbm.reallocate_images(pdir, part_id)
             st.rerun()
         except PlanError as exc:
             st.error(str(exc))

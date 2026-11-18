@@ -25,7 +25,8 @@ def default_visual() -> Dict[str, Any]:
     return {
         "theme": DEFAULT_THEME,
         "bible": {"style_anchor": DEFAULT_STYLE_ANCHOR},
-        "images": {"enabled": True, "provider": "agnes", "max_per_minute": 2.5, "size": "1024x1024"},
+        "images": {"enabled": True, "provider": "agnes", "max_per_minute": 2.5, "size": "1024x1024",
+                   "shots_per_image": 2},
     }
 
 
@@ -51,6 +52,14 @@ def normalize_visual(raw: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, An
         rate = base["images"]["max_per_minute"]
         warnings.append("插图每分钟上限不是数字，已改用默认值")
     rate = min(MAX_PER_MINUTE_LIMIT, max(0.0, rate))
+    try:
+        shots = int(img_raw.get("shots_per_image", base["images"]["shots_per_image"]))
+    except (TypeError, ValueError):
+        shots = base["images"]["shots_per_image"]
+        warnings.append("每图镜头数不是整数，已改用默认值")
+    if not 1 <= shots <= 3:
+        warnings.append(f"每图镜头数 {shots} 超出 1–3，已限制在范围内")
+    shots = min(3, max(1, shots))
     out = {
         "theme": theme,
         "bible": {"style_anchor": anchor[:300]},
@@ -59,6 +68,7 @@ def normalize_visual(raw: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, An
             "provider": str(img_raw.get("provider", base["images"]["provider"])),
             "max_per_minute": round(rate, 2),
             "size": str(img_raw.get("size", base["images"]["size"])),
+            "shots_per_image": shots,
         },
     }
     return out, warnings

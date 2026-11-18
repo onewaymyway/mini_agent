@@ -16,6 +16,7 @@ from .text import draw_rich_line, wrap_text
 from .themes import get_theme, unit_for
 
 Canvas = Tuple[int, int]
+SHOT_ZOOM = 1.35  # 插图底图的放大倍数，为水平取景留出余量
 
 
 class _Ctx:
@@ -382,7 +383,9 @@ def render_illustration_background(src: Path, canvas: Canvas, focus_x: float, th
 
     with Image.open(src) as im:
         im = im.convert("RGB")
-        scale = max(canvas[0] / im.width, canvas[1] / im.height)
+        # 放大 SHOT_ZOOM 倍后再取景：正方形图按画幅铺满时宽度刚好相等，没有余量水平移动，
+        # 一图多用的不同取景会完全相同。放大后横向留出余量，focus_x 才有效果。
+        scale = max(canvas[0] * SHOT_ZOOM / im.width, canvas[1] / im.height)
         big = im.resize((math.ceil(im.width * scale), math.ceil(im.height * scale)), Image.LANCZOS)
     fx = min(1.0, max(0.0, float(focus_x)))
     left = round((big.width - canvas[0]) * fx)
