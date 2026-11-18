@@ -34,9 +34,28 @@ class MediaError(RuntimeError):
     pass
 
 
-def _run(args: Sequence[str]) -> str:
+WIN_CMD_LIMIT = 32767   # Windows CreateProcess 命令行总长上限（字符）
+
+
+def _launch_error(args: Sequence[str], cwd, exc: OSError) -> str:
+    """ffmpeg 无法启动时的诊断信息。Windows 上命令行超长会报“文件名或扩展名太长”（WinError 206），
+    这条信息与文件名无关，因此这里把命令行长度、参数个数和输出路径一并写出来。"""
+    cmd_len = len(subprocess.list2cmdline([str(a) for a in args]))
+    hint = ""
+    if getattr(exc, "winerror", None) == 206 or cmd_len > WIN_CMD_LIMIT:
+        hint = (f"（命令行 {cmd_len} 字符，超过 Windows 上限 {WIN_CMD_LIMIT}；"
+                "滤镜应走 -filter_complex_script，输入应使用相对路径）")
+    out = str(args[-1]) if args else ""
+    return (f"{Path(args[0]).name} 无法启动：{exc}{hint}。"
+            f"参数 {len(args)} 个，工作目录 {cwd or '未指定'}，输出 {out}")
+
+
+def _run(args: Sequence[str], cwd=None) -> str:
     # 经 cancel.run_process 运行：用户请求停止时立即终止 ffmpeg，而不是等它跑完
-    returncode, stdout, stderr = cancel.run_process(list(args))
+    try:
+        returncode, stdout, stderr = cancel.run_process(list(args), cwd=cwd)
+    except OSError as exc:
+        raise MediaError(_launch_error(args, cwd, exc)) from exc
     if returncode != 0:
         tail = (stderr or "")[-400:]
         raise MediaError(f"{Path(args[0]).name} 失败：{tail.strip()}")
@@ -146,6 +165,35 @@ def concat(clips: List[Path], out: Path) -> Path:
     return out
 
 
+def _input_layout(paths: Sequence[Path]):
+    """返回 (工作目录, 输入参数路径列表)。输入改为相对于公共父目录的短路径，避免命令行超长。
+    无法求公共目录（如跨盘符）时退回绝对路径。"""
+    resolved = [Path(p).resolve() for p in paths]
+    try:
+        base = Path(os.path.commonpath([str(p.parent) for p in resolved]))
+    except ValueError:
+        return None, [str(p) for p in resolved]
+    return base, [Path(os.path.relpath(p, base)).as_posix() for p in resolved]
+
+
+def _run_filter_graph(clips: Sequence[Path], fc: str, out: Path, maps: Sequence[str],
+                      codec: Sequence[str]) -> None:
+    """用 filter_complex 合成。滤镜图写入临时文件（-filter_complex_script），
+    不放在命令行上：片段多时滤镜串很长，会超过 Windows 命令行上限。"""
+    cwd, names = _input_layout(clips)
+    inputs: List[str] = []
+    for n in names:
+        inputs += ["-i", n]
+    script = out.with_name(out.stem + ".filter.txt").resolve()
+    script.write_text(fc, encoding="utf-8")
+    try:
+        _run([ffmpeg(), "-y", *inputs, "-filter_complex_script", str(script), *maps, *codec, str(out)], cwd=cwd)
+    finally:
+        script.unlink(missing_ok=True)
+
+
+_CODEC = ["-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+          "-c:a", "aac", "-ar", str(AUDIO_RATE), "-ac", "1"]
 FADE_AUDIO_SEC = 0.02   # 音频只做极短的淡变，防止爆音；不做明显淡化，避免吃掉台词的起头
 
 
@@ -158,9 +206,6 @@ def concat_fade(clips: List[Path], durations: Sequence[float], out: Path, fade_s
         raise MediaError("片段数与时长数不一致")
     out.parent.mkdir(parents=True, exist_ok=True)
     n = len(clips)
-    inputs: List[str] = []
-    for c in clips:
-        inputs += ["-i", str(c)]
     parts: List[str] = []
     labels: List[str] = []
     for i, d in enumerate(durations):
@@ -175,9 +220,7 @@ def concat_fade(clips: List[Path], durations: Sequence[float], out: Path, fade_s
         parts += [vf, af]
         labels += [f"[v{i}]", f"[a{i}]"]
     fc = ";".join(parts) + ";" + "".join(labels) + f"concat=n={n}:v=1:a=1[outv][outa]"
-    _run([ffmpeg(), "-y", *inputs, "-filter_complex", fc, "-map", "[outv]", "-map", "[outa]",
-          "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
-          "-c:a", "aac", "-ar", str(AUDIO_RATE), "-ac", "1", str(out)])
+    _run_filter_graph(clips, fc, out, maps=["-map", "[outv]", "-map", "[outa]"], codec=_CODEC)
     return out
 
 
@@ -211,9 +254,6 @@ def concat_dissolve(clips: List[Path], durations: Sequence[float], out: Path, di
     if n == 1:
         return concat(clips, out)
     t = effective_dissolve(durations, dissolve_sec)
-    inputs: List[str] = []
-    for c in clips:
-        inputs += ["-i", str(c)]
     parts: List[str] = []
     for i in range(n):
         parts.append(f"[{i}:v]setsar=1[v{i}]")
@@ -230,9 +270,7 @@ def concat_dissolve(clips: List[Path], durations: Sequence[float], out: Path, di
         length += float(durations[k]) - t
     parts.append("".join(f"[a{i}]" for i in range(n)) + f"concat=n={n}:v=0:a=1[outa]")
     fc = ";".join(parts)
-    _run([ffmpeg(), "-y", *inputs, "-filter_complex", fc, "-map", "[outv]", "-map", "[outa]",
-          "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
-          "-c:a", "aac", "-ar", str(AUDIO_RATE), "-ac", "1", str(out)])
+    _run_filter_graph(clips, fc, out, maps=["-map", "[outv]", "-map", "[outa]"], codec=_CODEC)
     return out
 
 

@@ -167,15 +167,21 @@ def recompose_chapter(project_dir: Path, no: int) -> Dict[str, Any]:
 
 
 def _join(clips, out: Path, *, still: bool, cfg: Dict[str, Any]) -> None:
-    """拼接镜头片段。动态漫：淡化（逐段黑场，时长不变）或叠化（画面重叠）；否则硬切，与视频模式相同。"""
-    if still and cfg.get("transition") == "fade":
-        durations = [mf.probe_duration(c) for c in clips]
-        mf.concat_fade(clips, durations, out, float(cfg["transition_sec"]))
-    elif still and cfg.get("transition") == "dissolve":
-        durations = [mf.probe_duration(c) for c in clips]
-        mf.concat_dissolve(clips, durations, out, float(cfg["transition_sec"]))
-    else:
-        mf.concat(clips, out)
+    """拼接镜头片段。动态漫：淡化（逐段黑场，时长不变）或叠化（画面重叠）；否则硬切，与视频模式相同。
+    失败时错误信息附上片段数量、首尾文件名与输出路径，便于定位是哪一批素材出的问题。"""
+    try:
+        if still and cfg.get("transition") == "fade":
+            durations = [mf.probe_duration(c) for c in clips]
+            mf.concat_fade(clips, durations, out, float(cfg["transition_sec"]))
+        elif still and cfg.get("transition") == "dissolve":
+            durations = [mf.probe_duration(c) for c in clips]
+            mf.concat_dissolve(clips, durations, out, float(cfg["transition_sec"]))
+        else:
+            mf.concat(clips, out)
+    except mf.MediaError as exc:
+        first = clips[0].name if clips else "-"
+        last = clips[-1].name if clips else "-"
+        raise mf.MediaError(f"章节拼接失败：{len(clips)} 个片段（首 {first}，末 {last}）→ {out}：{exc}") from exc
 
 
 def _timeline_durations(clips, *, still: bool, cfg: Dict[str, Any]):

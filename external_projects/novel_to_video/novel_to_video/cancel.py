@@ -187,19 +187,22 @@ def _unregister(key: Optional[str], proc: subprocess.Popen) -> None:
             procs.remove(proc)
 
 
-def run_process(args: List[str]) -> Tuple[int, str, str]:
+def run_process(args: List[str], cwd: Optional[Any] = None) -> Tuple[int, str, str]:
     """运行外部命令（ffmpeg / ffprobe）。停止时立即终止子进程并抛出 Cancelled。
 
+    cwd：子进程的工作目录（可选）。输入文件用相对路径时，靠它把命令行缩短。
     返回 (returncode, stdout, stderr)，与 subprocess.run(capture_output=True, text=True) 一致。
+    启动失败（如命令行超长、找不到可执行文件）时抛出 OSError，由调用方补充上下文。
     """
     ev = current_event()
     if ev is None:
-        proc = subprocess.run(list(args), capture_output=True, text=True, encoding="utf-8", errors="replace")
+        proc = subprocess.run(list(args), capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              cwd=cwd)
         return proc.returncode, proc.stdout, proc.stderr
     check()
     key = _current_key()
     proc = subprocess.Popen(list(args), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, encoding="utf-8", errors="replace")
+                            text=True, encoding="utf-8", errors="replace", cwd=cwd)
     _register(key, proc)
     try:
         while True:
