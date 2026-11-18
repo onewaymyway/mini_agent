@@ -11,6 +11,7 @@ import streamlit as st  # noqa: E402
 
 from ui.import_page import render_import_page  # noqa: E402
 from ui.outline_page import render_outline_page  # noqa: E402
+from ui.script_page import render_script_page  # noqa: E402
 from ui.projects_page import render_projects_page  # noqa: E402
 
 st.set_page_config(page_title="article_to_video", page_icon="🎞️", layout="wide")
@@ -18,12 +19,13 @@ st.set_page_config(page_title="article_to_video", page_icon="🎞️", layout="w
 PAGES = {
     "📥 新建项目": render_import_page,
     "🗺️ 大纲": render_outline_page,
+    "📝 口播稿": render_script_page,
     "📚 项目": render_projects_page,
 }
 
 with st.sidebar:
     st.title("article_to_video")
-    st.caption("文章 → 讲解视频（P1：规划）")
+    st.caption("文章 → 讲解视频（P2：口播稿）")
     page = st.radio("页面", list(PAGES), label_visibility="collapsed")
 
 PAGES[page]()

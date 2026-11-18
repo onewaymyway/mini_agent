@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
+from .. import cancel
 from ..paths import mini_agent_root
 
 
@@ -37,7 +38,8 @@ class MiniAgentTextLLM(TextLLM):
         return self._helper
 
     def ask(self, prompt: str, system: str = "") -> str:
-        return self._get_helper().ask(prompt, system=system)
+        # 模型请求可能持续数十秒：经 cancel.call，用户停止时立即返回
+        return cancel.call(lambda: self._get_helper().ask(prompt, system=system))
 
 
 def make_text_llm(name: str) -> TextLLM:
