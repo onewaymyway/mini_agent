@@ -3,6 +3,7 @@
 文件：
   plan/groups.json   分节组（不含正文，正文可由源文章重算）
   plan/digests.json  分节摘要（engine、input_sha 用于跳过未变化的组）
+  plan/digests_partial.json  R5：生成中的分节摘要，每组完成即落盘；失败后下次只重算未完成的组
   plan/spine.json    大纲（含 confirmed 标记）
   plan/raw_*.txt     模型两次都不合格时的原始输出
 """
@@ -46,6 +47,23 @@ def load_spine(project_dir: Path) -> Optional[Dict[str, Any]]:
 def load_digests(project_dir: Path) -> List[Dict[str, Any]]:
     p = Path(project_dir) / "plan" / "digests.json"
     return read_json(p)["digests"] if p.is_file() else []
+
+
+PARTIAL_FILE = "digests_partial.json"
+
+
+def _partial_path(project_dir: Path) -> Path:
+    return Path(project_dir) / "plan" / PARTIAL_FILE
+
+
+def _load_partial(project_dir: Path) -> Dict[str, Dict[str, Any]]:
+    p = _partial_path(project_dir)
+    if not p.is_file():
+        return {}
+    try:
+        return {d["group_id"]: d for d in read_json(p).get("digests", []) if isinstance(d, dict) and "group_id" in d}
+    except (OSError, ValueError, KeyError):
+        return {}
 
 
 def _save_raw(project_dir: Path, name: str, raw: Optional[str]) -> None:
@@ -96,23 +114,38 @@ def plan_outline(project_dir: Path, *, engine: str = "llm", llm=None,
         raise PlanError("文章没有可规划的内容")
 
     joblog.bound_log(f"开始生成大纲：{'离线规则' if engine == 'rules' else '模型'}，共 {len(groups)} 组")
-    old = {d["group_id"]: d for d in load_digests(project_dir)} if engine == "llm" else {}
+    # R5：断点续跑。已完成的组来自上次的部分结果（或上次成功的摘要），输入未变则直接复用
+    old: Dict[str, Dict[str, Any]] = {}
+    if engine == "llm":
+        old = {d["group_id"]: d for d in load_digests(project_dir)}
+        old.update(_load_partial(project_dir))
     digests: List[Dict[str, Any]] = []
+    done: Dict[str, Dict[str, Any]] = {}
+    reused = 0
     for g in groups:
         sha = _input_sha(g, title)
         if engine == "rules":
             digests.append(rules_digest(g, ctx["blocks_by_id"]))
-        elif g["id"] in old and old[g["id"]].get("input_sha") == sha:
+            continue
+        if g["id"] in old and old[g["id"]].get("input_sha") == sha:
             joblog.bound_log(f"节组 {g['id']}：输入未变，复用已有摘要")
-            digests.append(old[g["id"]])  # 断点续跑：输入未变，复用已有摘要
+            d = old[g["id"]]
+            reused += 1
         else:
             try:
                 d, _raw = llm_digest(g, llm, title)
             except PlanError as exc:
                 _save_raw(project_dir, g["id"], exc.raw)
+                if done:
+                    joblog.bound_log(f"已保存 {len(done)} 组摘要；下次生成将从未完成的组继续", level="warn")
                 raise
             d["input_sha"] = sha
-            digests.append(d)
+        digests.append(d)
+        done[g["id"]] = d
+        if engine == "llm":
+            write_json_atomic(_partial_path(project_dir), {"digests": list(done.values())})
+    if reused:
+        joblog.bound_log(f"摘要共 {len(groups)} 组，其中 {reused} 组复用已有结果")
 
     if engine == "rules":
         spine = rules_spine(ctx["catalog"], digests, meta, section_claims(ctx["doc"]))
@@ -125,6 +158,7 @@ def plan_outline(project_dir: Path, *, engine: str = "llm", llm=None,
     _validate_or_raise(spine, ctx, digests)
 
     stamp = now_iso(now)
+    _partial_path(project_dir).unlink(missing_ok=True)
     write_json_atomic(project_dir / "plan" / "groups.json", {"groups": [
         {k: v for k, v in g.items() if k != "text"} for g in groups]})
     write_json_atomic(project_dir / "plan" / "digests.json", {"engine": engine, "digests": digests})

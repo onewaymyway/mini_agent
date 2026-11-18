@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List
 
-PROMPT_VERSION = "p1-v1"
+PROMPT_VERSION = "p1-v2"   # R5：引文与数字允许标点、大小写差异（系统对齐原文）
 
 DIGEST_SYSTEM = (
     "你是视频讲解的编辑。只输出一个 JSON 对象，不要任何解释、前言或 Markdown 围栏。"
@@ -23,10 +23,10 @@ SPINE_SYSTEM = (
 DIGEST_SCHEMA = """{
   "summary": "本组一段话摘要（<=120字）",
   "core_claims": ["核心论点1", "核心论点2"],
-  "key_numbers": ["原文中出现的数字或数量（逐字）"],
+  "key_numbers": ["原文中的数字或数量，最多 5 个"],
   "terms": ["需要统一译法的术语"],
   "analogies": ["原文中的类比（简述）"],
-  "quotable": ["可作金句的原文逐字片段（<=60字）"],
+  "quotable": ["可作金句的原文片段，最多 3 条，每条 8～40 字"],
   "relation_to_prev": "与上文的关系（一句话）"
 }"""
 
@@ -60,7 +60,8 @@ def digest_prompt(group: Dict[str, Any], article_title: str, issues: List[str] =
         f"文章：{article_title}\n\n"
         "请阅读下面这一组原文，输出如下结构的 JSON：\n"
         f"{DIGEST_SCHEMA}\n\n"
-        "要求：quotable 与 key_numbers 必须是原文逐字出现的片段；只概括本组内容。\n\n"
+        "要求：quotable 与 key_numbers 请从原文中直接复制（标点与大小写可以略有差异，系统会按内容对齐原文）；"
+        "对不上原文的条目会被剔除。只概括本组内容。\n\n"
         "【原文】\n" + group["text"]
     )
     return body + (_retry_hint(list(issues)) if issues else "")
@@ -90,7 +91,7 @@ def spine_prompt(
         f"1. 章数 5～7 章（小节少于 5 个时按小节数）；每章 section_ids 连续、按原文顺序。\n"
         "2. 每个 SECTION_IDS 中的小节必须且只能出现一次：要么在某章，要么在 cuts 中并给出理由。\n"
         "3. weight 表示该章内容的相对分量（正数，可取字数比例）。\n"
-        "4. golden_quotes 只能从摘要的 quotable 中选取，逐字复制。\n"
+        "4. golden_quotes 只能从摘要的 quotable 中选取（内容一致即可）。\n"
         "5. 给出 3 个开场钩子候选，取自原文最强的问题或反差。\n\n"
         "【各组摘要】\n" + json.dumps(compact, ensure_ascii=False, indent=1)
     )

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from .fidelity import squash
+from .fidelity import norm_key
 
 MIN_PARTS, MAX_PARTS = 5, 7
 
@@ -65,9 +65,9 @@ def validate_spine(
         errors.append("所选开场钩子越界")
 
     if digests is not None:
-        quotable = {squash(q) for d in digests for q in d.get("quotable") or []}
+        quotable = {norm_key(q) for d in digests for q in d.get("quotable") or []}
         for q in spine.get("golden_quotes") or []:
-            if squash(q) not in quotable:
+            if norm_key(q) not in quotable:
                 errors.append(f"金句不是摘要中登记的原文逐字片段：{q[:30]}")
 
     if len(section_ids) >= MIN_PARTS and not (MIN_PARTS <= len(parts) <= MAX_PARTS):

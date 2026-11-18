@@ -3,7 +3,7 @@ import json
 import pytest
 
 from article_to_video.planning.errors import PlanError
-from article_to_video.planning.runner import confirm_spine, load_spine, plan_outline, save_spine
+from article_to_video.planning.runner import confirm_spine, load_digests, load_spine, plan_outline, save_spine
 from article_to_video.planning import outline_edit as oe
 from article_to_video.project_store import load_project
 from helpers_p1 import ScriptedLLM, covering_spine, good_digest, make_project
@@ -81,16 +81,28 @@ def test_llm_digest_retries_once_then_succeeds(tmp_path):
     assert state["n"] > 1
 
 
-def test_llm_digest_failure_writes_nothing_and_archives_raw(tmp_path):
+def test_llm_digest_structural_failure_writes_nothing_and_archives_raw(tmp_path):
+    """R5：只有结构性问题（摘要或核心论点为空）才会整组失败；失败时不写结果，原始输出归档。"""
     pdir = make_project(tmp_path)
-    llm = ScriptedLLM(lambda p: '{"summary": "x", "core_claims": ["c"], "quotable": ["编造原话ABC"]}',
-                      covering_spine)
+    llm = ScriptedLLM(lambda p: '{"summary": "", "core_claims": [], "quotable": []}', covering_spine)
     with pytest.raises(PlanError) as exc:
         plan_outline(pdir, engine="llm", llm=llm)
-    assert "逐字" in str(exc.value)
+    assert "结构" in str(exc.value)
     assert load_spine(pdir) is None
     assert not (pdir / "plan" / "digests.json").exists()
     assert list((pdir / "plan").glob("raw_g01*.txt"))
+
+
+def test_fabricated_quote_is_dropped_and_run_continues(tmp_path):
+    """R5：编造的金句不再让整组失败：剔除、记入日志，其余内容照常生成；编造的金句不会进入大纲。"""
+    pdir = make_project(tmp_path)
+    llm = ScriptedLLM(lambda p: '{"summary": "x", "core_claims": ["c"], "quotable": ["编造原话ABC"]}',
+                      covering_spine)
+    plan_outline(pdir, engine="llm", llm=llm)
+    assert load_spine(pdir) is not None
+    digests = load_digests(pdir)
+    assert all(d["quotable"] == [] for d in digests)
+    assert not (pdir / "plan" / "digests_partial.json").exists()
 
 
 def test_llm_spine_missing_section_retries_then_fails(tmp_path):
