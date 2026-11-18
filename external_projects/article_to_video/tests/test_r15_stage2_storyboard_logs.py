@@ -109,3 +109,56 @@ def test_cache_decisions_are_logged(ready):
     assert any("输入已变化" in m and "重新生成" in m for m in _msgs(ready))
     _run(ready, "P01", StoryLLM(_good_plan), force=True)       # 强制
     assert any("强制重新生成" in m for m in _msgs(ready))
+
+
+# ---------- 第三轮修正：公式符号可用、不可用的画面类型改为卡片 ----------
+
+import re
+
+
+def _formula_beat(prompt):
+    """返回含原文公式的段落 ID 与公式文本（参考文章中存在）。"""
+    for bid in _beats_from_prompt(prompt):
+        block = prompt.split(f"[{bid}]", 1)[1].split("\n[", 1)[0]
+        m = re.search(r"原文公式：(.+)", block)
+        if m:
+            return bid, m.group(1).strip()
+    return None, None
+
+
+def test_formula_explanation_may_use_symbols_from_the_formula(ready):
+    seen = {}
+
+    def responder(prompt, n=None):
+        bid, formula = _formula_beat(prompt)
+        seen["bid"] = bid
+        data = json.loads(_good_plan(prompt, n))
+        word = re.search(r"[A-Za-z]{4,}", formula or "")
+        for s in data["scenes"]:
+            if s["beat"] == bid:
+                s["type"], s["formula_explanation"] = "formula", [word.group(0) if word else "增长"]
+                s.pop("items", None)
+        return json.dumps(data, ensure_ascii=False)
+
+    llm = StoryLLM(responder)
+    sb = _run(ready, "P04", llm)
+    assert seen.get("bid"), "参考文章的 P04 应含原文公式"
+    assert sb["errors"] == []
+    assert llm.calls == 1                       # 公式符号来自原文，不应被当作编造而重试
+
+
+def test_disallowed_type_falls_back_to_keypoint_without_retry(ready):
+    def responder(prompt, n=None):
+        data = json.loads(_good_plan(prompt, n))
+        for s in data["scenes"]:
+            if s["beat"] == "P03.b04":
+                s["type"], s["items"] = "diagram", []     # 本段只允许 keypoint / illustration
+        return json.dumps(data, ensure_ascii=False)
+
+    llm = StoryLLM(responder)
+    sb = _run(ready, "P03", llm)
+    scene = next(s for s in sb["scenes"] if s["beat"] == "P03.b04")
+    assert scene["type"] == "keypoint" and scene["fallback_from"] == "diagram"
+    assert scene["items"] and all(item.strip() for item in scene["items"])
+    assert llm.calls == 1
+    assert any("已改为卡片（keypoint）" in m for m in _msgs(ready))

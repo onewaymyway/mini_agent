@@ -102,7 +102,8 @@ def build_prompt(part: Dict[str, Any], script: Dict[str, Any], ctxs: Dict[str, D
     lines += ["", "请为每一段输出一个场景，按段落顺序，输出如下结构的 JSON：",
               json.dumps(schema, ensure_ascii=False, indent=2),
               "要求：type 只能从该段的可选画面类型中选择；keypoint 的 items 必填，用本段口播中的词组成短语；illustration 的 items 可以为空数组（只出图）；"
-              "image_subject 只描述画面意象，不得要求出现文字、标题、字幕或标志。"]
+              "image_subject 只描述画面意象，不得要求出现文字、标题、字幕或标志。"
+              "formula_explanation 可以使用原文公式中的符号与变量名；其它条目只用本段口播中的词。"]
     if issues:
         lines += ["", "【上次输出的问题，必须修正后重新输出完整 JSON】"] + [f"- {x}" for x in issues]
     return "\n".join(lines)
@@ -116,10 +117,16 @@ def _build_scene(beat: Dict[str, Any], item: Dict[str, Any], ctx: Dict[str, Any]
     bid = beat["id"]
     errs: List[str] = []
     kind = str(item.get("type") or "")
+    fallback_from: Optional[str] = None
     if kind not in ctx["allowed"]:
-        return None, [f"{bid}：画面类型 {kind!r} 不适用于本段（可选：{'、'.join(ctx['allowed'])}）"]
+        # 模型选了本段不可用的画面类型（原文没有对应结构）：不再整段重试，改为卡片（keypoint）。
+        # 条目缺失时用本段第一句原文作卡片文字，保证仍只来自原文；记录 fallback_from 供日志说明。
+        fallback_from, kind = kind or "（空）", "keypoint"
     sents = beat["sentences"]
+    # 可追溯来源：本段口播 + 本段原文结构（公式、表格、列表的内容本身来自原文，不算“编造”）
     source = "".join(s["text"] for s in sents)
+    if ctx.get("math"):
+        source += " " + str(ctx["math"].get("content") or "")
     sc = _scene(beat, kind, ctx["refs"])
     if kind == "diagram":
         sc["items"] = [plain(n) for n in ctx["chain"]["nodes"][:MAX_DIAGRAM_NODES]]
@@ -145,6 +152,8 @@ def _build_scene(beat: Dict[str, Any], item: Dict[str, Any], ctx: Dict[str, Any]
         else:
             raw_items = item.get("items") or []
         items = [str(x).strip() for x in raw_items if str(x).strip()][:MAX_KEYPOINT_ITEMS]
+        if not items and fallback_from and sents:
+            items = [sents[0]["text"][:TEXT_LIMIT]]
         if not items and kind == "keypoint":  # 插图可以只有画面（计划 6.4：少量叠字，非必需）
             errs.append(f"{bid}：keypoint 缺少条目")
         for it in items:
@@ -163,6 +172,8 @@ def _build_scene(beat: Dict[str, Any], item: Dict[str, Any], ctx: Dict[str, Any]
         emph_in = [str(e) for e in item.get("emphasis") or [] if str(e) and str(e) in source]
         sc["emphasis"] = list(dict.fromkeys(emph_in))[:8] or _emphasis(sents)
         sc["reveal"] = uniform_reveal(sc, len(sents))
+    if fallback_from and sc is not None:
+        sc["fallback_from"] = fallback_from
     return (sc if not errs else None), errs
 
 
@@ -251,6 +262,10 @@ def direct_part_llm(script: Dict[str, Any], blocks: List[Dict[str, Any]], *, par
             if len(errs) > 12:
                 joblog.bound_log(f"  · 其余 {len(errs) - 12} 处略", level="warn")
             continue
+        for sc in scenes:
+            if sc.get("fallback_from"):
+                joblog.bound_log(f"  {sc['beat']}：模型选择的 {sc['fallback_from']} 在本段不可用（原文无对应结构），"
+                                 f"已改为卡片（keypoint）", level="warn")
         allocate_shared_images(scenes, shots)
         sb = {
             "schema": 1, "part": script["part"], "title": script["title"], "chapter": chapter,
