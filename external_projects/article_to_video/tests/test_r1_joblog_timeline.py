@@ -251,7 +251,7 @@ def fresh(tmp_path, monkeypatch):
 
 
 def test_pipeline_writes_run_steps_and_substeps(fresh):
-    st = run_pipeline(fresh, until="voice", gear="G1", llm=ScriptLLM(good_script), tts=SilenceTTS())
+    st = run_pipeline(fresh, outline_engine="rules", until="voice", gear="G1", llm=ScriptLLM(good_script), tts=SilenceTTS())
     assert st["state"] == "done" and st["run_id"]
     run = timeline.build_timeline(fresh)[0]
     assert run["run_id"] == st["run_id"] and run["status"] == "ok"
@@ -266,15 +266,15 @@ def test_pipeline_writes_run_steps_and_substeps(fresh):
 
 def test_pipeline_second_run_logs_skips(fresh):
     llm = ScriptLLM(good_script)
-    run_pipeline(fresh, until="script", gear="G1", llm=llm)
-    run_pipeline(fresh, until="script", gear="G1", llm=llm)
+    run_pipeline(fresh, outline_engine="rules", until="script", gear="G1", llm=llm)
+    run_pipeline(fresh, outline_engine="rules", until="script", gear="G1", llm=llm)
     msgs = [r["message"] for r in joblog.tail(fresh, 800, ["pipeline"])]
     assert any("口播稿已存在，跳过" in m for m in msgs)
     assert len(timeline.build_timeline(fresh)) == 2
 
 
 def test_pipeline_waiting_is_not_a_failure(fresh):
-    st = run_pipeline(fresh, until="script", gear="G0", llm=ScriptLLM(good_script))
+    st = run_pipeline(fresh, outline_engine="rules", until="script", gear="G0", llm=ScriptLLM(good_script))
     assert st["state"] == "waiting"
     run = timeline.build_timeline(fresh)[0]
     assert run["status"] == "waiting" and "待人工确认" in run["error"]
@@ -282,7 +282,7 @@ def test_pipeline_waiting_is_not_a_failure(fresh):
 
 
 def test_pipeline_failure_records_stage_error(fresh):
-    st = run_pipeline(fresh, until="script", gear="G1", llm=None)     # 写稿需要文本模型
+    st = run_pipeline(fresh, outline_engine="rules", until="script", gear="G1", llm=None)     # 写稿需要文本模型
     assert st["state"] == "failed"
     run = timeline.build_timeline(fresh)[0]
     assert run["status"] == "failed" and "文本模型" in run["error"]
@@ -296,7 +296,7 @@ def test_pipeline_stop_is_recorded_as_stopped(fresh):
     ev.set()
     cancel.bind(ev)
     try:
-        st = run_pipeline(fresh, until="script", gear="G1", llm=ScriptLLM(good_script))
+        st = run_pipeline(fresh, outline_engine="rules", until="script", gear="G1", llm=ScriptLLM(good_script))
     finally:
         cancel.bind(threading.Event())
     assert st["state"] == "stopped"
@@ -312,7 +312,7 @@ def test_pipeline_status_is_saved_when_started_and_after_each_stage(fresh):
             seen.append(read_status(fresh))    # 写稿进行中，另一个进程读到的状态
             return super().ask(prompt, system)
 
-    run_pipeline(fresh, until="script", gear="G1", llm=Spy(good_script))
+    run_pipeline(fresh, outline_engine="rules", until="script", gear="G1", llm=Spy(good_script))
     assert seen and seen[0]["state"] == "running" and seen[0]["steps"][0]["stage"] == "outline"
 
 

@@ -25,7 +25,7 @@ def main(out_dir: str) -> int:
     pj = read_json(pdir / "project.json")
     pj.setdefault("settings", {}).setdefault("video", {})["resolution"] = "720P"
     write_json_atomic(pdir / "project.json", pj)
-    st = run_pipeline(pdir, until="export", gear="G2", max_images=200, max_minutes=60,
+    st = run_pipeline(pdir, outline_engine="rules", until="export", gear="G2", max_images=200, max_minutes=60,
                       llm=ScriptLLM(good_script), tts=SilenceTTS(), image_provider=StubImageProvider())
     print(json.dumps({"state": st["state"], "steps": [s["stage"] + ":" + s["result"] for s in st["steps"]],
                       "outputs": st["outputs"], "budget": st["budget"], "error": st["error"]},

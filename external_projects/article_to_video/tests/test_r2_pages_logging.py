@@ -130,6 +130,7 @@ def test_outline_generate_button_starts_background_job_from_ui(tmp_path, monkeyp
     pdir = make_project(tmp_path)           # 没有大纲
     at = AppTest.from_file(str(PROJECT_DIR / "app.py"), default_timeout=90).run()
     at.sidebar.radio[0].set_value("🗺️ 大纲").run()
+    next(r for r in at.radio if r.label == "生成方式").set_value("rules").run()   # 离线规则，不依赖模型配置
     gen = next(b for b in at.button if b.label.startswith("生成 / 重新生成"))
     gen.click().run()
     assert not at.exception, [e.value for e in at.exception]

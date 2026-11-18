@@ -202,7 +202,7 @@ def _save(pdir: Path, status: Dict[str, Any], now: Optional[datetime]) -> None:
 
 def run_pipeline(pdir: Path, *, until: str = "export", gear: str = "G0", max_images: Optional[int] = None,
                  max_minutes: Optional[float] = None, approve: bool = False, llm=None, tts=None,
-                 image_provider=None, outline_engine: str = "rules", storyboard_engine: str = "rules",
+                 image_provider=None, outline_engine: str = "llm", storyboard_engine: str = "rules",
                  merge_all: bool = False, now: Optional[datetime] = None) -> Dict[str, Any]:
     pdir = Path(pdir)
     if until not in STAGES:

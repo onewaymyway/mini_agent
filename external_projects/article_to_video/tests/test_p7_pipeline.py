@@ -49,18 +49,18 @@ def test_g2_requires_a_budget_cap():
 # ---------- 门控行为 ----------
 
 def test_g0_stops_at_outline_confirmation(fresh_unconfirmed):
-    st = run_pipeline(fresh_unconfirmed, until="export", gear="G0")
+    st = run_pipeline(fresh_unconfirmed, outline_engine="rules", until="export", gear="G0")
     assert st["state"] == "waiting" and st["waiting"]["stage"] == "outline"
     assert read_status(fresh_unconfirmed)["state"] == "waiting"
 
 
 def test_g1_keeps_c0_manual_but_auto_confirms_script_and_storyboard(fresh_unconfirmed):
-    st = run_pipeline(fresh_unconfirmed, until="export", gear="G1")  # 大纲未确认：C0 仍需人工
+    st = run_pipeline(fresh_unconfirmed, outline_engine="rules", until="export", gear="G1")  # 大纲未确认：C0 仍需人工
     assert st["state"] == "waiting" and st["waiting"]["stage"] == "outline"
     from article_to_video.planning.runner import confirm_spine, plan_outline
     plan_outline(fresh_unconfirmed, engine="rules")
     confirm_spine(fresh_unconfirmed)  # 人工确认 C0
-    st = run_pipeline(fresh_unconfirmed, until="storyboard", gear="G1", llm=ScriptLLM(good_script),
+    st = run_pipeline(fresh_unconfirmed, outline_engine="rules", until="storyboard", gear="G1", llm=ScriptLLM(good_script),
                       tts=SilenceTTS(), image_provider=StubImageProvider())
     assert st["state"] == "done"
     for p in load_spine(fresh_unconfirmed)["parts"]:
@@ -70,7 +70,7 @@ def test_g1_keeps_c0_manual_but_auto_confirms_script_and_storyboard(fresh_unconf
 
 
 def test_g0_script_stage_waits_for_c1_after_writing(fresh):
-    st = run_pipeline(fresh, until="script", gear="G0", llm=ScriptLLM(good_script))
+    st = run_pipeline(fresh, outline_engine="rules", until="script", gear="G0", llm=ScriptLLM(good_script))
     assert st["state"] == "waiting" and st["waiting"]["stage"] == "script"
     assert load_script(fresh, "P01") is not None
     assert load_script(fresh, "P01")["confirmed"] is False
@@ -78,19 +78,19 @@ def test_g0_script_stage_waits_for_c1_after_writing(fresh):
 
 def test_g2_refuses_to_start_without_budget(fresh):
     with pytest.raises(PipelineError):
-        run_pipeline(fresh, until="export", gear="G2")
+        run_pipeline(fresh, outline_engine="rules", until="export", gear="G2")
 
 
 def test_unknown_stage_is_rejected(fresh):
     with pytest.raises(PipelineError):
-        run_pipeline(fresh, until="publish", gear="G0")
+        run_pipeline(fresh, outline_engine="rules", until="publish", gear="G0")
 
 
 # ---------- 预算 ----------
 
 def test_image_budget_stops_the_run_and_records_it(fresh):
-    run_pipeline(fresh, until="voice", gear="G1", llm=ScriptLLM(good_script), tts=SilenceTTS())
-    st = run_pipeline(fresh, until="render", gear="G2", max_images=1, llm=ScriptLLM(good_script),
+    run_pipeline(fresh, outline_engine="rules", until="voice", gear="G1", llm=ScriptLLM(good_script), tts=SilenceTTS())
+    st = run_pipeline(fresh, outline_engine="rules", until="render", gear="G2", max_images=1, llm=ScriptLLM(good_script),
                       tts=SilenceTTS(), image_provider=StubImageProvider(),
                       storyboard_engine="rules")
     assert st["state"] == "budget_exceeded"
@@ -122,7 +122,7 @@ def test_stop_request_leaves_state_stopped(fresh_unconfirmed):
     ev.set()
     cancel.bind(ev)
     try:
-        st = run_pipeline(fresh_unconfirmed, until="outline", gear="G1")
+        st = run_pipeline(fresh_unconfirmed, outline_engine="rules", until="outline", gear="G1")
     finally:
         cancel.bind(threading.Event())
     assert st["state"] == "stopped"
@@ -131,21 +131,21 @@ def test_stop_request_leaves_state_stopped(fresh_unconfirmed):
 # ---------- 整章重置 ----------
 
 def test_reset_requires_explicit_confirmation(fresh):
-    run_pipeline(fresh, until="script", gear="G1", llm=ScriptLLM(good_script))
+    run_pipeline(fresh, outline_engine="rules", until="script", gear="G1", llm=ScriptLLM(good_script))
     with pytest.raises(PipelineError):
         reset_part(fresh, "P01", from_stage="script")
     assert load_script(fresh, "P01") is not None
 
 
 def test_reset_from_script_cascades_downstream(fresh):
-    run_pipeline(fresh, until="script", gear="G1", llm=ScriptLLM(good_script))
+    run_pipeline(fresh, outline_engine="rules", until="script", gear="G1", llm=ScriptLLM(good_script))
     removed = reset_part(fresh, "P01", from_stage="script", confirm=True)
     assert load_script(fresh, "P01") is None
     assert any(r.endswith("script.json") for r in removed)
 
 
 def test_reset_from_storyboard_keeps_script_and_image_cache(fresh):
-    run_pipeline(fresh, until="script", gear="G1", llm=ScriptLLM(good_script))
+    run_pipeline(fresh, outline_engine="rules", until="script", gear="G1", llm=ScriptLLM(good_script))
     (fresh / "parts" / "P01" / "images").mkdir(parents=True, exist_ok=True)
     (fresh / "parts" / "P01" / "images" / "keep.txt").write_text("x", encoding="utf-8")
     reset_part(fresh, "P01", from_stage="storyboard", confirm=True)

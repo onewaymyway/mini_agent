@@ -1,6 +1,6 @@
 """entrypoints/plan_outline.py — 生成大纲（P1）：分节摘要 + 主线大纲。
 
-用法：python entrypoints/plan_outline.py --id <项目目录名> --engine rules|miniagent [--force]
+用法：python entrypoints/plan_outline.py --id <项目目录名> [--engine miniagent|rules] [--force]   # 默认 miniagent
       python entrypoints/plan_outline.py --project <项目目录> --engine rules
 """
 
@@ -24,7 +24,8 @@ def main(argv=None) -> int:
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--id", help="项目目录名（位于项目集合目录下）")
     g.add_argument("--project", help="项目目录路径")
-    p.add_argument("--engine", default="rules", choices=["rules", "miniagent"])
+    p.add_argument("--engine", default="miniagent", choices=["rules", "miniagent"],
+                   help="默认 miniagent（模型）；rules 为离线规则版")
     p.add_argument("--force", action="store_true", help="覆盖已确认的大纲")
     args = p.parse_args(argv)
 

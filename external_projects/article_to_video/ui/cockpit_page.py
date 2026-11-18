@@ -62,7 +62,7 @@ def render_cockpit_page() -> None:
         c4, c5 = st.columns(2)
         approve = c4.checkbox("确认终审（允许导出）", value=False)
         merge_all = c5.checkbox("多期时导出全集合并版", value=False)
-        offline = st.checkbox("离线冒烟（语音静音、生图占位，不产生费用）", value=False)
+        offline = st.checkbox("离线冒烟（语音静音、生图占位，大纲改用离线规则，不产生费用）", value=False)
 
     if st.button("▶ 运行流水线（后台）", disabled=busy):
         mi = int(max_images) or None
@@ -77,7 +77,7 @@ def render_cockpit_page() -> None:
                 prov = default_providers(pdir, offline=offline)
                 run_pipeline(pdir, until=until, gear=gear, max_images=mi, max_minutes=mm, approve=approve,
                              llm=prov["llm"], tts=prov["tts"], image_provider=prov["image"],
-                             merge_all=merge_all)
+                             merge_all=merge_all, outline_engine="rules" if offline else "llm")
             if jobs.start(pdir, f"流水线 {gear}", run, scope="pipeline"):
                 st.rerun()
 

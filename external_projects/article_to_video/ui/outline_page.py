@@ -12,10 +12,10 @@ from article_to_video.planning.errors import PlanError
 from article_to_video.planning.runner import confirm_spine, load_digests, load_spine, plan_outline, save_spine
 from article_to_video.planning.chunks import section_catalog
 from article_to_video.project_store import list_projects, read_json
-from article_to_video.providers.text import make_text_llm
+from article_to_video.providers.text import make_text_llm, text_model_status
 from article_to_video.validators.coverage import validate_spine
 
-ENGINE_LABELS = {"rules": "离线规则（不调用模型）", "miniagent": "模型（mini_agent 的 LLM）"}
+ENGINE_LABELS = {"miniagent": "模型（默认，mini_agent 的 LLM）", "rules": "离线规则（不调用模型，较粗略）"}
 
 
 def _catalog(pdir):
@@ -57,10 +57,15 @@ def _outline_body(pdir) -> None:
     confirmed = bool(spine and spine.get("confirmed"))
 
     with st.expander("生成大纲", expanded=spine is None):
+        model_ok, model_why = text_model_status()
         engine = st.radio("生成方式", list(ENGINE_LABELS), format_func=ENGINE_LABELS.get, horizontal=True)
+        if engine == "miniagent" and not model_ok:
+            st.warning(f"文本模型未就绪：{model_why}。请检查 mini_agent 的模型配置后重试；"
+                       "也可以先改选「离线规则」生成一版。")
         overwrite = st.checkbox("覆盖已确认的大纲", value=False, disabled=not confirmed,
                                 help="大纲已确认时，默认禁止覆盖，避免丢失人工编辑")
-        if st.button("生成 / 重新生成", type="primary", disabled=is_busy(pdir)):
+        if st.button("生成 / 重新生成", type="primary",
+                     disabled=is_busy(pdir) or (engine == "miniagent" and not model_ok)):
             def run(engine=engine, overwrite=overwrite):
                 llm = make_text_llm("miniagent") if engine == "miniagent" else None
                 plan_outline(pdir, engine="llm" if engine == "miniagent" else "rules",

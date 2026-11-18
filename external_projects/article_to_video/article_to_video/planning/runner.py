@@ -65,7 +65,7 @@ def _validate_or_raise(spine: Dict[str, Any], ctx: Dict[str, Any], digests: List
     return result
 
 
-def plan_outline(project_dir: Path, *, engine: str = "rules", llm=None,
+def plan_outline(project_dir: Path, *, engine: str = "llm", llm=None,
                  force: bool = False, now: Optional[datetime] = None) -> Dict[str, Any]:
     """S1 分节摘要 + S2 大纲。engine: rules（离线）| llm（需要 llm 实例）。
 
@@ -75,7 +75,8 @@ def plan_outline(project_dir: Path, *, engine: str = "rules", llm=None,
     if engine not in ("rules", "llm"):
         raise PlanError(f"未知的生成方式：{engine}")
     if engine == "llm" and llm is None:
-        raise PlanError("模型生成需要提供文本模型 provider")
+        raise PlanError("模型生成大纲需要文本模型（未配置 mini_agent 的模型）。"
+                        "如需离线生成，请改选「离线规则」，或修正模型配置后重试")
 
     existing = load_spine(project_dir)
     if existing and existing.get("confirmed") and not force:
