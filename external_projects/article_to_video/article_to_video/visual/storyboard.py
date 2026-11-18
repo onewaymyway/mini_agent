@@ -11,8 +11,9 @@ import hashlib
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
+from .. import cancel, joblog
 from ..planning.errors import PlanError
 from ..planning.runner import load_spine
 from ..project_store import append_progress, now_iso, read_json, write_json_atomic
@@ -212,3 +213,74 @@ def confirm_storyboard(pdir: Path, part_id: str, now: Optional[datetime] = None)
     write_json_atomic(_sb_path(pdir, part_id), sb)
     append_progress(pdir, f"确认分镜（C2）{part_id}", now)
     return sb
+
+
+def plan_all_storyboards(pdir: Path, *, force: bool = False, engine: str = "rules", llm=None,
+                         now: Optional[datetime] = None) -> Dict[str, Any]:
+    """R15：逐章生成全部分镜（后台任务内调用）。
+
+    每章独立处理，规则与单章「生成分镜」按钮一致：
+      * 口播稿未确认 → 跳过；
+      * 分镜不存在或已过期 → 生成；
+      * 分镜已是最新 → 跳过（保留已做的编辑）；
+      * force=True → 所有已确认口播稿的章节都重新生成（会覆盖编辑，界面需二次确认）。
+    某章失败（模型输出不合格、网络错误等）只记录原因，继续下一章；全部处理完后若有失败，
+    以 PlanError 结束，说明失败的章节；已成功的章节文件不受影响。
+    停止请求（cancel.Cancelled）直接向上抛出，不再处理后续章节。
+    """
+    if engine not in ("rules", "llm"):
+        raise PlanError(f"未知的分镜引擎：{engine}")
+    pdir = Path(pdir)
+    spine = load_spine(pdir)
+    if spine is None or not spine.get("confirmed"):
+        raise PlanError("请先确认大纲（C0）")
+    parts = spine["parts"]
+    results: List[Dict[str, Any]] = []
+    mode = "覆盖已有分镜" if force else "仅生成缺失或过期的分镜"
+    joblog.bound_log(f"批量分镜：共 {len(parts)} 章，引擎 {'模型版' if engine == 'llm' else '规则版'}，{mode}")
+    for p in parts:
+        cancel.check()
+        pid = p["id"]
+        title = p.get("title", "")
+        script = load_script(pdir, pid)
+        if script is None or not script.get("confirmed"):
+            joblog.bound_log(f"{pid}：口播稿未确认，跳过", level="warn")
+            results.append({"part": pid, "title": title, "action": "skipped", "reason": "口播稿未确认"})
+            continue
+        st = storyboard_status(pdir, pid)
+        same_engine = st.get("engine", "rules") == engine
+        if st["exists"] and not st["stale"] and same_engine and not force:
+            joblog.bound_log(f"{pid}：分镜已是最新，跳过（保留已有编辑）")
+            results.append({"part": pid, "title": title, "action": "skipped", "reason": "分镜已是最新"})
+            continue
+        joblog.bound_log(f"{pid}：开始生成分镜（{title}）")
+        try:
+            sb = plan_storyboard(pdir, pid, force=True, now=now, engine=engine, llm=llm)
+        except PlanError as exc:
+            joblog.bound_log(f"{pid}：分镜生成失败：{exc}", level="error")
+            results.append({"part": pid, "title": title, "action": "failed", "reason": str(exc)})
+            continue
+        except cancel.Cancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001 — 单章异常不影响其它章
+            joblog.bound_log(f"{pid}：分镜生成异常：{exc}", level="error")
+            results.append({"part": pid, "title": title, "action": "failed", "reason": str(exc)})
+            continue
+        ok = not sb.get("errors")
+        joblog.bound_log(f"{pid}：分镜已生成（{len(sb['scenes'])} 段，图片 {sb['images_planned']}）"
+                         + ("" if ok else f"，仍有 {len(sb['errors'])} 处错误需修改"),
+                         level="ok" if ok else "warn")
+        results.append({"part": pid, "title": title, "action": "generated",
+                        "scenes": len(sb["scenes"]), "images": sb["images_planned"],
+                        "errors": list(sb.get("errors", []))})
+
+    gen = [r for r in results if r["action"] == "generated"]
+    skip = [r for r in results if r["action"] == "skipped"]
+    bad = [r for r in results if r["action"] == "failed"]
+    joblog.bound_log(f"批量分镜结束：生成 {len(gen)} 章，跳过 {len(skip)} 章，失败 {len(bad)} 章",
+                     level="warn" if bad else "ok")
+    append_progress(pdir, f"批量生成分镜：生成 {len(gen)}，跳过 {len(skip)}，失败 {len(bad)}", now)
+    if bad:
+        raise PlanError("以下章节分镜生成失败（已成功的章节不受影响）：" +
+                        "；".join(f"{r['part']}：{r['reason'][:80]}" for r in bad))
+    return {"results": results, "generated": len(gen), "skipped": len(skip), "failed": len(bad)}

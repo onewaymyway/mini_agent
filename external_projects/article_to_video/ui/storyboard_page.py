@@ -156,6 +156,8 @@ def _storyboard_body(pdir) -> None:
             st.rerun()
         st.error("已有后台任务在运行，请稍候")
 
+    _batch_controls(pdir, ready, engine, busy)
+
     if not status["exists"]:
         return
     sb = sbm.load_storyboard(pdir, part_id)
@@ -199,6 +201,27 @@ def _storyboard_body(pdir) -> None:
     _preview(pdir, part_id)
 
 
+def _batch_controls(pdir, ready, engine: str, busy: bool) -> None:
+    """R15：一次性逐章生成全部分镜（后台任务，章与章之间独立，失败不影响其它章）。"""
+    st.divider()
+    st.markdown("**全部章节**")
+    force = st.checkbox("覆盖已有分镜（会丢失这些章节里的手工编辑）", value=False, key="batch_force",
+                        help="不勾选时：只生成缺失或已过期的章节，已是最新的章节保留你的编辑。")
+    label = (f"⚠️ 覆盖并重新生成全部章节（{len(ready)} 章）" if force
+             else f"⚡ 生成全部章节分镜（{len(ready)} 章，逐章进行）")
+    st.caption("只处理已确认口播稿的章节；按章节顺序逐章生成，单章失败不影响其它章，"
+               "过程见页面底部的运行日志，可随时请求停止。")
+    if st.button(label, disabled=busy, key="batch_go"):
+        from article_to_video.providers.text import make_text_llm
+
+        def run():
+            llm = make_text_llm("miniagent", pdir=pdir) if engine == "llm" else None
+            sbm.plan_all_storyboards(pdir, force=force, engine=engine, llm=llm)
+
+        title = f"批量{'模型' if engine == 'llm' else '规则'}生成分镜（{len(ready)} 章{'，覆盖' if force else ''}）"
+        if jobs.start(pdir, title, run, scope="storyboard"):
+            st.rerun()
+        st.error("已有后台任务在运行，请稍候")
 
 
 def _preview(pdir, part_id) -> None:
