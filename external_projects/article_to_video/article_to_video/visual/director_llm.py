@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from .. import cancel, joblog
@@ -100,7 +101,7 @@ def build_prompt(part: Dict[str, Any], script: Dict[str, Any], ctxs: Dict[str, D
                           "formula_explanation": ["公式解释（仅 formula 类型）"]}]}
     lines += ["", "请为每一段输出一个场景，按段落顺序，输出如下结构的 JSON：",
               json.dumps(schema, ensure_ascii=False, indent=2),
-              "要求：type 只能从该段的可选画面类型中选择；keypoint 与 illustration 的 items 用本段口播中的词组成短语；"
+              "要求：type 只能从该段的可选画面类型中选择；keypoint 的 items 必填，用本段口播中的词组成短语；illustration 的 items 可以为空数组（只出图）；"
               "image_subject 只描述画面意象，不得要求出现文字、标题、字幕或标志。"]
     if issues:
         lines += ["", "【上次输出的问题，必须修正后重新输出完整 JSON】"] + [f"- {x}" for x in issues]
@@ -144,8 +145,8 @@ def _build_scene(beat: Dict[str, Any], item: Dict[str, Any], ctx: Dict[str, Any]
         else:
             raw_items = item.get("items") or []
         items = [str(x).strip() for x in raw_items if str(x).strip()][:MAX_KEYPOINT_ITEMS]
-        if not items and kind != "formula":
-            errs.append(f"{bid}：{kind} 缺少条目")
+        if not items and kind == "keypoint":  # 插图可以只有画面（计划 6.4：少量叠字，非必需）
+            errs.append(f"{bid}：keypoint 缺少条目")
         for it in items:
             if len(it) > TEXT_LIMIT:
                 errs.append(f"{bid}：条目 {len(it)} 字，超过 {TEXT_LIMIT} 字")
@@ -197,31 +198,59 @@ def parse_scenes(obj: Dict[str, Any], script: Dict[str, Any], ctxs: Dict[str, Di
     return scenes, errs
 
 
+def _kind_summary(scenes: List[Dict[str, Any]]) -> str:
+    counts: Dict[str, int] = {}
+    for sc in scenes:
+        counts[sc["type"]] = counts.get(sc["type"], 0) + 1
+    return "、".join(f"{k}×{v}" for k, v in counts.items())
+
+
+def _log_script_overview(part: Dict[str, Any], script: Dict[str, Any], ctxs: Dict[str, Dict[str, Any]],
+                         allowance: int, shots: int) -> None:
+    n_sent = sum(len(b["sentences"]) for b in script["beats"])
+    chars = sum(len(s["text"]) for b in script["beats"] for s in b["sentences"])
+    joblog.bound_log(f"{part['id']}：输入 {len(script['beats'])} 段 / {n_sent} 句 / {chars} 字，"
+                     f"图片额度 {allowance} 张（每图 {shots} 镜头）")
+    for beat in script["beats"]:
+        c = ctxs[beat["id"]]
+        joblog.bound_log(f"  {beat['id']}：可选画面 {'、'.join(c['allowed'])}"
+                         + (f"；原文结构 {'；'.join(c['notes'])}" if c["notes"] else ""))
+
+
 def direct_part_llm(script: Dict[str, Any], blocks: List[Dict[str, Any]], *, part: Dict[str, Any],
                     chapter: Dict[str, str], allowance: int, shots_per_image: int, llm,
                     images_enabled: bool, style_anchor: str) -> Dict[str, Any]:
     ctxs = {b["id"]: beat_context(b, blocks) for b in script["beats"]}
     shots = max(1, int(shots_per_image))
+    pid = part["id"]
+    _log_script_overview(part, script, ctxs, allowance, shots)
     issues: List[str] = []
     raw = ""
     for _attempt in range(MAX_ATTEMPTS):
         cancel.check()
         prompt = build_prompt(part, script, ctxs, allowance=allowance, shots=shots, issues=issues)
-        joblog.bound_log(f"{part['id']}：调用模型设计分镜（第 {_attempt + 1} 次）")
+        n = _attempt + 1
+        why = "" if n == 1 else f"（上次问题 {len(issues)} 条，已附在提示词末尾）"
+        joblog.bound_log(f"{pid}：调用模型设计分镜（第 {n}/{MAX_ATTEMPTS} 次，提示词 {len(prompt)} 字）{why}")
+        t0 = time.monotonic()
         raw = llm.ask(prompt, system=SYSTEM)
         cancel.check()
+        joblog.bound_log(f"{pid}：模型返回 {len(raw)} 字，用时 {time.monotonic() - t0:.1f} 秒")
         try:
             obj = parse_json_object(raw)
         except ValueError as exc:
             issues = [f"JSON 解析失败：{exc}"]
-            joblog.bound_log(f"{part['id']}：分镜输出不是有效 JSON，将重试", level="warn")
+            joblog.bound_log(f"{pid}：分镜输出不是有效 JSON（{exc}），将重试", level="warn")
             continue
         scenes, errs = parse_scenes(obj, script, ctxs)
         if errs:
             issues = errs[:12]
-            joblog.bound_log(f"{part['id']}：分镜未通过校验（{errs[0]}），将重试", level="warn")
+            joblog.bound_log(f"{pid}：分镜校验发现 {len(errs)} 处问题，将重试：", level="warn")
+            for e in errs[:12]:
+                joblog.bound_log(f"  · {e}", level="warn")
+            if len(errs) > 12:
+                joblog.bound_log(f"  · 其余 {len(errs) - 12} 处略", level="warn")
             continue
-        joblog.bound_log(f"{part['id']}：模型分镜通过校验", level="ok")
         allocate_shared_images(scenes, shots)
         sb = {
             "schema": 1, "part": script["part"], "title": script["title"], "chapter": chapter,
@@ -234,7 +263,15 @@ def direct_part_llm(script: Dict[str, Any], blocks: List[Dict[str, Any]], *, par
                                 images_enabled=images_enabled, shots_per_image=shots)
         if v["errors"]:
             issues = v["errors"][:12]
+            joblog.bound_log(f"{pid}：结构校验（V4/V5）发现 {len(v['errors'])} 处问题，将重试：", level="warn")
+            for e in v["errors"][:12]:
+                joblog.bound_log(f"  · {e}", level="warn")
             continue
         sb["warnings"] = v["warnings"]
+        joblog.bound_log(f"{pid}：模型分镜通过校验：{len(scenes)} 段（{_kind_summary(scenes)}），"
+                         f"图片 {sb['images_planned']}/{allowance}", level="ok")
+        for w in v["warnings"][:6]:
+            joblog.bound_log(f"  ! {w}", level="warn")
         return sb
+    joblog.bound_log(f"{pid}：分镜模型输出 {MAX_ATTEMPTS} 次仍不合格，本章未写入结果", level="error")
     raise PlanError(f"{script['part']} 分镜模型输出 {MAX_ATTEMPTS} 次仍不合格：" + "；".join(issues[:6]), raw=raw)

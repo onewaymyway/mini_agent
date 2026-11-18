@@ -113,8 +113,16 @@ def plan_storyboard(pdir: Path, part_id: str, *, force: bool = False, now: Optio
     cfg = load_visual_config(pdir)
     sha = _input_sha(pdir, part_id, script, part, cfg, engine)
     existing = load_storyboard(pdir, part_id)
+    label = "模型版" if engine == "llm" else "规则版"
     if existing and existing.get("input_sha") == sha and not force:
+        joblog.bound_log(f"{part_id}：已有{label}分镜且输入未变（口播、时长、视觉设置、引擎），复用，不调用模型")
         return existing
+    if existing and force:
+        joblog.bound_log(f"{part_id}：强制重新生成（覆盖已有分镜与手工编辑）")
+    elif existing and existing.get("input_sha") != sha:
+        joblog.bound_log(f"{part_id}：输入已变化（口播稿、本章时长、视觉设置或引擎），旧分镜作废，重新生成")
+    else:
+        joblog.bound_log(f"{part_id}：尚无分镜，开始生成（{label}）")
     if engine == "llm" and llm is None:
         raise PlanError("模型版分镜需要文本模型（mini_agent 配置）")
     chapter = {"number": f"第 {idx + 1} 章", "title": part["title"], "one_line": part.get("one_line", "")}
@@ -135,7 +143,10 @@ def plan_storyboard(pdir: Path, part_id: str, *, force: bool = False, now: Optio
     sb["errors"] = v["errors"]
     sb["warnings"] = sb["warnings"] + v["warnings"]
     write_json_atomic(_sb_path(pdir, part_id), sb)
-    label = "模型版" if engine == "llm" else "规则版"
+    n_err = len(sb["errors"])
+    tail = "校验通过" if n_err == 0 else f"仍有 {n_err} 处错误，需在分镜页修改"
+    joblog.bound_log(f"{part_id}：分镜已写入（{len(sb['scenes'])} 段，图片 {sb['images_planned']}/{allowance}，{tail}）",
+                     level="ok" if n_err == 0 else "warn")
     append_progress(pdir, f"生成分镜（{label}）{part_id}：{len(sb['scenes'])} 段，图片 {sb['images_planned']}/{allowance}", now)
     return sb
 
