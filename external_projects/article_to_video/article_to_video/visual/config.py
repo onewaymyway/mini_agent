@@ -10,7 +10,6 @@ import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..project_store import load_project, write_json_atomic
 from ..render.themes import DEFAULT_THEME, THEMES
 
 DEFAULT_STYLE_ANCHOR = (
@@ -75,18 +74,15 @@ def normalize_visual(raw: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, An
 
 
 def load_visual_config(project_dir: Path) -> Dict[str, Any]:
-    project = load_project(Path(project_dir))
-    cfg, _ = normalize_visual(project.get("visual"))
-    return cfg
+    from ..app_settings import effective_group  # 延迟导入，避免循环依赖
+    return effective_group(Path(project_dir), "visual")
 
 
 def save_visual_config(project_dir: Path, raw: Dict[str, Any]) -> Dict[str, Any]:
+    from ..app_settings import effective_group, save_group  # 延迟导入
     project_dir = Path(project_dir)
-    project = load_project(project_dir)
-    cfg, warnings = normalize_visual(raw)
-    project["visual"] = cfg
-    write_json_atomic(project_dir / "project.json", project)
-    return {"config": cfg, "warnings": warnings}
+    warnings = save_group(project_dir, "visual", raw)
+    return {"config": effective_group(project_dir, "visual"), "warnings": warnings}
 
 
 def image_allowance(part_minutes: float, max_per_minute: float, enabled: bool) -> int:

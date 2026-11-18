@@ -79,7 +79,8 @@ def export_final(pdir: Path, *, part_ids: Optional[List[str]] = None, episode: O
         raise ComposeError("以下章还没有合成视频：" + "、".join(missing) + "（请先合成本章）")
     infos = {pid: read_json(video_dir(pdir, pid) / "info.json") for pid in ids}
     cfg = load_compose_config(pdir)
-    project = load_project(pdir)
+    from ..app_settings import load_effective_project  # 延迟导入
+    project = load_effective_project(pdir)
     title = project.get("title") or spine.get("title") or "video"
     branding, warnings = resolve_branding(project)
     bgm, bgm_warn = resolve_bgm(pdir, project)
@@ -264,8 +265,9 @@ def export_final(pdir: Path, *, part_ids: Optional[List[str]] = None, episode: O
     write_json_atomic(exports / f"{name}_report.json", report)
     if verdict["errors"]:
         raise ComposeError("成片校验未通过：" + "；".join(verdict["errors"]))
-    project["stage"] = "P6_exported"
-    write_json_atomic(pdir / "project.json", project)
+    raw = load_project(pdir)           # 只写阶段标记：基于原始内容，不写回生效值
+    raw["stage"] = "P6_exported"
+    write_json_atomic(pdir / "project.json", raw)
     return report
 
 

@@ -10,8 +10,6 @@ from typing import Any, Dict, Optional
 from .project_store import (
     SCHEMA_VERSION,
     append_progress,
-    normalize_branding,
-    normalize_settings,
     now_iso,
     slugify,
     unique_project_dir,
@@ -78,8 +76,13 @@ def import_article(
     branding_raw["author"] = author_name
     if not branding_raw.get("source_title"):
         branding_raw["source_title"] = final_title
-    branding_n, warn_b = normalize_branding(branding_raw)
-    settings_n, warn_s = normalize_settings(settings)
+    from .app_settings import _merge as _mg, global_sparse_group as _gsg, inherited_group as _inh, normalize_group as _ng
+    branding_inh = _inh("branding")
+    branding_n, warn_b = _ng("branding", _mg(_gsg("branding"), branding_raw))
+    from .app_settings import diff, global_sparse_group, inherited_group, normalize_group, _merge  # 延迟导入
+    # 只有用户明确提供的字段参与比较：未提供的字段继承全局默认，不写入项目
+    settings_inh = inherited_group("settings")
+    settings_n, warn_s = normalize_group("settings", _merge(global_sparse_group("settings"), settings or {}))
     warnings = warn_b + warn_s
     if not author_name:
         warnings.append("未填写作者名：片头与片尾不署名，可在「📚 项目」里补填")
@@ -108,8 +111,9 @@ def import_article(
         "created_at": now_iso(now),
         "source": {"name": source_name, "sha256": sha, "chars": len(text)},
         "author_source": author_source,
-        "branding": branding_n,
-        "settings": settings_n,
+        # 新项目只保存与全局默认不同的字段（R4）；未填写的字段随全局默认变化
+        "branding": diff(branding_n, branding_inh),
+        "settings": diff(settings_n, settings_inh),
         "summary": summary,
     }
     write_json_atomic(project_dir / "project.json", project)

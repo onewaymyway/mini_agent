@@ -164,9 +164,10 @@ def write_part(project_dir: Path, part_id: str, llm, *, force: bool = False,
     if not spine.get("confirmed"):
         raise PlanError("请先确认大纲（C0），再写口播稿")
     part = spine["parts"][_part_index(spine, part_id)]
-    project = load_project(project_dir)
-    persona = project.get("settings", {}).get("persona", "host")
-    mode = project.get("settings", {}).get("mode", "condensed")
+    from ..app_settings import load_effective_project  # 延迟导入
+    settings_eff = load_effective_project(project_dir)["settings"]
+    persona = settings_eff.get("persona", "host")
+    mode = settings_eff.get("mode", "condensed")
     budget_minutes = float(part["budget_minutes"])
     budget_chars = chars_for_minutes(budget_minutes)
     glossary = spine.get("glossary") or []

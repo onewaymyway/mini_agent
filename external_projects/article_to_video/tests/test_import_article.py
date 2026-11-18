@@ -50,8 +50,10 @@ def test_import_creates_project_with_expected_files(tmp_path, reference_text):
     assert project["stage"] == "P0_imported"
     assert project["branding"]["author"] == "测试作者"
     assert project["author_source"] == "input"
-    assert project["branding"]["watermark"]["enabled"] is True
-    assert project["branding"]["watermark"]["text"] == "测试水印"
+    from article_to_video.app_settings import load_effective_project  # 生效值（原始文件只保存与默认不同的字段）
+    eff = load_effective_project(pdir)["branding"]
+    assert eff["watermark"]["enabled"] is True
+    assert eff["watermark"]["text"] == "测试水印"
 
 
 def test_author_missing_warns_and_is_not_guessed(tmp_path, reference_text):

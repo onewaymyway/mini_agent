@@ -79,6 +79,11 @@ def _clean_text(value: Any, max_chars: int) -> str:
 def normalize_settings(raw: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, Any], List[str]]:
     raw = dict(raw or {})
     warnings: List[str] = []
+    # 画幅与分辨率存放在 video 子字典中（导入与设置页都如此写入）；顶层同名字段仅作兼容
+    video_raw = raw.get("video") if isinstance(raw.get("video"), dict) else {}
+    for key in ("orientation", "resolution"):
+        if key in video_raw:
+            raw[key] = video_raw[key]
 
     def pick(key: str, allowed: Tuple[str, ...], default: str) -> str:
         value = raw.get(key)
@@ -178,15 +183,14 @@ def _deep_merge(base: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def update_branding(project_dir: Path, raw: Dict[str, Any], now: Optional[datetime] = None) -> List[str]:
-    """更新已有项目的署名与水印。只改 project.json，不动源文章与块数据。"""
+    """更新已有项目的署名与水印。只改 project.json 的覆盖值，不动源文章与块数据。
+
+    合并而非整体替换：只提交的字段被修改，其余字段保持生效值（嵌套字典逐层合并）。
+    """
+    from .app_settings import effective_group, save_group  # 延迟导入，避免循环依赖
     project_dir = Path(project_dir)
-    data = read_json(project_dir / "project.json")
-    # 合并而非整体替换：只提交的字段被修改，其余字段保持原值（嵌套字典逐层合并）
-    merged = _deep_merge(data.get("branding") or {}, raw or {})
-    branding, warnings = normalize_branding(merged)
-    data["branding"] = branding
-    data["updated_at"] = now_iso(now)
-    write_json_atomic(project_dir / "project.json", data)
+    cur = effective_group(project_dir, "branding")
+    warnings = save_group(project_dir, "branding", _deep_merge(cur, raw or {}), now=now)
     append_progress(project_dir, "更新署名与水印设置", now)
     return warnings
 

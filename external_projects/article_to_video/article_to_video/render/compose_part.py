@@ -16,7 +16,7 @@ from typing import Any, Dict, Optional, Tuple
 from .. import cancel, joblog
 from ..audio.synth import load_timeline
 from ..planning.errors import PlanError
-from ..project_store import append_progress, load_project, now_iso, read_json, write_json_atomic
+from ..project_store import append_progress, now_iso, read_json, write_json_atomic
 from ..script.writer import load_script
 from ..visual.config import load_visual_config
 from ..visual.images import ensure_illustration
@@ -96,8 +96,8 @@ def render_part(project_dir: Path, part_id: str, *, provider=None,
     script = load_script(pdir, part_id)
     sb = load_storyboard(pdir, part_id)
     cfg = load_visual_config(pdir)
-    project = load_project(pdir)
-    video = project.get("settings", {}).get("video", {})
+    from ..app_settings import load_effective_project  # 延迟导入
+    video = load_effective_project(pdir)["settings"].get("video", {})
     orientation = video.get("orientation", "landscape")
     canvas = canvas_size(orientation, video.get("resolution", "1080P"))
     size = cfg["images"]["size"]

@@ -167,8 +167,9 @@ def _stage_compose(pdir: Path, ctx: Dict[str, Any]) -> Dict[str, Any]:
 
 def _stage_export(pdir: Path, ctx: Dict[str, Any]) -> Dict[str, Any]:
     parts = _parts(pdir)
-    project = read_json(pdir / "project.json")
-    specs = episode_specs(parts, float(project.get("episode_max_minutes", DEFAULT_EPISODE_MAX)))
+    from ..app_settings import load_effective_project  # 延迟导入
+    project = load_effective_project(pdir)
+    specs = episode_specs(parts, float(project["settings"].get("episode_max_minutes", DEFAULT_EPISODE_MAX)))
     ctx["status"]["episodes"] = [{"index": s["index"], "total": s["total"], "parts": s["parts"]} for s in specs]
     if "export" in ctx["manual"] and not ctx["approve"]:
         return _waiting("终审待人工确认：检查成片后以 approve 导出")
@@ -282,7 +283,8 @@ def default_providers(pdir: Path, *, offline: bool = False) -> Dict[str, Any]:
     if offline:
         return {"llm": None, "tts": SilenceTTS(), "image": make_image_provider("stub")}
     cfg = project_tts_config(Path(pdir))
-    image_name = load_project(Path(pdir)).get("visual", {}).get("images", {}).get("provider", "agnes")
+    from ..app_settings import effective_group  # 延迟导入
+    image_name = effective_group(Path(pdir), "visual")["images"]["provider"]
     return {"llm": make_text_llm("miniagent"),
             "tts": build_chain(cfg["engine_chain"], edge_proxy=cfg["edge_proxy"]),
             "image": make_image_provider(image_name)}

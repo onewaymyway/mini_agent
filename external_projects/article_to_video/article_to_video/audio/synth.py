@@ -20,28 +20,26 @@ from typing import Any, Dict, Optional
 from .. import cancel, joblog
 from ..planning.errors import PlanError
 from ..planning.runner import load_spine
-from ..project_store import append_progress, load_project, now_iso, read_json, write_json_atomic
+from ..project_store import append_progress, now_iso, read_json, write_json_atomic
 from ..providers.tts import sanitize_tts_text
 from ..script.writer import load_script
-from .config import normalize_tts, rate_for
+from .config import rate_for
 from .timeline import assign_voices, build_timeline
 
 
 def project_tts_config(project_dir: Path) -> Dict[str, Any]:
-    raw = load_project(Path(project_dir)).get("settings", {}).get("tts")
-    cfg, _ = normalize_tts(raw)
-    return cfg
+    from ..app_settings import effective_group  # 延迟导入
+    return effective_group(Path(project_dir), "settings")["tts"]
 
 
 def update_tts_settings(project_dir: Path, raw: Dict[str, Any], now: Optional[datetime] = None):
+    from ..app_settings import save_group, effective_group  # 延迟导入
     project_dir = Path(project_dir)
-    data = load_project(project_dir)
-    cfg, warnings = normalize_tts(raw)
-    data.setdefault("settings", {})["tts"] = cfg
-    data["updated_at"] = now_iso(now)
-    write_json_atomic(project_dir / "project.json", data)
+    cur = effective_group(project_dir, "settings")
+    cur["tts"] = dict(raw or {})
+    warnings = save_group(project_dir, "settings", cur, now=now)
     append_progress(project_dir, "更新配音设置", now)
-    return cfg, warnings
+    return effective_group(project_dir, "settings")["tts"], warnings
 
 
 def _sentence_key(voice: str, rate: str, tts_text: str, engine_name: str) -> str:

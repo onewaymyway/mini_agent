@@ -189,13 +189,12 @@ def inside_canvas(canvas, box: Tuple[int, int, int, int]) -> bool:
 
 def save_bgm(project_dir: Path, *, enabled: bool, rel_path: str, volume: float) -> Dict[str, Any]:
     """保存 BGM 设置到 project.json（只接受项目内的相对路径；音频须由用户提供）。"""
-    from ..project_store import load_project, write_json_atomic
+    from ..app_settings import load_effective_project, save_group  # 延迟导入
     project_dir = Path(project_dir)
-    project = load_project(project_dir)
     rel = str(rel_path or "").strip().replace("\\", "/")
     if rel.startswith("/") or ".." in Path(rel).parts:
         rel = ""
-    project["bgm"] = {"enabled": bool(enabled), "path": rel, "volume": round(min(1.0, max(0.0, float(volume))), 2)}
-    write_json_atomic(project_dir / "project.json", project)
-    cfg, warn = resolve_bgm(project_dir, project)
-    return {"config": cfg, "warnings": warn}
+    warn = save_group(project_dir, "bgm", {"enabled": bool(enabled), "path": rel,
+                                           "volume": round(min(1.0, max(0.0, float(volume))), 2)})
+    cfg, warn2 = resolve_bgm(project_dir, load_effective_project(project_dir))
+    return {"config": cfg, "warnings": warn + warn2}

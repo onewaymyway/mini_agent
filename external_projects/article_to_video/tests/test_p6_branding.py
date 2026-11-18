@@ -37,8 +37,9 @@ def test_save_bgm_refuses_absolute_and_parent_paths(tmp_path):
     from article_to_video.project_store import write_json_atomic
     write_json_atomic(tmp_path / "project.json", {"title": "t"})
     save_bgm(tmp_path, enabled=True, rel_path="/abs/x.mp3", volume=2.0)
-    assert read_json(tmp_path / "project.json")["bgm"]["path"] == ""
-    assert read_json(tmp_path / "project.json")["bgm"]["volume"] == 1.0
+    from article_to_video.app_settings import load_effective_project
+    assert load_effective_project(tmp_path)["bgm"]["path"] == ""
+    assert load_effective_project(tmp_path)["bgm"]["volume"] == 1.0
 
 
 @pytest.mark.parametrize("pos", ["top_left", "top_right", "bottom_left", "bottom_right", "center"])

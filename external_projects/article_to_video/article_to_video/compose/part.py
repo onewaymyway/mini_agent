@@ -12,7 +12,7 @@ from typing import Any, Dict, Optional
 
 from .. import cancel
 from ..audio.synth import load_timeline
-from ..project_store import append_progress, load_project, now_iso, read_json, write_json_atomic
+from ..project_store import append_progress, now_iso, read_json, write_json_atomic
 from ..script.writer import load_script
 from ..validators.compose import check_video
 from ..visual.storyboard import load_storyboard
@@ -52,8 +52,8 @@ def compose_part(pdir: Path, part_id: str, *, now: Optional[datetime] = None) ->
     if timeline is None:
         raise ComposeError(f"{part_id} 还没有时间轴（P3）")
     script = load_script(pdir, part_id)
-    project = load_project(pdir)
-    video = project.get("settings", {}).get("video", {})
+    from ..app_settings import load_effective_project  # 延迟导入
+    video = load_effective_project(pdir)["settings"].get("video", {})
     orientation = video.get("orientation", "landscape")
     canvas = canvas_size(orientation, video.get("resolution", "1080P"))
     cfg = load_compose_config(pdir)

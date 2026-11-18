@@ -19,10 +19,8 @@ from article_to_video.compose.ffrun import probe
 
 
 def _use_720p(pdir):
-    p = pdir / "project.json"
-    pj = read_json(p)
-    pj["settings"]["video"]["resolution"] = "720P"
-    write_json_atomic(p, pj)
+    from article_to_video.app_settings import set_field
+    set_field(pdir, "settings", "video.resolution", "720P")
 
 
 @pytest.fixture(scope="module")

@@ -19,10 +19,8 @@ from helpers_p5 import fake_part
 def pdir(tmp_path, monkeypatch):
     monkeypatch.setenv("ARTICLE_TO_VIDEO_HOME", str(tmp_path))
     d, _ = voiced_project(tmp_path)
-    p = d / "project.json"
-    pj = read_json(p)
-    pj["settings"]["video"]["resolution"] = "720P"
-    write_json_atomic(p, pj)
+    from article_to_video.app_settings import set_field
+    set_field(d, "settings", "video.resolution", "720P")
     fake_part(d, "P01", 3.0)
     fake_part(d, "P02", 3.0)
     update_branding(d, {"author": "作者甲", "source_url": "https://example.com/a",

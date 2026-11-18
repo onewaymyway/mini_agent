@@ -86,7 +86,8 @@ def plan_outline(project_dir: Path, *, engine: str = "llm", llm=None,
     project = ctx["project"]
     title = project["title"]
     author = project["branding"].get("author", "")
-    st = ctx["project"].get("settings", {})
+    from ..app_settings import load_effective_project  # 延迟导入
+    st = load_effective_project(project_dir)["settings"]
     meta = {"title": title, "author": author, "mode": st.get("mode", "condensed"),
             "target_minutes": float(st.get("target_minutes", 10.0))}
 

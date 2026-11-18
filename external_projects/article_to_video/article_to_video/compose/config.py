@@ -9,7 +9,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..project_store import load_project, write_json_atomic
 
 TRANSITIONS = ("cut", "fade", "dissolve")
 SUBTITLE_MODES = ("auto", "always", "off")
@@ -50,14 +49,12 @@ def normalize_compose(raw: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, A
 
 
 def load_compose_config(project_dir: Path) -> Dict[str, Any]:
-    cfg, _ = normalize_compose(load_project(Path(project_dir)).get("compose"))
-    return cfg
+    from ..app_settings import effective_group  # 延迟导入，避免循环依赖
+    return effective_group(Path(project_dir), "compose")
 
 
 def save_compose_config(project_dir: Path, raw: Dict[str, Any]) -> Dict[str, Any]:
+    from ..app_settings import effective_group, save_group  # 延迟导入
     project_dir = Path(project_dir)
-    project = load_project(project_dir)
-    cfg, warnings = normalize_compose(raw)
-    project["compose"] = cfg
-    write_json_atomic(project_dir / "project.json", project)
-    return {"config": cfg, "warnings": warnings}
+    warnings = save_group(project_dir, "compose", raw)
+    return {"config": effective_group(project_dir, "compose"), "warnings": warnings}
