@@ -8,6 +8,7 @@ from article_to_video.planning.errors import PlanError
 from article_to_video.providers import text as text_mod
 from conftest import PROJECT_DIR
 from helpers_p1 import make_project
+from helpers_ui_nav import go_page, go_step
 
 
 class BadLLM:
@@ -86,7 +87,7 @@ def test_outline_page_blocks_model_generation_when_model_unavailable(tmp_path, m
     make_project(tmp_path)
     monkeypatch.setattr(op, "text_model_status", lambda: (False, "缺少 API key"))
     at = AppTest.from_file(str(PROJECT_DIR / "app.py"), default_timeout=90).run()
-    at.sidebar.radio[0].set_value("🗺️ 大纲").run()
+    go_step(at, "🗺️ 大纲")
     assert not at.exception, [e.value for e in at.exception]
     assert any("文本模型未就绪" in w.value and "缺少 API key" in w.value for w in at.warning)
     gen = next(b for b in at.button if b.label.startswith("生成 / 重新生成"))

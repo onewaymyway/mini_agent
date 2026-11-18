@@ -1,4 +1,11 @@
-"""ui/cockpit_page.py — 「🧭 驾驶舱」（P7）：挡位与预算、一键流水线（后台可停止，R1 起带实时日志与步骤时间表）、各章状态、整章重置。"""
+"""ui/cockpit_page.py — 「🧭 驾驶舱」（R7）：项目的主入口。
+
+驾驶舱分两部分：
+  * 流程总览：每个步骤（大纲、口播稿、配音、分镜、合成导出）的状态与下一步；
+  * 步骤区：「🧭 总控」（挡位与预算、一键流水线、上次运行、各章状态、整章重置）与各个步骤的编辑界面。
+    步骤之间用一排单选按钮切换，每次只渲染当前步骤，因此同一项目内不会出现重复控件。
+各步骤的业务代码仍在 ui/outline_page.py 等模块中（_xxx_body），这里只负责编排与导航。
+"""
 
 from __future__ import annotations
 
@@ -14,12 +21,27 @@ from article_to_video.project_store import list_projects
 from article_to_video.script.writer import load_script
 from article_to_video.visual.storyboard import storyboard_status
 from ui import jobs
-from ui.joblog_panel import render_run_monitor, run_state
+from ui.joblog_panel import render_job_panel, render_run_monitor, run_state
+from ui.outline_page import _outline_body
+from ui.script_page import _script_body
+from ui.voice_page import _voice_body
+from ui.storyboard_page import _storyboard_body
+from ui.export_page import _export_body
 
 _GEAR_HELP = {
     "G0": "默认：大纲、口播、分镜、终审都需要人工确认。",
     "G1": "只有大纲与终审需要人工；口播与分镜通过校验后自动确认。",
     "G2": "全自动，必须设置预算上限（生图次数或总耗时）；超限即停止。",
+}
+
+CONTROL = "🧭 总控"
+# 导航名 → (步骤标题, 业务函数, 运行日志 scope, 日志面板标题)
+STEPS = {
+    "🗺️ 大纲": ("🗺️ 大纲（C0）", _outline_body, ["outline"], "大纲运行日志"),
+    "📝 口播稿": ("📝 口播稿（C1）", _script_body, ["script"], "写稿运行日志"),
+    "🔊 配音": ("🔊 配音（S5）", _voice_body, ["voice"], "配音运行日志"),
+    "🎞️ 分镜": ("🎞️ 分镜（C2）", _storyboard_body, ["storyboard", "render"], "分镜与渲染运行日志"),
+    "🎬 合成导出": ("🎬 合成导出（P5）", _export_body, ["export"], "合成导出运行日志"),
 }
 
 
@@ -39,17 +61,64 @@ def _part_rows(pdir):
     return rows
 
 
-def render_cockpit_page() -> None:
-    st.header("🧭 驾驶舱")
-    root = projects_root()
-    projects = [p for p in list_projects(root) if "error" not in p]
-    if not projects:
-        st.info("还没有项目。先到「📥 新建项目」导入文章。")
-        return
-    pid = st.selectbox("项目", [p["id"] for p in projects],
-                       format_func=lambda i: next(p["title"] for p in projects if p["id"] == i))
-    pdir = root / pid
+def overview(pdir) -> list:
+    """每个步骤的状态与说明（只读，不调用模型）。返回 [{步骤, 状态, 说明, 完成}]。"""
+    spine = load_spine(pdir)
+    parts = spine["parts"] if spine else []
+    ids = [p["id"] for p in parts]
+    n = len(ids)
+    rows = []
 
+    if spine is None:
+        rows.append({"步骤": "🗺️ 大纲", "状态": "未生成", "说明": "在「大纲」步骤生成", "完成": False})
+    elif spine.get("confirmed"):
+        rows.append({"步骤": "🗺️ 大纲", "状态": "已确认", "说明": f"{n} 章", "完成": True})
+    else:
+        rows.append({"步骤": "🗺️ 大纲", "状态": "待确认", "说明": "检查章节与时长后确认", "完成": False})
+
+    scripts = {pid: load_script(pdir, pid) for pid in ids}
+    n_conf = sum(1 for sc in scripts.values() if sc and sc.get("confirmed"))
+    n_draft = sum(1 for sc in scripts.values() if sc)
+    if not n:
+        rows.append({"步骤": "📝 口播稿", "状态": "等待大纲", "说明": "", "完成": False})
+    elif n_conf == n:
+        rows.append({"步骤": "📝 口播稿", "状态": "已确认", "说明": f"{n} 章", "完成": True})
+    else:
+        rows.append({"步骤": "📝 口播稿", "状态": "未完成" if n_draft == 0 else f"{n_conf}/{n} 章已确认",
+                     "说明": "逐章写稿并确认", "完成": False})
+
+    n_voice = sum(1 for pid in ids if (pdir / "parts" / pid / "timeline.json").is_file())
+    rows.append({"步骤": "🔊 配音", "状态": "已完成" if n and n_voice == n else
+                 (f"{n_voice}/{n} 章" if n_voice else "未配音"),
+                 "说明": "逐句配音与时间轴", "完成": bool(n and n_voice == n)})
+
+    sb = {pid: storyboard_status(pdir, pid) for pid in ids}
+    n_sb = sum(1 for s_ in sb.values() if s_["confirmed"])
+    n_stale = sum(1 for s_ in sb.values() if s_["stale"])
+    if n and n_sb == n:
+        sb_state = "已确认"
+    elif n_stale:
+        sb_state = f"{n_stale} 章过期"
+    else:
+        sb_state = f"{n_sb}/{n} 章已确认" if n_sb else "未生成"
+    rows.append({"步骤": "🎞️ 分镜", "状态": sb_state, "说明": "画面设计与插图", "完成": bool(n and n_sb == n)})
+
+    n_video = sum(1 for pid in ids if (pdir / "parts" / pid / "video" / "part.mp4").is_file())
+    exported = any((pdir / "exports").glob("*.mp4")) if (pdir / "exports").is_dir() else False
+    rows.append({"步骤": "🎬 合成导出",
+                 "状态": "已导出" if exported else (f"{n_video}/{n} 章已合成" if n_video else "未合成"),
+                 "说明": "章合成与成片导出", "完成": exported})
+    return rows
+
+
+def _next_hint(rows) -> str:
+    for r in rows:
+        if not r["完成"]:
+            return f"下一步：{r['步骤']}（{r['状态']}）"
+    return "全部步骤已完成。"
+
+
+def _control_body(pdir) -> None:
     busy = run_state(pdir, None)["busy"]
 
     from article_to_video import app_settings as S  # 默认值来自「⚙️ 设置」（R4）
@@ -84,8 +153,6 @@ def render_cockpit_page() -> None:
                              merge_all=merge_all, outline_engine="rules" if offline else pl["outline_engine"])
             if jobs.start(pdir, f"流水线 {gear}", run, scope="pipeline"):
                 st.rerun()
-
-    render_run_monitor(pdir, ["pipeline"], title="流水线运行监控")
 
     status = read_status(pdir)
     if status:
@@ -130,3 +197,34 @@ def render_cockpit_page() -> None:
                     st.rerun()
                 except PipelineError as exc:
                     st.error(str(exc))
+
+
+def render_cockpit_page() -> None:
+    st.header("🧭 驾驶舱")
+    root = projects_root()
+    projects = [p for p in list_projects(root) if "error" not in p]
+    if not projects:
+        st.info("还没有项目。先到「📥 新建项目」导入文章。")
+        return
+    pid = st.selectbox("项目", [p["id"] for p in projects],
+                       format_func=lambda i: next(p["title"] for p in projects if p["id"] == i))
+    pdir = root / pid
+
+    rows = overview(pdir)
+    st.subheader("流程总览")
+    st.table([{"步骤": r["步骤"], "状态": r["状态"], "说明": r["说明"]} for r in rows])
+    st.caption(_next_hint(rows))
+
+    step = st.radio("步骤", [CONTROL, *STEPS], horizontal=True, key="cockpit_step", label_visibility="collapsed")
+    if step == CONTROL:
+        try:
+            _control_body(pdir)
+        finally:
+            render_run_monitor(pdir, ["pipeline"], title="流水线运行监控")
+        return
+    heading, body_fn, scopes, panel_title = STEPS[step]
+    st.header(heading)
+    try:
+        body_fn(pdir)
+    finally:
+        render_job_panel(pdir, scopes, title=panel_title)

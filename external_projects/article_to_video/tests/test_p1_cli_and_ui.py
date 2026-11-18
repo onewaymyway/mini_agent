@@ -10,6 +10,7 @@ from helpers_p1 import make_project
 
 pytest.importorskip("streamlit")
 from streamlit.testing.v1 import AppTest  # noqa: E402
+from helpers_ui_nav import go_page, go_step
 
 
 def test_plan_outline_cli_rules(tmp_path):
@@ -41,7 +42,7 @@ def test_outline_page_renders_and_shows_parts(monkeypatch, tmp_path):
     from article_to_video.planning.runner import plan_outline
     plan_outline(pdir, engine="rules")
     at = AppTest.from_file(str(PROJECT_DIR / "app.py"), default_timeout=90).run()
-    at.sidebar.radio[0].set_value("🗺️ 大纲").run()
+    go_step(at, "🗺️ 大纲")
     assert not at.exception, [e.value for e in at.exception]
     assert any(h.value == "🗺️ 大纲（C0）" for h in at.header)
     assert any("章标题" in ti.label for ti in at.text_input)
@@ -51,6 +52,6 @@ def test_outline_page_without_outline_shows_hint(monkeypatch, tmp_path):
     monkeypatch.setenv("ARTICLE_TO_VIDEO_HOME", str(tmp_path))
     make_project(tmp_path)
     at = AppTest.from_file(str(PROJECT_DIR / "app.py"), default_timeout=90).run()
-    at.sidebar.radio[0].set_value("🗺️ 大纲").run()
+    go_step(at, "🗺️ 大纲")
     assert not at.exception
     assert any("还没有大纲" in i.value for i in at.info)

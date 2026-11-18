@@ -9,13 +9,14 @@ from helpers_p4 import voiced_project
 
 pytest.importorskip("streamlit")
 from streamlit.testing.v1 import AppTest  # noqa: E402
+from helpers_ui_nav import go_page, go_step
 
 
 def test_export_page_loads_and_lists_chapters(monkeypatch, tmp_path):
     monkeypatch.setenv("ARTICLE_TO_VIDEO_HOME", str(tmp_path))
     voiced_project(tmp_path)
     at = AppTest.from_file(str(PROJECT_DIR / "app.py"), default_timeout=120).run()
-    at.sidebar.radio[0].set_value("🎬 合成导出").run()
+    go_step(at, "🎬 合成导出")
     assert not at.exception, [e.value for e in at.exception]
     assert any(h.value == "🎬 合成导出（P5）" for h in at.header)
     assert any(b.label == "🎞️ 导出成片（后台）" for b in at.button)

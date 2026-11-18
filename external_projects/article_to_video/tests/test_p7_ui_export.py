@@ -13,6 +13,7 @@ from helpers_p2 import make_project
 
 pytest.importorskip("streamlit")
 from streamlit.testing.v1 import AppTest  # noqa: E402
+from helpers_ui_nav import go_page, go_step
 
 
 @pytest.fixture
@@ -57,7 +58,7 @@ def test_cockpit_page_loads_with_status_and_gear(monkeypatch, tmp_path):
     monkeypatch.setenv("ARTICLE_TO_VIDEO_HOME", str(tmp_path))
     make_project(tmp_path)
     at = AppTest.from_file(str(PROJECT_DIR / "app.py"), default_timeout=120).run()
-    at.sidebar.radio[0].set_value("🧭 驾驶舱").run()
+    go_page(at, "🧭 驾驶舱")
     assert not at.exception, [e.value for e in at.exception]
     assert any(b.label.startswith("▶ 运行流水线") for b in at.button)
 

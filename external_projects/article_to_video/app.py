@@ -10,32 +10,24 @@ if str(PROJECT_DIR) not in sys.path:
 import streamlit as st  # noqa: E402
 
 from ui.import_page import render_import_page  # noqa: E402
-from ui.outline_page import render_outline_page  # noqa: E402
-from ui.script_page import render_script_page  # noqa: E402
-from ui.voice_page import render_voice_page  # noqa: E402
-from ui.storyboard_page import render_storyboard_page  # noqa: E402
-from ui.export_page import render_export_page  # noqa: E402
 from ui.cockpit_page import render_cockpit_page  # noqa: E402
 from ui.projects_page import render_projects_page  # noqa: E402
 from ui.settings_page import render_settings_page  # noqa: E402
 
 st.set_page_config(page_title="article_to_video", page_icon="🎞️", layout="wide")
 
+# R7：驾驶舱是主入口，大纲、口播稿、配音、分镜、合成导出都在驾驶舱的步骤区内。
+# 侧边栏只保留与项目全局相关的入口。
 PAGES = {
-    "📥 新建项目": render_import_page,
-    "🗺️ 大纲": render_outline_page,
-    "📝 口播稿": render_script_page,
-    "🔊 配音": render_voice_page,
-    "🎞️ 分镜": render_storyboard_page,
     "🧭 驾驶舱": render_cockpit_page,
-    "🎬 合成导出": render_export_page,
+    "📥 新建项目": render_import_page,
     "📚 项目": render_projects_page,
     "⚙️ 设置": render_settings_page,
 }
 
 with st.sidebar:
     st.title("article_to_video")
-    st.caption("文章 → 讲解视频（R4：统一设置）")
+    st.caption("文章 → 讲解视频（R7：驾驶舱为主入口）")
     page = st.radio("页面", list(PAGES), label_visibility="collapsed")
 
 PAGES[page]()

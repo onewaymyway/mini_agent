@@ -18,7 +18,8 @@ def home(tmp_path, monkeypatch):
 
 def _app(page):
     at = AppTest.from_file(str(PROJECT_DIR / "app.py"), default_timeout=90).run()
-    at.sidebar.radio[0].set_value(page).run()
+    from helpers_ui_nav import go_page, go_step
+    go_page(at, page) if page in ("📥 新建项目", "📚 项目", "⚙️ 设置", "🧭 驾驶舱") else go_step(at, page)
     assert not at.exception, [e.value for e in at.exception]
     return at
 

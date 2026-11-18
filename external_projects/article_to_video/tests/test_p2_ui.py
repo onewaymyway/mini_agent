@@ -11,6 +11,7 @@ from streamlit.testing.v1 import AppTest  # noqa: E402
 
 from article_to_video.script import writer as w  # noqa: E402
 from ui import jobs  # noqa: E402
+from helpers_ui_nav import go_page, go_step
 
 
 def test_script_page_renders_with_script(monkeypatch, tmp_path):
@@ -18,7 +19,7 @@ def test_script_page_renders_with_script(monkeypatch, tmp_path):
     pdir = ready_project(tmp_path)
     w.write_part(pdir, "P01", ScriptLLM(good_script))
     at = AppTest.from_file(str(PROJECT_DIR / "app.py"), default_timeout=90).run()
-    at.sidebar.radio[0].set_value("📝 口播稿").run()
+    go_step(at, "📝 口播稿")
     assert not at.exception, [e.value for e in at.exception]
     assert any(h.value == "📝 口播稿（C1）" for h in at.header)
     assert any(b.label.startswith("写全部章") for b in at.button)
@@ -30,7 +31,7 @@ def test_script_page_without_confirmed_outline_shows_hint(monkeypatch, tmp_path)
     pdir = make_project(tmp_path)
     plan_outline(pdir, engine="rules")
     at = AppTest.from_file(str(PROJECT_DIR / "app.py"), default_timeout=90).run()
-    at.sidebar.radio[0].set_value("📝 口播稿").run()
+    go_step(at, "📝 口播稿")
     assert not at.exception
     assert any("确认大纲" in i.value for i in at.info)
 

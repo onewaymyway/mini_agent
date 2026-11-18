@@ -10,6 +10,7 @@ from conftest import PROJECT_DIR
 from helpers_p1 import make_project
 from helpers_p2 import ScriptLLM, good_script, ready_project
 from ui import jobs
+from helpers_ui_nav import go_page, go_step
 
 
 def _wait(pdir, timeout=20.0):
@@ -118,7 +119,7 @@ def test_each_business_page_ends_with_log_panel(tmp_path, monkeypatch, page):
     monkeypatch.setenv("ARTICLE_TO_VIDEO_HOME", str(tmp_path))
     ready_project(tmp_path)
     at = AppTest.from_file(str(PROJECT_DIR / "app.py"), default_timeout=90).run()
-    at.sidebar.radio[0].set_value(page).run()
+    go_page(at, page) if page == "📚 项目" else go_step(at, page)
     assert not at.exception, [e.value for e in at.exception]
     assert any(PANEL_TITLES[page] in m.value for m in at.markdown)
 
@@ -129,7 +130,7 @@ def test_outline_generate_button_starts_background_job_from_ui(tmp_path, monkeyp
     monkeypatch.setenv("ARTICLE_TO_VIDEO_HOME", str(tmp_path))
     pdir = make_project(tmp_path)           # 没有大纲
     at = AppTest.from_file(str(PROJECT_DIR / "app.py"), default_timeout=90).run()
-    at.sidebar.radio[0].set_value("🗺️ 大纲").run()
+    go_step(at, "🗺️ 大纲")
     next(r for r in at.radio if r.label == "生成方式").set_value("rules").run()   # 离线规则，不依赖模型配置
     gen = next(b for b in at.button if b.label.startswith("生成 / 重新生成"))
     gen.click().run()
