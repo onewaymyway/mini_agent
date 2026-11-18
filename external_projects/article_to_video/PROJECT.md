@@ -11,8 +11,8 @@
 | **P1** 规划 | 分节摘要（S1）、主线与大纲（S2）、V1 覆盖校验、取舍报告、离线规则版、大纲确认页（C0） | ✅ 完成 |
 | **P2** 口播稿 | 分章写稿（S3）、发音词典、V2 忠实度与 V3 可读性校验、字数预算（±15%）、后台写稿可停止、脚本编辑与确认（C1） | ✅ 完成（102 项测试通过） |
 | **P3** 配音与时间轴 | 逐句 TTS（降级链）、双声线、句间停顿、语速、`timeline.json`、试听、设置 | ✅ 完成（122 项通过，1 项需联网跳过） |
-| P4 视觉 | 分镜、卡片/图表渲染、插图预算 | 未开始 |
-| P5 合成 | beat→章→成片、字幕、进度条、封面 | 未开始 |
+| **P4** 视觉 | 分镜（规则版）、卡片/流程/表格/列表/时间线/金句/公式渲染、插图预算与缓存、V4/V5 校验、章渲染清单、分镜页（C2） | ✅ 完成（186 项通过，1 项需联网跳过） |
+| P5 合成 | beat→章→成片、字幕、进度条、封面 | 未开始（等待 P4 确认后进入） |
 | P6 署名与水印 | 片头/片尾/下三分之一条、水印叠加 | 未开始（P0 已保存配置） |
 | P7 自动化 | G1/G2 挡位、多期拆分 | 未开始 |
 
@@ -57,9 +57,9 @@ article_to_video/
 │   │   ├── fidelity.py       V2（P1 部分）：摘要中的原话与数字必须出现在原文
 │   │   └── coverage.py       V1：每个小节恰好出现一次（章或取舍报告）
 │   └── providers/text.py     文本 LLM（mini_agent 的 LLMHelper）
-├── entrypoints/              import_article / list_projects / health / plan_outline / write_script / synth_audio
-├── ui/                       import_page / outline_page（C0）/ script_page（C1）/ voice_page（S5）/ projects_page / jobs
-├── tests/                    122 项通过 + 1 项需联网（P0 40 + P1 34 + P2 28 + P3 20）
+├── entrypoints/              import_article / list_projects / health / plan_outline / write_script / synth_audio / plan_storyboard / render_visuals
+├── ui/                       import_page / outline_page（C0）/ script_page（C1）/ voice_page（S5）/ storyboard_page（C2）/ projects_page / jobs
+├── tests/                    186 项通过 + 1 项需联网（P0–P3 122 + P4 64）
 └── docs/README.md
 ```
 
@@ -76,6 +76,8 @@ python entrypoints/plan_outline.py --id <项目目录名> --engine miniagent # �
 python entrypoints/write_script.py --id <项目目录名>            # 写口播稿（需要模型）
 python entrypoints/synth_audio.py --id <项目目录名>            # 配音（需要 edge-tts 或 CosyVoice）
 python entrypoints/synth_audio.py --id <项目目录名> --stub      # 仅流程验证：静音
+python entrypoints/plan_storyboard.py --id <项目目录名>          # 生成分镜（规则版，需 C1 已确认）
+python entrypoints/render_visuals.py --id <项目目录名> --provider none  # 渲染画面（none=插图全部降级为卡片）
 python entrypoints/health.py
 python -m pytest -q
 A2V_REAL_TTS=1 python -m pytest -q tests/test_p3_real_edge.py  # 真实 edge-tts 冒烟（需网络）
@@ -122,6 +124,29 @@ A2V_REAL_TTS=1 python -m pytest -q tests/test_p3_real_edge.py  # 真实 edge-tts
 - **不静默降级**：引擎链全部失败时报错并列出每个引擎的原因；只有 `--stub` 或界面勾选"仅流程验证"才生成静音，且时间轴带 stub 警告。
 - **前置条件**：大纲已确认（C0），且该章口播稿已确认（C1）。
 - **试听**：写入 `preview/`，不改变项目的音频与时间轴。
+
+## P4 已确定的规则
+
+- **分镜（S4，规则版）**：不调用模型。画面类型由原文结构决定：代码块链式流程/回路 → `diagram`；表格 → `table`；公式 → `formula`；列表 → `list`（年份开头 → `timeline`）；金句 → `quote`；其余 → `keypoint`。分镜文件 `parts/<章>/storyboard.json`，场景 ID 即段落 ID。LLM 版分镜未做。
+- **文字密度**：单条文字 ≤ 60 字，超出自动按子句拆分；每张卡条目数上限：卡片/插图 4、列表与时间线 5、流程 6 节点、表格 6 行 × 4 列、公式 3 条解释。
+- **逐步出现**：每个状态对应一句（`at_sentence`）；状态多于句子时，同一句内均分时长。表格的条目由行派生，不接受单独编辑。
+- **V4 节奏**：相邻三段不得同一类型（生成时自动修正，编辑后不通过则报错）；原文结构未被画面表达时给出提示。
+- **V5 插图**：额度 = 章时长 × 每分钟上限（默认 2.5，上限 6）；提示词必须带固定风格锚（含禁文字约束），主题中不得出现写字类词语。
+- **插图缓存**：`parts/<章>/images/index.json` 记录提示词哈希；哈希不变则复用，不调用生图。重新生成写入新版本 `_vNNN.png`，旧版本保留。同章第一张生成的图作为后续图的风格参考。
+- **降级**：未配置生图 key、已关闭生图或生图失败时，插图按卡片绘制，并在清单与界面中写明原因。渲染不因此中断。
+- **过期**：口播稿或视觉设置变化后，分镜标记为过期；过期分镜不能确认或渲染，重新生成会覆盖界面中的编辑。
+- **渲染清单** `parts/<章>/visuals/manifest.json`：P5 合成的唯一输入。每个场景记录时间段、底图与各状态图层及出现时刻（来自时间轴）。场景缓存键 = 场景内容 + 主题 + 风格锚 + 画幅 + 渲染版本。
+- **画幅**：横屏 1920×1080（1080P）/ 1280×720（720P），竖屏 1080×1920 / 720×1280。字号按短边比例缩放。
+- **字体**：中文字体优先读取环境变量 `ARTICLE_TO_VIDEO_FONT`，其次系统字体候选；找不到时报错，绝不画成方框。
+
+## 已知限制（P4）
+
+- S4 只有规则版，画面选择不理解语义；可在分镜页手动改类型。
+- 插图提示词由主题词拼接，未经模型改写，隐喻质量有限。
+- 「一图多用」（同一张图裁切为多个镜头）的数据字段已支持，但没有自动分配，需要在分镜页手动设置取景位置。
+- 真实生图接口（Agnes）未在本环境调用过，测试全部使用离线占位图。
+- 渲染测试只做结构检查（状态数、透明底、覆盖面递增、画幅、换行不越界）和人工目视检查，没有像素级快照。
+- 分镜页的表格只读；表头与行不能在界面中修改。
 
 ## 已知限制（P3）
 

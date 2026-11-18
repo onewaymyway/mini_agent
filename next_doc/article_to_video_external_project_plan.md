@@ -1,6 +1,6 @@
 # article_to_video 外部项目设计方案（文章讲解视频）
 
-> 状态：**Q1–Q10 已确认（按推荐值，作者名与水印可在界面填写）；P0 已完成（2026-11-18）**，见第 19 节。按第 15 节分期实施，每期更新文档并打包 diff zip（保持目录结构）。
+> 状态：**Q1–Q10 已确认（按推荐值，作者名与水印可在界面填写）；P0–P4 已完成（2026-11-18）**，见第 19 节。按第 15 节分期实施，每期更新文档并打包 diff zip（保持目录结构）。
 > 关联：`external_projects/novel_to_video/`（最接近的现有项目，尤其是其「动态漫 still 模式」）、`next_doc/novel_to_video_still_comic_mode_improvement_plan.md`。
 > 新项目路径：`external_projects/article_to_video/`（遵循外部项目标准结构，自包含，可独立于 daemon 运行）。
 
@@ -463,4 +463,13 @@ external_projects/article_to_video/
 - 偏差与未做：真实 edge-tts 未在本环境验证（沙箱 DNS 不通，冒烟测试已写好，需本机运行 `A2V_REAL_TTS=1`）；CosyVoice 只有接口未测；试听语速固定为 +0%。
 - 测试：122 项通过，1 项需联网跳过（P0 40 + P1 34 + P2 28 + P3 20）。
 - 下一期：P4 视觉（分镜、卡片/表格/列表/时间线/引用渲染、插图预算、分镜页 C2）。
+
+**P4 视觉（已完成，2026-11-18）**
+
+- 完成：`render/`（字体查找、主题与画幅、换行与强调着色、8 类场景绘制、章标题卡、插图底图取景、章渲染清单 `compose_part.py`）；`visual/`（`states.py` 逐步出现的状态定义、`director.py` 规则版分镜、`config.py` 视觉配置与风格锚、`images.py` 插图提示词/缓存/版本/降级、`storyboard.py` 生成与保存/确认/过期判断、`normalize.py` 编辑规范化）；`validators/visual.py`（V4/V5）；`providers/image.py` 与 `keypool.py`（沿用 novel_to_video 的 Agnes 接口，占位图不画文字）；`cancel.sleep`（可中断等待）；界面「🎞️ 分镜」（C2）；入口 `plan_storyboard`、`render_visuals`。
+- 验收：参考文章 6 章分镜全部零错误；表格、流程/回路、公式、列表、金句均有对应场景；插图不超过每章额度；缓存复用时零次生图调用；生图不可用时降级为卡片并给出原因；停止请求立即生效且不写清单；竖屏与横屏布局均可渲染。
+- 偏差与未做：S4 只做规则版（LLM 版分镜留待后续）；「一图多用」只支持字段，未自动分配；生图接口未在本环境真实调用；渲染验收以结构测试与人工目视代替像素快照。
+- 修正：`project.yaml` 的 `allowed_domains` 此前为空（P3 应加入的 edge-tts 域名也未加入），本期补入 `apihub.agnes-ai.com` 与 `speech.platform.bing.com`。
+- 测试：186 项通过，1 项需联网跳过（P0 40 + P1 34 + P2 28 + P3 20 + P4 64）。
+- 下一期：P5 合成（beat→章→成片、字幕与关键词高亮、进度条、转场、封面、`.srt`、成片校验）。等待你确认 P4 后再开始。
 

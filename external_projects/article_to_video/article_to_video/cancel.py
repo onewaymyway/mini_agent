@@ -84,3 +84,10 @@ def call(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
     if "error" in box:
         raise box["error"]
     return box.get("value")
+
+
+def sleep(seconds: float) -> None:
+    """可中断的等待（P4 生图重试用）：停止时立即抛出 Cancelled。"""
+    ev = _current()
+    if ev.wait(seconds):
+        raise Cancelled("用户请求停止")

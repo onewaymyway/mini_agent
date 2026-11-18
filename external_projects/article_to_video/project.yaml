@@ -1,5 +1,5 @@
 # project.yaml — article_to_video 与 daemon 之间的契约（字段规范见 src/mini_agent/external_projects/manifest.py）。
-# 当前为 P0：导入与解析。默认不登记 cron；生图/语音/视频属于高成本操作，后续阶段由用户在界面确认后手动触发。
+# 当前为 P4：导入、规划、口播稿、配音、分镜与画面渲染。默认不登记 cron；生图/语音属于高成本操作，由用户在界面或命令行手动触发。
 
 name: article_to_video
 
@@ -15,8 +15,10 @@ health_check:
   cmd: "python entrypoints/health.py"
 
 resources:
-  # P3 配音（edge-tts）上线时再加入 speech.platform.bing.com；P0 不访问任何外部域名
-  allowed_domains: []
+  # 生图（Agnes，P4）与配音（edge-tts，P3）所需的域名；其余域名一律不访问
+  allowed_domains:
+    - apihub.agnes-ai.com
+    - speech.platform.bing.com
   max_concurrency: 1
 
 review:
