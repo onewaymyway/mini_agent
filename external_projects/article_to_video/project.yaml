@@ -1,0 +1,29 @@
+# project.yaml — article_to_video 与 daemon 之间的契约（字段规范见 src/mini_agent/external_projects/manifest.py）。
+# 当前为 P0：导入与解析。默认不登记 cron；生图/语音/视频属于高成本操作，后续阶段由用户在界面确认后手动触发。
+
+name: article_to_video
+
+entrypoints:
+  import_article:
+    cmd: "python entrypoints/import_article.py"
+    timeout_sec: 120
+  list_projects:
+    cmd: "python entrypoints/list_projects.py"
+    timeout_sec: 60
+
+health_check:
+  cmd: "python entrypoints/health.py"
+
+resources:
+  # P3 配音（edge-tts）上线时再加入 speech.platform.bing.com；P0 不访问任何外部域名
+  allowed_domains: []
+  max_concurrency: 1
+
+review:
+  cadence: weekly
+  enabled: false
+
+# Streamlit 界面（端口 8507；8502–8506 已被其它项目占用）
+web_app:
+  entry: app.py
+  port: 8507

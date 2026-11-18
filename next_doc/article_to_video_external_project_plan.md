@@ -1,6 +1,6 @@
 # article_to_video 外部项目设计方案（文章讲解视频）
 
-> 状态：**方案草案，待确认（2026-11-18）；尚未修改任何代码。** 确认第 18 节的决策后，按第 15 节分期实施，每期更新文档并打包 diff zip（保持目录结构）。
+> 状态：**Q1–Q10 已确认（按推荐值，作者名与水印可在界面填写）；P0 已完成（2026-11-18）**，见第 19 节。按第 15 节分期实施，每期更新文档并打包 diff zip（保持目录结构）。
 > 关联：`external_projects/novel_to_video/`（最接近的现有项目，尤其是其「动态漫 still 模式」）、`next_doc/novel_to_video_still_comic_mode_improvement_plan.md`。
 > 新项目路径：`external_projects/article_to_video/`（遵循外部项目标准结构，自包含，可独立于 daemon 运行）。
 
@@ -422,3 +422,19 @@ external_projects/article_to_video/
 | Q8 | BGM | 默认关闭，仅支持用户提供的本地音频 |
 | Q9 | 基础设施复用 | 复制精简（自包含）；不抽公共库 |
 | Q10 | 默认挡位与检查点 | `G0`；每期结束打包 diff zip 等你确认 |
+
+---
+
+## 19. 实施进度
+
+**P0 脚手架与导入（已完成，2026-11-18）**
+
+- 新建 `external_projects/article_to_video/`，自包含，结构见 `PROJECT.md`。
+- 完成：`source/md_parse.py`（块序列与稳定 ID、表格、引用、列表、公式四种写法、图片、分隔线、front matter）、`source/ascii_graph.py`（chain / ascii_art / text 分类与回路检测；单独的“……”不计为节点）、`source/author_meta.py`（署名优先级，不猜作者）、`project_store.py`（原子写入、署名与水印归一化、`update_branding`）、`importer.py`（导入登记，不调用模型）。
+- 入口：`import_article`（支持 `--author`、`--watermark-text` 等）、`list_projects`、`health`。
+- 界面（端口 8507）：「📥 新建项目」可填标题、作者名、模式、时长、视角、画幅、分辨率、水印文字/位置/透明度、四项署名开关与 AI 声明；「📚 项目」可修改作者名与水印并保存。
+- 参考文章统计与设计文档第 3 节一致：52 个一级标题、35 个代码块（27 个链、2 个 ASCII 图、6 个纯文字）、16 处公式、2 个表格、7,022 汉字、全文朗读约 27.9 分钟。
+- 测试：40 项全部通过（解析、链与回路、作者解析、水印归一化、导入、更新署名水印后源数据不变、CLI、界面冒烟）。
+- 偏差与未做：界面真实上传与浏览器体验未在本环境验证；P0 不实现水印绘制（P6）；`health` 中 ffmpeg/pillow 为提示项。
+- 下一期：P1 规划（分节摘要、主线大纲、取舍报告、大纲页）。
+
