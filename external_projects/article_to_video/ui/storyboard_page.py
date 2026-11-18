@@ -247,7 +247,11 @@ def _preview(pdir, part_id) -> None:
     if scene.get("fallback_reason"):
         st.info(f"插图未生成，已按卡片绘制：{scene['fallback_reason']}")
     if scene["frames"]:
-        idx = st.slider("状态", 0, len(scene["frames"]) - 1, len(scene["frames"]) - 1, key=f"st_{part_id}")
+        n = len(scene["frames"])
+        if n == 1:  # 只有一个状态时无需滑块（Streamlit 不接受 min == max）
+            idx = 0
+        else:
+            idx = st.slider("状态", 0, n - 1, n - 1, key=f"st_{part_id}_{sid}")
         frame = scene["frames"][idx]
         st.image(str(base / frame["file"]), caption=f"出现时刻 {frame['start']} 秒")
     else:

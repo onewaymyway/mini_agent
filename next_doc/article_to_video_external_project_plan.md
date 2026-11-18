@@ -1208,3 +1208,13 @@ external_projects/article_to_video/
 
 验收：`tests/test_r15_stage2_storyboard_logs.py` 新增 2 项（公式符号可用且不重试；不可用类型改为卡片且不重试）。全量测试：462 项通过、3 项跳过。
 
+### 32.9 补充：渲染后分镜预览报错（2026-11-18）
+
+现象：「渲染本章画面」成功后，分镜页报 `StreamlitAPIException: Slider min_value must be less than the max_value. The values were 0 and 0.`
+
+原因：预览滑块的范围是 `0 ～ 状态数 - 1`。只有一个状态的场景（如静态卡片）得到 `0 ～ 0`，Streamlit 不接受。此外滑块的 key 只按章区分，切换场景时会沿用其它场景的序号。
+
+修正（`ui/storyboard_page.py`）：单状态场景直接显示该状态，不创建滑块；滑块 key 改为按章加场景 ID 区分。
+
+验收：`tests/test_r15_stage4_preview_slider.py`（2 项）。单状态场景的测试在旧代码上复现了报错（`min_value` 与 `max_value` 都为 0），修正后通过；多状态场景的滑块范围保持 `0 ～ 2`。全量测试：464 项通过、3 项跳过。
+
