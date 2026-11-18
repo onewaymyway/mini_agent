@@ -62,7 +62,7 @@ def edge_tts_error_hint(exc: Exception) -> str:
     ver = edge_tts_version()
     if "403" in text or "Invalid response status" in text:
         return (f"edge-tts 服务拒绝连接（403，版本 {ver}）。排查：①pip install -U edge-tts；"
-                "②在项目设置里把 edge_proxy 设为 direct 绕过系统代理；③若需要代理，填写可用的代理地址；"
+                "②在设置里确认「使用系统代理」处于关闭（默认关闭，即直连）；③若必须走代理，填写 edge-tts 代理地址或打开「使用系统代理」；"
                 f"④仍无效时服务端可能已拒绝该客户端，改用其它引擎。原始错误：{raw}")
     if "Name or service not known" in text or "ClientConnector" in text:
         return f"无法连接 edge-tts 服务（网络或 DNS 不通，版本 {ver}）。原始错误：{raw}"
@@ -147,19 +147,22 @@ class _no_system_proxy:
 class EdgeTTS(TTSProvider):
     name = "edge-tts"
 
-    def __init__(self, timeout: float = DEFAULT_EDGE_TTS_TIMEOUT_SEC, proxy: "str | None" = None):
+    def __init__(self, timeout: float = DEFAULT_EDGE_TTS_TIMEOUT_SEC, proxy: "str | None" = None,
+                 use_system_proxy: bool = False):
         try:
             import edge_tts  # noqa: F401
         except ImportError as exc:
             raise RuntimeError("未安装 edge-tts：pip install edge-tts") from exc
         self.timeout = timeout
-        self.proxy = proxy  # None=系统代理；"direct"=直连；其它=代理地址
+        self.proxy = proxy  # 代理地址；"direct"=直连；None=按 use_system_proxy 决定
+        self.use_system_proxy = bool(use_system_proxy)  # 默认 False：不读取系统代理
 
     def synth(self, text: str, out_wav: Path, voice: str, rate: str = "+0%") -> float:
         import edge_tts
         mp3 = out_wav.with_suffix(".mp3")
         mp3.parent.mkdir(parents=True, exist_ok=True)
-        direct = (self.proxy or "").strip().lower() == PROXY_DIRECT
+        direct = ((self.proxy or "").strip().lower() == PROXY_DIRECT
+                  or (not self.proxy and not self.use_system_proxy))
         explicit = None if (not self.proxy or direct) else self.proxy
         sent = sanitize_tts_text(text)
         if not has_speakable(sent):
@@ -229,7 +232,7 @@ class ChainTTS(TTSProvider):
         raise RuntimeError("；".join(f"{n} 失败（{e}）" for n, e in self.last_errors.items()))
 
 
-def build_chain(names, *, edge_proxy=None) -> ChainTTS:
+def build_chain(names, *, edge_proxy=None, use_system_proxy=False) -> ChainTTS:
     """按名称构造降级链。无法构造的引擎包成 UnavailableTTS，合成时才报出原因。"""
     engines = []
     for n in names:
@@ -240,7 +243,7 @@ def build_chain(names, *, edge_proxy=None) -> ChainTTS:
                 engines.append(UnavailableTTS("cosyvoice", str(exc)))
         elif n == "edge-tts":
             try:
-                engines.append(EdgeTTS(proxy=edge_proxy))
+                engines.append(EdgeTTS(proxy=edge_proxy, use_system_proxy=use_system_proxy))
             except Exception as exc:  # noqa: BLE001
                 engines.append(UnavailableTTS("edge-tts", str(exc)))
         else:

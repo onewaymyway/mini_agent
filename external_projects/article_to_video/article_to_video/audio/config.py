@@ -12,6 +12,7 @@ DEFAULT_TTS = {
     "quote_voice": "zh-CN-XiaoxiaoNeural",
     "engine_chain": ["cosyvoice", "edge-tts"],
     "edge_proxy": None,
+    "use_system_proxy": False,   # 保守默认：不读取系统代理（R13）
     "max_quotes_per_part": 2,
     "lead_in_sec": 0.5,
     "tail_sec": 0.5,
@@ -41,6 +42,7 @@ def normalize_tts(raw: Dict[str, Any] | None) -> Tuple[Dict[str, Any], List[str]
     out["tail_sec"] = max(0.0, min(3.0, float(out["tail_sec"])))
     out["sentence_gap_sec"] = max(0.0, min(2.0, float(out["sentence_gap_sec"])))
     out["edge_proxy"] = (out["edge_proxy"] or None)
+    out["use_system_proxy"] = bool(out["use_system_proxy"])
     return out, warnings
 
 

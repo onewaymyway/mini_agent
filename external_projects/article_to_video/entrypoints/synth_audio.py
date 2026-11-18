@@ -34,7 +34,7 @@ def main(argv=None) -> int:
     pdir = Path(args.project) if args.project else projects_root() / args.id
     cancel.bind(cancel.begin(pdir))
     cfg = project_tts_config(pdir)
-    tts = SilenceTTS() if args.stub else build_chain(cfg["engine_chain"], edge_proxy=cfg["edge_proxy"])
+    tts = SilenceTTS() if args.stub else build_chain(cfg["engine_chain"], edge_proxy=cfg["edge_proxy"], use_system_proxy=cfg["use_system_proxy"])
     try:
         if args.part == "all":
             done = synthesize_all(pdir, tts, force=args.force)

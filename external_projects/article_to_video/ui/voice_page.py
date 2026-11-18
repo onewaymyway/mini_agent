@@ -21,7 +21,7 @@ def _tts_for(pdir, stub: bool):
     if stub:
         return SilenceTTS()
     cfg = sy.project_tts_config(pdir)
-    return build_chain(cfg["engine_chain"], edge_proxy=cfg["edge_proxy"])
+    return build_chain(cfg["engine_chain"], edge_proxy=cfg["edge_proxy"], use_system_proxy=cfg["use_system_proxy"])
 
 
 def render_voice_page() -> None:

@@ -48,7 +48,8 @@ FIELDS = {
         {"path": "tts.narration_voice", "label": "主讲音色", "kind": "select", "options": list(NARRATION_VOICES)},
         {"path": "tts.quote_voice", "label": "引文音色", "kind": "select", "options": list(QUOTE_VOICES)},
         {"path": "tts.engine_chain", "label": "配音引擎顺序（逗号分隔）", "kind": "list", "help": f"可选：{', '.join(ENGINES)}"},
-        {"path": "tts.edge_proxy", "label": "edge-tts 代理（留空=系统代理；direct=直连）", "kind": "text"},
+        {"path": "tts.use_system_proxy", "label": "配音使用系统代理（默认关闭=直连）", "kind": "bool"},
+        {"path": "tts.edge_proxy", "label": "edge-tts 指定代理地址（留空=按上一项；填写则优先；direct=强制直连）", "kind": "text"},
         {"path": "tts.max_quotes_per_part", "label": "每章引文最多几句", "kind": "int", "min": 0, "max": 10},
     ],
     "visual": [

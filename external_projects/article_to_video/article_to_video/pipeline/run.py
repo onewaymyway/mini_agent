@@ -286,5 +286,5 @@ def default_providers(pdir: Path, *, offline: bool = False) -> Dict[str, Any]:
     from ..app_settings import effective_group  # 延迟导入
     image_name = effective_group(Path(pdir), "visual")["images"]["provider"]
     return {"llm": make_text_llm("miniagent"),
-            "tts": build_chain(cfg["engine_chain"], edge_proxy=cfg["edge_proxy"]),
+            "tts": build_chain(cfg["engine_chain"], edge_proxy=cfg["edge_proxy"], use_system_proxy=cfg["use_system_proxy"]),
             "image": make_image_provider(image_name)}
