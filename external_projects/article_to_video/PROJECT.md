@@ -12,7 +12,7 @@
 | **P2** 口播稿 | 分章写稿（S3）、发音词典、V2 忠实度与 V3 可读性校验、字数预算（±15%）、后台写稿可停止、脚本编辑与确认（C1） | ✅ 完成（102 项测试通过） |
 | **P3** 配音与时间轴 | 逐句 TTS（降级链）、双声线、句间停顿、语速、`timeline.json`、试听、设置 | ✅ 完成（122 项通过，1 项需联网跳过） |
 | **P4** 视觉 | 分镜（规则版与模型版）、卡片/流程/表格/列表/时间线/金句/公式渲染、插图预算与缓存、一图多用（自动分配）、V4/V5 校验、章渲染清单、分镜页（C2） | ✅ 完成（207 项通过，1 项需联网跳过） |
-| P5 合成 | beat→章→成片、字幕、进度条、封面 | 未开始（等待 P4 确认后进入） |
+| **P5** 合成 | 章音轨、分段图层、字幕（含高亮）、进度条与章标签、ffmpeg 编码、转场（cut/fade/dissolve）、成片导出（mp4、srt、封面、报告）、V6 成片校验、前 30 秒预览、合成导出页 | ✅ 完成（232 项通过，1 项需联网跳过） |
 | P6 署名与水印 | 片头/片尾/下三分之一条、水印叠加 | 未开始（P0 已保存配置） |
 | P7 自动化 | G1/G2 挡位、多期拆分 | 未开始 |
 
@@ -57,9 +57,9 @@ article_to_video/
 │   │   ├── fidelity.py       V2（P1 部分）：摘要中的原话与数字必须出现在原文
 │   │   └── coverage.py       V1：每个小节恰好出现一次（章或取舍报告）
 │   └── providers/text.py     文本 LLM（mini_agent 的 LLMHelper）
-├── entrypoints/              import_article / list_projects / health / plan_outline / write_script / synth_audio / plan_storyboard / render_visuals
+├── entrypoints/              import_article / list_projects / health / plan_outline / write_script / synth_audio / plan_storyboard / render_visuals / compose_part / export_final
 ├── ui/                       import_page / outline_page（C0）/ script_page（C1）/ voice_page（S5）/ storyboard_page（C2）/ projects_page / jobs
-├── tests/                    207 项通过 + 1 项需联网（P0–P3 122 + P4 85）
+├── tests/                    232 项通过 + 1 项需联网（P0–P3 122 + P4 85 + P5 25）
 └── docs/README.md
 ```
 
@@ -79,6 +79,8 @@ python entrypoints/synth_audio.py --id <项目目录名> --stub      # 仅流程
 python entrypoints/plan_storyboard.py --id <项目目录名>          # 生成分镜（规则版，需 C1 已确认）
 python entrypoints/plan_storyboard.py --id <项目目录名> --engine llm  # 生成分镜（模型版，需要 mini_agent 模型）
 python entrypoints/render_visuals.py --id <项目目录名> --provider none  # 渲染画面（none=插图全部降级为卡片）
+python entrypoints/compose_part.py --id <项目目录名>            # 章合成（需画面已渲染、配音已完成）
+python entrypoints/export_final.py --id <项目目录名>            # 成片导出（需所有章已合成）
 python entrypoints/health.py
 python -m pytest -q
 A2V_REAL_TTS=1 python -m pytest -q tests/test_p3_real_edge.py  # 真实 edge-tts 冒烟（需网络）
@@ -141,6 +143,29 @@ A2V_REAL_TTS=1 python -m pytest -q tests/test_p3_real_edge.py  # 真实 edge-tts
 - **渲染清单** `parts/<章>/visuals/manifest.json`：P5 合成的唯一输入。每个场景记录时间段、底图与各状态图层及出现时刻（来自时间轴）。场景缓存键 = 场景内容 + 主题 + 风格锚 + 画幅 + 渲染版本。
 - **画幅**：横屏 1920×1080（1080P）/ 1280×720（720P），竖屏 1080×1920 / 720×1280。字号按短边比例缩放。
 - **字体**：中文字体优先读取环境变量 `ARTICLE_TO_VIDEO_FONT`，其次系统字体候选；找不到时报错，绝不画成方框。
+
+## P5 已确定的规则
+
+- **章音轨**：按时间轴把每句 WAV 放到准确时刻，中间留静音（纯 Python 实现）。要求 24kHz 单声道 16bit，格式不符直接报错。
+- **分段合成**：切点取自场景起止、画面状态时刻、句子起止与章标题卡结束。每段只合成一张图（底图 + 当前画面状态 + 字幕 + 进度条 + 章标签），段内画面不变。
+- **字幕**：每句一条，底部居中半透明底框，关键词用强调色。`auto` 时，若卡片（非插图）的条目已完整包含这句话，则隐藏字幕；`always` 始终显示；`off` 关闭。字幕设置只影响合成，不需要重新渲染画面。
+- **进度条与章标签**：底部细进度条表示本章进度；左上角显示章号与章名（可关闭）。
+- **编码**：ffmpeg concat 时长列表 + libx264（veryfast，crf 20）+ AAC，帧率固定 25，输出 `parts/<章>/video/part.mp4`，并写入 `info.json`（时长、字幕时间窗）。
+- **前置条件**：画面已渲染且与当前分镜一致（否则拒绝合成，提示重新渲染）；时间轴存在。
+- **停止**：ffmpeg 以 0.2 秒为周期轮询停止信号，收到停止即结束子进程，不写入未完成的结果。
+- **转场**：`cut` 直接拼接（流复制）；`fade` 每章首尾黑场淡入淡出后拼接；`dissolve` 相邻章叠化（xfade + acrossfade），后一章提前 `transition_sec` 开始。转场时长 0.2–2 秒，章短于两倍转场时长时拒绝叠化。
+- **成片输出**（`exports/`）：`<标题>.mp4`（写入标题与作者元数据）、`<标题>.srt`（字幕时间已按章起点与叠化重叠平移）、`<标题>_cover.png`（程序绘制的封面）、`<标题>_report.json`（校验报告）。
+- **V6 成片校验**：分辨率、平均帧率（误差 0.05）、音轨存在、时长与预期相差不超过 0.25 秒、字幕结束不超过成片时长。校验失败则报错。
+- **前 30 秒预览**：快速编码，不改变章视频。
+
+## 已知限制（P5）
+
+- 本环境只做了离线全流程（假配音、假生图）。真实 edge-tts 与生图的画质与时长未验证。
+- 叠化与淡入淡出需要重新编码：6 章约 11 分钟的成片，导出约 3 分钟（720P）。1080P 未做完整计时。
+- 只提供章视频的前 30 秒预览，没有单 beat 预览。
+- 封面只有标题与作者，没有图片。
+- 输出文件（报告 json）权限为 600，仅影响本机直接访问，界面下载不受影响。
+- 片头、片尾、下三分之一条、水印与 AI 声明属于 P6，本期未加入。
 
 ## 已知限制（P4）
 

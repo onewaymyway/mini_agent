@@ -51,10 +51,18 @@ def split_chunks(text: str, limit: int = TEXT_LIMIT) -> List[str]:
     return [c.rstrip("，,；;。！？!?：:") for c in chunks if c.strip("，,；;。！？!?：: ")]
 
 
-def _text_of(x: Any) -> str:
+_MD = re.compile(r"[*`_~]+")
+
+
+def plain(x: Any) -> str:
+    """去掉 Markdown 强调与代码标记（画面中不应出现 ** 等符号）。"""
     if isinstance(x, dict):
-        return str(x.get("text") or x.get("plain") or "")
-    return str(x)
+        x = x.get("text") or x.get("plain") or ""
+    return _MD.sub("", str(x)).strip()
+
+
+def _text_of(x: Any) -> str:
+    return plain(x)
 
 
 def _refs_blocks(refs: Sequence[str], blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -122,8 +130,8 @@ def _build_beat(beat: Dict[str, Any], idx: int, refs_blocks: List[Dict[str, Any]
         sc["loop"] = bool(chain.get("loop"))
     elif table and table.get("rows"):
         sc = _scene(beat, "table", refs)
-        header = [str(h) for h in table.get("header") or []][:MAX_TABLE_COLS]
-        rows = [[str(c)[:30] for c in (r or [])][:MAX_TABLE_COLS] for r in table["rows"]][:MAX_TABLE_ROWS]
+        header = [plain(h) for h in table.get("header") or []][:MAX_TABLE_COLS]
+        rows = [[plain(c)[:30] for c in (r or [])][:MAX_TABLE_COLS] for r in table["rows"]][:MAX_TABLE_ROWS]
         sc["header"] = header
         sc["rows"] = rows
         sc["items"] = ["、".join(r) for r in rows]

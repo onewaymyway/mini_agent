@@ -19,7 +19,7 @@ from ..planning.jsonio import parse_json_object
 from ..validators.visual import validate_storyboard
 from .director import (MAX_DIAGRAM_NODES, MAX_KEYPOINT_ITEMS, MAX_LIST_ITEMS, MAX_TABLE_COLS,
                        MAX_TABLE_ROWS, TEXT_LIMIT, _emphasis, _first, _refs_blocks, _scene,
-                       _text_of, _year_like)
+                       _text_of, _year_like, plain)
 from .sharing import allocate_shared_images, count_groups
 from .states import uniform_reveal
 
@@ -48,7 +48,7 @@ def beat_context(beat: Dict[str, Any], blocks: List[Dict[str, Any]]) -> Dict[str
         notes.append(f"原文流程：{arrow}" + ("（首尾相接，为回路）" if chain.get("loop") else ""))
     if table:
         allowed.append("table")
-        notes.append("原文表格：" + " | ".join(str(h) for h in table.get("header") or []))
+        notes.append("原文表格：" + " | ".join(plain(h) for h in table.get("header") or []))
     if math:
         allowed.append("formula")
         notes.append("原文公式：" + str(math["content"]).replace("\n", " "))
@@ -121,12 +121,12 @@ def _build_scene(beat: Dict[str, Any], item: Dict[str, Any], ctx: Dict[str, Any]
     source = "".join(s["text"] for s in sents)
     sc = _scene(beat, kind, ctx["refs"])
     if kind == "diagram":
-        sc["items"] = [str(n) for n in ctx["chain"]["nodes"][:MAX_DIAGRAM_NODES]]
+        sc["items"] = [plain(n) for n in ctx["chain"]["nodes"][:MAX_DIAGRAM_NODES]]
         sc["loop"] = bool(ctx["chain"].get("loop"))
     elif kind == "table":
         t = ctx["table"]
-        sc["header"] = [str(h)[:30] for h in (t.get("header") or [])][:MAX_TABLE_COLS]
-        sc["rows"] = [[str(c)[:30] for c in (r or [])][:MAX_TABLE_COLS] for r in t["rows"]][:MAX_TABLE_ROWS]
+        sc["header"] = [plain(h)[:30] for h in (t.get("header") or [])][:MAX_TABLE_COLS]
+        sc["rows"] = [[plain(c)[:30] for c in (r or [])][:MAX_TABLE_COLS] for r in t["rows"]][:MAX_TABLE_ROWS]
         sc["items"] = ["、".join(r) for r in sc["rows"]]
     elif kind == "quote":
         q = next(i for i, s in enumerate(sents) if s.get("quote"))
