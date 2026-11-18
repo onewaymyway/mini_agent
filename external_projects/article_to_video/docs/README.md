@@ -1,6 +1,7 @@
 # article_to_video 文档索引
 
 - `../PROJECT.md` — 项目说明、当前进度、目录与运行方式（主文档）
-- `../../../next_doc/article_to_video_external_project_plan.md` — 完整设计方案与分期计划（第 15 节）
+- `../../../next_doc/article_to_video_external_project_plan.md` — 完整设计方案与分期计划（第 15 节，实施进度见第 19 节）
 
-当前已完成 P0（导入与解析）。后续阶段的使用说明会随各期补充到本目录。
+当前已完成 P0（导入与解析）与 P1（规划：分节摘要、大纲、C0 确认）。
+P1 的使用方式：先在「📥 新建项目」导入，再到「🗺️ 大纲」选择生成方式（离线规则或模型）、编辑章节，最后确认（C0）。

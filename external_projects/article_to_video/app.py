@@ -10,16 +10,20 @@ if str(PROJECT_DIR) not in sys.path:
 import streamlit as st  # noqa: E402
 
 from ui.import_page import render_import_page  # noqa: E402
+from ui.outline_page import render_outline_page  # noqa: E402
 from ui.projects_page import render_projects_page  # noqa: E402
 
 st.set_page_config(page_title="article_to_video", page_icon="🎞️", layout="wide")
 
+PAGES = {
+    "📥 新建项目": render_import_page,
+    "🗺️ 大纲": render_outline_page,
+    "📚 项目": render_projects_page,
+}
+
 with st.sidebar:
     st.title("article_to_video")
-    st.caption("文章 → 讲解视频（P0：导入与解析）")
-    page = st.radio("页面", ["📥 新建项目", "📚 项目"], label_visibility="collapsed")
+    st.caption("文章 → 讲解视频（P1：规划）")
+    page = st.radio("页面", list(PAGES), label_visibility="collapsed")
 
-if page == "📥 新建项目":
-    render_import_page()
-else:
-    render_projects_page()
+PAGES[page]()

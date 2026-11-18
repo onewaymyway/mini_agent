@@ -438,3 +438,12 @@ external_projects/article_to_video/
 - 偏差与未做：界面真实上传与浏览器体验未在本环境验证；P0 不实现水印绘制（P6）；`health` 中 ffmpeg/pillow 为提示项。
 - 下一期：P1 规划（分节摘要、主线大纲、取舍报告、大纲页）。
 
+**P1 规划（已完成，2026-11-18）**
+
+- 完成：`planning/chunks.py`（分节组 ≤4000 字符、块边界切分、章节目录）、`planning/rules.py`（离线规则版）、`planning/llm.py`（S1 分节摘要、S2 大纲，各失败重试一次，仍失败不落盘）、`planning/prompts.py`（p1-v1）、`planning/outline_edit.py`（C0 编辑纯函数）、`planning/runner.py`（落盘、断点续跑、保存编辑、确认）、`validators/coverage.py`（V1）、`validators/fidelity.py`（V2 部分）、`providers/text.py`（mini_agent LLMHelper）。
+- 入口 `plan_outline`；界面「🗺️ 大纲」（C0）：生成、改章标题与钩子、时长、合并、拆分、恢复取舍、确认。
+- 参考文章（规则版）：6 章，每章的一句话取自该章首节，预算合计 10 分钟，3 个钩子与金句均为原文逐字片段。
+- 测试：74 项全部通过（P0 40 + P1 34）。
+- 偏差与未做：LLM 路径未对真实模型做质量验证；LLM 调用尚不可中途停止（与 novel_to_video 的「立即停止」问题相同，留待 P2）；规则版文字质量有限，依赖 C0 人工改写；章划分未按时长二次校正。
+- 下一期：P2 口播稿（分段写稿、词典、忠实度校验、脚本页 C1）。
+
