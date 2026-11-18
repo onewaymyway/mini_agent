@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .. import cancel
+from .. import cancel, joblog
 from ..audio.synth import synthesize_part
 from ..compose.export import export_final
 from ..compose.part import compose_part, video_dir
@@ -27,8 +27,20 @@ from .episodes import DEFAULT_EPISODE_MAX, episode_specs
 from .gates import STAGES, PipelineError, check_budget_requirement, manual_checkpoints
 
 
+SCOPE = "pipeline"   # 日志 scope
+
+
 def _tick(ctx: Dict[str, Any]) -> None:
     ctx["ledger"].checkpoint()
+
+
+def _sub(pdir: Path, stage: str, item: str):
+    """阶段下的子步骤（某一章、某一期…）：写开始/结束事件，耗时久时定期写“仍在进行”。"""
+    return joblog.step(pdir, SCOPE, stage, item)
+
+
+def _note(pdir: Path, message: str, level: str = "info") -> None:
+    joblog.log(pdir, SCOPE, message, level=level)
 
 
 def _done(detail: str = "") -> Dict[str, Any]:
@@ -52,7 +64,8 @@ def _stage_outline(pdir: Path, ctx: Dict[str, Any]) -> Dict[str, Any]:
         engine = ctx["outline_engine"]
         if engine == "llm" and ctx["llm"] is None:
             raise PipelineError("大纲选择了模型版，但未配置文本模型")
-        plan_outline(pdir, engine=engine, llm=ctx["llm"] if engine == "llm" else None)
+        with _sub(pdir, "outline", f"生成大纲（{'模型' if engine == 'llm' else '离线规则'}）"):
+            plan_outline(pdir, engine=engine, llm=ctx["llm"] if engine == "llm" else None)
         spine = load_spine(pdir)
     if spine.get("confirmed"):
         return _done("大纲已确认")
@@ -68,8 +81,11 @@ def _stage_script(pdir: Path, ctx: Dict[str, Any]) -> Dict[str, Any]:
         if sc is None:
             if ctx["llm"] is None:
                 raise PipelineError("写稿需要文本模型（未配置）")
-            write_part(pdir, p["id"], ctx["llm"])
+            with _sub(pdir, "script", p["id"]):
+                write_part(pdir, p["id"], ctx["llm"])
             _tick(ctx)
+        else:
+            _note(pdir, f"{p['id']} 口播稿已存在，跳过")
     pending = [p["id"] for p in _parts(pdir) if not (load_script(pdir, p["id"]) or {}).get("confirmed")]
     if not pending:
         return _done("口播稿已确认")
@@ -87,7 +103,8 @@ def _stage_voice(pdir: Path, ctx: Dict[str, Any]) -> Dict[str, Any]:
         if not (load_script(pdir, p["id"]) or {}).get("confirmed"):
             return _waiting("请先确认全部口播稿（C1）")
     for p in _parts(pdir):
-        synthesize_part(pdir, p["id"], ctx["tts"])
+        with _sub(pdir, "voice", p["id"]):
+            synthesize_part(pdir, p["id"], ctx["tts"])
         _tick(ctx)
     return _done("配音与时间轴完成")
 
@@ -100,8 +117,11 @@ def _stage_storyboard(pdir: Path, ctx: Dict[str, Any]) -> Dict[str, Any]:
         if st["stale"] and "storyboard" in ctx["manual"]:
             return _waiting(f"{pid} 分镜已过期，需人工重新生成（C2）")
         if not st["exists"] or st["stale"]:
-            plan_storyboard(pdir, pid, engine=engine, llm=ctx["llm"] if engine == "llm" else None)
+            with _sub(pdir, "storyboard", pid):
+                plan_storyboard(pdir, pid, engine=engine, llm=ctx["llm"] if engine == "llm" else None)
             _tick(ctx)
+        else:
+            _note(pdir, f"{pid} 分镜已是最新，跳过")
     pending = [p["id"] for p in _parts(pdir) if not storyboard_status(pdir, p["id"])["confirmed"]]
     if not pending:
         return _done("分镜已确认")
@@ -117,7 +137,8 @@ def _stage_render(pdir: Path, ctx: Dict[str, Any]) -> Dict[str, Any]:
         if not storyboard_status(pdir, p["id"])["confirmed"]:
             return _waiting("请先确认全部分镜（C2）")
     for p in _parts(pdir):
-        render_part(pdir, p["id"], provider=ctx["provider"])
+        with _sub(pdir, "render", p["id"]):
+            render_part(pdir, p["id"], provider=ctx["provider"])
         _tick(ctx)
     return _done("画面渲染完成")
 
@@ -135,8 +156,10 @@ def _stage_compose(pdir: Path, ctx: Dict[str, Any]) -> Dict[str, Any]:
     done = 0
     for p in _parts(pdir):
         if _compose_fresh(pdir, p["id"]):
+            _note(pdir, f"{p['id']} 章视频已是最新，跳过")
             continue
-        compose_part(pdir, p["id"])
+        with _sub(pdir, "compose", p["id"]):
+            compose_part(pdir, p["id"])
         done += 1
         _tick(ctx)
     return _done(f"章合成：新做 {done} 章")
@@ -151,14 +174,18 @@ def _stage_export(pdir: Path, ctx: Dict[str, Any]) -> Dict[str, Any]:
         return _waiting("终审待人工确认：检查成片后以 approve 导出")
     outputs = []
     if len(specs) == 1:
-        outputs.append(export_final(pdir, part_ids=specs[0]["parts"])["files"]["video"])
+        with _sub(pdir, "export", "成片"):
+            outputs.append(export_final(pdir, part_ids=specs[0]["parts"])["files"]["video"])
     else:
         for s in specs:
-            rep = export_final(pdir, part_ids=s["parts"], episode=s, label=f"_第{s['index']}期")
+            with _sub(pdir, "export", f"第 {s['index']}/{s['total']} 期"):
+                rep = export_final(pdir, part_ids=s["parts"], episode=s, label=f"_第{s['index']}期")
             outputs.append(rep["files"]["video"])
             _tick(ctx)
         if ctx["merge_all"]:
-            outputs.append(export_final(pdir, part_ids=[p["id"] for p in parts], label="_全集")["files"]["video"])
+            with _sub(pdir, "export", "全集合并"):
+                outputs.append(export_final(pdir, part_ids=[p["id"] for p in parts],
+                                            label="_全集")["files"]["video"])
     ctx["status"]["outputs"] = outputs
     return _done("导出：" + "、".join(outputs))
 
@@ -190,24 +217,42 @@ def run_pipeline(pdir: Path, *, until: str = "export", gear: str = "G0", max_ima
            "provider": provider, "outline_engine": outline_engine, "storyboard_engine": storyboard_engine,
            "merge_all": merge_all,
            "ledger": ledger, "status": status}
+    run_name = f"流水线 {gear}（运行到 {until}）"
+    run_id = joblog.run_start(pdir, SCOPE, run_name)
+    status["run_id"] = run_id
+    run_started = status["started_at"]
+    _save(pdir, status, now)   # 开始即落盘：命令行启动的运行，界面也能看到“运行中”
+    end_status, end_error, end_tb = "ok", None, None
     try:
-        for stage in STAGES[: STAGES.index(until) + 1]:
-            cancel.check()
-            _tick(ctx)
-            res = _STAGE_FNS[stage](pdir, ctx)
-            status["steps"].append({"stage": stage, "result": res["result"], "detail": res["detail"]})
-            if res["result"] == "waiting":
-                status["state"] = "waiting"
-                status["waiting"] = {"stage": stage, "detail": res["detail"]}
-                break
-        else:
-            status["state"] = "done"
+        with joblog.bind(pdir, SCOPE):
+            _note(pdir, f"挡位 {gear}；人工检查点：{'、'.join(sorted(ctx['manual'])) or '无'}；"
+                        f"预算：生图 {max_images or '不限'}，耗时 {max_minutes or '不限'} 分钟")
+            for stage in STAGES[: STAGES.index(until) + 1]:
+                cancel.check()
+                _tick(ctx)
+                with joblog.step(pdir, SCOPE, stage, heartbeat=False) as info:
+                    res = _STAGE_FNS[stage](pdir, ctx)
+                    info["detail"] = res["detail"]
+                    if res["result"] == "waiting":
+                        info["status"] = "waiting"
+                status["steps"].append({"stage": stage, "result": res["result"], "detail": res["detail"]})
+                _save(pdir, status, now)
+                if res["result"] == "waiting":
+                    status["state"] = "waiting"
+                    status["waiting"] = {"stage": stage, "detail": res["detail"]}
+                    end_status = "waiting"
+                    break
+            else:
+                status["state"] = "done"
     except BudgetExceeded as exc:
         status["state"], status["error"] = "budget_exceeded", str(exc)
+        end_status, end_error = "failed", str(exc)
     except cancel.Cancelled:
         status["state"], status["error"] = "stopped", "用户请求停止"
+        end_status, end_error = "stopped", "用户请求停止"
     except Exception as exc:  # noqa: BLE001 — 记录失败原因，便于界面展示
         status["state"], status["error"] = "failed", str(exc)
+        end_status, end_error, end_tb = "failed", str(exc), joblog.format_tb(exc)
     finally:
         try:
             ledger.checkpoint()
@@ -215,6 +260,9 @@ def run_pipeline(pdir: Path, *, until: str = "export", gear: str = "G0", max_ima
             pass
         status["budget"] = ledger.summary()
         _save(pdir, status, now)
+        if end_status == "waiting":
+            end_error = status["waiting"]["detail"]
+        joblog.run_end(pdir, SCOPE, run_id, run_name, end_status, end_error, end_tb, run_started)
     return status
 
 

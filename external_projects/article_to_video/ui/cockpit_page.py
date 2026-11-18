@@ -1,4 +1,4 @@
-"""ui/cockpit_page.py — 「🧭 驾驶舱」（P7）：挡位与预算、一键流水线（后台可停止）、各章状态、整章重置。"""
+"""ui/cockpit_page.py — 「🧭 驾驶舱」（P7）：挡位与预算、一键流水线（后台可停止，R1 起带实时日志与步骤时间表）、各章状态、整章重置。"""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from article_to_video.project_store import list_projects
 from article_to_video.script.writer import load_script
 from article_to_video.visual.storyboard import storyboard_status
 from ui import jobs
+from ui.joblog_panel import render_run_monitor, run_state
 
 _GEAR_HELP = {
     "G0": "默认：大纲、口播、分镜、终审都需要人工确认。",
@@ -48,13 +49,7 @@ def render_cockpit_page() -> None:
                        format_func=lambda i: next(p["title"] for p in projects if p["id"] == i))
     pdir = root / pid
 
-    job = jobs.status(pdir)
-    busy = job is not None and job["state"] == "running"
-    if job:
-        st.write(f"后台任务：{job['label']} — **{job['state']}**：{job['message']}")
-        if busy and st.button("⏹ 请求停止"):
-            jobs.stop(pdir)
-            st.rerun()
+    busy = run_state(pdir, None)["busy"]
 
     with st.expander("挡位与预算", expanded=True):
         gear = st.radio("挡位", ["G0", "G1", "G2"], horizontal=True, index=0)
@@ -82,8 +77,10 @@ def render_cockpit_page() -> None:
                 run_pipeline(pdir, until=until, gear=gear, max_images=mi, max_minutes=mm, approve=approve,
                              llm=prov["llm"], tts=prov["tts"], image_provider=prov["image"],
                              merge_all=merge_all)
-            if jobs.start(pdir, f"流水线 {gear}", run):
+            if jobs.start(pdir, f"流水线 {gear}", run, scope="pipeline"):
                 st.rerun()
+
+    render_run_monitor(pdir, ["pipeline"], title="流水线运行监控")
 
     status = read_status(pdir)
     if status:
@@ -91,6 +88,8 @@ def render_cockpit_page() -> None:
         state_label = {"done": "✅ 完成", "waiting": "⏸ 等待人工确认", "budget_exceeded": "🛑 超出预算",
                        "stopped": "⏹ 已停止", "failed": "❌ 失败", "running": "⏳ 运行中"}.get(status["state"],
                                                                                           status["state"])
+        if status["state"] == "running" and not busy:
+            state_label = "⚠️ 中断（进程已结束，没有完成记录）"
         st.write(f"状态：**{state_label}**　挡位 {status['gear']}　运行到 {status['until']}")
         if status.get("waiting"):
             st.warning(f"等待：{status['waiting']['detail']}")
