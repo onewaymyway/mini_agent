@@ -21,6 +21,7 @@ from ..validators.coverage import validate_spine
 from .chunks import build_groups, section_catalog
 from .errors import PlanError
 from .llm import llm_digest, llm_spine
+from ..validators.fidelity import locate
 from .prompts import PROMPT_VERSION
 from .rules import rules_digest, rules_spine, section_claims
 from .spine_math import recompute_budgets, renumber
@@ -81,6 +82,38 @@ def _validate_or_raise(spine: Dict[str, Any], ctx: Dict[str, Any], digests: List
     if result["errors"]:
         raise PlanError("大纲不合格：" + "；".join(result["errors"]))
     return result
+
+
+def restore_digest_item(project_dir: Path, group_id: str, index: int, fragment: str) -> Dict[str, Any]:
+    """R8 手动恢复：把某个被剔除的条目，换成用户在原文中选出的片段（同样经过对齐校验）。
+    成功后该条目从 dropped 中移除，片段加入该组的金句或数字。失败抛 PlanError，不写入任何结果。"""
+    project_dir = Path(project_dir)
+    ctx = _context(project_dir)
+    groups = {g["id"]: g for g in build_groups(ctx["lines"], ctx["doc"])}
+    if group_id not in groups:
+        raise PlanError(f"找不到节组 {group_id}")
+    data = read_json(project_dir / "plan" / "digests.json")
+    digest = next((d for d in data.get("digests", []) if d.get("group_id") == group_id), None)
+    if digest is None:
+        raise PlanError(f"节组 {group_id} 还没有摘要")
+    dropped = digest.get("dropped") or []
+    if not 0 <= index < len(dropped):
+        raise PlanError("被剔除条目序号越界（可能已被处理，请刷新页面）")
+    item = dropped[index]
+    text = fragment.strip()
+    if not text:
+        raise PlanError("请先输入原文中的片段")
+    kind = item.get("kind", "quote")
+    found = locate(text, groups[group_id]["text"], min_key=1 if kind == "number" else 4)
+    if found is None:
+        raise PlanError("原文中找不到这段文字（忽略标点与大小写后仍不一致）。请从原文中复制一段")
+    key = "key_numbers" if kind == "number" else "quotable"
+    if found not in digest.setdefault(key, []):
+        digest[key].append(found)
+    digest["dropped"] = [d for i, d in enumerate(dropped) if i != index]
+    write_json_atomic(project_dir / "plan" / "digests.json", data)
+    joblog.log(project_dir, "outline", f"节组 {group_id}：手动恢复{'数字' if kind == 'number' else '金句'}：{found[:30]}", level="ok")
+    return digest
 
 
 def set_project_target(project_dir: Path, minutes: float) -> float:

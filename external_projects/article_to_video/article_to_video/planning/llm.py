@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Tuple
 
 from .. import joblog
 from ..validators.coverage import validate_spine
-from ..validators.fidelity import digest_structure_issues, norm_key, repair_digest
+from ..validators.fidelity import digest_structure_issues, dropped_entries, norm_key, repair_digest
 from .errors import PlanError
 from .jsonio import parse_json_object
 from .prompts import DIGEST_SYSTEM, SPINE_SYSTEM, digest_prompt, spine_prompt
@@ -48,7 +48,9 @@ def llm_digest(group: Dict[str, Any], llm, article_title: str) -> Tuple[Dict[str
             joblog.bound_log(f"节组 {group['id']}：输出不是有效 JSON，将重试", level="warn")
             continue
         obj = _attach_digest_meta(obj, group)
+        dropped_items = dropped_entries(obj, group["text"])   # R8：记录被剔除的条目，供界面列出与手动恢复
         obj, dropped = repair_digest(obj, group["text"])
+        obj["dropped"] = dropped_items
         for note in dropped[:5]:
             joblog.bound_log(f"节组 {group['id']}：{note}", level="warn")
         if len(dropped) > 5:

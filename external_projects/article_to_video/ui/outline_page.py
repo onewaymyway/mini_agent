@@ -9,11 +9,12 @@ from ui.joblog_panel import is_busy, render_job_panel, render_page_status
 from article_to_video.paths import projects_root
 from article_to_video.planning import outline_edit as oe
 from article_to_video.planning.errors import PlanError
-from article_to_video.planning.runner import confirm_spine, load_digests, load_spine, plan_outline, save_spine, set_project_target
+from article_to_video.planning.runner import (confirm_spine, load_digests, load_spine, plan_outline, restore_digest_item,
+                                             save_spine, set_project_target)
 from article_to_video.planning.chunks import section_catalog
 from article_to_video.project_store import list_projects, read_json
 from article_to_video.providers.text import make_text_llm, text_model_status
-from article_to_video.validators.coverage import validate_spine
+from article_to_video.validators.outline_report import outline_report
 
 ENGINE_LABELS = {"miniagent": "模型（默认，mini_agent 的 LLM）", "rules": "离线规则（不调用模型，较粗略）"}
 
@@ -32,6 +33,67 @@ def _apply(pdir, fn):
     except (PlanError, ValueError) as exc:
         st.error(str(exc))
         return False
+
+
+_STATUS_ICON = {"ok": "✅ 通过", "warn": "⚠️ 需注意", "error": "❌ 未通过"}
+
+
+def _render_report(report) -> None:
+    """校验分组：每类一列，状态、问题与处理建议。门禁以 validate_spine 为准（未通过则不能确认）。"""
+    st.subheader("大纲校验")
+    cols = st.columns(len(report["categories"]))
+    for col, cat in zip(cols, report["categories"]):
+        with col:
+            st.markdown(f"**{cat['name']}**　{_STATUS_ICON[cat['status']]}")
+            if not cat["items"]:
+                st.caption("没有问题")
+            for it in cat["items"]:
+                (st.error if it["level"] == "error" else st.warning)(it["text"])
+            st.caption(cat["hint"])
+    if report["ok"]:
+        st.caption("校验通过，可以确认大纲。")
+    else:
+        st.caption("存在未通过的问题，修正后才能确认大纲。")
+
+
+def _render_chapter_cards(spine, titles_by_id) -> None:
+    """章节卡片：标题、角色、一句话、覆盖的小节、预算占比与金句。"""
+    st.subheader("章节")
+    total = sum(float(p.get("budget_minutes") or 0) for p in spine["parts"]) or 1.0
+    for p in spine["parts"]:
+        with st.container(border=True):
+            head, budget = st.columns([3, 2])
+            head.markdown(f"**{p['id']} {p['title']}**　·　{p['role']}")
+            minutes = float(p.get("budget_minutes") or 0)
+            budget.markdown(f"预计 **{minutes:.1f} 分钟**（占 {minutes / total:.0%}）")
+            st.progress(min(1.0, minutes / total))
+            if p.get("one_line"):
+                st.write(p["one_line"])
+            sections = [titles_by_id.get(sid, sid) for sid in p["section_ids"]]
+            st.caption(f"覆盖 {len(sections)} 节：" + "；".join(sections[:6])
+                       + ("……" if len(sections) > 6 else ""))
+
+
+def _render_dropped(pdir, digests) -> None:
+    """被剔除的摘要条目：列出，并允许输入原文中的片段手动恢复（同样经过对齐校验）。"""
+    entries = [(d["group_id"], i, item) for d in digests for i, item in enumerate(d.get("dropped") or [])]
+    if not entries:
+        return
+    st.subheader("被剔除的摘要条目（可手动恢复）")
+    st.caption("这些是模型给出、但在原文中找不到的金句或数字。可以从原文复制一段对应文字，系统会校验后加入。")
+    for gid, idx, item in entries:
+        kind = "数字" if item.get("kind") == "number" else "金句"
+        with st.container(border=True):
+            st.write(f"**{gid} · {kind}**：{item.get('text', '')}")
+            c1, c2 = st.columns([4, 1])
+            frag = c1.text_input("原文中的对应片段", key=f"frag_{gid}_{idx}", label_visibility="collapsed",
+                                 placeholder="从原文复制一段对应文字")
+            if c2.button("加入", key=f"restore_{gid}_{idx}"):
+                try:
+                    restore_digest_item(pdir, gid, idx, frag)
+                    st.rerun()
+                except PlanError as exc:
+                    st.error(str(exc))
 
 
 def render_outline_page() -> None:
@@ -86,23 +148,16 @@ def _outline_body(pdir) -> None:
 
     catalog = _catalog(pdir)
     digests = load_digests(pdir)
-    check = validate_spine(spine, [c["id"] for c in catalog], digests)
+    report = outline_report(spine, [c["id"] for c in catalog], digests)
+    titles_by_id = {c["id"]: c["title"] for c in catalog}
 
     st.subheader("主线")
     st.write(f"**主旨**：{spine['thesis']}")
     st.write(f"**论证弧线**：{spine['arc']}")
     st.caption(f"生成方式：{ENGINE_LABELS.get('rules' if spine['engine'] == 'rules' else 'miniagent')}"
                f"　·　状态：{'已确认 ✅' if confirmed else '未确认'}")
-    for w in check["warnings"]:
-        st.warning(w)
-    for e in check["errors"]:
-        st.error(e)
-
-    st.subheader("章节与时长")
-    st.dataframe([{
-        "章": p["id"], "标题": p["title"], "角色": p["role"], "小节数": len(p["section_ids"]),
-        "预计分钟": p["budget_minutes"], "一句话": p["one_line"],
-    } for p in spine["parts"]], use_container_width=True, hide_index=True)
+    _render_report(report)
+    _render_chapter_cards(spine, titles_by_id)
 
     with st.form("outline_edit_form"):
         target = st.slider("目标时长（分钟）", 3.0, 60.0, float(spine["target_minutes"]), 0.5,
@@ -149,8 +204,10 @@ def _outline_body(pdir) -> None:
                 if _apply(pdir, lambda s, ci=ci, k=target_part: oe.restore_cut(s, ci, k, catalog)):
                     st.rerun()
 
+    _render_dropped(pdir, digests)
+
     st.subheader("确认大纲（C0）")
-    if st.button("确认大纲", type="primary", disabled=bool(check["errors"]) or confirmed):
+    if st.button("确认大纲", type="primary", disabled=not report["ok"] or confirmed):
         try:
             confirm_spine(pdir)
             st.success("已确认。后续口播稿将基于此大纲。")

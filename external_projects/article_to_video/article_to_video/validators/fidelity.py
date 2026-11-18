@@ -109,6 +109,20 @@ def repair_digest(obj: Dict[str, Any], source_text: str) -> Tuple[Dict[str, Any]
     return repaired, dropped
 
 
+def dropped_entries(obj: Dict[str, Any], source_text: str) -> List[Dict[str, str]]:
+    """模型输出中无法对齐原文的金句与数字（结构化，供界面展示与手动恢复）。应在 repair_digest 之前调用。"""
+    out: List[Dict[str, str]] = []
+    for q in obj.get("quotable") or []:
+        text = str(q).strip()
+        if text and locate(text, source_text) is None:
+            out.append({"kind": "quote", "text": text})
+    for n in obj.get("key_numbers") or []:
+        text = str(n).strip()
+        if text and locate(text, source_text, min_key=1) is None:
+            out.append({"kind": "number", "text": text})
+    return out
+
+
 def digest_structure_issues(obj: Dict[str, Any]) -> List[str]:
     issues: List[str] = []
     if not str(obj.get("summary", "")).strip():
