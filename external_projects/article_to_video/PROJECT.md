@@ -61,6 +61,7 @@ article_to_video/
 │   │   ├── synth.py          逐句合成（缓存键=音色+语速+文本+引擎链）、试听、设置
 │   │   ├── timeline.py       时间轴（纯计算）与引文音色分配
 │   │   └── config.py         音色/引擎/代理设置、语速映射
+│   ├── netproxy.py           各类请求是否使用系统代理（默认否；R14 约定：新增网络请求必须带开关）
 │   ├── media/binaries.py     ffmpeg/ffprobe 自动查找（环境变量→imageio_ffmpeg→conda→PATH，R12）
 │   ├── media/ffmpeg.py       ffmpeg/ffprobe 调用、WAV 时长、静音、转码
 │   ├── providers/tts.py      TTS：CosyVoice → edge-tts 降级链（SilenceTTS 仅流程验证）

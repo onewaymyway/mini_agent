@@ -74,13 +74,13 @@ def _script_body(pdir) -> None:
                         help="默认只写缺少稿件或输入已变化的章（断点续跑）")
     running = bool(job and job["state"] == "running")
     if c2.button("写全部章", disabled=running, type="primary"):
-        jobs.start(pdir, "写全部章", lambda: w.write_all(pdir, make_text_llm("miniagent"), force=force),
+        jobs.start(pdir, "写全部章", lambda: w.write_all(pdir, make_text_llm("miniagent", pdir=pdir), force=force),
                    scope="script")
         st.rerun()
     part = c3.selectbox("章", part_ids,
                         format_func=lambda i: next(p["title"] for p in spine["parts"] if p["id"] == i))
     if st.button("写本章", disabled=running):
-        jobs.start(pdir, f"写 {part}", lambda: w.write_part(pdir, part, make_text_llm("miniagent"), force=force),
+        jobs.start(pdir, f"写 {part}", lambda: w.write_part(pdir, part, make_text_llm("miniagent", pdir=pdir), force=force),
                    scope="script")
         st.rerun()
 

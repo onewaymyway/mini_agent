@@ -41,7 +41,7 @@ def main(argv=None) -> int:
             from article_to_video import cancel
             from article_to_video.providers.text import make_text_llm
             cancel.bind(cancel.begin(pdir))
-            llm = make_text_llm("miniagent")
+            llm = make_text_llm("miniagent", pdir=pdir)
         out = {}
         for pid in ids:
             sb = sbm.plan_storyboard(pdir, pid, force=args.force, engine=args.engine, llm=llm)

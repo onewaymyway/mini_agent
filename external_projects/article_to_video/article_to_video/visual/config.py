@@ -25,7 +25,7 @@ def default_visual() -> Dict[str, Any]:
         "theme": DEFAULT_THEME,
         "bible": {"style_anchor": DEFAULT_STYLE_ANCHOR},
         "images": {"enabled": True, "provider": "agnes", "max_per_minute": 2.5, "size": "1024x1024",
-                   "shots_per_image": 2},
+                   "shots_per_image": 2, "use_system_proxy": False},
     }
 
 
@@ -68,6 +68,7 @@ def normalize_visual(raw: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, An
             "max_per_minute": round(rate, 2),
             "size": str(img_raw.get("size", base["images"]["size"])),
             "shots_per_image": shots,
+            "use_system_proxy": bool(img_raw.get("use_system_proxy", False)),
         },
     }
     return out, warnings

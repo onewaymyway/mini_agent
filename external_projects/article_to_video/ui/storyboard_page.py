@@ -137,7 +137,7 @@ def _storyboard_body(pdir) -> None:
                 sbm.plan_storyboard(pdir, part_id, force=force)
             else:
                 from article_to_video.providers.text import make_text_llm
-                sbm.plan_storyboard(pdir, part_id, force=force, engine="llm", llm=make_text_llm("miniagent"))
+                sbm.plan_storyboard(pdir, part_id, force=force, engine="llm", llm=make_text_llm("miniagent", pdir=pdir))
 
         label = f"{'模型' if engine == 'llm' else '规则'}生成分镜 {part_id}"
         if jobs.start(pdir, label, run, scope="storyboard"):

@@ -34,7 +34,7 @@ def main(argv=None) -> int:
     engine = "rules"
     if args.engine == "miniagent":
         from article_to_video.providers.text import make_text_llm
-        llm, engine = make_text_llm("miniagent"), "llm"
+        llm, engine = make_text_llm("miniagent", pdir=pdir), "llm"
     try:
         spine = plan_outline(pdir, engine=engine, llm=llm, force=args.force)
     except PlanError as exc:

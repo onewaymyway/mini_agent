@@ -183,7 +183,7 @@ def _outline_body(pdir) -> None:
         if st.button("生成 / 重新生成", type="primary",
                      disabled=is_busy(pdir) or (engine == "miniagent" and not model_ok)):
             def run(engine=engine, overwrite=overwrite, reuse=reuse):
-                llm = make_text_llm("miniagent") if engine == "miniagent" else None
+                llm = make_text_llm("miniagent", pdir=pdir) if engine == "miniagent" else None
                 plan_outline(pdir, engine="llm" if engine == "miniagent" else "rules",
                              llm=llm, force=overwrite, reuse_digests=reuse)
             if jobs.start(pdir, f"生成大纲（{ENGINE_LABELS[engine]}）", run, scope="outline"):

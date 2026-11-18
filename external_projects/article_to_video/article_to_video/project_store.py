@@ -104,6 +104,9 @@ def normalize_settings(raw: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, 
             "resolution": pick("resolution", RESOLUTIONS, "1080P"),
             "fps": 25,
         },
+        # 大模型请求是否使用系统代理（R14，默认不使用）
+        "llm": {"use_system_proxy": bool(raw["llm"].get("use_system_proxy", False))
+                if isinstance(raw.get("llm"), dict) else False},
     }
     return settings, warnings
 

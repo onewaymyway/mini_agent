@@ -31,7 +31,7 @@ def main(argv=None) -> int:
 
     pdir = Path(args.project) if args.project else projects_root() / args.id
     cancel.bind(cancel.begin(pdir))
-    llm = make_text_llm("miniagent")
+    llm = make_text_llm("miniagent", pdir=pdir)
     try:
         if args.part == "all":
             done = w.write_all(pdir, llm, force=args.force)

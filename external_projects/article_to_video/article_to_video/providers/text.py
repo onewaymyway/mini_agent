@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 from .. import cancel
+from ..netproxy import proxy_policy
 from ..paths import mini_agent_root
 
 
@@ -25,7 +26,8 @@ class TextLLM:
 class MiniAgentTextLLM(TextLLM):
     name = "miniagent"
 
-    def __init__(self, project_root: Optional[Path] = None):
+    def __init__(self, project_root: Optional[Path] = None, use_system_proxy: bool = False):
+        self.use_system_proxy = bool(use_system_proxy)
         self._root = project_root or mini_agent_root()
         self._helper = None
 
@@ -40,7 +42,10 @@ class MiniAgentTextLLM(TextLLM):
 
     def ask(self, prompt: str, system: str = "") -> str:
         # 模型请求可能持续数十秒：经 cancel.call，用户停止时立即返回
-        return cancel.call(lambda: self._get_helper().ask(prompt, system=system))
+        def _ask():
+            with proxy_policy(self.use_system_proxy):   # 默认不使用系统代理（R14）
+                return self._get_helper().ask(prompt, system=system)
+        return cancel.call(_ask)
 
 
 _STATUS: dict = {"at": 0.0, "value": (False, "尚未检查")}
@@ -64,7 +69,20 @@ def text_model_status(force: bool = False) -> Tuple[bool, str]:
     return value
 
 
-def make_text_llm(name: str) -> TextLLM:
+def llm_use_system_proxy(pdir: Optional[Path] = None) -> bool:
+    """大模型是否使用系统代理：有项目目录时取项目生效值，否则取全局默认；读取失败按默认（不使用）。"""
+    try:
+        from ..app_settings import effective_group, load_global_raw, normalize_group
+        if pdir is not None:
+            return bool(effective_group(Path(pdir), "settings").get("llm", {}).get("use_system_proxy", False))
+        raw, _ = load_global_raw()
+        full, _w = normalize_group("settings", raw.get("settings") or {})
+        return bool(full.get("llm", {}).get("use_system_proxy", False))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def make_text_llm(name: str, pdir: Optional[Path] = None) -> TextLLM:
     if name == "miniagent":
-        return MiniAgentTextLLM()
+        return MiniAgentTextLLM(use_system_proxy=llm_use_system_proxy(pdir))
     raise ValueError(f"未知的文本模型 provider：{name}")

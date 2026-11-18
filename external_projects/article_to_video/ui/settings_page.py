@@ -48,6 +48,7 @@ FIELDS = {
         {"path": "tts.narration_voice", "label": "主讲音色", "kind": "select", "options": list(NARRATION_VOICES)},
         {"path": "tts.quote_voice", "label": "引文音色", "kind": "select", "options": list(QUOTE_VOICES)},
         {"path": "tts.engine_chain", "label": "配音引擎顺序（逗号分隔）", "kind": "list", "help": f"可选：{', '.join(ENGINES)}"},
+        {"path": "llm.use_system_proxy", "label": "大模型请求使用系统代理（默认关闭=直连）", "kind": "bool"},
         {"path": "tts.use_system_proxy", "label": "配音使用系统代理（默认关闭=直连）", "kind": "bool"},
         {"path": "tts.edge_proxy", "label": "edge-tts 指定代理地址（留空=按上一项；填写则优先；direct=强制直连）", "kind": "text"},
         {"path": "tts.max_quotes_per_part", "label": "每章引文最多几句", "kind": "int", "min": 0, "max": 10},
@@ -55,6 +56,7 @@ FIELDS = {
     "visual": [
         {"path": "bible.style_anchor", "label": "风格锚（插图提示词的固定前缀）", "kind": "area"},
         {"path": "images.enabled", "label": "启用 AI 插图", "kind": "bool"},
+        {"path": "images.use_system_proxy", "label": "生图请求使用系统代理（默认关闭=直连）", "kind": "bool"},
         {"path": "images.provider", "label": "生图服务", "kind": "select", "options": ["agnes", "stub"],
          "labels": {"agnes": "agnes（需要 AGNES_API_KEYS）", "stub": "stub（离线占位图）"}},
         {"path": "images.max_per_minute", "label": "每分钟图片上限", "kind": "number", "min": 0.0, "max": 6.0, "step": 0.5},

@@ -284,7 +284,8 @@ def default_providers(pdir: Path, *, offline: bool = False) -> Dict[str, Any]:
         return {"llm": None, "tts": SilenceTTS(), "image": make_image_provider("stub")}
     cfg = project_tts_config(Path(pdir))
     from ..app_settings import effective_group  # 延迟导入
-    image_name = effective_group(Path(pdir), "visual")["images"]["provider"]
-    return {"llm": make_text_llm("miniagent"),
+    images = effective_group(Path(pdir), "visual")["images"]
+    image_name = images["provider"]
+    return {"llm": make_text_llm("miniagent", pdir=Path(pdir)),
             "tts": build_chain(cfg["engine_chain"], edge_proxy=cfg["edge_proxy"], use_system_proxy=cfg["use_system_proxy"]),
-            "image": make_image_provider(image_name)}
+            "image": make_image_provider(image_name, use_system_proxy=images.get("use_system_proxy", False))}

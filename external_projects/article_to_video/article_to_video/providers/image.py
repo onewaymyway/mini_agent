@@ -96,7 +96,7 @@ class AgnesImageProvider(ImageProvider):
 
     def __init__(self, pool: KeyPool, *, endpoint: str = AGNES_IMAGE_ENDPOINT,
                  model: str = AGNES_IMAGE_MODEL, timeout: int = 300, max_retries: int = 3,
-                 session=None, sleep=cancel.sleep):   # 可中断的等待：停止时立即返回
+                 session=None, sleep=cancel.sleep, use_system_proxy: bool = False):   # 可中断的等待：停止时立即返回
         self.pool = pool
         self.endpoint = endpoint
         self.model = model
@@ -106,6 +106,7 @@ class AgnesImageProvider(ImageProvider):
         if session is None:
             import requests
             session = requests.Session()
+            session.trust_env = bool(use_system_proxy)   # 默认不读取环境变量与系统代理
         self.session = session
 
     def generate(self, prompt: str, save_path: Path, *, ratio: Optional[str] = None,
@@ -217,7 +218,7 @@ class StubImageProvider(ImageProvider):
         return ImageResult(True, path=str(save_path), **info)
 
 
-def make_image_provider(name: str, env: Optional[Dict[str, str]] = None) -> Optional[ImageProvider]:
+def make_image_provider(name: str, env: Optional[Dict[str, str]] = None, *, use_system_proxy: bool = False) -> Optional[ImageProvider]:
     """按名称构造生图 provider。返回 None 表示当前无法生图（如未配置 key），调用方应降级为程序绘制。"""
     if name == "stub":
         return StubImageProvider()
@@ -225,5 +226,5 @@ def make_image_provider(name: str, env: Optional[Dict[str, str]] = None) -> Opti
         pool = pool_from_env(env)
         if pool is None:
             return None
-        return AgnesImageProvider(pool)
+        return AgnesImageProvider(pool, use_system_proxy=use_system_proxy)
     raise ValueError(f"未知的生图 provider：{name}")
