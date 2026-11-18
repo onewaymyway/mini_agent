@@ -20,7 +20,7 @@ from ..planning.runner import load_spine
 from ..project_store import append_progress, load_project, now_iso, read_json, write_json_atomic
 from .budget import chars_for_minutes
 from .lexicon import apply_lexicon, load_lexicon
-from .validate import validate_script
+from .validate import canonicalize_quotes, validate_script
 
 MAX_ATTEMPTS = 3
 MAX_PART_CHARS = 12000
@@ -216,6 +216,7 @@ def write_part(project_dir: Path, part_id: str, llm, *, force: bool = False,
             continue
         script = normalize_script(obj, part, persona=persona, budget_chars=budget_chars,
                                   budget_minutes=budget_minutes, lexicon=lexicon)
+        canonicalize_quotes(script, source)                 # R9：金句对齐到原文的规范写法
         verdict = validate_script(script, source, part["section_ids"], check_pacing=(mode == "condensed"))
         if verdict["errors"]:
             issues = verdict["errors"][:12]
@@ -281,6 +282,7 @@ def save_script(project_dir: Path, part_id: str, script: Dict[str, Any],
                               budget_chars=chars_for_minutes(budget_minutes),
                               budget_minutes=budget_minutes, lexicon=lexicon)
     source = _part_source(project_dir, part["section_ids"])
+    canonicalize_quotes(script, source)                     # R9：人工编辑的金句同样对齐原文
     verdict = validate_script(script, source, part["section_ids"],
                               check_pacing=project.get("settings", {}).get("mode") == "condensed")
     if verdict["errors"]:

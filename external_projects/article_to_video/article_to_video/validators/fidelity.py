@@ -5,7 +5,7 @@ R5 起的比较规则（忽略标点、大小写、空白与 Markdown 标记）�
     中文引号 “” 与英文引号 ""、全角与半角逗号、换行与 “>” 引用符都不再造成误判。
   * locate(quote, source)：在源文中找到归一化后相同的片段，返回**源文中的原始文本**（去掉引用符与换行后的版本）。
     模型输出的引文只要内容对得上，就会被替换为源文中的规范写法，下游拿到的始终是逐字来源。
-  * repair_digest(obj, source)：能对齐的引文/数字替换为规范写法，对不上的剔除并返回剔除清单（不再让整组失败）。
+  * repair_digest(obj, source)：能对齐的引文替换为规范写法，数字按完整记号保留；对不上的剔除并返回剔除清单（不再让整组失败）。
   * digest_structure_issues(obj)：只检查结构（摘要、核心论点），这是唯一需要整组重试的情况。
 
 squash() 保留给其它模块（口播校验、测试）使用，行为不变。
@@ -71,6 +71,24 @@ def locate(quote: str, source: str, min_key: int = MIN_QUOTE_KEY) -> Optional[st
     return clean_span(source[start:end])
 
 
+_NUM_TOKEN = re.compile(r"\d+(?:\.\d+)?%?")
+
+
+def number_tokens(text: str) -> List[str]:
+    """数字记号：去掉千分位逗号后取出的完整数字（3,000 → 3000；3.5% → 3.5%）。"""
+    return _NUM_TOKEN.findall((text or "").replace(",", "").replace("，", ""))
+
+
+def numbers_supported(text: str, source: str) -> bool:
+    """文字中的每个数字记号都必须以完整记号出现在原文中。3.5 与 35 不互相匹配；3,000 与 3000 相同。
+    不含数字的文字返回 False（调用方另行判断）。"""
+    tokens = number_tokens(text)
+    if not tokens:
+        return False
+    src = set(number_tokens(source))
+    return all(t in src for t in tokens)
+
+
 def contains(source: str, text: str) -> bool:
     """归一化后 text 是否出现在 source 中（用于数字、英文词等短片段）。"""
     key = norm_key(text)
@@ -81,7 +99,7 @@ def repair_digest(obj: Dict[str, Any], source_text: str) -> Tuple[Dict[str, Any]
     """对齐模型输出的引文与数字。返回 (修复后的对象, 被剔除的条目说明)。
 
     * quotable：能对齐的替换为源文规范写法（去重）；对不上的剔除。
-    * key_numbers：能对齐的替换为源文规范写法；对不上的剔除。
+    * key_numbers：数字记号都能在原文中找到的保留（去重）；否则剔除（数字按完整记号比较，见 numbers_supported）。
     结构性问题（摘要、核心论点为空）不在这里处理，见 digest_structure_issues。
     """
     dropped: List[str] = []
@@ -98,11 +116,10 @@ def repair_digest(obj: Dict[str, Any], source_text: str) -> Tuple[Dict[str, Any]
         text = str(n).strip()
         if not text:
             continue
-        found = locate(text, source_text, min_key=1)
-        if found is None:
+        if not numbers_supported(text, source_text):
             dropped.append(f"数字未在原文中找到，已剔除：{text[:20]}")
-        elif found not in numbers:
-            numbers.append(found)
+        elif text not in numbers:
+            numbers.append(text)
     repaired = dict(obj)
     repaired["quotable"] = quotes
     repaired["key_numbers"] = numbers
@@ -118,7 +135,7 @@ def dropped_entries(obj: Dict[str, Any], source_text: str) -> List[Dict[str, str
             out.append({"kind": "quote", "text": text})
     for n in obj.get("key_numbers") or []:
         text = str(n).strip()
-        if text and locate(text, source_text, min_key=1) is None:
+        if text and not numbers_supported(text, source_text):
             out.append({"kind": "number", "text": text})
     return out
 
@@ -140,6 +157,6 @@ def validate_digest(obj: Dict[str, Any], source_text: str) -> List[str]:
         if norm_key(str(q)) and locate(str(q), source_text) is None:
             issues.append(f"quotable 不是原文逐字片段：{str(q)[:30]}")
     for n in obj.get("key_numbers") or []:
-        if norm_key(str(n)) and not contains(source_text, str(n)):
+        if str(n).strip() and not numbers_supported(str(n), source_text):
             issues.append(f"key_numbers 在原文中找不到：{str(n)[:20]}")
     return issues

@@ -21,7 +21,7 @@ from ..validators.coverage import validate_spine
 from .chunks import build_groups, section_catalog
 from .errors import PlanError
 from .llm import llm_digest, llm_spine
-from ..validators.fidelity import locate
+from ..validators.fidelity import locate, numbers_supported
 from .prompts import PROMPT_VERSION
 from .rules import rules_digest, rules_spine, section_claims
 from .spine_math import recompute_budgets, renumber
@@ -104,7 +104,12 @@ def restore_digest_item(project_dir: Path, group_id: str, index: int, fragment: 
     if not text:
         raise PlanError("请先输入原文中的片段")
     kind = item.get("kind", "quote")
-    found = locate(text, groups[group_id]["text"], min_key=1 if kind == "number" else 4)
+    if kind == "number":
+        if not numbers_supported(text, groups[group_id]["text"]):
+            raise PlanError("原文中找不到这些数字（按完整数字比较，例如 3.5 与 35 不相同）。请从原文复制一段")
+        found = text
+    else:
+        found = locate(text, groups[group_id]["text"], min_key=4)
     if found is None:
         raise PlanError("原文中找不到这段文字（忽略标点与大小写后仍不一致）。请从原文中复制一段")
     key = "key_numbers" if kind == "number" else "quotable"

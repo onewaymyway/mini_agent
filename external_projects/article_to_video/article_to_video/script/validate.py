@@ -1,6 +1,7 @@
 """script/validate.py — 口播稿校验。
 
-V2 忠实度：句中的数字与英文词必须在本章原文中出现；标记为金句的句子必须是原文逐字片段；
+V2 忠实度（R9 起忽略标点与大小写）：句中的数字必须以完整记号出现在本章原文中（3.5 与 35 不相同，
+            3,000 与 3000 相同）；英文词按归一化后的子串比较；标记为金句的句子必须能对齐到原文（见 canonicalize_quotes）；
             引用的小节必须属于本章。
 V3 可读性：不得含 Markdown 符号与裸公式；单句不超过 60 字（超过 40 字给警告）。
 节奏：      condensed 模式下章的字数应在预算 ±15% 内（超出作为“节奏问题”，由写稿重试处理）。
@@ -13,7 +14,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional
 
-from ..validators.fidelity import squash
+from ..validators.fidelity import locate, norm_key, numbers_supported
 from .budget import count_chars, pacing_issue
 
 _NUM = re.compile(r"\d+(?:\.\d+)?%?")
@@ -33,8 +34,7 @@ def validate_script(
 ) -> Dict[str, Any]:
     errors: List[str] = []
     warnings: List[str] = []
-    src = squash(part_source_text)
-    src_lower = src.lower()
+    src_key = norm_key(part_source_text)
     beats = script.get("beats") or []
     if not beats:
         errors.append("没有任何段落（beat）")
@@ -70,12 +70,12 @@ def validate_script(
             elif n > WARN_SENTENCE:
                 warnings.append(f"{bid} 单句偏长（{n} 字）")
             for num in _NUM.findall(t):
-                if squash(num) not in src:
+                if not numbers_supported(num, part_source_text):
                     errors.append(f"{bid} 数字“{num}”在本章原文中找不到")
             for w in _LATIN.findall(t):
-                if w.lower() not in src_lower:
+                if norm_key(w) not in src_key:
                     errors.append(f"{bid} 英文词“{w}”在本章原文中找不到")
-            if s.get("quote") and squash(t) not in src:
+            if s.get("quote") and locate(t, part_source_text) is None:
                 errors.append(f"{bid} 标记为原文金句，但不是原文逐字片段：{t[:24]}")
 
     uncovered = [sid for sid in part_section_ids if sid not in covered]
@@ -86,3 +86,18 @@ def validate_script(
     if check_pacing:
         pacing = pacing_issue(total, int(script.get("budget_chars") or 0))
     return {"errors": errors, "warnings": warnings, "pacing": pacing, "total_chars": total}
+
+
+def canonicalize_quotes(script: Dict[str, Any], part_source_text: str) -> int:
+    """R9：标记为原文金句的句子，若能对齐原文，改为原文中的规范写法（引号、换行与引用符去掉）。
+    对不上原文的句子保持不变，由 validate_script 报错。返回改写的句子数。原地修改 script。"""
+    changed = 0
+    for beat in script.get("beats") or []:
+        for s_ in beat.get("sentences") or []:
+            if not s_.get("quote"):
+                continue
+            found = locate(str(s_.get("text", "")), part_source_text)
+            if found is not None and found != s_.get("text"):
+                s_["text"] = found
+                changed += 1
+    return changed

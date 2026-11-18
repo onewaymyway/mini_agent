@@ -63,7 +63,7 @@ def test_repair_digest_keeps_matches_and_drops_the_rest():
     src = SRC_CROSS + "\n核心是3000亿元。\n"
     fixed, dropped = F.repair_digest(obj, src)
     assert fixed["quotable"] == ["Intelligence as Labor"]
-    assert fixed["key_numbers"] == ["3000"]
+    assert fixed["key_numbers"] == ["3,000"]        # 数字按完整记号验证，保留模型的写法
     assert len(dropped) == 2
     assert any("编造" in x for x in dropped) and any("9999" in x for x in dropped)
 
