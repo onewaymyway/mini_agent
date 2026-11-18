@@ -357,7 +357,7 @@ web_app:
 - **重启**：先停止（或结束）当前实例，等端口释放后再启动。远程项目不支持。
 
 当前约定端口：world_simulator 8502、stock_watch 8503、novel_writer 8504、
-novel_to_video 8505。
+novel_to_video 8505、info_hub 8506、article_to_video 8507。
 
 #### 登录保护（共享账户）
 

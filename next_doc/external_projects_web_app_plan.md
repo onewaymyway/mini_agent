@@ -17,7 +17,7 @@ novel_to_video）各自带一个 Streamlit 页面，但此前看板只能看到 
 3. **解释器**：`python` 不指定时使用启动看板的解释器（设计初衷是与 daemon
    同一环境；如果两者分属不同 venv，需要在 `project.yaml` 显式指定）。
 4. **端口分配**：world_simulator 8502、stock_watch 8503、novel_writer 8504、
-   novel_to_video 8505。同一机器上冲突时，相关项目均显示配置错误、不启动。
+   novel_to_video 8505、info_hub 8506、article_to_video 8507。同一机器上冲突时，相关项目均显示配置错误、不启动。
 5. **host**：不填 = 同一台机器，可启停。填非本机地址 = 远程部署，看板只探测
    与打开链接，不启停。远程能力目前不会用到，先保留配置位。
 6. **不做 autostart**。只能手动启停。

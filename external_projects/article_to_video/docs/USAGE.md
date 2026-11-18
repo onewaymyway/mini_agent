@@ -3,6 +3,14 @@
 本项目把一篇 Markdown 文章转换为讲解视频：配音、字幕、动态画面、署名与水印。
 界面由 Streamlit 提供（端口见 `project.yaml`），也可以用命令行。
 
+## 0. 从 mini_agent 看板启动
+
+在 mini_agent 看板的「🗂️ 外部项目」中注册 `article_to_video`（「➕ 注册新项目」→「扫描 external_projects 目录」），然后点「▶ 启动」「🌐 打开」。端口为 8507，默认只监听本机（`http://localhost:8507`）。也可以直接运行：
+
+```bash
+streamlit run app.py --server.port 8507 --server.address 127.0.0.1
+```
+
 ## 1. 准备
 
 - Python 3.10+，并安装 `requirements.txt` 中的依赖（streamlit、pillow、pytest）。

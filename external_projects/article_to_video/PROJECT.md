@@ -257,3 +257,12 @@ A2V_REAL_TTS=1 python -m pytest -q tests/test_p3_real_edge.py  # 真实 edge-tts
 - 界面的文件上传与表单提交只做了 Streamlit AppTest 冒烟（空表单报错路径）；带真实文件的提交靠 CLI 与导入函数测试覆盖，**真实浏览器中的体验需本机确认**。
 - 尚未调用任何模型，`health` 中的 ffmpeg 与 pillow 仅提示，P4/P5 再强制。
 - 水印的实际绘制（位置、透明度、`drift`/斜铺动效）在 P6 实现；P0 只保存配置。
+
+## 从 mini_agent 看板启动（端口 8507）
+
+- `project.yaml` 的 `web_app` 块声明：入口 `app.py`、端口 `8507`、监听地址 `127.0.0.1`（无登录保护，默认只本机访问）。
+- 注册：mini_agent 看板「🗂️ 外部项目」→「➕ 注册新项目」→「扫描 external_projects 目录」，选择 `article_to_video` 注册（注册时会校验 `project.yaml`）。
+- 启动：在「外部项目」中点「▶ 启动」，然后「🌐 打开」（地址 `http://localhost:8507`）。看板启动时可改选监听地址，选择局域网地址前请确认没有登录保护。
+- 端口约定：world_simulator 8502、stock_watch 8503、novel_writer 8504、novel_to_video 8505、info_hub 8506、article_to_video 8507（记录在 mini_agent 的 `next_doc/external_projects_web_app_plan.md` 与 `docs/external-projects-guide.md`）。
+- 直接启动（不经看板）：`streamlit run app.py --server.port 8507 --server.address 127.0.0.1`。
+- 回归测试：`tests/test_web_app_config.py` 检查端口、入口、本机绑定与端口不冲突；mini_agent 可导入时还会用其清单解析器校验。

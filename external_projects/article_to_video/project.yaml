@@ -25,7 +25,9 @@ review:
   cadence: weekly
   enabled: false
 
-# Streamlit 界面（端口 8507；8502–8506 已被其它项目占用）
+# Streamlit 界面（端口 8507；8502–8506 已被其它项目占用）。
+# 本项目无登录保护且会调用付费接口，默认只监听本机（看板启动时仍可手动改选地址）。
 web_app:
   entry: app.py
   port: 8507
+  bind: 127.0.0.1
