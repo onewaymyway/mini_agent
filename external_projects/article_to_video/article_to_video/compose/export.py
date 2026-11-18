@@ -65,8 +65,10 @@ def _cached(state: Dict[str, Any], step: str, key: str, target: Path) -> bool:
     return state.get(step) == key and target.is_file()
 
 
-def export_final(pdir: Path, *, part_ids: Optional[List[str]] = None,
-                 now: Optional[datetime] = None) -> Dict[str, Any]:
+def export_final(pdir: Path, *, part_ids: Optional[List[str]] = None, episode: Optional[Dict[str, Any]] = None,
+                 label: str = "", now: Optional[datetime] = None) -> Dict[str, Any]:
+    """导出成片。episode（可选）：{index, total, recap, preview}，用于多期的期号与上期回顾/下期预告。
+    label（可选）：文件名后缀，如 「_第2期」「_全集」；同时决定中间文件目录，各期互不覆盖。"""
     pdir = Path(pdir)
     spine = load_spine(pdir)
     if spine is None:
@@ -95,15 +97,23 @@ def export_final(pdir: Path, *, part_ids: Optional[List[str]] = None,
     orientation = video.get("orientation", "landscape")
     canvas = canvas_size(orientation, video.get("resolution", "1080P"))
 
-    work = pdir / "exports" / ".work"
+    work = pdir / "exports" / ".work" / (safe_filename(label) if label else "main")
     work.mkdir(parents=True, exist_ok=True)
     state_path = work / "state.json"
     state: Dict[str, Any] = read_json(state_path) if state_path.is_file() else {}
 
     # ---- 1 序列：片头、各章、片尾 ----
     seq: List[Tuple[Path, float]] = []
+    ep = episode or {}
+    ep_total = int(ep.get("total") or 1)
     if credits.get("title_card"):
-        lines = [(title, "title")] + ([(f"作者：{author}", "sub")] if author else [])
+        lines = [(title, "title")]
+        if ep_total > 1:
+            lines.append((f"第 {ep.get('index')} 期", "sub"))
+        if author:
+            lines.append((f"作者：{author}", "sub"))
+        if ep.get("recap"):
+            lines.append((str(ep["recap"]), "small"))
         png = work / "title_card.png"
         bg = render_background(canvas, _THEME).convert("RGBA")
         bg.alpha_composite(render_credit_card(canvas, orientation, _THEME, lines))
@@ -120,6 +130,8 @@ def export_final(pdir: Path, *, part_ids: Optional[List[str]] = None,
         lines = [(title, "title")]
         if author:
             lines.append((f"作者：{author}", "sub"))
+        if ep.get("preview"):
+            lines.append((str(ep["preview"]), "small"))
         if source_url:
             lines.append((source_url, "small"))
         if ai_text:
@@ -142,7 +154,7 @@ def export_final(pdir: Path, *, part_ids: Optional[List[str]] = None,
         raise ComposeError("有段落短于两倍叠化时长，请减小转场时长或改用淡入淡出")
     starts, total = part_offsets(durations, mode, d)
 
-    name = safe_filename(title)
+    name = safe_filename(title) + (label or "")
     exports = pdir / "exports"
     exports.mkdir(parents=True, exist_ok=True)
     meta = _meta(title, author, source_url, ai_text)

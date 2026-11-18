@@ -1,0 +1,240 @@
+"""pipeline/run.py — 可重入流水线（P7）：outline → script → voice → storyboard → render → compose → export。
+
+可重入：每一步先检查已有产物，已完成则跳过；上游变化时下游按各自的指纹重算。
+门控：遇到需要人工确认的检查点（见 gates.py）时停在那里，state=waiting；人工确认后再次运行即可继续。
+预算：G2 必须设置上限；超限时 state=budget_exceeded 并保存进度，不再调用模型或生图。
+停止：与其它模块一样响应停止请求（cancel），state=stopped。
+状态保存在 pipeline.json，界面与命令行读取它显示进度。
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from .. import cancel
+from ..audio.synth import synthesize_part
+from ..compose.export import export_final
+from ..compose.part import compose_part, video_dir
+from ..planning.runner import confirm_spine, load_spine, plan_outline
+from ..project_store import now_iso, read_json, write_json_atomic
+from ..render.compose_part import render_part
+from ..script.writer import confirm_script, load_script, write_part
+from ..visual.storyboard import confirm_storyboard, plan_storyboard, storyboard_status
+from .budget import BudgetedImageProvider, BudgetExceeded, Ledger
+from .episodes import DEFAULT_EPISODE_MAX, episode_specs
+from .gates import STAGES, PipelineError, check_budget_requirement, manual_checkpoints
+
+
+def _tick(ctx: Dict[str, Any]) -> None:
+    ctx["ledger"].checkpoint()
+
+
+def _done(detail: str = "") -> Dict[str, Any]:
+    return {"result": "done", "detail": detail}
+
+
+def _waiting(detail: str) -> Dict[str, Any]:
+    return {"result": "waiting", "detail": detail}
+
+
+def _parts(pdir: Path) -> List[Dict[str, Any]]:
+    spine = load_spine(pdir)
+    if spine is None:
+        raise PipelineError("还没有大纲")
+    return spine["parts"]
+
+
+def _stage_outline(pdir: Path, ctx: Dict[str, Any]) -> Dict[str, Any]:
+    spine = load_spine(pdir)
+    if spine is None:
+        engine = ctx["outline_engine"]
+        if engine == "llm" and ctx["llm"] is None:
+            raise PipelineError("大纲选择了模型版，但未配置文本模型")
+        plan_outline(pdir, engine=engine, llm=ctx["llm"] if engine == "llm" else None)
+        spine = load_spine(pdir)
+    if spine.get("confirmed"):
+        return _done("大纲已确认")
+    if "outline" in ctx["manual"]:
+        return _waiting("C0 大纲待人工确认（界面：🗺️ 大纲）")
+    confirm_spine(pdir)  # 未通过 V1 校验时抛出，流水线记为失败
+    return _done("大纲已自动确认（G1/G2）")
+
+
+def _stage_script(pdir: Path, ctx: Dict[str, Any]) -> Dict[str, Any]:
+    for p in _parts(pdir):
+        sc = load_script(pdir, p["id"])
+        if sc is None:
+            if ctx["llm"] is None:
+                raise PipelineError("写稿需要文本模型（未配置）")
+            write_part(pdir, p["id"], ctx["llm"])
+            _tick(ctx)
+    pending = [p["id"] for p in _parts(pdir) if not (load_script(pdir, p["id"]) or {}).get("confirmed")]
+    if not pending:
+        return _done("口播稿已确认")
+    if "script" in ctx["manual"]:
+        return _waiting("C1 口播待人工确认：" + "、".join(pending))
+    for pid in pending:
+        confirm_script(pdir, pid)
+    return _done(f"口播稿自动确认：{len(pending)} 章")
+
+
+def _stage_voice(pdir: Path, ctx: Dict[str, Any]) -> Dict[str, Any]:
+    if ctx["tts"] is None:
+        raise PipelineError("配音需要语音引擎（未配置）")
+    for p in _parts(pdir):
+        if not (load_script(pdir, p["id"]) or {}).get("confirmed"):
+            return _waiting("请先确认全部口播稿（C1）")
+    for p in _parts(pdir):
+        synthesize_part(pdir, p["id"], ctx["tts"])
+        _tick(ctx)
+    return _done("配音与时间轴完成")
+
+
+def _stage_storyboard(pdir: Path, ctx: Dict[str, Any]) -> Dict[str, Any]:
+    engine = ctx["storyboard_engine"]
+    for p in _parts(pdir):
+        pid = p["id"]
+        st = storyboard_status(pdir, pid)
+        if st["stale"] and "storyboard" in ctx["manual"]:
+            return _waiting(f"{pid} 分镜已过期，需人工重新生成（C2）")
+        if not st["exists"] or st["stale"]:
+            plan_storyboard(pdir, pid, engine=engine, llm=ctx["llm"] if engine == "llm" else None)
+            _tick(ctx)
+    pending = [p["id"] for p in _parts(pdir) if not storyboard_status(pdir, p["id"])["confirmed"]]
+    if not pending:
+        return _done("分镜已确认")
+    if "storyboard" in ctx["manual"]:
+        return _waiting("C2 分镜待人工确认：" + "、".join(pending))
+    for pid in pending:
+        confirm_storyboard(pdir, pid)
+    return _done(f"分镜自动确认：{len(pending)} 章")
+
+
+def _stage_render(pdir: Path, ctx: Dict[str, Any]) -> Dict[str, Any]:
+    for p in _parts(pdir):
+        if not storyboard_status(pdir, p["id"])["confirmed"]:
+            return _waiting("请先确认全部分镜（C2）")
+    for p in _parts(pdir):
+        render_part(pdir, p["id"], provider=ctx["provider"])
+        _tick(ctx)
+    return _done("画面渲染完成")
+
+
+def _compose_fresh(pdir: Path, pid: str) -> bool:
+    mp4 = video_dir(pdir, pid) / "part.mp4"
+    if not mp4.is_file():
+        return False
+    deps = [pdir / "parts" / pid / "visuals" / "manifest.json", pdir / "parts" / pid / "storyboard.json",
+            pdir / "parts" / pid / "timeline.json"]
+    return all(d.is_file() and d.stat().st_mtime_ns <= mp4.stat().st_mtime_ns for d in deps)
+
+
+def _stage_compose(pdir: Path, ctx: Dict[str, Any]) -> Dict[str, Any]:
+    done = 0
+    for p in _parts(pdir):
+        if _compose_fresh(pdir, p["id"]):
+            continue
+        compose_part(pdir, p["id"])
+        done += 1
+        _tick(ctx)
+    return _done(f"章合成：新做 {done} 章")
+
+
+def _stage_export(pdir: Path, ctx: Dict[str, Any]) -> Dict[str, Any]:
+    parts = _parts(pdir)
+    project = read_json(pdir / "project.json")
+    specs = episode_specs(parts, float(project.get("episode_max_minutes", DEFAULT_EPISODE_MAX)))
+    ctx["status"]["episodes"] = [{"index": s["index"], "total": s["total"], "parts": s["parts"]} for s in specs]
+    if "export" in ctx["manual"] and not ctx["approve"]:
+        return _waiting("终审待人工确认：检查成片后以 approve 导出")
+    outputs = []
+    if len(specs) == 1:
+        outputs.append(export_final(pdir, part_ids=specs[0]["parts"])["files"]["video"])
+    else:
+        for s in specs:
+            rep = export_final(pdir, part_ids=s["parts"], episode=s, label=f"_第{s['index']}期")
+            outputs.append(rep["files"]["video"])
+            _tick(ctx)
+        if ctx["merge_all"]:
+            outputs.append(export_final(pdir, part_ids=[p["id"] for p in parts], label="_全集")["files"]["video"])
+    ctx["status"]["outputs"] = outputs
+    return _done("导出：" + "、".join(outputs))
+
+
+_STAGE_FNS = {"outline": _stage_outline, "script": _stage_script, "voice": _stage_voice,
+              "storyboard": _stage_storyboard, "render": _stage_render, "compose": _stage_compose,
+              "export": _stage_export}
+
+
+def _save(pdir: Path, status: Dict[str, Any], now: Optional[datetime]) -> None:
+    status["updated_at"] = now_iso(now)
+    write_json_atomic(pdir / "pipeline.json", status)
+
+
+def run_pipeline(pdir: Path, *, until: str = "export", gear: str = "G0", max_images: Optional[int] = None,
+                 max_minutes: Optional[float] = None, approve: bool = False, llm=None, tts=None,
+                 image_provider=None, outline_engine: str = "rules", storyboard_engine: str = "rules",
+                 merge_all: bool = False, now: Optional[datetime] = None) -> Dict[str, Any]:
+    pdir = Path(pdir)
+    if until not in STAGES:
+        raise PipelineError(f"未知阶段：{until}")
+    check_budget_requirement(gear, max_images, max_minutes)
+    ledger = Ledger(pdir, max_images=max_images, max_minutes=max_minutes)
+    provider = BudgetedImageProvider(image_provider, ledger) if image_provider is not None else None
+    status: Dict[str, Any] = {"gear": gear, "until": until, "state": "running", "steps": [],
+                              "waiting": None, "error": None, "episodes": [], "outputs": [],
+                              "budget": None, "started_at": now_iso(now)}
+    ctx = {"manual": manual_checkpoints(gear), "approve": approve, "llm": llm, "tts": tts,
+           "provider": provider, "outline_engine": outline_engine, "storyboard_engine": storyboard_engine,
+           "merge_all": merge_all,
+           "ledger": ledger, "status": status}
+    try:
+        for stage in STAGES[: STAGES.index(until) + 1]:
+            cancel.check()
+            _tick(ctx)
+            res = _STAGE_FNS[stage](pdir, ctx)
+            status["steps"].append({"stage": stage, "result": res["result"], "detail": res["detail"]})
+            if res["result"] == "waiting":
+                status["state"] = "waiting"
+                status["waiting"] = {"stage": stage, "detail": res["detail"]}
+                break
+        else:
+            status["state"] = "done"
+    except BudgetExceeded as exc:
+        status["state"], status["error"] = "budget_exceeded", str(exc)
+    except cancel.Cancelled:
+        status["state"], status["error"] = "stopped", "用户请求停止"
+    except Exception as exc:  # noqa: BLE001 — 记录失败原因，便于界面展示
+        status["state"], status["error"] = "failed", str(exc)
+    finally:
+        try:
+            ledger.checkpoint()
+        except BudgetExceeded:
+            pass
+        status["budget"] = ledger.summary()
+        _save(pdir, status, now)
+    return status
+
+
+def read_status(pdir: Path) -> Optional[Dict[str, Any]]:
+    p = Path(pdir) / "pipeline.json"
+    return read_json(p) if p.is_file() else None
+
+
+def default_providers(pdir: Path, *, offline: bool = False) -> Dict[str, Any]:
+    """项目的默认引擎：文本模型（mini_agent）、语音降级链、生图（按项目设置）。offline=True 时语音静音、生图占位。"""
+    from ..audio.synth import project_tts_config
+    from ..project_store import load_project
+    from ..providers.image import make_image_provider
+    from ..providers.text import make_text_llm
+    from ..providers.tts import SilenceTTS, build_chain
+
+    if offline:
+        return {"llm": None, "tts": SilenceTTS(), "image": make_image_provider("stub")}
+    cfg = project_tts_config(Path(pdir))
+    image_name = load_project(Path(pdir)).get("visual", {}).get("images", {}).get("provider", "agnes")
+    return {"llm": make_text_llm("miniagent"),
+            "tts": build_chain(cfg["engine_chain"], edge_proxy=cfg["edge_proxy"]),
+            "image": make_image_provider(image_name)}

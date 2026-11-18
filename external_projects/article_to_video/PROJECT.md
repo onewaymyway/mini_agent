@@ -14,6 +14,7 @@
 | **P4** 视觉 | 分镜（规则版与模型版）、卡片/流程/表格/列表/时间线/金句/公式渲染、插图预算与缓存、一图多用（自动分配）、V4/V5 校验、章渲染清单、分镜页（C2） | ✅ 完成（207 项通过，1 项需联网跳过） |
 | **P5** 合成 | 章音轨、分段图层、字幕（含高亮）、进度条与章标签、ffmpeg 编码、转场（cut/fade/dissolve）、成片导出（mp4、srt、封面、报告）、V6 成片校验、前 30 秒预览、合成导出页 | ✅ 完成（232 项通过，1 项需联网跳过） |
 | **P6** 署名与水印 | 片头标题卡、下三分之一条、角标、片尾卡（含 AI 声明与来源）、文字/图片水印（静态、漂移、斜向平铺）、水印安全区校验、元数据（标题、作者、声明、来源）、可选 BGM（侧链压低）、改水印只重跑最后一步、无水印版本 | ✅ 完成（256 项通过，1 项需联网跳过） |
+| **P7** 自动化与收尾 | 挡位 G0/G1/G2（门控）、可重入流水线 `run_pipeline`（--until）、预算账本（生图次数、总耗时，超限即停）、长文多期拆分（章边界、单期 ≤ 15 分钟）与全集合并、期首回顾/期末预告、整章重置（需确认、级联）、驾驶舱页面、使用说明 | ✅ 完成（279 项通过，1 项需联网跳过）；参考文章 G2 全自动离线跑完 |
 | P7 自动化 | G1/G2 挡位、多期拆分 | 未开始 |
 
 ## 目录
@@ -57,9 +58,9 @@ article_to_video/
 │   │   ├── fidelity.py       V2（P1 部分）：摘要中的原话与数字必须出现在原文
 │   │   └── coverage.py       V1：每个小节恰好出现一次（章或取舍报告）
 │   └── providers/text.py     文本 LLM（mini_agent 的 LLMHelper）
-├── entrypoints/              import_article / list_projects / health / plan_outline / write_script / synth_audio / plan_storyboard / render_visuals / compose_part / export_final
-├── ui/                       import_page / outline_page（C0）/ script_page（C1）/ voice_page（S5）/ storyboard_page（C2）/ projects_page / jobs
-├── tests/                    256 项通过 + 1 项需联网（P0–P3 122 + P4 85 + P5 25 + P6 24）
+├── entrypoints/              import_article / list_projects / health / plan_outline / write_script / synth_audio / plan_storyboard / render_visuals / compose_part / export_final / run_pipeline
+├── ui/                       import_page / outline_page（C0）/ script_page（C1）/ voice_page（S5）/ storyboard_page（C2）/ export_page / cockpit_page（驾驶舱）/ projects_page / jobs
+├── tests/                    279 项通过 + 1 项需联网（P0–P3 122 + P4 85 + P5 25 + P6 24 + P7 23）
 └── docs/README.md
 ```
 
@@ -81,6 +82,8 @@ python entrypoints/plan_storyboard.py --id <项目目录名> --engine llm  # 生
 python entrypoints/render_visuals.py --id <项目目录名> --provider none  # 渲染画面（none=插图全部降级为卡片）
 python entrypoints/compose_part.py --id <项目目录名>            # 章合成（需画面已渲染、配音已完成）
 python entrypoints/export_final.py --id <项目目录名>            # 成片导出（需所有章已合成）
+python entrypoints/run_pipeline.py --id <项目目录名> --gear G0      # 一键流水线：挡位 G0 在检查点停下等待确认
+python entrypoints/run_pipeline.py --id <项目目录名> --gear G2 --max-images 200 --max-minutes 60  # 全自动（必须设预算）
 python entrypoints/health.py
 python -m pytest -q
 A2V_REAL_TTS=1 python -m pytest -q tests/test_p3_real_edge.py  # 真实 edge-tts 冒烟（需网络）
@@ -143,6 +146,28 @@ A2V_REAL_TTS=1 python -m pytest -q tests/test_p3_real_edge.py  # 真实 edge-tts
 - **渲染清单** `parts/<章>/visuals/manifest.json`：P5 合成的唯一输入。每个场景记录时间段、底图与各状态图层及出现时刻（来自时间轴）。场景缓存键 = 场景内容 + 主题 + 风格锚 + 画幅 + 渲染版本。
 - **画幅**：横屏 1920×1080（1080P）/ 1280×720（720P），竖屏 1080×1920 / 720×1280。字号按短边比例缩放。
 - **字体**：中文字体优先读取环境变量 `ARTICLE_TO_VIDEO_FONT`，其次系统字体候选；找不到时报错，绝不画成方框。
+
+## P7 已确定的规则
+
+- **挡位**（设计 14.3）：`G0`（默认）四个检查点（C0 大纲、C1 口播、C2 分镜、终审）都需人工；`G1` 只有 C0 与终审人工，C1、C2 通过校验后自动确认；`G2` 全自动，**必须**设置预算上限（生图次数或总耗时至少一项），未设置则拒绝启动。
+- **流水线**（`run_pipeline`，`--until` 指定停止阶段）：outline → script → voice → storyboard → render → compose → export。每一步先看已有产物：已确认则跳过，过期则按各自指纹重算；可重复运行。遇到需人工的检查点时 `state=waiting` 并记录原因；人工确认后再次运行即可继续。状态写入 `pipeline.json`。
+- **大纲默认用规则版**（离线、确定）；选择模型版时需要文本模型。写稿、分镜（规则或模型版）、配音、渲染、合成、导出各自沿用对应模块的校验与缓存。
+- **终审**：`export` 阶段在 G0/G1 需要 `--approve`（界面勾选「确认终审」），否则停在导出之前。
+- **预算账本**（`budget.json`，跨次累计）：生图次数只统计真正调用 provider 的次数（缓存复用不计）；超限在调用前抛出，`state=budget_exceeded`。总耗时在阶段之间检查。
+- **停止**：沿用 cancel 机制，`state=stopped`；已完成的产物保留，可重新运行继续。
+- **多期拆分**（设计第 10 节）：只在章边界拆分；每期总时长不超过 `episode_max_minutes`（默认 15）；超长的单章独占一期。期首「上期回顾」、期末「下期预告」直接取相邻章的一句话（`one_line`），不由模型生成。只有一期时不加期号。
+- **多期导出**：每期独立成片，文件名带「_第N期」，中间文件放在 `exports/.work/<后缀>/`，各期互不覆盖；`--merge-all` 额外导出「_全集」。
+- **整章重置**（`reset_part`）：必须 `confirm=True`，从指定阶段起删除该章产物并级联；图片缓存（`images/`）保留，重新生图代价高且按指纹复用。
+- **驾驶舱**（界面「🧭 驾驶舱」）：选择挡位、预算、运行到哪一步、离线冒烟；显示上次运行的步骤、等待原因、预算使用、分期与各章状态；提供整章重置。
+
+## 已知限制（P7）
+
+- 参考文章的 G2 全自动验收使用**离线条件**：文本模型为测试假模型（口播内容为占位文字，只验证流程），语音为静音，生图为占位图，画幅 720P。真实模型与真实配音的效果未在本环境验证。
+- 总耗时（约 8 分钟，720P、6 章）取决于机器；未做 1080P 完整计时。
+- 预算只统计生图次数与耗时，不统计模型调用的 token 费用（模型调用的费用由 mini_agent 侧统计，本项目未接入）。
+- 期首回顾与期末预告直接使用章的一句话，不做衔接改写。
+- 未实现「全集合并」的自动封面与片头（全集版沿用单期的标题卡）。
+- 流水线在 `storyboard` 过期时，G0/G1 停在人工检查点，不会静默覆盖编辑；G2 会自动重新生成分镜（覆盖未确认编辑）。
 
 ## P6 已确定的规则
 

@@ -63,7 +63,7 @@ def test_clean_version_has_no_watermark_and_final_does(pdir):
 
 def test_changing_watermark_reruns_only_the_last_step(pdir):
     export_final(pdir, part_ids=["P01", "P02"])
-    work = pdir / "exports" / ".work"
+    work = pdir / "exports" / ".work" / "main"  # P7 起按分期分目录（单期为 main）
     marks = {
         "part": (video_dir(pdir, "P01") / "part.mp4").stat().st_mtime_ns,
         "joined": (work / "joined.mp4").stat().st_mtime_ns,
