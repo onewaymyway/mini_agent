@@ -14,7 +14,7 @@ streamlit run app.py --server.port 8507 --server.address 127.0.0.1
 ## 1. 准备
 
 - Python 3.10+，并安装 `requirements.txt` 中的依赖（streamlit、pillow、pytest）。
-- ffmpeg 与 ffprobe 必须在 PATH 中（程序通过 PATH 查找，目前没有单独的路径配置项）。
+- ffmpeg 与 ffprobe 会自动查找（与 novel_to_video 一致），顺序：环境变量 `FFMPEG_BIN` / `FFPROBE_BIN`（也认 `NOVEL_FFMPEG_PATH` / `NOVEL_FFPROBE_PATH`）→ pip 包 `imageio-ffmpeg` → conda 环境（当前激活的优先，其次名字含 novel/mv/video 的）→ 系统 PATH。找不到时，报错会列出每种方式的尝试结果。
 - 中文字体：程序会自动查找系统字体（Windows 微软雅黑、macOS 苹方、Linux Noto CJK 或文泉驿）。找不到时，设置环境变量 `ARTICLE_TO_VIDEO_FONT` 指向一个 .ttf / .ttc / .otf 文件。
 - 文本模型：通过 mini_agent 配置（写稿与模型版分镜需要）。
 - 语音：CosyVoice 或 edge-tts（按项目设置中的引擎顺序降级）。

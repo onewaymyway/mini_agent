@@ -1,6 +1,6 @@
 # article_to_video 外部项目设计方案（文章讲解视频）
 
-> 状态：**Q1–Q10 已确认（按推荐值，作者名与水印可在界面填写）；P0–P7 已完成（2026-11-18）**，见第 19 节。**第二轮改进（R1–R4，实时日志/大纲默认模型/统一设置页）见第 20、21 节，已完成（2026-11-18）。第三轮（R5 大纲稳健性）见第 22 节，已完成（2026-11-18）；第四轮（R6 重新生成与目标时长）见第 23 节，已完成（2026-11-18）；界面结构重构（R7）见第 24 节，已完成（2026-11-18）；大纲校验与展示（R8）见第 25 节，已完成（2026-11-18）。**按第 15 节分期实施，每期更新文档并打包 diff zip（保持目录结构）。
+> 状态：**Q1–Q10 已确认（按推荐值，作者名与水印可在界面填写）；P0–P7 已完成（2026-11-18）**，见第 19 节。**第二轮改进（R1–R4，实时日志/大纲默认模型/统一设置页）见第 20、21 节，已完成（2026-11-18）。第三轮（R5 大纲稳健性）见第 22 节，已完成（2026-11-18）；第四轮（R6 重新生成与目标时长）见第 23 节，已完成（2026-11-18）；界面结构重构（R7）见第 24 节，已完成（2026-11-18）；大纲校验与展示（R8）见第 25 节，已完成（2026-11-18）；R12 ffmpeg 自动查找见第 29 节，已完成（2026-11-18）。**按第 15 节分期实施，每期更新文档并打包 diff zip（保持目录结构）。
 > 关联：`external_projects/novel_to_video/`（最接近的现有项目，尤其是其「动态漫 still 模式」）、`next_doc/novel_to_video_still_comic_mode_improvement_plan.md`。
 > 新项目路径：`external_projects/article_to_video/`（遵循外部项目标准结构，自包含，可独立于 daemon 运行）。
 
@@ -1056,3 +1056,24 @@ external_projects/article_to_video/
 - 修正提示中的原文句子列表是按标点切分的，句子边界不完美；模型指出的句子若过长，会被单句检查拦下，进入下一轮修正。
 - 摘要阶段的语义校验（见 28.4）是下一步可以做的事情。
 
+---
+
+## 29. R12 ffmpeg / ffprobe 自动查找（已完成，2026-11-18）
+
+> 来源：用户日志。“配音全部”失败：`edge-tts 失败（MediaError: 未找到 ffmpeg：请安装 ffmpeg 并加入 PATH）`。novel_to_video 能自动找到 ffmpeg，本项目只用 `shutil.which`，因此在 ffmpeg 不在 PATH（例如装在 conda 环境或由 `imageio-ffmpeg` 自带）时失败。
+
+### 29.1 改动
+
+- 新增 `media/binaries.py`：与 `novel_to_video/media/binaries.py` 保持一致的查找逻辑（两个项目相互独立，因此复制而不是跨项目导入）。顺序：环境变量 `FFMPEG_BIN` / `FFPROBE_BIN`（也认 `NOVEL_FFMPEG_PATH` / `NOVEL_FFPROBE_PATH`）→ `imageio_ffmpeg` → conda 环境（当前激活优先，其次名字含 novel/mv/video，再次其它）→ 系统 PATH。找到后缓存，找不到不缓存。
+- `media/ffmpeg.py` 的 `find_ffmpeg` / `find_ffprobe` 改为调用上述查找，找不到时仍抛 `MediaError`（上层的引擎失败提示不变），消息中列出每种方式的尝试结果。合成（`compose/ffrun.py`）与配音转码都经过这两个函数，因此一并生效。
+- `entrypoints/health.py`：ffmpeg / ffprobe 检查改用同一查找，并显示实际路径。
+- 文档：`docs/USAGE.md`、`PROJECT.md` 已更新。
+
+### 29.2 验收
+
+`tests/test_r12_ffmpeg_lookup.py`（5 项）：环境变量优先；skill 变量同样有效；conda 环境自动探测；找不到时为 `MediaError` 且列出尝试方式；找不到时不缓存，之后设置变量即可生效。全量：372 项通过，24 项跳过；1 项失败是沙箱未安装 `streamlit`（与本期无关，在你的环境中应通过）。
+
+### 29.3 未做 / 说明
+
+- 日志中的另一条错误：`cosyvoice 失败（No module named 'torchaudio'）` 是 CosyVoice 引擎的运行环境缺少依赖，不属于本期。未使用 CosyVoice 时可忽略（流程已回退到 edge-tts）；需要时在运行本项目的环境中安装 CosyVoice 的依赖。
+- 如果机器上没有任何 ffmpeg，最简单的做法是在运行环境中 `pip install imageio-ffmpeg`；该包只含 ffmpeg，不含 ffprobe，ffprobe 缺失时只影响非 WAV 音频时长读取，配音转码已先转成 WAV，通常不受影响。

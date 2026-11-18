@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 import wave
 from pathlib import Path
+
+from . import binaries as _binaries
 
 AUDIO_RATE = 24000
 
@@ -15,17 +16,18 @@ class MediaError(RuntimeError):
 
 
 def find_ffmpeg() -> str:
-    exe = shutil.which("ffmpeg")
-    if not exe:
-        raise MediaError("未找到 ffmpeg：请安装 ffmpeg 并加入 PATH")
-    return exe
+    """定位 ffmpeg：环境变量 → imageio_ffmpeg → conda 环境 → PATH（见 binaries.py）。"""
+    try:
+        return _binaries.find_ffmpeg()
+    except _binaries.BinaryNotFound as exc:
+        raise MediaError(f"未找到 ffmpeg：{exc}") from exc
 
 
 def find_ffprobe() -> str:
-    exe = shutil.which("ffprobe")
-    if not exe:
-        raise MediaError("未找到 ffprobe：请安装 ffmpeg（通常包含 ffprobe）并加入 PATH")
-    return exe
+    try:
+        return _binaries.find_ffprobe()
+    except _binaries.BinaryNotFound as exc:
+        raise MediaError(f"未找到 ffprobe：{exc}") from exc
 
 
 def wav_duration(path: Path) -> float:
