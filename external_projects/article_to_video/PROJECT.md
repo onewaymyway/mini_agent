@@ -10,7 +10,7 @@
 | **P0** 脚手架与导入 | 项目骨架、`project.yaml`、Markdown 块解析（稳定 ID）、ASCII 链与回路识别、公式/表格/引用解析、作者解析、作者名与水印输入、项目列表与署名水印编辑、看板 | ✅ 完成（40 项测试通过） |
 | **P1** 规划 | 分节摘要（S1）、主线与大纲（S2）、V1 覆盖校验、取舍报告、离线规则版、大纲确认页（C0） | ✅ 完成 |
 | **P2** 口播稿 | 分章写稿（S3）、发音词典、V2 忠实度与 V3 可读性校验、字数预算（±15%）、后台写稿可停止、脚本编辑与确认（C1） | ✅ 完成（102 项测试通过） |
-| P3 配音与时间轴 | 逐句 TTS、双声线、`timeline.json` | 未开始 |
+| **P3** 配音与时间轴 | 逐句 TTS（降级链）、双声线、句间停顿、语速、`timeline.json`、试听、设置 | ✅ 完成（122 项通过，1 项需联网跳过） |
 | P4 视觉 | 分镜、卡片/图表渲染、插图预算 | 未开始 |
 | P5 合成 | beat→章→成片、字幕、进度条、封面 | 未开始 |
 | P6 署名与水印 | 片头/片尾/下三分之一条、水印叠加 | 未开始（P0 已保存配置） |
@@ -46,14 +46,20 @@ article_to_video/
 │   │   ├── budget.py         字数换算（4.2 字/秒）与 ±15% 节奏判断
 │   │   ├── lexicon.py        发音词典 lexicon.json（只影响 tts）
 │   │   └── (提示词在 writer.py：SCRIPT_SYSTEM / build_prompt，PROMPT_VERSION = s3-v1)
+│   ├── audio/                P3
+│   │   ├── synth.py          逐句合成（缓存键=音色+语速+文本+引擎链）、试听、设置
+│   │   ├── timeline.py       时间轴（纯计算）与引文音色分配
+│   │   └── config.py         音色/引擎/代理设置、语速映射
+│   ├── media/ffmpeg.py       ffmpeg/ffprobe 定位、WAV 时长、静音、转码
+│   ├── providers/tts.py      TTS：CosyVoice → edge-tts 降级链（SilenceTTS 仅流程验证）
 │   ├── cancel.py             可中断调用：按项目登记停止信号，模型请求每 0.2 秒检查
 │   ├── validators/
 │   │   ├── fidelity.py       V2（P1 部分）：摘要中的原话与数字必须出现在原文
 │   │   └── coverage.py       V1：每个小节恰好出现一次（章或取舍报告）
 │   └── providers/text.py     文本 LLM（mini_agent 的 LLMHelper）
-├── entrypoints/              import_article / list_projects / health / plan_outline / write_script
-├── ui/                       import_page / outline_page（C0）/ script_page（C1）/ projects_page / jobs（后台任务）
-├── tests/                    102 项（P0 40 + P1 34 + P2 28）
+├── entrypoints/              import_article / list_projects / health / plan_outline / write_script / synth_audio
+├── ui/                       import_page / outline_page（C0）/ script_page（C1）/ voice_page（S5）/ projects_page / jobs
+├── tests/                    122 项通过 + 1 项需联网（P0 40 + P1 34 + P2 28 + P3 20）
 └── docs/README.md
 ```
 
@@ -68,8 +74,11 @@ python entrypoints/list_projects.py
 python entrypoints/plan_outline.py --id <项目目录名> --engine rules     # 离线规则
 python entrypoints/plan_outline.py --id <项目目录名> --engine miniagent # 模型（需 mini_agent 配置）
 python entrypoints/write_script.py --id <项目目录名>            # 写口播稿（需要模型）
+python entrypoints/synth_audio.py --id <项目目录名>            # 配音（需要 edge-tts 或 CosyVoice）
+python entrypoints/synth_audio.py --id <项目目录名> --stub      # 仅流程验证：静音
 python entrypoints/health.py
 python -m pytest -q
+A2V_REAL_TTS=1 python -m pytest -q tests/test_p3_real_edge.py  # 真实 edge-tts 冒烟（需网络）
 ```
 
 项目默认保存在 `<项目目录>/projects/`，可用环境变量 `ARTICLE_TO_VIDEO_HOME` 改到其它目录。
@@ -102,6 +111,26 @@ python -m pytest -q
 - **C1 确认**：编辑后本章变为未确认；确认前必须通过所有硬校验。
 - **后台写稿**：界面中写稿在线程里运行，可随时「请求停止」；模型请求每 0.2 秒检查一次停止信号，停止后不写入未完成的结果。
 
+## P3 已确定的规则
+
+- **逐句合成**：每句一个 WAV（`parts/<章>/audio/<句ID>.wav`）；句子 ID 形如 `P01.b01.s01`。音频统一为 24kHz 单声道 16bit。
+- **缓存**：键 = 音色 + 语速 + 朗读文本 + 引擎链。编辑口播只重配改动的句子；换引擎链会全部重配。每句完成即写入 `manifest.json`，停止或失败后可续跑。
+- **双声线**：主讲用 `narration_voice`，`quote: true` 的金句用 `quote_voice`；每章引文音色最多 2 句（可设），超出的改用主讲音色并给出警告。
+- **语速**：beat 的 pace 映射到 -10% / 0 / +10%；开场（hook）默认 +5%。
+- **停顿**：句内停顿 `sentence_gap_sec`（0.15 秒）；段末停顿用 beat 的 `pause_after_ms`；章首章尾各 0.5 秒。
+- **时间轴不变量**（测试覆盖）：`end = start + duration`；下一句 `start = end + gap`；`total = 末句 end + 末 gap + tail`。
+- **不静默降级**：引擎链全部失败时报错并列出每个引擎的原因；只有 `--stub` 或界面勾选"仅流程验证"才生成静音，且时间轴带 stub 警告。
+- **前置条件**：大纲已确认（C0），且该章口播稿已确认（C1）。
+- **试听**：写入 `preview/`，不改变项目的音频与时间轴。
+
+## 已知限制（P3）
+
+- **真实 edge-tts 没有在本环境验证**：沙箱无法解析 `speech.platform.bing.com`。冒烟测试已写好（`A2V_REAL_TTS=1` 时运行），失败时会给出"网络不通"的说明。请在本机运行一次。
+- CosyVoice 路径只实现了接口，未在本环境测试（需要本地模型与 torch）。
+- 真实 edge-tts 需要 ffmpeg 转码（mp3 → wav）。
+- 句内强调词（emphasis）不影响配音，只在 P4 视觉中使用。
+- 试听的语速固定为 +0%，音色为主讲音色。
+
 ## 已知限制（P2）
 
 - 写稿只支持模型（miniagent），没有离线规则版：口播改写需要语言能力。
@@ -110,7 +139,7 @@ python -m pytest -q
 - 单章原文超过 12000 字时拒绝写稿，需要在大纲页拆分。
 - 节奏检查只对 condensed 模式生效；faithful 与 highlights 模式不检查字数。
 - 在 C1 页编辑时，句内强调词（emphasis）会被清空，需要在 P4 视觉阶段重新标注。
-- 停止机制目前只覆盖模型调用；ffmpeg 等子进程的停止在 P5 处理。
+- 停止机制目前覆盖模型调用与配音请求；ffmpeg 子进程的停止在 P5 处理。
 
 ## 已知限制（P1）
 

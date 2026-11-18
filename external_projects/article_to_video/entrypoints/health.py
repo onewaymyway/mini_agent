@@ -19,7 +19,11 @@ def main() -> int:
         {"name": "pillow", "ok": find_spec("PIL") is not None, "required": False,
          "detail": "P4 视觉渲染需要"},
         {"name": "ffmpeg", "ok": shutil.which("ffmpeg") is not None, "required": False,
-         "detail": "P5 合成需要"},
+         "detail": "P3 配音（edge-tts 转码）与 P5 合成需要"},
+        {"name": "ffprobe", "ok": shutil.which("ffprobe") is not None, "required": False,
+         "detail": "读取非 WAV 音频时长需要"},
+        {"name": "edge-tts", "ok": find_spec("edge_tts") is not None, "required": False,
+         "detail": "在线配音引擎：pip install edge-tts"},
     ]
     root = projects_root()
     try:
