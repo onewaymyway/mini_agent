@@ -40,3 +40,14 @@ def check_video(probe: Dict[str, Any], *, canvas, fps: int, expected_sec: float,
     if subtitle_end_sec is not None and subtitle_end_sec > dur + DURATION_TOL:
         errors.append(f"字幕结束于 {subtitle_end_sec:.2f} 秒，超出成片时长")
     return {"errors": errors, "warnings": []}
+
+
+def check_watermark(canvas, box) -> Dict[str, List[str]]:
+    """水印位置在安全区内：完整位于画面中（box = (x, y, w, h)，None 表示未启用水印）。"""
+    from ..compose.branding import inside_canvas
+    errors: List[str] = []
+    if box is None:
+        return {"errors": errors, "warnings": []}
+    if not inside_canvas(canvas, tuple(int(v) for v in box)):
+        errors.append("水印超出画面安全区，请调整位置或缩放")
+    return {"errors": errors, "warnings": []}

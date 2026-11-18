@@ -107,6 +107,10 @@ def fakes(tmp_path, monkeypatch):
     monkeypatch.setenv("ARTICLE_TO_VIDEO_HOME", str(tmp_path))
     pdir, _ = voiced_project(tmp_path)
     _use_720p(pdir)  # 假章视频为 720P，成片设定须一致（否则 V6 拦截）
+    # 本组测试只针对章节之间的转场与字幕偏移：关闭 P6 默认的片头/片尾与水印（署名另有测试）
+    from article_to_video.project_store import update_branding
+    update_branding(pdir, {"credits": {"title_card": False, "end_card": False, "lower_third": False,
+                                       "corner_tag": False}, "watermark": {"enabled": False}})
     fake_part(pdir, "P01", 2.0, [{"id": "P01.s1", "start": 0.2, "end": 1.0, "text": "甲一"}])
     fake_part(pdir, "P02", 3.0, [{"id": "P02.s1", "start": 0.5, "end": 2.0, "text": "乙一"}])
     return pdir

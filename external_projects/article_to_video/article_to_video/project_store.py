@@ -118,8 +118,13 @@ def normalize_branding(raw: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, 
 
     wm_raw = raw.get("watermark") if isinstance(raw.get("watermark"), dict) else {}
     wm_text = _clean_text(wm_raw.get("text"), MAX_WATERMARK_CHARS)
+    wm_image = _clean_text(wm_raw.get("image"), 200) or None  # 项目内相对路径，如 assets/logo.png
+    wm_type = wm_raw.get("type") if wm_raw.get("type") in ("text", "image") else "text"
+    if wm_type == "image" and not wm_image:
+        wm_type = "text"
     wm_requested = bool(wm_raw.get("enabled", True))
-    if wm_requested and not wm_text:
+    has_content = bool(wm_text) if wm_type == "text" else True
+    if wm_requested and not has_content:
         if "enabled" in wm_raw:
             warnings.append("水印未填写文字，未启用水印")
         wm_enabled = False
@@ -145,9 +150,9 @@ def normalize_branding(raw: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, 
         "credits": credits,
         "watermark": {
             "enabled": wm_enabled,
-            "type": "text",
+            "type": wm_type,
             "text": wm_text,
-            "image": None,
+            "image": wm_image,
             "position": position,
             "opacity": round(_clamp(_to_float(wm_raw.get("opacity"), 0.35), 0.0, 1.0), 2),
             "scale": round(_clamp(_to_float(wm_raw.get("scale"), 0.06), 0.01, 0.3), 3),
@@ -162,11 +167,23 @@ def normalize_branding(raw: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, 
     return branding, warnings
 
 
+def _deep_merge(base: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(base)
+    for k, v in patch.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
 def update_branding(project_dir: Path, raw: Dict[str, Any], now: Optional[datetime] = None) -> List[str]:
     """更新已有项目的署名与水印。只改 project.json，不动源文章与块数据。"""
     project_dir = Path(project_dir)
     data = read_json(project_dir / "project.json")
-    branding, warnings = normalize_branding(raw)
+    # 合并而非整体替换：只提交的字段被修改，其余字段保持原值（嵌套字典逐层合并）
+    merged = _deep_merge(data.get("branding") or {}, raw or {})
+    branding, warnings = normalize_branding(merged)
     data["branding"] = branding
     data["updated_at"] = now_iso(now)
     write_json_atomic(project_dir / "project.json", data)
