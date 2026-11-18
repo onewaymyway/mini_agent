@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
 from typing import List, Tuple
 
-from .. import cancel
+from .. import cancel, joblog
 from ..media.ffmpeg import find_ffmpeg, find_ffprobe
 
 
@@ -34,6 +35,7 @@ def run(args: List[str]) -> Tuple[int, str, str]:
 
 
 def ffmpeg(args: List[str]) -> None:
+    joblog.bound_log(f"ffmpeg 编码：{Path(str(args[-1])).name}")
     code, _out, err = run([find_ffmpeg(), "-y", "-hide_banner", "-loglevel", "error"] + args)
     if code != 0:
         raise ComposeError("ffmpeg 失败：" + (err.strip().splitlines() or ["未知错误"])[-1][:300])

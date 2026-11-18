@@ -13,6 +13,7 @@ from article_to_video.project_store import (
     update_branding,
 )
 from ui.import_page import POSITION_LABELS
+from ui.joblog_panel import render_job_panel
 
 
 def render_projects_page() -> None:
@@ -37,6 +38,13 @@ def render_projects_page() -> None:
         return
     pid = st.selectbox("选择项目", ids)
     project_dir = root / pid
+    try:
+        _projects_body(project_dir)
+    finally:
+        render_job_panel(project_dir, None, title="最近日志", height=180)
+
+
+def _projects_body(project_dir) -> None:
     data = load_project(project_dir)
     b = data.get("branding", {})
     wm = b.get("watermark", {})

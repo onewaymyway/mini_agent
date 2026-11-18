@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import streamlit as st
+from ui.joblog_panel import render_job_panel, render_page_status
 
 from article_to_video.paths import projects_root
 from article_to_video.planning.errors import PlanError
@@ -42,6 +43,14 @@ def render_script_page() -> None:
     pid = st.selectbox("项目", [p["id"] for p in projects],
                        format_func=lambda i: next(p["title"] for p in projects if p["id"] == i))
     pdir = root / pid
+    try:
+        _script_body(pdir)
+    finally:
+        render_job_panel(pdir, ["script"], title="写稿运行日志")
+
+
+def _script_body(pdir) -> None:
+    render_page_status(pdir, ["script"])
     spine = load_spine(pdir)
     if spine is None or not spine.get("confirmed"):
         st.info("请先在「🗺️ 大纲」生成并确认大纲（C0）。")
@@ -65,12 +74,14 @@ def render_script_page() -> None:
                         help="默认只写缺少稿件或输入已变化的章（断点续跑）")
     running = bool(job and job["state"] == "running")
     if c2.button("写全部章", disabled=running, type="primary"):
-        jobs.start(pdir, "写全部章", lambda: w.write_all(pdir, make_text_llm("miniagent"), force=force))
+        jobs.start(pdir, "写全部章", lambda: w.write_all(pdir, make_text_llm("miniagent"), force=force),
+                   scope="script")
         st.rerun()
     part = c3.selectbox("章", part_ids,
                         format_func=lambda i: next(p["title"] for p in spine["parts"] if p["id"] == i))
     if st.button("写本章", disabled=running):
-        jobs.start(pdir, f"写 {part}", lambda: w.write_part(pdir, part, make_text_llm("miniagent"), force=force))
+        jobs.start(pdir, f"写 {part}", lambda: w.write_part(pdir, part, make_text_llm("miniagent"), force=force),
+                   scope="script")
         st.rerun()
 
     with st.expander("发音词典（只影响配音，字幕显示原写法）"):
@@ -117,3 +128,5 @@ def render_script_page() -> None:
             st.rerun()
         except PlanError as exc:
             st.error(str(exc))
+
+

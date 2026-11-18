@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import streamlit as st
 
+from article_to_video import joblog
 from article_to_video.paths import projects_root
 from article_to_video.pipeline.gates import PipelineError, STAGES
 from article_to_video.pipeline.reset import ORDER, reset_part
@@ -120,6 +121,7 @@ def render_cockpit_page() -> None:
             if st.button("重置本章", disabled=not ok or busy):
                 try:
                     removed = reset_part(pdir, rp, from_stage=frm, confirm=True)
+                    joblog.log(pdir, "pipeline", f"整章重置：{rp} 从「{frm}」起删除 {len(removed)} 项", level="warn")
                     st.success(f"已删除 {len(removed)} 项")
                     st.rerun()
                 except PipelineError as exc:

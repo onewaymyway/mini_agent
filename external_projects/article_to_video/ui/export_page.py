@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 
 import streamlit as st
+from ui.joblog_panel import render_job_panel, render_page_status
 
 from article_to_video.compose.config import load_compose_config, save_compose_config
 from article_to_video.compose.export import export_final, safe_filename
-from article_to_video.compose.ffrun import ComposeError
 from article_to_video.compose.part import compose_part, preview_part, video_dir
 from article_to_video.paths import projects_root
 from article_to_video.planning.runner import load_spine
@@ -102,6 +102,14 @@ def _branding_form(pdir) -> None:
             st.caption(bgm_warn[0])
 
 
+_PREVIEW_VIDEO: dict = {}   # {项目|章|章视频修改时间: 预览文件}，章重新合成后旧预览自动失效
+
+
+def _preview_key(pdir, cid) -> str:
+    src = video_dir(pdir, cid) / "part.mp4"
+    return f"{pdir}|{cid}|{src.stat().st_mtime if src.is_file() else 0}"
+
+
 def render_export_page() -> None:
     st.header("🎬 合成导出（P5）")
     root = projects_root()
@@ -112,6 +120,14 @@ def render_export_page() -> None:
     pid = st.selectbox("项目", [p["id"] for p in projects],
                        format_func=lambda i: next(p["title"] for p in projects if p["id"] == i))
     pdir = root / pid
+    try:
+        _export_body(pdir)
+    finally:
+        render_job_panel(pdir, ["export"], title="合成导出运行日志")
+
+
+def _export_body(pdir) -> None:
+    render_page_status(pdir, ["export"])
     spine = load_spine(pdir)
     if spine is None or not spine.get("confirmed"):
         st.info("请先在「🗺️ 大纲」生成并确认大纲（C0）。")
@@ -153,31 +169,37 @@ def render_export_page() -> None:
         if c[4].button("合成本章", key=f"comp_{cid}", disabled=not ready or busy):
             def run(cid=cid):
                 compose_part(pdir, cid)
-            if jobs.start(pdir, f"合成 {cid}", run):
+            if jobs.start(pdir, f"合成 {cid}", run, scope="export"):
                 st.rerun()
         if has_video and st.button("预览前 30 秒", key=f"prev_{cid}", disabled=busy):
-            try:
-                path = preview_part(pdir, cid, 30)
-                st.video(str(path))
-            except ComposeError as exc:
-                st.error(str(exc))
+            def run_prev(cid=cid):
+                _PREVIEW_VIDEO[_preview_key(pdir, cid)] = preview_part(pdir, cid, 30)
+
+            if jobs.start(pdir, f"预览 {cid}", run_prev, scope="export"):
+                st.rerun()
+            st.error("已有后台任务在运行，请稍候")
+        pv = _PREVIEW_VIDEO.get(_preview_key(pdir, cid)) if has_video else None
+        if pv is not None and pv.is_file():
+            st.video(str(pv))
 
     c1, c2 = st.columns(2)
     if c1.button("合成全部已就绪的章", disabled=busy or not ready_ids):
         def run_all():
             for cid in ready_ids:
                 compose_part(pdir, cid)
-        if jobs.start(pdir, f"合成 {len(ready_ids)} 章", run_all):
+        if jobs.start(pdir, f"合成 {len(ready_ids)} 章", run_all, scope="export"):
             st.rerun()
 
     all_ids = [p["id"] for p in spine["parts"]]
     done = all((video_dir(pdir, cid) / "part.mp4").is_file() for cid in all_ids)
     if c2.button("🎞️ 导出成片（后台）", disabled=busy or not done,
                  help="需要所有章都已合成" if not done else None):
-        if jobs.start(pdir, "导出成片", lambda: export_final(pdir)):
+        if jobs.start(pdir, "导出成片", lambda: export_final(pdir), scope="export"):
             st.rerun()
 
     _downloads(pdir)
+
+
 
 
 def _downloads(pdir) -> None:

@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .. import cancel
+from .. import cancel, joblog
 from ..planning.errors import PlanError
 from ..planning.jsonio import parse_json_object
 from ..planning.runner import load_spine
@@ -191,6 +191,7 @@ def write_part(project_dir: Path, part_id: str, llm, *, force: bool = False,
     ]).encode("utf-8")).hexdigest()
     existing = _load_script(project_dir, part_id)
     if existing and existing.get("input_sha") == sha and not force:
+        joblog.bound_log(f"{part_id}：输入未变，复用已有口播稿")
         return existing
 
     issues: List[str] = []
@@ -202,6 +203,7 @@ def write_part(project_dir: Path, part_id: str, llm, *, force: bool = False,
         cancel.check()
         prompt = build_prompt(part, source, persona=persona, budget_chars=budget_chars,
                               glossary=glossary, prev_tail=prev_tail, issues=issues)
+        joblog.bound_log(f"{part_id}：调用模型写稿（第 {attempt + 1} 次，预算 {budget_chars} 字）")
         raw = llm.ask(prompt, system=SCRIPT_SYSTEM)
         cancel.check()
         verdict = {}  # 每次尝试都重新判断，避免沿用上一次的结果
@@ -209,17 +211,21 @@ def write_part(project_dir: Path, part_id: str, llm, *, force: bool = False,
             obj = parse_json_object(raw)
         except ValueError as exc:
             issues = [f"JSON 解析失败：{exc}"]
+            joblog.bound_log(f"{part_id}：输出不是有效 JSON，将重试", level="warn")
             continue
         script = normalize_script(obj, part, persona=persona, budget_chars=budget_chars,
                                   budget_minutes=budget_minutes, lexicon=lexicon)
         verdict = validate_script(script, source, part["section_ids"], check_pacing=(mode == "condensed"))
         if verdict["errors"]:
             issues = verdict["errors"][:12]
+            joblog.bound_log(f"{part_id}：稿件未通过校验（{issues[0]}），将重试", level="warn")
             continue
         if verdict["pacing"] and attempt < MAX_ATTEMPTS - 1:
             issues = [verdict["pacing"]]
+            joblog.bound_log(f"{part_id}：节奏不达标，将重试", level="warn")
             continue
         accepted = True  # 无硬错误；节奏问题若仍在，接受并记为警告
+        joblog.bound_log(f"{part_id}：稿件通过校验（{verdict['total_chars']} 字）", level="ok")
         break
 
     if not accepted:

@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .. import joblog
 from ..project_store import append_progress, load_project, now_iso, read_json, write_json_atomic, write_text_atomic
 from ..validators.coverage import validate_spine
 from .chunks import build_groups, section_catalog
@@ -92,6 +93,7 @@ def plan_outline(project_dir: Path, *, engine: str = "rules", llm=None,
     if not groups:
         raise PlanError("文章没有可规划的内容")
 
+    joblog.bound_log(f"开始生成大纲：{'离线规则' if engine == 'rules' else '模型'}，共 {len(groups)} 组")
     old = {d["group_id"]: d for d in load_digests(project_dir)} if engine == "llm" else {}
     digests: List[Dict[str, Any]] = []
     for g in groups:
@@ -99,6 +101,7 @@ def plan_outline(project_dir: Path, *, engine: str = "rules", llm=None,
         if engine == "rules":
             digests.append(rules_digest(g, ctx["blocks_by_id"]))
         elif g["id"] in old and old[g["id"]].get("input_sha") == sha:
+            joblog.bound_log(f"节组 {g['id']}：输入未变，复用已有摘要")
             digests.append(old[g["id"]])  # 断点续跑：输入未变，复用已有摘要
         else:
             try:
@@ -125,6 +128,7 @@ def plan_outline(project_dir: Path, *, engine: str = "rules", llm=None,
     write_json_atomic(project_dir / "plan" / "digests.json", {"engine": engine, "digests": digests})
     write_json_atomic(project_dir / "plan" / "spine.json", spine)
 
+    joblog.bound_log(f"大纲已保存：{len(spine['parts'])} 章（待你在「大纲」页确认）", level="ok")
     project["stage"] = "P1_outlined"
     project["plan"] = {"engine": engine, "generated_at": stamp, "groups": len(groups),
                        "parts": len(spine["parts"]), "spine_confirmed": False}

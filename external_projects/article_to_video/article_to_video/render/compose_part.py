@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-from .. import cancel
+from .. import cancel, joblog
 from ..audio.synth import load_timeline
 from ..planning.errors import PlanError
 from ..project_store import append_progress, load_project, now_iso, read_json, write_json_atomic
@@ -153,7 +153,9 @@ def render_part(project_dir: Path, part_id: str, *, provider=None,
         if old and old.get("sha") == sha and _check_files(pdir, part_id, old):
             out_scenes.append(old)
             counts["reused"] += 1
+            joblog.bound_log(f"镜头 {sc['id']}：未变化，复用已渲染画面")
             continue
+        joblog.bound_log(f"镜头 {sc['id']}：渲染为 {sc['type']}")
 
         entry: Dict[str, Any] = {"id": sc["id"], "beat": sc["beat"], "type": sc["type"], "sha": sha,
                                  "start": round(span_start, 3), "end": round(span_end, 3),

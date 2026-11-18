@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from .. import cancel
+from .. import cancel, joblog
 from ..planning.errors import PlanError
 from ..planning.runner import load_spine
 from ..project_store import append_progress, load_project, now_iso, read_json, write_json_atomic
@@ -73,6 +73,8 @@ def synthesize_part(project_dir: Path, part_id: str, tts, *, force: bool = False
 
     durations: Dict[str, float] = {}
     engines: Dict[str, str] = {}
+    total = sum(len(b["sentences"]) for b in script["beats"])
+    joblog.bound_log(f"{part_id}：共 {total} 句，开始逐句配音（已缓存的句子直接复用）")
     for b in script["beats"]:
         for i, s in enumerate(b["sentences"]):
             sid = f"{b['id']}.s{i + 1:02d}"
@@ -89,12 +91,14 @@ def synthesize_part(project_dir: Path, part_id: str, tts, *, force: bool = False
             out = audio_dir / f"{sid}.wav"
             dur = float(tts.synth(tts_text, out, voice, rate))
             engine = getattr(tts, "last_engine", None) or tts.name
+            joblog.bound_log(f"{sid}：已合成（{voice}，{dur:.1f} 秒，{engine}）")
             manifest[sid] = {"key": key, "file": out.name, "duration": round(dur, 3), "voice": voice,
                              "rate": rate, "engine": engine, "text": tts_text}
             write_json_atomic(_manifest_path(pdir, part_id), manifest)  # 每句落盘，停止后可续跑
             durations[sid] = dur
             engines[sid] = engine
 
+    joblog.bound_log(f"{part_id}：配音完成，共 {len(durations)} 句", level="ok")
     timeline = build_timeline(script, durations, cfg, voices, engines)
     timeline["warnings"] = vwarn + (["本章使用了模拟配音（stub，静音），不能作为正式成片"]
                                     if "stub" in set(engines.values()) else [])

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import streamlit as st
+from ui import jobs
+from ui.joblog_panel import is_busy, render_job_panel, render_page_status
 
 from article_to_video.paths import projects_root
 from article_to_video.planning import outline_edit as oe
@@ -42,6 +44,14 @@ def render_outline_page() -> None:
     pid = st.selectbox("项目", [p["id"] for p in projects],
                        format_func=lambda i: next(p["title"] for p in projects if p["id"] == i))
     pdir = root / pid
+    try:
+        _outline_body(pdir)
+    finally:
+        render_job_panel(pdir, ["outline"], title="大纲运行日志")
+
+
+def _outline_body(pdir) -> None:
+    render_page_status(pdir, ["outline"])
 
     spine = load_spine(pdir)
     confirmed = bool(spine and spine.get("confirmed"))
@@ -50,18 +60,14 @@ def render_outline_page() -> None:
         engine = st.radio("生成方式", list(ENGINE_LABELS), format_func=ENGINE_LABELS.get, horizontal=True)
         overwrite = st.checkbox("覆盖已确认的大纲", value=False, disabled=not confirmed,
                                 help="大纲已确认时，默认禁止覆盖，避免丢失人工编辑")
-        if st.button("生成 / 重新生成", type="primary"):
-            try:
-                with st.spinner("正在生成大纲…（模型方式可能需要数分钟）"):
-                    llm = make_text_llm("miniagent") if engine == "miniagent" else None
-                    plan_outline(pdir, engine="llm" if engine == "miniagent" else "rules",
-                                 llm=llm, force=overwrite)
-                st.success("大纲已生成")
+        if st.button("生成 / 重新生成", type="primary", disabled=is_busy(pdir)):
+            def run(engine=engine, overwrite=overwrite):
+                llm = make_text_llm("miniagent") if engine == "miniagent" else None
+                plan_outline(pdir, engine="llm" if engine == "miniagent" else "rules",
+                             llm=llm, force=overwrite)
+            if jobs.start(pdir, f"生成大纲（{ENGINE_LABELS[engine]}）", run, scope="outline"):
                 st.rerun()
-            except PlanError as exc:
-                st.error(str(exc))
-                if exc.raw:
-                    st.caption("模型原始输出已存档到 plan/raw_*.txt")
+            st.error("已有后台任务在运行，请稍候")
 
     if spine is None:
         st.info("还没有大纲。请先生成。")
@@ -137,3 +143,5 @@ def render_outline_page() -> None:
             st.rerun()
         except PlanError as exc:
             st.error(str(exc))
+
+

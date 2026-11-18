@@ -11,6 +11,7 @@ import hashlib
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from .. import joblog
 from ..project_store import read_json, write_json_atomic
 from .config import aspect_ratio
 
@@ -54,17 +55,22 @@ def ensure_illustration(pdir: Path, part_id: str, scene: Dict[str, Any], *, prov
     index = load_index(pdir, part_id)
     entry = index.get(scene["id"])
     if entry and entry.get("sha") == sha and Path(entry.get("file", "")).is_file():
+        joblog.bound_log(f"插图 {scene['id']}：复用已生成的图片（未变化）")
         return {"ok": True, "path": Path(entry["file"]), "reused": True, "prompt": prompt, "error": None}
     if provider is None:
+        joblog.bound_log(f"插图 {scene['id']}：未配置生图服务，改用卡片绘制", level="warn")
         return {"ok": False, "path": None, "reused": False, "prompt": prompt,
                 "error": "未配置生图服务（缺少 API key 或已在设置中关闭）"}
     version = int(entry.get("version", 0)) + 1 if entry else 1
     out = images_dir(pdir, part_id) / f"{scene['id']}_v{version:03d}.png"
     refs = [reference] if reference and Path(reference).is_file() else None
+    joblog.bound_log(f"插图 {scene['id']}：调用生图服务（第 {version} 版{'，带风格参考图' if refs else ''}）")
     res = provider.generate(prompt, out, ratio=aspect_ratio(orientation), size=size, reference_images=refs)
     if not res.ok:
+        joblog.bound_log(f"插图 {scene['id']}：生图失败，改用卡片绘制：{res.error or '未知原因'}", level="warn")
         return {"ok": False, "path": None, "reused": False, "prompt": prompt,
                 "error": res.error or "生图失败"}
+    joblog.bound_log(f"插图 {scene['id']}：已生成 {out.name}", level="ok")
     index[scene["id"]] = {"sha": sha, "version": version, "file": str(out), "prompt": prompt}
     write_json_atomic(_index_path(pdir, part_id), index)
     return {"ok": True, "path": out, "reused": False, "prompt": prompt, "error": None}

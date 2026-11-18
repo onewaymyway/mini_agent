@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 import streamlit as st
+from ui.joblog_panel import render_job_panel, render_page_status
 
 from article_to_video.paths import projects_root
 from article_to_video.planning.errors import PlanError
@@ -107,6 +108,14 @@ def render_storyboard_page() -> None:
     pid = st.selectbox("项目", [p["id"] for p in projects],
                        format_func=lambda i: next(p["title"] for p in projects if p["id"] == i))
     pdir = root / pid
+    try:
+        _storyboard_body(pdir)
+    finally:
+        render_job_panel(pdir, ["storyboard", "render"], title="分镜与渲染运行日志")
+
+
+def _storyboard_body(pdir) -> None:
+    render_page_status(pdir, ["storyboard", "render"])
     spine = load_spine(pdir)
     if spine is None or not spine.get("confirmed"):
         st.info("请先在「🗺️ 大纲」生成并确认大纲（C0）。")
@@ -146,19 +155,15 @@ def render_storyboard_page() -> None:
     busy = job is not None and job["state"] == "running"
 
     def _generate(force: bool) -> None:
-        if engine == "rules":
-            try:
-                sbm.plan_storyboard(pdir, part_id, force=force)
-                st.rerun()
-            except PlanError as exc:
-                st.error(str(exc))
-            return
-        from article_to_video.providers.text import make_text_llm
-
         def run():
-            sbm.plan_storyboard(pdir, part_id, force=force, engine="llm", llm=make_text_llm("miniagent"))
+            if engine == "rules":
+                sbm.plan_storyboard(pdir, part_id, force=force)
+            else:
+                from article_to_video.providers.text import make_text_llm
+                sbm.plan_storyboard(pdir, part_id, force=force, engine="llm", llm=make_text_llm("miniagent"))
 
-        if jobs.start(pdir, f"模型生成分镜 {part_id}", run):
+        label = f"{'模型' if engine == 'llm' else '规则'}生成分镜 {part_id}"
+        if jobs.start(pdir, label, run, scope="storyboard"):
             st.rerun()
         st.error("已有后台任务在运行，请稍候")
 
@@ -169,11 +174,10 @@ def render_storyboard_page() -> None:
         _generate(True)
     if status["exists"] and c3.button("🔁 重新分配一图多用", disabled=busy,
                                       help="只重新分配插图的图片组与取景，不改动文字与画面类型"):
-        try:
-            sbm.reallocate_images(pdir, part_id)
+        if jobs.start(pdir, f"重新分配一图多用 {part_id}",
+                      lambda: sbm.reallocate_images(pdir, part_id), scope="storyboard"):
             st.rerun()
-        except PlanError as exc:
-            st.error(str(exc))
+        st.error("已有后台任务在运行，请稍候")
 
     if not status["exists"]:
         return
@@ -212,10 +216,12 @@ def render_storyboard_page() -> None:
             def run():
                 render_part(pdir, part_id, provider=provider)
 
-            if jobs.start(pdir, f"渲染 {part_id}", run):
+            if jobs.start(pdir, f"渲染 {part_id}", run, scope="render"):
                 st.rerun()
 
     _preview(pdir, part_id)
+
+
 
 
 def _preview(pdir, part_id) -> None:

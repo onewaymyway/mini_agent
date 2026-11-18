@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import streamlit as st
 
+from pathlib import Path
+
+from article_to_video import joblog
 from article_to_video.importer import ArticleImportError, import_article
 from article_to_video.paths import projects_root
+from ui.joblog_panel import render_job_panel
 from article_to_video.project_store import MODES, ORIENTATIONS, PERSONAS, RESOLUTIONS, WATERMARK_POSITIONS
 
 MODE_LABELS = {
@@ -50,6 +54,15 @@ def _show_result(result: dict) -> None:
 
 
 def render_import_page() -> None:
+    try:
+        _import_body()
+    finally:
+        last = st.session_state.get("last_import")
+        if last and (Path(last) / joblog.LOG_FILE).is_file():
+            render_job_panel(Path(last), ["import"], title="导入日志", height=160)
+
+
+def _import_body() -> None:
     st.header("📥 新建项目：导入文章")
     st.caption("导入只做解析与登记，不调用任何模型，不消耗生图或语音额度。")
 
@@ -113,4 +126,7 @@ def render_import_page() -> None:
     except ArticleImportError as exc:
         st.error(str(exc))
         return
+    pdir = projects_root() / result["project_id"]
+    joblog.log(pdir, "import", f"导入完成：{result['title']}（{result['project_id']}）", level="ok")
+    st.session_state["last_import"] = str(pdir)
     _show_result(result)

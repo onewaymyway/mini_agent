@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple
 
+from .. import joblog
 from ..validators.coverage import validate_spine
 from ..validators.fidelity import validate_digest
 from .errors import PlanError
@@ -20,12 +21,14 @@ MAX_ATTEMPTS = 2
 def llm_digest(group: Dict[str, Any], llm, article_title: str) -> Tuple[Dict[str, Any], str]:
     issues: List[str] = []
     raw = ""
-    for _ in range(MAX_ATTEMPTS):
+    for attempt in range(MAX_ATTEMPTS):
+        joblog.bound_log(f"节组 {group['id']}：调用模型生成摘要（第 {attempt + 1} 次）")
         raw = llm.ask(digest_prompt(group, article_title, issues), system=DIGEST_SYSTEM)
         try:
             obj = parse_json_object(raw)
         except ValueError as exc:
             issues = [f"JSON 解析失败：{exc}"]
+            joblog.bound_log(f"节组 {group['id']}：输出不是有效 JSON，将重试", level="warn")
             continue
         obj["group_id"] = group["id"]
         obj["section_ids"] = group["section_ids"]
@@ -37,7 +40,9 @@ def llm_digest(group: Dict[str, Any], llm, article_title: str) -> Tuple[Dict[str
         obj["engine"] = "llm"
         issues = validate_digest(obj, group["text"])
         if not issues:
+            joblog.bound_log(f"节组 {group['id']}：摘要通过校验", level="ok")
             return obj, raw
+        joblog.bound_log(f"节组 {group['id']}：摘要未通过校验（{issues[0]}），将重试", level="warn")
     raise PlanError(f"分节摘要 {group['id']} 两次输出仍不合格：{'；'.join(issues)}", raw=raw)
 
 
@@ -84,15 +89,19 @@ def llm_spine(digests: List[Dict[str, Any]], catalog: List[Dict[str, Any]],
     section_ids = [c["id"] for c in catalog]
     issues: List[str] = []
     raw = ""
-    for _ in range(MAX_ATTEMPTS):
+    for attempt in range(MAX_ATTEMPTS):
+        joblog.bound_log(f"调用模型生成大纲（第 {attempt + 1} 次）")
         raw = llm.ask(spine_prompt(digests, catalog, meta, issues), system=SPINE_SYSTEM)
         try:
             spine = _normalize_spine(parse_json_object(raw), meta)
         except (ValueError, TypeError, AttributeError) as exc:
             issues = [f"JSON 结构不正确：{exc}"]
+            joblog.bound_log(f"大纲输出结构不正确，将重试：{exc}", level="warn")
             continue
         result = validate_spine(spine, section_ids, digests)
         if not result["errors"]:
+            joblog.bound_log("大纲通过校验", level="ok")
             return spine, raw
         issues = result["errors"]
+        joblog.bound_log(f"大纲未通过校验（{issues[0]}），将重试", level="warn")
     raise PlanError(f"大纲两次输出仍不合格：{'；'.join(issues)}", raw=raw)

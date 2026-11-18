@@ -13,7 +13,7 @@ import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from .. import cancel
+from .. import cancel, joblog
 from ..planning.errors import PlanError
 from ..planning.jsonio import parse_json_object
 from ..validators.visual import validate_storyboard
@@ -207,17 +207,21 @@ def direct_part_llm(script: Dict[str, Any], blocks: List[Dict[str, Any]], *, par
     for _attempt in range(MAX_ATTEMPTS):
         cancel.check()
         prompt = build_prompt(part, script, ctxs, allowance=allowance, shots=shots, issues=issues)
+        joblog.bound_log(f"{part['id']}：调用模型设计分镜（第 {_attempt + 1} 次）")
         raw = llm.ask(prompt, system=SYSTEM)
         cancel.check()
         try:
             obj = parse_json_object(raw)
         except ValueError as exc:
             issues = [f"JSON 解析失败：{exc}"]
+            joblog.bound_log(f"{part['id']}：分镜输出不是有效 JSON，将重试", level="warn")
             continue
         scenes, errs = parse_scenes(obj, script, ctxs)
         if errs:
             issues = errs[:12]
+            joblog.bound_log(f"{part['id']}：分镜未通过校验（{errs[0]}），将重试", level="warn")
             continue
+        joblog.bound_log(f"{part['id']}：模型分镜通过校验", level="ok")
         allocate_shared_images(scenes, shots)
         sb = {
             "schema": 1, "part": script["part"], "title": script["title"], "chapter": chapter,

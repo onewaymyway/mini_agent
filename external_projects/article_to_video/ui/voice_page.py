@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import streamlit as st
+from ui.joblog_panel import render_job_panel, render_page_status
 
 from article_to_video.audio import synth as sy
 from article_to_video.audio.config import ENGINES, NARRATION_VOICES, QUOTE_VOICES, normalize_tts
 from article_to_video.paths import projects_root
-from article_to_video.planning.errors import PlanError
 from article_to_video.planning.runner import load_spine
 from article_to_video.project_store import list_projects
 from article_to_video.providers.tts import SilenceTTS, build_chain
 from article_to_video.script.writer import load_script
 from ui import jobs
+
+
+_PREVIEW: dict = {}   # 最近一次试听：{项目目录: (文字, 音频路径)}，由后台任务写入
 
 
 def _tts_for(pdir, stub: bool):
@@ -32,6 +35,14 @@ def render_voice_page() -> None:
     pid = st.selectbox("项目", [p["id"] for p in projects],
                        format_func=lambda i: next(p["title"] for p in projects if p["id"] == i))
     pdir = root / pid
+    try:
+        _voice_body(pdir)
+    finally:
+        render_job_panel(pdir, ["voice"], title="配音运行日志")
+
+
+def _voice_body(pdir) -> None:
+    render_page_status(pdir, ["voice"])
     spine = load_spine(pdir)
     if spine is None or not spine.get("confirmed"):
         st.info("请先确认大纲（C0）并确认口播稿（C1）。")
@@ -79,12 +90,12 @@ def render_voice_page() -> None:
     c1, c2 = st.columns(2)
     if c1.button("配音本章", disabled=running, type="primary"):
         jobs.start(pdir, f"配音 {part}",
-                   lambda: sy.synthesize_part(pdir, part, _tts_for(pdir, stub), force=force))
+                   lambda: sy.synthesize_part(pdir, part, _tts_for(pdir, stub), force=force), scope="voice")
         st.rerun()
     if c2.button("配音全部已确认的章", disabled=running):
         jobs.start(pdir, "配音全部",
                    lambda: [sy.synthesize_part(pdir, p, _tts_for(pdir, stub), force=force)
-                            for p in confirmed_parts])
+                            for p in confirmed_parts], scope="voice")
         st.rerun()
 
     tl = sy.load_timeline(pdir, part)
@@ -107,9 +118,18 @@ def render_voice_page() -> None:
 
     st.subheader("试听任意文字")
     text = st.text_input("文字", placeholder="输入一句话试听，不会改变项目")
-    if st.button("生成试听") and text.strip():
-        try:
-            out = sy.preview(pdir, text, cfg["narration_voice"], "+0%", _tts_for(pdir, stub))
-            st.audio(str(out))
-        except (PlanError, RuntimeError) as exc:
-            st.error(str(exc))
+    if st.button("生成试听", disabled=running) and text.strip():
+        clean = text.strip()
+
+        def run_preview(clean=clean, stub=stub):
+            out = sy.preview(pdir, clean, cfg["narration_voice"], "+0%", _tts_for(pdir, stub))
+            _PREVIEW[str(pdir)] = (clean, out)
+
+        if jobs.start(pdir, "试听", run_preview, scope="voice"):
+            st.rerun()
+        st.error("已有后台任务在运行，请稍候")
+    last = _PREVIEW.get(str(pdir))
+    if last and last[0] == text.strip() and last[1].is_file():
+        st.audio(str(last[1]))
+
+

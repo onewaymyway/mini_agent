@@ -42,6 +42,31 @@ font:12px/1.5 Consolas,'Courier New',monospace;white-space:pre-wrap;word-break:b
 </script></body></html>"""
 
 
+def is_busy(pdir: Path) -> bool:
+    """本项目是否有后台任务正在运行（同一项目同一时间只允许一个任务）。"""
+    job = jobs.status(pdir)
+    return bool(job and job["state"] == "running")
+
+
+def render_page_status(pdir: Path, scopes: List[str]) -> None:
+    """页面顶部的状态条：运行中提示（停止按钮在页面底部的实时面板里）；本页面最近一次任务的结果。"""
+    job = jobs.status(pdir)
+    if not job:
+        return
+    if job["state"] == "running":
+        st.info(f"🟢 后台运行中：{job['label']}　·　实时日志见页面底部，可在那里请求停止。")
+        return
+    if job.get("scope") not in scopes:
+        return
+    text = f"最近一次：{job['label']}　·　{JOB_LABEL.get(job['state'], job['state'])}"
+    if job["state"] == "error":
+        st.error(f"{text}：{job['message']}")
+    elif job["state"] == "stopped":
+        st.warning(f"{text}：{job['message']}")
+    else:
+        st.caption(text)
+
+
 def run_state(pdir: Path, scopes: Optional[List[str]]) -> dict:
     """当前运行状态：local=本界面的后台任务在跑；external=其它进程（如命令行）近期仍在写日志。"""
     job = jobs.status(pdir)
