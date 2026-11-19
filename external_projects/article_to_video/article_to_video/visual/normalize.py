@@ -51,6 +51,8 @@ def normalize_scene(raw: Dict[str, Any], sentences: List[Dict[str, Any]]) -> Dic
             focus = 0.5
         sc["image"] = {
             "subject": str(img.get("subject") or "").strip()[:60],
+            "scene": str(img.get("scene") or "").strip()[:60],
+            "composition": str(img.get("composition") or "").strip()[:60],
             "focus_x": min(1.0, max(0.0, focus)),
             "version": int(img.get("version") or 0),
             "file": img.get("file"),

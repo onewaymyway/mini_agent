@@ -7,14 +7,14 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from ..visual.config import FORBIDDEN_WORDS
+from ..visual.prompting import check_illustration, compose_prompt
 from ..visual.director import (MAX_DIAGRAM_NODES, MAX_KEYPOINT_ITEMS, MAX_LIST_ITEMS,
                                MAX_TABLE_COLS, MAX_TABLE_ROWS, TEXT_LIMIT)
 from ..visual.shots import reveal_in_range, shot_range
 from ..visual.states import SCENE_TYPES
 
 MAX_RUN = 3          # 同一画面类型连续超过此数量给出警告
-MAX_PROMPT_CHARS = 300
+MAX_PROMPT_CHARS = 400
 
 _STRUCT_TO_TYPES = {"chain": ("diagram",), "table": ("table",), "math": ("formula",),
                     "list": ("list", "timeline")}
@@ -105,14 +105,10 @@ def validate_storyboard(sb: Dict[str, Any], script: Dict[str, Any], *, allowance
         if kind == "illustration":
             img = sc.get("image") or {}
             if img.get("leader", True):  # 只有主图需要画面主题（组内其余镜头复用主图）
-                subject = str(img.get("subject") or "").strip()
-                if not subject:
-                    errors.append(f"{sid}：插图缺少画面主题")
-                for w in FORBIDDEN_WORDS:
-                    if w in subject:
-                        errors.append(f"{sid}：插图主题含禁用词「{w}」（插图禁止文字类内容）")
-                        break
-                if len(style_anchor) + len(subject) > MAX_PROMPT_CHARS:
+                # 第三期：主体须具体、不得含文字类请求；场景与构图同样不得含文字类请求
+                errors += [f"{sid}：{e}" for e in check_illustration(img)]
+                prompt_len = len(compose_prompt(img, style_anchor, "landscape"))
+                if prompt_len > MAX_PROMPT_CHARS:
                     errors.append(f"{sid}：生图提示词超过 {MAX_PROMPT_CHARS} 字")
             if not images_enabled:
                 warnings.append(f"{sid}：生图已关闭，插图将按卡片绘制")

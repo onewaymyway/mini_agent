@@ -14,13 +14,12 @@ from typing import Any, Dict, Optional
 from .. import joblog
 from ..project_store import read_json, write_json_atomic
 from .config import aspect_ratio
-
-PROMPT_BUILD_VERSION = "p4-img-v1"
+from .prompting import PROMPT_BUILD_VERSION, compose_prompt
 
 
 def build_prompt(scene: Dict[str, Any], style_anchor: str, orientation: str) -> str:
-    subject = str((scene.get("image") or {}).get("subject") or "").strip()
-    return f"{subject}的隐喻插图。{style_anchor}。画幅比例{aspect_ratio(orientation)}。"
+    """第三期：主体 + 场景 + 构图 + 风格锚 + 无文字约束（见 visual/prompting.py）。"""
+    return compose_prompt(scene.get("image") or {}, style_anchor, orientation)
 
 
 def image_sha(prompt: str, size: str, reference_sha: str) -> str:

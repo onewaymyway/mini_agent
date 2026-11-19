@@ -66,8 +66,11 @@ def _scene_editor(pdir, part_id, sb, script) -> dict:
             if kind == "illustration":
                 img = sc.get("image") or {}
                 new["image"] = {
-                    "subject": st.text_input("插图主题（画面意象，不要写文字）",
+                    "subject": st.text_input("视觉主体（具体的物体或场景，不要写抽象词或文字）",
                                              value=img.get("subject", ""), key=f"subj_{key}"),
+                    "scene": st.text_input("场景（所处环境，可空）", value=img.get("scene", ""), key=f"scene_{key}"),
+                    "composition": st.text_input("构图（画面安排，可空）", value=img.get("composition", ""),
+                                                 key=f"comp_{key}"),
                     "focus_x": st.slider("水平取景位置", 0.0, 1.0, float(img.get("focus_x", 0.5)),
                                          key=f"focus_{key}"),
                     "version": img.get("version", 0), "file": img.get("file"),

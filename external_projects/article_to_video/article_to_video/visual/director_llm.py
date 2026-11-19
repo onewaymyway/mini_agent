@@ -34,6 +34,9 @@ from ..validators.visual import validate_storyboard
 from .director import (MAX_DIAGRAM_NODES, MAX_LIST_ITEMS, MAX_TABLE_COLS, MAX_TABLE_ROWS, TEXT_LIMIT,
                        _emphasis, _first, _refs_blocks, _text_of, _year_like, plain)
 from .sharing import allocate_shared_images, count_groups
+from .prompting import MAX_COMPOSITION as MAX_COMPOSITION_CHARS
+from .prompting import MAX_SCENE as MAX_SCENE_CHARS
+from .prompting import check_illustration
 from .shots import (MAX_POINTS, MAX_SHOT_ITEMS, POINT_LIMIT, ROLES, beat_of, mention, plan_windows,
                     scene_reveal, sentence_id, sentence_index)
 
@@ -314,7 +317,10 @@ def build_window_prompt(part: Dict[str, Any], script: Dict[str, Any], wbeats: Se
         "4. keypoint / illustration 的 items 不超过 3 条，每条不超过 60 字；chart 用 data（2–3 项，每项 label 与 value）。",
         "5. flow（流程）的节点与 chart（图表）的标签必须出现在本镜头的句子中，不够就扩大句子范围。",
         "6. 数字与英文词只用本段口播或原文结构中的词；flow、table、list 的内容由原文决定，只需选择句子范围与类型。",
-        "7. illustration 的 image_subject 只描述画面意象（具体物体或场景），不得要求出现文字、标题、字幕或标志。",
+        "7. illustration 只用于比喻、场景与抽象概念的具体化；数据、流程、定义应使用 chart、flow 或 keypoint。"
+        "illustration 必须给出 image_subject（具体的物体或场景，不得是抽象词如“效率”“趋势”），"
+        "可选 image_scene（所处环境）与 image_composition（画面安排，如“远景，主体靠左”）。"
+        "这些字段都不得要求出现文字、标题、字幕或标志。",
         "8. formula 的 formula_explanation 可以使用原文公式中的符号与变量名。",
     ]
     if issues:
@@ -434,8 +440,12 @@ def _build_shot(cut: Dict[str, Any], beat: Dict[str, Any], ctx: Dict[str, Any]) 
         if kind == "illustration":
             subject = str(raw.get("image_subject") or "").strip()[:MAX_SUBJECT_CHARS]
             emph = _emphasis(sents[a:b + 1])
-            sc["image"] = {"subject": subject or (emph[0] if emph else (items[0][:MAX_SUBJECT_CHARS] if items else bid)),
-                           "focus_x": 0.5, "version": 0, "file": None}
+            image = {"subject": subject or (emph[0] if emph else (items[0][:MAX_SUBJECT_CHARS] if items else bid)),
+                     "scene": str(raw.get("image_scene") or "").strip()[:MAX_SCENE_CHARS],
+                     "composition": str(raw.get("image_composition") or "").strip()[:MAX_COMPOSITION_CHARS],
+                     "focus_x": 0.5, "version": 0, "file": None}
+            errs += [f"镜头 {span}：{e}" for e in check_illustration(image)]   # 抽象主体、禁用词：整窗重做
+            sc["image"] = image
     sc["kind"] = kind
     sc["sentences"] = [sentence_id(bid, a), sentence_id(bid, b)]
     sc["emphasis"] = list(dict.fromkeys(emph_src))[:8] or _emphasis(sents[a:b + 1])
