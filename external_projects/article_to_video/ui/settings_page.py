@@ -52,6 +52,13 @@ FIELDS = {
         {"path": "tts.use_system_proxy", "label": "配音使用系统代理（默认关闭=直连）", "kind": "bool"},
         {"path": "tts.edge_proxy", "label": "edge-tts 指定代理地址（留空=按上一项；填写则优先；direct=强制直连）", "kind": "text"},
         {"path": "tts.max_quotes_per_part", "label": "每章引文最多几句", "kind": "int", "min": 0, "max": 10},
+        {"path": "tts.chapter_card_sec", "label": "章封面停留（秒；至少 3，旁白在封面结束后开始）", "kind": "number",
+         "min": 3.0, "max": 10.0, "step": 0.5},
+        {"path": "tts.lead_in_sec", "label": "章首静音（秒；与章封面取较长者）", "kind": "number",
+         "min": 0.0, "max": 3.0, "step": 0.1},
+        {"path": "tts.sentence_gap_sec", "label": "句间停顿（秒）", "kind": "number",
+         "min": 0.0, "max": 2.0, "step": 0.05},
+        {"path": "tts.tail_sec", "label": "章尾停顿（秒）", "kind": "number", "min": 0.0, "max": 3.0, "step": 0.1},
     ],
     "visual": [
         {"path": "bible.style_anchor", "label": "风格锚（插图提示词的固定前缀）", "kind": "area"},
