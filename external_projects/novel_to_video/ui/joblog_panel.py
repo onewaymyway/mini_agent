@@ -19,7 +19,8 @@ import streamlit.components.v1 as components
 from novel_to_video import joblog, runtime, tool_api
 
 REFRESH_SECONDS = 2
-JOB_LABEL = {"idle": "空闲", "running": "运行中", "done": "已完成", "stopped": "已停止", "failed": "失败"}
+JOB_LABEL = {"idle": "空闲", "running": "运行中", "done": "已完成", "stopped": "已停止", "failed": "失败",
+             "interrupted": "已中断（进程意外退出，已回收，可重新开始）"}
 
 
 def build_log_html(text: str, height: int) -> str:

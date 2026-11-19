@@ -47,9 +47,15 @@ def test_rename_chapters_only_changes_names(proj):
 
 
 def test_rename_refused_while_queue_running(proj):
-    rt.update(proj, state="running")
-    assert not tool_api.rename_project(str(proj), "x")["ok"]
-    assert not tool_api.rename_chapters(str(proj), {1: "x"})["ok"]
-    assert ps.read_json(proj / "project.json")["title"] == "旧书名"
-    rt.update(proj, state="idle")
+    # 真实运行中的队列同时持有运行锁与 running 状态（见 runlock.reconcile：只有状态、没有活动锁会被回收为中断）
+    from novel_to_video import runlock
+    runlock.acquire(proj)
+    try:
+        rt.update(proj, state="running")
+        assert not tool_api.rename_project(str(proj), "x")["ok"]
+        assert not tool_api.rename_chapters(str(proj), {1: "x"})["ok"]
+        assert ps.read_json(proj / "project.json")["title"] == "旧书名"
+        rt.update(proj, state="idle")
+    finally:
+        runlock.release(proj)
     assert tool_api.rename_project(str(proj), "x")["ok"]

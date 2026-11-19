@@ -23,13 +23,19 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-def status(project_dir: Path) -> Dict[str, Any]:
+def _read_raw(project_dir: Path) -> Dict[str, Any]:
     p = Path(project_dir) / STATE_FILE
     return read_json(p) if p.is_file() else {"state": "idle"}
 
 
+def status(project_dir: Path) -> Dict[str, Any]:
+    """任务状态。先校正遗留状态：进程意外终结时 running 会被回收为 interrupted（见 runlock.reconcile）。"""
+    runlock.reconcile(Path(project_dir))
+    return _read_raw(project_dir)
+
+
 def _set(project_dir: Path, **fields: Any) -> None:
-    st = status(project_dir)
+    st = _read_raw(project_dir)
     st.update(fields)
     write_json_atomic(Path(project_dir) / STATE_FILE, st)
 
@@ -58,6 +64,7 @@ def start(project_dir: Path, *, name: str, label: str, scope: str,
           fn: Callable[[], Dict[str, Any]]) -> Dict[str, Any]:
     """启动后台任务。返回 {ok, error}。fn() 返回一个 dict（可含 done/failed/skipped/stopped）。"""
     project_dir = Path(project_dir)
+    runlock.reconcile(project_dir)            # 上次意外终结的运行先回收，界面才能重新开始
     try:
         runlock.acquire(project_dir)
     except runlock.LockBusy as exc:
@@ -71,7 +78,8 @@ def start(project_dir: Path, *, name: str, label: str, scope: str,
     def worker() -> None:
         final: Dict[str, Any] = {"state": "failed"}
         try:
-            with cancel.bind(project_dir), joblog.bind(project_dir, scope):  # skill 输出与子步骤日志写入本任务
+            with cancel.bind(project_dir), joblog.bind(project_dir, scope), \
+                    runlock.HeartbeatLoop(project_dir):  # skill 输出与子步骤日志写入本任务；心跳保活
                 result = fn()
             summary = _summarize(result)
             final = {"state": "done", "summary": summary}

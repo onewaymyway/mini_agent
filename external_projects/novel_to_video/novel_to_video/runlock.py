@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -106,6 +107,83 @@ def heartbeat(project_dir: Path) -> bool:
         return False
 
 
+class HeartbeatLoop:
+    """运行期间每隔 interval 秒刷新一次心跳（后台线程）。
+
+    后台任务（全书素材、性别检索等）原先不刷新心跳，长时间运行会被其他进程误判为遗留锁。
+    with HeartbeatLoop(pdir): ... 结束或异常退出时自动停止。
+    """
+
+    def __init__(self, project_dir: Path, interval: float = 20.0):
+        self.project_dir = Path(project_dir)
+        self.interval = interval
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def _run(self) -> None:
+        while not self._stop.wait(self.interval):
+            heartbeat(self.project_dir)
+
+    def __enter__(self) -> "HeartbeatLoop":
+        heartbeat(self.project_dir)
+        self._thread = threading.Thread(target=self._run, name="n2v-heartbeat", daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+
+
+RUN_STATE_FILES = ("logs/runtime.json", "logs/job_state.json")
+_ACTIVE = ("running", "stopping")
+
+
+def _now_iso() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def reconcile(project_dir: Path) -> List[Dict[str, Any]]:
+    """校正运行状态：状态文件仍为 running/stopping，但项目锁已不再有效（持有进程已退出、心跳超时或锁丢失），
+    说明上次运行被意外终结。此时：
+      * 状态改为 interrupted（不再显示为运行中，允许重新开始）；
+      * 回收遗留的 running 章节；
+      * 写入一条警告日志。
+    锁仍被有效持有（运行中）时不做任何改动。返回本次校正的记录。
+    """
+    project_dir = Path(project_dir)
+    changed: List[Dict[str, Any]] = []
+    for rel in RUN_STATE_FILES:
+        path = project_dir / rel
+        data = _read(path) if path.is_file() else None
+        if not data or data.get("state") not in _ACTIVE:
+            continue
+        st = inspect(project_dir)
+        if st["held"]:
+            continue                                  # 确实在运行，不是遗留
+        reason = st["reason"] or "运行锁已丢失"
+        previous = data.get("state")
+        data.update(state="interrupted", finished_at=_now_iso(), interrupted_reason=reason,
+                    message=f"上次运行意外中断（{reason}），已回收；可以重新开始")
+        from .project_store import write_json_atomic
+        write_json_atomic(path, data)
+        changed.append({"file": rel, "previous": previous, "reason": reason})
+    if changed:
+        try:
+            from . import joblog
+            joblog.log(project_dir, "system",
+                       f"检测到上次运行意外中断（{changed[0]['reason']}），已把运行状态回收为「已中断」",
+                       level="warn")
+        except Exception:  # 日志失败不影响回收
+            pass
+        try:
+            recover_running_chapters(project_dir)
+        except LockBusy:
+            pass
+    return changed
+
+
 def release(project_dir: Path) -> None:
     path = project_dir / LOCK_FILE
     data = _read(path) or {}
@@ -129,6 +207,8 @@ def recover_running_chapters(project_dir: Path) -> List[Dict[str, Any]]:
     if st["held"]:
         raise LockBusy("项目仍在运行，不能回收")
     fixed: List[Dict[str, Any]] = []
+    if not (project_dir / "chapters" / "index.yaml").is_file():   # 尚未建立章节索引：无章节需要回收
+        return fixed
     idx = cio.load_index(project_dir)
     for row in idx.get("chapters", []):
         if row.get("status") != "running":

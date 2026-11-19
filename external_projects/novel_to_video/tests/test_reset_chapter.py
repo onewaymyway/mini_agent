@@ -48,7 +48,9 @@ def test_reset_keeps_global_settings_and_other_chapters(project):
 
 
 def test_reset_refused_while_running(project):
+    from novel_to_video import runlock
     _build_everything(project)
+    runlock.acquire(project)          # 真实运行中的队列同时持有运行锁与 running 状态
     rt.update(project, state="running")
     try:
         r = tool_api.reset_chapter(str(project), 1)
@@ -56,6 +58,7 @@ def test_reset_refused_while_running(project):
         assert (cio.chapter_dir(project, 1) / "script.md").is_file()     # 没有删除任何东西
     finally:
         rt.update(project, state="idle")
+        runlock.release(project)
 
 
 def test_reset_unknown_chapter_fails_without_creating_dirs(project):

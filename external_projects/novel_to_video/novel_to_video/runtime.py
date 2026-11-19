@@ -26,15 +26,21 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-def read_state(project_dir: Path) -> Dict[str, Any]:
+def _read_raw(project_dir: Path) -> Dict[str, Any]:
     p = project_dir / STATE_FILE
     if not p.is_file():
         return {"state": "idle"}
     return read_json(p)
 
 
+def read_state(project_dir: Path) -> Dict[str, Any]:
+    """队列状态。先校正遗留状态：进程意外终结时 running 回收为 interrupted（见 runlock.reconcile）。"""
+    runlock.reconcile(Path(project_dir))
+    return _read_raw(project_dir)
+
+
 def update(project_dir: Path, **fields: Any) -> Dict[str, Any]:
-    st = read_state(project_dir)
+    st = _read_raw(project_dir)
     st.update(fields)
     st["updated_at"] = _now()
     write_json_atomic(project_dir / STATE_FILE, st)
@@ -43,7 +49,7 @@ def update(project_dir: Path, **fields: Any) -> Dict[str, Any]:
 
 def note_chapter(project_dir: Path, no: int, res: Dict[str, Any]) -> None:
     """每章结束时调用：记录结果、刷新锁心跳。"""
-    st = read_state(project_dir)
+    st = _read_raw(project_dir)
     hist = st.get("history", [])
     hist.append({"chapter": no, "status": res.get("status"), "message": res.get("message", ""), "at": _now()})
     st.update(chapter=None, phase="between", message=f"第 {no} 章：{res.get('status')}",
@@ -65,7 +71,7 @@ def request_stop(project_dir: Path) -> None:
     """立即停止：不再等待当前章节跑完。"""
     write_json_atomic(project_dir / STOP_FILE, {"at": _now(), "immediate": True})
     killed = cancel.request(project_dir)
-    st = read_state(project_dir)
+    st = _read_raw(project_dir)
     if st.get("state") in ("running", "stopping"):
         update(project_dir, state="stopping",
                message=f"已请求立即停止，正在中断当前请求（终止子进程 {killed} 个）")
@@ -82,6 +88,7 @@ def start_background(project_dir: Path, numbers: List[int], gear: str,
                      run_fn: Callable[[], Dict[str, Any]]) -> Dict[str, Any]:
     """启动后台运行。run_fn() 执行实际队列并返回 tool_api 风格的结果（{ok, data, error}）。
     返回 {ok, error}：锁被占用时 ok=False，不启动线程。"""
+    runlock.reconcile(project_dir)           # 上次意外终结的运行先回收
     try:
         runlock.acquire(project_dir)
     except runlock.LockBusy as exc:
@@ -95,7 +102,8 @@ def start_background(project_dir: Path, numbers: List[int], gear: str,
         final: Dict[str, Any] = {"state": "failed", "phase": "finished", "chapter": None}
         try:
             from . import joblog
-            with cancel.bind(project_dir), joblog.bind(project_dir, "chapter"):  # 章节运行中 skill 的输出写入章节日志
+            with cancel.bind(project_dir), joblog.bind(project_dir, "chapter"), \
+                    runlock.HeartbeatLoop(project_dir):  # 章节运行中 skill 的输出写入章节日志；心跳保活
                 res = run_fn()
             if res.get("ok"):
                 data = res["data"]
