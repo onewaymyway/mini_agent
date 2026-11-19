@@ -34,8 +34,9 @@ def test_assets_page_presplit_propose_and_confirm(tmp_path, monkeypatch):
     monkeypatch.setattr(tool_api, "presplit_confirm", fake_confirm)
 
     at = AppTest.from_file(APP, default_timeout=60).run()
-    at.sidebar.radio(key="nav").set_value("🎭 全书素材").run()
-    at.text_input(key="assets_root").input(str(out)).run()
+    at.sidebar.radio(key="nav").set_value("🧭 驾驶舱").run()
+    at.text_input(key="ck_root").input(str(out)).run()
+    at.radio(key="ck_sub").set_value("🎭 全书素材").run()
     assert not at.exception
     assert any("区域预拆解" in m.value for m in at.markdown)
     assert at.checkbox(key="presplit_on").value is True          # 默认开启
@@ -56,8 +57,9 @@ def test_assets_page_presplit_toggle_off_hides_actions(tmp_path):
     out = tmp_path / "out"
     tool_api.create_project_from_source(str(out), str(src), title="书")
     at = AppTest.from_file(APP, default_timeout=60).run()
-    at.sidebar.radio(key="nav").set_value("🎭 全书素材").run()
-    at.text_input(key="assets_root").input(str(out)).run()
+    at.sidebar.radio(key="nav").set_value("🧭 驾驶舱").run()
+    at.text_input(key="ck_root").input(str(out)).run()
+    at.radio(key="ck_sub").set_value("🎭 全书素材").run()
     at.checkbox(key="presplit_on").uncheck().run()
     assert not at.exception
     assert any("区域预拆解已关闭" in i.value for i in at.info)

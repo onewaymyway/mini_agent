@@ -13,11 +13,10 @@ from ui.chapter_page import _pick_project
 LAYOUT_LABEL = {"center": "居中（默认）", "bottom_bar": "底部色条", "top_classic": "上方描边"}
 
 
-def page_final() -> None:
+def page_final(pdir: str) -> None:
+    """由驾驶舱的子导航调用：项目目录由驾驶舱统一选择，本页不再单独选择项目。"""
     st.header("全书合成（F-1 至 F-4）")
     st.caption("先确认所有章节完成，再设置封面与转场，然后人工确认，最后合成。任何挡位都需要人工确认。")
-    root = st.text_input("项目存放目录", value=DEFAULT_PROJECTS_ROOT, key="final_root")
-    pdir = _pick_project(root)
     if not pdir:
         return
 

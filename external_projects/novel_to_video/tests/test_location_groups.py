@@ -52,8 +52,9 @@ def test_assets_page_shows_one_block_per_area(tmp_path):
     (proj / "global" / "locations.json").write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
 
     at = AppTest.from_file(APP, default_timeout=90).run()
-    at.sidebar.radio(key="nav").set_value("🎭 全书素材").run()
-    at.text_input(key="assets_root").input(str(out)).run()
+    at.sidebar.radio(key="nav").set_value("🧭 驾驶舱").run()
+    at.text_input(key="ck_root").input(str(out)).run()
+    at.radio(key="ck_sub").set_value("🎭 全书素材").run()
     assert not at.exception
     texts = [m.value for m in at.markdown]
     assert sum(1 for t in texts if f"区域「{area['name']}」" in t) == 1         # 同一区域只有一个内容块

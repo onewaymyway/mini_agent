@@ -163,7 +163,8 @@ def test_gender_page_renders(tmp_path, monkeypatch):
     tool_api.create_project_from_source(str(out), str(src), title="t")
     app = str(Path(__file__).resolve().parent.parent / "app.py")
     at = AppTest.from_file(app, default_timeout=60).run()
-    at.sidebar.radio[0].set_value("⚧ 性别确认").run()
-    at.text_input(key="gen_root").input(str(out)).run()
+    at.sidebar.radio[0].set_value("🧭 驾驶舱").run()
+    at.text_input(key="ck_root").input(str(out)).run()
+    at.radio(key="ck_sub").set_value("⚧ 性别确认").run()
     assert not at.exception
     assert any("性别确认" in h.value for h in at.header)

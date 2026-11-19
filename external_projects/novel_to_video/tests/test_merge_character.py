@@ -123,8 +123,9 @@ def test_merge_from_chapter_page(proj):
     _run(proj)
     new = _auto(proj)
     at = AppTest.from_file(APP, default_timeout=180).run()
-    at.sidebar.radio[0].set_value("🎬 章节生产").run()
-    at.text_input(key="chap_root").input(str(proj.parent)).run()
+    at.sidebar.radio[0].set_value("🧭 驾驶舱").run()
+    at.text_input(key="ck_root").input(str(proj.parent)).run()
+    at.radio(key="ck_sub").set_value("🎬 章节生产").run()
     assert not at.exception, at.exception
     sel = next(s for s in at.selectbox if s.label == "合并到已有角色")
     target = next(c for c in _chars(proj) if c["names"] == ["影子"])

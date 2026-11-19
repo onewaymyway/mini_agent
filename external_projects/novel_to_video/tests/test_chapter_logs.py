@@ -74,8 +74,9 @@ def test_chapter_page_shows_run_log(proj):
     assert r["ok"]
     _wait_queue(proj)
     at = AppTest.from_file(APP, default_timeout=180).run()
-    at.sidebar.radio[0].set_value("🎬 章节生产").run()
-    at.text_input(key="chap_root").input(str(proj.parent)).run()
+    at.sidebar.radio[0].set_value("🧭 驾驶舱").run()
+    at.text_input(key="ck_root").input(str(proj.parent)).run()
+    at.radio(key="ck_sub").set_value("🎬 章节生产").run()
     assert not at.exception
     # 日志面板现在是 components.html（iframe 的 srcdoc），取出其中的文本
     import html as _h

@@ -85,11 +85,10 @@ def render_auto_added(pdir: str, chapter: Optional[int] = None, *, key_prefix: s
     return open_n
 
 
-def page_auto_added() -> None:
+def page_auto_added(pdir: str) -> None:
+    """由驾驶舱的子导航调用：项目目录由驾驶舱统一选择，本页不再单独选择项目。"""
     st.header("补建角色审核")
     st.caption("章节生成过程中出现的新角色会先以草稿进入库中，确认后才会生成定妆图并参与配音。")
-    root = st.text_input("项目存放目录", value=DEFAULT_PROJECTS_ROOT, key="auto_root")
-    pdir = _pick_project(root)
     if not pdir:
         return
     render_batch_bar(pdir, chapter=None, key_prefix="batch_all")

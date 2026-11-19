@@ -163,8 +163,9 @@ def test_assets_page_renders_log_panel(proj, tmp_path):
     from streamlit.testing.v1 import AppTest
     app = str(Path(__file__).resolve().parent.parent / "app.py")
     at = AppTest.from_file(app, default_timeout=120).run()
-    at.sidebar.radio[0].set_value("🎭 全书素材").run()
-    at.text_input(key="assets_root").input(str(proj.parent)).run()
+    at.sidebar.radio[0].set_value("🧭 驾驶舱").run()
+    at.text_input(key="ck_root").input(str(proj.parent)).run()
+    at.radio(key="ck_sub").set_value("🎭 全书素材").run()
     assert not at.exception
     assert any("素材生成日志" in m.value for m in at.markdown)
 
@@ -173,12 +174,14 @@ def test_final_and_gender_pages_render_log_panels(proj):
     from streamlit.testing.v1 import AppTest
     app = str(Path(__file__).resolve().parent.parent / "app.py")
     at = AppTest.from_file(app, default_timeout=120).run()
-    at.sidebar.radio[0].set_value("🎞️ 全书合成").run()
-    at.text_input(key="final_root").input(str(proj.parent)).run()
+    at.sidebar.radio[0].set_value("🧭 驾驶舱").run()
+    at.text_input(key="ck_root").input(str(proj.parent)).run()
+    at.radio(key="ck_sub").set_value("🎞️ 全书合成").run()
     assert not at.exception
     assert any("全书合成日志" in m.value for m in at.markdown)
-    at.sidebar.radio[0].set_value("⚧ 性别确认").run()
-    at.text_input(key="gen_root").input(str(proj.parent)).run()
+    at.sidebar.radio[0].set_value("🧭 驾驶舱").run()
+    at.text_input(key="ck_root").input(str(proj.parent)).run()
+    at.radio(key="ck_sub").set_value("⚧ 性别确认").run()
     assert not at.exception
     assert any("性别检索日志" in m.value for m in at.markdown)
 

@@ -212,8 +212,9 @@ def test_replan_without_shots_fails_cleanly(proj):
 
 def _open(proj):
     at = AppTest.from_file(APP, default_timeout=180).run()
-    at.sidebar.radio[0].set_value("🎬 章节生产").run()
-    at.text_input(key="chap_root").input(str(proj.parent)).run()
+    at.sidebar.radio[0].set_value("🧭 驾驶舱").run()
+    at.text_input(key="ck_root").input(str(proj.parent)).run()
+    at.radio(key="ck_sub").set_value("🎬 章节生产").run()
     assert not at.exception, at.exception
     return at
 

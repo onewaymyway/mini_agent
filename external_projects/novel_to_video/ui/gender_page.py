@@ -17,11 +17,10 @@ BASIS_LABEL = {"persona_field": "人设卡明确写出", "none": "人设卡未�
                "non_human": "非人类或系统级实体"}
 
 
-def page_gender() -> None:
+def page_gender(pdir: str) -> None:
+    """由驾驶舱的子导航调用：项目目录由驾驶舱统一选择，本页不再单独选择项目。"""
     st.header("性别确认")
     st.caption("系统从人设卡与正文中检索线索并给出建议。证据中的代词、亲属词未必指向该角色，请逐条判断后再确认。")
-    root = st.text_input("项目存放目录", value=DEFAULT_PROJECTS_ROOT, key="gen_root")
-    pdir = _pick_project(root)
     if not pdir:
         return
     from pathlib import Path

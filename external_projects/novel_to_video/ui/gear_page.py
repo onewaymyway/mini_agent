@@ -21,10 +21,9 @@ GEAR_HELP = {
 }
 
 
-def page_gear() -> None:
+def page_gear(pdir: str) -> None:
+    """由驾驶舱的子导航调用：项目目录由驾驶舱统一选择，本页不再单独选择项目。"""
     st.header("设置与批量队列")
-    root = st.text_input("项目存放目录", value=DEFAULT_PROJECTS_ROOT, key="gear_root")
-    pdir = _pick_project(root)
     if not pdir:
         return
     pol = tool_api.gear_policy()["data"]

@@ -182,10 +182,12 @@ def test_prompt_demands_contiguous_original_text(proj):
 
 # ---------------------------------------------------------------- 界面
 
-def _open(proj, page="🎬 章节生产", root_key="chap_root"):
+def _open(proj, page="🎬 章节生产", root_key=None):
+    """打开驾驶舱并切到生成子页面（项目目录在驾驶舱顶部统一选择；root_key 仅为兼容旧调用而保留）。"""
     at = AppTest.from_file(APP, default_timeout=180).run()
-    at.sidebar.radio[0].set_value(page).run()
-    at.text_input(key=root_key).input(str(proj.parent)).run()
+    at.sidebar.radio[0].set_value("🧭 驾驶舱").run()
+    at.text_input(key="ck_root").input(str(proj.parent)).run()
+    at.radio(key="ck_sub").set_value(page).run()
     assert not at.exception, at.exception
     return at
 

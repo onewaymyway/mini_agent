@@ -55,8 +55,9 @@ def test_assets_page_renders_with_project(tmp_path, monkeypatch):
     tool_api.run_visual_text(proj)
     tool_api.run_portraits(proj)
     at = AppTest.from_file(APP, default_timeout=60).run()
-    at.radio(key="nav").set_value("🎭 全书素材").run()
-    at.text_input(key="assets_root").input(str(out)).run()
+    at.radio(key="nav").set_value("🧭 驾驶舱").run()
+    at.text_input(key="ck_root").input(str(out)).run()
+    at.radio(key="ck_sub").set_value("🎭 全书素材").run()
     assert not at.exception
     assert any("全书级素材（G-2 / G-3）" in h.value for h in at.header)
     assert any(b.key == "ok_p_character:char_001" for b in at.button)
@@ -70,8 +71,9 @@ def test_chapter_page_renders(tmp_path, monkeypatch):
     res = tool_api.create_project_from_source(str(out), str(src), title="书")
     assert res["ok"]
     at = AppTest.from_file(APP, default_timeout=60).run()
-    at.radio(key="nav").set_value("🎬 章节生产").run()
-    at.text_input(key="chap_root").input(str(out)).run()
+    at.radio(key="nav").set_value("🧭 驾驶舱").run()
+    at.text_input(key="ck_root").input(str(out)).run()
+    at.radio(key="ck_sub").set_value("🎬 章节生产").run()
     assert not at.exception
     assert any("章节生产（C-1 … C-9）" in h.value for h in at.header)
 
@@ -89,14 +91,17 @@ def test_gear_and_auto_added_pages_render(tmp_path, monkeypatch):
     gv.visual_text_pass(proj, RuleTextLLM())
     gv.portrait_pass(proj, StubImageProvider())
     at = AppTest.from_file(APP, default_timeout=60).run()
-    at.sidebar.radio[0].set_value("🛠️ 设置与队列").run()
+    at.sidebar.radio[0].set_value("🧭 驾驶舱").run()
+    assert not at.exception
+    assert any("驾驶舱" in h.value for h in at.header)
+    at.text_input(key="ck_root").input(str(out)).run()
+    at.radio(key="ck_sub").set_value("🛠️ 设置与队列").run()
     assert not at.exception
     assert any("设置与批量队列" in h.value for h in at.header)
-    at.text_input(key="gear_root").input(str(out)).run()
-    assert not at.exception
     assert any(s.label == "挡位" for s in at.selectbox)
-    at.sidebar.radio[0].set_value("🧩 补建角色审核").run()
-    at.text_input(key="auto_root").input(str(out)).run()
+    at.sidebar.radio[0].set_value("🧭 驾驶舱").run()
+    at.text_input(key="ck_root").input(str(out)).run()
+    at.radio(key="ck_sub").set_value("🧩 补建角色审核").run()
     assert not at.exception
     assert any("补建角色审核" in h.value for h in at.header)
     assert any("当前没有待审核" in i.value for i in at.info)
@@ -115,8 +120,9 @@ def test_final_page_renders(tmp_path, monkeypatch):
     gv.visual_text_pass(proj, RuleTextLLM())
     gv.portrait_pass(proj, StubImageProvider())
     at = AppTest.from_file(APP, default_timeout=60).run()
-    at.sidebar.radio[0].set_value("🎞️ 全书合成").run()
-    at.text_input(key="final_root").input(str(out)).run()
+    at.sidebar.radio[0].set_value("🧭 驾驶舱").run()
+    at.text_input(key="ck_root").input(str(out)).run()
+    at.radio(key="ck_sub").set_value("🎞️ 全书合成").run()
     assert not at.exception
     assert any("全书合成" in h.value for h in at.header)
     assert any("F-1 章节检查" in m.value for m in at.markdown)

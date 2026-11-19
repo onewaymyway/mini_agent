@@ -98,11 +98,10 @@ def _jumped(go_key: str) -> None:
     st.session_state[go_key] = True
 
 
-def page_videos() -> None:
+def page_videos(pdir: str) -> None:
+    """由驾驶舱的子导航调用：项目目录由驾驶舱统一选择，本页不再单独选择项目。"""
     st.header("章节视频")
     st.caption("查看所有章节的视频完成情况，并把已完成的章节连续播放，方便整体预览。")
-    root = st.text_input("项目存放目录", value=DEFAULT_PROJECTS_ROOT, key="vid_root")
-    pdir = _pick_project(root)
     if not pdir:
         return
     res = tool_api.chapter_videos(pdir)

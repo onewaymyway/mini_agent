@@ -239,8 +239,9 @@ def test_set_retries_validates_range(proj):
 def test_chapter_page_shows_prompt_response_and_review(proj):
     run_script(proj, 1, RecLLM(json.dumps({"script": LONG}, ensure_ascii=False)))
     at = AppTest.from_file(APP, default_timeout=180).run()
-    at.sidebar.radio[0].set_value("🎬 章节生产").run()
-    at.text_input(key="chap_root").input(str(proj.parent)).run()
+    at.sidebar.radio[0].set_value("🧭 驾驶舱").run()
+    at.text_input(key="ck_root").input(str(proj.parent)).run()
+    at.radio(key="ck_sub").set_value("🎬 章节生产").run()
     assert not at.exception, at.exception
     text = " ".join(str(getattr(e, "value", "")) for e in at.text_area)
     assert '{"script"' in text                       # 原始返回内容
@@ -280,8 +281,9 @@ def test_unknown_speakers_helper():
 
 def _open_chapter_page(proj):
     at = AppTest.from_file(APP, default_timeout=180).run()
-    at.sidebar.radio[0].set_value("🎬 章节生产").run()
-    at.text_input(key="chap_root").input(str(proj.parent)).run()
+    at.sidebar.radio[0].set_value("🧭 驾驶舱").run()
+    at.text_input(key="ck_root").input(str(proj.parent)).run()
+    at.radio(key="ck_sub").set_value("🎬 章节生产").run()
     assert not at.exception, at.exception
     return at
 
@@ -332,8 +334,9 @@ def test_auto_added_page_has_action_buttons(proj):
     cp.run_chapter(proj, 1, text_llm=ChapterLLM(), image=StubImageProvider(),
                    video=StubVideoProvider(), tts=SilenceTTS())
     at = AppTest.from_file(APP, default_timeout=180).run()
-    at.sidebar.radio[0].set_value("🧩 补建角色审核").run()
-    at.text_input(key="auto_root").input(str(proj.parent)).run()
+    at.sidebar.radio[0].set_value("🧭 驾驶舱").run()
+    at.text_input(key="ck_root").input(str(proj.parent)).run()
+    at.radio(key="ck_sub").set_value("🧩 补建角色审核").run()
     assert not at.exception, at.exception
     assert any((b.key or "").startswith("ok_t_") for b in at.button)
 

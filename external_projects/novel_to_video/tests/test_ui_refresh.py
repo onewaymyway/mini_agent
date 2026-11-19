@@ -26,8 +26,9 @@ def _anchor_widgets(at):
 def test_assets_detail_shows_text_written_after_page_was_rendered(tmp_path, monkeypatch):
     out, proj = _project(tmp_path, monkeypatch)
     at = AppTest.from_file(APP, default_timeout=120).run()
-    at.sidebar.radio[0].set_value("🎭 全书素材").run()
-    at.text_input(key="assets_root").input(str(out)).run()
+    at.sidebar.radio[0].set_value("🧭 驾驶舱").run()
+    at.text_input(key="ck_root").input(str(out)).run()
+    at.radio(key="ck_sub").set_value("🎭 全书素材").run()
     # 第一次渲染：设定为空
     assert all(t.value == "" for t in _anchor_widgets(at))
 
@@ -43,8 +44,9 @@ def test_gender_radio_shows_confirmed_choice_after_save(tmp_path, monkeypatch):
     from novel_to_video import gender_review
     out, proj = _project(tmp_path, monkeypatch)
     at = AppTest.from_file(APP, default_timeout=120).run()
-    at.sidebar.radio[0].set_value("⚧ 性别确认").run()
-    at.text_input(key="gen_root").input(str(out)).run()
+    at.sidebar.radio[0].set_value("🧭 驾驶舱").run()
+    at.text_input(key="ck_root").input(str(out)).run()
+    at.radio(key="ck_sub").set_value("⚧ 性别确认").run()
     gender_review.suggest_all(proj)
     at.run()
     gender_review.confirm(proj, "char_002", "female")

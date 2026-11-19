@@ -2,6 +2,7 @@
 
 参考 novel_writer 驾驶舱的结构：顶部指标 → 下一步 → 实时面板（定时刷新）→ 流水线表。
 实时面板是 fragment，只重绘自身，不会打断其他区域的输入。
+生成流程页面（全书素材、性别确认、补建角色审核、章节生产、章节视频、设置与队列、全书合成）放在本页的子导航中。
 """
 
 from __future__ import annotations
@@ -11,8 +12,14 @@ from pathlib import Path
 import streamlit as st
 
 from novel_to_video import tool_api
-from ui.chapter_page import _pick_project
+from ui.assets_page import page_assets
+from ui.auto_added_page import page_auto_added
+from ui.chapter_page import _pick_project, page_chapters
 from ui.common import DEFAULT_PROJECTS_ROOT
+from ui.final_page import page_final
+from ui.gear_page import page_gear
+from ui.gender_page import page_gender
+from ui.video_page import page_videos
 
 REFRESH_SECONDS = 3
 
@@ -27,13 +34,42 @@ GEAR_LABEL = {"G0": "G0 手动", "G1": "G1 引导", "G2": "G2 半自动", "G3": 
               "G4": "G4 托管", "G5": "G5 不停机", "G6": "G6 全流程自动"}
 
 
+OVERVIEW = "🧭 驾驶舱总览"
+# 生成流程相关的页面，统一放在驾驶舱的子导航里（顶层导航只保留导入、项目列表与驾驶舱）。
+# 子导航用单选控件而不是 st.tabs：只渲染当前选中的页面，避免每次刷新都执行全部子页面。
+GEN_PAGES = {
+    "🎭 全书素材": page_assets,
+    "⚧ 性别确认": page_gender,
+    "🧩 补建角色审核": page_auto_added,
+    "🎬 章节生产": page_chapters,
+    "📺 章节视频": page_videos,
+    "🛠️ 设置与队列": page_gear,
+    "🎞️ 全书合成": page_final,
+}
+
+
+def _go_to(label: str) -> None:
+    """回调：切换驾驶舱子导航（回调在脚本重跑前执行，因此可以改写已绑定的 key）。"""
+    st.session_state["ck_sub"] = label
+
+
 def page_cockpit() -> None:
     st.header("🧭 驾驶舱")
-    st.caption("一眼看清当前步骤、待处理事项与运行状态。")
     root = st.text_input("项目存放目录", value=DEFAULT_PROJECTS_ROOT, key="ck_root")
     pdir = _pick_project(root)
     if not pdir:
         return
+    sub = st.radio("驾驶舱子页面", [OVERVIEW, *GEN_PAGES], horizontal=True, key="ck_sub",
+                   label_visibility="collapsed")
+    if sub != OVERVIEW:
+        st.caption(f"当前项目：{Path(pdir).name}　·　项目在驾驶舱顶部切换，子页面共用同一个项目。")
+        GEN_PAGES[sub](pdir)
+        return
+    _overview(pdir)
+
+
+def _overview(pdir: str) -> None:
+    st.caption("一眼看清当前步骤、待处理事项与运行状态。")
     res = tool_api.cockpit_status(pdir)
     if not res["ok"]:
         st.error(res["error"]["message"])
@@ -44,7 +80,12 @@ def page_cockpit() -> None:
     if nxt["key"] in ("done",):
         st.success(f"✅ {nxt['title']}：{nxt['reason']}")
     else:
-        st.info(f"👉 当前步骤：**{nxt['title']}**　—　{nxt['reason']}　（前往「{nxt['page']}」）")
+        st.info(f"👉 当前步骤：**{nxt['title']}**　—　{nxt['reason']}")
+        if nxt["page"] in GEN_PAGES:
+            st.button(f"前往驾驶舱 ›「{nxt['page']}」", key="ck_next_go",
+                      on_click=_go_to, args=(nxt["page"],))
+        else:
+            st.caption(f"（前往「{nxt['page']}」）")
     _live_panel(pdir)
     _start_controls(pdir, d)
     _timeline_panel(pdir)

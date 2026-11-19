@@ -99,8 +99,9 @@ def test_autoplay_script_wires_ended_to_next_button():
 
 def _open_video_page(out_root: Path) -> AppTest:
     at = AppTest.from_file(APP, default_timeout=60).run()
-    at.radio(key="nav").set_value("📺 章节视频").run()
-    at.text_input(key="vid_root").input(str(out_root)).run()
+    at.radio(key="nav").set_value("🧭 驾驶舱").run()
+    at.text_input(key="ck_root").input(str(out_root)).run()
+    at.radio(key="ck_sub").set_value("📺 章节视频").run()
     return at
 
 

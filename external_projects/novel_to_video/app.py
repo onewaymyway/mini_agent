@@ -1,6 +1,6 @@
 """novel_to_video — Streamlit 入口（`streamlit run app.py`）。
 
-Phase 0 页面：导入导出目录、项目列表。后续阶段逐步加入素材、章节工作台、全书合成等页面。
+顶层：驾驶舱、导入导出目录、项目列表。生成流程页面（素材、章节、视频、队列、合成、性别与补建角色）放在驾驶舱的子导航中。
 页面逻辑全部在 ui/ 下；本文件只做导航。
 """
 
@@ -15,28 +15,15 @@ if str(_ROOT) not in sys.path:
 
 import streamlit as st  # noqa: E402
 
-from ui.assets_page import page_assets  # noqa: E402
-from ui.auto_added_page import page_auto_added  # noqa: E402
 from ui.cockpit_page import page_cockpit  # noqa: E402
-from ui.final_page import page_final  # noqa: E402
-from ui.gender_page import page_gender  # noqa: E402
-from ui.gear_page import page_gear  # noqa: E402
-from ui.chapter_page import page_chapters  # noqa: E402
 from ui.import_page import page_import  # noqa: E402
 from ui.projects_page import page_projects  # noqa: E402
-from ui.video_page import page_videos  # noqa: E402
 
+# 顶层导航只保留启动准备与项目管理；生成流程页面都在驾驶舱的子导航里（见 ui/cockpit_page.py: GEN_PAGES）。
 PAGES = {
     "🧭 驾驶舱": page_cockpit,
     "📥 导入导出目录": page_import,
     "📚 项目列表": page_projects,
-    "🎭 全书素材": page_assets,
-    "🎬 章节生产": page_chapters,
-    "📺 章节视频": page_videos,
-    "🛠️ 设置与队列": page_gear,
-    "🧩 补建角色审核": page_auto_added,
-    "🎞️ 全书合成": page_final,
-    "⚧ 性别确认": page_gender,
 }
 
 
@@ -44,7 +31,7 @@ def main() -> None:
     st.set_page_config(page_title="novel_to_video", page_icon="🎬", layout="wide")
     with st.sidebar:
         st.markdown("### 🎬 novel_to_video")
-        st.caption("小说转短剧工作台 · Phase 5")
+        st.caption("小说转短剧工作台 · Phase 5（生成流程见驾驶舱）")
         choice = st.radio("导航", list(PAGES), label_visibility="collapsed", key="nav")
     PAGES[choice]()
 

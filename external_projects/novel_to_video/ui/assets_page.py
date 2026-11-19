@@ -353,11 +353,10 @@ def _entity_detail(pdir: str, r: dict) -> None:
                     st.error(res["error"]["message"])
 
 
-def page_assets() -> None:
+def page_assets(pdir: str) -> None:
+    """由驾驶舱的子导航调用：项目目录由驾驶舱统一选择，本页不再单独选择项目。"""
     st.header("全书级素材（G-2 / G-3）")
     st.caption("角色与地点设定对全书共用。每一条都需要人工通过后才算完成。")
-    root = st.text_input("项目存放目录", value=DEFAULT_PROJECTS_ROOT, key="assets_root")
-    pdir = _pick_project(root)
     if not pdir:
         return
     _run_panel(pdir)

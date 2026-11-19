@@ -160,8 +160,9 @@ def test_import_page_default_is_video(tmp_path):
 
 
 def _gear(at, root):
-    at.sidebar.radio[0].set_value("🛠️ 设置与队列").run()
-    at.text_input(key="gear_root").input(str(root)).run()
+    at.sidebar.radio[0].set_value("🧭 驾驶舱").run()
+    at.text_input(key="ck_root").input(str(root)).run()
+    at.radio(key="ck_sub").set_value("🛠️ 设置与队列").run()
     return at
 
 

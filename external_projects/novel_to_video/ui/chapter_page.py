@@ -427,11 +427,10 @@ def _recompose_all(pdir: str, overview: list) -> None:
             (st.success if r["ok"] else st.error)("已开始批量重新合成。" if r["ok"] else r["error"]["message"])
 
 
-def page_chapters() -> None:
+def page_chapters(pdir: str) -> None:
+    """由驾驶舱的子导航调用：项目目录由驾驶舱统一选择，本页不再单独选择项目。"""
     st.header("章节生产（C-1 … C-9）")
     st.caption("每章：剧本 → 镜头 → 补建角色确认 → 配音 → 提示词 → 小场景视频 → 逐镜审核 → 章节合成。")
-    root = st.text_input("项目存放目录", value=DEFAULT_PROJECTS_ROOT, key="chap_root")
-    pdir = _pick_project(root)
     if not pdir:
         return
     ov = tool_api.chapters_overview(pdir)
