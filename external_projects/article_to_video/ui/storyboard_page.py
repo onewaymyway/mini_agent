@@ -16,6 +16,7 @@ from article_to_video.visual import storyboard as sbm
 from article_to_video.visual.config import load_visual_config
 from article_to_video.visual.states import SCENE_TYPES
 from ui import jobs
+from ui.reset_panel import render_reset_panel
 
 _TYPE_LABELS = {"keypoint": "卡片", "list": "列表", "timeline": "时间线", "diagram": "流程/回路",
                 "table": "表格", "quote": "金句", "formula": "公式", "illustration": "插图"}
@@ -162,6 +163,18 @@ def _storyboard_body(pdir) -> None:
         st.error("已有后台任务在运行，请稍候")
 
     _batch_controls(pdir, ready, engine, busy)
+    def _regen_storyboard(p, ids):
+        from article_to_video import joblog
+        from article_to_video.providers.text import make_text_llm
+        llm = make_text_llm("miniagent", pdir=p) if engine == "llm" else None
+        for pid in ids:
+            try:
+                sbm.plan_storyboard(p, pid, force=True, engine=engine, llm=llm)
+            except PlanError as exc:   # 单章失败不影响其它章
+                joblog.bound_log(f"{pid}：分镜重新生成失败：{exc}", level="error")
+
+    render_reset_panel(pdir, stage="storyboard", key="rst_storyboard", busy=busy,
+                       regenerate=_regen_storyboard, confirmed_only=[p["id"] for p in ready])
 
     if not status["exists"]:
         return

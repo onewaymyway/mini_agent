@@ -12,6 +12,7 @@ from article_to_video.project_store import list_projects
 from article_to_video.providers.tts import SilenceTTS, build_chain
 from article_to_video.script.writer import load_script
 from ui import jobs
+from ui.reset_panel import render_reset_panel
 
 
 _PREVIEW: dict = {}   # 最近一次试听：{项目目录: (文字, 音频路径)}，由后台任务写入
@@ -78,6 +79,13 @@ def _voice_body(pdir) -> None:
                    lambda: [sy.synthesize_part(pdir, p, _tts_for(pdir, stub), force=force)
                             for p in confirmed_parts], scope="voice")
         st.rerun()
+
+    def _regen_voice(p, ids, stub=stub):
+        for pid in ids:
+            sy.synthesize_part(p, pid, _tts_for(p, stub), force=True)   # 清空后必然重新合成，不复用缓存
+
+    render_reset_panel(pdir, stage="voice", key="rst_voice", busy=running,
+                       regenerate=_regen_voice, confirmed_only=confirmed_parts)
 
     tl = sy.load_timeline(pdir, part)
     if tl is None:

@@ -16,6 +16,7 @@ from article_to_video.planning.chunks import section_catalog
 from article_to_video.project_store import list_projects, read_json
 from article_to_video.providers.text import make_text_llm, text_model_status
 from article_to_video.validators.outline_report import outline_report
+from ui.reset_panel import render_reset_panel
 
 ENGINE_LABELS = {"miniagent": "模型（默认，mini_agent 的 LLM）", "rules": "离线规则（不调用模型，较粗略）"}
 
@@ -189,6 +190,12 @@ def _outline_body(pdir) -> None:
             if jobs.start(pdir, f"生成大纲（{ENGINE_LABELS[engine]}）", run, scope="outline"):
                 st.rerun()
             st.error("已有后台任务在运行，请稍候")
+
+    def _regen_outline(p, ids, engine=engine):
+        llm = make_text_llm("miniagent", pdir=p) if engine == "miniagent" else None
+        plan_outline(p, engine="llm" if engine == "miniagent" else "rules", llm=llm, force=True, reuse_digests=False)
+
+    render_reset_panel(pdir, stage="outline", key="rst_outline", busy=is_busy(pdir), regenerate=_regen_outline)
 
     if spine is None:
         st.info("还没有大纲。请先生成。")

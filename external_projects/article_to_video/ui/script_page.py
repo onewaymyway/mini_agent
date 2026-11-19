@@ -14,6 +14,7 @@ from article_to_video.script import writer as w
 from article_to_video.script.budget import chars_for_minutes
 from article_to_video.script.lexicon import load_lexicon, parse_lexicon_text, save_lexicon
 from ui import jobs
+from ui.reset_panel import render_reset_panel
 
 
 def _editor_text(beat) -> str:
@@ -83,6 +84,13 @@ def _script_body(pdir) -> None:
         jobs.start(pdir, f"写 {part}", lambda: w.write_part(pdir, part, make_text_llm("miniagent", pdir=pdir), force=force),
                    scope="script")
         st.rerun()
+
+    def _regen_script(p, ids):
+        llm = make_text_llm("miniagent", pdir=p)
+        for pid in ids:
+            w.write_part(p, pid, llm, force=True)   # 清空后逐章重写，不沿用旧稿
+
+    render_reset_panel(pdir, stage="script", key="rst_script", busy=running, regenerate=_regen_script)
 
     with st.expander("发音词典（只影响配音，字幕显示原写法）"):
         cur = load_lexicon(pdir)

@@ -8,6 +8,7 @@ import streamlit as st
 from ui.joblog_panel import render_job_panel, render_page_status
 
 from article_to_video.compose.export import export_final, safe_filename
+from ui.reset_panel import render_reset_panel
 from article_to_video.compose.part import compose_part, preview_part, video_dir
 from article_to_video.paths import projects_root
 from article_to_video.planning.runner import load_spine
@@ -109,6 +110,9 @@ def _export_body(pdir) -> None:
         pv = _PREVIEW_VIDEO.get(_preview_key(pdir, cid)) if has_video else None
         if pv is not None and pv.is_file():
             st.video(str(pv))
+
+    render_reset_panel(pdir, stage="export", key="rst_export", busy=busy,
+                       regenerate=lambda p, ids: export_final(p))
 
     c1, c2 = st.columns(2)
     if c1.button("合成全部已就绪的章", disabled=busy or not ready_ids):

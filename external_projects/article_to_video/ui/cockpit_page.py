@@ -11,16 +11,15 @@ from __future__ import annotations
 
 import streamlit as st
 
-from article_to_video import joblog
 from article_to_video.paths import projects_root
 from article_to_video.pipeline.gates import PipelineError, STAGES
-from article_to_video.pipeline.reset import ORDER, reset_part
 from article_to_video.pipeline.run import default_providers, read_status, run_pipeline
 from article_to_video.planning.runner import load_spine
 from article_to_video.project_store import list_projects
 from article_to_video.script.writer import load_script
 from article_to_video.visual.storyboard import storyboard_status
 from ui import jobs
+from ui.reset_panel import render_reset_panel
 from ui.joblog_panel import render_job_panel, render_run_monitor, run_state
 from ui.outline_page import _outline_body
 from ui.script_page import _script_body
@@ -182,21 +181,7 @@ def _control_body(pdir) -> None:
     st.subheader("各章状态")
     st.table(_part_rows(pdir))
 
-    with st.expander("整章重置（会删除产物，需要确认）"):
-        spine = load_spine(pdir)
-        part_ids = [p["id"] for p in spine["parts"]] if spine else []
-        if part_ids:
-            rp = st.selectbox("章", part_ids, key="reset_part")
-            frm = st.selectbox("从此阶段起删除", list(ORDER), key="reset_from")
-            ok = st.checkbox("我确认删除该章从此阶段起的全部产物（图片缓存保留）", key="reset_ok")
-            if st.button("重置本章", disabled=not ok or busy):
-                try:
-                    removed = reset_part(pdir, rp, from_stage=frm, confirm=True)
-                    joblog.log(pdir, "pipeline", f"整章重置：{rp} 从「{frm}」起删除 {len(removed)} 项", level="warn")
-                    st.success(f"已删除 {len(removed)} 项")
-                    st.rerun()
-                except PipelineError as exc:
-                    st.error(str(exc))
+    render_reset_panel(pdir, stage=None, key="rst_cockpit", busy=busy)
 
 
 def render_cockpit_page() -> None:
