@@ -134,3 +134,45 @@ def preview(project_dir: Path, text: str, voice: str, rate: str, tts) -> Path:
         cancel.check()
         tts.synth(clean, out, voice, rate)
     return out
+
+
+def rebuild_timeline(project_dir: Path, part_id: str, now: Optional[datetime] = None) -> Dict[str, Any]:
+    """只按当前时间设置重建本章时间轴（R19）：不调用配音、不改动句子音频与口播稿。
+
+    句长取自已缓存的配音清单（audio/manifest.json）；缺少任一句的配音时拒绝执行。
+    时间设置（章封面停留、章首静音、句间停顿、章尾停顿）只影响时间轴，所以这一步足够。
+    """
+    pdir = Path(project_dir)
+    spine = load_spine(pdir)
+    if spine is None or not spine.get("confirmed"):
+        raise PlanError("请先确认大纲（C0）")
+    script = load_script(pdir, part_id)
+    if script is None or not script.get("confirmed"):
+        raise PlanError(f"{part_id} 的口播稿还没有确认（C1），不能重建时间轴")
+    manifest = _load_manifest(pdir, part_id)
+    durations: Dict[str, float] = {}
+    voices: Dict[str, str] = {}
+    engines: Dict[str, str] = {}
+    missing: list = []
+    for b in script["beats"]:
+        for i, _s in enumerate(b["sentences"]):
+            sid = f"{b['id']}.s{i + 1:02d}"
+            entry = manifest.get(sid)
+            if not entry or not (pdir / "parts" / part_id / "audio" / entry["file"]).is_file():
+                missing.append(sid)
+                continue
+            durations[sid] = float(entry["duration"])
+            voices[sid] = entry["voice"]
+            engines[sid] = entry["engine"]
+    if missing:
+        raise PlanError(f"{part_id} 还有 {len(missing)} 句没有配音（如 {missing[0]}），请先配音")
+    cfg = project_tts_config(pdir)
+    timeline = build_timeline(script, durations, cfg, voices, engines)
+    timeline["warnings"] = (["本章使用了模拟配音（stub，静音），不能作为正式成片"]
+                            if "stub" in set(engines.values()) else [])
+    timeline["generated_at"] = now_iso(now)
+    write_json_atomic(pdir / "parts" / part_id / "timeline.json", timeline)
+    joblog.bound_log(f"{part_id}：时间轴已按当前时间设置重建（总长 {timeline['total_sec']} 秒，章封面 "
+                     f"{timeline['lead_in_sec']} 秒），未重新配音", level="ok")
+    append_progress(pdir, f"重建时间轴 {part_id}：总长 {timeline['total_sec']} 秒", now)
+    return timeline

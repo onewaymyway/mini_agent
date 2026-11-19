@@ -55,9 +55,9 @@ def compose_part(pdir: Path, part_id: str, *, now: Optional[datetime] = None) ->
     hold = float(timeline.get("lead_in_sec", 0.0))
     if hold < CHAPTER_CARD_MIN_SEC - 1e-6:
         raise ComposeError(f"{part_id} 的章封面停留只有 {hold:.1f} 秒（至少 {CHAPTER_CARD_MIN_SEC:.0f} 秒），"
-                           "请先重新配音，再重新渲染画面")
+                           "请在「🔊 配音」页点「按当前时间设置重建时间轴」")
     if abs(float(manifest.get("chapter", {}).get("end", -1)) - hold) > 1e-3:
-        raise ComposeError(f"{part_id} 的画面与时间轴的章封面时长不一致，请重新渲染画面")
+        raise ComposeError(f"{part_id} 的画面与时间轴不一致：请在「🎞️ 分镜」页重新渲染本章画面（不会重新生图）")
     script = load_script(pdir, part_id)
     from ..app_settings import load_effective_project  # 延迟导入
     video = load_effective_project(pdir)["settings"].get("video", {})

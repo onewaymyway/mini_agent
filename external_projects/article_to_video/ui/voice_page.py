@@ -7,6 +7,7 @@ from ui.joblog_panel import render_job_panel, render_page_status
 
 from article_to_video.audio import synth as sy
 from article_to_video.paths import projects_root
+from article_to_video.planning.errors import PlanError
 from article_to_video.planning.runner import load_spine
 from article_to_video.project_store import list_projects
 from article_to_video.providers.tts import SilenceTTS, build_chain
@@ -79,6 +80,27 @@ def _voice_body(pdir) -> None:
                    lambda: [sy.synthesize_part(pdir, p, _tts_for(pdir, stub), force=force)
                             for p in confirmed_parts], scope="voice")
         st.rerun()
+
+    c3, c4 = st.columns(2)
+    if c3.button("⏱ 按当前时间设置重建本章时间轴", disabled=running,
+                 help="只更新时间轴（章封面停留、章首静音、句间停顿、章尾停顿）。不重新配音、不重写分镜、不重新生图；"
+                      "之后需在分镜页重新渲染画面，再合成。"):
+        try:
+            sy.rebuild_timeline(pdir, part)
+            st.success(f"{part} 时间轴已更新。请在分镜页重新渲染本章画面，再合成。")
+        except PlanError as exc:
+            st.error(str(exc))
+    if c4.button("⏱ 重建全部已确认章的时间轴", disabled=running):
+        bad = []
+        for p_id in confirmed_parts:
+            try:
+                sy.rebuild_timeline(pdir, p_id)
+            except PlanError as exc:
+                bad.append(f"{p_id}：{exc}")
+        if bad:
+            st.error("以下章节未能重建：\n\n" + "\n\n".join(bad))
+        else:
+            st.success(f"{len(confirmed_parts)} 章时间轴已更新。请重新渲染画面，再合成。")
 
     def _regen_voice(p, ids, stub=stub):
         for pid in ids:
