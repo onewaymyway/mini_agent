@@ -118,6 +118,32 @@ python entrypoints/run_pipeline.py --id <项目目录名> --until export --appro
 
 项目目录名即导入时生成的目录名，位于项目集合目录下（由 `ARTICLE_TO_VIDEO_HOME` 决定）。命令的输出是 JSON，同时写入项目目录下的 `pipeline.json`。退出码：完成为 0，其它为 1。
 
+### 8.1 批量队列（命令行）
+
+界面的「📦 批量生成」页负责加入文章、设置标题与作者、共用参数。命令行读取同一份队列（位于项目集合目录下的 `_queue/`）：
+
+```bash
+# 查看队列状态（JSON），不运行
+python entrypoints/batch_run.py --status
+
+# 前台运行队列，直到队列处理完；Ctrl+C 可中断（当前篇记为「已停止」，下次运行继续）
+python entrypoints/batch_run.py
+
+# 运行前重排失败、已停止、停在检查点或超预算的条目；加编号则只重排一篇
+python entrypoints/batch_run.py --requeue
+python entrypoints/batch_run.py --requeue q0003
+
+# 只重写报告，不运行
+python entrypoints/batch_run.py --report
+
+# 队列不在默认目录时，用 --root 指定项目集合目录
+python entrypoints/batch_run.py --root D:\video_projects --status
+```
+
+- 每次运行结束（包括中断）都会写入 `_queue/report.md` 与 `_queue/report.json`：每篇的状态、重试次数、耗时（墙钟）、生图次数、成片路径与未完成原因。
+- 退出码：0 = 正常且没有失败条目；1 = 有失败条目，或参数与队列错误；3 = 已有运行者（界面或另一条命令行正在运行），本次未启动；130 = Ctrl+C 中断。
+- 批量生成会产生模型与生图费用，入口不登记为定时任务，只由人手动运行。
+
 ## 9. 整章重置
 
 若某章的口播、分镜或画面不满意，可在驾驶舱的「整章重置」中选择章与起始阶段，勾选确认后删除该章从此阶段起的产物。图片缓存保留，重新生成时会按内容指纹复用。重置不可撤销，且会丢弃该章的人工编辑。

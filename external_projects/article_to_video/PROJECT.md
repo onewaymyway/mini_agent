@@ -20,7 +20,7 @@
 | **R9**（第五轮）口播校验统一 | 口播 V2 忠实度忽略标点与大小写；数字按完整记号比较（修正 3.5 与 35 互相匹配）；金句对齐原文的规范写法（`canonicalize_quotes`）；摘要数字同步改为完整记号比较 | ✅ 完成（见方案第 26 节）|
 | **R8**（第四轮）大纲校验与展示 | 校验分组报告（覆盖、时长、忠实度、结构；门禁不变）、章节卡片（预算占比、覆盖小节）、摘要被剔除条目持久化（`digests.json` 的 `dropped`）与手动恢复（原文片段经对齐校验后加入） | ✅ 完成（见方案第 25 节）|
 | **R7**（第四轮）驾驶舱为主入口 | 侧边栏只保留驾驶舱、新建项目、项目、设置；驾驶舱顶部「流程总览」（各步骤状态与下一步），步骤区含「总控」与大纲、口播稿、配音、分镜、合成导出；步骤之间用单选切换，每次只渲染当前步骤，避免控件重复 | ✅ 完成（见方案 23.5 与下文）|
-| **R23**（第五轮）批量生成队列（进行中：第一、二期） | 新增 G3 完全无人值守挡位；持久化队列（`_queue/`）可随时追加，逐篇设置标题与作者、其余参数共享，串行运行，失败重试三次后继续下一篇；侧边栏「📦 批量生成」页（共用参数、加入队列、队列监控）；命令行入口与报告在第三期 | 🚧 第一、二期完成（见 `next_doc/article_to_video_batch_generation_plan.md`）|
+| **R23**（第五轮）批量生成队列 | 新增 G3 完全无人值守挡位；持久化队列（`_queue/`）可随时追加，逐篇设置标题与作者、其余参数共享，串行运行，失败重试三次后继续下一篇；侧边栏「📦 批量生成」页（共用参数、加入队列、队列监控）；命令行入口 `entrypoints/batch_run.py`；每次运行结束写队列报告（`_queue/report.json`、`report.md`） | ✅ 三期完成（620 项通过，3 项跳过；见 `next_doc/article_to_video_batch_generation_plan.md` 第 9–11 节）|
 | **R1**（第二轮）实时日志与步骤时间表 | 项目运行日志 `logs/job.jsonl`、结构化运行/步骤事件、步骤时间表、流水线逐阶段/逐章埋点、驾驶舱实时日志面板与停止按钮、后台任务日志、命令行启动的运行也能在界面看到 | ✅ 完成（见下）|
 | R2 全页面实时日志 | 其余页面接入同一面板；页面内同步操作改后台任务；服务内部补日志点 | ✅ 完成（325 项测试通过） |
 | R3 大纲默认模型 | 大纲默认改用模型；模型未就绪时提示并禁用，不静默降级；离线冒烟仍用规则版 | ✅ 完成（331 项测试通过） |
@@ -74,7 +74,7 @@ article_to_video/
 │   │   ├── fidelity.py       V2（P1 部分）：摘要中的原话与数字必须出现在原文
 │   │   └── coverage.py       V1：每个小节恰好出现一次（章或取舍报告）
 │   └── providers/text.py     文本 LLM（mini_agent 的 LLMHelper）
-├── entrypoints/              import_article / list_projects / health / plan_outline / write_script / synth_audio / plan_storyboard / render_visuals / compose_part / export_final / run_pipeline
+├── entrypoints/              import_article / list_projects / health / plan_outline / write_script / synth_audio / plan_storyboard / render_visuals / compose_part / export_final / run_pipeline / batch_run（R23，批量队列）
 ├── article_to_video/joblog.py     项目运行日志（logs/job.jsonl）、线程绑定、运行/步骤事件、心跳
 ├── article_to_video/timeline.py   步骤时间表（增量读取日志、汇总每次运行与各步骤）
 ├── ui/                       joblog_panel（实时运行监控面板）/ import_page / outline_page（C0）/ script_page（C1）/ voice_page（S5）/ storyboard_page（C2）/ export_page / cockpit_page（驾驶舱）/ projects_page / jobs
@@ -102,6 +102,10 @@ python entrypoints/compose_part.py --id <项目目录名>            # 章合成
 python entrypoints/export_final.py --id <项目目录名>            # 成片导出（需所有章已合成）
 python entrypoints/run_pipeline.py --id <项目目录名> --gear G0      # 一键流水线：挡位 G0 在检查点停下等待确认
 python entrypoints/run_pipeline.py --id <项目目录名> --gear G2 --max-images 200 --max-minutes 60  # 全自动（必须设预算）
+python entrypoints/batch_run.py --status                 # 批量队列：查看状态（不运行）
+python entrypoints/batch_run.py                          # 批量队列：前台运行直到处理完（Ctrl+C 中断）
+python entrypoints/batch_run.py --requeue               # 运行前重排失败/停止/等待中的条目（或 --requeue q0003 只重排一篇）
+python entrypoints/batch_run.py --report                # 只重写 _queue/report.md 与 report.json
 python entrypoints/health.py
 python -m pytest -q
 A2V_REAL_TTS=1 python -m pytest -q tests/test_p3_real_edge.py  # 真实 edge-tts 冒烟（需网络）
@@ -176,6 +180,15 @@ A2V_REAL_TTS=1 python -m pytest -q tests/test_p3_real_edge.py  # 真实 edge-tts
 - **渲染清单** `parts/<章>/visuals/manifest.json`：P5 合成的唯一输入。每个场景记录时间段、底图与各状态图层及出现时刻（来自时间轴）。场景缓存键 = 场景内容 + 主题 + 风格锚 + 画幅 + 渲染版本。
 - **画幅**：横屏 1920×1080（1080P）/ 1280×720（720P），竖屏 1080×1920 / 720×1280。字号按短边比例缩放。
 - **字体**：中文字体优先读取环境变量 `ARTICLE_TO_VIDEO_FONT`，其次系统字体候选；找不到时报错，绝不画成方框。
+
+## R23 已确定的规则（批量队列）
+
+- **挡位**：批量队列默认 G3（完全无人值守，无预算上限）；队列只在用户点击「开始」或运行命令行入口时才运行。
+- **队列位置**：`<项目集合根目录>/_queue/`（`queue.json`、`sources/`、`logs/job.jsonl`、`report.json`、`report.md`）。以下划线开头的目录不会出现在项目列表中。
+- **同一时间只有一个运行者**：界面与命令行共用运行者锁；已有运行者时，命令行入口退出码 3，不重复启动。
+- **报告**：每次运行结束（包括中断）写入 `report.json` 与 `report.md`，内容为每篇的状态、重试次数、墙钟耗时、生图次数、成片路径（相对于项目集合根目录）与未完成原因。报告写失败只忽略，不影响队列。
+- **停止**：界面的停止按钮只在界面进程内立即中断；命令行运行时用 Ctrl+C 中断，当前篇记为「已停止」，可再次运行继续。
+- **不登记定时任务**：`project.yaml` 不把批量入口列为 entrypoint，批量运行只由人手动触发。
 
 ## P7 已确定的规则
 

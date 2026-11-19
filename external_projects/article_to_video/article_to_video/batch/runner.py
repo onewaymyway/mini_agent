@@ -9,6 +9,7 @@
     waiting / budget_exceeded / stopped 不重试，直接记录后继续下一篇。
   * 停止：stop.flag（跨进程）+ 对当前项目 cancel.request；当前条目标为 stopped，其余保持排队，可再次开始。
   * 同一时间只允许一个运行者（runner.lock，带心跳）；异常退出遗留的 running 在下次启动时改回排队。
+  * 每次运行结束（包括被中断）写 _queue/report.json 与 report.md（第三期）。
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from typing import Any, Callable, Dict, Optional
 from .. import cancel, joblog
 from ..importer import ArticleImportError, import_article
 from ..pipeline.run import default_providers, run_pipeline
-from . import store
+from . import report, store
 
 SCOPE = "queue"
 HEARTBEAT_SEC = 15.0
@@ -199,6 +200,7 @@ def run_queue(root: Path, *, pipeline_runner: Optional[PipelineRunner] = None,
             _log(root, f"队列运行结束：{reason}（本次处理 {processed} 篇）", "info")
     finally:
         store.release_runner(root)
+        report.write_report_quietly(root)       # 先放开运行者锁再写报告，报告里的“运行中”才准确；失败不影响队列
     return {"started": True, "processed": processed, **store.summary(root)}
 
 
