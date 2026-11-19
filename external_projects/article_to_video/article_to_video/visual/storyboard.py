@@ -30,6 +30,11 @@ def _sb_path(pdir: Path, part_id: str) -> Path:
     return Path(pdir) / "parts" / part_id / "storyboard.json"
 
 
+def _cache_dir(pdir: Path, part_id: str) -> Path:
+    """模型版分镜的策划与窗口缓存（随分镜整体重置）。"""
+    return Path(pdir) / "parts" / part_id / "director_cache"
+
+
 def _blocks(pdir: Path) -> list:
     return read_json(Path(pdir) / "source" / "blocks.json")["blocks"]
 
@@ -132,7 +137,8 @@ def plan_storyboard(pdir: Path, part_id: str, *, force: bool = False, now: Optio
     if engine == "llm":
         sb = direct_part_llm(script, _blocks(pdir), part=part, chapter=chapter, allowance=allowance,
                              shots_per_image=shots, llm=llm, images_enabled=cfg["images"]["enabled"],
-                             style_anchor=cfg["bible"]["style_anchor"])
+                             style_anchor=cfg["bible"]["style_anchor"],
+                             cache_dir=_cache_dir(pdir, part_id), force=force)
     else:
         sb = direct_part(script, _blocks(pdir), chapter=chapter, allowance=allowance, shots_per_image=shots)
     sb["input_sha"] = sha
@@ -266,7 +272,7 @@ def plan_all_storyboards(pdir: Path, *, force: bool = False, engine: str = "rule
             continue
         joblog.bound_log(f"{pid}：开始生成分镜（{title}）")
         try:
-            sb = plan_storyboard(pdir, pid, force=True, now=now, engine=engine, llm=llm)
+            sb = plan_storyboard(pdir, pid, force=force, now=now, engine=engine, llm=llm)
         except PlanError as exc:
             joblog.bound_log(f"{pid}：分镜生成失败：{exc}", level="error")
             results.append({"part": pid, "title": title, "action": "failed", "reason": str(exc)})

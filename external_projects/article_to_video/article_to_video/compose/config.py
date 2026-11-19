@@ -16,7 +16,7 @@ FPS = 25
 
 
 def default_compose() -> Dict[str, Any]:
-    return {"transition": "fade", "transition_sec": 0.6, "subtitles": "auto",
+    return {"transition": "fade", "transition_sec": 0.6, "subtitles": "always",
             "progress_bar": True, "chapter_label": True}
 
 

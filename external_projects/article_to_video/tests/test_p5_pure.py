@@ -86,7 +86,7 @@ def test_subtitle_image_has_box_and_emphasis_colour():
 
 def test_compose_settings_are_normalized():
     cfg, warn = normalize_compose({"transition": "wipe", "subtitles": "maybe", "transition_sec": 99})
-    assert cfg["transition"] == "fade" and cfg["subtitles"] == "auto"
+    assert cfg["transition"] == "fade" and cfg["subtitles"] == "always"
     assert cfg["transition_sec"] == 2.0 and cfg["fps"] == 25
     assert len(warn) == 2
 

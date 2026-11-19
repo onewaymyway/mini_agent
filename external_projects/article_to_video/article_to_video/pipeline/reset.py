@@ -13,7 +13,7 @@ ORDER = ("script", "voice", "storyboard", "render", "compose")
 _PATHS = {
     "script": ["script.json", "raw_last.txt"],
     "voice": ["audio", "timeline.json"],
-    "storyboard": ["storyboard.json"],
+    "storyboard": ["storyboard.json", "director_cache"],
     "render": ["visuals"],
     "compose": ["video"],
 }

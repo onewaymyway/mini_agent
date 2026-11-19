@@ -10,13 +10,56 @@ from typing import Any, Dict, List
 from ..visual.config import FORBIDDEN_WORDS
 from ..visual.director import (MAX_DIAGRAM_NODES, MAX_KEYPOINT_ITEMS, MAX_LIST_ITEMS,
                                MAX_TABLE_COLS, MAX_TABLE_ROWS, TEXT_LIMIT)
-from ..visual.states import SCENE_TYPES, expected_state_count
+from ..visual.shots import reveal_in_range, shot_range
+from ..visual.states import SCENE_TYPES
 
-MAX_RUN = 3          # 相邻三个 beat 不得同一场景类型
+MAX_RUN = 3          # 同一画面类型连续超过此数量给出警告
 MAX_PROMPT_CHARS = 300
 
 _STRUCT_TO_TYPES = {"chain": ("diagram",), "table": ("table",), "math": ("formula",),
                     "list": ("list", "timeline")}
+
+
+def _partition_errors(scenes: List[Dict[str, Any]], beats: List[Dict[str, Any]]) -> List[str]:
+    """镜头必须按段落顺序、在每段内连续覆盖全部句子（不遗漏、不重叠）。
+
+    没有 sentences 字段的场景（规则版）覆盖整段，因此每段只能有一个这样的场景。
+    """
+    out: List[str] = []
+    known = {b["id"] for b in beats}
+    by_beat: Dict[str, List[Dict[str, Any]]] = {}
+    for s in scenes:
+        by_beat.setdefault(s.get("beat"), []).append(s)
+    for bid in by_beat:
+        if bid not in known:
+            out.append(f"分镜中的段落 {bid} 不在口播稿中")
+    for b in beats:
+        bid = b["id"]
+        n = len(b["sentences"])
+        group = by_beat.get(bid, [])
+        if not group:
+            out.append(f"{bid}：没有镜头覆盖本段")
+            continue
+        if len(group) > 1 and any(not s.get("sentences") for s in group):
+            out.append(f"{bid}：一段内有多个镜头，但镜头没有标明句子范围")
+            continue
+        pos = 0
+        for s in group:
+            a, c = shot_range(s, n)
+            if a != pos:
+                out.append(f"{bid}：镜头 {s.get('id')} 从第 {a + 1} 句开始，应从第 {pos + 1} 句开始（遗漏或重叠）")
+                break
+            if c < a:
+                out.append(f"{bid}：镜头 {s.get('id')} 的句子范围倒置")
+                break
+            pos = c + 1
+        else:
+            if pos != n:
+                out.append(f"{bid}：镜头只覆盖到第 {pos} 句，本段共 {n} 句（末尾句子未被覆盖）")
+    expected = [b["id"] for b in beats for _ in by_beat.get(b["id"], [])]
+    if [s.get("beat") for s in scenes] != expected:
+        out.append("分镜镜头的顺序与口播稿段落顺序不一致")
+    return out
 
 
 def validate_storyboard(sb: Dict[str, Any], script: Dict[str, Any], *, allowance: int,
@@ -27,9 +70,8 @@ def validate_storyboard(sb: Dict[str, Any], script: Dict[str, Any], *, allowance
     beats = script["beats"]
     scenes = sb.get("scenes") or []
 
-    # 每个 beat 恰好一个场景，顺序一致
-    if [s.get("beat") for s in scenes] != [b["id"] for b in beats]:
-        errors.append("分镜场景与口播稿的段落不一一对应（缺少、多余或顺序不符）")
+    # 镜头覆盖：每段内连续覆盖全部句子，段落顺序一致
+    errors += _partition_errors(scenes, beats)
 
     for sc in scenes:
         sid = sc.get("id", "?")
@@ -77,24 +119,16 @@ def validate_storyboard(sb: Dict[str, Any], script: Dict[str, Any], *, allowance
 
         beat = next((b for b in beats if b["id"] == sc.get("beat")), None)
         if beat is not None:
-            n_sent = len(beat["sentences"])
-            reveal = sc.get("reveal") or []
-            if len(reveal) != expected_state_count(sc):
-                errors.append(f"{sid}：逐步出现的状态数与条目不一致，请保存以重算")
-            prev = -1
-            for r in reveal:
-                k = r.get("at_sentence")
-                if not isinstance(k, int) or k < 0 or k >= n_sent or k < prev:
-                    errors.append(f"{sid}：逐步出现的句序号无效（需在本段句子范围内且不倒退）")
-                    break
-                prev = k
+            a, c = shot_range(sc, len(beat["sentences"]))
+            if not reveal_in_range(sc, a, c):
+                errors.append(f"{sid}：逐步出现的状态数、句序号或镜头句子范围不一致（需在镜头句子范围内且不倒退），请保存以重算")
 
-    # V4：连续三个同类型
-    for i in range(MAX_RUN - 1, len(scenes)):
-        window = [s.get("type") for s in scenes[i - MAX_RUN + 1:i + 1]]
-        if len(set(window)) == 1:
-            errors.append(f"{scenes[i].get('id')}：相邻 {MAX_RUN} 段为同一画面类型「{window[0]}」，请调整")
-            break
+    # V4：同一画面类型连续超过 MAX_RUN 个镜头为警告（计划 4.5）
+    run = 1
+    for i in range(1, len(scenes)):
+        run = run + 1 if scenes[i].get("type") == scenes[i - 1].get("type") else 1
+        if run == MAX_RUN + 1:
+            warnings.append(f"{scenes[i].get('id')}：连续 {run} 个镜头为同一画面类型「{scenes[i].get('type')}」，建议调整")
 
     # V5：需要生成的图片数（按组计）不超过本章额度；每组镜头数不超过每图上限，且只有一张主图
     groups: Dict[str, List[Dict[str, Any]]] = {}

@@ -69,10 +69,12 @@ def _verdict(scenes, n_beats, **kw):
     return validate_storyboard(_sb(scenes), _script(n_beats), **kw)
 
 
-def test_v4_rejects_three_same_types_in_a_row():
-    scenes = [_good_scene(i, "keypoint") for i in (1, 2, 3)]
-    v = _verdict(scenes, 3)
-    assert any("相邻" in e for e in v["errors"])
+def test_v4_allows_three_same_types_in_a_row_and_warns_beyond_that():
+    """计划 4.5：同一类型连续超过 3 个为警告（不阻止确认）。"""
+    three = _verdict([_good_scene(i, "keypoint") for i in (1, 2, 3)], 3)
+    assert three["errors"] == [] and not any("连续" in w for w in three["warnings"])
+    four = _verdict([_good_scene(i, "keypoint") for i in (1, 2, 3, 4)], 4)
+    assert four["errors"] == [] and any("连续 4 个" in w for w in four["warnings"])
 
 
 def test_v4_rejects_overlong_item_and_too_many_items():

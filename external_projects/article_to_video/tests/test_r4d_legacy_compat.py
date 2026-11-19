@@ -53,9 +53,9 @@ def test_global_change_does_not_touch_legacy_overrides(tmp_path, monkeypatch):
 def test_restore_to_global_follows_global_again(tmp_path, monkeypatch):
     monkeypatch.setenv("ARTICLE_TO_VIDEO_HOME", str(tmp_path))
     pdir = _legacy_project(tmp_path)
-    S.save_global_group("compose", {"subtitles": "always"})
+    S.save_global_group("compose", {"subtitles": "off"})
     S.reset_field(pdir, "compose", "subtitles")
-    assert load_compose_config(pdir)["subtitles"] == "always"
+    assert load_compose_config(pdir)["subtitles"] == "off"
     assert S.source_of(pdir, "compose", "subtitles") == "全局"
     assert S.source_of(pdir, "compose", "transition") == "项目"  # 其它显式字段不受影响
 

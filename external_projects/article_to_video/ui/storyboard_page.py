@@ -54,7 +54,8 @@ def _scene_editor(pdir, part_id, sb, script) -> dict:
                 items = [x for x in items_text.splitlines() if x.strip()]
             emph = st.text_input("强调词（逗号分隔）", value="、".join(sc.get("emphasis") or []),
                                  key=f"emph_{key}")
-            new = {"id": sc["id"], "beat": sc["beat"], "type": kind, "refs": sc.get("refs", []),
+            new = {"id": sc["id"], "beat": sc["beat"], "type": kind, "kind": sc.get("kind"),
+                   "sentences": sc.get("sentences") or [], "refs": sc.get("refs", []),
                    "items": items,
                    "emphasis": [x.strip() for x in emph.replace(",", "、").split("、") if x.strip()],
                    "header": sc.get("header", []), "rows": sc.get("rows", []),

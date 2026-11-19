@@ -21,13 +21,14 @@ from ..script.writer import load_script
 from ..visual.config import load_visual_config
 from ..visual.images import ensure_illustration
 from ..visual.sharing import leader_subjects
+from ..visual.shots import shot_range
 from ..visual.storyboard import load_storyboard, storyboard_status
 from .fonts import FontError
 from .renderers import (render_background, render_chapter_card, render_illustration_background,
                         render_scene_frames)
 from .themes import canvas_size
 
-RENDER_VERSION = "p4-render-v2"
+RENDER_VERSION = "p4-render-v3"
 
 
 def _sentence_starts(timeline: Dict[str, Any]) -> Dict[str, Tuple[float, float, float]]:
@@ -35,12 +36,15 @@ def _sentence_starts(timeline: Dict[str, Any]) -> Dict[str, Tuple[float, float, 
     return {s["id"]: (s["start"], s["end"], s["gap_after"]) for s in timeline["sentences"]}
 
 
-def _beat_span(timeline_map, beat_id: str, sentences: int) -> Tuple[float, float]:
-    ids = [f"{beat_id}.s{i + 1:02d}" for i in range(sentences)]
-    present = [timeline_map[i] for i in ids if i in timeline_map]
-    if not present:
-        raise PlanError(f"时间轴中找不到段落 {beat_id}，请重新配音（P3）")
-    return present[0][0], present[-1][1] + present[-1][2]
+def _scene_span(timeline_map, sc: Dict[str, Any], sentences: int) -> Tuple[float, float]:
+    """镜头在时间轴上的起止：首句起点到末句终点（含句间停顿），按镜头的句子范围；旧场景覆盖整段。"""
+    a, b = shot_range(sc, sentences)
+    beat_id = sc["beat"]
+    first = f"{beat_id}.s{a + 1:02d}"
+    last = f"{beat_id}.s{b + 1:02d}"
+    if first not in timeline_map or last not in timeline_map:
+        raise PlanError(f"时间轴中找不到镜头 {sc.get('id')}（段落 {beat_id}），请重新配音（P3）")
+    return timeline_map[first][0], timeline_map[last][1] + timeline_map[last][2]
 
 
 def _scene_sha(scene: Dict[str, Any], cfg: Dict[str, Any], canvas, orientation: str,
@@ -144,7 +148,7 @@ def render_part(project_dir: Path, part_id: str, *, provider=None,
     out_scenes = []
     for sc in sb["scenes"]:
         cancel.check()
-        span_start, span_end = _beat_span(starts, sc["beat"], beat_sent[sc["beat"]])
+        span_start, span_end = _scene_span(starts, sc, beat_sent[sc["beat"]])
         img = sc.get("image") or {}
         gid = img.get("group") or sc["id"]
         group_subject = subjects.get(gid, "") if sc["type"] == "illustration" else ""

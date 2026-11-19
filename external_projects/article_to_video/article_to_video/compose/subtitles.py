@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 from ..render.fonts import load_font
 from ..render.text import draw_rich_line, wrap_text
 from ..render.themes import get_theme, unit_for
+from ..visual.shots import shot_range
 
 _PUNCT = re.compile(r"[\s，,。．.！!？?；;：:、“”\"'‘’（）()《》\-—…]")
 
@@ -26,10 +27,25 @@ def covered_by_card(sentence: str, scene: Optional[Dict[str, Any]]) -> bool:
     return bool(shown) and _norm(sentence) in shown
 
 
+def _scene_of_sentence(scenes_by_beat: Dict[str, List[Dict[str, Any]]], counts: Dict[str, int],
+                       sid: str) -> Optional[Dict[str, Any]]:
+    """句子所在的镜头（第一期起一段可有多个镜头，按句子范围查找）。"""
+    beat = sid.rsplit(".s", 1)[0]
+    idx = int(sid.rsplit(".s", 1)[1]) - 1
+    for sc in scenes_by_beat.get(beat, []):
+        a, b = shot_range(sc, counts.get(beat, 0))
+        if a <= idx <= b:
+            return sc
+    return None
+
+
 def subtitle_plan(timeline: Dict[str, Any], script: Dict[str, Any], storyboard: Dict[str, Any],
                   mode: str) -> List[Dict[str, Any]]:
     """每句一条：{id, start, end, text, emphasis, visible}。"""
-    scenes = {s["beat"]: s for s in storyboard["scenes"]}
+    scenes_by_beat: Dict[str, List[Dict[str, Any]]] = {}
+    for s in storyboard["scenes"]:
+        scenes_by_beat.setdefault(s["beat"], []).append(s)
+    counts = {b["id"]: len(b["sentences"]) for b in script["beats"]}
     texts = {}
     emph = {}
     for b in script["beats"]:
@@ -46,7 +62,7 @@ def subtitle_plan(timeline: Dict[str, Any], script: Dict[str, Any], storyboard: 
         elif mode == "always":
             visible = True
         else:
-            visible = not covered_by_card(text, scenes.get(item["beat"]))
+            visible = not covered_by_card(text, _scene_of_sentence(scenes_by_beat, counts, sid))
         out.append({"id": sid, "start": item["start"], "end": item["end"], "text": text,
                     "emphasis": emph.get(sid, []), "visible": visible})
     return out

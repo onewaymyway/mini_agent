@@ -1,5 +1,6 @@
 """P4 补充：一图多用的自动分配、模型版分镜（来源校验与重试）、分镜服务的引擎选择与重新分配。"""
 import json
+import re
 
 import pytest
 
@@ -111,53 +112,9 @@ def test_config_clamps_shots_per_image():
     assert cfg["images"]["shots_per_image"] == 2
 
 
-# ---------- 模型版分镜 ----------
+# ---------- 模型版分镜（第一期：章级策划 + 分窗落镜，见 helpers_shots.py） ----------
 
-class StoryLLM:
-    """responder(prompt, n) -> str；记录调用次数。"""
-
-    def __init__(self, responder):
-        self.responder = responder
-        self.calls = 0
-        self.prompts = []
-
-    def ask(self, prompt, system=""):
-        self.calls += 1
-        self.prompts.append(prompt)
-        return self.responder(prompt, self.calls)
-
-
-def _beats_from_prompt(prompt):
-    import re
-    return re.findall(r"^\[(P\d+\.b\d+)\]", prompt, flags=re.M)
-
-
-def _good_plan(prompt, _n=None):
-    """每段：金句段用 quote，其余用 keypoint；章中一个插图；条目只用本段口播中的字。"""
-    scenes = []
-    for k, bid in enumerate(_beats_from_prompt(prompt)):
-        block = prompt.split(f"[{bid}]", 1)[1].split("\n[", 1)[0]
-        texts = [line.strip()[2:].replace("（金句）", "") for line in block.splitlines() if line.strip().startswith("· ")]
-        first = texts[0][:20] if texts else "要点"
-        if "（金句）" in block:
-            scenes.append({"beat": bid, "type": "quote"})
-        elif "原文流程" in block:
-            scenes.append({"beat": bid, "type": "diagram"})
-        elif "原文公式" in block:
-            scenes.append({"beat": bid, "type": "formula", "formula_explanation": [first]})
-        elif "原文表格" in block:
-            scenes.append({"beat": bid, "type": "table"})
-        elif "原文列表" in block:
-            scenes.append({"beat": bid, "type": "list"})
-        elif k % 3 == 2 and "illustration" in block:
-            scenes.append({"beat": bid, "type": "illustration", "items": [first], "image_subject": "蒸汽与齿轮"})
-        else:
-            scenes.append({"beat": bid, "type": "keypoint", "items": [first]})
-    # 保证没有连续三段同类型：把第三个相同的改为 keypoint（仅 keypoint 可安全替换）
-    for i in range(2, len(scenes)):
-        if scenes[i]["type"] == scenes[i - 1]["type"] == scenes[i - 2]["type"] and scenes[i]["type"] != "keypoint":
-            scenes[i] = {"beat": scenes[i]["beat"], "type": "keypoint", "items": ["要点"]}
-    return json.dumps({"scenes": scenes}, ensure_ascii=False)
+from helpers_shots import ShotLLM, default_plan, default_shots, shot, shots_json  # noqa: E402
 
 
 @pytest.fixture
@@ -167,68 +124,87 @@ def ready(tmp_path, monkeypatch):
     return pdir, spine
 
 
-def _part(spine, pid):
-    return next(p for p in spine["parts"] if p["id"] == pid)
+def _errs(sb):
+    return sb["errors"]
 
 
-def test_llm_plan_builds_valid_storyboard_and_uses_source_structure(ready):
-    pdir, spine = ready
-    llm = StoryLLM(_good_plan)
+def test_llm_plan_builds_valid_storyboard_with_shot_structure(ready):
+    pdir, _ = ready
+    llm = ShotLLM()
     sb = sbm.plan_storyboard(pdir, "P01", engine="llm", llm=llm)
-    assert sb["engine"] == "llm" and sb["director"] == LLM_PROMPT_VERSION
-    assert sb["errors"] == []
-    table = next((s for s in sb["scenes"] if s["type"] == "table"), None)
-    if table:  # 表格内容必须来自原文
-        assert table["header"] and table["rows"]
+    assert sb["schema"] == 2 and sb["engine"] == "llm" and sb["director"] == LLM_PROMPT_VERSION
+    assert _errs(sb) == []
+    assert all(s.get("sentences") and s.get("kind") for s in sb["scenes"])
+    assert sb["plan"]["beats"] and sb["windows"]
+    assert llm.plan_calls == 1                              # 章级策划只调用一次
+    assert llm.calls == 1 + len(sb["windows"])              # 其余为分窗落镜
 
 
-def test_llm_structure_is_taken_from_source_not_model(ready):
-    pdir, spine = ready
-    def hallucinate(prompt, n):
-        data = json.loads(_good_plan(prompt, n))
-        for s in data["scenes"]:
-            if s["type"] == "keypoint":
-                s["items"] = ["编造的结构"]
-        return json.dumps(data, ensure_ascii=False)
-    sb = sbm.plan_storyboard(pdir, "P02", engine="llm", llm=StoryLLM(hallucinate))
-    diagrams = [s for s in sb["scenes"] if s["type"] == "diagram"]
-    for d in diagrams:
+def test_llm_structure_items_come_from_source_not_model(ready):
+    """模型只能选择 flow；节点必须来自原文，且必须在镜头句子中出现，否则改用卡片（不编造结构）。"""
+    pdir, _ = ready
+
+    def flow_when_mentioned(prompt, wid, n):
+        def special(bid, block):
+            m = re.search(r"原文流程：(.+)", block)
+            if not m:
+                return None
+            nodes = [x.strip() for x in m.group(1).split("→") if x.strip()]
+            sents = re.findall(r"^\s+\[" + re.escape(bid) + r"\.s\d+\] (.*)$", block, re.M)
+            text = "".join(sents)
+            kind = "flow" if all(n_ in text for n_ in nodes) else "keypoint"
+            if kind == "flow":
+                return [shot(f"{bid}.s01", f"{bid}.s{len(sents):02d}", "flow", items=["编造的结构"])]
+            return [shot(f"{bid}.s01", f"{bid}.s{len(sents):02d}", "keypoint", items=[sents[0][:20]])]
+        return shots_json(default_shots(prompt, special))
+
+    sb = sbm.plan_storyboard(pdir, "P02", engine="llm", llm=ShotLLM(win_fn=flow_when_mentioned))
+    assert _errs(sb) == []
+    for d in (s for s in sb["scenes"] if s["type"] == "diagram"):
         assert "编造的结构" not in d["items"] and len(d["items"]) >= 2
 
 
-def test_llm_items_with_numbers_not_in_source_are_rejected_then_retried(ready):
+def test_llm_items_with_numbers_not_in_source_retry_only_that_window(ready):
     pdir, _ = ready
-    def first_bad(prompt, n):
-        data = json.loads(_good_plan(prompt, n))
-        if n == 1:
-            for s in data["scenes"]:
-                if s["type"] == "keypoint":
-                    s["items"] = ["增长了 999 倍"]
-                    break
-        return json.dumps(data, ensure_ascii=False)
-    llm = StoryLLM(first_bad)
+
+    def first_bad(prompt, wid, n):
+        if wid == "W01" and n == 1:
+            def special(bid, block):
+                if bid != "P01.b01":
+                    return None
+                last = re.findall(r"\[(P01\.b01\.s\d+)\]", block)[-1]
+                return [shot("P01.b01.s01", last, "keypoint", items=["增长了 999 倍"])]
+            return shots_json(default_shots(prompt, special))
+        return shots_json(default_shots(prompt))
+
+    llm = ShotLLM(win_fn=first_bad)
     sb = sbm.plan_storyboard(pdir, "P01", engine="llm", llm=llm)
-    assert llm.calls == 2 and sb["errors"] == []
-    assert "999" in llm.prompts[1]          # 第二次提示词带上了问题清单
+    assert _errs(sb) == []
+    counts = {w: llm.win_calls.count(w) for w in set(llm.win_calls)}
+    assert counts["W01"] == 2 and all(v == 1 for w, v in counts.items() if w != "W01")  # 只重做出错的窗口
+    second = llm.window_prompts("W01")[1]
+    assert "999" in second                          # 第二次提示词带上了问题清单
 
 
-def test_llm_persistent_failure_raises_and_writes_nothing(ready):
+def test_llm_persistent_plan_failure_raises_and_writes_nothing(ready):
     pdir, _ = ready
-    llm = StoryLLM(lambda prompt, n: "这不是 JSON")
+    llm = ShotLLM(plan_fn=lambda p, n=None: "这不是 JSON")
     with pytest.raises(PlanError) as err:
         sbm.plan_storyboard(pdir, "P01", engine="llm", llm=llm)
-    assert llm.calls == 3 and err.value.raw == "这不是 JSON"
+    assert llm.plan_calls == 3 and err.value.raw == "这不是 JSON"
     assert sbm.load_storyboard(pdir, "P01") is None
 
 
-def test_llm_missing_beat_is_reported(ready):
+def test_llm_plan_missing_beat_is_reported(ready):
     pdir, _ = ready
-    def drop_first(prompt, n):
-        data = json.loads(_good_plan(prompt, n))
-        data["scenes"] = data["scenes"][1:]
+
+    def drop_first(prompt, n=None):
+        data = json.loads(default_plan(prompt))
+        data["beats"] = data["beats"][1:]
         return json.dumps(data, ensure_ascii=False)
+
     with pytest.raises(PlanError, match="缺少段落"):
-        sbm.plan_storyboard(pdir, "P01", engine="llm", llm=StoryLLM(drop_first))
+        sbm.plan_storyboard(pdir, "P01", engine="llm", llm=ShotLLM(plan_fn=drop_first))
 
 
 def test_llm_engine_requires_model_object(ready):
@@ -241,7 +217,7 @@ def test_llm_engine_requires_model_object(ready):
 
 def test_llm_storyboard_stales_when_engine_recorded_differs(ready):
     pdir, _ = ready
-    sbm.plan_storyboard(pdir, "P01", engine="llm", llm=StoryLLM(_good_plan))
+    sbm.plan_storyboard(pdir, "P01", engine="llm", llm=ShotLLM())
     sb = sbm.load_storyboard(pdir, "P01")
     assert sbm.storyboard_status(pdir, "P01")["stale"] is False
     sb["engine"] = "rules"  # 模拟记录的引擎与指纹不符
@@ -249,17 +225,16 @@ def test_llm_storyboard_stales_when_engine_recorded_differs(ready):
     assert sbm.storyboard_status(pdir, "P01")["stale"] is True
 
 
-def test_beat_context_only_offers_types_the_source_supports(ready):
-    pdir, spine = ready
-    script = sbm.load_script(pdir, "P02") if hasattr(sbm, "load_script") else None
+def test_beat_context_only_offers_kinds_the_source_supports(ready):
+    pdir, _ = ready
     from article_to_video.script.writer import load_script
     from article_to_video.visual.storyboard import _blocks
     script = load_script(pdir, "P02")
     blocks = _blocks(pdir)
     for beat in script["beats"]:
         ctx = beat_context(beat, blocks)
-        assert "keypoint" in ctx["allowed"] and "illustration" in ctx["allowed"]
-        if "diagram" in ctx["allowed"]:
+        assert "keypoint" in ctx["allowed"] and "illustration" in ctx["allowed"] and "hold" in ctx["allowed"]
+        if "flow" in ctx["allowed"]:
             assert any("原文流程" in n for n in ctx["notes"])
 
 
