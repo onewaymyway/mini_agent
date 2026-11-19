@@ -531,3 +531,22 @@ client.py`）✅已完成
   都是纯文件读写 + YAML 解析，没有 subprocess 调用，耗时可忽略，
   不需要同样加 spinner——只有「▶️ 触发」这一个按钮背后是真正的
   外部子进程执行，属于文档标题里"异步型按钮"的唯一实例。
+
+---
+
+## 追加（2026-11-19）：外部项目状态读超时与健康探测并行
+
+**现象**：看板「外部项目」报「获取外部项目状态失败：…port=8765… Read timed out. (read timeout=6)」。
+
+**原因**：`GET /v1/self/external_projects` 要对每个声明了 `health_check` 的项目 fork 子进程探测（冷启动 1～5 秒），`aggregate_status` 原先**逐项目串行**，总耗时 = 各项目之和；探测缓存（TTL 60 秒）过期后第一次打开页面，三四个项目就会超过客户端默认的 6 秒读超时。服务端自身的上限是 30 秒（`run_blocking`），客户端却只等 6 秒。
+
+**改动**：
+- `apps/mini_agent_kanban/client.py`：`external_projects_status` 读超时改为 30 秒（常量 `EXTERNAL_PROJECTS_STATUS_TIMEOUT_SEC`，与服务端对齐），并改为读超时不重试（`retry=False`）。原默认会重试 2 次，一次慢请求最多卡 3 个超时预算，且服务端会把同一份慢计算重复跑；成长顾问 tab 已是同一做法。
+- `src/mini_agent/external_projects/status.py`：新增 `_prewarm_health`，聚合前并行探测所有需要探测的项目（最多 8 个线程）并写入 TTL 缓存，之后的聚合循环命中缓存；总耗时从「各项目之和」降到「最慢的那一个」。缓存仍有效的项目不探测；`use_cache=False` 时强制探测一次且不重复探测；预热出错不影响聚合（仍按原逻辑逐项目容错）。返回顺序与结构不变。
+
+**验收**：`tests/test_external_projects_status_parallel.py`（4 项）：4 个各需 0.8 秒的探测并行完成且顺序不变；第二次调用命中缓存；强制刷新每个项目只探测一次；客户端超时为 30 秒且不重试读超时。相关既有测试（账本与状态、API 路由、看板 entrypoints 刷新）共 89 项通过。
+
+**未做 / 可选的后续优化**：
+- 探测缓存过期后的那一次请求仍要等探测完成。可改为「过期即返回旧结果，后台刷新」（stale-while-revalidate），页面基本零等待，代价是健康状态最多滞后一个 TTL。
+- 看板每次 Streamlit 重跑都会重新请求该端点；可在 `session_state` 做几秒的短缓存，但需在所有改变项目状态的操作（开关自动调度、更新 entrypoints、触发运行）后主动失效，改动面较大，暂不做。
+- 也可改用 `_fetch_*_async`（后台线程 + 轮询）模式，慢请求不阻塞整页。

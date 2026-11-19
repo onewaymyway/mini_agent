@@ -79,6 +79,7 @@ def _build_http_session_no_read_retry() -> requests.Session:
 _HTTP = _build_http_session()
 # 读超时 / 5xx 不重试的 GET 专用 Session（成长顾问 tab 渲染路径）。
 _HTTP_NO_READ_RETRY = _build_http_session_no_read_retry()
+EXTERNAL_PROJECTS_STATUS_TIMEOUT_SEC = 30
 # 供"异步"版本方法（*_async）使用：把实际的阻塞 HTTP 调用丢到后台线程，
 # 调用方立刻拿到一个 concurrent.futures.Future，不必在当前这次 Streamlit
 # 脚本执行里干等 6 秒的 socket 读超时——配合 UI 层的轮询（见
@@ -1428,7 +1429,10 @@ class AgentClient:
     # ── 看板：外部项目管理接入（external_projects_kanban_integration_plan.md）──
     def external_projects_status(self):
         """已注册外部项目的聚合状态（健康 + 最近5条执行记录）。"""
-        return self._get("/self/external_projects")
+        # 聚合状态要对每个项目做健康探测（fork 子进程，缓存失效后单个可达数秒），
+        # 6s 默认超时不够用：读超时放宽到 30s（与服务端 run_blocking 的 30s 对齐）；
+        # 读超时不重试，避免服务端把同一份慢计算重复跑（与成长顾问 tab 同一做法）。
+        return self._get("/self/external_projects", timeout=EXTERNAL_PROJECTS_STATUS_TIMEOUT_SEC, retry=False)
 
     # ── 看板：调研/产出类项目一览（output_projects_intro_and_kanban_plan.md）──
     def output_projects(self):

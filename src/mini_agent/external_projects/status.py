@@ -150,6 +150,43 @@ def project_status_snapshot(
     )
 
 
+def _prewarm_health(registry: ExternalProjectRegistry, *, force: bool) -> None:
+    """并行探测所有声明了 health_check 的项目，结果写入 TTL 缓存。
+
+    原来 aggregate_status 逐项目串行探测，总耗时 = 各项目探测之和（缓存失效后
+    每个 1~5s，三四个项目就超过看板 6s 超时）；探测本质是等子进程，并行后总耗时
+    ≈ 最慢的那一个。之后的串行聚合循环直接命中缓存。任何异常都吞掉：预热只是
+    优化，聚合循环里仍会按原逻辑处理（并把单项目错误记入该项目的结果）。
+    """
+    manifests = []
+    for r in registry.list():
+        try:
+            m = registry.load_manifest_for(r.name)
+        except Exception:  # noqa: BLE001
+            continue
+        if m.health_check is None:
+            continue
+        key = (m.name, m.health_check.cmd)
+        cached = _health_cache.get(key)
+        if not force and cached is not None and (time.monotonic() - cached[0]) < _HEALTH_CACHE_TTL_SEC:
+            continue  # 缓存仍有效，无需探测
+        manifests.append(m)
+    if len(manifests) < 2 and not force:
+        return  # 只有 0/1 个要探测时并行没有收益，交给后面的循环
+    if not manifests:
+        return
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=min(8, len(manifests)), thread_name_prefix="health-probe") as pool:
+        list(pool.map(lambda m: _safe_probe(m, force), manifests))
+
+
+def _safe_probe(manifest: ProjectManifest, force: bool) -> None:
+    try:
+        probe_health(manifest, use_cache=not force)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def aggregate_status(
     registry: ExternalProjectRegistry, *, recent_runs_limit: int = 5, use_cache: bool = True
 ) -> List[dict]:
@@ -167,6 +204,13 @@ def aggregate_status(
     因为 CLI（`mini-agent projects status`）也直接同步调用它，没有事件
     循环可言。
     """
+    # 先并行探测写缓存；`use_cache=False`（用户要当下准确结果）时强制探测一次，
+    # 随后的循环改用缓存，避免同一项目被探测两次。
+    try:
+        _prewarm_health(registry, force=not use_cache)
+        use_cache = True
+    except Exception:  # noqa: BLE001
+        pass
     results: List[dict] = []
     for r in registry.list():
         try:
