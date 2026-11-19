@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from ..validators.fidelity import locate, norm_key, numbers_supported
 from .budget import count_chars, pacing_issue
+from .structure import beat_structure, missing_nodes, structure_warnings, visual_ref_hits
 
 _NUM = re.compile(r"\d+(?:\.\d+)?%?")
 _LATIN = re.compile(r"[A-Za-z][A-Za-z0-9]+")
@@ -32,9 +33,12 @@ def validate_script(
     *,
     check_pacing: bool = True,
     manual_quotes: Optional[List[str]] = None,
+    blocks: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """manual_quotes：大纲中人工加入、指定到本章的金句（R10）。它们不要求出现在原文中，
-    标记为金句的句子只要与其中之一内容相同即可。"""
+    标记为金句的句子只要与其中之一内容相同即可。
+    blocks：原文块（source/blocks.json）。给出时启用第二期检查：含结构段落不得依赖画面（句子级错误，可局部修正），
+    流程节点未提及与表格数字未提及作为警告。"""
     manual_keys = {norm_key(q) for q in (manual_quotes or []) if norm_key(q)}
     errors: List[str] = []
     warnings: List[str] = []
@@ -86,6 +90,15 @@ def validate_script(
                     flag(bid, si, "latin", f"{bid} 英文词“{w}”在本章原文中找不到")
             if s.get("quote") and locate(t, part_source_text) is None and norm_key(t) not in manual_keys:
                 flag(bid, si, "quote", f"{bid} 标记为原文金句，但不是原文逐字片段：{t[:24]}")
+        if blocks is not None:
+            if structure_issues_of_visual(b, blocks):
+                for si, word in visual_ref_hits(b):
+                    flag(bid, si, "visual_ref", f"{bid} 第 {si + 1} 句依赖画面（「{word}」），应改为用口语讲清楚")
+            for msg in structure_warnings(b, blocks):
+                warnings.append(msg)
+            miss = missing_nodes(b, beat_structure(b, blocks))
+            if miss:
+                warnings.append(f"{bid} 流程节点未在口播中提及：{'、'.join(miss[:6])}")
 
     uncovered = [sid for sid in part_section_ids if sid not in covered]
     if uncovered:
@@ -97,6 +110,11 @@ def validate_script(
     hard = len(flags) < len(errors)         # 存在不属于单句的错误（段落或结构问题）
     return {"errors": errors, "warnings": warnings, "pacing": pacing, "total_chars": total,
             "flags": flags, "hard": hard}
+
+
+def structure_issues_of_visual(beat: Dict[str, Any], blocks: List[Dict[str, Any]]) -> bool:
+    """本段是否含结构且有依赖画面的句子。"""
+    return bool(beat_structure(beat, blocks)["kinds"]) and bool(visual_ref_hits(beat))
 
 
 def canonicalize_quotes(script: Dict[str, Any], part_source_text: str) -> int:

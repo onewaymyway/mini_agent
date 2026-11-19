@@ -25,7 +25,7 @@ from .validate import canonicalize_quotes, validate_script
 
 MAX_ATTEMPTS = 3
 MAX_PART_CHARS = 12000
-PROMPT_VERSION = "s3-v1"
+PROMPT_VERSION = "s3-v2"   # v2（第二期）：含结构段落口语化、禁止依赖画面的说法
 PACE_VALUES = ("normal", "slow", "fast")
 
 SCRIPT_SYSTEM = (
@@ -58,6 +58,12 @@ def _part_source(project_dir: Path, section_ids: List[str]) -> str:
         if b["section"] in wanted:
             chunks.append("\n".join(lines[b["line_start"] - 1:b["line_end"]]))
     return "\n".join(chunks)
+
+
+def load_blocks(project_dir: Path) -> List[Dict[str, Any]]:
+    """原文块（source/blocks.json）；没有导入记录时返回空列表（校验时跳过结构检查）。"""
+    p = Path(project_dir) / "source" / "blocks.json"
+    return read_json(p)["blocks"] if p.is_file() else []
 
 
 def _part_index(spine: Dict[str, Any], part_id: str) -> int:
@@ -102,7 +108,9 @@ def build_prompt(part: Dict[str, Any], source: str, *, persona: str, budget_char
         "2. 数字、年份、英文词必须来自本章原文，不得新增。\n"
         "3. 标记 quote=true 的句子必须是原文逐字片段，用于金句与引文。\n"
         "4. 不要 Markdown 符号，不要公式符号。\n"
-        "5. 开场第一个 beat 用 hook（抛问题或反差）；结尾用 summary 回扣。\n\n"
+        "5. 开场第一个 beat 用 hook（抛问题或反差）；结尾用 summary 回扣。\n"
+        "6. 含表格、流程、公式或数据对比的段落：用口语讲清关键数字、节点与先后顺序（如“先是……，接着……，最后……”）；"
+        "不得写“如图所示”“见下图”“上面的流程图”等依赖画面的说法，听众不看画面也要能听懂。\n\n"
         "【本章原文】\n" + source
     )
     return body + (_retry_hint(issues) if issues else "")
@@ -200,6 +208,7 @@ def write_part(project_dir: Path, part_id: str, llm, *, force: bool = False,
         json.dumps(must_quotes_for(spine, part["id"]), ensure_ascii=False),
         json.dumps(lexicon, ensure_ascii=False, sort_keys=True), prev_tail, mode,
     ]).encode("utf-8")).hexdigest()
+    blocks = load_blocks(project_dir)
     existing = _load_script(project_dir, part_id)
     if existing and existing.get("input_sha") == sha and not force:
         joblog.bound_log(f"{part_id}：输入未变，复用已有口播稿")
@@ -231,7 +240,7 @@ def write_part(project_dir: Path, part_id: str, llm, *, force: bool = False,
 
         def _check(sc):
             return validate_script(sc, source, part["section_ids"], check_pacing=(mode == "condensed"),
-                                   manual_quotes=must_quotes_for(spine, part["id"]))
+                                   manual_quotes=must_quotes_for(spine, part["id"]), blocks=blocks)
 
         verdict = _check(script)
         rounds = 0
@@ -314,7 +323,7 @@ def save_script(project_dir: Path, part_id: str, script: Dict[str, Any],
     canonicalize_quotes(script, source)                     # R9：人工编辑的金句同样对齐原文
     verdict = validate_script(script, source, part["section_ids"],
                               check_pacing=project.get("settings", {}).get("mode") == "condensed",
-                              manual_quotes=must_quotes_for(spine, part["id"]))
+                              manual_quotes=must_quotes_for(spine, part["id"]), blocks=load_blocks(project_dir))
     if verdict["errors"]:
         raise PlanError("口播稿不合格：" + "；".join(verdict["errors"][:8]))
     old = _load_script(project_dir, part_id)
@@ -336,7 +345,7 @@ def confirm_script(project_dir: Path, part_id: str, now: Optional[datetime] = No
     spine = load_spine(project_dir)
     part = spine["parts"][_part_index(spine, part_id)]
     verdict = validate_script(script, _part_source(project_dir, part["section_ids"]),
-                              part["section_ids"], check_pacing=False)
+                              part["section_ids"], check_pacing=False, blocks=load_blocks(project_dir))
     if verdict["errors"]:
         raise PlanError("口播稿不合格，不能确认：" + "；".join(verdict["errors"][:6]))
     script["confirmed"] = True

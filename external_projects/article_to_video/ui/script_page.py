@@ -13,6 +13,7 @@ from article_to_video.providers.text import make_text_llm
 from article_to_video.script import writer as w
 from article_to_video.script.budget import chars_for_minutes
 from article_to_video.script.lexicon import load_lexicon, parse_lexicon_text, save_lexicon
+from article_to_video.script.restructure import refresh_structured_beats
 from ui import jobs
 from ui.reset_panel import render_reset_panel
 
@@ -91,6 +92,14 @@ def _script_body(pdir) -> None:
             w.write_part(p, pid, llm, force=True)   # 清空后逐章重写，不沿用旧稿
 
     render_reset_panel(pdir, stage="script", key="rst_script", busy=running, regenerate=_regen_script)
+
+    st.caption("第二期：含表格、流程、公式的段落，口播需用口语讲清关键数字与关系，不依赖画面。"
+               "下面的修订只重写有问题的段落（段落 ID 不变），被改写的章需重新确认。")
+    if st.button("🔧 修订含结构段落（只改有问题的段落）", disabled=running,
+                 help="已有口播稿中，含结构且依赖画面或漏提流程节点的段落会被逐段重写"):
+        jobs.start(pdir, "修订含结构段落",
+                   lambda: refresh_structured_beats(pdir, make_text_llm("miniagent", pdir=pdir)), scope="script")
+        st.rerun()
 
     with st.expander("发音词典（只影响配音，字幕显示原写法）"):
         cur = load_lexicon(pdir)
