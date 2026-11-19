@@ -17,6 +17,7 @@ from ..script.writer import load_script
 from ..validators.compose import check_video
 from ..visual.storyboard import load_storyboard
 from .audio_track import build_part_audio
+from ..audio.config import CHAPTER_CARD_MIN_SEC
 from .config import FPS, load_compose_config
 from .ffrun import ComposeError, ffmpeg, probe
 from .segments import build_segments
@@ -51,6 +52,12 @@ def compose_part(pdir: Path, part_id: str, *, now: Optional[datetime] = None) ->
     timeline = load_timeline(pdir, part_id)
     if timeline is None:
         raise ComposeError(f"{part_id} 还没有时间轴（P3）")
+    hold = float(timeline.get("lead_in_sec", 0.0))
+    if hold < CHAPTER_CARD_MIN_SEC - 1e-6:
+        raise ComposeError(f"{part_id} 的章封面停留只有 {hold:.1f} 秒（至少 {CHAPTER_CARD_MIN_SEC:.0f} 秒），"
+                           "请先重新配音，再重新渲染画面")
+    if abs(float(manifest.get("chapter", {}).get("end", -1)) - hold) > 1e-3:
+        raise ComposeError(f"{part_id} 的画面与时间轴的章封面时长不一致，请重新渲染画面")
     script = load_script(pdir, part_id)
     from ..app_settings import load_effective_project  # 延迟导入
     video = load_effective_project(pdir)["settings"].get("video", {})

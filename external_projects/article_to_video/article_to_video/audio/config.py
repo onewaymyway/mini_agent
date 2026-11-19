@@ -15,9 +15,11 @@ DEFAULT_TTS = {
     "use_system_proxy": False,   # 保守默认：不读取系统代理（R13）
     "max_quotes_per_part": 2,
     "lead_in_sec": 0.5,
+    "chapter_card_sec": 3.5,     # 章封面停留时长（至少 3 秒）；旁白在封面结束后开始
     "tail_sec": 0.5,
     "sentence_gap_sec": 0.15,
 }
+CHAPTER_CARD_MIN_SEC = 3.0   # 章封面至少停留 3 秒，否则一闪而过
 PACE_RATE = {"slow": "-10%", "normal": "+0%", "fast": "+10%"}
 HOOK_BOOST = "+5%"
 
@@ -39,6 +41,7 @@ def normalize_tts(raw: Dict[str, Any] | None) -> Tuple[Dict[str, Any], List[str]
     out["engine_chain"] = chain
     out["max_quotes_per_part"] = max(0, min(10, int(out["max_quotes_per_part"])))
     out["lead_in_sec"] = max(0.0, min(3.0, float(out["lead_in_sec"])))
+    out["chapter_card_sec"] = max(CHAPTER_CARD_MIN_SEC, min(10.0, float(out["chapter_card_sec"])))
     out["tail_sec"] = max(0.0, min(3.0, float(out["tail_sec"])))
     out["sentence_gap_sec"] = max(0.0, min(2.0, float(out["sentence_gap_sec"])))
     out["edge_proxy"] = (out["edge_proxy"] or None)

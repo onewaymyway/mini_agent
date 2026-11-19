@@ -18,7 +18,9 @@ def build_timeline(script: Dict[str, Any], durations: Dict[str, float], cfg: Dic
     quote_seen = 0
     items: List[Dict[str, Any]] = []
     warnings: List[str] = []
-    cursor = float(cfg["lead_in_sec"])
+    # 章首画面时长：章封面至少停留 chapter_card_sec，旁白从这之后开始（lead_in_sec 仍可更长，取较大者）
+    hold = max(float(cfg["lead_in_sec"]), float(cfg.get("chapter_card_sec", 0.0)))
+    cursor = hold
     for b in script["beats"]:
         n = len(b["sentences"])
         for i, s in enumerate(b["sentences"]):
@@ -47,7 +49,7 @@ def build_timeline(script: Dict[str, Any], durations: Dict[str, float], cfg: Dic
     return {
         "schema": 1,
         "part": script["part"],
-        "lead_in_sec": cfg["lead_in_sec"],
+        "lead_in_sec": round(hold, 3),          # 章封面停留时长（渲染清单的章首段结束时刻）
         "tail_sec": cfg["tail_sec"],
         "total_sec": total,
         "sentences": items,
