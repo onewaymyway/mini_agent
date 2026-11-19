@@ -106,6 +106,7 @@ def export_final(pdir: Path, *, part_ids: Optional[List[str]] = None, episode: O
 
     # ---- 1 序列：片头、各章、片尾 ----
     seq: List[Tuple[Path, float]] = []
+    holds: List[float] = []   # 每段开头封面的秒数（不淡入，直接显示）
     ep = episode or {}
     ep_total = int(ep.get("total") or 1)
     if credits.get("title_card"):
@@ -126,8 +127,10 @@ def export_final(pdir: Path, *, part_ids: Optional[List[str]] = None, episode: O
             make_still_clip(png, TITLE_SEC, clip, canvas)
             state["intro"] = key
         seq.append((clip, TITLE_SEC))
+        holds.append(TITLE_SEC)
     for pid in ids:
         seq.append((video_dir(pdir, pid) / "part.mp4", float(infos[pid]["duration"])))
+        holds.append(_cover_hold(pdir, pid))
     if credits.get("end_card"):
         lines = [(title, "title")]
         if author:
@@ -148,6 +151,7 @@ def export_final(pdir: Path, *, part_ids: Optional[List[str]] = None, episode: O
             make_still_clip(png, END_SEC, clip, canvas)
             state["outro"] = key
         seq.append((clip, END_SEC))
+        holds.append(END_SEC)
 
     durations = [d for _, d in seq]
     mode = cfg["transition"] if len(seq) > 1 else "cut"
@@ -164,9 +168,9 @@ def export_final(pdir: Path, *, part_ids: Optional[List[str]] = None, episode: O
     # ---- 2 拼接（指纹：序列文件、时长、转场） ----
     joined = work / "joined.mp4"
     jkey = fingerprint({"seq": [(str(p), p.stat().st_size, p.stat().st_mtime_ns, dur) for p, dur in seq],
-                        "mode": mode, "d": d})
+                        "mode": mode, "d": d, "holds": holds})
     if not _cached(state, "joined", jkey, joined):
-        join(seq, mode, d, joined, work / "concat.txt", [])
+        join(seq, mode, d, joined, work / "concat.txt", [], holds=holds)
         state["joined"] = jkey
 
     # ---- 3 主版本（下三分之一条、角标、BGM） ----
@@ -271,6 +275,13 @@ def export_final(pdir: Path, *, part_ids: Optional[List[str]] = None, episode: O
     raw["stage"] = "P6_exported"
     write_json_atomic(pdir / "project.json", raw)
     return report
+
+
+def _cover_hold(pdir: Path, part_id: str) -> float:
+    """章开头封面（章首画面）的秒数：来自时间轴 lead_in_sec；没有时间轴时为 0。"""
+    from ..audio.synth import load_timeline  # 延迟导入
+    tl = load_timeline(pdir, part_id)
+    return float(tl.get("lead_in_sec", 0.0)) if tl else 0.0
 
 
 def _kinds(credits: Dict[str, Any], ids: List[str]) -> List[str]:

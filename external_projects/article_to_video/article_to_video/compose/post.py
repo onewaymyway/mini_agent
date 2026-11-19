@@ -41,8 +41,12 @@ def make_still_clip(png: Path, seconds: float, out: Path, canvas) -> None:
 
 
 def join(seq: Sequence[Tuple[Path, float]], mode: str, d: float, out: Path, lst: Path,
-         meta: List[str]) -> None:
-    """按转场拼接。cut 流复制；fade 先逐段加黑场再流复制；dissolve 用 xfade 整体重编码。"""
+         meta: List[str], holds: Optional[Sequence[float]] = None) -> None:
+    """按转场拼接。cut 流复制；fade 先逐段加黑场再流复制；dissolve 用 xfade 整体重编码。
+
+    holds[i]：第 i 段开头是封面（片头卡、章封面、片尾卡）的秒数。封面不做淡入：这段从第一帧起直接显示，
+    只保留它结尾的淡出；否则别人预览时看到的会是黑屏。未给出或为 0 的段落保持原有的淡入淡出。
+    """
     paths = [p for p, _ in seq]
     durations = [dur for _, dur in seq]
     if mode == "cut" or len(seq) == 1:
@@ -53,9 +57,12 @@ def join(seq: Sequence[Tuple[Path, float]], mode: str, d: float, out: Path, lst:
         faded = []
         for i, (src, dur) in enumerate(seq):
             dst = lst.parent / f"fade_{i:02d}.mp4"
+            hold = float(holds[i]) if holds is not None and i < len(holds) else 0.0
+            vin = "" if hold > 0 else f"fade=t=in:st=0:d={d:.3f},"
+            ain = "" if hold > 0 else f"afade=t=in:st=0:d={d:.3f},"
             ffmpeg(["-i", str(src),
-                    "-vf", f"fade=t=in:st=0:d={d:.3f},fade=t=out:st={dur - d:.3f}:d={d:.3f}",
-                    "-af", f"afade=t=in:st=0:d={d:.3f},afade=t=out:st={dur - d:.3f}:d={d:.3f}"]
+                    "-vf", f"{vin}fade=t=out:st={dur - d:.3f}:d={d:.3f}",
+                    "-af", f"{ain}afade=t=out:st={dur - d:.3f}:d={d:.3f}"]
                    + ENC_V + ENC_A + [str(dst)])
             faded.append(dst)
         write_concat_list(faded, lst)
