@@ -56,8 +56,26 @@ def asset_file(project_dir: Path, no: int, sh: Dict[str, Any], mode: Optional[st
     return cdir / "clips" / f"{sh['id']}.mp4"
 
 
+# 分镜文件只读解析缓存：按 (路径, 修改时间, 大小) 失效；返回副本，调用方修改不会污染缓存。
+_SHOTS_CACHE: Dict[str, tuple] = {}
+
+
+def _load_shots_readonly(project_dir: Path, no: int) -> Dict[str, Any]:
+    import copy
+    path = chapter_dir(project_dir, no) / "shots.yaml"
+    if not path.is_file():
+        return {}
+    st = path.stat()
+    sig = (st.st_mtime_ns, st.st_size)
+    hit = _SHOTS_CACHE.get(str(path))
+    if hit is None or hit[0] != sig:
+        hit = (sig, load_shots(project_dir, no))
+        _SHOTS_CACHE[str(path)] = hit
+    return copy.deepcopy(hit[1])
+
+
 def shot_states(project_dir: Path, no: int) -> Dict[str, str]:
-    shots = load_shots(project_dir, no)
+    shots = _load_shots_readonly(project_dir, no)
     review = load_shot_review(project_dir, no)["items"]
     mode = project_mode(project_dir)
     key, err = _FIELDS[mode]

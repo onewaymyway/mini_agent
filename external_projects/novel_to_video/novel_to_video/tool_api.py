@@ -772,6 +772,14 @@ def cockpit_status(project_dir: str) -> Dict[str, Any]:
         return _fail(f"读取驾驶舱失败：{exc}")
 
 
+def cockpit_run(project_dir: str) -> Dict[str, Any]:
+    """驾驶舱实时面板用的轻量接口：只返回运行状态，不做完整汇总。"""
+    try:
+        return _ok({"run": _ck.build_run(Path(project_dir))})
+    except Exception as exc:
+        return _fail(f"读取运行状态失败：{exc}")
+
+
 def run_timeline(project_dir: str) -> Dict[str, Any]:
     """章节流水线运行时间线（驾驶舱“运行时间线”面板使用）。"""
     try:

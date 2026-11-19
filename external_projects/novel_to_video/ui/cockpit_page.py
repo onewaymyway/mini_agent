@@ -74,7 +74,7 @@ def _header_metrics(d: dict) -> None:
 @st.fragment(run_every=REFRESH_SECONDS)
 def _live_panel(pdir: str) -> None:
     st.subheader("实时运行")
-    res = tool_api.cockpit_status(pdir)
+    res = tool_api.cockpit_run(pdir)           # 轻量：只取运行状态（完整汇总只在整页渲染时做一次）
     if not res["ok"]:
         st.error(res["error"]["message"])
         return

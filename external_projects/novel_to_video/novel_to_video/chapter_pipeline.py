@@ -226,7 +226,8 @@ def _read_yaml(path: Path) -> Optional[Dict[str, Any]]:
     if not path.is_file():
         return None
     import yaml
-    return yaml.safe_load(path.read_text(encoding="utf-8")) or None
+    from .project_store import load_yaml_text
+    return load_yaml_text(path.read_text(encoding="utf-8")) or None
 
 
 def _speakers(project_dir: Path, cdir: Path, shots_doc: dict) -> list:

@@ -125,4 +125,5 @@ def find_entity(entities: Dict[str, Any], kind: str, eid: str) -> Optional[Dict[
 
 
 def read_yaml_file(path: Path) -> Any:
-    return yaml.safe_load(path.read_text(encoding="utf-8")) if path.is_file() else None
+    from .project_store import load_yaml_text
+    return load_yaml_text(path.read_text(encoding="utf-8")) if path.is_file() else None

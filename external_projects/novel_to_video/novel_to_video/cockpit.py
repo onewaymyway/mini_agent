@@ -104,6 +104,16 @@ def next_step(data: Dict[str, Any]) -> Dict[str, str]:
     return {"key": "done", "title": "已完成", "reason": "全书成片已生成", "page": "🎞️ 全书合成"}
 
 
+def build_run(project_dir: Path) -> Dict[str, Any]:
+    """只读运行状态（实时面板每隔几秒刷新一次，不需要完整汇总）。"""
+    runst = rt.read_state(project_dir)
+    busy = runst.get("state") in ("running", "stopping") or runlock.inspect(project_dir)["held"]
+    return {"busy": busy, "state": runst.get("state", "idle"), "chapter": runst.get("chapter"),
+            "phase": runst.get("phase"), "message": runst.get("message", ""),
+            "history": runst.get("history", [])[-10:], "gear": runst.get("gear"),
+            "stop_requested": rt.stop_requested(project_dir)}
+
+
 def build_cockpit(project_dir: Path) -> Dict[str, Any]:
     proj = read_json(project_dir / "project.json")
     chapters = _chapter_rows(project_dir)

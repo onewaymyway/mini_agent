@@ -36,23 +36,45 @@ def log(project_dir: Path, scope: str, message: str, level: str = "info", **fiel
 
 
 def tail(project_dir: Path, limit: int = 200, scopes: Optional[Iterable[str]] = None) -> List[Dict[str, Any]]:
+    """最近 limit 条日志（可按 scope 过滤）。从文件末尾反向分块读取，读够即停，不随日志变长而变慢
+    （驾驶舱每 3 秒刷新一次，旧实现每次都从头读完整个文件）。"""
     path = Path(project_dir) / LOG_FILE
     if not path.is_file():
         return []
     wanted = set(scopes) if scopes else None
-    keep: deque = deque(maxlen=max(1, limit))
-    with path.open("r", encoding="utf-8", errors="replace") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                row = json.loads(line)
-            except ValueError:
-                continue  # 进程被中途终止时最后一行可能不完整
-            if wanted is None or row.get("scope") in wanted:
-                keep.append(row)
-    return list(keep)
+    want = max(1, limit)
+    found: List[Dict[str, Any]] = []
+
+    def take(raw: bytes) -> None:
+        line = raw.strip()
+        if not line:
+            return
+        try:
+            row = json.loads(line.decode("utf-8", errors="replace"))
+        except ValueError:
+            return                          # 进程被中途终止时最后一行可能不完整
+        if wanted is None or row.get("scope") in wanted:
+            found.append(row)
+
+    with path.open("rb") as f:
+        pos = f.seek(0, 2)
+        buf = b""
+        block = 64 * 1024
+        while pos > 0 and len(found) < want:
+            step = min(block, pos)
+            pos -= step
+            f.seek(pos)
+            buf = f.read(step) + buf
+            lines = buf.split(b"\n")
+            buf = lines[0]                  # 可能是被切断的行，留到下一块拼接
+            for raw in reversed(lines[1:]):
+                take(raw)
+                if len(found) >= want:
+                    break
+        if pos == 0 and buf and len(found) < want:
+            take(buf)
+    found.reverse()
+    return found[-want:]
 
 
 def format_row(row: Dict[str, Any]) -> str:

@@ -146,8 +146,16 @@ def write_yaml_atomic(path: Path, data: Any) -> None:
     _write_atomic(path, yaml.dump(data, Dumper=_NoAliasDumper, allow_unicode=True, sort_keys=False))
 
 
+# libyaml（C 实现）比纯 Python 解析快一个数量级；两者语义相同（都是安全加载）。
+YAML_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+
+
+def load_yaml_text(text: str) -> Any:
+    return yaml.load(text, Loader=YAML_LOADER)
+
+
 def read_yaml(path: Path) -> Any:
-    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return load_yaml_text(path.read_text(encoding="utf-8")) or {}
 
 
 def append_progress(project_dir: Path, text: str, when: Optional[datetime] = None) -> None:
