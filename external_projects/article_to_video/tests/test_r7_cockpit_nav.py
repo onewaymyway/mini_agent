@@ -27,7 +27,7 @@ def test_sidebar_has_only_global_pages(home):
     at = _app()
     assert not at.exception
     options = list(at.sidebar.radio[0].options)
-    assert options == [COCKPIT, "📥 新建项目", "📚 项目", "⚙️ 设置"]
+    assert options == [COCKPIT, "📥 新建项目", "📦 批量生成", "📚 项目", "⚙️ 设置"]   # R23 新增批量生成页
 
 
 def test_cockpit_is_the_default_page(home):

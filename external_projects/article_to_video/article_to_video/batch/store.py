@@ -18,6 +18,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -26,6 +27,7 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 from ..pipeline.gates import GEARS, STAGES, PipelineError, check_budget_requirement
 from ..project_store import now_iso, read_json, slugify, write_json_atomic, write_text_atomic
 
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 QUEUE_DIRNAME = "_queue"
 SCHEMA = 1
 STATES = ("queued", "running", "done", "failed", "stopped", "waiting", "budget_exceeded")
@@ -249,7 +251,8 @@ def enqueue(root: Path, *, source_text: str, source_name: str, title: str, autho
         rel = f"sources/{item_id}_{slugify(Path(source_name).stem or title)}.md"
         write_text_atomic(queue_dir(root) / rel, text)
         item = {"id": item_id, "title": title, "author": author, "source_name": source_name,
-                "source_path": rel, "sha256": sha, "chars": len(text), "state": "queued",
+                "source_path": rel, "sha256": sha, "chars": len(text),
+                "chinese_chars": len(_CJK_RE.findall(text)), "state": "queued",
                 "failures": 0, "project_id": "", "error": "", "outputs": [],
                 "enqueued_at": now_iso(), "started_at": "", "finished_at": ""}
         data["items"].append(item)

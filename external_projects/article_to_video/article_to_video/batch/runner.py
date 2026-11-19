@@ -200,3 +200,12 @@ def run_queue(root: Path, *, pipeline_runner: Optional[PipelineRunner] = None,
     finally:
         store.release_runner(root)
     return {"started": True, "processed": processed, **store.summary(root)}
+
+
+def start_background(root: Path, **kwargs: Any) -> bool:
+    """在后台线程里运行队列（界面用）。已有运行者（本进程或命令行进程）时返回 False，不重复启动。"""
+    root = Path(root)
+    if store.runner_alive(root):
+        return False
+    threading.Thread(target=run_queue, args=(root,), kwargs=kwargs, daemon=True, name="queue-runner").start()
+    return True
