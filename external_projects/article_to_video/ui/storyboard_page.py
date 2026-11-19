@@ -163,6 +163,7 @@ def _storyboard_body(pdir) -> None:
         st.error("已有后台任务在运行，请稍候")
 
     _batch_controls(pdir, ready, engine, busy)
+    _render_all_controls(pdir, ready, busy)
     def _regen_storyboard(p, ids):
         from article_to_video import joblog
         from article_to_video.providers.text import make_text_llm
@@ -217,6 +218,26 @@ def _storyboard_body(pdir) -> None:
                 st.rerun()
 
     _preview(pdir, part_id)
+
+
+def _render_all_controls(pdir, ready, busy: bool) -> None:
+    """R20：一次性渲染全部可渲染章节的画面（后台任务，逐章独立，图片复用，不重复生图）。"""
+    from article_to_video.render.compose_part import render_ready_reason
+    ids = [p["id"] for p in ready]
+    ready_now = [i for i in ids if render_ready_reason(pdir, i) is None]
+    st.markdown("**渲染全部章节画面**")
+    st.caption(f"可渲染 {len(ready_now)} 章（分镜已确认、未过期、有时间轴）；其余章节会跳过并写明原因。"
+               "已生成的图片直接复用，不会重新生图。")
+    if st.button(f"🖼️ 渲染所有章的画面（{len(ready_now)} 章）", disabled=busy or not ready_now,
+                 key="batch_render_all"):
+        from article_to_video.providers.image import make_image_provider as mk
+        from article_to_video.render.compose_part import render_all_parts
+        cfg = load_visual_config(pdir)
+        provider = mk(cfg["images"]["provider"]) if cfg["images"]["enabled"] else None
+        if jobs.start(pdir, f"渲染所有章的画面（{len(ids)} 章）",
+                      lambda: render_all_parts(pdir, ids, provider=provider), scope="render"):
+            st.rerun()
+        st.error("已有后台任务在运行，请稍候")
 
 
 def _batch_controls(pdir, ready, engine: str, busy: bool) -> None:

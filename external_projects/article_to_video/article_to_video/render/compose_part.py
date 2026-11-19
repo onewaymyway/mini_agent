@@ -213,3 +213,64 @@ def render_part(project_dir: Path, part_id: str, *, provider=None,
     append_progress(pdir, f"渲染画面 {part_id}：新绘 {counts['rendered']}、复用 {counts['reused']}、"
                           f"图片组 {counts['groups']}、降级 {counts['fallback']}", now)
     return manifest
+
+
+def render_ready_reason(pdir: Path, part_id: str) -> Optional[str]:
+    """本章能否渲染：返回 None 表示可以；否则返回跳过的原因（R20）。"""
+    st = storyboard_status(pdir, part_id)
+    if not st["exists"]:
+        return "还没有分镜"
+    if st["stale"]:
+        return "分镜已过期"
+    if not st["confirmed"]:
+        return "分镜未确认"
+    if st["errors"]:
+        return "分镜不合格"
+    if load_timeline(pdir, part_id) is None:
+        return "还没有时间轴"
+    return None
+
+
+def render_all_parts(project_dir: Path, part_ids, *, provider=None,
+                     now: Optional[datetime] = None) -> Dict[str, Any]:
+    """逐章渲染画面（R20，后台任务内调用）。
+
+    * 未就绪的章（分镜未确认、已过期、不合格、无时间轴）跳过，并写明原因；
+    * 每章独立：单章失败只记录，继续下一章；全部完成后若有失败，以 PlanError 结束并列出失败章节；
+    * 图片复用由 render_part 负责（已生成的图片不会重新生图），所以重复执行不会产生额外费用；
+    * 停止请求（cancel.Cancelled）直接向上抛出。
+    """
+    pdir = Path(project_dir)
+    part_ids = list(part_ids)
+    results: list = []
+    joblog.bound_log(f"批量渲染：共 {len(part_ids)} 章（已生成的图片直接复用）")
+    for pid in part_ids:
+        cancel.check()
+        reason = render_ready_reason(pdir, pid)
+        if reason:
+            joblog.bound_log(f"{pid}：{reason}，跳过渲染", level="warn")
+            results.append({"part": pid, "action": "skipped", "reason": reason})
+            continue
+        joblog.bound_log(f"{pid}：开始渲染画面")
+        try:
+            out = render_part(pdir, pid, provider=provider, now=now)
+        except cancel.Cancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001 — 单章失败不影响其它章
+            joblog.bound_log(f"{pid}：渲染失败：{exc}", level="error")
+            results.append({"part": pid, "action": "failed", "reason": str(exc)})
+            continue
+        counts = out.get("counts", {})
+        joblog.bound_log(f"{pid}：渲染完成（镜头 {counts.get('rendered', 0)}，复用 {counts.get('reused', 0)}，"
+                         f"插图 {counts.get('illustration', 0)}，降级 {counts.get('fallback', 0)}）", level="ok")
+        results.append({"part": pid, "action": "rendered", "counts": counts})
+    done = [r for r in results if r["action"] == "rendered"]
+    skip = [r for r in results if r["action"] == "skipped"]
+    bad = [r for r in results if r["action"] == "failed"]
+    joblog.bound_log(f"批量渲染结束：渲染 {len(done)} 章，跳过 {len(skip)} 章，失败 {len(bad)} 章",
+                     level="warn" if bad else "ok")
+    append_progress(pdir, f"批量渲染画面：渲染 {len(done)}，跳过 {len(skip)}，失败 {len(bad)}", now)
+    if bad:
+        raise PlanError("以下章节渲染失败（已完成的章节不受影响）：" +
+                        "；".join(f"{r['part']}：{r['reason'][:80]}" for r in bad))
+    return {"results": results, "rendered": len(done), "skipped": len(skip), "failed": len(bad)}
