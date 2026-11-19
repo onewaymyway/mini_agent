@@ -1,9 +1,9 @@
 """entrypoints/run_pipeline.py — 一键流水线（P7）：可重入，按挡位在检查点停下或自动推进。
 
 用法：
-  python entrypoints/run_pipeline.py --id <项目目录名> [--until export] [--gear G0|G1|G2]
+  python entrypoints/run_pipeline.py --id <项目目录名> [--until export] [--gear G0|G1|G2|G3]
         [--max-images N] [--max-minutes M] [--approve] [--merge-all] [--offline]
-挡位：G0 四个检查点都需人工；G1 只有 C0 与终审人工；G2 全自动，必须设置 --max-images 或 --max-minutes。
+挡位：G0 四个检查点都需人工；G1 只有 C0 与终审人工；G2 全自动，必须设置 --max-images 或 --max-minutes；G3 完全无人值守，无预算上限、终审自动通过。
 --offline：语音用静音、生图用占位图，大纲改用离线规则（只用于冒烟，不产生费用）；写稿仍需要文本模型。
 --outline-engine：大纲生成方式，llm（默认，需要文本模型）或 rules（离线规则）。
 输出 JSON（同时写入项目的 pipeline.json）。退出码：done=0，其它=1。
@@ -31,7 +31,7 @@ def main(argv=None) -> int:
     g.add_argument("--id", help="项目目录名（位于项目集合目录下）")
     g.add_argument("--project", help="项目目录路径")
     p.add_argument("--until", default="export", choices=list(STAGES))
-    p.add_argument("--gear", default="G0", choices=["G0", "G1", "G2"])
+    p.add_argument("--gear", default="G0", choices=["G0", "G1", "G2", "G3"])
     p.add_argument("--max-images", type=int, default=None, help="G2 预算：最多生图次数")
     p.add_argument("--max-minutes", type=float, default=None, help="G2 预算：最长总耗时（分钟）")
     p.add_argument("--approve", action="store_true", help="确认终审，允许导出")

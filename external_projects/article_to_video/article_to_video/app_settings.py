@@ -29,7 +29,7 @@ from .compose.config import normalize_compose
 from .visual.config import normalize_visual
 
 GLOBAL_FILE = "settings.json"
-GEARS = ("G0", "G1", "G2")
+GEARS = ("G0", "G1", "G2", "G3")
 OUTLINE_ENGINES = ("llm", "rules")
 GROUPS = ("settings", "visual", "compose", "branding", "bgm", "pipeline", "logs")
 

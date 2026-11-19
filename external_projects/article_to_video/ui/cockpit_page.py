@@ -12,7 +12,7 @@ from __future__ import annotations
 import streamlit as st
 
 from article_to_video.paths import projects_root
-from article_to_video.pipeline.gates import PipelineError, STAGES
+from article_to_video.pipeline.gates import GEARS, PipelineError, STAGES
 from article_to_video.pipeline.run import default_providers, read_status, run_pipeline
 from article_to_video.planning.runner import load_spine
 from article_to_video.project_store import list_projects
@@ -31,6 +31,7 @@ _GEAR_HELP = {
     "G0": "默认：大纲、口播、分镜、终审都需要人工确认。",
     "G1": "只有大纲与终审需要人工；口播与分镜通过校验后自动确认。",
     "G2": "全自动，必须设置预算上限（生图次数或总耗时）；超限即停止。",
+    "G3": "完全无人值守：无人工检查点，终审自动通过并导出；不设预算上限（可能产生较多费用）。",
 }
 
 CONTROL = "🧭 总控"
@@ -124,7 +125,7 @@ def _control_body(pdir) -> None:
     pl = S.effective_group(pdir, "pipeline")
     with st.expander("挡位与预算", expanded=True):
         st.caption("默认值来自「⚙️ 设置」的「流水线」分组；这里的修改只影响本次运行。")
-        gear = st.radio("挡位", ["G0", "G1", "G2"], horizontal=True, index=["G0", "G1", "G2"].index(pl["gear"]))
+        gear = st.radio("挡位", list(GEARS), horizontal=True, index=list(GEARS).index(pl["gear"]))
         st.caption(_GEAR_HELP[gear])
         c1, c2, c3 = st.columns(3)
         until = c1.selectbox("运行到", list(STAGES), index=len(STAGES) - 1)
