@@ -16,12 +16,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..planning.runner import load_spine
 from ..project_store import load_project, now_iso, read_json, write_json_atomic
-from ..render.renderers import render_background, render_chapter_card
+from ..render.renderers import render_background
 from ..render.themes import canvas_size
 from ..validators.compose import check_video, check_watermark
 from .branding import (END_SEC, LOWER_AFTER, LOWER_SEC, TITLE_SEC, render_corner_tag, render_credit_card,
                        render_lower_third, render_watermark, resolve_branding, resolve_bgm, watermark_xy)
 from .config import FPS, load_compose_config
+from .cover import build_cover, cover_subtitle, pick_cover_image
 from .ffrun import ComposeError, probe
 from .part import video_dir
 from .post import copy_with_meta, fingerprint, join, make_still_clip, master_step, watermark_step
@@ -238,11 +239,12 @@ def export_final(pdir: Path, *, part_ids: Optional[List[str]] = None, episode: O
     srt = exports / f"{name}.srt"
     srt.write_text(build_srt(entries), encoding="utf-8")
 
-    bg = render_background(canvas, _THEME).convert("RGBA")
-    bg.alpha_composite(render_chapter_card({"number": "", "title": title, "one_line": author}, canvas,
-                                           orientation, _THEME))
+    # 封面（R16）：插图（若有）+ 标题 / 作者 / 副标题 / AI 声明 / 与成片一致的水印
     cover = exports / f"{name}_cover.png"
-    bg.convert("RGB").save(cover)
+    cover_img = build_cover(canvas=canvas, orientation=orientation, title=title, author=author,
+                            subtitle=cover_subtitle(spine), ai_text=ai_text, wm=wm, pdir=pdir,
+                            source_image=pick_cover_image(pdir, ids))
+    cover_img.save(cover)
 
     pr = probe(final)
     last_sub = max((e["end"] for e in entries), default=0.0)
