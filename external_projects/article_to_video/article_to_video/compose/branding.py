@@ -103,18 +103,32 @@ def render_lower_third(canvas, orientation: str, theme_name: str, text: str):
     return img
 
 
-def render_corner_tag(canvas, orientation: str, theme_name: str, text: str):
+def corner_tag_xy(canvas, size: Tuple[int, int], position: str, *, avoid_h: int = 0) -> Tuple[int, int]:
+    """角标左上角坐标。边距与此前一致（宽、高各 3%）；avoid_h > 0 时沿画面内侧让出该高度（避开同角水印）。"""
+    W, H = canvas
+    w, h = size
+    mx, my = round(W * 0.03), round(H * 0.03)
+    x = W - w - mx if position.endswith("right") else mx
+    if position.startswith("top"):
+        y = my + avoid_h
+    else:
+        y = H - h - my - avoid_h
+    return x, y
+
+
+def render_corner_tag(canvas, orientation: str, theme_name: str, text: str, *,
+                      position: str = "top_right", avoid_h: int = 0):
+    """角标（作者）：整幅 RGBA 透明图，角标放在 position 指定的角（默认右上）。"""
     from PIL import Image, ImageDraw
     u = _unit(canvas, orientation)
-    W, H = canvas
     theme = get_theme(theme_name)
     img = Image.new("RGBA", canvas, (0, 0, 0, 0))
     draw = ImageDraw.Draw(img, "RGBA")
     font = load_font(round(30 * u))
     tw = draw.textlength(text, font=font)
-    x0, y0 = W * 0.03, H * 0.03
-    draw.rounded_rectangle([x0, y0, x0 + tw + 28 * u, y0 + font.size + 20 * u], radius=8 * u,
-                           fill=(0, 0, 0, 110))
+    bw, bh = round(tw + 28 * u), round(font.size + 20 * u)
+    x0, y0 = corner_tag_xy(canvas, (bw, bh), position, avoid_h=avoid_h)
+    draw.rounded_rectangle([x0, y0, x0 + bw, y0 + bh], radius=8 * u, fill=(0, 0, 0, 110))
     draw.text((x0 + 14 * u, y0 + 9 * u), text, font=font, fill=theme["muted"])
     return img
 

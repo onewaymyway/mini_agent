@@ -185,14 +185,21 @@ def export_final(pdir: Path, *, part_ids: Optional[List[str]] = None, episode: O
     corner = None
     if credits.get("corner_tag") and author:
         png = work / "corner.png"
-        render_corner_tag(canvas, orientation, _THEME, f"原文作者：{author}").save(png)
+        corner_pos = credits.get("corner_position", "top_right")
+        avoid_h = 0
+        # 角标与固定水印同在一角时，角标沿内侧让开水印，避免重叠（漂移 / 平铺水印不固定，不处理）
+        if wm.get("enabled") and wm["mode"] == "static" and wm.get("position") == corner_pos:
+            _m, (_mw, _mh) = render_watermark(canvas, orientation, _THEME, wm, pdir)
+            avoid_h = _mh + round(canvas[0] * wm["margin"]) + round(canvas[1] * 0.01)
+        render_corner_tag(canvas, orientation, _THEME, f"原文作者：{author}",
+                          position=corner_pos, avoid_h=avoid_h).save(png)
         corner = png
     bgm_arg = (Path(bgm["path"]), bgm["volume"]) if bgm["enabled"] else None
     master = work / "master.mp4"
     needs_master = bool(lower or corner or bgm_arg)
     if needs_master:
         mkey = fingerprint({"joined": jkey, "lower": lower and [str(lower[0]), lower[1]],
-                            "corner": bool(corner), "bgm": bgm_arg and [bgm_arg[0].name, bgm_arg[1]],
+                            "corner": corner and [corner_pos, avoid_h, author], "bgm": bgm_arg and [bgm_arg[0].name, bgm_arg[1]],
                             "bgm_mtime": bgm_arg and bgm_arg[0].stat().st_mtime_ns, "total": total})
         if not _cached(state, "master", mkey, master):
             master_step(joined, master, total, lower=lower, corner=corner, bgm=bgm_arg, meta=meta)
@@ -261,7 +268,7 @@ def export_final(pdir: Path, *, part_ids: Optional[List[str]] = None, episode: O
         "sequence": [{"kind": k, "start": round(starts[i], 3), "duration": round(durations[i], 3)}
                      for i, k in enumerate(_kinds(credits, ids))],
         "lower_third": None if not lower else [round(lower[1][0], 3), round(lower[1][1], 3)],
-        "corner_tag": bool(corner), "bgm": bgm["enabled"],
+        "corner_tag": bool(corner), "corner_position": credits.get("corner_position") if corner else None, "bgm": bgm["enabled"],
         "watermark": {"enabled": bool(wm.get("enabled")), "mode": wm["mode"], "box": wm_box},
         "ai_disclosure": ai_text or None,
         "subtitles": len(entries), "warnings": warnings,

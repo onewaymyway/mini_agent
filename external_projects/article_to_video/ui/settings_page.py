@@ -18,7 +18,7 @@ from article_to_video.compose.config import SUBTITLE_MODES, TRANSITIONS
 from article_to_video.paths import projects_root
 from article_to_video.pipeline.gates import GEARS
 from article_to_video.project_store import MODES, ORIENTATIONS, PERSONAS, RESOLUTIONS, WATERMARK_MODES, \
-    WATERMARK_POSITIONS, list_projects
+    CORNER_POSITIONS, WATERMARK_POSITIONS, list_projects
 from ui.joblog_panel import is_busy
 
 LABELS = {
@@ -30,6 +30,7 @@ LABELS = {
     "subtitles": {"auto": "自动（卡片已呈现则隐藏）", "always": "始终显示", "off": "关闭"},
     "position": {"top_left": "左上", "top_right": "右上", "bottom_left": "左下", "bottom_right": "右下",
                  "center": "居中", "diagonal_tile": "斜向平铺（防裁剪）"},
+    "corner": {"top_left": "左上", "top_right": "右上（默认）", "bottom_left": "左下", "bottom_right": "右下"},
     "wmmode": {"static": "固定", "drift": "缓慢漂移"},
     "gear": {"G0": "G0：大纲、口播、分镜、终审都需人工确认", "G1": "G1：只有大纲与终审需人工",
              "G2": "G2：全自动（须设置预算上限）"},
@@ -82,6 +83,7 @@ FIELDS = {
         {"path": "credits.lower_third", "label": "下三分之一条", "kind": "bool"},
         {"path": "credits.end_card", "label": "片尾卡", "kind": "bool"},
         {"path": "credits.corner_tag", "label": "角标（作者）", "kind": "bool"},
+        {"path": "credits.corner_position", "label": "角标位置", "kind": "select", "options": list(CORNER_POSITIONS), "labels": LABELS["corner"]},
         {"path": "watermark.enabled", "label": "启用水印", "kind": "bool"},
         {"path": "watermark.text", "label": "水印文字", "kind": "text"},
         {"path": "watermark.position", "label": "水印位置", "kind": "select", "options": list(WATERMARK_POSITIONS), "labels": LABELS["position"]},

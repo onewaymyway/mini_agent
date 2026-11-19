@@ -17,6 +17,7 @@ ORIENTATIONS = ("landscape", "portrait")
 RESOLUTIONS = ("720P", "1080P")
 WATERMARK_POSITIONS = ("top_left", "top_right", "bottom_left", "bottom_right", "center", "diagonal_tile")
 WATERMARK_MODES = ("static", "drift")
+CORNER_POSITIONS = ("top_left", "top_right", "bottom_left", "bottom_right")  # 角标位置（默认右上）
 MAX_AUTHOR_CHARS = 60
 MAX_WATERMARK_CHARS = 60
 DEFAULT_AI_TEXT = "本视频配音与部分插图由 AI 生成"
@@ -123,6 +124,11 @@ def normalize_branding(raw: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, 
         "end_card": bool(credits_raw.get("end_card", True)),
         "corner_tag": bool(credits_raw.get("corner_tag", False)),
     }
+    corner_pos = credits_raw.get("corner_position") or "top_right"
+    if corner_pos not in CORNER_POSITIONS:
+        warnings.append(f"角标位置 {corner_pos!r} 不合法，已改用 top_right")
+        corner_pos = "top_right"
+    credits["corner_position"] = corner_pos
 
     wm_raw = raw.get("watermark") if isinstance(raw.get("watermark"), dict) else {}
     wm_text = _clean_text(wm_raw.get("text"), MAX_WATERMARK_CHARS)
