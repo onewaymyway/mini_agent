@@ -29,7 +29,7 @@ from ..validators.compose import check_video
 from ..visual.config import load_visual_config
 from .script import load_script
 from .voice import load_deck_timeline
-from .store import load_deck
+from .store import deck_root, load_deck
 
 RENDER_VERSION = "deck-render-v1"
 TITLE_BAND = 0.14        # 页标题区高度占画面高度的比例
@@ -38,7 +38,7 @@ MIN_ELEMENT_SHARE = 0.12  # 单个元素最少占用的画面高度比例
 
 
 def _out_dir(pdir: Path, part_id: str) -> Path:
-    return Path(pdir) / "parts" / part_id / "deck_video"
+    return deck_root(pdir, part_id) / "video"
 
 
 def _scene_for(el: Dict[str, Any]) -> Dict[str, Any]:
@@ -197,7 +197,6 @@ def compose_deck_part(pdir: Path, part_id: str, *, now: Optional[datetime] = Non
     vdir.mkdir(parents=True, exist_ok=True)
     segs, total = build_segments(pdir, part_id, deck, tl, canvas, orientation, theme_name, chapter)
     cancel.check()
-    from .voice import deck_root
     part_dir = deck_root(pdir, part_id)        # 新方案的配音在 parts/<章>/deck/audio/
     audio_tl = {"total_sec": total,
                 "sentences": [{"id": s["id"], "start": s["start"]} for p in tl["pages"] for s in p["sentences"]]}
@@ -238,7 +237,8 @@ def export_deck_video(pdir: Path, *, now: Optional[datetime] = None) -> Path:
         if not f.is_file():
             raise ComposeError(f"{p['id']} 还没有新方案视频，请先合成本章")
         files.append(f)
-    exports = pdir / "exports"
+    from .store import deck_home
+    exports = deck_home(pdir) / "exports"          # 新方案的成片在 deck/exports/
     exports.mkdir(parents=True, exist_ok=True)
     name = safe_filename(spine.get("title") or "video") + "_新方案"
     lst = exports / f".{name}_concat.txt"

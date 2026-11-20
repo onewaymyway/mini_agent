@@ -20,7 +20,7 @@ from ..planning.errors import PlanError
 from ..planning.jsonio import parse_json_object
 from ..project_store import now_iso, read_json, write_json_atomic
 from .plan import PAGE_OVERHEAD_SEC, SPEECH_CHARS_PER_SEC
-from .store import load_deck
+from .store import deck_root, load_deck
 
 SCRIPT_VERSION = "deck-script-v1"
 BATCH_PAGES = 8
@@ -32,7 +32,7 @@ _NUM = re.compile(r"\d+(?:\.\d+)?")
 
 
 def script_path(pdir: Path, part_id: str) -> Path:
-    return Path(pdir) / "parts" / part_id / "deck_script.json"
+    return deck_root(pdir, part_id) / "deck_script.json"
 
 
 def load_script(pdir: Path, part_id: str) -> Optional[Dict[str, Any]]:

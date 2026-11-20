@@ -85,7 +85,7 @@ def test_compose_requires_a_confirmed_plan_and_voice(tmp_path, monkeypatch):
 def test_compose_renders_a_video_whose_length_matches_the_voice(small_project):
     info = compose_deck_part(small_project, "P01")
     tl = load_deck_timeline(small_project, "P01")
-    out = small_project / "parts" / "P01" / "deck_video" / "part.mp4"
+    out = small_project / "deck" / "parts" / "P01" / "video" / "part.mp4"
     assert out.is_file() and os.path.getsize(out) > 0
     assert info["duration"] == pytest.approx(tl["total_sec"], abs=0.05)
     assert info["pages"] == len(tl["pages"])

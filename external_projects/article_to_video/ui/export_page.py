@@ -147,17 +147,22 @@ def _export_body(pdir) -> None:
 
 
 def _downloads(pdir) -> None:
-    """成片：列出 exports/ 下的全部视频（单期、各期、全集），不再只认项目标题的那一个文件。"""
-    from article_to_video.compose.export import list_exports
+    """成片（两种方案统一放在这里）：每个成片标明方案、生成时间与大小，并提供下载。"""
+    import time as _time
 
-    videos = list_exports(pdir)
-    if not videos:
+    from article_to_video.compose.export import list_all_exports
+
+    rows = list_all_exports(pdir)
+    if not rows:
         return
-    st.subheader("成片")
-    for video in videos:
+    st.subheader("成片（现有方案与新方案）")
+    st.table([{"方案": r["scheme"], "文件": r["name"], "生成时间": _time.strftime("%Y-%m-%d %H:%M", _time.localtime(r["mtime"])),
+               "大小(MB)": r["size_mb"]} for r in rows])
+    for r in rows:
+        video = r["path"]
         name = video.stem
         exports = video.parent
-        st.caption(video.name)
+        st.markdown(f"**【{r['scheme']}】{video.name}**")
         st.video(str(video))
         cols = st.columns(4)
         cols[0].download_button("下载视频（mp4）", video.read_bytes(), file_name=video.name, mime="video/mp4",

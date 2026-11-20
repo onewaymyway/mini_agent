@@ -40,7 +40,7 @@ def test_sentences_split_and_keep_their_punctuation():
 
 
 def test_each_page_becomes_a_beat_with_its_sentences(ready):
-    doc = json.loads((ready / "parts" / "P01" / "deck_script.json").read_text(encoding="utf-8"))
+    doc = json.loads((ready / "deck" / "parts" / "P01" / "deck_script.json").read_text(encoding="utf-8"))
     st = pages_as_script("P01", doc)
     assert [b["id"] for b in st["beats"]] == [p["id"] for p in doc["slides"]]
     assert all(b["pause_after_ms"] == 500 and b["sentences"] for b in st["beats"])
@@ -50,7 +50,7 @@ def test_synthesis_gives_page_durations_and_non_overlapping_pages(ready):
     tl = synthesize_deck(ready, "P01", SilenceTTS())
     assert load_deck_timeline(ready, "P01") == tl
     pages = tl["pages"]
-    assert len(pages) == len(json.loads((ready / "parts" / "P01" / "deck_script.json").read_text())["slides"])
+    assert len(pages) == len(json.loads((ready / "deck" / "parts" / "P01" / "deck_script.json").read_text())["slides"])
     for a, b in zip(pages, pages[1:]):
         assert a["end"] <= b["start"] + 1e-6                       # 页与页不重叠、按顺序
     for p in pages:
@@ -92,7 +92,7 @@ def test_voicing_requires_confirmed_and_fresh_script(tmp_path, monkeypatch):
 def test_voice_status_reports_stale_after_script_change(ready):
     synthesize_deck(ready, "P01", SilenceTTS())
     assert voice_status(ready, "P01")["stale"] is False
-    doc_path = ready / "parts" / "P01" / "deck_script.json"
+    doc_path = ready / "deck" / "parts" / "P01" / "deck_script.json"
     doc = json.loads(doc_path.read_text(encoding="utf-8"))
     doc["input_sha"] = "changed"
     write_json_atomic(doc_path, doc)

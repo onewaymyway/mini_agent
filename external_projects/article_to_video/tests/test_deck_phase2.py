@@ -72,7 +72,7 @@ def test_page_source_covers_items_and_table_cells():
 
 def test_generates_a_script_for_every_page_within_length(project):
     doc = plan_script(project, "P01", llm=FakeLLM(), part_title="测试章")
-    deck = json.loads((project / "parts" / "P01" / "deck.json").read_text(encoding="utf-8"))
+    deck = json.loads((project / "deck" / "parts" / "P01" / "deck.json").read_text(encoding="utf-8"))
     assert [x["id"] for x in doc["slides"]] == [s["id"] for s in deck["slides"]]
     for x in doc["slides"]:
         assert x["narration"] and x["chars"] == len(x["narration"])
@@ -122,7 +122,7 @@ def test_reuses_script_when_inputs_unchanged_and_detects_staleness(project):
     b = plan_script(project, "P01", llm=llm)
     assert b["input_sha"] == a["input_sha"] and llm.calls == calls      # 复用，不调用模型
     assert script_status(project, "P01")["stale"] is False
-    deck_path = project / "parts" / "P01" / "deck.json"
+    deck_path = project / "deck" / "parts" / "P01" / "deck.json"
     deck = json.loads(deck_path.read_text(encoding="utf-8"))
     deck["input_sha"] = "changed"
     write_json_atomic(deck_path, deck)
@@ -138,7 +138,7 @@ def test_confirm_marks_the_script_confirmed(project):
 
 
 def test_check_batch_reports_missing_pages(project):
-    deck = json.loads((project / "parts" / "P01" / "deck.json").read_text(encoding="utf-8"))
+    deck = json.loads((project / "deck" / "parts" / "P01" / "deck.json").read_text(encoding="utf-8"))
     batch = deck["slides"][:2]
     obj = {"slides": [{"id": batch[0]["id"], "narration": "一段话。"}]}
     got, errs = check_batch(obj, batch)

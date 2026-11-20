@@ -307,3 +307,23 @@ def list_exports(pdir: Path) -> list:
     if not d.is_dir():
         return []
     return sorted((p for p in d.glob("*.mp4") if p.is_file()), key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+SCHEME_CLASSIC = "现有方案"
+SCHEME_DECK = "新方案"
+
+
+def list_all_exports(pdir: Path) -> list:
+    """两种方案的全部成片，统一列出（现有方案：exports/；新方案：deck/exports/），按生成时间从新到旧。"""
+    sources = [(Path(pdir) / "exports", SCHEME_CLASSIC), (Path(pdir) / "deck" / "exports", SCHEME_DECK)]
+    rows = []
+    for d, scheme in sources:
+        if not d.is_dir():
+            continue
+        for p in d.glob("*.mp4"):
+            if not p.is_file():
+                continue
+            st = p.stat()
+            rows.append({"name": p.name, "scheme": scheme, "path": p,
+                         "mtime": st.st_mtime, "size_mb": round(st.st_size / 1e6, 1)})
+    return sorted(rows, key=lambda r: r["mtime"], reverse=True)

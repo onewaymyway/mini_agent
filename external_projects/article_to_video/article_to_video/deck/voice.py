@@ -19,18 +19,14 @@ from ..planning.errors import PlanError
 from ..project_store import now_iso, read_json, write_json_atomic
 from .plan import element_count
 from .script import load_script, script_status
+from .store import deck_root
 
 PAGE_PAUSE_MS = 500
 _SPLIT = re.compile(r"[^。！？!?；;]+[。！？!?；;]?")
 
 
-def deck_root(pdir: Path, part_id: str) -> Path:
-    """新方案的产物目录：parts/<章>/deck/（配音文件也在其中，与现有方案的 audio/ 分开）。"""
-    return Path(pdir) / "parts" / part_id / "deck"
-
-
 def timeline_path(pdir: Path, part_id: str) -> Path:
-    return Path(pdir) / "parts" / part_id / "deck_timeline.json"
+    return deck_root(pdir, part_id) / "deck_timeline.json"
 
 
 def load_deck_timeline(pdir: Path, part_id: str) -> Optional[Dict[str, Any]]:

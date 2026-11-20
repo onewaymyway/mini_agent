@@ -16,8 +16,18 @@ from .plan import DECK_VERSION, plan_slides
 from .validate import validate_deck
 
 
+def deck_home(pdir: Path) -> Path:
+    """新方案的根目录：项目下的 deck/，与现有方案的 parts/、exports/ 平级，两者没有包含关系。"""
+    return Path(pdir) / "deck"
+
+
+def deck_root(pdir: Path, part_id: str) -> Path:
+    """新方案某章的过程数据：deck/parts/<章>/（规划、讲稿、时间线、配音、视频）。"""
+    return deck_home(pdir) / "parts" / part_id
+
+
 def deck_path(pdir: Path, part_id: str) -> Path:
-    return Path(pdir) / "parts" / part_id / "deck.json"
+    return deck_root(pdir, part_id) / "deck.json"
 
 
 def load_deck(pdir: Path, part_id: str) -> Optional[Dict[str, Any]]:

@@ -28,8 +28,9 @@ def test_both_schemes_keep_their_outputs_side_by_side(small_project):
     pdir = small_project
     _classic_outputs(pdir)
     deck_files = {p: (pdir / p).read_bytes() for p in
-                  ["parts/P01/deck_timeline.json", "parts/P01/deck/audio/manifest.json"]}
-    (pdir / "exports" / "测试文章_新方案.mp4").write_bytes(b"deck")
+                  ["deck/parts/P01/deck_timeline.json", "deck/parts/P01/audio/manifest.json"]}
+    (pdir / "deck" / "exports").mkdir(parents=True, exist_ok=True)
+    (pdir / "deck" / "exports" / "测试文章_新方案.mp4").write_bytes(b"deck")
 
     removed = reset_project(pdir, from_stage="script", confirm=True)
 
@@ -41,10 +42,10 @@ def test_both_schemes_keep_their_outputs_side_by_side(small_project):
     # 新方案的产物完好
     for p, data in deck_files.items():
         assert (pdir / p).read_bytes() == data
-    assert (pdir / "parts/P01/deck/audio").is_dir()
-    assert (pdir / "exports/测试文章_新方案.mp4").read_bytes() == b"deck"
-    assert "exports/测试文章_新方案.mp4" not in removed          # 重置的删除清单里不含新方案成片
-    assert "exports/测试文章.mp4" in removed
+    assert (pdir / "deck/parts/P01/audio").is_dir()
+    assert (pdir / "deck/exports/测试文章_新方案.mp4").read_bytes() == b"deck"
+    assert "deck/exports/测试文章_新方案.mp4" not in removed          # 重置的删除清单里不含新方案成片
+    assert "exports/" in removed                                # 现有方案的成片目录整体删除
 
 
 def test_deck_still_composes_after_the_classic_reset(small_project):
@@ -57,7 +58,7 @@ def test_deck_still_composes_after_the_classic_reset(small_project):
 
 def test_classic_synthesis_does_not_touch_the_deck_manifest(small_project):
     pdir = small_project
-    deck_manifest = pdir / "parts/P01/deck/audio/manifest.json"
+    deck_manifest = pdir / "deck/parts/P01/audio/manifest.json"
     before = deck_manifest.read_bytes()
     classic_script = {"schema": 1, "part": "P01", "title": "现有", "role": "claim",
                       "beats": [{"id": "P01.b01", "role": "hook", "source_refs": ["s01"], "pace": "normal",
