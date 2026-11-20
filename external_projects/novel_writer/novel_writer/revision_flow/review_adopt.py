@@ -53,6 +53,8 @@ def _distinct_chapters(f: Dict[str, Any]) -> List[int]:
 
 def options(f: Dict[str, Any]) -> List[Dict[str, Any]]:
     """可选处理方式（不落盘，每次按问题内容生成）。每项：{label, target_chapters, instruction}。"""
+    if f["category"] == "outline_deviation":
+        return _outline_options(f)
     if f["category"] == "contradiction":
         chs = _distinct_chapters(f)
         if len(chs) < 2:
@@ -67,6 +69,24 @@ def options(f: Dict[str, Any]) -> List[Dict[str, Any]]:
             lines.append(f"第{c}章相关原文：「{q}」")
     lines.append("要求：只修改与该问题有关的内容，保持其它情节与文风不变。")
     return [{"label": "按问题修改" + "、".join(f"第{c}章" for c in targets),
+             "target_chapters": targets, "instruction": "\n".join(lines)}]
+
+
+def _outline_options(f: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """大纲偏离（R5）：只提供「以大纲为准改正文」。规则比对的偏离只是提示，不能直接改正文；
+    多写章节与少写章节也没有可改的正文，分别交给大纲重生成或正文续写处理。"""
+    if f.get("origin_kind") != "llm" or f["check"] in ("outline_extra_chapter", "outline_missing_chapter"):
+        return []
+    targets = _distinct_chapters(f)
+    if not targets:
+        return []
+    lines = [f"以大纲为准修改正文（大纲是权威）。偏离：{f['title']}。{f['description']}"]
+    for c in targets:
+        q = _quote_of(f, c)
+        if q:
+            lines.append(f"第{c}章需要改动的原文：「{q}」")
+    lines.append("要求：只修改正文中与大纲偏离有关的部分，使其符合大纲要求；其它情节与文风保持不变。")
+    return [{"label": "以大纲为准修改" + "、".join(f"第{c}章" for c in targets),
              "target_chapters": targets, "instruction": "\n".join(lines)}]
 
 
@@ -109,7 +129,7 @@ def _change_for(f: Dict[str, Any], review_id: str, version: str, *, option_index
 def _check_adoptable(ws, f: Dict[str, Any], *, allow_unverified: bool) -> None:
     if f["status"] not in ADOPTABLE:
         raise FlowError(f"问题状态为「{f['status']}」，不能采纳")
-    if f["source"] == "llm" and not f.get("evidence_ok", True) and not allow_unverified:
+    if f["source"] in ("llm", "outline") and not f.get("evidence_ok", True) and not allow_unverified:
         raise FlowError("证据未核实（引文不在原文中），请先核对原文，或明确允许采纳")
     if f.get("adjudication", {}).get("verdict") == "false_positive":
         raise FlowError("模型仲裁为误报，如确需修改请先驳回仲裁或改为其它处理")

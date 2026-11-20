@@ -31,6 +31,7 @@
     python entrypoints/post_revision.py --novel <dir> outline-diff --id ol_xxx             # R4 候选与当前蓝图的差异
     python entrypoints/post_revision.py --novel <dir> outline-adopt --id ol_xxx [--chapters 1 3] [--set 3:function=...] [--no-structure]  # R4 采纳为仅大纲的新版本
     python entrypoints/post_revision.py --novel <dir> outline-discard --id ol_xxx          # R4 放弃候选
+    python entrypoints/post_revision.py --novel <dir> outline-check [--version v00N] [--llm]   # R5 以大纲为准的偏离检查（--llm 调用模型；否则只做确定性比对）
 """
 
 from __future__ import annotations
@@ -43,7 +44,7 @@ import _common  # noqa: F401
 
 from novel_writer.revision_flow import changes as CH
 from novel_writer.revision_flow import config as CFG
-from novel_writer.revision_flow import derived, executor, feedback, outline_regen, review_adopt, review_cards, review_checks, review_llm
+from novel_writer.revision_flow import derived, executor, feedback, outline_check, outline_regen, review_adopt, review_cards, review_checks, review_llm
 from novel_writer.revision_flow import versions as V
 from novel_writer.revision_flow.common import FlowError
 from novel_writer.workspace import Workspace
@@ -139,6 +140,9 @@ def main(argv=None) -> int:
     sp.add_argument("--chapters", nargs="+", type=int, default=None)
     sp.add_argument("--set", action="append", default=[], help="章号:字段=值（如 3:function=新功能）")
     sp.add_argument("--no-structure", action="store_true", help="不采用候选的幕划分")
+    sp = sub.add_parser("outline-check")
+    sp.add_argument("--version", default=None)
+    sp.add_argument("--llm", action="store_true", help="调用模型做 LLM 偏离判断")
     sp = sub.add_parser("outline-discard")
     sp.add_argument("--id", required=True)
     sp = sub.add_parser("review-findings")
@@ -244,6 +248,9 @@ def main(argv=None) -> int:
                     or field.strip() == "word_budget" else value
             return _out(outline_regen.adopt(ws, args.id, chapters=args.chapters, edits=edits,
                                             take_structure=not args.no_structure))
+        if args.cmd == "outline-check":
+            res = outline_check.run_check(ws, args.version, _invoker() if args.llm else None, progress=print)
+            return _out({k: res[k] for k in ("version", "counts", "calls", "failed", "llm")})
         if args.cmd == "outline-discard":
             return _out(outline_regen.discard_candidate(ws, args.id))
         if args.cmd == "review-findings":

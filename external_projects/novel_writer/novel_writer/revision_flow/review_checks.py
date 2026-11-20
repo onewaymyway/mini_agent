@@ -28,6 +28,7 @@ STATUSES = ("open", "adopted", "rejected", "applied", "resolved", "still_open", 
 CATEGORY_LABEL = {
     "coverage": "评估覆盖", "contradiction": "前后矛盾", "continuity": "衔接连贯", "timeline": "时间线",
     "character_logic": "人物", "foreshadow": "伏笔", "pacing": "节奏", "redundancy": "冗余", "style_drift": "文风漂移",
+    "outline_deviation": "大纲偏离",
 }
 
 ADJ_LABEL = {"confirmed": "确认为问题", "false_positive": "误报", "uncertain": "无法判定"}

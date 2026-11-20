@@ -16,7 +16,7 @@ import streamlit as st
 
 from novel_writer.revision_flow import changes as CH
 from novel_writer.revision_flow import config as CFG
-from novel_writer.revision_flow import derived, executor, feedback, jobs, outline_regen
+from novel_writer.revision_flow import derived, executor, feedback, jobs, outline_check, outline_regen
 from novel_writer.revision_flow import review_adopt, review_cards, review_checks, review_llm
 from novel_writer.revision_flow import versions as V
 from novel_writer.revision_flow.common import FlowError, sub_dir
@@ -186,6 +186,11 @@ def _review_job(ws: Workspace, name: str, progress) -> Dict[str, Any]:
 def _outline_job(ws: Workspace, name: str, progress) -> Dict[str, Any]:
     res = outline_regen.generate_candidate(ws, None, jobs.make_invoker(ws, name, _invoker()), progress=progress)
     return {"id": res["id"], "changed": res["summary"]["changed"]}
+
+
+def _outline_check_job(ws: Workspace, name: str, progress) -> Dict[str, Any]:
+    res = outline_check.run_check(ws, None, jobs.make_invoker(ws, name, _invoker()), progress=progress)
+    return {"counts": res["counts"], "calls": res["calls"], "failed": len(res["failed"])}
 
 
 def _increment_job(ws: Workspace, name: str, progress) -> Dict[str, Any]:
@@ -492,8 +497,10 @@ def _tab_review(root: Workspace) -> None:
     cats = sorted({f["category"] for f in fs})
     cat = f2.multiselect("类别", cats, default=cats, key="rv_e_cat",
                          format_func=lambda c: review_checks.CATEGORY_LABEL.get(c, c))
-    src = f3.multiselect("来源", ["deterministic", "llm"], default=["deterministic", "llm"], key="rv_e_src",
-                         format_func=lambda s: "规则候选" if s == "deterministic" else "模型复核")
+    src = f3.multiselect("来源", ["deterministic", "llm", "outline"], default=["deterministic", "llm", "outline"],
+                         key="rv_e_src",
+                         format_func=lambda s: {"deterministic": "规则候选", "llm": "模型复核",
+                                                "outline": "大纲偏离"}[s])
     stat = f4.multiselect("处理状态", list(review_checks.STATUSES), default=list(review_checks.STATUSES), key="rv_e_stat",
                           format_func=_status)
     s1, s2 = st.columns(2)
@@ -505,7 +512,7 @@ def _tab_review(root: Workspace) -> None:
         if f["severity"] not in sev or f["category"] not in cat or f["source"] not in src or f["status"] not in stat:
             continue
         verdict = (f.get("adjudication") or {}).get("verdict")
-        unverified = f["source"] == "llm" and not f.get("evidence_ok", True)
+        unverified = f["source"] in ("llm", "outline") and not f.get("evidence_ok", True)
         if (verdict == "false_positive" and not show_fp) or (unverified and not show_unv):
             folded += 1
             continue
@@ -529,14 +536,14 @@ def _tab_review(root: Workspace) -> None:
         cat_text = review_checks.CATEGORY_LABEL.get(f["category"], f["category"])
         with st.expander(f"{f['severity']}｜{cat_text}｜{f['title']}　（第{chapters}章）"):
             st.write(f["description"])
-            origin = "规则候选" if f["source"] == "deterministic" else "模型复核"
+            origin = {"deterministic": "规则候选", "llm": "模型复核", "outline": "大纲偏离检查"}.get(f["source"], f["source"])
             st.caption(f"编号 {f['id']}　来源 {origin}　状态 {_status(f['status'])}")
             adj = f.get("adjudication")
             if adj:
                 st.info(f"模型仲裁：{_VERDICT_TEXT.get(adj.get('verdict'), adj.get('verdict'))}——{adj.get('reason', '')}")
             elif f.get("needs_adjudication"):
                 st.caption("待仲裁：规则只是候选，请运行 ③ LLM 复核或自行判断。")
-            if f["source"] == "llm" and not f.get("evidence_ok", True):
+            if f["source"] in ("llm", "outline") and not f.get("evidence_ok", True):
                 st.warning("证据未核实：有引文不在章节原文中。该条不参与批量采纳，请核对原文后再决定。")
             for e in f["evidence"]:
                 if e.get("quote"):
@@ -578,7 +585,7 @@ def _adopt_block(root: Workspace, vid: str, f: Dict[str, Any]) -> None:
     ins = st.text_area("修改意见（可改写后再采纳）", value=base["instruction"], height=140,
                        key=f"rv_a_ins_{f['id']}_{idx}")
     unverified_ok = True
-    if f["source"] == "llm" and not f.get("evidence_ok", True):
+    if f["source"] in ("llm", "outline") and not f.get("evidence_ok", True):
         unverified_ok = st.checkbox("我已核对原文，明确允许采纳这条证据未核实的问题", key=f"rv_a_unv_{f['id']}")
     if st.button("采纳为变更", key=f"rv_a_go_{f['id']}", disabled=not unverified_ok):
         res = _act(root, f"采纳问题 {f['id']}", review_adopt.adopt, root, vid, f["id"], option_index=idx,
@@ -606,6 +613,13 @@ def _tab_outline(root: Workspace) -> None:
         st.info("本书为大纲先行：采纳大纲不会同步章节简述，请在变更日志中留意。")
     if st.button("生成候选大纲（调用模型）", key="rv_o_gen", disabled=_busy(root)):
         _start_job(root, "反推大纲", "outline", _outline_job)
+    st.markdown("**偏离检查**：以当前版本的大纲为准，检查正文是否偏离（结果进入「🔎 评估」页的问题池，类别为「大纲偏离」）")
+    c1, c2 = st.columns(2)
+    if c1.button("仅确定性比对（不调用模型）", key="rv_o_chk0", disabled=_busy(root)):
+        res = _act(root, "大纲偏离（确定性）", outline_check.run_check, root, None, None,
+                   summarize=lambda r: f"{sum(r['counts'].values())} 条")
+    if c2.button("偏离检查（调用模型）", key="rv_o_chk1", disabled=_busy(root)):
+        _start_job(root, "大纲偏离检查", "outcheck", _outline_check_job)
 
     cands = [c for c in outline_regen.list_candidates(root) if c["status"] == "candidate"]
     if not cands:
