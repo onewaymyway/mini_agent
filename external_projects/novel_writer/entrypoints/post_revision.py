@@ -19,6 +19,8 @@
     python entrypoints/post_revision.py --novel <dir> verify --version v001
     python entrypoints/post_revision.py --novel <dir> review-estimate [--version v00N]   # R0 评估成本估算（不调用 LLM）
     python entrypoints/post_revision.py --novel <dir> review-cards [--version v00N] [--chapters 1 2] [--force]  # R0 生成事实卡（调用 LLM）
+    python entrypoints/post_revision.py --novel <dir> review-checks [--version v00N]     # R1 确定性检查，更新问题池与报告（不调用 LLM）
+    python entrypoints/post_revision.py --novel <dir> review-findings [--version v00N] [--set f_xxx --status rejected]  # R1 查看/标记问题
 """
 
 from __future__ import annotations
@@ -31,7 +33,7 @@ import _common  # noqa: F401
 
 from novel_writer.revision_flow import changes as CH
 from novel_writer.revision_flow import config as CFG
-from novel_writer.revision_flow import derived, executor, feedback, review_cards
+from novel_writer.revision_flow import derived, executor, feedback, review_cards, review_checks
 from novel_writer.revision_flow import versions as V
 from novel_writer.revision_flow.common import FlowError
 from novel_writer.workspace import Workspace
@@ -97,6 +99,12 @@ def main(argv=None) -> int:
     sp.add_argument("--version", default=None)
     sp.add_argument("--chapters", nargs="+", type=int, default=None)
     sp.add_argument("--force", action="store_true", help="忽略缓存重新生成")
+    sp = sub.add_parser("review-checks")
+    sp.add_argument("--version", default=None)
+    sp = sub.add_parser("review-findings")
+    sp.add_argument("--version", default=None)
+    sp.add_argument("--set", dest="fid", default=None, help="要标记的问题编号")
+    sp.add_argument("--status", default=None, choices=review_checks.STATUSES)
     args = p.parse_args(argv)
 
     ws = Workspace(args.novel)
@@ -153,6 +161,17 @@ def main(argv=None) -> int:
         if args.cmd == "review-cards":
             return _out(review_cards.generate_cards(ws, args.version, _invoker(), progress=print,
                                                     chapters=args.chapters, force=args.force))
+        if args.cmd == "review-checks":
+            res = review_checks.run_checks(ws, args.version)
+            return _out({k: res[k] for k in ("review_id", "version", "counts", "missing")}
+                        | {"report": f"_revision/review/{res['review_id']}/report.md"})
+        if args.cmd == "review-findings":
+            vid = review_cards.resolve_version(ws, args.version)
+            if args.fid:
+                if not args.status:
+                    raise FlowError("请用 --status 指定新状态")
+                return _out(review_checks.set_status(ws, vid, args.fid, args.status))
+            return _out(review_checks.load_findings(ws, vid))
     except FlowError as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 2

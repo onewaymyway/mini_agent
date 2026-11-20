@@ -31,6 +31,7 @@
     ├── runs/run_*.lock       运行期间的归属锁（记录持有进程号；进程结束后残留，用于识别中断）
     ├── runs/<run>/chNNN/attemptKK/out/   每次尝试的执行器产出（便于排查）
     ├── review/cards/chNNN.<sha8>.json   R0 章节事实卡缓存（键＝章节文件 sha256 前 8 位 + schema 版本）；review/work/ 为每次尝试的产出
+    ├── review/rev_<版本>/findings.json、report.md   R1 问题池与可读报告（按版本一份；确定性来源的问题每次重算，已做的处理与其它来源的问题保留）
     ├── triage/tri_*.json     章节反馈分诊记录
     ├── jobs/<任务>.log       实时进度日志（逐行，带时间戳）；<任务>.status.json 为 running / done / failed
     └── jobs/ops.log          操作日志：界面每个按钮的开始、结果（含摘要）或失败原因
@@ -72,6 +73,8 @@ python entrypoints/post_revision.py --novel <dir> verify --version v001
 python entrypoints/post_revision.py --novel <dir> discard --version v003          # P5 撤销（仅叶子版本）
 python entrypoints/post_revision.py --novel <dir> review-estimate [--version v00N]  # R0 评估成本估算（不调用 LLM）
 python entrypoints/post_revision.py --novel <dir> review-cards [--version v00N] [--chapters 1 2] [--force]  # R0 生成章节事实卡（调用 LLM）
+python entrypoints/post_revision.py --novel <dir> review-checks [--version v00N]   # R1 确定性检查，更新问题池与报告（不调用 LLM）
+python entrypoints/post_revision.py --novel <dir> review-findings [--version v00N] [--set f_xxx --status rejected]  # R1 查看 / 标记问题
 ```
 
 变更 JSON 示例（设定变更）：
@@ -98,6 +101,7 @@ python entrypoints/post_revision.py --novel <dir> review-cards [--version v00N] 
 | P4 派生物与对比导出 | 完成（重跑需手动） | `derived.py` | 派生物建议清单、版本逐文件差异、按版本导出 |
 | P5 撤销与丢弃 | 完成 | `versions.py` | `discard`（仅叶子版本，不能丢弃 v001）、`undo_head` |
 | R0 章节事实卡 | 完成 | `review_cards.py` | 全书评估与大纲偏离检查的共用底座。每章一次调用提取时间/地点/人物末状态/事件/新确立的事实/伏笔动作/开头结尾状态；只读版本，只写 `_revision/review/`；缓存命中则不再调用；带 quote 的条目必须能在章节原文中核对到（忽略空白与标点），核对不过的丢弃并记入 `dropped`；单章失败不阻塞其它章。仅在已有 v001 后可用。设计与后续分期见 `next_doc/novel_writer_post_completion_review_and_outline_regen_plan.md` |
+| R1 确定性检查与问题池 | 完成 | `review_checks.py` | 零 LLM，只读事实卡。六项检查：同主体同属性取值不同、已死亡人物再出场（带否定词/复活保护）、「第N天」时间倒退、F+数字伏笔的先回收后种下/无种下/未回收、多章出现的未登记人物、相邻章地点衔接。结果都是**候选**（`needs_adjudication`），由 R2 的 LLM 对照原文仲裁；各检查按 `review_dimensions` 开关，「未纳入评估的章节」不受开关影响。问题 id 稳定，重算保留已做的处理。**未覆盖**：伏笔账本与事实卡的交叉核对、自由文本伏笔的顺序 |
 | 实时进度 | 完成 | `jobs.py`、`ui/post_revision.py` | 生成预览、开始改写、续跑、分诊都在后台线程执行。页面顶部只有一个「当前任务」面板（同一时间只允许一个任务），每 1.5 秒刷新，日志按时间顺序排列、最新在最下（面板显示最近 40 行，完整日志在下方展开项），显示状态、开始时间、已输出行数；包含每章开始判定、每次尝试、判定与校验结果，以及 agent 的逐行输出 |
 | 版本导出与阅读 | 完成 | `derived.py`、`ui/reading.py` | 📖 阅读页顶部可选择工作稿或任一版本（v001 只读完稿、修改版本）；选中版本后预览该版本正文，并可分别导出全书合稿（md / txt / docx / epub）和最终稿。导出文件统一放在 `_versions/exports/<版本号>/`，版本目录不留产物；页面列出该版本已导出的文件供下载。版本快照包含 `项目状态/workspace_config.json`（书名） |
 | 版本差异 | 完成 | `derived.py`、`ui/post_revision.py` | 「查看差异」输出 git 风格的 unified diff（`diff --git` 头、`@@` 块、`+`/`-` 行，带 diff 语法高亮）；先列出变化文件及增删行数，可选单个文件或全部文件；新增/删除文件有 `new file` / `deleted file` 标记 |
@@ -121,6 +125,8 @@ python entrypoints/post_revision.py --novel <dir> review-cards [--version v00N] 
 - 流程完全不读写流水线状态；若作者在完稿后又回去用流水线重跑章节，那是独立于本流程的操作，两者不会自动同步。
 
 ## 测试
+
+`tests/test_revision_review_checks.py`（13 例，R1）：六项检查的正反用例、问题池端到端与报告、维度开关、缺卡如实报告、重算保留状态与其它来源问题、成因消失后问题消失、状态校验、不触碰版本。
 
 `tests/test_revision_review_cards.py`（13 例，R0）：完稿门禁、设置默认与校验、引文归一化核对、结构校验、缓存命中与失效、伪造引文被丢弃、坏 JSON 重试、单章失败隔离、调用上限暂停续跑、默认不设上限、不触碰版本与流水线状态。
 

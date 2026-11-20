@@ -1,6 +1,6 @@
 # novel_writer 完稿后评估、大纲重生成与大纲分析方案（设计，待确认后实施）
 
-> 状态：方案已确认（2026-11-20，见第 9 节），按第 7 节分期实施，每期更新文档并打包 diff zip。**R0 已完成**，其余待做。
+> 状态：方案已确认（2026-11-20，见第 9 节），按第 7 节分期实施，每期更新文档并打包 diff zip。**R0、R1 已完成**，其余待做。
 > 依据：`next_doc/novel_writer_post_completion_revision_plan.md`、`external_projects/novel_writer/docs/revision_flow.md`、
 > `docs/outline_first.md`，以及对 `revision_flow/*`、`blueprint_store.py`、`act_planning.py`、`brief.py`、`ui/post_revision.py` 的阅读。
 
@@ -221,7 +221,8 @@ _revision/
 | 期 | 状态 | 备注 |
 |---|---|---|
 | R0 | 完成 | `revision_flow/review_cards.py`、设置项、CLI `review-estimate`/`review-cards`、`tests/test_revision_review_cards.py`（13 例；人工破坏 6 处逻辑均转红） |
-| R1–R6 | 待做 | |
+| R1 | 完成 | `revision_flow/review_checks.py`、CLI `review-checks`/`review-findings`、`tests/test_revision_review_checks.py`（13 例；人工破坏 10 处逻辑均转红）。偏离原计划：伏笔账本与事实卡的交叉核对暂缓，自由文本伏笔不做顺序检查（无法可靠匹配） |
+| R2–R6 | 待做 | |
 
 ## 11. 风险与已知限制
 
