@@ -7,7 +7,10 @@
 
 from __future__ import annotations
 
+import inspect
 import json
+import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
@@ -45,24 +48,115 @@ def _invoker():
 
 # ─────────────────────────────── 操作日志 ───────────────────────────────
 
+_OP = "rv_op"                 # 当前运行中的页面操作（None 表示空闲）
+_OP_LAST = "rv_op_last"       # 最近一次操作的结果（显示在页面底部）
+
+
+def _store(key: str, transform: Callable[[Any], Any] = lambda r: r) -> Callable[[Any], None]:
+    """操作完成时把结果写入 session_state，供页面在下一次渲染时展示。"""
+    def done(result: Any) -> None:
+        st.session_state[key] = transform(result)
+    return done
+
+
+def _op_running() -> bool:
+    return st.session_state.get(_OP) is not None
+
+
 def _act(root: Workspace, label: str, fn: Callable[..., Any], *args: Any,
-         summarize: Optional[Callable[[Any], str]] = None, **kwargs: Any) -> Optional[Any]:
-    """统一执行一个同步操作：开始 / 成功（含摘要）/ 失败 都写入操作日志。返回结果，失败返回 None。"""
+         summarize: Optional[Callable[[Any], str]] = None,
+         on_done: Optional[Callable[[Any], None]] = None, **kwargs: Any) -> None:
+    """在后台线程执行一个页面操作；运行日志显示在页面最下方，完成后页面自动刷新。
+
+    操作的开始、进度、结果、失败都写入该操作自己的日志（jobs/act_*.log）与页面底部的操作日志。
+    fn 若接受 progress 参数，会收到一个写日志的回调。成功时调用 on_done(结果)，结果由调用方自己保存。
+    同一时间只允许一个页面操作或后台任务运行。
+    """
+    if _op_running() or _busy(root):
+        st.warning("已有操作在进行，请等它结束后再开始。")
+        return
+    op = f"act_{uuid.uuid4().hex[:8]}"
+    box: Dict[str, Any] = {}
+    takes_progress = "progress" in inspect.signature(fn).parameters
+
+    def say(text: str) -> None:
+        jobs.log(root, op, text)
+        jobs.log(root, OPS_JOB, f"  {label} │ {text}")
+
+    def runner() -> None:
+        try:
+            if takes_progress:
+                box["result"] = fn(*args, progress=say, **kwargs)
+            else:
+                box["result"] = fn(*args, **kwargs)
+        except BaseException as exc:  # 线程里的异常在页面底部报告
+            box["error"] = exc
+
     jobs.log(root, OPS_JOB, f"▶ {label}：开始")
-    try:
-        result = fn(*args, **kwargs)
-    except FlowError as exc:
-        jobs.log(root, OPS_JOB, f"✘ {label}：失败：{exc}")
-        st.error(str(exc))
-        return None
-    except Exception as exc:  # 意外错误同样要可见
-        jobs.log(root, OPS_JOB, f"✘ {label}：异常：{exc}")
-        st.error(f"操作失败：{exc}")
-        return None
-    text = summarize(result) if summarize else ""
+    jobs.log(root, op, f"▶ {label}：开始")
+    thread = threading.Thread(target=runner, name=f"rv-{op}", daemon=True)
+    thread.start()
+    st.session_state[_OP] = {"id": op, "label": label, "summarize": summarize, "on_done": on_done,
+                             "thread": thread, "box": box}
+
+
+def _op_finish(root: Workspace) -> None:
+    """操作线程结束后：记录结果、调用 on_done、写日志。只执行一次（执行后清空 _OP）。"""
+    slot = st.session_state.pop(_OP, None)
+    if slot is None:
+        return
+    label, op, box = slot["label"], slot["id"], slot["box"]
+    exc = box.get("error")
+    if exc is not None:
+        msg = str(exc) if isinstance(exc, FlowError) else f"操作失败：{exc}"
+        kind = "失败" if isinstance(exc, FlowError) else "异常"
+        jobs.log(root, OPS_JOB, f"✘ {label}：{kind}：{exc}")
+        jobs.log(root, op, f"✘ {kind}：{exc}")
+        st.session_state[_OP_LAST] = {"label": label, "ok": False, "text": msg}
+        return
+    result = box.get("result")
+    text = slot["summarize"](result) if slot["summarize"] else ""
     jobs.log(root, OPS_JOB, f"✔ {label}：完成{('，' + text) if text else ''}")
-    st.toast(f"{label}：完成")
-    return result
+    jobs.log(root, op, f"✔ 完成{('：' + text) if text else ''}")
+    st.session_state[_OP_LAST] = {"label": label, "ok": True, "text": text}
+    if slot["on_done"] is not None:
+        try:
+            slot["on_done"](result)
+        except Exception as cb_exc:  # 回调失败也要可见
+            jobs.log(root, OPS_JOB, f"✘ {label}：后续步骤失败：{cb_exc}")
+            st.session_state[_OP_LAST] = {"label": label, "ok": False, "text": f"后续步骤失败：{cb_exc}"}
+
+
+def _op_body(root: Workspace) -> None:
+    """运行中：显示实时日志（最新在下）；结束后收尾并刷新整页。"""
+    slot = st.session_state.get(_OP)
+    if slot is None:
+        return
+    if slot["thread"].is_alive():
+        lines = jobs.tail(root, slot["id"], LOG_LINES).splitlines()
+        st.markdown(f"**{slot['label']}**　运行中（实时日志，最新在下）")
+        st.code("\n".join(lines[-TAIL_LINES:]) or "（等待输出…）", language=None)
+        return
+    _op_finish(root)
+    st.rerun(scope="app")
+
+
+def _op_panel(root: Workspace) -> None:
+    """页面底部的操作面板：运行中时用 fragment 每 0.5 秒刷新日志；空闲时显示最近一次结果。"""
+    slot = st.session_state.get(_OP)
+    if slot is not None:
+        if slot["thread"].is_alive():
+            st.fragment(run_every=0.5)(_op_body)(root)
+        else:
+            _op_finish(root)
+            st.rerun()
+        return
+    last = st.session_state.get(_OP_LAST)
+    if last:
+        if last["ok"]:
+            st.success(f"{last['label']}：完成" + (f"，{last['text']}" if last["text"] else ""))
+        else:
+            st.error(f"{last['label']}：{last['text']}")
 
 
 def _ops_panel(root: Workspace) -> None:
@@ -232,9 +326,8 @@ def _tab_versions(root: Workspace) -> None:
     if not V.is_baseline_ready(root):
         st.info("尚未创建完稿基线。全书终审通过后，在这里生成只读的 v001。")
         if st.button("创建完稿基线 v001", key="rv_baseline"):
-            if _act(root, "创建完稿基线", V.init_baseline, root,
-                    summarize=lambda e: f"{e['id']} 已生成（只读）"):
-                st.rerun()
+            _act(root, "创建完稿基线", V.init_baseline, root,
+                 summarize=lambda e: f"{e['id']} 已生成（只读）")
         return
     index = V.load_index(root)
     st.write(f"当前 head：**{index['head']}**")
@@ -246,36 +339,37 @@ def _tab_versions(root: Workspace) -> None:
     with c1:
         pick = st.selectbox("校验版本", ids, key="rv_verify_pick")
         if st.button("校验该版本", key="rv_verify"):
-            problems = _act(root, f"校验 {pick}", V.verify, root, pick,
-                            summarize=lambda p: "内容与清单一致" if not p else f"发现 {len(p)} 处不一致")
-            if problems:
-                st.error("；".join(problems[:5]))
-            elif problems is not None:
-                st.success("校验通过")
+            _act(root, f"校验 {pick}", V.verify, root, pick,
+                 summarize=lambda p: "内容与清单一致" if not p else f"发现 {len(p)} 处不一致",
+                 on_done=_store("rv_verify_res", lambda p: {"version": pick, "problems": p}))
+        vr = st.session_state.get("rv_verify_res")
+        if vr:
+            if vr["problems"]:
+                st.error(f"{vr['version']}：" + "；".join(vr["problems"][:5]))
+            else:
+                st.success(f"{vr['version']} 校验通过")
     with c2:
         if st.button("撤销最近一次修改（丢弃 head）", key="rv_undo",
                      disabled=index["head"] in (None, "v001")):
             head = index["head"]
-            if _act(root, f"撤销 {head}", V.undo_head, root,
-                    summarize=lambda new: f"head 回到 {new}") is not None:
-                st.rerun()
+            _act(root, f"撤销 {head}", V.undo_head, root,
+                 summarize=lambda new: f"head 回到 {new}")
     st.markdown("**版本差异**")
     d1, d2 = st.columns(2)
     a = d1.selectbox("旧版本", ids, index=0, key="rv_diff_a")
     b = d2.selectbox("新版本", ids, index=len(ids) - 1, key="rv_diff_b")
     if st.button("查看差异", key="rv_diff", disabled=a == b):
-        rows = _act(root, f"比较 {a} 与 {b}", derived.diff_versions, root, a, b,
-                    summarize=lambda r: f"{sum(1 for x in r if x['status'] != 'same')} 个文件有差异")
-        if rows is not None:
-            st.session_state["rv_diff_result"] = {"a": a, "b": b, "rows": rows}
+        _act(root, f"比较 {a} 与 {b}", derived.diff_versions, root, a, b,
+             summarize=lambda r: f"{sum(1 for x in r if x['status'] != 'same')} 个文件有差异",
+             on_done=_store("rv_diff_result", lambda rows: {"a": a, "b": b, "rows": rows}))
     _diff_view()
     st.markdown("**导出**")
     ex = st.selectbox("导出版本", ids, key="rv_export_pick")
     if st.button("导出该版本", key="rv_export"):
-        result = _act(root, f"导出 {ex}", derived.export_version, root, ex,
-                      summarize=lambda r: "已生成导出文件")
-        if result is not None:
-            st.json(result, expanded=False)
+        _act(root, f"导出 {ex}", derived.export_version, root, ex,
+             summarize=lambda r: "已生成导出文件", on_done=_store("rv_export_res"))
+    if st.session_state.get("rv_export_res"):
+        st.json(st.session_state["rv_export_res"], expanded=False)
 
 
 # ─────────────────────────────── 变更与预览 ───────────────────────────────
@@ -297,10 +391,8 @@ def _tab_changes(root: Workspace) -> None:
         raw = {"kind": "setting", "title": title, "before": before, "after": after, "reason": reason,
                "terms": _split(terms), "after_terms": _split(after_terms), "mode": mode,
                "effective_from": int(eff) if mode == "from_chapter" else None}
-        created = _act(root, "保存变更", CH.save_change, root, raw,
-                       summarize=lambda c: f"{c['id']}「{c['title']}」，定位词 {'、'.join(c['terms'])}")
-        if created:
-            st.success(f"已保存变更 {created['id']}")
+        _act(root, "保存变更", CH.save_change, root, raw,
+             summarize=lambda c: f"{c['id']}「{c['title']}」，定位词 {'、'.join(c['terms'])}")
 
     changes = CH.list_changes(root)
     if changes:
@@ -336,13 +428,11 @@ def _tab_changes(root: Workspace) -> None:
                            disabled=pv["confirmed"])
         if keep == row["excluded"] and not pv["confirmed"]:
             label = f"第{row['number']}章{'加回' if keep else '排除'}"
-            if _act(root, label, CH.set_excluded, root, pid, row["number"], not keep,
-                    summarize=lambda p: f"当前参与改写 {sum(1 for r in p['chapters'] if not r['excluded'])} 章"):
-                st.rerun()
+            _act(root, label, CH.set_excluded, root, pid, row["number"], not keep,
+                 summarize=lambda p: f"当前参与改写 {sum(1 for r in p['chapters'] if not r['excluded'])} 章")
     if not pv["confirmed"] and st.button("确认预览", key="rv_p_confirm"):
-        if _act(root, f"确认预览 {pid}", CH.confirm_preview, root, pid,
-                summarize=lambda p: f"{len(p['chapters'])} 章候选已锁定"):
-            st.rerun()
+        _act(root, f"确认预览 {pid}", CH.confirm_preview, root, pid,
+             summarize=lambda p: f"{len(p['chapters'])} 章候选已锁定")
 
 
 # ─────────────────────────────── 运行 ───────────────────────────────
@@ -361,9 +451,9 @@ def _tab_runs(root: Workspace) -> None:
     if previews:
         pid = st.selectbox("已确认的预览", previews, key="rv_r_pick")
         if st.button("开始改写", key="rv_r_start", disabled=_busy(root)):
-            if _act(root, f"检查预览 {pid}", executor.precheck_start, root, pid,
-                    summarize=lambda p: f"待改写 {sum(1 for r in p['chapters'] if not r['excluded'])} 章"):
-                _start_job(root, f"开始改写（{pid}）", "run", _run_job, pid)
+            _act(root, f"检查预览 {pid}", executor.precheck_start, root, pid,
+                 summarize=lambda p: f"待改写 {sum(1 for r in p['chapters'] if not r['excluded'])} 章",
+                 on_done=lambda _p: _start_job(root, f"开始改写（{pid}）", "run", _run_job, pid))
     else:
         st.info("还没有已确认的预览。")
 
@@ -382,9 +472,9 @@ def _tab_runs(root: Workspace) -> None:
         _act(root, f"请求停止 {rid}", executor.request_stop, root, rid,
              summarize=lambda _: "将在当前章节结束后生效")
     if run["status"] in executor.RESUMABLE and c2.button("续跑", key="rv_r_resume", disabled=_busy(root)):
-        if _act(root, f"检查续跑 {rid}", executor.precheck_resume, root, rid,
-                summarize=lambda r: f"从未完成章节继续，已完成 {len(r['done'])} 章"):
-            _start_job(root, f"续跑（{rid}）", "run", _resume_job, rid)
+        _act(root, f"检查续跑 {rid}", executor.precheck_resume, root, rid,
+             summarize=lambda r: f"从未完成章节继续，已完成 {len(r['done'])} 章",
+             on_done=lambda _r: _start_job(root, f"续跑（{rid}）", "run", _resume_job, rid))
     if run["status"] == "failed" and run.get("failed"):
         st.error(f"第{run['failed']['chapter']}章失败：{'；'.join(run['failed']['errors'])}")
     if run.get("derived_marks"):
@@ -433,14 +523,14 @@ def _tab_feedback(root: Workspace) -> None:
     if c1.button("采纳为变更", key="rv_f_accept"):
         if res["kind"] == "setting" and not mode:
             st.error("请选择时间语义")
-        elif _act(root, "采纳分诊结果", feedback.accept, root, tid, mode=mode,
-                  effective_from=int(eff) if eff else None,
-                  summarize=lambda c: f"已生成变更 {c['id']}，请到「变更与预览」生成预览"):
-            st.session_state.pop("rv_triage", None)
+        else:
+            _act(root, "采纳分诊结果", feedback.accept, root, tid, mode=mode,
+                 effective_from=int(eff) if eff else None,
+                 summarize=lambda c: f"已生成变更 {c['id']}，请到「变更与预览」生成预览",
+                 on_done=lambda _c: st.session_state.pop("rv_triage", None))
     if c2.button("放弃", key="rv_f_reject"):
-        if _act(root, "放弃分诊结果", feedback.reject, root, tid, summarize=lambda _: "已放弃"):
-            st.session_state.pop("rv_triage", None)
-            st.rerun()
+        _act(root, "放弃分诊结果", feedback.reject, root, tid, summarize=lambda _: "已放弃",
+             on_done=lambda _r: st.session_state.pop("rv_triage", None))
 
 
 # ─────────────────────────────── 评估 ───────────────────────────────
@@ -467,9 +557,8 @@ def _tab_review(root: Workspace) -> None:
     if b1.button("① 生成事实卡（调用模型）", key="rv_e_cards", disabled=_busy(root)):
         _start_job(root, "生成事实卡", "cards", _cards_job)
     if b2.button("② 确定性检查（不调用模型）", key="rv_e_checks"):
-        if _act(root, "确定性检查", review_checks.run_checks, root, None,
-                summarize=lambda r: f"问题 {sum(r['counts'].values())} 条") is not None:
-            st.rerun()
+        _act(root, "确定性检查", review_checks.run_checks, root, None,
+             summarize=lambda r: f"问题 {sum(r['counts'].values())} 条")
     if b3.button("③ LLM 复核：仲裁 / 衔接 / 全书（调用模型）", key="rv_e_llm", disabled=_busy(root)):
         _start_job(root, "LLM 复核", "review", _review_job)
 
@@ -479,10 +568,9 @@ def _tab_review(root: Workspace) -> None:
     fs = data["findings"]
     parent = V.get_entry(root, vid).get("parent")
     if fs and st.button("导出评估报告（Markdown）", key="rv_e_export"):
-        exported = _act(root, "导出评估报告", review_report.export, root, vid,
-                        summarize=lambda r: f"{r['findings']} 条问题")
-        if exported is not None:
-            st.session_state["rv_export_text"] = exported["text"]
+        _act(root, "导出评估报告", review_report.export, root, vid,
+             summarize=lambda r: f"{r['findings']} 条问题",
+             on_done=_store("rv_export_text", lambda r: r["text"]))
     if st.session_state.get("rv_export_text"):
         st.download_button("下载评估报告", data=st.session_state["rv_export_text"],
                            file_name=f"评估报告_{vid}.md", mime="text/markdown", key="rv_e_dl")
@@ -533,11 +621,8 @@ def _tab_review(root: Workspace) -> None:
         pick = st.multiselect("批量采纳（仅非矛盾、证据已核实）", [f["id"] for f in adoptable_batch],
                               key="rv_a_batch", format_func=lambda i: next(f["title"] for f in adoptable_batch if f["id"] == i))
         if st.button("批量采纳所选为变更", key="rv_a_batch_go", disabled=not pick):
-            res = _act(root, "批量采纳", review_adopt.adopt_batch, root, vid, pick,
-                       summarize=lambda r: f"生成 {len(r['created'])} 条变更，跳过 {len(r['skipped'])} 条")
-            if res is not None:
-                st.session_state["rv_a_last"] = res
-                st.rerun()
+            _act(root, "批量采纳", review_adopt.adopt_batch, root, vid, pick,
+                 summarize=lambda r: f"生成 {len(r['created'])} 条变更，跳过 {len(r['skipped'])} 条")
 
     for f in visible:
         chapters = "、".join(str(c) for c in f["chapters"])
@@ -565,9 +650,8 @@ def _tab_review(root: Workspace) -> None:
                                       key=f"rv_e_st_{f['id']}", format_func=_status)
             notes = st.text_input("备注", value=f.get("notes", ""), key=f"rv_e_nt_{f['id']}")
             if st.button("保存处理", key=f"rv_e_save_{f['id']}"):
-                if _act(root, f"标记问题 {f['id']}", review_checks.set_status, root, vid, f["id"], new_status, notes,
-                        summarize=lambda _: f"状态 {_status(new_status)}") is not None:
-                    st.rerun()
+                _act(root, f"标记问题 {f['id']}", review_checks.set_status, root, vid, f["id"], new_status, notes,
+                     summarize=lambda _: f"状态 {_status(new_status)}")
 
 
 def _adopt_block(root: Workspace, vid: str, f: Dict[str, Any]) -> None:
@@ -596,11 +680,9 @@ def _adopt_block(root: Workspace, vid: str, f: Dict[str, Any]) -> None:
     if f["source"] in ("llm", "outline") and not f.get("evidence_ok", True):
         unverified_ok = st.checkbox("我已核对原文，明确允许采纳这条证据未核实的问题", key=f"rv_a_unv_{f['id']}")
     if st.button("采纳为变更", key=f"rv_a_go_{f['id']}", disabled=not unverified_ok):
-        res = _act(root, f"采纳问题 {f['id']}", review_adopt.adopt, root, vid, f["id"], option_index=idx,
-                   instruction=ins, allow_unverified=unverified_ok,
-                   summarize=lambda c: f"已生成变更 {c['id']}，请到「变更与预览」生成预览")
-        if res is not None:
-            st.rerun()
+        _act(root, f"采纳问题 {f['id']}", review_adopt.adopt, root, vid, f["id"], option_index=idx,
+             instruction=ins, allow_unverified=unverified_ok,
+             summarize=lambda c: f"已生成变更 {c['id']}，请到「变更与预览」生成预览")
 
 
 # ─────────────────────────────── 大纲 ───────────────────────────────
@@ -624,8 +706,8 @@ def _tab_outline(root: Workspace) -> None:
     st.markdown("**偏离检查**：以当前版本的大纲为准，检查正文是否偏离（结果进入「🔎 评估」页的问题池，类别为「大纲偏离」）")
     c1, c2 = st.columns(2)
     if c1.button("仅确定性比对（不调用模型）", key="rv_o_chk0", disabled=_busy(root)):
-        res = _act(root, "大纲偏离（确定性）", outline_check.run_check, root, None, None,
-                   summarize=lambda r: f"{sum(r['counts'].values())} 条")
+        _act(root, "大纲偏离（确定性）", outline_check.run_check, root, None, None,
+             summarize=lambda r: f"{sum(r['counts'].values())} 条")
     if c2.button("偏离检查（调用模型）", key="rv_o_chk1", disabled=_busy(root)):
         _start_job(root, "大纲偏离检查", "outcheck", _outline_check_job)
 
@@ -670,15 +752,12 @@ def _tab_outline(root: Workspace) -> None:
     take_struct = st.checkbox("采用候选的幕划分与主线、支线概要", value=True, key=f"rv_o_struct_{pick}")
     b1, b2 = st.columns(2)
     if b1.button("采纳为新版本（仅大纲）", key=f"rv_o_adopt_{pick}", disabled=cand["base_version"] != head):
-        res = _act(root, f"采纳大纲 {pick}", outline_regen.adopt, root, pick, chapters=chosen, edits=edits,
-                   take_structure=take_struct,
-                   summarize=lambda r: f"已生成 {r['version']}（正文未改动）")
-        if res is not None:
-            st.rerun()
+        _act(root, f"采纳大纲 {pick}", outline_regen.adopt, root, pick, chapters=chosen, edits=edits,
+             take_structure=take_struct,
+             summarize=lambda r: f"已生成 {r['version']}（正文未改动）")
     if b2.button("放弃候选", key=f"rv_o_disc_{pick}"):
-        if _act(root, f"放弃候选 {pick}", outline_regen.discard_candidate, root, pick,
-                summarize=lambda _: "已放弃") is not None:
-            st.rerun()
+        _act(root, f"放弃候选 {pick}", outline_regen.discard_candidate, root, pick,
+             summarize=lambda _: "已放弃")
 
 
 # ─────────────────────────────── 设置 ───────────────────────────────
@@ -713,10 +792,12 @@ def page_post_revision() -> None:
     root = Workspace(ws)
     st.header("📝 完稿修改")
     st.caption("完稿后的版本化修改：原稿只读，每次修改生成新版本。独立于写作流水线。")
-    _task_panel(root)
     tabs = st.tabs(["📌 版本", "🧾 变更与预览", "▶ 运行", "💬 章节反馈", "🔎 评估", "📚 大纲", "⚙ 设置"])
     renders = [_tab_versions, _tab_changes, _tab_runs, _tab_feedback, _tab_review, _tab_outline, _tab_settings]
     for tab, render in zip(tabs, renders):
         with tab:
             render(root)
+    # 运行日志统一放在页面最下方：后台任务、页面操作、操作日志
+    _task_panel(root)
+    _op_panel(root)
     _ops_panel(root)

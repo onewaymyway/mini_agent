@@ -155,35 +155,44 @@ def _adopt_one(ws, vid: str, pool: Dict[str, Any], f: Dict[str, Any], *, option_
 
 def adopt(ws, version: Optional[str], fid: str, *, option_index: Optional[int] = None,
           instruction: Optional[str] = None, target_chapters: Optional[List[int]] = None,
-          allow_unverified: bool = False) -> Dict[str, Any]:
+          allow_unverified: bool = False, progress=None) -> Dict[str, Any]:
     """采纳一条问题：生成一条 chapter 变更（draft），问题状态变为 adopted。返回变更。"""
+    say = progress or (lambda _t: None)
     vid = RC.resolve_version(ws, version)
     pool = RK.load_findings(ws, vid)
     f = _find(pool, fid)
+    say(f"采纳「{f['title']}」（版本 {vid}）")
     change = _adopt_one(ws, vid, pool, f, option_index=option_index, instruction=instruction,
                         target_chapters=target_chapters, allow_unverified=allow_unverified)
     _write_pool(ws, vid, pool)
+    say(f"已生成变更 {change['id']}，涉及第 {'、'.join(str(c) for c in change['chapters'])} 章，等待预览")
     return change
 
 
-def adopt_batch(ws, version: Optional[str], fids: List[str], choices: Optional[Dict[str, int]] = None) -> Dict[str, Any]:
+def adopt_batch(ws, version: Optional[str], fids: List[str], choices: Optional[Dict[str, int]] = None,
+                progress=None) -> Dict[str, Any]:
     """批量采纳。跳过：证据未核实、已驳回、矛盾类但未选定方向（choices 中没有该问题）。逐条返回原因。"""
+    say = progress or (lambda _t: None)
     vid = RC.resolve_version(ws, version)
     pool = RK.load_findings(ws, vid)
     choices = choices or {}
     created, skipped = [], []
+    say(f"批量采纳 {len(fids)} 条（版本 {vid}）")
     for fid in fids:
         f = _find(pool, fid)
         if f["category"] == "contradiction" and fid not in choices:
             skipped.append({"id": fid, "reason": "矛盾类需要先选定以哪一方为准"})
+            say(f"跳过「{f['title']}」：矛盾类需要先选定方向")
             continue
         try:
             change = _adopt_one(ws, vid, pool, f, option_index=choices.get(fid), instruction=None,
                                 target_chapters=None, allow_unverified=False)
         except FlowError as exc:
             skipped.append({"id": fid, "reason": str(exc)})
+            say(f"跳过「{f['title']}」：{exc}")
             continue
         created.append(change["id"])
+        say(f"采纳「{f['title']}」→ 变更 {change['id']}")
     _write_pool(ws, vid, pool)
     return {"created": created, "skipped": skipped}
 

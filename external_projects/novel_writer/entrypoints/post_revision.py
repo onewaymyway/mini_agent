@@ -44,6 +44,11 @@ import sys
 
 import _common  # noqa: F401
 
+
+def _log(text: str) -> None:
+    """进度输出到 stderr，stdout 只留给 JSON 结果，便于脚本解析。"""
+    print(text, file=sys.stderr, flush=True)
+
 from novel_writer.revision_flow import changes as CH
 from novel_writer.revision_flow import config as CFG
 from novel_writer.revision_flow import derived, executor, feedback, outline_check, outline_regen, review_adopt, review_cards, review_checks, review_llm, review_report
@@ -207,14 +212,14 @@ def main(argv=None) -> int:
         if args.cmd == "review-estimate":
             return _out(review_cards.estimate(ws, args.version) | {"llm_review": review_llm.estimate_llm(ws, args.version)})
         if args.cmd == "review-cards":
-            return _out(review_cards.generate_cards(ws, args.version, _invoker(), progress=print,
+            return _out(review_cards.generate_cards(ws, args.version, _invoker(), progress=_log,
                                                     chapters=args.chapters, force=args.force))
         if args.cmd == "review-checks":
-            res = review_checks.run_checks(ws, args.version)
+            res = review_checks.run_checks(ws, args.version, progress=_log)
             return _out({k: res[k] for k in ("review_id", "version", "counts", "missing")}
                         | {"report": f"_revision/review/{res['review_id']}/report.md"})
         if args.cmd == "review-llm":
-            res = review_llm.run_review(ws, args.version, _invoker(), progress=print)
+            res = review_llm.run_review(ws, args.version, _invoker(), progress=_log)
             return _out({k: res[k] for k in ("review_id", "version", "calls", "paused", "failed", "counts", "missing")}
                         | {"report": f"_revision/review/{res['review_id']}/report.md"})
         if args.cmd == "review-options":
@@ -226,17 +231,17 @@ def main(argv=None) -> int:
         if args.cmd == "adopt":
             return _out(review_adopt.adopt(ws, args.version, args.finding, option_index=args.option,
                                            instruction=args.instruction, target_chapters=args.chapters,
-                                           allow_unverified=args.allow_unverified))
+                                           allow_unverified=args.allow_unverified, progress=_log))
         if args.cmd == "adopt-batch":
             choices = {}
             for item in args.choose:
                 k, _, v = item.partition("=")
                 choices[k.strip()] = int(v)
-            return _out(review_adopt.adopt_batch(ws, args.version, args.findings, choices))
+            return _out(review_adopt.adopt_batch(ws, args.version, args.findings, choices, progress=_log))
         if args.cmd == "review-increment":
-            return _out(review_adopt.increment(ws, _invoker(), progress=print))
+            return _out(review_adopt.increment(ws, _invoker(), progress=_log))
         if args.cmd == "outline-candidate":
-            return _out(outline_regen.generate_candidate(ws, args.version, _invoker(), progress=print))
+            return _out(outline_regen.generate_candidate(ws, args.version, _invoker(), progress=_log))
         if args.cmd == "outline-list":
             return _out(outline_regen.list_candidates(ws))
         if args.cmd == "outline-diff":
@@ -251,12 +256,12 @@ def main(argv=None) -> int:
                 edits.setdefault(int(num), {})[field.strip()] = json.loads(value) if field.strip() == "tension_level" \
                     or field.strip() == "word_budget" else value
             return _out(outline_regen.adopt(ws, args.id, chapters=args.chapters, edits=edits,
-                                            take_structure=not args.no_structure))
+                                            take_structure=not args.no_structure, progress=_log))
         if args.cmd == "outline-check":
-            res = outline_check.run_check(ws, args.version, _invoker() if args.llm else None, progress=print)
+            res = outline_check.run_check(ws, args.version, _invoker() if args.llm else None, progress=_log)
             return _out({k: res[k] for k in ("version", "counts", "calls", "failed", "llm")})
         if args.cmd == "review-export":
-            res = review_report.export(ws, args.version)
+            res = review_report.export(ws, args.version, progress=_log)
             return _out({k: res[k] for k in ("version", "path", "findings")})
         if args.cmd == "outline-discard":
             return _out(outline_regen.discard_candidate(ws, args.id))

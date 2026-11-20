@@ -105,13 +105,16 @@ def render(data: Dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def export(ws, version: Optional[str] = None) -> Dict[str, Any]:
+def export(ws, version: Optional[str] = None, progress=None) -> Dict[str, Any]:
+    say = progress or (lambda _t: None)
     vid = RC.resolve_version(ws, version)
     data = RK.load_findings(ws, vid)
     if not data.get("updated_at") and not data["findings"]:
         raise FlowError("该版本还没有评估记录，请先运行评估")
     data.setdefault("version", vid)
+    say(f"读取问题池：{len(data['findings'])} 条（版本 {vid}）")
     text = render(data)
     path = export_path(ws, vid)
     path.write_text(text, encoding="utf-8")
+    say(f"已写入 {path.name}（{len(text)} 字符）")
     return {"version": vid, "path": str(path.relative_to(ws.root)), "findings": len(data["findings"]), "text": text}

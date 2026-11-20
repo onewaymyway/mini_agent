@@ -330,8 +330,9 @@ def _canon(bp: Dict[str, Any]) -> str:
 
 
 def adopt(ws, oid: str, *, chapters: Optional[List[int]] = None, edits: Optional[Dict[int, Dict[str, Any]]] = None,
-          take_structure: bool = True, note: str = "") -> Dict[str, Any]:
+          take_structure: bool = True, note: str = "", progress=None) -> Dict[str, Any]:
     """采纳候选：派生「仅大纲」新版本。chapters=None 表示全部；edits 可就地改某章的字段（仅限 CHAPTER_FIELDS）。"""
+    say = progress or (lambda _t: None)
     cand = load_candidate(ws, oid)
     if cand["status"] != "candidate":
         raise FlowError(f"候选状态为 {cand['status']}，不能采纳")
@@ -381,7 +382,9 @@ def adopt(ws, oid: str, *, chapters: Optional[List[int]] = None, edits: Optional
         shutil.rmtree(tmp, ignore_errors=True)
 
     diff = diff_blueprints(old_bp, bp)
+    say(f"校验通过：采纳 {len(chosen)} 章，结构{'采用' if take_structure else '保留原样'}（基于 {head}）")
     vid2 = V.derive(ws, head, note=f"大纲重生成 {oid}")
+    say(f"已派生 {vid2}，写入蓝图")
     root = version_dir(ws, vid2)
     base = root / BLUEPRINT_REL
     BS.write_store(base, base / BS.INDEX_NAME, bp)
@@ -391,6 +394,7 @@ def adopt(ws, oid: str, *, chapters: Optional[List[int]] = None, edits: Optional
     _append_changelog(root, oid, head, chosen, diff, note)
     V.finalize(ws, vid2, [oid])
     V.set_head(ws, vid2)
+    say(f"已定稿并设为 head：{vid2}（正文未改动）")
     cand["status"], cand["adopted_version"] = "adopted", vid2
     cand["adopted_chapters"] = chosen
     save_json(_state_path(ws, oid), cand)

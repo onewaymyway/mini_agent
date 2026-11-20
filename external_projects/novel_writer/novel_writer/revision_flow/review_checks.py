@@ -283,17 +283,22 @@ def load_findings(ws, version: str) -> Dict[str, Any]:
     return {"review_id": review_id(version), "version": version, "findings": []}
 
 
-def run_checks(ws, version: Optional[str] = None) -> Dict[str, Any]:
+def run_checks(ws, version: Optional[str] = None, progress=None) -> Dict[str, Any]:
     """对版本做确定性检查，更新问题池与报告。至少需要一张事实卡。返回 {review_id, version, counts, findings, missing}。"""
+    say = progress or (lambda _t: None)
     vid = RC.resolve_version(ws, version)
     cards, missing = RC.load_cards(ws, vid)
     if not cards:
         raise FlowError("没有可用的事实卡，请先生成事实卡（review-cards）")
     dims = set(CFG.load(ws)["review_dimensions"])
     fresh: List[Dict[str, Any]] = []
-    for _name, (dim, fn) in CHECKS.items():
+    for name, (dim, fn) in CHECKS.items():
         if dim in dims:
-            fresh.extend(fn(cards))
+            found = fn(cards)
+            fresh.extend(found)
+            say(f"检查 {name}：{len(found)} 条候选")
+        else:
+            say(f"检查 {name}：维度 {dim} 未启用，跳过")
     fresh.extend(check_coverage(missing))
 
     old = load_findings(ws, vid)
@@ -315,6 +320,7 @@ def run_checks(ws, version: Optional[str] = None) -> Dict[str, Any]:
                       "dropped_items": sum(len(c["dropped"]) for c in cards.values())}}
     save_json(findings_path(ws, vid), data)
     (review_dir(ws, vid) / "report.md").write_text(render_report(data), encoding="utf-8")
+    say(f"问题池已更新：共 {len(merged)} 条，缺卡章节 {len(missing)} 个")
     counts: Dict[str, int] = {}
     for f in merged:
         counts[f["severity"]] = counts.get(f["severity"], 0) + 1
