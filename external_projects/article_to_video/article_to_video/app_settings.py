@@ -31,6 +31,7 @@ from .visual.config import normalize_visual
 GLOBAL_FILE = "settings.json"
 GEARS = ("G0", "G1", "G2", "G3")
 OUTLINE_ENGINES = ("llm", "rules")
+GEN_MODES = ("classic", "deck")   # classic：现有方案（口播稿→分镜→画面）；deck：新方案（幻灯片→讲解）
 GROUPS = ("settings", "visual", "compose", "branding", "bgm", "pipeline", "logs")
 
 # 身份字段：只属于项目本身，不写入全局默认，也不从全局继承
@@ -84,8 +85,12 @@ def _norm_pipeline(raw: Optional[Dict[str, Any]]) -> Tuple[Dict[str, Any], List[
     except (TypeError, ValueError):
         max_minutes = 0.0
         warnings.append("耗时上限不是数字，已改用 0（不限）")
+    mode = raw.get("mode", "classic")
+    if mode not in GEN_MODES:
+        warnings.append(f"生成方案 {mode!r} 不合法，已改用现有方案 classic")
+        mode = "classic"
     return {"gear": gear, "outline_engine": engine, "max_images": max_images,
-            "max_minutes": round(max_minutes, 1)}, warnings
+            "max_minutes": round(max_minutes, 1), "mode": mode}, warnings
 
 
 def _norm_logs(raw: Optional[Dict[str, Any]]) -> Tuple[Dict[str, Any], List[str]]:
@@ -294,8 +299,8 @@ def save_group(project_dir: Path, group: str, value: Dict[str, Any], now=None,
 BUDGET_KEYS = ("gear", "max_images", "max_minutes")
 
 
-def save_budget(project_dir: Path, *, gear: str, max_images: int, max_minutes: float, now=None,
-                root: Optional[Path] = None) -> bool:
+def save_budget(project_dir: Path, *, gear: str, max_images: int, max_minutes: float, mode: Optional[str] = None,
+                now=None, root: Optional[Path] = None) -> bool:
     """把驾驶舱的挡位与预算记为本项目的设置（写入 project.json 的 pipeline 分组，只记录与全局默认不同的部分）。
 
     值没有变化时不写文件，返回 False；有变化时写入并返回 True。
@@ -304,7 +309,9 @@ def save_budget(project_dir: Path, *, gear: str, max_images: int, max_minutes: f
     cur = effective_group(project_dir, "pipeline", root)
     new = dict(cur)
     new.update(gear=gear, max_images=int(max_images), max_minutes=round(float(max_minutes), 1))
-    if all(new[k] == cur[k] for k in BUDGET_KEYS):
+    if mode is not None:
+        new["mode"] = mode
+    if all(new[k] == cur[k] for k in BUDGET_KEYS + (("mode",) if mode is not None else ())):
         return False
     save_group(project_dir, "pipeline", new, now=now, root=root)
     return True

@@ -121,11 +121,50 @@ def _next_hint(rows) -> str:
     return "全部步骤已完成。"
 
 
+def _deck_panel(pdir, busy: bool) -> None:
+    """新方案（第一阶段）：逐章生成幻灯片规划。讲稿、配音与按页渲染在后续阶段接入。"""
+    from article_to_video.deck.store import deck_status, plan_deck
+    from article_to_video.planning.errors import PlanError
+
+    st.subheader("新方案：幻灯片规划")
+    st.caption("先把文章按章节规划为幻灯片（确定性规则，不调用模型）。讲稿、配音与按页渲染将在后续阶段接入；"
+               "在此之前，流水线按钮对新方案不可用。")
+    spine = load_spine(pdir)
+    if spine is None or not spine.get("confirmed"):
+        st.info("请先在「🗺️ 大纲」生成并确认大纲（C0）。")
+        return
+    rows = []
+    for p in spine["parts"]:
+        s_ = deck_status(pdir, p["id"])
+        rows.append({"章": f"{p['id']} {p['title'][:20]}",
+                     "幻灯片规划": ("✅ 已生成" if s_["exists"] and not s_["stale"] else
+                                    ("⚠️ 已过期" if s_["exists"] else "⬜ 未生成")),
+                     "页数": s_["slides"], "预计讲解": f"{(s_.get('total_est_sec') or 0) / 60:.1f} 分钟"})
+    st.table(rows)
+    if st.button("生成全部章的幻灯片规划（后台）", disabled=busy):
+        def run_plan():
+            errs = []
+            for p in spine["parts"]:
+                try:
+                    plan_deck(pdir, p["id"])
+                except PlanError as exc:
+                    errs.append(f"{p['id']}：{exc}")
+            if errs:
+                return {"state": "error", "message": "；".join(errs)}
+            return {"state": "done", "message": "幻灯片规划已生成"}
+
+        if jobs.start(pdir, "幻灯片规划", run_plan, scope="deck"):
+            st.rerun()
+
+
 def _control_body(pdir) -> None:
     busy = run_state(pdir, None)["busy"]
 
     from article_to_video import app_settings as S  # 默认值来自「⚙️ 设置」（R4）
     pl = S.effective_group(pdir, "pipeline")
+    mode_labels = {"classic": "现有方案：口播稿 → 分镜 → 画面", "deck": "新方案：幻灯片 → 讲解（第一阶段：仅规划）"}
+    mode = st.radio("生成方案（每个项目单独记忆）", list(mode_labels), index=list(mode_labels).index(pl["mode"]),
+                    format_func=lambda k: mode_labels[k], key="gen_mode")
     with st.expander("挡位与预算", expanded=True):
         st.caption("默认值来自「⚙️ 设置」的「流水线」分组；这里的挡位与预算会记为本项目的设置，下次打开自动使用。")
         gear = st.radio("挡位", list(GEARS), horizontal=True, index=list(GEARS).index(pl["gear"]))
@@ -135,7 +174,7 @@ def _control_body(pdir) -> None:
         max_images = c2.number_input("预算：最多生图次数（0 = 不限）", min_value=0, value=int(pl["max_images"]), step=1)
         max_minutes = c3.number_input("预算：最长耗时（分钟，0 = 不限）", min_value=0.0, value=float(pl["max_minutes"]),
                                       step=5.0)
-        if S.save_budget(pdir, gear=gear, max_images=int(max_images), max_minutes=float(max_minutes)):
+        if S.save_budget(pdir, gear=gear, max_images=int(max_images), max_minutes=float(max_minutes), mode=mode):
             joblog.log(pdir, "settings", f"挡位与预算已保存为本项目设置：{gear}，生图 {int(max_images) or '不限'}，"
                                          f"耗时 {float(max_minutes) or '不限'} 分钟")
         c4, c5 = st.columns(2)
@@ -143,7 +182,9 @@ def _control_body(pdir) -> None:
         merge_all = c5.checkbox("多期时导出全集合并版", value=False)
         offline = st.checkbox("离线冒烟（语音静音、生图占位，大纲改用离线规则，不产生费用）", value=False)
 
-    if st.button("▶ 运行流水线（后台）", disabled=busy):
+    if mode == "deck":
+        _deck_panel(pdir, busy)
+    elif st.button("▶ 运行流水线（后台）", disabled=busy):
         mi = int(max_images) or None
         mm = float(max_minutes) or None
         try:
@@ -170,7 +211,7 @@ def _control_body(pdir) -> None:
         if blocked:
             st.warning("当前挡位在导出前需要终审。请先勾选上方「确认终审（允许导出）」，否则流水线会停在导出前，"
                        "不会生成视频。")
-        if st.button("清空所有并重新生成（后台）", disabled=busy or not ok_all or blocked, key="rst_all_go",
+        if st.button("清空所有并重新生成（后台）", disabled=busy or not ok_all or blocked or mode == "deck", key="rst_all_go",
                      type="primary"):
             mi_all = int(max_images) or None
             mm_all = float(max_minutes) or None

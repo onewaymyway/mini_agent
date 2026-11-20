@@ -39,7 +39,7 @@ def test_get_set_del_path_cleans_empty_parents():
 def test_builtin_groups_are_normalized_and_complete():
     assert S.builtin_group("settings")["video"]["resolution"] == "1080P"
     assert "engine_chain" in S.builtin_group("settings")["tts"]
-    assert S.builtin_group("pipeline") == {"gear": "G0", "outline_engine": "llm", "max_images": 0, "max_minutes": 0.0}
+    assert S.builtin_group("pipeline") == {"gear": "G0", "outline_engine": "llm", "max_images": 0, "max_minutes": 0.0, "mode": "classic"}
     assert S.builtin_group("logs") == {"max_lines": 0}
 
 
