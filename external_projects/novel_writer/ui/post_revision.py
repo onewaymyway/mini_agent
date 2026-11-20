@@ -16,7 +16,7 @@ import streamlit as st
 
 from novel_writer.revision_flow import changes as CH
 from novel_writer.revision_flow import config as CFG
-from novel_writer.revision_flow import derived, executor, feedback, jobs, outline_check, outline_regen
+from novel_writer.revision_flow import derived, executor, feedback, jobs, outline_check, outline_regen, review_report
 from novel_writer.revision_flow import review_adopt, review_cards, review_checks, review_llm
 from novel_writer.revision_flow import versions as V
 from novel_writer.revision_flow.common import FlowError, sub_dir
@@ -478,6 +478,14 @@ def _tab_review(root: Workspace) -> None:
     data = review_checks.load_findings(root, vid)
     fs = data["findings"]
     parent = V.get_entry(root, vid).get("parent")
+    if fs and st.button("导出评估报告（Markdown）", key="rv_e_export"):
+        exported = _act(root, "导出评估报告", review_report.export, root, vid,
+                        summarize=lambda r: f"{r['findings']} 条问题")
+        if exported is not None:
+            st.session_state["rv_export_text"] = exported["text"]
+    if st.session_state.get("rv_export_text"):
+        st.download_button("下载评估报告", data=st.session_state["rv_export_text"],
+                           file_name=f"评估报告_{vid}.md", mime="text/markdown", key="rv_e_dl")
     st.divider()
     st.markdown("**增量复评**")
     st.caption("改动后（head 有父版本）：重新生成事实卡（未改章节命中缓存）、确定性检查与 LLM 复核，并与改动前的问题对照："

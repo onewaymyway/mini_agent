@@ -32,6 +32,8 @@
     python entrypoints/post_revision.py --novel <dir> outline-adopt --id ol_xxx [--chapters 1 3] [--set 3:function=...] [--no-structure]  # R4 采纳为仅大纲的新版本
     python entrypoints/post_revision.py --novel <dir> outline-discard --id ol_xxx          # R4 放弃候选
     python entrypoints/post_revision.py --novel <dir> outline-check [--version v00N] [--llm]   # R5 以大纲为准的偏离检查（--llm 调用模型；否则只做确定性比对）
+    python entrypoints/post_revision.py --novel <dir> review-export [--version v00N]        # R6 导出评估报告（Markdown，写入 _revision/review/rev_<版本>/export.md）
+    python entrypoints/post_revision.py --novel <dir> stop --run run_xxx                   # 请求停止改写运行（当前章结束后生效）
 """
 
 from __future__ import annotations
@@ -44,7 +46,7 @@ import _common  # noqa: F401
 
 from novel_writer.revision_flow import changes as CH
 from novel_writer.revision_flow import config as CFG
-from novel_writer.revision_flow import derived, executor, feedback, outline_check, outline_regen, review_adopt, review_cards, review_checks, review_llm
+from novel_writer.revision_flow import derived, executor, feedback, outline_check, outline_regen, review_adopt, review_cards, review_checks, review_llm, review_report
 from novel_writer.revision_flow import versions as V
 from novel_writer.revision_flow.common import FlowError
 from novel_writer.workspace import Workspace
@@ -143,6 +145,8 @@ def main(argv=None) -> int:
     sp = sub.add_parser("outline-check")
     sp.add_argument("--version", default=None)
     sp.add_argument("--llm", action="store_true", help="调用模型做 LLM 偏离判断")
+    sp = sub.add_parser("review-export")
+    sp.add_argument("--version", default=None)
     sp = sub.add_parser("outline-discard")
     sp.add_argument("--id", required=True)
     sp = sub.add_parser("review-findings")
@@ -251,6 +255,9 @@ def main(argv=None) -> int:
         if args.cmd == "outline-check":
             res = outline_check.run_check(ws, args.version, _invoker() if args.llm else None, progress=print)
             return _out({k: res[k] for k in ("version", "counts", "calls", "failed", "llm")})
+        if args.cmd == "review-export":
+            res = review_report.export(ws, args.version)
+            return _out({k: res[k] for k in ("version", "path", "findings")})
         if args.cmd == "outline-discard":
             return _out(outline_regen.discard_candidate(ws, args.id))
         if args.cmd == "review-findings":

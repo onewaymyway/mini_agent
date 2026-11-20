@@ -1,6 +1,6 @@
 # novel_writer 完稿后评估、大纲重生成与大纲分析方案（设计，待确认后实施）
 
-> 状态：方案已确认（2026-11-20，见第 9 节），按第 7 节分期实施，每期更新文档并打包 diff zip。**R0–R5 已完成**，其余待做。
+> 状态：方案已确认（2026-11-20，见第 9 节），按第 7 节分期实施，每期更新文档并打包 diff zip。**R0–R6 全部完成**（2026-11-20）。以下为各期实际交付与偏离原计划之处。
 > 依据：`next_doc/novel_writer_post_completion_revision_plan.md`、`external_projects/novel_writer/docs/revision_flow.md`、
 > `docs/outline_first.md`，以及对 `revision_flow/*`、`blueprint_store.py`、`act_planning.py`、`brief.py`、`ui/post_revision.py` 的阅读。
 
@@ -226,7 +226,7 @@ _revision/
 | R3 | 完成 | `revision_flow/review_adopt.py`、`changes.py`（可选 `evidence`、`origin` 字段，向后兼容）、`executor.py`（改写提示加入「问题定位」）、界面「🔎 评估」采纳区与增量复评、CLI `review-options`/`adopt`/`adopt-batch`/`review-increment`、`tests/test_revision_review_adopt.py`（12 例）。人工破坏 3 处逻辑（矛盾类免选方向、跳过 `ADOPTABLE` 状态门禁、取消 resolved/still_open 对照）均转红。偏离原计划：①选项按需生成，不落盘（同一问题内容一致，无需存储）；②「不处理」以「已驳回」表达；③采纳的修正全部是 `chapter` 变更，设定类变更不由评估产生；④问题编号改为不含章节 sha（窗口编号用章节范围），否则章节一改编号即变，无法对照；⑤「stale」状态只在设计中，界面未单独呈现旧版本的失效 |
 | R4 | 完成 | `revision_flow/outline_regen.py`、界面「📚 大纲」、CLI `outline-candidate`/`outline-list`/`outline-diff`/`outline-adopt`/`outline-discard`、`tests/test_revision_outline_regen.py`（14 例）。人工破坏 2 处（取消 head 变化检查、采纳时复制全部字段包括字数）中 2 处转红；严格读回的守卫测试未能触发（写入是确定性的），作为兜底保留。偏离原计划：①章名保留蓝图中的章名，没有才取正文标题；②候选的幕与主线概要写入 `structure.acts` 与 `structure.actual_summary`；③章节大纲.md 不重写（它由规划步骤的 LLM 生成，重写会丢内容），变更日志注明；④LLM 按每 20 章分批，超过 20 章时调用次数随章数增长 |
 | R5 | 完成 | `revision_flow/outline_check.py`、`review_adopt.py`（大纲偏离只提供「以大纲为准改正文」）、界面「📚 大纲」偏离检查按钮与「🔎 评估」来源筛选、CLI `outline-check [--llm]`、`tests/test_revision_outline_check.py`（12 例）。人工破坏 2 处（取消少写可无引文的规则、取消规则偏离不可采纳的门禁）均转红。偏离原计划：①权威大纲即检查版本的蓝图，不另设选择（采纳重生成大纲后它就是当前蓝图）；②「以正文为准更新大纲」不在此处，由 R4 负责；③确定性比对的结果不经 R2 仲裁（统一标轻，作为提示）；④多写章节（正文有、大纲无）不提供改正文选项，应通过 R4 重生成大纲处理；⑤偏离检查按批次缓存，没有调用上限暂停续跑（与 R4 一致，估算仅作提示） |
-| R6 | 待做 | |
+| R6 | 完成 | `revision_flow/review_report.py`（评估报告导出）、CLI `review-export`、界面导出与下载、`docs/revision_flow.md` 全面对齐（目录结构、命令、阶段表、已知限制、测试清单）、`tests/test_revision_cli_and_report.py`（6 例）。CLI 全部 30 个子命令都能解析并有文档；非 LLM 流程端到端通过。全量回归：除环境相关的 19 个既有失败外全部通过，失败集合与改动前完全一致。偏离原计划：报告为 Markdown（未做 docx）；`stale` 状态未在界面呈现 |
 
 ## 11. 风险与已知限制
 
