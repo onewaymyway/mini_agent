@@ -122,26 +122,35 @@ def _next_hint(rows) -> str:
 
 
 def _deck_panel(pdir, busy: bool) -> None:
-    """新方案（第一阶段）：逐章生成幻灯片规划。讲稿、配音与按页渲染在后续阶段接入。"""
-    from article_to_video.deck.store import deck_status, plan_deck
+    """新方案：逐章生成幻灯片规划 → 确认 → 生成讲稿 → 确认。配音与按页渲染为后续阶段。"""
+    from article_to_video.deck.script import plan_script, script_status
+    from article_to_video.deck.store import confirm_deck, deck_status, load_deck, plan_deck
     from article_to_video.planning.errors import PlanError
 
-    st.subheader("新方案：幻灯片规划")
-    st.caption("先把文章按章节规划为幻灯片（确定性规则，不调用模型）。讲稿、配音与按页渲染将在后续阶段接入；"
-               "在此之前，流水线按钮对新方案不可用。")
+    st.subheader("新方案：幻灯片讲解")
+    st.caption("先把文章规划为幻灯片（确定性规则），确认后为每页生成讲稿（需要文本模型）。"
+               "配音与按页渲染将在后续阶段接入；在此之前，新方案下流水线按钮不可用。")
     spine = load_spine(pdir)
     if spine is None or not spine.get("confirmed"):
         st.info("请先在「🗺️ 大纲」生成并确认大纲（C0）。")
         return
     rows = []
     for p in spine["parts"]:
-        s_ = deck_status(pdir, p["id"])
-        rows.append({"章": f"{p['id']} {p['title'][:20]}",
-                     "幻灯片规划": ("✅ 已生成" if s_["exists"] and not s_["stale"] else
-                                    ("⚠️ 已过期" if s_["exists"] else "⬜ 未生成")),
-                     "页数": s_["slides"], "预计讲解": f"{(s_.get('total_est_sec') or 0) / 60:.1f} 分钟"})
+        d = deck_status(pdir, p["id"])
+        sc = script_status(pdir, p["id"])
+        rows.append({
+            "章": f"{p['id']} {p['title'][:20]}",
+            "幻灯片规划": ("⬜ 未生成" if not d["exists"] else
+                          ("⚠️ 已过期" if d["stale"] else ("✅ 已确认" if d["confirmed"] else "🟡 待确认"))),
+            "页数": d["slides"],
+            "讲稿": ("⬜ 未生成" if not sc["exists"] else
+                     ("⚠️ 已过期" if sc["stale"] else ("✅ 已确认" if sc["confirmed"] else "🟡 待确认"))),
+            "讲稿字数": sc.get("total_chars", 0),
+        })
     st.table(rows)
-    if st.button("生成全部章的幻灯片规划（后台）", disabled=busy):
+
+    c1, c2 = st.columns(2)
+    if c1.button("生成全部章的幻灯片规划（后台）", disabled=busy):
         def run_plan():
             errs = []
             for p in spine["parts"]:
@@ -155,6 +164,46 @@ def _deck_panel(pdir, busy: bool) -> None:
 
         if jobs.start(pdir, "幻灯片规划", run_plan, scope="deck"):
             st.rerun()
+    if c2.button("确认全部章的幻灯片规划", disabled=busy):
+        for p in spine["parts"]:
+            if load_deck(pdir, p["id"]) and not deck_status(pdir, p["id"])["stale"]:
+                try:
+                    confirm_deck(pdir, p["id"])
+                except PlanError as exc:
+                    st.error(str(exc))
+        st.rerun()
+
+    d1, d2 = st.columns(2)
+    if d1.button("生成全部章的讲稿（后台，需要文本模型）", disabled=busy):
+        def run_script():
+            from article_to_video.pipeline.run import default_providers
+            llm = default_providers(pdir, offline=False)["llm"]
+            errs = []
+            for p in spine["parts"]:
+                try:
+                    plan_script(pdir, p["id"], llm=llm, part_title=p["title"])
+                except PlanError as exc:
+                    errs.append(f"{p['id']}：{exc}")
+            if errs:
+                return {"state": "error", "message": "；".join(errs)}
+            return {"state": "done", "message": "讲稿已生成"}
+
+        if jobs.start(pdir, "幻灯片讲稿", run_script, scope="deck"):
+            st.rerun()
+    if d2.button("确认全部章的讲稿", disabled=busy):
+        from article_to_video.deck.script import confirm_script
+        for p in spine["parts"]:
+            if load_script_doc(pdir, p["id"]):
+                try:
+                    confirm_script(pdir, p["id"])
+                except PlanError as exc:
+                    st.error(str(exc))
+        st.rerun()
+
+
+def load_script_doc(pdir, part_id):
+    from article_to_video.deck.script import load_script
+    return load_script(pdir, part_id)
 
 
 def _control_body(pdir) -> None:
