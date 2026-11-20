@@ -24,6 +24,11 @@ PAGE_PAUSE_MS = 500
 _SPLIT = re.compile(r"[^。！？!?；;]+[。！？!?；;]?")
 
 
+def deck_root(pdir: Path, part_id: str) -> Path:
+    """新方案的产物目录：parts/<章>/deck/（配音文件也在其中，与现有方案的 audio/ 分开）。"""
+    return Path(pdir) / "parts" / part_id / "deck"
+
+
 def timeline_path(pdir: Path, part_id: str) -> Path:
     return Path(pdir) / "parts" / part_id / "deck_timeline.json"
 
@@ -112,7 +117,7 @@ def synthesize_deck(pdir: Path, part_id: str, tts, *, force: bool = False,
     if st["stale"]:
         raise PlanError(f"{part_id} 的讲稿已过期，请先重新生成并确认")
     pseudo = pages_as_script(part_id, doc)
-    tl = synthesize_script(pdir, part_id, pseudo, tts, force=force)
+    tl = synthesize_script(pdir, part_id, pseudo, tts, force=force, audio_root=deck_root(pdir, part_id))
     by_page: Dict[str, List[Dict[str, Any]]] = {}
     for it in tl["sentences"]:
         by_page.setdefault(it["beat"], []).append(it)

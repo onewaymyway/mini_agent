@@ -46,12 +46,17 @@ def _sentence_key(voice: str, rate: str, tts_text: str, engine_name: str) -> str
     return hashlib.sha256(f"{voice}|{rate}|{tts_text}|{engine_name}".encode("utf-8")).hexdigest()[:20]
 
 
-def _manifest_path(pdir: Path, part_id: str) -> Path:
-    return pdir / "parts" / part_id / "audio" / "manifest.json"
+def _audio_root(pdir: Path, part_id: str, root: Optional[Path] = None) -> Path:
+    """配音文件所在的根目录（其下是 audio/）。现有方案用 parts/<章>/，新方案用 parts/<章>/deck/，互不删除对方的音频。"""
+    return Path(root) if root is not None else pdir / "parts" / part_id
 
 
-def _load_manifest(pdir: Path, part_id: str) -> Dict[str, Any]:
-    p = _manifest_path(pdir, part_id)
+def _manifest_path(pdir: Path, part_id: str, root: Optional[Path] = None) -> Path:
+    return _audio_root(pdir, part_id, root) / "audio" / "manifest.json"
+
+
+def _load_manifest(pdir: Path, part_id: str, root: Optional[Path] = None) -> Dict[str, Any]:
+    p = _manifest_path(pdir, part_id, root)
     return read_json(p) if p.is_file() else {}
 
 
@@ -71,7 +76,8 @@ def synthesize_part(project_dir: Path, part_id: str, tts, *, force: bool = False
     return timeline
 
 
-def synthesize_script(pdir: Path, part_id: str, script: Dict[str, Any], tts, *, force: bool = False) -> Dict[str, Any]:
+def synthesize_script(pdir: Path, part_id: str, script: Dict[str, Any], tts, *, force: bool = False,
+                      audio_root: Optional[Path] = None) -> Dict[str, Any]:
     """按任意“口播结构”（beats/sentences，与口播稿同形）逐句配音并返回时间线（不写文件）。
 
     现有方案的口播稿与新方案的每页讲稿都经由这里配音，句级缓存、断点续跑与引擎记录完全相同。
@@ -79,8 +85,9 @@ def synthesize_script(pdir: Path, part_id: str, script: Dict[str, Any], tts, *, 
     pdir = Path(pdir)
     cfg = project_tts_config(pdir)
     voices, vwarn = assign_voices(script, cfg)
-    audio_dir = pdir / "parts" / part_id / "audio"
-    manifest = {} if force else _load_manifest(pdir, part_id)
+    root = _audio_root(pdir, part_id, audio_root)
+    audio_dir = root / "audio"
+    manifest = {} if force else _load_manifest(pdir, part_id, audio_root)
 
     durations: Dict[str, float] = {}
     engines: Dict[str, str] = {}
@@ -105,7 +112,7 @@ def synthesize_script(pdir: Path, part_id: str, script: Dict[str, Any], tts, *, 
             joblog.bound_log(f"{sid}：已合成（{voice}，{dur:.1f} 秒，{engine}）")
             manifest[sid] = {"key": key, "file": out.name, "duration": round(dur, 3), "voice": voice,
                              "rate": rate, "engine": engine, "text": tts_text}
-            write_json_atomic(_manifest_path(pdir, part_id), manifest)  # 每句落盘，停止后可续跑
+            write_json_atomic(_manifest_path(pdir, part_id, audio_root), manifest)  # 每句落盘，停止后可续跑
             durations[sid] = dur
             engines[sid] = engine
 

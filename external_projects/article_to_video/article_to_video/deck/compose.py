@@ -197,7 +197,8 @@ def compose_deck_part(pdir: Path, part_id: str, *, now: Optional[datetime] = Non
     vdir.mkdir(parents=True, exist_ok=True)
     segs, total = build_segments(pdir, part_id, deck, tl, canvas, orientation, theme_name, chapter)
     cancel.check()
-    part_dir = pdir / "parts" / part_id
+    from .voice import deck_root
+    part_dir = deck_root(pdir, part_id)        # 新方案的配音在 parts/<章>/deck/audio/
     audio_tl = {"total_sec": total,
                 "sentences": [{"id": s["id"], "start": s["start"]} for p in tl["pages"] for s in p["sentences"]]}
     wav = vdir / "audio.wav"

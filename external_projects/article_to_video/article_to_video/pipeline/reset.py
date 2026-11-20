@@ -94,7 +94,21 @@ def reset_project(pdir: Path, *, from_stage: str = "outline", part_ids: Optional
                 _drop(cdir / name, f"{pid}/{name}")
         if include_images and PROJECT_ORDER.index(from_stage) <= PROJECT_ORDER.index("render"):
             _drop(cdir / "images", f"{pid}/images")
-    _drop(pdir / "exports", "exports")
+    # 导出：只删除现有方案的成片；新方案的成片（文件名含“_新方案”）保留，两种方案互不影响
+    exports = pdir / "exports"
+    if exports.is_dir():
+        for f in list(exports.iterdir()):
+            if "_新方案" in f.name:
+                continue
+            if f.is_dir():
+                shutil.rmtree(f)
+                removed.append(f"exports/{f.name}/")
+            else:
+                f.unlink()
+                removed.append(f"exports/{f.name}")
+        if not any(exports.iterdir()):
+            exports.rmdir()
+            removed.append("exports/")
     append_progress(pdir, f"项目级清空：从 {from_stage} 起，章 {len(part_ids)} 个，删除 {len(removed)} 项"
                           + ("（含生图缓存）" if include_images else ""))
     return removed
