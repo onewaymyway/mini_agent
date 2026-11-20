@@ -19,11 +19,12 @@ from .states import uniform_reveal
 
 WINDOW_MAX_CHARS = 2500            # 分窗上限（字）：段落边界切分，单段超过上限时自成一窗
 ROLES = ("argument", "data", "structure", "formula", "quote", "narrative", "image", "hold")
-SHOT_KINDS = ("keypoint", "illustration", "quote", "formula", "flow", "chart", "table", "list", "hold")
+SHOT_KINDS = ("keypoint", "illustration", "quote", "formula", "flow", "stack", "chart", "table", "list", "hold")
 KIND_TO_TYPE = {"keypoint": "keypoint", "illustration": "illustration", "quote": "quote",
-                "formula": "formula", "flow": "diagram", "chart": "table", "table": "table", "list": "list"}
+                "formula": "formula", "flow": "diagram", "stack": "stack", "chart": "table", "table": "table",
+                "list": "list"}
 TYPE_TO_KIND = {"keypoint": "keypoint", "illustration": "illustration", "quote": "quote",
-                "formula": "formula", "diagram": "flow", "table": "table", "list": "list",
+                "formula": "formula", "diagram": "flow", "stack": "stack", "table": "table", "list": "list",
                 "timeline": "list"}
 MAX_SHOT_ITEMS = 3                 # 单镜元素上限（计划 4.5）；流程、表格、原文列表由原文结构决定，不受此限
 POINT_LIMIT = 20                   # 视觉要点：每条字数上限（计划 4.1）

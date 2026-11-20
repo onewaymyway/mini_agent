@@ -16,7 +16,7 @@ from ..visual.states import SCENE_TYPES
 MAX_RUN = 3          # 同一画面类型连续超过此数量给出警告
 MAX_PROMPT_CHARS = 400
 
-_STRUCT_TO_TYPES = {"chain": ("diagram",), "table": ("table",), "math": ("formula",),
+_STRUCT_TO_TYPES = {"chain": ("diagram", "stack"), "table": ("table",), "math": ("formula",),
                     "list": ("list", "timeline")}
 
 
@@ -88,7 +88,7 @@ def validate_storyboard(sb: Dict[str, Any], script: Dict[str, Any], *, allowance
                 break
         limit = {"keypoint": MAX_KEYPOINT_ITEMS, "illustration": MAX_KEYPOINT_ITEMS,
                  "list": MAX_LIST_ITEMS, "timeline": MAX_LIST_ITEMS,
-                 "diagram": MAX_DIAGRAM_NODES, "table": MAX_TABLE_ROWS,
+                 "diagram": MAX_DIAGRAM_NODES, "stack": MAX_DIAGRAM_NODES, "table": MAX_TABLE_ROWS,
                  "quote": 1, "formula": MAX_KEYPOINT_ITEMS}[kind]
         if len(items) > limit:
             errors.append(f"{sid}：{kind} 条目 {len(items)} 个，超过上限 {limit}")

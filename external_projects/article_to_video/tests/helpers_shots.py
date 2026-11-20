@@ -61,6 +61,37 @@ def default_plan(prompt, _n=None):
     return json.dumps({"beats": beats}, ensure_ascii=False)
 
 
+_NOTE_FLOW = re.compile(r"原文流程：.*?（共 (\d+) 个节点")
+_NOTE_STACK = re.compile(r"原文堆叠层级[^：]*：.*?（共 (\d+) 层）")
+_NOTE_TABLE = re.compile(r"原文表格（共 (\d+) 行）")
+_NOTE_LIST = re.compile(r"原文列表（共 (\d+) 项）")
+CAPS = {"flow": 6, "stack": 6, "table": 6, "list": 5}
+
+
+def _structure_pages(block, items):
+    """段落中的原文结构：按每镜上限分页，每页占用一句（测试用的假模型只做结构覆盖，不做语义判断）。
+
+    返回 (镜头列表, 已占用的句子数)。
+    """
+    found = []
+    for kind, pat in (("flow", _NOTE_FLOW), ("stack", _NOTE_STACK), ("table", _NOTE_TABLE), ("list", _NOTE_LIST)):
+        m = pat.search(block)
+        if m:
+            found.append((kind, int(m.group(1))))
+    out, used = [], 0
+    for kind, total in found:
+        if kind in ("flow", "stack"):          # 流程节点必须在镜头句子中出现，假模型无法保证，故不生成
+            continue
+        cap = CAPS[kind]
+        for start in range(0, total, cap):
+            if used >= len(items):
+                return out, used
+            sid = items[used][0]
+            out.append(shot(sid, sid, kind, part=[start + 1, min(total, start + cap)]))
+            used += 1
+    return out, used
+
+
 def default_shots(prompt, special=None):
     """每段：金句单独成镜，其余句子合并为一个卡片镜头（条目取首句前 20 字）。
 
@@ -77,6 +108,9 @@ def default_shots(prompt, special=None):
         if custom is not None:
             out += custom
             continue
+        struct, used = _structure_pages(blocks.get(bid, ""), items)
+        out += struct
+        items = items[used:]
         i = 0
         while i < len(items):
             sid, text, q = items[i]

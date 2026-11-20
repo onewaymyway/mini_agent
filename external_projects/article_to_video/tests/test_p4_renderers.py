@@ -2,7 +2,7 @@
 import pytest
 
 from article_to_video.render.fonts import FontError, find_cjk_font
-from article_to_video.visual.states import uniform_reveal
+from article_to_video.visual.states import ALL_AT_ONCE_TYPES, uniform_reveal
 
 try:
     find_cjk_font({})
@@ -16,7 +16,7 @@ from article_to_video.render.renderers import (render_background, render_chapter
                                                render_scene_frames)
 from article_to_video.render.text import split_segments, wrap_text  # noqa: E402
 from article_to_video.render.themes import canvas_size  # noqa: E402
-from article_to_video.visual.states import expected_state_count  # noqa: E402
+from article_to_video.visual.states import ALL_AT_ONCE_TYPES, expected_state_count  # noqa: E402
 
 
 def _scene(t, items, **kw):
@@ -53,15 +53,25 @@ def test_frames_match_states_and_are_transparent_rgba(kind, orientation):
     for f in frames:
         assert f.mode == "RGBA" and f.size == canvas
         assert f.getpixel((0, 0))[3] == 0          # 四角透明：只绘制内容层
-    assert _coverage(frames[0]) < _coverage(frames[-1]) or kind == "quote"
+    if kind in ALL_AT_ONCE_TYPES:                 # 结构化画面整体一次显示（第一期起）
+        assert len(frames) == 1
+    else:
+        assert _coverage(frames[0]) < _coverage(frames[-1]) or kind == "quote"
 
 
-@pytest.mark.parametrize("kind", ["keypoint", "list", "timeline", "diagram", "table"])
+@pytest.mark.parametrize("kind", ["keypoint"])
 def test_more_revealed_items_cover_more_pixels(kind):
     sc = CASES[kind]
     frames = render_scene_frames(sc, canvas_size("landscape", "720P"), "landscape", "ink")
     cov = [_coverage(f) for f in frames]
     assert cov == sorted(cov) and cov[-1] > cov[0]
+
+
+@pytest.mark.parametrize("kind", ["list", "timeline", "diagram", "table"])
+def test_structured_items_are_drawn_all_at_once(kind):
+    sc = CASES[kind]
+    frames = render_scene_frames(sc, canvas_size("landscape", "720P"), "landscape", "ink")
+    assert len(frames) == 1 and _coverage(frames[0]) > 0
 
 
 def test_formula_first_state_shows_formula_only():

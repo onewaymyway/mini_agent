@@ -41,6 +41,10 @@ def normalize_scene(raw: Dict[str, Any], sentences: List[Dict[str, Any]]) -> Dic
         "image": None,
         "reveal": [],
     }
+    page = raw.get("page")
+    if (isinstance(page, dict) and isinstance(page.get("index"), int) and isinstance(page.get("total"), int)
+            and 1 <= page["index"] <= page["total"]):
+        sc["page"] = {"index": page["index"], "total": page["total"]}   # 续镜的页码（结构分页）
     if sc["type"] == "table" and sc["rows"]:  # 表格的条目由行派生，保证行数与逐行出现一致
         sc["items"] = ["、".join(r) for r in sc["rows"]]
     if sc["type"] == "illustration":

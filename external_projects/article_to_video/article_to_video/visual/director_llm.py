@@ -41,7 +41,7 @@ from .shots import (MAX_POINTS, MAX_SHOT_ITEMS, POINT_LIMIT, ROLES, beat_of, men
                     scene_reveal, sentence_id, sentence_index)
 
 MAX_ATTEMPTS = 3
-LLM_PROMPT_VERSION = "s4-llm-v2"
+LLM_PROMPT_VERSION = "s4-llm-v3"
 SYSTEM = ("你是讲解视频的视觉导演。只输出一个 JSON 对象，不要任何解释、前言或 Markdown 围栏。"
           "只使用给定口播与原文结构中已有的词，不得添加原文没有的数字、年份或英文词。")
 _TOKEN = re.compile(r"\d+(?:\.\d+)?|[A-Za-z][A-Za-z0-9\-\.]*")
@@ -50,7 +50,7 @@ MAX_SUBJECT_CHARS = 24
 CHART_HEADER = ["项目", "数值"]
 MAX_CHART_ITEMS = 3
 MAX_FORMULA_CHARS = 120
-SHOT_KINDS = ("keypoint", "illustration", "quote", "formula", "flow", "chart", "table", "list", "hold")
+SHOT_KINDS = ("keypoint", "illustration", "quote", "formula", "flow", "stack", "chart", "table", "list", "hold")
 
 ROLE_HINT = {
     "argument": "关键论点", "data": "数据与对比", "structure": "结构与流程", "formula": "公式",
@@ -71,19 +71,25 @@ def beat_context(beat: Dict[str, Any], blocks: List[Dict[str, Any]]) -> Dict[str
     if any(s.get("quote") for s in beat["sentences"]):
         allowed.append("quote")
     if chain and len(chain.get("nodes") or []) >= 2:
-        allowed.append("flow")
-        arrow = " → ".join(str(n) for n in chain["nodes"][:MAX_DIAGRAM_NODES])
-        notes.append(f"原文流程：{arrow}" + ("（首尾相接，为回路）" if chain.get("loop") else ""))
+        nodes_all = [str(n) for n in chain["nodes"]]
+        if chain.get("direction") == "up":
+            allowed.append("stack")
+            notes.append(f"原文堆叠层级（自上而下书写，最后一项为底层，用 stack，不要用 flow）："
+                         f"{' / '.join(nodes_all)}（共 {len(nodes_all)} 层）")
+        else:
+            allowed.append("flow")
+            notes.append(f"原文流程：{' → '.join(nodes_all)}（共 {len(nodes_all)} 个节点"
+                         + ("，首尾相接，为回路" if chain.get("loop") else "") + "）")
     if table:
         allowed.append("table")
-        notes.append("原文表格：" + " | ".join(plain(h) for h in table.get("header") or []))
+        notes.append(f"原文表格（共 {len(table.get('rows') or [])} 行）：" + " | ".join(plain(h) for h in table.get("header") or []))
     if math_b:
         allowed.append("formula")
         notes.append("原文公式：" + str(math_b["content"]).replace("\n", " "))
     if lst:
-        items = [_text_of(x) for x in lst["items"]][:MAX_LIST_ITEMS]
+        items = [_text_of(x) for x in lst["items"]]
         allowed.append("list")
-        notes.append("原文列表：" + "；".join(items))
+        notes.append(f"原文列表（共 {len(items)} 项）：" + "；".join(items))
     if any(_DIGIT.search(s["text"]) for s in beat["sentences"]):
         allowed.append("chart")
     return {"allowed": allowed, "chain": chain, "table": table, "math": math_b, "lst": lst,
@@ -322,6 +328,10 @@ def build_window_prompt(part: Dict[str, Any], script: Dict[str, Any], wbeats: Se
         "可选 image_scene（所处环境）与 image_composition（画面安排，如“远景，主体靠左”）。"
         "这些字段都不得要求出现文字、标题、字幕或标志。",
         "8. formula 的 formula_explanation 可以使用原文公式中的符号与变量名。",
+        "9. flow 表示先后或因果（→ 或 ↓）；stack 表示原文用 ↑ 书写的堆叠层级（自上而下书写，最后一项为底层），不得用 flow 表示。",
+        "10. flow、stack、table、list 可用 part: [起, 止] 指定本镜展示的项目序号（从 1 开始，闭区间）。"
+        "超过每镜上限（流程与层级 6 项、表格 6 行、列表 5 项）时，用多个连续镜头（同一类型，part 依次覆盖剩余项目）完整展示，"
+        "不得省略任何项目；未写 part 时只展示前 N 项。",
     ]
     if issues:
         lines += ["", "【上次输出的问题，必须修正后重新输出完整 JSON】"] + [f"- {x}" for x in issues]
@@ -384,21 +394,29 @@ def _build_shot(cut: Dict[str, Any], beat: Dict[str, Any], ctx: Dict[str, Any]) 
     if kind == "quote":
         q = next(i for i in range(a, b + 1) if sents[i].get("quote"))
         sc.update(type="quote", items=[sents[q]["text"][:TEXT_LIMIT]])
-    elif kind == "flow":
+    elif kind in ("flow", "stack"):
         chain = ctx["chain"]
-        nodes = [plain(n)[:24] for n in chain["nodes"][:MAX_DIAGRAM_NODES]]
+        total = len(chain["nodes"])
+        a0, a1 = _page(raw, total, MAX_DIAGRAM_NODES, span, errs)
+        nodes = [plain(n)[:24] for n in chain["nodes"][a0:a1]]
         missing = [n for n in nodes if not mention(n, texts)]
         if missing:
             errs.append(f"镜头 {span}：流程节点「{missing[0]}」未在本镜头的句子中出现，请扩大句子范围或换用其它画面")
-        sc.update(type="diagram", items=nodes, loop=bool(chain.get("loop")))
+        whole = a0 == 0 and a1 == total
+        sc.update(type="diagram" if kind == "flow" else "stack", items=nodes,
+                  loop=bool(chain.get("loop")) and whole, part=[a0 + 1, a1])
     elif kind == "table":
         t = ctx["table"]
         header = [plain(h)[:30] for h in (t.get("header") or [])][:MAX_TABLE_COLS]
-        rows = [[plain(c)[:30] for c in (r or [])][:MAX_TABLE_COLS] for r in t["rows"]][:MAX_TABLE_ROWS]
-        sc.update(type="table", header=header, rows=rows, items=["、".join(r) for r in rows])
+        total = len(t["rows"])
+        r0, r1 = _page(raw, total, MAX_TABLE_ROWS, span, errs)
+        rows = [[plain(c)[:30] for c in (r or [])][:MAX_TABLE_COLS] for r in t["rows"][r0:r1]]
+        sc.update(type="table", header=header, rows=rows, items=["、".join(r) for r in rows], part=[r0 + 1, r1])
     elif kind == "list":
-        items = [_text_of(x)[:TEXT_LIMIT] for x in ctx["lst"]["items"]][:MAX_LIST_ITEMS]
-        sc.update(type="timeline" if _year_like(items) else "list", items=items)
+        total = len(ctx["lst"]["items"])
+        i0, i1 = _page(raw, total, MAX_LIST_ITEMS, span, errs)
+        items = [_text_of(x)[:TEXT_LIMIT] for x in ctx["lst"]["items"][i0:i1]]
+        sc.update(type="timeline" if _year_like(items) else "list", items=items, part=[i0 + 1, i1])
     elif kind == "chart":
         data = raw.get("data") if isinstance(raw.get("data"), list) else []
         pairs = [(str(x.get("label") or "").strip(), str(x.get("value") or "").strip())
@@ -453,6 +471,108 @@ def _build_shot(cut: Dict[str, Any], beat: Dict[str, Any], ctx: Dict[str, Any]) 
     if fallback_from:
         sc["fallback_from"] = fallback_from
     return (sc if not errs else None), errs
+
+
+_FAMILY_KINDS = {"chain": ("flow", "stack"), "table": ("table",), "list": ("list",)}
+_PAGED_TYPES = ("diagram", "stack", "table", "list", "timeline")
+
+
+def _page(raw: Dict[str, Any], total: int, cap: int, span: str, errs: List[str]) -> Tuple[int, int]:
+    """镜头展示的结构项范围（从 0 起、右开）。raw.part 为 [起, 止]（从 1 起、闭区间）；缺省取前 cap 项。"""
+    part = raw.get("part")
+    if part is None:
+        return 0, min(total, cap)
+    if not (isinstance(part, list) and len(part) == 2 and all(isinstance(x, int) for x in part)):
+        errs.append(f"镜头 {span}：part 应为 [起, 止] 两个整数")
+        return 0, min(total, cap)
+    a, b = part
+    if not (1 <= a <= b <= total) or b - a + 1 > cap:
+        errs.append(f"镜头 {span}：part {part} 超出范围（共 {total} 项，每镜最多 {cap} 项）")
+        return 0, min(total, cap)
+    return a - 1, b
+
+
+def _structure_totals(ctx: Dict[str, Any]) -> Dict[str, Tuple[int, int, str]]:
+    out: Dict[str, Tuple[int, int, str]] = {}
+    if ctx.get("chain"):
+        out["chain"] = (len(ctx["chain"]["nodes"]), MAX_DIAGRAM_NODES, "流程或堆叠层级")
+    if ctx.get("table"):
+        out["table"] = (len(ctx["table"].get("rows") or []), MAX_TABLE_ROWS, "表格行")
+    if ctx.get("lst"):
+        out["list"] = (len(ctx["lst"]["items"]), MAX_LIST_ITEMS, "列表项")
+    return out
+
+
+def _coverage_errors(cuts: List[Dict[str, Any]], wbeats: Sequence[Dict[str, Any]],
+                     ctxs: Dict[str, Dict[str, Any]]) -> List[str]:
+    """原文结构被镜头展示了一部分（分页不完整）时报错，要求模型补齐续镜。
+
+    结构在本段完全没有出现在镜头中（口播未提及或模型选择了卡片）不在这里报错，
+    由 absence_warnings 在整章层面提示，避免一处内容问题导致整窗反复重做。
+    """
+    out: List[str] = []
+    for b in wbeats:
+        bid = b["id"]
+        for fam, (total, cap, label) in _structure_totals(ctxs[bid]).items():
+            covered = set()
+            used = False
+            for c in cuts:
+                if c["beat"] != bid or c["kind"] not in _FAMILY_KINDS[fam]:
+                    continue
+                used = True
+                a0, a1 = _page(c["raw"], total, cap, f"{c['first']}–{c['last']}", [])
+                covered.update(range(a0, a1))
+            if not used:
+                continue
+            if -(-total // cap) > len(b["sentences"]):   # 句子不够分页（每页需占用一个句子范围）：由整章提示说明
+                continue
+            missing = [i + 1 for i in range(total) if i not in covered]
+            if missing:
+                out.append(f"段 {bid} 的{label}共 {total} 项，镜头未展示第 {'、'.join(str(i) for i in missing)} 项："
+                           "请用同一类型的续镜补齐（part 指向剩余项目，每镜不超过上限），不得省略项目")
+    return out
+
+
+_FAMILY_TYPES = {"chain": ("diagram", "stack"), "table": ("table",), "list": ("list", "timeline")}
+
+
+def absence_warnings(scenes: List[Dict[str, Any]], script: Dict[str, Any],
+                     ctxs: Dict[str, Dict[str, Any]]) -> List[str]:
+    """整章层面：原文结构在其段落中完全没有出现在画面里时给出提示（不阻止生成）。"""
+    out: List[str] = []
+    for b in script["beats"]:
+        bid = b["id"]
+        own = [s for s in scenes if s.get("beat") == bid]
+        types = {s.get("type") for s in own}
+        for fam, (total, _cap, label) in _structure_totals(ctxs[bid]).items():
+            if not types & set(_FAMILY_TYPES[fam]):
+                out.append(f"{bid}：原文的{label}未在本段画面中出现（口播未提及，或模型选择了卡片），请在分镜页检查")
+                continue
+            shown = set()
+            for s in own:
+                if s.get("type") not in _FAMILY_TYPES[fam]:
+                    continue
+                if s.get("part"):
+                    shown.update(range(s["part"][0] - 1, s["part"][1]))
+                else:
+                    shown.update(range(len(s.get("items") or [])))
+            if len(shown) < total:
+                out.append(f"{bid}：原文的{label}共 {total} 项，本段画面只展示了 {len(shown)} 项"
+                           "（句子数不足以分页，请在分镜页手动调整句子范围或拆分段落）")
+    return out
+
+
+def _mark_pages(scenes: List[Dict[str, Any]]) -> None:
+    """同一段内的结构分页：标注页码，渲染时显示“1 / 3”。"""
+    groups: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+    for sc in scenes:
+        if sc.get("part") and sc.get("type") in _PAGED_TYPES:
+            fam = "chain" if sc["type"] in ("diagram", "stack") else sc["type"]
+            groups.setdefault((sc["beat"], fam), []).append(sc)
+    for members in groups.values():
+        if len(members) > 1:
+            for j, sc in enumerate(members, 1):
+                sc["page"] = {"index": j, "total": len(members)}
 
 
 def parse_window(obj: Any, wbeats: Sequence[Dict[str, Any]], ctxs: Dict[str, Dict[str, Any]], *,
@@ -510,8 +630,13 @@ def parse_window(obj: Any, wbeats: Sequence[Dict[str, Any]], ctxs: Dict[str, Dic
             sc, e = _build_shot(cut, beat_by[cut["beat"]], ctxs[cut["beat"]])
             errs += e
             if sc is not None:
+                cut["kind"] = sc["kind"]              # 覆盖检查按实际构建的类型计算（回退为卡片的不算覆盖结构）
                 scenes.append(sc)
 
+    if not errs:
+        errs += _coverage_errors(cuts, wbeats, ctxs)     # 覆盖检查在分镜成功构建之后进行，避免掩盖具体错误
+    if not errs:
+        _mark_pages(scenes)
     n_ill = sum(1 for s in scenes if s.get("type") == "illustration")
     remaining = max(0, allowance - _groups(ill_used, shots))
     if not errs and _groups(ill_used + n_ill, shots) - _groups(ill_used, shots) > remaining:
@@ -647,7 +772,7 @@ def direct_part_llm(script: Dict[str, Any], blocks: List[Dict[str, Any]], *, par
     if v["errors"]:
         joblog.bound_log(f"{pid}：整章校验发现 {len(v['errors'])} 处问题，本章未写入结果", level="error")
         raise PlanError(f"{pid} 分镜整章校验不通过：" + "；".join(v["errors"][:6]))
-    sb["warnings"] = v["warnings"]
+    sb["warnings"] = v["warnings"] + absence_warnings(scenes_all, script, ctxs)
     cached = sum(1 for w in win_info if w["cached"])
     total_calls = plan_calls + sum(w["calls"] for w in win_info)
     joblog.bound_log(f"{pid}：模型分镜通过校验：{len(scenes_all)} 个镜头（{_kind_summary(scenes_all)}），"

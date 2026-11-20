@@ -23,7 +23,7 @@ MAX_LIST_ITEMS = 5
 MAX_DIAGRAM_NODES = 6
 MAX_TABLE_ROWS = 6
 MAX_TABLE_COLS = 4
-DIRECTOR_VERSION = "p4-rules-v1"
+DIRECTOR_VERSION = "p4-rules-v2"
 
 _CLAUSE = re.compile(r"[^，,；;。！？!?：:]+[，,；;。！？!?：:]?")
 _YEAR = re.compile(r"^\s*(19|20)\d{2}")
@@ -124,10 +124,13 @@ def _build_beat(beat: Dict[str, Any], idx: int, refs_blocks: List[Dict[str, Any]
     has_plain = any(not s.get("quote") for s in sents)
 
     if chain and len(chain.get("nodes") or []) >= 2:
-        sc = _scene(beat, "diagram", refs)
-        nodes = [str(n) for n in chain["nodes"]][:MAX_DIAGRAM_NODES]
+        all_nodes = [str(n) for n in chain["nodes"]]
+        sc = _scene(beat, "stack" if chain.get("direction") == "up" else "diagram", refs)
+        nodes = all_nodes[:MAX_DIAGRAM_NODES]
         sc["items"] = nodes
-        sc["loop"] = bool(chain.get("loop"))
+        sc["loop"] = bool(chain.get("loop")) and len(nodes) == len(all_nodes)
+        if len(all_nodes) > len(nodes):
+            sc["truncated"] = len(all_nodes)
     elif table and table.get("rows"):
         sc = _scene(beat, "table", refs)
         header = [plain(h) for h in table.get("header") or []][:MAX_TABLE_COLS]
@@ -135,6 +138,8 @@ def _build_beat(beat: Dict[str, Any], idx: int, refs_blocks: List[Dict[str, Any]
         sc["header"] = header
         sc["rows"] = rows
         sc["items"] = ["、".join(r) for r in rows]
+        if len(table["rows"]) > len(rows):
+            sc["truncated"] = len(table["rows"])
     elif math and math.get("content"):
         sc = _scene(beat, "formula", refs)
         formula = re.sub(r"\$+", "", str(math["content"])).replace("\n", " ").strip()
@@ -144,6 +149,8 @@ def _build_beat(beat: Dict[str, Any], idx: int, refs_blocks: List[Dict[str, Any]
         items = [_text_of(x) for x in lst["items"]][:MAX_LIST_ITEMS]
         sc = _scene(beat, "timeline" if _year_like(items) else "list", refs)
         sc["items"] = [i[:TEXT_LIMIT] for i in items]
+        if len(lst["items"]) > len(items):
+            sc["truncated"] = len(lst["items"])
     elif has_quote and not has_plain:
         sc = _scene(beat, "quote", refs)
         q = next(i for i, s in enumerate(sents) if s.get("quote"))
@@ -231,6 +238,10 @@ def direct_part(script: Dict[str, Any], blocks: List[Dict[str, Any]], *, chapter
         scenes.append(_build_beat(b, i, refs_blocks, illustrate=i in chosen))
 
     notes = _break_runs(scenes, beats)
+    for sc in scenes:
+        if sc.get("truncated"):
+            notes.append(f"{sc['id']}：原文结构共 {sc['truncated']} 项，规则版每镜最多显示 {len(sc['items'])} 项；"
+                         "未显示的项目请在分镜页手动拆分，或改用模型版分镜（模型版会分镜续页）")
     allocate_shared_images(scenes, shots_per_image)
     used_images = count_groups(scenes)
     return {

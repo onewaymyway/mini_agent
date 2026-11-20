@@ -212,6 +212,51 @@ def _draw_diagram(draw, ctx: _Ctx, scene, vis: int) -> None:
         _arrow(draw, pts[-2], pts[-1], color, lw, 20 * ctx.u)
 
 
+def _draw_stack(draw, ctx: _Ctx, scene, vis: int) -> None:
+    """堆叠层图：原文自上而下书写，最后一项为底层；箭头自下而上，表示“堆叠在上面”。整体一次显示。"""
+    layers = _items(scene)
+    if not layers:
+        return
+    n = len(layers)
+    font = ctx.font(46 if ctx.landscape else 40)
+    box_w = ctx.content_w * (0.62 if ctx.landscape else 0.86)
+    box_h = 120 * ctx.u
+    gap = 64 * ctx.u
+    total = n * box_h + (n - 1) * gap
+    top = max(ctx.my, (ctx.H - total) / 2)
+    x0 = _center_x(ctx, box_w)
+    boxes = []
+    for i in range(n):
+        y = top + i * (box_h + gap)
+        boxes.append((x0, y, x0 + box_w, y + box_h))
+    color = ctx.c("accent")
+    lw = max(3, round(4 * ctx.u))
+    shown = min(vis, n)
+    lh = font.size + int(font.size * 0.15)
+    for i in range(shown):
+        bx0, by0, bx1, by1 = boxes[i]
+        draw.rounded_rectangle([bx0, by0, bx1, by1], radius=20 * ctx.u, fill=ctx.c("card"),
+                               outline=ctx.c("line"), width=max(2, round(3 * ctx.u)))
+        lines = wrap_text(draw, layers[i], font, int(box_w - 40 * ctx.u), max_lines=2)
+        ty = (by0 + by1) / 2 - lh * len(lines) / 2
+        for k, line in enumerate(lines):
+            lwid = draw.textlength(line, font=font)
+            draw_rich_line(draw, (bx0 + (box_w - lwid) / 2, ty + k * lh), line, font, ctx.c("text"),
+                           ctx.c("accent"), scene.get("emphasis") or [])
+    for i in range(shown - 1):                       # 下层指向上层
+        upper, lower = boxes[i], boxes[i + 1]
+        cx = (upper[0] + upper[2]) / 2
+        _arrow(draw, (cx, lower[1] - 12 * ctx.u), (cx, upper[3] + 12 * ctx.u), color, lw, 20 * ctx.u)
+
+
+def _draw_page_tag(draw, ctx: _Ctx, page: Dict[str, Any]) -> None:
+    """结构分页的页码（右下角），如 “2 / 3”。"""
+    label = f"{page['index']} / {page['total']}"
+    font = ctx.font(30 if ctx.landscape else 26)
+    w = draw.textlength(label, font=font)
+    draw.text((ctx.W - w - 36 * ctx.u, ctx.H - font.size - 30 * ctx.u), label, font=font, fill=ctx.c("accent"))
+
+
 def _draw_table(draw, ctx: _Ctx, scene, vis: int) -> None:
     header = [str(h) for h in (scene.get("header") or [])]
     rows = [[str(c) for c in r] for r in (scene.get("rows") or [])]
@@ -305,6 +350,7 @@ _DRAWERS = {
     "list": _draw_list,
     "timeline": _draw_timeline,
     "diagram": _draw_diagram,
+    "stack": _draw_stack,
     "table": _draw_table,
     "quote": _draw_quote,
     "formula": _draw_formula,
@@ -324,7 +370,10 @@ def render_scene_frames(scene: Dict[str, Any], canvas: Canvas, orientation: str,
     frames = []
     for vis in visible_counts(scene):
         img = Image.new("RGBA", canvas, (0, 0, 0, 0))
-        drawer(ImageDraw.Draw(img, "RGBA"), ctx, scene, vis)
+        draw = ImageDraw.Draw(img, "RGBA")
+        drawer(draw, ctx, scene, vis)
+        if scene.get("page"):
+            _draw_page_tag(draw, ctx, scene["page"])
         frames.append(img)
     return frames
 
