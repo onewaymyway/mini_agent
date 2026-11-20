@@ -47,7 +47,26 @@ def _brace_end(lines: List[str], i: int) -> int:
     return len(lines) - 1
 
 
+_CONCEPT_TITLE = re.compile(r"^[A-Za-z][A-Za-z ]*[A-Za-z]$")
+
+
+def _mark_concepts(blocks: List[Dict[str, Any]]) -> None:
+    """概念条目（A6）：英文的一级标题（如 Experience Loop）是术语的首次出现，记录其后第一句定义。
+    只做标记，不生成画面（定义卡在三期实施）。"""
+    for i, b in enumerate(blocks):
+        if b.get("kind") != "heading" or b.get("level") != 1 or not _CONCEPT_TITLE.match(b.get("text", "")):
+            continue
+        b["concept"] = True
+        b["definition"] = ""
+        for nxt in blocks[i + 1:i + 4]:
+            if nxt.get("kind") in ("paragraph", "quote") and nxt.get("plain", nxt.get("text", "")):
+                text = nxt.get("plain") or nxt.get("text", "")
+                b["definition"] = re.split(r"(?<=[。！？])", text.strip("* "))[0].strip()
+                break
+
+
 def parse_markdown(text: str) -> Dict[str, Any]:
+
     lines = text.splitlines()
     n = len(lines)
     front_matter, start = parse_front_matter(lines)
@@ -225,6 +244,7 @@ def parse_markdown(text: str) -> Dict[str, Any]:
         emit("paragraph", i, j - 1, text=ptext, plain=plain_text(" ".join(buf)))
         i = j
 
+    _mark_concepts(blocks)
     return {
         "front_matter": front_matter,
         "body_start_line": start + 1,

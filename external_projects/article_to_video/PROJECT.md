@@ -190,6 +190,7 @@ A2V_REAL_TTS=1 python -m pytest -q tests/test_p3_real_edge.py  # 真实 edge-tts
 - **规则版**：堆叠用 `stack`；超限在整章提示中说明，不分页。
 - **版本**：`DIRECTOR_VERSION=p4-rules-v2`、`LLM_PROMPT_VERSION=s4-llm-v3`；已有分镜过期需重新生成，已有项目需重新导入以获得新的块分类。
 - 详见 `next_doc/article_to_video_storyboard_case_harness_plan.md` 第 8 节。
+- **第二期（文本块分类与架构图）**：文本代码块按规则标注 `hint`（公式式表达、键值、阶段、数据、标签）；公式式表达视同公式、标签视同列表（模型版）。框线架构图解析为节点与回路。英文一级标题记为概念条目（`concept`，记录首句定义，只标记不生成画面）。`LLM_PROMPT_VERSION=s4-llm-v4`。详见 case 方案第 9 节。
 
 ## R23 已确定的规则（批量队列）
 

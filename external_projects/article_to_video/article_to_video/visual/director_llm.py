@@ -41,7 +41,7 @@ from .shots import (MAX_POINTS, MAX_SHOT_ITEMS, POINT_LIMIT, ROLES, beat_of, men
                     scene_reveal, sentence_id, sentence_index)
 
 MAX_ATTEMPTS = 3
-LLM_PROMPT_VERSION = "s4-llm-v3"
+LLM_PROMPT_VERSION = "s4-llm-v4"
 SYSTEM = ("你是讲解视频的视觉导演。只输出一个 JSON 对象，不要任何解释、前言或 Markdown 围栏。"
           "只使用给定口播与原文结构中已有的词，不得添加原文没有的数字、年份或英文词。")
 _TOKEN = re.compile(r"\d+(?:\.\d+)?|[A-Za-z][A-Za-z0-9\-\.]*")
@@ -66,6 +66,15 @@ def beat_context(beat: Dict[str, Any], blocks: List[Dict[str, Any]]) -> Dict[str
     table = _first(refs_blocks, lambda b: b["kind"] == "table" and b.get("rows"))
     math_b = _first(refs_blocks, lambda b: b["kind"] == "math" and b.get("content"))
     lst = _first(refs_blocks, lambda b: b["kind"] == "list" and b.get("items"))
+    # 文本代码块的自动分类结果（第二期）：公式式表达视同公式，标签视同列表
+    if math_b is None:
+        hinted = _first(refs_blocks, lambda b: b["kind"] == "code" and b.get("hint") == "formula")
+        if hinted:
+            math_b = {"kind": "math", "content": hinted["hint_text"], "id": hinted["id"]}
+    if lst is None:
+        labels = _first(refs_blocks, lambda b: b["kind"] == "code" and b.get("hint") == "labels")
+        if labels:
+            lst = {"kind": "list", "items": [{"text": x} for x in labels["items"]], "id": labels["id"]}
     allowed = ["keypoint", "illustration", "hold"]
     notes: List[str] = []
     if any(s.get("quote") for s in beat["sentences"]):
