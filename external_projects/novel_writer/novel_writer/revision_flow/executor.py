@@ -77,7 +77,18 @@ def _new_run_id(ws) -> str:
 
 def _mode_text(change: Dict[str, Any], chapter_no: int) -> str:
     if change["kind"] == "chapter":
-        return "【作者的章节修改意见】\n" + change["instruction"]
+        text = "【作者的章节修改意见】\n" + change["instruction"]
+        lines = []
+        for e in change.get("evidence") or []:
+            if not e.get("quote"):
+                continue
+            if e["chapter"] == chapter_no:
+                lines.append(f"- 本章需要改动的原文：「{e['quote']}」")
+            else:
+                lines.append(f"- 第{e['chapter']}章原文（仅供对照，不要改动那一章）：「{e['quote']}」")
+        if lines:
+            text += "\n【问题定位】\n" + "\n".join(lines)
+        return text
     lines = [f"【设定变更：{change['title']}】"]
     if change["before"]:
         lines.append(f"- 旧设定：{change['before']}")

@@ -309,7 +309,9 @@ def _window_stage(ws, vid: str, cards, texts, paths, allowed, wins, settings, st
             failed.append({"stage": "window", "id": key, "errors": errs})
             say(f"  窗口失败，下次运行再试：{'；'.join(errs)}")
             continue
-        state["windows"][key] = {"at": _now(), "findings": [_llm_finding("window", key, i, texts) for i in res]}
+        # 问题编号用章节范围而不是缓存键（键含章节 sha）：章节改动后同一问题仍是同一编号，便于增量复评对照
+        span = f"w{chs[0]}-{chs[-1]}"
+        state["windows"][key] = {"at": _now(), "findings": [_llm_finding("window", span, i, texts) for i in res]}
         _save_state(ws, vid, state)
         say(f"  得到 {len(res)} 条问题")
 
@@ -367,7 +369,7 @@ def _whole_stage(ws, vid: str, cards, texts, paths, allowed, key, state, budget,
         failed.append({"stage": "whole", "id": key, "errors": errs})
         say(f"  全书审阅失败，下次运行再试：{'；'.join(errs)}")
         return
-    state["whole"][key] = {"at": _now(), "findings": [_llm_finding("whole", key, i, texts) for i in res]}
+    state["whole"][key] = {"at": _now(), "findings": [_llm_finding("whole", "book", i, texts) for i in res]}
     _save_state(ws, vid, state)
     say(f"  得到 {len(res)} 条问题")
 

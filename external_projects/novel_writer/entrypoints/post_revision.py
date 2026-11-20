@@ -22,6 +22,10 @@
     python entrypoints/post_revision.py --novel <dir> review-checks [--version v00N]     # R1 确定性检查，更新问题池与报告（不调用 LLM）
     python entrypoints/post_revision.py --novel <dir> review-findings [--version v00N] [--set f_xxx --status rejected]  # R1 查看/标记问题
     python entrypoints/post_revision.py --novel <dir> review-llm [--version v00N]   # R2 LLM 复核：候选仲裁、衔接审阅、全书维度审阅（调用 LLM，可续跑）
+    python entrypoints/post_revision.py --novel <dir> review-options --finding f_xxx [--version v00N]   # R3 查看某问题可选的处理方式
+    python entrypoints/post_revision.py --novel <dir> adopt --finding f_xxx [--option 0|1] [--instruction "…"] [--chapters 2 3] [--allow-unverified]  # R3 采纳为变更
+    python entrypoints/post_revision.py --novel <dir> adopt-batch --findings f_a f_b [--choose f_x=1]   # R3 批量采纳（跳过矛盾未选方向、证据未核实）
+    python entrypoints/post_revision.py --novel <dir> review-increment   # R3 增量复评（基于 head，对照父版本；调用 LLM）
 """
 
 from __future__ import annotations
@@ -34,7 +38,7 @@ import _common  # noqa: F401
 
 from novel_writer.revision_flow import changes as CH
 from novel_writer.revision_flow import config as CFG
-from novel_writer.revision_flow import derived, executor, feedback, review_cards, review_checks, review_llm
+from novel_writer.revision_flow import derived, executor, feedback, review_adopt, review_cards, review_checks, review_llm
 from novel_writer.revision_flow import versions as V
 from novel_writer.revision_flow.common import FlowError
 from novel_writer.workspace import Workspace
@@ -104,6 +108,22 @@ def main(argv=None) -> int:
     sp.add_argument("--version", default=None)
     sp = sub.add_parser("review-llm")
     sp.add_argument("--version", default=None)
+    sp = sub.add_parser("review-options")
+    sp.add_argument("--finding", required=True)
+    sp.add_argument("--version", default=None)
+    sp = sub.add_parser("adopt")
+    sp.add_argument("--finding", required=True)
+    sp.add_argument("--version", default=None)
+    sp.add_argument("--option", type=int, default=None, help="矛盾类必填：0 或 1")
+    sp.add_argument("--instruction", default=None)
+    sp.add_argument("--chapters", nargs="+", type=int, default=None)
+    sp.add_argument("--allow-unverified", action="store_true")
+    sp = sub.add_parser("adopt-batch")
+    sp.add_argument("--findings", nargs="+", required=True)
+    sp.add_argument("--version", default=None)
+    sp.add_argument("--choose", action="append", default=[], help="f_xxx=序号，矛盾类选定方向")
+    sp = sub.add_parser("review-increment")
+    sp.add_argument("--version", default=None)
     sp = sub.add_parser("review-findings")
     sp.add_argument("--version", default=None)
     sp.add_argument("--set", dest="fid", default=None, help="要标记的问题编号")
@@ -172,6 +192,24 @@ def main(argv=None) -> int:
             res = review_llm.run_review(ws, args.version, _invoker(), progress=print)
             return _out({k: res[k] for k in ("review_id", "version", "calls", "paused", "failed", "counts", "missing")}
                         | {"report": f"_revision/review/{res['review_id']}/report.md"})
+        if args.cmd == "review-options":
+            vid = review_cards.resolve_version(ws, args.version)
+            f = next((x for x in review_checks.load_findings(ws, vid)["findings"] if x["id"] == args.finding), None)
+            if f is None:
+                raise FlowError(f"问题不存在：{args.finding}")
+            return _out(review_adopt.options(f))
+        if args.cmd == "adopt":
+            return _out(review_adopt.adopt(ws, args.version, args.finding, option_index=args.option,
+                                           instruction=args.instruction, target_chapters=args.chapters,
+                                           allow_unverified=args.allow_unverified))
+        if args.cmd == "adopt-batch":
+            choices = {}
+            for item in args.choose:
+                k, _, v = item.partition("=")
+                choices[k.strip()] = int(v)
+            return _out(review_adopt.adopt_batch(ws, args.version, args.findings, choices))
+        if args.cmd == "review-increment":
+            return _out(review_adopt.increment(ws, _invoker(), progress=print))
         if args.cmd == "review-findings":
             vid = review_cards.resolve_version(ws, args.version)
             if args.fid:

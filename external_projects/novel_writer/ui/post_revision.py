@@ -17,7 +17,7 @@ import streamlit as st
 from novel_writer.revision_flow import changes as CH
 from novel_writer.revision_flow import config as CFG
 from novel_writer.revision_flow import derived, executor, feedback, jobs
-from novel_writer.revision_flow import review_cards, review_checks, review_llm
+from novel_writer.revision_flow import review_adopt, review_cards, review_checks, review_llm
 from novel_writer.revision_flow import versions as V
 from novel_writer.revision_flow.common import FlowError, sub_dir
 from novel_writer.workspace import Workspace
@@ -110,6 +110,8 @@ _JOB_STATE = {"running": "运行中", "done": "已完成", "failed": "失败", "
 def _apply_result(kind: str, result: Dict[str, Any]) -> None:
     if kind == "preview" and result.get("preview_id"):
         st.session_state["rv_preview"] = result["preview_id"]
+    elif kind == "increment":
+        st.session_state["rv_increment"] = result
     elif kind == "triage" and result.get("triage_id"):
         st.session_state["rv_triage"] = result["triage_id"]
 
@@ -179,6 +181,10 @@ def _review_job(ws: Workspace, name: str, progress) -> Dict[str, Any]:
     res = review_llm.run_review(ws, None, jobs.make_invoker(ws, name, _invoker()), progress=progress)
     return {"review_id": res["review_id"], "calls": res["calls"], "paused": res["paused"],
             "failed": len(res["failed"])}
+
+
+def _increment_job(ws: Workspace, name: str, progress) -> Dict[str, Any]:
+    return review_adopt.increment(ws, jobs.make_invoker(ws, name, _invoker()), progress=progress)
 
 
 def _split(text: str):
@@ -458,10 +464,22 @@ def _tab_review(root: Workspace) -> None:
         _start_job(root, "LLM 复核", "review", _review_job)
 
     vid = review_cards.resolve_version(root, None)
+    review_adopt.sync_applied(root)                           # 已执行的采纳问题标为 applied
     data = review_checks.load_findings(root, vid)
     fs = data["findings"]
+    parent = V.get_entry(root, vid).get("parent")
+    st.divider()
+    st.markdown("**增量复评**")
+    st.caption("改动后（head 有父版本）：重新生成事实卡（未改章节命中缓存）、确定性检查与 LLM 复核，并与改动前的问题对照："
+               "已消失 → 已解决，仍在 → 仍存在，新出现的单独标记。")
+    if st.button("运行增量复评（调用模型）", key="rv_e_inc", disabled=_busy(root) or not parent):
+        _start_job(root, "增量复评", "increment", _increment_job)
+    inc = st.session_state.get("rv_increment")
+    if inc and inc.get("version") == vid:
+        st.success(f"已对照 {inc['parent']} → {inc['version']}：已解决 {len(inc['resolved'])}，仍存在 "
+                   f"{len(inc['still_open'])}，新出现 {len(inc['new'])}，已保留作者驳回 {len(inc['rejected_carried'])}")
     if not fs:
-        st.info("还没有问题记录。先运行 ② 确定性检查，再运行 ③ LLM 复核。")
+        st.info("还没有问题记录。先运行 ② 确定性检查，再运行 ③ LLM 复核；改动后请运行增量复评。")
         return
     st.markdown(f"**问题池（版本 {vid}）**")
     f1, f2, f3, f4 = st.columns(4)
@@ -489,6 +507,18 @@ def _tab_review(root: Workspace) -> None:
         visible.append(f)
     st.caption(f"显示 {len(visible)} 条；折叠 {folded} 条（误报或证据未核实，可用上方开关展开）")
 
+    adoptable_batch = [f for f in visible if f["status"] in review_adopt.ADOPTABLE and f["category"] != "contradiction"
+                       and f.get("evidence_ok", True) and not f.get("change_id")]
+    if adoptable_batch:
+        pick = st.multiselect("批量采纳（仅非矛盾、证据已核实）", [f["id"] for f in adoptable_batch],
+                              key="rv_a_batch", format_func=lambda i: next(f["title"] for f in adoptable_batch if f["id"] == i))
+        if st.button("批量采纳所选为变更", key="rv_a_batch_go", disabled=not pick):
+            res = _act(root, "批量采纳", review_adopt.adopt_batch, root, vid, pick,
+                       summarize=lambda r: f"生成 {len(r['created'])} 条变更，跳过 {len(r['skipped'])} 条")
+            if res is not None:
+                st.session_state["rv_a_last"] = res
+                st.rerun()
+
     for f in visible:
         chapters = "、".join(str(c) for c in f["chapters"])
         cat_text = review_checks.CATEGORY_LABEL.get(f["category"], f["category"])
@@ -509,6 +539,7 @@ def _tab_review(root: Workspace) -> None:
                     st.write(f"- 第{e['chapter']}章（{mark}）：「{e['quote']}」")
                 else:
                     st.write(f"- 第{e['chapter']}章：{e.get('note', '')}")
+            _adopt_block(root, vid, f)
             new_status = st.selectbox("处理状态", list(review_checks.STATUSES),
                                       index=list(review_checks.STATUSES).index(f["status"]),
                                       key=f"rv_e_st_{f['id']}", format_func=_status)
@@ -517,6 +548,39 @@ def _tab_review(root: Workspace) -> None:
                 if _act(root, f"标记问题 {f['id']}", review_checks.set_status, root, vid, f["id"], new_status, notes,
                         summarize=lambda _: f"状态 {_status(new_status)}") is not None:
                     st.rerun()
+
+
+def _adopt_block(root: Workspace, vid: str, f: Dict[str, Any]) -> None:
+    """单条采纳：选择处理方向（矛盾类必须选），可改写修改意见与目标章节，然后生成变更。"""
+    if f.get("change_id"):
+        st.caption(f"已采纳为变更 {f['change_id']}（去「变更与预览」生成预览）")
+        return
+    if f["status"] not in review_adopt.ADOPTABLE:
+        return
+    opts = review_adopt.options(f)
+    if not opts:
+        return
+    labels = [o["label"] for o in opts]
+    if f["category"] == "contradiction":
+        labels = ["请先选定以哪一方为准"] + labels
+    pick = st.selectbox("采纳方式", list(range(len(labels))), format_func=lambda i: labels[i],
+                        key=f"rv_a_opt_{f['id']}")
+    idx = pick - 1 if f["category"] == "contradiction" else pick
+    if idx < 0:
+        st.caption("矛盾类问题需要先选定以哪一方为准，才能采纳。")
+        return
+    base = opts[idx]
+    ins = st.text_area("修改意见（可改写后再采纳）", value=base["instruction"], height=140,
+                       key=f"rv_a_ins_{f['id']}_{idx}")
+    unverified_ok = True
+    if f["source"] == "llm" and not f.get("evidence_ok", True):
+        unverified_ok = st.checkbox("我已核对原文，明确允许采纳这条证据未核实的问题", key=f"rv_a_unv_{f['id']}")
+    if st.button("采纳为变更", key=f"rv_a_go_{f['id']}", disabled=not unverified_ok):
+        res = _act(root, f"采纳问题 {f['id']}", review_adopt.adopt, root, vid, f["id"], option_index=idx,
+                   instruction=ins, allow_unverified=unverified_ok,
+                   summarize=lambda c: f"已生成变更 {c['id']}，请到「变更与预览」生成预览")
+        if res is not None:
+            st.rerun()
 
 
 # ─────────────────────────────── 设置 ───────────────────────────────

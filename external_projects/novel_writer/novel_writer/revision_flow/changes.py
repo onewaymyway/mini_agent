@@ -41,6 +41,27 @@ def _str_list(value: Any, field: str) -> List[str]:
     return [x.strip() for x in value]
 
 
+def _evidence_list(value: Any) -> List[Dict[str, Any]]:
+    """可选的原文定位：[{chapter, quote}]。改写时用来告诉模型要改的具体句子（R3 采纳的问题带入）。"""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise FlowError("evidence 必须是列表")
+    out = []
+    for e in value:
+        if not isinstance(e, dict) or not isinstance(e.get("chapter"), int) or isinstance(e.get("chapter"), bool):
+            raise FlowError("evidence 的每一项需要整数 chapter")
+        out.append({"chapter": e["chapter"], "quote": str(e.get("quote") or "").strip()})
+    return out
+
+
+def _origin(value: Any) -> Optional[Dict[str, Any]]:
+    """变更来源（如：由哪条评估问题采纳而来）。只记录，不影响执行。"""
+    if not isinstance(value, dict):
+        return None
+    return {k: value[k] for k in ("finding_id", "review_id", "option") if k in value}
+
+
 def normalize(raw: Dict[str, Any]) -> Dict[str, Any]:
     """校验并规范化一条变更（不落盘）。"""
     if not isinstance(raw, dict):
@@ -60,6 +81,8 @@ def normalize(raw: Dict[str, Any]) -> Dict[str, Any]:
         "terms": _str_list(raw.get("terms"), "terms"),
         "after_terms": _str_list(raw.get("after_terms"), "after_terms"),
         "target": None,
+        "evidence": _evidence_list(raw.get("evidence")),
+        "origin": _origin(raw.get("origin")),
     }
     target = raw.get("target")
     if target:
