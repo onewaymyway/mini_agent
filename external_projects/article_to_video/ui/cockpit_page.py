@@ -126,7 +126,7 @@ def _control_body(pdir) -> None:
     from article_to_video import app_settings as S  # 默认值来自「⚙️ 设置」（R4）
     pl = S.effective_group(pdir, "pipeline")
     with st.expander("挡位与预算", expanded=True):
-        st.caption("默认值来自「⚙️ 设置」的「流水线」分组；这里的修改只影响本次运行。")
+        st.caption("默认值来自「⚙️ 设置」的「流水线」分组；这里的挡位与预算会记为本项目的设置，下次打开自动使用。")
         gear = st.radio("挡位", list(GEARS), horizontal=True, index=list(GEARS).index(pl["gear"]))
         st.caption(_GEAR_HELP[gear])
         c1, c2, c3 = st.columns(3)
@@ -134,6 +134,9 @@ def _control_body(pdir) -> None:
         max_images = c2.number_input("预算：最多生图次数（0 = 不限）", min_value=0, value=int(pl["max_images"]), step=1)
         max_minutes = c3.number_input("预算：最长耗时（分钟，0 = 不限）", min_value=0.0, value=float(pl["max_minutes"]),
                                       step=5.0)
+        if S.save_budget(pdir, gear=gear, max_images=int(max_images), max_minutes=float(max_minutes)):
+            joblog.log(pdir, "settings", f"挡位与预算已保存为本项目设置：{gear}，生图 {int(max_images) or '不限'}，"
+                                         f"耗时 {float(max_minutes) or '不限'} 分钟")
         c4, c5 = st.columns(2)
         approve = c4.checkbox("确认终审（允许导出）", value=False)
         merge_all = c5.checkbox("多期时导出全集合并版", value=False)

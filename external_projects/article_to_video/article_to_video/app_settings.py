@@ -291,6 +291,25 @@ def save_group(project_dir: Path, group: str, value: Dict[str, Any], now=None,
     return warnings
 
 
+BUDGET_KEYS = ("gear", "max_images", "max_minutes")
+
+
+def save_budget(project_dir: Path, *, gear: str, max_images: int, max_minutes: float, now=None,
+                root: Optional[Path] = None) -> bool:
+    """把驾驶舱的挡位与预算记为本项目的设置（写入 project.json 的 pipeline 分组，只记录与全局默认不同的部分）。
+
+    值没有变化时不写文件，返回 False；有变化时写入并返回 True。
+    """
+    project_dir = Path(project_dir)
+    cur = effective_group(project_dir, "pipeline", root)
+    new = dict(cur)
+    new.update(gear=gear, max_images=int(max_images), max_minutes=round(float(max_minutes), 1))
+    if all(new[k] == cur[k] for k in BUDGET_KEYS):
+        return False
+    save_group(project_dir, "pipeline", new, now=now, root=root)
+    return True
+
+
 def update_group(project_dir: Path, group: str, mutate: Callable[[Dict[str, Any]], Dict[str, Any]],
                  now=None, root: Optional[Path] = None) -> List[str]:
     """读取生效值 → 交给 mutate 修改 → 保存覆盖值。"""
