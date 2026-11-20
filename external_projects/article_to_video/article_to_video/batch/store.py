@@ -37,6 +37,7 @@ QUEUE_LOCK_WAIT_SEC = 10.0
 
 DEFAULT_PARAMS: Dict[str, Any] = {
     "gear": "G3",                 # 队列默认使用完全无人值守档位（需用户显式点击「开始」才会运行）
+    "author": "",                 # 共用作者：非空时对队列里所有文章生效（优先于逐篇作者）；留空 = 逐篇设置
     "until": "export",
     "max_images": 0,              # 0 = 不限
     "max_minutes": 0.0,           # 0 = 不限
@@ -134,6 +135,7 @@ def normalize_params(raw: Optional[Dict[str, Any]]) -> Tuple[Dict[str, Any], Lis
     p["max_images"] = int(_num(raw.get("max_images", 0), 0, 0, 10_000_000))
     p["max_minutes"] = _num(raw.get("max_minutes", 0), 0.0, 0.0, 10_000_000.0)
     p["merge_all"] = bool(raw.get("merge_all", False))
+    p["author"] = str(raw.get("author") or "").strip()
     p["max_retries"] = int(_num(raw.get("max_retries", 3), 3, 0, 10))
     delays = raw.get("retry_delays", p["retry_delays"])
     if not isinstance(delays, (list, tuple)) or not delays:
@@ -203,6 +205,15 @@ def update_item(root: Path, item_id: str, **fields: Any) -> Dict[str, Any]:
         item.update(fields)
         _save(root, data)
         return dict(item)
+
+
+# ---------- 作者 ----------
+
+def effective_author(params: Dict[str, Any], item: Dict[str, Any]) -> str:
+    """一篇文章实际使用的作者：共用作者非空则用共用作者（覆盖逐篇作者）；否则用加入队列时设置的逐篇作者。
+    留空表示不署名（导入时仍会尝试读取文章里的作者行，与新建项目一致）。"""
+    shared = str((params or {}).get("author") or "").strip()
+    return shared or str(item.get("author") or "").strip()
 
 
 # ---------- 入队与维护 ----------

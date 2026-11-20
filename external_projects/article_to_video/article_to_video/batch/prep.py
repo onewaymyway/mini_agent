@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..importer import summarize
+from . import store
 from ..pipeline.gates import STAGES
 from ..project_store import read_json
 from ..source.author_meta import resolve_author
@@ -73,7 +74,8 @@ def queue_rows(root: Path, data: Dict[str, Any]) -> List[Dict[str, Any]]:
     for it in data["items"]:
         pdir = Path(root) / it["project_id"] if it.get("project_id") else Path(root)
         rows.append({
-            "编号": it["id"], "标题": it["title"], "作者": it["author"] or "（不署名）",
+            "编号": it["id"], "标题": it["title"],
+            "作者": store.effective_author(data["params"], it) or "（不署名）",
             "状态": STATE_LABELS.get(it["state"], it["state"]),
             "进度": item_progress(pdir, it),
             "失败次数": it.get("failures", 0),

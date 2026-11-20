@@ -65,7 +65,12 @@ def _params_panel(root) -> None:
         delays_text = r2.text_input("每次重试前等待（秒，逗号分隔）", value=prep.format_delays(params["retry_delays"]),
                                     key="bq_delays", help="例如 30,60,120：第 1 次重试前等 30 秒，第 2 次 60 秒…；次数多于填写项时沿用最后一个")
 
-        st.markdown("**视频参数**（与「新建项目」相同，所有文章共享；标题与作者在加入队列时逐篇设置）")
+        st.markdown("**作者与视频参数**")
+        shared_author = st.text_input(
+            "共用作者（留空 = 每篇在加入队列时单独设置）", value=params.get("author", ""), max_chars=60,
+            key="bq_author",
+            help="填写后，队列里所有文章都使用这个作者（覆盖加入时设置的作者和文章里的作者行）；留空则每篇单独设置。")
+        st.caption("视频参数与「新建项目」相同，所有文章共享；标题在加入队列时逐篇设置。")
         d1, d2, d3 = st.columns(3)
         mode = d1.selectbox("模式", MODES, index=MODES.index(base_s["mode"]), format_func=MODE_LABELS.get, key="bq_mode")
         target = d2.slider("目标时长（分钟）", 3, 30, min(30, max(3, int(round(base_s["target_minutes"])))), key="bq_target")
@@ -93,6 +98,7 @@ def _params_panel(root) -> None:
                 delays = prep.parse_delays(delays_text)
                 warnings = store.set_params(root, {
                     "gear": gear, "until": until, "merge_all": merge_all, "max_images": max_images,
+                    "author": shared_author,
                     "max_minutes": max_minutes, "max_retries": retries, "retry_delays": delays,
                     "settings": {"mode": mode, "target_minutes": target, "persona": persona,
                                  "video": {"orientation": orientation, "resolution": resolution}},
@@ -117,7 +123,11 @@ def _rows_from_editor(edited) -> list:
 
 def _add_panel(root) -> None:
     st.subheader("加入队列")
-    st.caption("可以一篇一篇传，也可以一次多选；**每篇都要在下表里设置好标题和作者**。队列正在运行时也可以继续加入。")
+    shared = store.load(root)["params"].get("author", "")
+    if shared:
+        st.caption(f"已设置共用作者「{shared}」，所有文章都使用它，表中的作者列不生效。在上方「共用参数」中清空即可逐篇设置。")
+    else:
+        st.caption("可以一篇一篇传，也可以一次多选；**每篇都要在下表里设置好标题和作者**（作者可留空 = 不署名）。队列正在运行时也可以继续加入。")
     uploads = st.file_uploader("文章（Markdown / 文本，可多选）", type=["md", "markdown", "txt"],
                                accept_multiple_files=True, key=_upload_key())
     if not uploads:
@@ -136,12 +146,12 @@ def _add_panel(root) -> None:
     rows = []
     for key, (name, text) in decoded.items():
         meta = prep.suggest_meta(text, name)
-        rows.append({"加入": True, "文件": name, "标题": meta["title"], "作者": meta["author"],
+        rows.append({"加入": True, "文件": name, "标题": meta["title"], "作者": shared or meta["author"],
                      "汉字数": meta["chars"], "全文朗读约（分钟）": meta["minutes"]})
     sig = "|".join(decoded)
     edited = st.data_editor(
-        rows, key=f"bq_editor_{sig}", hide_index=True, use_container_width=True, num_rows="fixed",
-        disabled=["文件", "汉字数", "全文朗读约（分钟）"],
+        rows, key=f"bq_editor_{sig}_{shared}", hide_index=True, use_container_width=True, num_rows="fixed",
+        disabled=["文件", "汉字数", "全文朗读约（分钟）"] + (["作者"] if shared else []),
         column_config={"加入": st.column_config.CheckboxColumn("加入", width="small"),
                        "标题": st.column_config.TextColumn("标题（必填）"),
                        "作者": st.column_config.TextColumn("作者（可留空 = 不署名）")})
@@ -155,7 +165,7 @@ def _add_panel(root) -> None:
         for r, text in chosen:
             try:
                 res = store.enqueue(root, source_text=text, source_name=r["文件"],
-                                    title=str(r["标题"]), author=str(r.get("作者") or ""))
+                                    title=str(r["标题"]), author=shared or str(r.get("作者") or ""))
                 added += 1
                 for w in res["warnings"]:
                     st.warning(f"《{r['标题']}》{w}")

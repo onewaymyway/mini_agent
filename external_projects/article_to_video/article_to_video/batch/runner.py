@@ -111,7 +111,8 @@ def _process(root: Path, item: Dict[str, Any], params: Dict[str, Any], pipeline_
         try:
             text = (store.queue_dir(root) / item["source_path"]).read_text(encoding="utf-8")
             res = import_article(root, source_text=text, source_name=item["source_name"], title=title,
-                                 author=item["author"], branding=params["branding"], settings=params["settings"])
+                                 author=store.effective_author(params, item), branding=params["branding"],
+                                 settings=params["settings"])
         except (ArticleImportError, OSError) as exc:
             _log(root, f"《{title}》导入失败：{exc}", "error")
             _finish(root, item_id, "failed", error=f"导入失败：{exc}")
