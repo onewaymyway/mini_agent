@@ -249,6 +249,103 @@ def _draw_stack(draw, ctx: _Ctx, scene, vis: int) -> None:
         _arrow(draw, (cx, lower[1] - 12 * ctx.u), (cx, upper[3] + 12 * ctx.u), color, lw, 20 * ctx.u)
 
 
+def _draw_stages(draw, ctx: _Ctx, scene, vis: int) -> None:
+    """递进卡：每个阶段一个方框（标题 + 若干标签），阶段之间用方向箭头，按原文顺序；整体一次显示。
+    横屏为从左到右，竖屏为自上而下。"""
+    stages = [s for s in (scene.get("stages") or []) if str(s.get("title") or "").strip()]
+    if not stages:
+        return
+    n = len(stages)
+    title_font = ctx.font(40 if ctx.landscape else 36)
+    label_font = ctx.font(32 if ctx.landscape else 28)
+    pad = 24 * ctx.u
+    gap = 70 * ctx.u
+    color = ctx.c("accent")
+    lw = max(3, round(4 * ctx.u))
+    if ctx.landscape:
+        box_w = (ctx.content_w - gap * (n - 1)) / n
+    else:
+        box_w = ctx.content_w * 0.84
+    inner = int(box_w - 2 * pad)
+    cells = []
+    for st in stages:
+        t_lines = wrap_text(draw, str(st["title"]), title_font, inner, max_lines=2)
+        l_lines = []
+        for lab in (st.get("labels") or [])[:8]:
+            l_lines.append(wrap_text(draw, str(lab), label_font, inner, max_lines=2))
+        th = (title_font.size + int(title_font.size * 0.2)) * len(t_lines)
+        lh = sum((label_font.size + int(label_font.size * 0.2)) * len(x) + 10 * ctx.u for x in l_lines)
+        cells.append((t_lines, l_lines, th, lh))
+    if ctx.landscape:
+        box_h = max(th + lh for _t, _l, th, lh in cells) + 2 * pad + 16 * ctx.u
+        top = (ctx.H - box_h) / 2
+        x = _center_x(ctx, n * box_w + (n - 1) * gap)
+        rects = [(x + i * (box_w + gap), top, x + i * (box_w + gap) + box_w, top + box_h) for i in range(n)]
+    else:
+        heights = [th + lh + 2 * pad + 16 * ctx.u for _t, _l, th, lh in cells]
+        total = sum(heights) + gap * (n - 1)
+        y = max(ctx.my, (ctx.H - total) / 2)
+        x0 = _center_x(ctx, box_w)
+        rects = []
+        for h in heights:
+            rects.append((x0, y, x0 + box_w, y + h))
+            y += h + gap
+    for rect, (t_lines, l_lines, th, _lh) in zip(rects, cells):
+        draw.rounded_rectangle(list(rect), radius=20 * ctx.u, fill=ctx.c("card"),
+                               outline=ctx.c("line"), width=max(2, round(3 * ctx.u)))
+        ty = rect[1] + pad
+        for line in t_lines:
+            tw = draw.textlength(line, font=title_font)
+            draw.text((rect[0] + (box_w - tw) / 2, ty), line, font=title_font, fill=ctx.c("accent"))
+            ty += title_font.size + int(title_font.size * 0.2)
+        ty += 16 * ctx.u
+        for lines in l_lines:
+            for line in lines:
+                draw_rich_line(draw, (rect[0] + pad, ty), line, label_font, ctx.c("text"), ctx.c("accent"),
+                               scene.get("emphasis") or [])
+                ty += label_font.size + int(label_font.size * 0.2)
+            ty += 10 * ctx.u
+    for a, b in zip(rects, rects[1:]):
+        if ctx.landscape:
+            cy = (a[1] + a[3]) / 2
+            _arrow(draw, (a[2] + 10 * ctx.u, cy), (b[0] - 10 * ctx.u, cy), color, lw, 20 * ctx.u)
+        else:
+            cx = (a[0] + a[2]) / 2
+            _arrow(draw, (cx, a[3] + 10 * ctx.u), (cx, b[1] - 10 * ctx.u), color, lw, 20 * ctx.u)
+
+
+def _draw_definition(draw, ctx: _Ctx, scene, vis: int) -> None:
+    """定义卡：大字术语 + 原文定义句。整体一次显示。"""
+    term = str(scene.get("term") or "").strip()
+    items = _items(scene)
+    if not term and not items:
+        return
+    term_font = ctx.font(96 if ctx.landscape else 76)
+    def_font = ctx.font(44 if ctx.landscape else 38)
+    maxw = ctx.content_w * (0.78 if ctx.landscape else 0.9)
+    t_lines = wrap_text(draw, term, term_font, int(maxw), max_lines=2) if term else []
+    d_lines = wrap_text(draw, items[0], def_font, int(maxw), max_lines=4) if items else []
+    t_h = (term_font.size + int(term_font.size * 0.15)) * len(t_lines)
+    d_lh = def_font.size + int(def_font.size * 0.3)
+    gap = 56 * ctx.u
+    total = t_h + (gap if t_lines and d_lines else 0) + d_lh * len(d_lines)
+    y = (ctx.H - total) / 2
+    for line in t_lines:
+        tw = draw.textlength(line, font=term_font)
+        draw.text(((ctx.W - tw) / 2, y), line, font=term_font, fill=ctx.c("accent"))
+        y += term_font.size + int(term_font.size * 0.15)
+    if t_lines and d_lines:
+        y += gap / 2
+        draw.line([(ctx.W / 2 - 100 * ctx.u, y), (ctx.W / 2 + 100 * ctx.u, y)],
+                  fill=ctx.c("line"), width=max(3, round(4 * ctx.u)))
+        y += gap / 2
+    for line in d_lines:
+        tw = draw.textlength(line, font=def_font)
+        draw_rich_line(draw, ((ctx.W - tw) / 2, y), line, def_font, ctx.c("text"), ctx.c("accent"),
+                       scene.get("emphasis") or [])
+        y += d_lh
+
+
 def _draw_page_tag(draw, ctx: _Ctx, page: Dict[str, Any]) -> None:
     """结构分页的页码（右下角），如 “2 / 3”。"""
     label = f"{page['index']} / {page['total']}"
@@ -351,6 +448,8 @@ _DRAWERS = {
     "timeline": _draw_timeline,
     "diagram": _draw_diagram,
     "stack": _draw_stack,
+    "stages": _draw_stages,
+    "definition": _draw_definition,
     "table": _draw_table,
     "quote": _draw_quote,
     "formula": _draw_formula,

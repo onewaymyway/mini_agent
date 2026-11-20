@@ -37,11 +37,14 @@ from .sharing import allocate_shared_images, count_groups
 from .prompting import MAX_COMPOSITION as MAX_COMPOSITION_CHARS
 from .prompting import MAX_SCENE as MAX_SCENE_CHARS
 from .prompting import check_illustration
-from .shots import (MAX_POINTS, MAX_SHOT_ITEMS, POINT_LIMIT, ROLES, beat_of, mention, plan_windows,
+from .shots import (MAX_POINTS, MAX_SHOT_ITEMS, POINT_LIMIT, ROLES, SHOT_KINDS, beat_of, mention, plan_windows,
                     scene_reveal, sentence_id, sentence_index)
+from .structures import (analogy_words_in, article_text, concepts_of, coverage_report, stage_groups,
+                         subject_grounded, symbol_items)
+from ..validators.fidelity import norm_key
 
 MAX_ATTEMPTS = 3
-LLM_PROMPT_VERSION = "s4-llm-v4"
+LLM_PROMPT_VERSION = "s4-llm-v5"
 SYSTEM = ("你是讲解视频的视觉导演。只输出一个 JSON 对象，不要任何解释、前言或 Markdown 围栏。"
           "只使用给定口播与原文结构中已有的词，不得添加原文没有的数字、年份或英文词。")
 _TOKEN = re.compile(r"\d+(?:\.\d+)?|[A-Za-z][A-Za-z0-9\-\.]*")
@@ -50,7 +53,7 @@ MAX_SUBJECT_CHARS = 24
 CHART_HEADER = ["项目", "数值"]
 MAX_CHART_ITEMS = 3
 MAX_FORMULA_CHARS = 120
-SHOT_KINDS = ("keypoint", "illustration", "quote", "formula", "flow", "stack", "chart", "table", "list", "hold")
+MAX_SYMBOLS_PROMPT = 3
 
 ROLE_HINT = {
     "argument": "关键论点", "data": "数据与对比", "structure": "结构与流程", "formula": "公式",
@@ -75,6 +78,8 @@ def beat_context(beat: Dict[str, Any], blocks: List[Dict[str, Any]]) -> Dict[str
         labels = _first(refs_blocks, lambda b: b["kind"] == "code" and b.get("hint") == "labels")
         if labels:
             lst = {"kind": "list", "items": [{"text": x} for x in labels["items"]], "id": labels["id"]}
+    stages, stages_note = stage_groups(refs_blocks)             # 三期 B2：递进
+    concepts = concepts_of(refs_blocks)                          # 三期 B5：概念定义
     allowed = ["keypoint", "illustration", "hold"]
     notes: List[str] = []
     if any(s.get("quote") for s in beat["sentences"]):
@@ -99,10 +104,25 @@ def beat_context(beat: Dict[str, Any], blocks: List[Dict[str, Any]]) -> Dict[str
         items = [_text_of(x) for x in lst["items"]]
         allowed.append("list")
         notes.append(f"原文列表（共 {len(items)} 项）：" + "；".join(items))
+    if stages:
+        allowed.append("stages")
+        notes.append("原文递进（按顺序，用 stages）：" + " → ".join(
+            f"{s['title']}（{'、'.join(s['labels'])}）" for s in stages))
+    if concepts:
+        allowed.append("definition")
+        notes.append("概念术语（首次出现，可用 definition 生成定义卡）：" + "；".join(
+            f"{c['term']}：{c['definition']}" for c in concepts))
     if any(_DIGIT.search(s["text"]) for s in beat["sentences"]):
         allowed.append("chart")
     return {"allowed": allowed, "chain": chain, "table": table, "math": math_b, "lst": lst,
+            "stages": stages, "stages_note": stages_note, "concepts": concepts, "grounding": None,
             "notes": notes, "refs": list(beat.get("source_refs") or [])}
+
+
+def _grounding(ctxs: Dict[str, Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    for c in ctxs.values():
+        return c.get("grounding")
+    return None
 
 
 def _structure_kinds(ctxs: Dict[str, Dict[str, Any]]) -> List[str]:
@@ -341,7 +361,16 @@ def build_window_prompt(part: Dict[str, Any], script: Dict[str, Any], wbeats: Se
         "10. flow、stack、table、list 可用 part: [起, 止] 指定本镜展示的项目序号（从 1 开始，闭区间）。"
         "超过每镜上限（流程与层级 6 项、表格 6 行、列表 5 项）时，用多个连续镜头（同一类型，part 依次覆盖剩余项目）完整展示，"
         "不得省略任何项目；未写 part 时只展示前 N 项。",
+        "11. stages（递进卡）与 definition（定义卡）的内容由原文决定，只需选择句子范围；"
+        "definition 有多个概念时用 term 指定。有原文递进或概念术语的段落应使用它们。",
+        "12. formula 可用 formula_symbols: [{\"symbol\": \"公式中的符号\", \"meaning\": \"本镜头句子中的原文短语\"}]"
+        f"（不超过 {MAX_SYMBOLS_PROMPT} 个，meaning 必须逐字取自本镜头的句子且不超过 12 字，symbol 必须出自原文公式），"
+        "它优先于 formula_explanation。",
     ]
+    g = _grounding(ctxs)
+    if g:
+        lines.append("13. illustration 的 image_subject 必须出自原文：用原文已出现的具象类比或物体（"
+                     + "、".join(g["words"]) + "），抽象概念（如 Harness、Identity）不作主体，改用 definition、formula 或 keypoint。")
     if issues:
         lines += ["", "【上次输出的问题，必须修正后重新输出完整 JSON】"] + [f"- {x}" for x in issues]
     return "\n".join(lines)
@@ -350,6 +379,7 @@ def build_window_prompt(part: Dict[str, Any], script: Dict[str, Any], wbeats: Se
 def _window_payload(wbeats, ctxs, plan, *, allowance, shots, ill_used, prev) -> Dict[str, Any]:
     return {"v": LLM_PROMPT_VERSION, "stage": "window", "allowance": allowance, "shots": shots,
             "ill_used": ill_used, "prev": _prev_desc(prev) if prev else None,
+            "ground": (_grounding(ctxs) or {}).get("words"),
             "beats": [{"id": b["id"], "s": [[s["text"], bool(s.get("quote"))] for s in b["sentences"]],
                        "notes": ctxs[b["id"]]["notes"], "allowed": ctxs[b["id"]]["allowed"],
                        "plan": plan.get(b["id"])} for b in wbeats]}
@@ -414,6 +444,19 @@ def _build_shot(cut: Dict[str, Any], beat: Dict[str, Any], ctx: Dict[str, Any]) 
         whole = a0 == 0 and a1 == total
         sc.update(type="diagram" if kind == "flow" else "stack", items=nodes,
                   loop=bool(chain.get("loop")) and whole, part=[a0 + 1, a1])
+    elif kind == "stages":
+        stages = [{"title": plain(s["title"])[:30], "labels": [plain(x)[:30] for x in s["labels"]]}
+                  for s in ctx["stages"]]
+        sc.update(type="stages", stages=stages, items=[s["title"] for s in stages])
+    elif kind == "definition":
+        concepts = ctx["concepts"]
+        want = str(raw.get("term") or "").strip()
+        pick = next((c for c in concepts if want and norm_key(want) == norm_key(c["term"])), None)
+        if pick is None:
+            if len(concepts) > 1:
+                errs.append(f"镜头 {span}：本段有多个概念（{'、'.join(c['term'] for c in concepts)}），请用 term 指定其一")
+            pick = concepts[0]
+        sc.update(type="definition", term=pick["term"][:40], items=[pick["definition"]])
     elif kind == "table":
         t = ctx["table"]
         header = [plain(h)[:30] for h in (t.get("header") or [])][:MAX_TABLE_COLS]
@@ -450,8 +493,13 @@ def _build_shot(cut: Dict[str, Any], beat: Dict[str, Any], ctx: Dict[str, Any]) 
         formula = ""
         if ctx.get("math"):
             formula = re.sub(r"\$+", "", str(ctx["math"]["content"])).replace("\n", " ").strip()[:MAX_FORMULA_CHARS]
-        items = _clean_items(raw.get("formula_explanation") or [])[:MAX_SHOT_ITEMS]
-        errs += _item_errors(items, source, span)
+        sym_items, sym_errs = symbol_items(raw.get("formula_symbols"), formula, texts, span)
+        errs += sym_errs
+        if sym_items or raw.get("formula_symbols"):             # 三期 B3：符号卡优先于自由解释
+            items = sym_items
+        else:
+            items = _clean_items(raw.get("formula_explanation") or [])[:MAX_SHOT_ITEMS]
+            errs += _item_errors(items, source, span)
         sc.update(type="formula", formula=formula, items=items)
     else:  # keypoint / illustration
         items = _clean_items(raw.get("items") or [])
@@ -472,6 +520,10 @@ def _build_shot(cut: Dict[str, Any], beat: Dict[str, Any], ctx: Dict[str, Any]) 
                      "composition": str(raw.get("image_composition") or "").strip()[:MAX_COMPOSITION_CHARS],
                      "focus_x": 0.5, "version": 0, "file": None}
             errs += [f"镜头 {span}：{e}" for e in check_illustration(image)]   # 抽象主体、禁用词：整窗重做
+            g = ctx.get("grounding")                                           # 三期 B4：主体须出自原文（默认关闭）
+            if g and not subject_grounded(image["subject"], g["article_norm"], g["words"]):
+                errs.append(f"镜头 {span}：插图主体「{image['subject'][:12]}」未出现在原文中，"
+                            f"请改用原文已有的具象类比或物体（如 {'、'.join(g['words'][:6])}）")
             sc["image"] = image
     sc["kind"] = kind
     sc["sentences"] = [sentence_id(bid, a), sentence_id(bid, b)]
@@ -734,12 +786,24 @@ def _log_overview(part: Dict[str, Any], script: Dict[str, Any], ctxs: Dict[str, 
 def direct_part_llm(script: Dict[str, Any], blocks: List[Dict[str, Any]], *, part: Dict[str, Any],
                     chapter: Dict[str, str], allowance: int, shots_per_image: int, llm,
                     images_enabled: bool, style_anchor: str,
-                    cache_dir: Optional[Path] = None, force: bool = False) -> Dict[str, Any]:
+                    cache_dir: Optional[Path] = None, force: bool = False,
+                    strict_coverage: bool = False, subject_from_source: bool = False) -> Dict[str, Any]:
     """模型版分镜（两步调用 + 分窗 + 局部修复）。失败抛 PlanError，不写结果。
 
     cache_dir：缓存目录（策划与各窗口的结果）；force=True 时忽略缓存、全部重新调用模型。
+    strict_coverage：结构块（流程、表格、列表、公式、递进、概念）未被任何镜头承载时整章失败（默认只提示）。
+    subject_from_source：插图主体必须出自原文（默认关闭）。
     """
     ctxs = {b["id"]: beat_context(b, blocks) for b in script["beats"]}
+    if subject_from_source:
+        text = article_text(blocks)
+        words = analogy_words_in(text)
+        if words:
+            g = {"article_norm": norm_key(text), "words": words}
+            for c in ctxs.values():
+                c["grounding"] = g
+        else:
+            joblog.bound_log("插图主体须出自原文：原文中没有可识别的具象类比词，本次不做该检查", level="warn")
     shots = max(1, int(shots_per_image))
     pid = part["id"]
     cdir = Path(cache_dir) if cache_dir is not None else None
@@ -781,7 +845,14 @@ def direct_part_llm(script: Dict[str, Any], blocks: List[Dict[str, Any]], *, par
     if v["errors"]:
         joblog.bound_log(f"{pid}：整章校验发现 {len(v['errors'])} 处问题，本章未写入结果", level="error")
         raise PlanError(f"{pid} 分镜整章校验不通过：" + "；".join(v["errors"][:6]))
-    sb["warnings"] = v["warnings"] + absence_warnings(scenes_all, script, ctxs)
+    cov = coverage_report(scenes_all, script, ctxs)
+    sb["coverage"] = cov
+    if strict_coverage and cov["uncovered"]:
+        for u in cov["uncovered"][:12]:
+            joblog.bound_log(f"  · {u}", level="error")
+        raise PlanError(f"{pid} 结构块未被镜头承载（严格覆盖已开启）：" + "；".join(cov["uncovered"][:6]))
+    new_family = [u for u in cov["uncovered"] if any(k in u for k in ("公式", "递进", "概念定义"))]
+    sb["warnings"] = v["warnings"] + absence_warnings(scenes_all, script, ctxs) + new_family + cov["notes"]
     cached = sum(1 for w in win_info if w["cached"])
     total_calls = plan_calls + sum(w["calls"] for w in win_info)
     joblog.bound_log(f"{pid}：模型分镜通过校验：{len(scenes_all)} 个镜头（{_kind_summary(scenes_all)}），"

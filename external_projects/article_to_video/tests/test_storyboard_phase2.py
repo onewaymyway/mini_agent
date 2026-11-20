@@ -68,8 +68,8 @@ def test_english_level_one_headings_are_concepts(blocks):
     assert {"Identity Infrastructure", "Experience Loop", "Life Data", "AgentOS",
             "Artificial Life", "Intelligence Infrastructure"} <= names
     assert not any(x.get("concept") for x in blocks if x.get("text", "").startswith("一、"))
-    concept = _b(blocks, "s09.p01")
-    assert concept["definition"]                       # 记录了其后第一句定义
+    concept = _b(blocks, "s20.p01")
+    assert concept["definition"].startswith("管理人工智能主体")   # 三期修订：同节内第一句完整陈述（跳过否定句与引导句）
 
 
 # ---------- 模型版：公式与标签 ----------

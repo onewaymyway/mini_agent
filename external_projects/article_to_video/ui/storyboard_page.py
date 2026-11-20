@@ -19,7 +19,8 @@ from ui import jobs
 from ui.reset_panel import render_reset_panel
 
 _TYPE_LABELS = {"keypoint": "卡片", "list": "列表", "timeline": "时间线", "diagram": "流程/回路",
-                "table": "表格", "quote": "金句", "formula": "公式", "illustration": "插图"}
+                "table": "表格", "quote": "金句", "formula": "公式", "illustration": "插图",
+                "stack": "堆叠层图", "stages": "递进卡", "definition": "定义卡"}
 
 
 def _visual_summary(pdir) -> None:
@@ -61,6 +62,12 @@ def _scene_editor(pdir, part_id, sb, script) -> dict:
                    "header": sc.get("header", []), "rows": sc.get("rows", []),
                    "loop": sc.get("loop", False), "formula": sc.get("formula", ""), "image": None,
                    "reveal": []}
+            if kind == "stages":
+                new["stages"] = sc.get("stages") or []
+                st.caption("递进卡的阶段与标签取自原文，本页只读；条目随阶段标题自动生成。")
+                new["items"] = [s.get("title", "") for s in new["stages"]]
+            if kind == "definition":
+                new["term"] = st.text_input("术语（取自原文概念标题，可修改）", value=sc.get("term", ""), key=f"term_{key}")
             if kind == "formula":
                 new["formula"] = st.text_input("公式（纯文本）", value=sc.get("formula", ""), key=f"f_{key}")
             if kind == "illustration":

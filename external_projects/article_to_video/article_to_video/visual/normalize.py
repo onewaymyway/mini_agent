@@ -41,6 +41,17 @@ def normalize_scene(raw: Dict[str, Any], sentences: List[Dict[str, Any]]) -> Dic
         "image": None,
         "reveal": [],
     }
+    if sc_type == "stages":                         # 递进卡：阶段（标题 + 标签）；条目为阶段标题，保证与阶段一致
+        stages = []
+        for x in raw.get("stages") or []:
+            if isinstance(x, dict) and str(x.get("title") or "").strip():
+                stages.append({"title": str(x["title"]).strip()[:30],
+                               "labels": [str(t).strip()[:30] for t in x.get("labels") or [] if str(t).strip()][:8]})
+        sc["stages"] = stages
+        sc["items"] = [s["title"] for s in stages]
+    if sc_type == "definition":                     # 定义卡：术语 + 定义句（条目）
+        sc["term"] = str(raw.get("term") or "").strip()[:40]
+        sc["items"] = sc["items"][:1]
     page = raw.get("page")
     if (isinstance(page, dict) and isinstance(page.get("index"), int) and isinstance(page.get("total"), int)
             and 1 <= page["index"] <= page["total"]):

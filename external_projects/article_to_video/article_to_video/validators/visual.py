@@ -12,6 +12,7 @@ from ..visual.director import (MAX_DIAGRAM_NODES, MAX_KEYPOINT_ITEMS, MAX_LIST_I
                                MAX_TABLE_COLS, MAX_TABLE_ROWS, TEXT_LIMIT)
 from ..visual.shots import reveal_in_range, shot_range
 from ..visual.states import SCENE_TYPES
+from ..visual.structures import MAX_STAGE_LABELS, MAX_STAGES
 
 MAX_RUN = 3          # 同一画面类型连续超过此数量给出警告
 MAX_PROMPT_CHARS = 400
@@ -89,7 +90,7 @@ def validate_storyboard(sb: Dict[str, Any], script: Dict[str, Any], *, allowance
         limit = {"keypoint": MAX_KEYPOINT_ITEMS, "illustration": MAX_KEYPOINT_ITEMS,
                  "list": MAX_LIST_ITEMS, "timeline": MAX_LIST_ITEMS,
                  "diagram": MAX_DIAGRAM_NODES, "stack": MAX_DIAGRAM_NODES, "table": MAX_TABLE_ROWS,
-                 "quote": 1, "formula": MAX_KEYPOINT_ITEMS}[kind]
+                 "quote": 1, "formula": MAX_KEYPOINT_ITEMS, "stages": MAX_STAGES, "definition": 1}[kind]
         if len(items) > limit:
             errors.append(f"{sid}：{kind} 条目 {len(items)} 个，超过上限 {limit}")
         if kind == "table":
@@ -100,6 +101,17 @@ def validate_storyboard(sb: Dict[str, Any], script: Dict[str, Any], *, allowance
                 if len(r) != len(header):
                     errors.append(f"{sid}：表格行列数与表头不一致")
                     break
+        if kind == "stages":
+            stages = sc.get("stages") or []
+            if len(stages) < 2:
+                errors.append(f"{sid}：递进卡至少需要 2 个阶段")
+            if any(len(s.get("labels") or []) > MAX_STAGE_LABELS for s in stages):
+                errors.append(f"{sid}：递进卡的阶段标签超过 {MAX_STAGE_LABELS} 个")
+        if kind == "definition":
+            if not str(sc.get("term") or "").strip():
+                errors.append(f"{sid}：定义卡缺少术语")
+            if not items:
+                errors.append(f"{sid}：定义卡缺少定义句")
         if kind == "formula" and not str(sc.get("formula") or "").strip():
             errors.append(f"{sid}：公式场景缺少公式内容")
         if kind == "illustration":

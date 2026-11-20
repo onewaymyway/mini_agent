@@ -138,7 +138,9 @@ def plan_storyboard(pdir: Path, part_id: str, *, force: bool = False, now: Optio
         sb = direct_part_llm(script, _blocks(pdir), part=part, chapter=chapter, allowance=allowance,
                              shots_per_image=shots, llm=llm, images_enabled=cfg["images"]["enabled"],
                              style_anchor=cfg["bible"]["style_anchor"],
-                             cache_dir=_cache_dir(pdir, part_id), force=force)
+                             cache_dir=_cache_dir(pdir, part_id), force=force,
+                             strict_coverage=cfg["storyboard"]["strict_coverage"],
+                             subject_from_source=cfg["storyboard"]["subject_from_source"])
     else:
         sb = direct_part(script, _blocks(pdir), chapter=chapter, allowance=allowance, shots_per_image=shots)
     sb["input_sha"] = sha

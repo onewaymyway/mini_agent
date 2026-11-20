@@ -50,19 +50,45 @@ def _brace_end(lines: List[str], i: int) -> int:
 _CONCEPT_TITLE = re.compile(r"^[A-Za-z][A-Za-z ]*[A-Za-z]$")
 
 
+_NEGATION_LEAD = re.compile(r"不是|不应|不只|并不|不像|不再|而不是|不能")
+_SENTENCE_FINAL = re.compile(r"[。！？!?]$")
+
+
+def _definition_after(blocks: List[Dict[str, Any]], i: int) -> str:
+    """概念标题之后、同一节内的第一句完整陈述（三期修订）。
+
+    规则：只看同一节内的段落与引语；以冒号结尾的引导句、没有句末标点的短语、
+    以及紧跟在否定引导句（“不是…：”“不应该只是：”）之后的句子都跳过——它们是在说“不是什么”。
+    """
+    head = blocks[i]
+    prev_lead = ""
+    for nxt in blocks[i + 1:]:
+        if nxt.get("section") != head.get("section") or nxt.get("kind") in ("heading", "rule"):
+            break
+        if nxt.get("kind") not in ("paragraph", "quote"):
+            prev_lead = ""
+            continue
+        text = (nxt.get("plain") or nxt.get("text") or "").strip().strip("*").strip()
+        sentence = re.split(r"(?<=[。！？])", text)[0].strip().strip("“”\"")
+        if text.endswith(("：", ":")):
+            prev_lead = text
+            continue
+        negated = bool(prev_lead and _NEGATION_LEAD.search(prev_lead))
+        prev_lead = ""
+        if negated or len(sentence) < 4 or not _SENTENCE_FINAL.search(sentence):
+            continue
+        return sentence
+    return ""
+
+
 def _mark_concepts(blocks: List[Dict[str, Any]]) -> None:
-    """概念条目（A6）：英文的一级标题（如 Experience Loop）是术语的首次出现，记录其后第一句定义。
-    只做标记，不生成画面（定义卡在三期实施）。"""
+    """概念条目（A6）：英文的一级标题（如 Experience Loop）是术语的首次出现，记录其后的定义句。
+    只做标记；定义卡由分镜（三期）使用。没有合适的定义句时 definition 为空（不生成定义卡，不编造）。"""
     for i, b in enumerate(blocks):
         if b.get("kind") != "heading" or b.get("level") != 1 or not _CONCEPT_TITLE.match(b.get("text", "")):
             continue
         b["concept"] = True
-        b["definition"] = ""
-        for nxt in blocks[i + 1:i + 4]:
-            if nxt.get("kind") in ("paragraph", "quote") and nxt.get("plain", nxt.get("text", "")):
-                text = nxt.get("plain") or nxt.get("text", "")
-                b["definition"] = re.split(r"(?<=[。！？])", text.strip("* "))[0].strip()
-                break
+        b["definition"] = _definition_after(blocks, i)
 
 
 def parse_markdown(text: str) -> Dict[str, Any]:

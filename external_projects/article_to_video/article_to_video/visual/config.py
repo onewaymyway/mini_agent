@@ -26,6 +26,9 @@ def default_visual() -> Dict[str, Any]:
         "bible": {"style_anchor": DEFAULT_STYLE_ANCHOR},
         "images": {"enabled": True, "provider": "agnes", "max_per_minute": 2.5, "size": "1024x1024",
                    "shots_per_image": 2, "use_system_proxy": False},
+        # 分镜改进三期：均为保守默认（关闭）。strict_coverage=结构块未被镜头承载则整章失败；
+        # subject_from_source=插图主体必须出自原文（原文的具象类比）。
+        "storyboard": {"strict_coverage": False, "subject_from_source": False},
     }
 
 
@@ -45,6 +48,7 @@ def normalize_visual(raw: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, An
     if "文字" not in anchor and "字母" not in anchor:
         anchor = anchor + "，画面中不出现任何文字"
     img_raw = raw.get("images") if isinstance(raw.get("images"), dict) else {}
+    sb_raw = raw.get("storyboard") if isinstance(raw.get("storyboard"), dict) else {}
     try:
         rate = float(img_raw.get("max_per_minute", base["images"]["max_per_minute"]))
     except (TypeError, ValueError):
@@ -69,6 +73,10 @@ def normalize_visual(raw: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, An
             "size": str(img_raw.get("size", base["images"]["size"])),
             "shots_per_image": shots,
             "use_system_proxy": bool(img_raw.get("use_system_proxy", False)),
+        },
+        "storyboard": {
+            "strict_coverage": bool(sb_raw.get("strict_coverage", False)),
+            "subject_from_source": bool(sb_raw.get("subject_from_source", False)),
         },
     }
     return out, warnings
