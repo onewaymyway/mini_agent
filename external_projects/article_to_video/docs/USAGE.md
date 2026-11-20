@@ -225,3 +225,12 @@ python entrypoints/batch_run.py --root D:\video_projects --status
 
 目前的限制：元素以整块出现，不逐条显示；字幕尚未接入新方案。
 
+### 如何比较两种方案
+
+项目内置了一组客观指标，可对两种方案的输出分别计算（同一篇文章、同一套模型与语音引擎下比较最有意义）：
+
+    python -m article_to_video.deck.evaluate classic <script.json> <storyboard.json> <timeline.json>
+    python -m article_to_video.deck.evaluate deck <deck.json> <deck_script.json> <deck_timeline.json>
+
+同步率衡量"讲到某个元素时，画面是否亮起它"，是一个代理指标，不能代替人工观看。建议同时人工看一遍成片。
+
