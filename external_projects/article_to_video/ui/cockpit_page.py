@@ -124,6 +124,7 @@ def _next_hint(rows) -> str:
 def _deck_panel(pdir, busy: bool) -> None:
     """新方案：逐章生成幻灯片规划 → 确认 → 生成讲稿 → 确认。配音与按页渲染为后续阶段。"""
     from article_to_video.deck.script import plan_script, script_status
+    from article_to_video.deck.voice import synthesize_deck, voice_status
     from article_to_video.deck.store import confirm_deck, deck_status, load_deck, plan_deck
     from article_to_video.planning.errors import PlanError
 
@@ -146,6 +147,9 @@ def _deck_panel(pdir, busy: bool) -> None:
             "讲稿": ("⬜ 未生成" if not sc["exists"] else
                      ("⚠️ 已过期" if sc["stale"] else ("✅ 已确认" if sc["confirmed"] else "🟡 待确认"))),
             "讲稿字数": sc.get("total_chars", 0),
+            "配音": ("⬜ 未生成" if not voice_status(pdir, p["id"])["exists"] else
+                    ("⚠️ 已过期" if voice_status(pdir, p["id"])["stale"] else
+                     f"✅ {voice_status(pdir, p['id'])['total_sec'] / 60:.1f} 分钟")),
         })
     st.table(rows)
 
@@ -189,6 +193,23 @@ def _deck_panel(pdir, busy: bool) -> None:
             return {"state": "done", "message": "讲稿已生成"}
 
         if jobs.start(pdir, "幻灯片讲稿", run_script, scope="deck"):
+            st.rerun()
+    v1 = st.columns(1)[0]
+    if v1.button("生成全部章的配音（后台，需要语音引擎）", disabled=busy):
+        def run_voice():
+            from article_to_video.pipeline.run import default_providers
+            tts = default_providers(pdir, offline=False)["tts"]
+            errs = []
+            for p in spine["parts"]:
+                try:
+                    synthesize_deck(pdir, p["id"], tts)
+                except PlanError as exc:
+                    errs.append(f"{p['id']}：{exc}")
+            if errs:
+                return {"state": "error", "message": "；".join(errs)}
+            return {"state": "done", "message": "配音与页面时间线已生成"}
+
+        if jobs.start(pdir, "幻灯片配音", run_voice, scope="deck"):
             st.rerun()
     if d2.button("确认全部章的讲稿", disabled=busy):
         from article_to_video.deck.script import confirm_script

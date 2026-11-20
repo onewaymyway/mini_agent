@@ -64,6 +64,19 @@ def synthesize_part(project_dir: Path, part_id: str, tts, *, force: bool = False
     script = load_script(pdir, part_id)
     if script is None or not script.get("confirmed"):
         raise PlanError(f"{part_id} 的口播稿还没有确认（C1），不能配音")
+    timeline = synthesize_script(pdir, part_id, script, tts, force=force)
+    timeline["generated_at"] = now_iso(now)
+    write_json_atomic(pdir / "parts" / part_id / "timeline.json", timeline)
+    append_progress(pdir, f"配音 {part_id}：{sum(len(b['sentences']) for b in script['beats'])} 句，总长 {timeline['total_sec']} 秒", now)
+    return timeline
+
+
+def synthesize_script(pdir: Path, part_id: str, script: Dict[str, Any], tts, *, force: bool = False) -> Dict[str, Any]:
+    """按任意“口播结构”（beats/sentences，与口播稿同形）逐句配音并返回时间线（不写文件）。
+
+    现有方案的口播稿与新方案的每页讲稿都经由这里配音，句级缓存、断点续跑与引擎记录完全相同。
+    """
+    pdir = Path(pdir)
     cfg = project_tts_config(pdir)
     voices, vwarn = assign_voices(script, cfg)
     audio_dir = pdir / "parts" / part_id / "audio"
@@ -100,9 +113,6 @@ def synthesize_part(project_dir: Path, part_id: str, tts, *, force: bool = False
     timeline = build_timeline(script, durations, cfg, voices, engines)
     timeline["warnings"] = vwarn + (["本章使用了模拟配音（stub，静音），不能作为正式成片"]
                                     if "stub" in set(engines.values()) else [])
-    timeline["generated_at"] = now_iso(now)
-    write_json_atomic(pdir / "parts" / part_id / "timeline.json", timeline)
-    append_progress(pdir, f"配音 {part_id}：{len(durations)} 句，总长 {timeline['total_sec']} 秒", now)
     return timeline
 
 
