@@ -8,5 +8,6 @@
   executor.py  P2 按章序滚动改写、校验、断点续跑
   feedback.py  P3 章节反馈分诊（章内修改 / 设定变更）
   derived.py   P4 派生物标记、版本差异、按版本导出
+  review_cards.py  R0 章节事实卡（全书评估与大纲偏离检查的共用底座，带缓存与引文核对）
 本包只读写 _versions/ 与 _revision/ 两个目录，不改写流水线的任何状态文件。
 """

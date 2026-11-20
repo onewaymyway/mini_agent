@@ -30,6 +30,7 @@
     ├── runs/run_*.json       运行记录（状态、已完成章节、LLM 调用数、日志、派生物建议）
     ├── runs/run_*.lock       运行期间的归属锁（记录持有进程号；进程结束后残留，用于识别中断）
     ├── runs/<run>/chNNN/attemptKK/out/   每次尝试的执行器产出（便于排查）
+    ├── review/cards/chNNN.<sha8>.json   R0 章节事实卡缓存（键＝章节文件 sha256 前 8 位 + schema 版本）；review/work/ 为每次尝试的产出
     ├── triage/tri_*.json     章节反馈分诊记录
     ├── jobs/<任务>.log       实时进度日志（逐行，带时间戳）；<任务>.status.json 为 running / done / failed
     └── jobs/ops.log          操作日志：界面每个按钮的开始、结果（含摘要）或失败原因
@@ -44,6 +45,10 @@
 | `max_attempts_per_chapter` | 2 | 单章最多尝试次数（首次 + 带反馈重试） |
 | `length_ratio_min` / `length_ratio_max` | 0.7 / 1.3 | 改写后字数与原字数之比的允许范围 |
 | `stop_on_failure` | true | 某章失败即停止，后续章节保持原文 |
+| `review_max_llm_calls` | 0 | 全书评估单次最多 LLM 调用数；**0 = 不设上限**（默认） |
+| `review_dimensions` | 矛盾、衔接、时间线、人物逻辑、伏笔 | 启用的评估维度；`pacing`（节奏）、`redundancy`（冗余）、`style_drift`（文风漂移）主观、误报多，默认关闭，需手动开启 |
+| `review_window` | 5 | 衔接审阅窗口章数（相邻窗口重叠 1 章，R2 使用） |
+| `review_snippet_chars` | 300 | 仲裁时每处原文片段的前后长度（R2 使用） |
 | `review_scope` | hits | 语义判定的候选范围：`hits` 只判定命中定位词的章节；`all` 全书逐章判定（成本高，能找到纯指代的章节） |
 
 ## 命令行
@@ -65,6 +70,8 @@ python entrypoints/post_revision.py --novel <dir> diff --a v001 --b v002        
 python entrypoints/post_revision.py --novel <dir> export --version v002           # P4
 python entrypoints/post_revision.py --novel <dir> verify --version v001
 python entrypoints/post_revision.py --novel <dir> discard --version v003          # P5 撤销（仅叶子版本）
+python entrypoints/post_revision.py --novel <dir> review-estimate [--version v00N]  # R0 评估成本估算（不调用 LLM）
+python entrypoints/post_revision.py --novel <dir> review-cards [--version v00N] [--chapters 1 2] [--force]  # R0 生成章节事实卡（调用 LLM）
 ```
 
 变更 JSON 示例（设定变更）：
@@ -90,6 +97,7 @@ python entrypoints/post_revision.py --novel <dir> discard --version v003        
 | P3 章节反馈分诊 | 完成 | `feedback.py` | LLM 分诊为 chapter / setting；作者确认后才生成变更 |
 | P4 派生物与对比导出 | 完成（重跑需手动） | `derived.py` | 派生物建议清单、版本逐文件差异、按版本导出 |
 | P5 撤销与丢弃 | 完成 | `versions.py` | `discard`（仅叶子版本，不能丢弃 v001）、`undo_head` |
+| R0 章节事实卡 | 完成 | `review_cards.py` | 全书评估与大纲偏离检查的共用底座。每章一次调用提取时间/地点/人物末状态/事件/新确立的事实/伏笔动作/开头结尾状态；只读版本，只写 `_revision/review/`；缓存命中则不再调用；带 quote 的条目必须能在章节原文中核对到（忽略空白与标点），核对不过的丢弃并记入 `dropped`；单章失败不阻塞其它章。仅在已有 v001 后可用。设计与后续分期见 `next_doc/novel_writer_post_completion_review_and_outline_regen_plan.md` |
 | 实时进度 | 完成 | `jobs.py`、`ui/post_revision.py` | 生成预览、开始改写、续跑、分诊都在后台线程执行。页面顶部只有一个「当前任务」面板（同一时间只允许一个任务），每 1.5 秒刷新，日志按时间顺序排列、最新在最下（面板显示最近 40 行，完整日志在下方展开项），显示状态、开始时间、已输出行数；包含每章开始判定、每次尝试、判定与校验结果，以及 agent 的逐行输出 |
 | 版本导出与阅读 | 完成 | `derived.py`、`ui/reading.py` | 📖 阅读页顶部可选择工作稿或任一版本（v001 只读完稿、修改版本）；选中版本后预览该版本正文，并可分别导出全书合稿（md / txt / docx / epub）和最终稿。导出文件统一放在 `_versions/exports/<版本号>/`，版本目录不留产物；页面列出该版本已导出的文件供下载。版本快照包含 `项目状态/workspace_config.json`（书名） |
 | 版本差异 | 完成 | `derived.py`、`ui/post_revision.py` | 「查看差异」输出 git 风格的 unified diff（`diff --git` 头、`@@` 块、`+`/`-` 行，带 diff 语法高亮）；先列出变化文件及增删行数，可选单个文件或全部文件；新增/删除文件有 `new file` / `deleted file` 标记 |
@@ -113,6 +121,8 @@ python entrypoints/post_revision.py --novel <dir> discard --version v003        
 - 流程完全不读写流水线状态；若作者在完稿后又回去用流水线重跑章节，那是独立于本流程的操作，两者不会自动同步。
 
 ## 测试
+
+`tests/test_revision_review_cards.py`（13 例，R0）：完稿门禁、设置默认与校验、引文归一化核对、结构校验、缓存命中与失效、伪造引文被丢弃、坏 JSON 重试、单章失败隔离、调用上限暂停续跑、默认不设上限、不触碰版本与流水线状态。
 
 `tests/test_revision_flow.py`（36 例）与 `tests/test_revision_flow_ui.py`（12 例，AppTest 冒烟）覆盖：基线门禁与只读、配置校验、变更校验、两种语义的章节集合与警告、
 预览确认门禁、retcon / from_chapter 执行、原稿不被触碰、校验失败重试、失败即停、上限暂停与续跑、

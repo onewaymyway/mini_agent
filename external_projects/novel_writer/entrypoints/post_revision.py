@@ -17,6 +17,8 @@
     python entrypoints/post_revision.py --novel <dir> export --version v002     # P4
     python entrypoints/post_revision.py --novel <dir> discard --version v003    # P5 撤销
     python entrypoints/post_revision.py --novel <dir> verify --version v001
+    python entrypoints/post_revision.py --novel <dir> review-estimate [--version v00N]   # R0 评估成本估算（不调用 LLM）
+    python entrypoints/post_revision.py --novel <dir> review-cards [--version v00N] [--chapters 1 2] [--force]  # R0 生成事实卡（调用 LLM）
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ import _common  # noqa: F401
 
 from novel_writer.revision_flow import changes as CH
 from novel_writer.revision_flow import config as CFG
-from novel_writer.revision_flow import derived, executor, feedback
+from novel_writer.revision_flow import derived, executor, feedback, review_cards
 from novel_writer.revision_flow import versions as V
 from novel_writer.revision_flow.common import FlowError
 from novel_writer.workspace import Workspace
@@ -89,6 +91,12 @@ def main(argv=None) -> int:
     sp.add_argument("--version", required=True)
     sp = sub.add_parser("verify")
     sp.add_argument("--version", required=True)
+    sp = sub.add_parser("review-estimate")
+    sp.add_argument("--version", default=None)
+    sp = sub.add_parser("review-cards")
+    sp.add_argument("--version", default=None)
+    sp.add_argument("--chapters", nargs="+", type=int, default=None)
+    sp.add_argument("--force", action="store_true", help="忽略缓存重新生成")
     args = p.parse_args(argv)
 
     ws = Workspace(args.novel)
@@ -140,6 +148,11 @@ def main(argv=None) -> int:
         if args.cmd == "verify":
             problems = V.verify(ws, args.version)
             return _out({"ok": not problems, "problems": problems})
+        if args.cmd == "review-estimate":
+            return _out(review_cards.estimate(ws, args.version))
+        if args.cmd == "review-cards":
+            return _out(review_cards.generate_cards(ws, args.version, _invoker(), progress=print,
+                                                    chapters=args.chapters, force=args.force))
     except FlowError as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 2
