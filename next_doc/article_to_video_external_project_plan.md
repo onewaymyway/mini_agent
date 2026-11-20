@@ -1451,4 +1451,4 @@ external_projects/article_to_video/
 
 ## 43. 分镜改进（测试文章样本）指向
 
-以测试文章《Harness》为样本的分镜结构改进，完整方案与各期记录见 `next_doc/article_to_video_storyboard_case_harness_plan.md`。进度：第一期（分页、箭头语义、回路）、第二期（文本块分类、架构图、概念条目）、第三期（结构块覆盖报告、递进卡、公式符号卡、插图主体出自原文、定义卡，2026-11-20）已完成；第四期（对比卡、回顾分组、回归断言、覆盖报告展示）待实施。第三期新增两个默认关闭的设置：`visual.storyboard.strict_coverage`、`visual.storyboard.subject_from_source`。
+以测试文章《Harness》为样本的分镜结构改进，完整方案与各期记录见 `next_doc/article_to_video_storyboard_case_harness_plan.md`。进度：第一期（分页、箭头语义、回路）、第二期（文本块分类、架构图、概念条目）、第三期（结构块覆盖报告、递进卡、公式符号卡、插图主体出自原文、定义卡，2026-11-20）已完成；第四期（对比卡、回顾分组、回归断言、覆盖报告展示，2026-11-20）已完成，见 case 方案第 11 节。第三期新增两个默认关闭的设置：`visual.storyboard.strict_coverage`、`visual.storyboard.subject_from_source`。

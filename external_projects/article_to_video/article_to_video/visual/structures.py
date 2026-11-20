@@ -12,12 +12,18 @@ import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from ..validators.fidelity import norm_key
+from .states import RECAP_CAP
 
 MAX_STAGES = 4                 # 递进卡：每镜最多阶段数（超出则不提供递进卡，并在覆盖报告中说明）
 MAX_STAGE_LABELS = 8           # 递进卡：每个阶段最多标签数
 MAX_SYMBOLS = 3                # 公式符号卡：每镜最多符号数
 MAX_MEANING_CHARS = 12         # 符号含义的字数上限（取自原句的短语）
 DEFINITION_LIMIT = 60          # 定义卡的定义句字数上限
+CONTRAST_LEFT_TITLE = "不是"       # 对比卡左栏标题：直接取原文的对照词，不替原文下结论（计划中的“常见观点/本文判断”
+CONTRAST_RIGHT_TITLE = "而是"      # 会给第 26 节这类“这层解决的不是…”的对照加上不存在的立场，故不采用）
+CONTRAST_ITEM_LIMIT = 40        # 对比卡每侧单条的字数上限
+RECAP_MIN_LINES = 4             # 多行总结至少这么多行才视为回顾（少于则为普通金句）
+RECAP_ITEM_LIMIT = 40           # 回顾卡每条字数上限
 
 # 文章里常见的具象类比（插图主体的候选）。只用于「主体须出自原文」的检查与提示，不是白名单：
 # 主体整体出现在原文中同样合格。
@@ -26,6 +32,8 @@ ANALOGY_WORDS = (
     "城市", "大楼", "地基", "操作系统", "灵魂", "生命", "种子", "森林", "河流", "眼睛", "手",
 )
 
+_NEG_LEAD = re.compile(r"不是[：:]$")       # B6：「我的答案不是：」「也不是：」——对照的“常见观点”一侧
+_POS_LEAD = re.compile(r"而是[：:]$")         # B6：「而是：」——对照的“本文判断”一侧
 _PROGRESSION_WORDS = re.compile(r"过去|以前|曾经|然后|接下来|之后|随后|最后|首先|其次|现在|未来|最终|起初|如今")
 _COLON_END = re.compile(r"[：:]\s*$")
 _CLAUSE_END = re.compile(r"[，,；;。！？!?：:、]")
@@ -196,12 +204,104 @@ def symbol_items(raw_symbols: Any, formula: str, texts: Sequence[str], span: str
     return items, errs
 
 
+# ---------- 对比（B6）与回顾（B7） ----------
+
+def _plain_of(b: Dict[str, Any]) -> str:
+    return re.sub(r"[*`]+", "", str(b.get("plain") or b.get("text") or "")).strip()
+
+
+def _quote_lines(b: Dict[str, Any]) -> List[str]:
+    """引语块的各行（去掉首尾引号与空行）。"""
+    out = []
+    for ln in _plain_of(b).split("\n"):
+        t = ln.strip().strip("“”\"「」").strip()
+        if t:
+            out.append(t)
+    return out
+
+
+def _kv_pairs(b: Dict[str, Any]) -> List[Tuple[str, str]]:
+    """文本代码块（kv 分类）中的 “X ≠ Y” 对：逐行写法，或 “X / ≠ / Y” 三行写法。"""
+    items = [str(x).strip() for x in b.get("items") or [] if str(x).strip()]
+    if len(items) == 3 and items[1] == "≠":
+        return [(items[0], items[2])]
+    pairs = []
+    for it in items:
+        if "≠" not in it:
+            return []
+        left, right = [x.strip() for x in it.split("≠", 1)]
+        if not left or not right:
+            return []
+        pairs.append((left, right))
+    return pairs
+
+
+def contrast_of(refs_blocks: Sequence[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """段落内的对照结构（B6），返回 {id, refs, left, right, left_title, right_title}；没有则返回 None。
+
+    来源一：「我的答案不是：」> 引语 /「也不是：」> 引语 /「而是：」> 引语——左栏为否定的常见观点，右栏为本文判断；
+    来源二：文本代码块（kv）中的 “X ≠ Y”，左栏为 X，右栏为 Y（无栏标题）。
+    两侧都必须非空；每条只能是单行引语或短句，且不超过 CONTRAST_ITEM_LIMIT 字。两侧文字均取自原文。
+    """
+    seq = list(refs_blocks)
+    left: List[str] = []
+    right: List[str] = []
+    refs: List[str] = []
+    i = 0
+    while i < len(seq):
+        b = seq[i]
+        nxt = seq[i + 1] if i + 1 < len(seq) else None
+        lead = _plain_of(b) if b.get("kind") == "paragraph" else ""
+        if lead and nxt and nxt.get("kind") == "quote":
+            lines = _quote_lines(nxt)
+            if len(lines) == 1 and len(lines[0]) <= CONTRAST_ITEM_LIMIT:
+                if _NEG_LEAD.search(lead) and not right:
+                    left.append(lines[0])
+                    refs += [b.get("id"), nxt.get("id")]
+                    i += 2
+                    continue
+                if _POS_LEAD.search(lead) and left:
+                    right.append(lines[0])
+                    refs += [b.get("id"), nxt.get("id")]
+                    break
+        i += 1
+    if left and right:
+        return {"id": refs[0], "refs": refs, "left": left, "right": right,
+                "left_title": CONTRAST_LEFT_TITLE, "right_title": CONTRAST_RIGHT_TITLE}
+    for b in seq:
+        if b.get("kind") == "code" and b.get("hint") == "kv":
+            pairs = _kv_pairs(b)
+            if len(pairs) >= 2 and all(len(x) <= CONTRAST_ITEM_LIMIT and len(y) <= CONTRAST_ITEM_LIMIT
+                                       for x, y in pairs):
+                return {"id": b.get("id"), "refs": [b.get("id")],
+                        "left": [x for x, _ in pairs], "right": [y for _, y in pairs],
+                        "left_title": "", "right_title": ""}
+    return None
+
+
+def recap_of(refs_blocks: Sequence[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """段落内的多行总结（B7）：引语块且行数不少于 RECAP_MIN_LINES、每行不超过 RECAP_ITEM_LIMIT 字。
+
+    返回 {id, lines}；分镜按 RECAP_CAP 分页（每张回顾卡最多 3 条），例如 6 行 → 两张卡，各 3 条。
+    """
+    for b in refs_blocks:
+        if b.get("kind") != "quote":
+            continue
+        lines = _quote_lines(b)
+        if len(lines) >= RECAP_MIN_LINES and all(len(x) <= RECAP_ITEM_LIMIT for x in lines):
+            return {"id": b.get("id"), "lines": lines}
+    return None
+
+
 # ---------- 覆盖报告（B1 / C2 雏形） ----------
 
 _TYPES_OF = {"chain": ("diagram", "stack"), "table": ("table",), "list": ("list", "timeline"),
-             "math": ("formula",), "stages": ("stages",), "concept": ("definition",)}
+             "math": ("formula",), "stages": ("stages",), "concept": ("definition",),
+             "recap": ("recap",), "contrast": ("contrast",)}
 _LABEL = {"chain": "流程或堆叠层级", "table": "表格", "list": "列表", "math": "公式",
-          "stages": "递进", "concept": "概念定义"}
+          "stages": "递进", "concept": "概念定义", "recap": "回顾条目", "contrast": "对比卡"}
+FAMILY_LABEL = {"chain": "流程或堆叠", "table": "表格", "list": "列表", "math": "公式", "stages": "递进",
+                "concept": "概念定义", "recap": "回顾", "contrast": "对比"}
 
 
 def structure_blocks(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -220,6 +320,10 @@ def structure_blocks(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "total": len(ctx["stages"])})
     for c in ctx.get("concepts") or []:
         out.append({"family": "concept", "id": c["id"], "total": 1, "term": c["term"]})
+    if ctx.get("recap"):
+        out.append({"family": "recap", "id": ctx["recap"]["id"], "total": len(ctx["recap"]["lines"])})
+    if ctx.get("contrast"):
+        out.append({"family": "contrast", "id": ctx["contrast"]["id"], "total": 1})
     return out
 
 
@@ -228,7 +332,7 @@ def _shown(scenes: Sequence[Dict[str, Any]], fam: str, total: int) -> set:
     for s in scenes:
         if s.get("type") not in _TYPES_OF[fam]:
             continue
-        if fam in ("math", "concept"):
+        if fam in ("math", "concept", "contrast"):
             shown.add(0)
         elif s.get("part"):
             shown.update(range(s["part"][0] - 1, s["part"][1]))
@@ -268,3 +372,17 @@ def coverage_report(scenes: Sequence[Dict[str, Any]], script: Dict[str, Any],
             elif missing:
                 uncovered.append(f"{bid}：{name}共 {total} 项，只承载了 {total - len(missing)} 项")
     return {"blocks": entries, "uncovered": uncovered, "notes": notes}
+
+
+def coverage_rows(cov: Optional[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """覆盖报告的展示行（C2）：每个结构块一行——段落、结构、承载镜头、已展示项数。纯函数，界面直接显示。"""
+    rows: List[Dict[str, str]] = []
+    for e in (cov or {}).get("blocks") or []:
+        name = FAMILY_LABEL.get(e.get("family"), str(e.get("family") or ""))
+        if e.get("term"):
+            name += f"「{str(e['term'])[:16]}」"
+        rows.append({"段落": str(e.get("beat") or ""), "结构": name,
+                     "承载镜头": "、".join(str(x) for x in e.get("shots") or []) or "未承载",
+                     "已展示": f"{e.get('shown', 0)} / {e.get('total', 0)}"})
+    return rows
+

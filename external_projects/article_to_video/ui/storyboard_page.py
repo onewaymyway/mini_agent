@@ -15,12 +15,14 @@ from article_to_video.script.writer import load_script
 from article_to_video.visual import storyboard as sbm
 from article_to_video.visual.config import load_visual_config
 from article_to_video.visual.states import SCENE_TYPES
+from article_to_video.visual.structures import coverage_rows
 from ui import jobs
 from ui.reset_panel import render_reset_panel
 
 _TYPE_LABELS = {"keypoint": "卡片", "list": "列表", "timeline": "时间线", "diagram": "流程/回路",
                 "table": "表格", "quote": "金句", "formula": "公式", "illustration": "插图",
-                "stack": "堆叠层图", "stages": "递进卡", "definition": "定义卡"}
+                "stack": "堆叠层图", "stages": "递进卡", "definition": "定义卡", "contrast": "对比卡",
+                "recap": "回顾卡"}
 
 
 def _visual_summary(pdir) -> None:
@@ -48,6 +50,10 @@ def _scene_editor(pdir, part_id, sb, script) -> dict:
             if kind == "table":
                 st.caption("表格的每一行由原文表格决定，本页只读；逐行出现时机随保存自动重算。")
                 items = ["、".join(r) for r in sc.get("rows") or []]
+            elif kind == "contrast":
+                st.caption("对比卡的两侧由原文决定，本页只读：左 " + "；".join(sc.get("left") or [])
+                           + " ｜ 右 " + "；".join(sc.get("right") or []))
+                items = []
             else:
                 items_text = st.text_area("条目（每行一条，每条不超过 60 字）",
                                           value="\n".join(sc.get("items") or []), height=110,
@@ -66,6 +72,9 @@ def _scene_editor(pdir, part_id, sb, script) -> dict:
                 new["stages"] = sc.get("stages") or []
                 st.caption("递进卡的阶段与标签取自原文，本页只读；条目随阶段标题自动生成。")
                 new["items"] = [s.get("title", "") for s in new["stages"]]
+            if kind == "contrast":
+                new.update(left=sc.get("left") or [], right=sc.get("right") or [],
+                           left_title=sc.get("left_title", ""), right_title=sc.get("right_title", ""))
             if kind == "definition":
                 new["term"] = st.text_input("术语（取自原文概念标题，可修改）", value=sc.get("term", ""), key=f"term_{key}")
             if kind == "formula":
@@ -85,6 +94,23 @@ def _scene_editor(pdir, part_id, sb, script) -> dict:
             st.caption(f"本段 {n_sent} 句；保存时自动按句子重算出现时机。")
         raw_scenes.append(new)
     return {"scenes": raw_scenes}
+
+
+def _coverage_panel(sb) -> None:
+    """C2：分镜生成时的结构覆盖报告（哪些原文结构由哪些镜头承载；未承载或只承载部分的说明）。"""
+    cov = (sb or {}).get("coverage")
+    if not cov:
+        return
+    with st.expander("📊 结构覆盖报告（C2）", expanded=False):
+        rows = coverage_rows(cov)
+        if rows:
+            st.table(rows)
+        else:
+            st.caption("本章没有需要承载的原文结构。")
+        for u in cov.get("uncovered") or []:
+            st.caption(f"未完全承载：{u}")
+        for n in cov.get("notes") or []:
+            st.caption(f"说明：{n}")
 
 
 def render_storyboard_page() -> None:
@@ -196,6 +222,7 @@ def _storyboard_body(pdir) -> None:
         st.warning(w)
     for e in status["errors"][:10]:
         st.error(e)
+    _coverage_panel(sb)
 
     with st.form(f"sb_form_{part_id}"):
         raw = _scene_editor(pdir, part_id, sb, script)

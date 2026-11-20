@@ -52,6 +52,12 @@ def normalize_scene(raw: Dict[str, Any], sentences: List[Dict[str, Any]]) -> Dic
     if sc_type == "definition":                     # 定义卡：术语 + 定义句（条目）
         sc["term"] = str(raw.get("term") or "").strip()[:40]
         sc["items"] = sc["items"][:1]
+    if sc_type == "contrast":                       # 对比卡：两侧内容与栏标题（无条目；单状态）
+        sc["left"] = [str(x).strip()[:60] for x in raw.get("left") or [] if str(x).strip()]
+        sc["right"] = [str(x).strip()[:60] for x in raw.get("right") or [] if str(x).strip()]
+        sc["left_title"] = str(raw.get("left_title") or "").strip()[:12]
+        sc["right_title"] = str(raw.get("right_title") or "").strip()[:12]
+        sc["items"] = []
     page = raw.get("page")
     if (isinstance(page, dict) and isinstance(page.get("index"), int) and isinstance(page.get("total"), int)
             and 1 <= page["index"] <= page["total"]):

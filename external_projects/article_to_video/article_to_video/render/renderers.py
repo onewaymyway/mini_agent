@@ -441,6 +441,102 @@ def _draw_formula(draw, ctx: _Ctx, scene, vis: int) -> None:
             y += 20 * ctx.u
 
 
+def _draw_recap(draw, ctx: _Ctx, scene, vis: int) -> None:
+    """回顾卡（B7）：一张卡内最多 3 条总结，逐行排列在一个圆角卡片中；整体一次显示。"""
+    from ..visual.states import RECAP_CAP
+
+    items = [t for t in _items(scene)][:RECAP_CAP]
+    if not items:
+        return
+    font = ctx.font(50 if ctx.landscape else 42)
+    pad = 40 * ctx.u
+    gap = 28 * ctx.u
+    w = ctx.content_w * (0.72 if ctx.landscape else 0.88)
+    inner = int(w - 2 * pad - 24 * ctx.u)
+    rows = []
+    for t in items:
+        lines = wrap_text(draw, t, font, inner, max_lines=2)
+        rows.append((lines, font.size * len(lines) + int(font.size * 0.25) * max(0, len(lines) - 1)))
+    total = sum(h for _, h in rows) + gap * (len(rows) - 1) + 2 * pad
+    top = (ctx.H - total) / 2
+    x = _center_x(ctx, w)
+    draw.rounded_rectangle([x, top, x + w, top + total], radius=24 * ctx.u, fill=ctx.c("card"),
+                           outline=ctx.c("line"), width=max(2, round(3 * ctx.u)))
+    draw.rectangle([x, top + pad * 0.5, x + 8 * ctx.u, top + total - pad * 0.5], fill=ctx.c("accent"))
+    y = top + pad
+    for lines, h in rows:
+        ty = y
+        for line in lines:
+            draw_rich_line(draw, (x + pad + 24 * ctx.u, ty), line, font, ctx.c("text"), ctx.c("accent"),
+                           scene.get("emphasis") or [])
+            ty += font.size + int(font.size * 0.25)
+        y += h + gap
+
+
+def _draw_contrast(draw, ctx: _Ctx, scene, vis: int) -> None:
+    """对比卡（B6）：左栏「常见观点」、右栏「本文判断」（或无栏标题的 X / Y 两栏）；两侧文字取自原文；整体一次显示。
+    横屏并排，竖屏上下堆叠。"""
+    left = [str(x) for x in scene.get("left") or [] if str(x).strip()]
+    right = [str(x) for x in scene.get("right") or [] if str(x).strip()]
+    if not left and not right:
+        return
+    head_font = ctx.font(40 if ctx.landscape else 36)
+    body_font = ctx.font(46 if ctx.landscape else 40)
+    pad = 36 * ctx.u
+    gap = 60 * ctx.u
+    col_w = (ctx.content_w - gap) / 2 if ctx.landscape else ctx.content_w * 0.9
+    inner = int(col_w - 2 * pad)
+
+    def column(title: str, lines_src: List[str]):
+        head = wrap_text(draw, title, head_font, inner, max_lines=1) if title else []
+        body = []
+        for t in lines_src:
+            body.append(wrap_text(draw, t, body_font, inner, max_lines=3))
+        h = pad
+        if head:
+            h += head_font.size + int(head_font.size * 0.5)
+        for lines in body:
+            h += (body_font.size + int(body_font.size * 0.25)) * len(lines) + 22 * ctx.u
+        h += pad - 22 * ctx.u
+        return head, body, h
+
+    l_head, l_body, l_h = column(str(scene.get("left_title") or ""), left)
+    r_head, r_body, r_h = column(str(scene.get("right_title") or ""), right)
+
+    def paint(x: float, y: float, h: float, head, body, accent: bool) -> None:
+        draw.rounded_rectangle([x, y, x + col_w, y + h], radius=24 * ctx.u, fill=ctx.c("card"),
+                               outline=ctx.c("accent") if accent else ctx.c("line"),
+                               width=max(2, round((4 if accent else 3) * ctx.u)))
+        ty = y + pad
+        for line in head:
+            draw.text((x + pad, ty), line, font=head_font, fill=ctx.c("accent") if accent else ctx.c("text"))
+            ty += head_font.size + int(head_font.size * 0.5)
+        for lines in body:
+            for line in lines:
+                draw_rich_line(draw, (x + pad, ty), line, body_font, ctx.c("text"), ctx.c("accent"),
+                               scene.get("emphasis") or [])
+                ty += body_font.size + int(body_font.size * 0.25)
+            ty += 22 * ctx.u
+
+    if ctx.landscape:
+        h = max(l_h, r_h)
+        y = (ctx.H - h) / 2
+        x0 = _center_x(ctx, 2 * col_w + gap)
+        if left:
+            paint(x0, y, h, l_head, l_body, accent=False)
+        if right:
+            paint(x0 + col_w + gap, y, h, r_head, r_body, accent=True)
+    else:
+        total = (l_h if left else 0) + (r_h if right else 0) + (gap if left and right else 0)
+        y = max(ctx.my, (ctx.H - total) / 2)
+        x0 = _center_x(ctx, col_w)
+        if left:
+            paint(x0, y, l_h, l_head, l_body, accent=False)
+            y += l_h + gap
+        if right:
+            paint(x0, y, r_h, r_head, r_body, accent=True)
+
+
 _DRAWERS = {
     "keypoint": _draw_keypoint,
     "illustration": _draw_keypoint,  # 插图降级（无图或生图失败）时按卡片绘制
@@ -450,6 +546,8 @@ _DRAWERS = {
     "stack": _draw_stack,
     "stages": _draw_stages,
     "definition": _draw_definition,
+    "contrast": _draw_contrast,
+    "recap": _draw_recap,
     "table": _draw_table,
     "quote": _draw_quote,
     "formula": _draw_formula,

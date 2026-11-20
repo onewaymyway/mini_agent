@@ -39,12 +39,13 @@ from .prompting import MAX_SCENE as MAX_SCENE_CHARS
 from .prompting import check_illustration
 from .shots import (MAX_POINTS, MAX_SHOT_ITEMS, POINT_LIMIT, ROLES, SHOT_KINDS, beat_of, mention, plan_windows,
                     scene_reveal, sentence_id, sentence_index)
-from .structures import (analogy_words_in, article_text, concepts_of, coverage_report, stage_groups,
-                         subject_grounded, symbol_items)
+from .states import RECAP_CAP
+from .structures import (analogy_words_in, article_text, concepts_of, contrast_of, coverage_report, recap_of,
+                         stage_groups, subject_grounded, symbol_items)
 from ..validators.fidelity import norm_key
 
 MAX_ATTEMPTS = 3
-LLM_PROMPT_VERSION = "s4-llm-v5"
+LLM_PROMPT_VERSION = "s4-llm-v6"
 SYSTEM = ("你是讲解视频的视觉导演。只输出一个 JSON 对象，不要任何解释、前言或 Markdown 围栏。"
           "只使用给定口播与原文结构中已有的词，不得添加原文没有的数字、年份或英文词。")
 _TOKEN = re.compile(r"\d+(?:\.\d+)?|[A-Za-z][A-Za-z0-9\-\.]*")
@@ -80,6 +81,8 @@ def beat_context(beat: Dict[str, Any], blocks: List[Dict[str, Any]]) -> Dict[str
             lst = {"kind": "list", "items": [{"text": x} for x in labels["items"]], "id": labels["id"]}
     stages, stages_note = stage_groups(refs_blocks)             # 三期 B2：递进
     concepts = concepts_of(refs_blocks)                          # 三期 B5：概念定义
+    contrast = contrast_of(refs_blocks)                          # 四期 B6：对比卡
+    recap = recap_of(refs_blocks)                                # 四期 B7：回顾卡
     allowed = ["keypoint", "illustration", "hold"]
     notes: List[str] = []
     if any(s.get("quote") for s in beat["sentences"]):
@@ -112,10 +115,21 @@ def beat_context(beat: Dict[str, Any], blocks: List[Dict[str, Any]]) -> Dict[str
         allowed.append("definition")
         notes.append("概念术语（首次出现，可用 definition 生成定义卡）：" + "；".join(
             f"{c['term']}：{c['definition']}" for c in concepts))
+    if contrast:
+        allowed.append("contrast")
+        head = (f"左「{contrast['left_title']}」" if contrast["left_title"] else "左") + \
+               (f"、右「{contrast['right_title']}」" if contrast["right_title"] else "、右")
+        notes.append(f"原文对照（用 contrast 对比卡，{head}）：左 " + "；".join(contrast["left"])
+                     + " ｜ 右 " + "；".join(contrast["right"]))
+    if recap:
+        allowed.append("recap")
+        notes.append(f"原文多行总结（共 {len(recap['lines'])} 条，用 recap 回顾卡，每镜最多 {RECAP_CAP} 条，"
+                     "用 part 分页展示全部条目）：" + "；".join(recap["lines"]))
     if any(_DIGIT.search(s["text"]) for s in beat["sentences"]):
         allowed.append("chart")
     return {"allowed": allowed, "chain": chain, "table": table, "math": math_b, "lst": lst,
             "stages": stages, "stages_note": stages_note, "concepts": concepts, "grounding": None,
+            "contrast": contrast, "recap": recap,
             "notes": notes, "refs": list(beat.get("source_refs") or [])}
 
 
@@ -366,10 +380,12 @@ def build_window_prompt(part: Dict[str, Any], script: Dict[str, Any], wbeats: Se
         "12. formula 可用 formula_symbols: [{\"symbol\": \"公式中的符号\", \"meaning\": \"本镜头句子中的原文短语\"}]"
         f"（不超过 {MAX_SYMBOLS_PROMPT} 个，meaning 必须逐字取自本镜头的句子且不超过 12 字，symbol 必须出自原文公式），"
         "它优先于 formula_explanation。",
+        "13. recap（回顾卡）：原文末尾的多行总结，内容由原文决定；每镜最多 3 条，用 part 分页展示全部条目（同列表）。",
+        "14. contrast（对比卡）：原文的「不是…而是…」对照，左右两栏内容由原文决定，无需 items，只需选择句子范围。",
     ]
     g = _grounding(ctxs)
     if g:
-        lines.append("13. illustration 的 image_subject 必须出自原文：用原文已出现的具象类比或物体（"
+        lines.append("15. illustration 的 image_subject 必须出自原文：用原文已出现的具象类比或物体（"
                      + "、".join(g["words"]) + "），抽象概念（如 Harness、Identity）不作主体，改用 definition、formula 或 keypoint。")
     if issues:
         lines += ["", "【上次输出的问题，必须修正后重新输出完整 JSON】"] + [f"- {x}" for x in issues]
@@ -457,6 +473,14 @@ def _build_shot(cut: Dict[str, Any], beat: Dict[str, Any], ctx: Dict[str, Any]) 
                 errs.append(f"镜头 {span}：本段有多个概念（{'、'.join(c['term'] for c in concepts)}），请用 term 指定其一")
             pick = concepts[0]
         sc.update(type="definition", term=pick["term"][:40], items=[pick["definition"]])
+    elif kind == "recap":                                              # 四期 B7：回顾卡（分页与列表相同）
+        lines = ctx["recap"]["lines"]
+        i0, i1 = _page(raw, len(lines), RECAP_CAP, span, errs)
+        sc.update(type="recap", items=[x[:TEXT_LIMIT] for x in lines[i0:i1]], part=[i0 + 1, i1])
+    elif kind == "contrast":                                           # 四期 B6：对比卡（单状态，两侧取自原文）
+        c = ctx["contrast"]
+        sc.update(type="contrast", left=list(c["left"]), right=list(c["right"]),
+                  left_title=c["left_title"], right_title=c["right_title"], items=[])
     elif kind == "table":
         t = ctx["table"]
         header = [plain(h)[:30] for h in (t.get("header") or [])][:MAX_TABLE_COLS]
@@ -534,8 +558,8 @@ def _build_shot(cut: Dict[str, Any], beat: Dict[str, Any], ctx: Dict[str, Any]) 
     return (sc if not errs else None), errs
 
 
-_FAMILY_KINDS = {"chain": ("flow", "stack"), "table": ("table",), "list": ("list",)}
-_PAGED_TYPES = ("diagram", "stack", "table", "list", "timeline")
+_FAMILY_KINDS = {"chain": ("flow", "stack"), "table": ("table",), "list": ("list",), "recap": ("recap",)}
+_PAGED_TYPES = ("diagram", "stack", "table", "list", "timeline", "recap")
 
 
 def _page(raw: Dict[str, Any], total: int, cap: int, span: str, errs: List[str]) -> Tuple[int, int]:
@@ -561,6 +585,8 @@ def _structure_totals(ctx: Dict[str, Any]) -> Dict[str, Tuple[int, int, str]]:
         out["table"] = (len(ctx["table"].get("rows") or []), MAX_TABLE_ROWS, "表格行")
     if ctx.get("lst"):
         out["list"] = (len(ctx["lst"]["items"]), MAX_LIST_ITEMS, "列表项")
+    if ctx.get("recap"):
+        out["recap"] = (len(ctx["recap"]["lines"]), RECAP_CAP, "回顾条目")
     return out
 
 
@@ -594,7 +620,7 @@ def _coverage_errors(cuts: List[Dict[str, Any]], wbeats: Sequence[Dict[str, Any]
     return out
 
 
-_FAMILY_TYPES = {"chain": ("diagram", "stack"), "table": ("table",), "list": ("list", "timeline")}
+_FAMILY_TYPES = {"chain": ("diagram", "stack"), "table": ("table",), "list": ("list", "timeline"), "recap": ("recap",)}
 
 
 def absence_warnings(scenes: List[Dict[str, Any]], script: Dict[str, Any],
@@ -851,7 +877,7 @@ def direct_part_llm(script: Dict[str, Any], blocks: List[Dict[str, Any]], *, par
         for u in cov["uncovered"][:12]:
             joblog.bound_log(f"  · {u}", level="error")
         raise PlanError(f"{pid} 结构块未被镜头承载（严格覆盖已开启）：" + "；".join(cov["uncovered"][:6]))
-    new_family = [u for u in cov["uncovered"] if any(k in u for k in ("公式", "递进", "概念定义"))]
+    new_family = [u for u in cov["uncovered"] if any(k in u for k in ("公式", "递进", "概念定义", "对比", "回顾"))]
     sb["warnings"] = v["warnings"] + absence_warnings(scenes_all, script, ctxs) + new_family + cov["notes"]
     cached = sum(1 for w in win_info if w["cached"])
     total_calls = plan_calls + sum(w["calls"] for w in win_info)

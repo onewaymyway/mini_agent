@@ -11,7 +11,7 @@ from ..visual.prompting import check_illustration, compose_prompt
 from ..visual.director import (MAX_DIAGRAM_NODES, MAX_KEYPOINT_ITEMS, MAX_LIST_ITEMS,
                                MAX_TABLE_COLS, MAX_TABLE_ROWS, TEXT_LIMIT)
 from ..visual.shots import reveal_in_range, shot_range
-from ..visual.states import SCENE_TYPES
+from ..visual.states import RECAP_CAP, SCENE_TYPES
 from ..visual.structures import MAX_STAGE_LABELS, MAX_STAGES
 
 MAX_RUN = 3          # 同一画面类型连续超过此数量给出警告
@@ -90,7 +90,8 @@ def validate_storyboard(sb: Dict[str, Any], script: Dict[str, Any], *, allowance
         limit = {"keypoint": MAX_KEYPOINT_ITEMS, "illustration": MAX_KEYPOINT_ITEMS,
                  "list": MAX_LIST_ITEMS, "timeline": MAX_LIST_ITEMS,
                  "diagram": MAX_DIAGRAM_NODES, "stack": MAX_DIAGRAM_NODES, "table": MAX_TABLE_ROWS,
-                 "quote": 1, "formula": MAX_KEYPOINT_ITEMS, "stages": MAX_STAGES, "definition": 1}[kind]
+                 "quote": 1, "formula": MAX_KEYPOINT_ITEMS, "stages": MAX_STAGES, "definition": 1,
+                 "recap": RECAP_CAP, "contrast": 0}[kind]
         if len(items) > limit:
             errors.append(f"{sid}：{kind} 条目 {len(items)} 个，超过上限 {limit}")
         if kind == "table":
@@ -112,6 +113,12 @@ def validate_storyboard(sb: Dict[str, Any], script: Dict[str, Any], *, allowance
                 errors.append(f"{sid}：定义卡缺少术语")
             if not items:
                 errors.append(f"{sid}：定义卡缺少定义句")
+        if kind == "contrast":                                  # 四期 B6：对比卡两侧都需要原文内容
+            if not [x for x in sc.get("left") or [] if str(x).strip()] or \
+                    not [x for x in sc.get("right") or [] if str(x).strip()]:
+                errors.append(f"{sid}：对比卡两侧都需要原文内容")
+        if kind == "recap" and not items:
+            errors.append(f"{sid}：回顾卡缺少条目")
         if kind == "formula" and not str(sc.get("formula") or "").strip():
             errors.append(f"{sid}：公式场景缺少公式内容")
         if kind == "illustration":

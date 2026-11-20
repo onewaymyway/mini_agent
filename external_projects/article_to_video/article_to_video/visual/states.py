@@ -2,7 +2,7 @@
 
   * 普通场景（keypoint / illustration / quote / list 之外的卡片）：第 i 个状态显示前 i+1 个条目；
     无条目时只有一个状态（空）。
-  * 结构化场景（ALL_AT_ONCE_TYPES：流程、堆叠层图、表格、列表、年代线、递进卡、定义卡）：整体一次显示，只有一个状态。
+  * 结构化场景（ALL_AT_ONCE_TYPES：流程、堆叠层图、表格、列表、年代线、递进卡、定义卡、对比卡、回顾卡）：整体一次显示，只有一个状态。
     第一期起（分镜改进）结构不再一块一块出现；需要的话由镜头分页（续镜）控制篇幅。
   * formula 公式场景：状态 0 只显示公式，状态 k 显示前 k 条解释（公式本体始终可见）。
 
@@ -14,9 +14,11 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 SCENE_TYPES = ("keypoint", "list", "timeline", "diagram", "stack", "table", "quote", "formula", "illustration",
-               "stages", "definition")
-STRUCTURED_TYPES = ("diagram", "stack", "table", "list", "timeline", "formula", "stages", "definition")
-ALL_AT_ONCE_TYPES = ("diagram", "stack", "table", "list", "timeline", "stages", "definition")
+               "stages", "definition", "contrast", "recap")
+STRUCTURED_TYPES = ("diagram", "stack", "table", "list", "timeline", "formula", "stages", "definition",
+                    "contrast", "recap")
+ALL_AT_ONCE_TYPES = ("diagram", "stack", "table", "list", "timeline", "stages", "definition", "contrast", "recap")
+RECAP_CAP = 3                       # 回顾卡：每镜最多条数（超出用续镜，与列表分页一致；计划 B7「每卡要素 ≤ 3」）
 
 
 def visible_counts(scene: Dict[str, Any]) -> List[int]:
