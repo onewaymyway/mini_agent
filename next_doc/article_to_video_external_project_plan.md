@@ -1447,3 +1447,8 @@ external_projects/article_to_video/
 - 第二期（已完成）：「📦 批量生成」页面——共用参数、逐篇上传并设置标题与作者、运行中可继续加入、队列监控（开始/停止/重新排队/移除）、队列日志；18 项新测试，全量 601 项通过。
 - 第三期（已完成，2026-11-19）：命令行入口 `entrypoints/batch_run.py`（运行、`--status`、`--requeue`、`--report`，退出码 0/1/3/130，不登记 cron）、队列报告 `_queue/report.json` 与 `report.md`（每次运行结束写入）、文档收尾。详见 `next_doc/article_to_video_batch_generation_plan.md` 第 11 节；全量测试 620 项通过、3 项跳过。
 
+---
+
+## 43. 分镜改进（测试文章样本）指向
+
+以测试文章《Harness》为样本的分镜结构改进，完整方案与各期记录见 `next_doc/article_to_video_storyboard_case_harness_plan.md`。进度：第一期（分页、箭头语义、回路）、第二期（文本块分类、架构图、概念条目）、第三期（结构块覆盖报告、递进卡、公式符号卡、插图主体出自原文、定义卡，2026-11-20）已完成；第四期（对比卡、回顾分组、回归断言、覆盖报告展示）待实施。第三期新增两个默认关闭的设置：`visual.storyboard.strict_coverage`、`visual.storyboard.subject_from_source`。
