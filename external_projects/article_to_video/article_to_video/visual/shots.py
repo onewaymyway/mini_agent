@@ -101,25 +101,49 @@ def first_mention(key_text: str, texts: Sequence[str]) -> Optional[int]:
     return None
 
 
-def scene_reveal(sc: Dict[str, Any], texts: Sequence[str], start: int) -> List[Dict[str, int]]:
-    """逐步出现的时机（段内句序号）。
+def item_frac(item: str, text: str) -> float:
+    """要点在其句子中的相对位置（0–1），用于句内的出现时刻；找不到时取句首。"""
+    if not item or not text:
+        return 0.0
+    idx = text.find(item)
+    if idx < 0:
+        return 0.0
+    return round(idx / max(1, len(text)), 3)
 
-    * diagram（流程）：第 i 个状态显示前 i+1 个节点，节点在句子中首次被提及时出现；
-    * 其它：状态均匀分布在镜头的句子上。
+
+def scene_reveal(sc: Dict[str, Any], texts: Sequence[str], start: int) -> List[Dict[str, Any]]:
+    """逐步出现的时机（段内句序号 at_sentence，以及句内位置 at_frac）。
+
+    * 有要点、且要点数与状态数一致的镜头（要点、列表、流程、递进、定义）：每个要点出现在它第一次被讲到的那一句，
+      并记录该要点在句中的相对位置 at_frac（渲染时据此换算成真实时刻）；讲到顺序不递减；
+      原文中找不到的要点，回退到均匀分布的句子。
+    * 其它类型（金句、公式、插图、表格等）：状态均匀分布在镜头的句子上，不含 at_frac。
     texts 为镜头覆盖的句子（按顺序），start 为镜头首句在段内的序号。
     """
+    from .states import expected_state_count
+
     n = max(1, len(texts))
-    if sc.get("type") == "diagram" and sc.get("items"):
-        out: List[Dict[str, int]] = []
-        prev = 0
-        for i, item in enumerate(sc["items"]):
-            at = first_mention(str(item), texts)
-            at = prev if at is None else max(prev, at)
-            out.append({"step": i, "at_sentence": start + at})
-            prev = at
-        return out
+    items = [str(x) for x in sc.get("items") or []]
+    states = expected_state_count(sc)
     base = uniform_reveal(sc, n)
-    return [{"step": r["step"], "at_sentence": start + r["at_sentence"]} for r in base]
+    aligned = sc.get("type") in ("keypoint", "list", "diagram", "stages", "definition")
+    if not (aligned and items and len(items) == states):
+        return [{"step": r["step"], "at_sentence": start + r["at_sentence"]} for r in base]
+    out: List[Dict[str, Any]] = []
+    prev_j, prev_f = 0, 0.0
+    for i, item in enumerate(items):
+        j = first_mention(item, texts)
+        if j is None:
+            j = max(prev_j, min(n - 1, base[i]["at_sentence"]))
+            f = 0.0
+        else:
+            j = max(prev_j, j)
+            f = item_frac(item, texts[j]) if j < len(texts) else 0.0
+            if j == prev_j:
+                f = max(f, prev_f)
+        out.append({"step": i, "at_sentence": start + j, "at_frac": f})
+        prev_j, prev_f = j, f
+    return out
 
 
 def reveal_in_range(sc: Dict[str, Any], a: int, b: int) -> bool:

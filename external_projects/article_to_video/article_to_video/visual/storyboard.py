@@ -11,9 +11,10 @@ import hashlib
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .. import cancel, joblog
+from ..audio.synth import load_timeline
 from ..planning.errors import PlanError
 from ..planning.runner import load_spine
 from ..project_store import append_progress, now_iso, read_json, write_json_atomic
@@ -46,6 +47,21 @@ def _part_and_index(spine: Dict[str, Any], part_id: str):
     raise PlanError(f"大纲中没有章 {part_id}")
 
 
+def _timing_of(pdir: Path, part_id: str) -> Optional[Dict[str, Tuple[float, float]]]:
+    """配音时间轴：句ID → (开始秒, 结束秒)；还没有配音时返回 None。"""
+    tl = load_timeline(Path(pdir), part_id)
+    if tl is None:
+        return None
+    return {str(x["id"]): (float(x["start"]), float(x["end"])) for x in tl.get("sentences", [])}
+
+
+def _timing_digest(pdir: Path, part_id: str) -> Optional[str]:
+    t = _timing_of(pdir, part_id)
+    if t is None:
+        return None
+    return hashlib.sha256(json.dumps(sorted(t.items()), ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
 def _input_sha(pdir: Path, part_id: str, script: Dict[str, Any], part: Dict[str, Any],
                cfg: Dict[str, Any], engine: str = "rules") -> str:
     payload = {
@@ -55,6 +71,8 @@ def _input_sha(pdir: Path, part_id: str, script: Dict[str, Any], part: Dict[str,
         "script": script,
         "budget_minutes": part["budget_minutes"],
         "visual": cfg,
+        # 配音时间轴变化（重新配音）后，模型版分镜按新的真实时长失效
+        "timing": _timing_digest(pdir, part_id) if engine == "llm" else None,
     }
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -135,12 +153,15 @@ def plan_storyboard(pdir: Path, part_id: str, *, force: bool = False, now: Optio
                                 cfg["images"]["enabled"])
     shots = cfg["images"]["shots_per_image"]
     if engine == "llm":
+        timing = _timing_of(pdir, part_id)
+        if timing is None:
+            joblog.bound_log(f"{part_id}：还没有配音时间轴，分镜无法按真实口播时长定时（请先配音）", level="warn")
         sb = direct_part_llm(script, _blocks(pdir), part=part, chapter=chapter, allowance=allowance,
                              shots_per_image=shots, llm=llm, images_enabled=cfg["images"]["enabled"],
                              style_anchor=cfg["bible"]["style_anchor"],
                              cache_dir=_cache_dir(pdir, part_id), force=force,
                              strict_coverage=cfg["storyboard"]["strict_coverage"],
-                             subject_from_source=cfg["storyboard"]["subject_from_source"])
+                             subject_from_source=cfg["storyboard"]["subject_from_source"], timing=timing)
     else:
         sb = direct_part(script, _blocks(pdir), chapter=chapter, allowance=allowance, shots_per_image=shots)
     sb["input_sha"] = sha

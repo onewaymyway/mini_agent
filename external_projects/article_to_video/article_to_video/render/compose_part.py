@@ -61,10 +61,21 @@ def _frame_times(scene: Dict[str, Any], starts: Dict[str, Tuple[float, float, fl
     reveal = scene.get("reveal") or []
     if not reveal:
         return [span_start]
+    times = [span_start] * len(reveal)
+    # 有 at_frac 的状态（LLM 分镜按要点在句中的位置定时）：直接按句内位置换算
+    framed = {k for k, r in enumerate(reveal) if isinstance(r.get("at_frac"), (int, float))}
+    for k in framed:
+        r = reveal[k]
+        sid = f"{scene['beat']}.s{r['at_sentence'] + 1:02d}"
+        if sid not in starts:
+            continue
+        start, end, _gap = starts[sid]
+        times[k] = start + max(0.0, end - start) * min(1.0, max(0.0, float(r["at_frac"])))
+    # 其余状态：同一句内均分（旧分镜兼容）
     groups: Dict[int, list] = {}
     for k, r in enumerate(reveal):
-        groups.setdefault(r["at_sentence"], []).append(k)
-    times = [span_start] * len(reveal)
+        if k not in framed:
+            groups.setdefault(r["at_sentence"], []).append(k)
     for at, ks in groups.items():
         sid = f"{scene['beat']}.s{at + 1:02d}"
         if sid not in starts:
@@ -73,6 +84,9 @@ def _frame_times(scene: Dict[str, Any], starts: Dict[str, Tuple[float, float, fl
         dur = max(0.0, end - start)
         for j, k in enumerate(ks):
             times[k] = start + dur * j / len(ks)
+    # 出现时刻不得倒退
+    for k in range(1, len(times)):
+        times[k] = max(times[k], times[k - 1])
     return times
 
 

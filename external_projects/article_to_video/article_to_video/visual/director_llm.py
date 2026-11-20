@@ -45,7 +45,7 @@ from .structures import (analogy_words_in, article_text, concepts_of, contrast_o
 from ..validators.fidelity import norm_key
 
 MAX_ATTEMPTS = 3
-LLM_PROMPT_VERSION = "s4-llm-v6"
+LLM_PROMPT_VERSION = "s4-llm-v7"
 SYSTEM = ("你是讲解视频的视觉导演。只输出一个 JSON 对象，不要任何解释、前言或 Markdown 围栏。"
           "只使用给定口播与原文结构中已有的词，不得添加原文没有的数字、年份或英文词。")
 _TOKEN = re.compile(r"\d+(?:\.\d+)?|[A-Za-z][A-Za-z0-9\-\.]*")
@@ -349,10 +349,21 @@ def build_window_prompt(part: Dict[str, Any], script: Dict[str, Any], wbeats: Se
         lines.append(f"[{beat['id']}] 视觉角色 {p['role']}；要点：{pts}")
         for i, s in enumerate(beat["sentences"]):
             tag = "（金句）" if s.get("quote") else ""
-            lines.append(f"  [{sentence_id(beat['id'], i)}] {s['text']}{tag}")
+            sid = sentence_id(beat["id"], i)
+            t = (ctx.get("timing") or {}).get(sid)
+            when = f"（配音 {t[0]:.1f}–{t[1]:.1f} 秒，时长 {t[1] - t[0]:.1f} 秒）" if t else ""
+            lines.append(f"  [{sid}] {s['text']}{tag}{when}")
         for n in ctx["notes"]:
             lines.append(f"  {n}")
         lines.append(f"  可选画面类型：{'、'.join(ctx['allowed'])}")
+    if any(ctxs[b["id"]].get("timing") for b in wbeats):
+        lines += [
+            "",
+            "时间规则（句子括号内是真实配音时间）：",
+            "  T1. 画面必须与口播同步：一个镜头只使用它所覆盖句子里讲到的内容，要点的顺序与口播的讲述顺序一致。",
+            "  T2. 要点出现在它被讲到的那一句；不要把后面才讲到的要点提前放在前一句的镜头里。",
+            "  T3. 时长很短的句子（不超过 3 秒）只放 1 到 2 个要点；时长较长的句子可放更多要点，但不超过上限。",
+        ]
     schema = {"shots": [{"sentences": ["P01.b01.s01", "P01.b01.s03"], "kind": "keypoint",
                          "items": ["短条目"], "emphasis": ["句中的词"]}]}
     lines += [
@@ -397,6 +408,8 @@ def _window_payload(wbeats, ctxs, plan, *, allowance, shots, ill_used, prev) -> 
             "ill_used": ill_used, "prev": _prev_desc(prev) if prev else None,
             "ground": (_grounding(ctxs) or {}).get("words"),
             "beats": [{"id": b["id"], "s": [[s["text"], bool(s.get("quote"))] for s in b["sentences"]],
+                       "t": [list(ctxs[b["id"]].get("timing", {}).get(sentence_id(b["id"], i), ()))
+                             for i in range(len(b["sentences"]))],
                        "notes": ctxs[b["id"]]["notes"], "allowed": ctxs[b["id"]]["allowed"],
                        "plan": plan.get(b["id"])} for b in wbeats]}
 
@@ -813,14 +826,21 @@ def direct_part_llm(script: Dict[str, Any], blocks: List[Dict[str, Any]], *, par
                     chapter: Dict[str, str], allowance: int, shots_per_image: int, llm,
                     images_enabled: bool, style_anchor: str,
                     cache_dir: Optional[Path] = None, force: bool = False,
-                    strict_coverage: bool = False, subject_from_source: bool = False) -> Dict[str, Any]:
+                    strict_coverage: bool = False, subject_from_source: bool = False,
+                    timing: Optional[Dict[str, Tuple[float, float]]] = None) -> Dict[str, Any]:
     """模型版分镜（两步调用 + 分窗 + 局部修复）。失败抛 PlanError，不写结果。
+
+    timing：句ID → (开始秒, 结束秒)，来自配音时间轴；有则提示词标注每句的真实时长，并纳入缓存键。
 
     cache_dir：缓存目录（策划与各窗口的结果）；force=True 时忽略缓存、全部重新调用模型。
     strict_coverage：结构块（流程、表格、列表、公式、递进、概念）未被任何镜头承载时整章失败（默认只提示）。
     subject_from_source：插图主体必须出自原文（默认关闭）。
     """
     ctxs = {b["id"]: beat_context(b, blocks) for b in script["beats"]}
+    for b in script["beats"]:
+        ctxs[b["id"]]["timing"] = {sentence_id(b["id"], i): tuple(timing[sentence_id(b["id"], i)])
+                                   for i in range(len(b["sentences"]))
+                                   if timing and sentence_id(b["id"], i) in timing}
     if subject_from_source:
         text = article_text(blocks)
         words = analogy_words_in(text)
