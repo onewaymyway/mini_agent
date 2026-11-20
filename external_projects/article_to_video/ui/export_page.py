@@ -56,6 +56,17 @@ def render_export_page() -> None:
         render_job_panel(pdir, ["export"], title="合成导出运行日志")
 
 
+def _approval_banner(pdir) -> None:
+    """流水线停在导出前等待终审时，明确告诉用户原因与做法（否则看起来像“没有导出”）。"""
+    from article_to_video.pipeline.run import read_status
+
+    status = read_status(pdir) or {}
+    w = status.get("waiting") or {}
+    if status.get("state") == "waiting" and w.get("stage") == "export":
+        st.warning("流水线停在导出前，等待终审：确认成片后，到「🎬 驾驶舱」勾选「确认终审（允许导出）」，"
+                   "再运行流水线，视频会自动导出并显示在本页。")
+
+
 def _export_body(pdir) -> None:
     render_page_status(pdir, ["export"])
     spine = load_spine(pdir)
@@ -63,6 +74,7 @@ def _export_body(pdir) -> None:
         st.info("请先在「🗺️ 大纲」生成并确认大纲（C0）。")
         return
     _effective_summary(pdir)
+    _approval_banner(pdir)
 
     job = jobs.status(pdir)
     busy = job is not None and job["state"] == "running"
@@ -135,25 +147,29 @@ def _export_body(pdir) -> None:
 
 
 def _downloads(pdir) -> None:
-    exports = pdir / "exports"
-    if not exports.is_dir():
-        return
-    project = load_project(pdir)
-    name = safe_filename(project.get("title") or "video")
-    video = exports / f"{name}.mp4"
-    if not video.is_file():
+    """成片：列出 exports/ 下的全部视频（单期、各期、全集），不再只认项目标题的那一个文件。"""
+    from article_to_video.compose.export import list_exports
+
+    videos = list_exports(pdir)
+    if not videos:
         return
     st.subheader("成片")
-    st.video(str(video))
-    cols = st.columns(3)
-    cols[0].download_button("下载视频（mp4）", video.read_bytes(), file_name=video.name, mime="video/mp4")
-    srt = exports / f"{name}.srt"
-    if srt.is_file():
-        cols[1].download_button("下载字幕（srt）", srt.read_bytes(), file_name=srt.name)
-    cover = exports / f"{name}_cover.png"
-    if cover.is_file():
-        cols[2].download_button("下载封面（png）", cover.read_bytes(), file_name=cover.name, mime="image/png")
-    report = exports / f"{name}_report.json"
-    if report.is_file():
-        with st.expander("成片校验报告"):
-            st.json(json.loads(report.read_text(encoding="utf-8")))
+    for video in videos:
+        name = video.stem
+        exports = video.parent
+        st.caption(video.name)
+        st.video(str(video))
+        cols = st.columns(4)
+        cols[0].download_button("下载视频（mp4）", video.read_bytes(), file_name=video.name, mime="video/mp4",
+                                key=f"dl_v_{name}")
+        srt = exports / f"{name}.srt"
+        if srt.is_file():
+            cols[1].download_button("下载字幕（srt）", srt.read_bytes(), file_name=srt.name, key=f"dl_s_{name}")
+        cover = exports / f"{name}_cover.png"
+        if cover.is_file():
+            cols[2].download_button("下载封面（png）", cover.read_bytes(), file_name=cover.name, mime="image/png",
+                                    key=f"dl_c_{name}")
+        report = exports / f"{name}_report.json"
+        if report.is_file():
+            with cols[3].expander("导出报告"):
+                st.json(json.loads(report.read_text(encoding="utf-8")))

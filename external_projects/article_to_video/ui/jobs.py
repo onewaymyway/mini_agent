@@ -38,10 +38,16 @@ def start(pdir: Path, label: str, fn: Callable[[], None], scope: str = "job") ->
         with joblog.bind(pdir, scope):
             joblog.log(pdir, scope, f"后台任务开始：{label}")
             try:
-                fn()
-                # 先写日志、再改状态：界面看到“已结束”时，日志里的最后一行一定已经在了
-                joblog.log(pdir, scope, f"后台任务完成：{label}", level="ok")
-                job.update(state="done", message="完成")
+                res = fn()
+                # 任务函数可返回 {state, message}（如流水线停在终审）：以它作为最终状态，而不是一律“完成”
+                if isinstance(res, dict) and res.get("state") not in (None, "done"):
+                    joblog.log(pdir, scope, f"后台任务结束：{label}：{res.get('message', '')}", level="warn")
+                    job.update(state=res["state"], message=res.get("message", ""))
+                else:
+                    msg = res.get("message", "完成") if isinstance(res, dict) else "完成"
+                    # 先写日志、再改状态：界面看到“已结束”时，日志里的最后一行一定已经在了
+                    joblog.log(pdir, scope, f"后台任务完成：{label}", level="ok")
+                    job.update(state="done", message=msg)
             except cancel.Cancelled:
                 joblog.log(pdir, scope, f"后台任务已停止：{label}", level="warn")
                 job.update(state="stopped", message="已停止（未完成的结果不会写入）")

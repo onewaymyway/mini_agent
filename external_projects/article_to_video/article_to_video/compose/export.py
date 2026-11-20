@@ -299,3 +299,11 @@ def _kinds(credits: Dict[str, Any], ids: List[str]) -> List[str]:
     if credits.get("end_card"):
         out.append("end_card")
     return out
+
+
+def list_exports(pdir: Path) -> list:
+    """exports/ 下的全部成片（单期、各期、全集），按生成时间从新到旧。"""
+    d = Path(pdir) / "exports"
+    if not d.is_dir():
+        return []
+    return sorted((p for p in d.glob("*.mp4") if p.is_file()), key=lambda p: p.stat().st_mtime, reverse=True)

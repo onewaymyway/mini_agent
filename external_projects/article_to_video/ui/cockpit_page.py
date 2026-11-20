@@ -14,7 +14,8 @@ import streamlit as st
 from article_to_video.paths import projects_root
 from article_to_video.pipeline.gates import GEARS, PipelineError, STAGES
 from article_to_video import joblog
-from article_to_video.pipeline.regenerate import regenerate_all
+from article_to_video.pipeline.gates import export_needs_approval
+from article_to_video.pipeline.regenerate import outcome_of, regenerate_all
 from article_to_video.pipeline.run import default_providers, read_status, run_pipeline
 from article_to_video.planning.runner import load_spine
 from article_to_video.project_store import list_projects
@@ -153,9 +154,10 @@ def _control_body(pdir) -> None:
         else:
             def run():
                 prov = default_providers(pdir, offline=offline)
-                run_pipeline(pdir, until=until, gear=gear, max_images=mi, max_minutes=mm, approve=approve,
-                             llm=prov["llm"], tts=prov["tts"], image_provider=prov["image"],
-                             merge_all=merge_all, outline_engine="rules" if offline else pl["outline_engine"])
+                st_ = run_pipeline(pdir, until=until, gear=gear, max_images=mi, max_minutes=mm, approve=approve,
+                                   llm=prov["llm"], tts=prov["tts"], image_provider=prov["image"],
+                                   merge_all=merge_all, outline_engine="rules" if offline else pl["outline_engine"])
+                return outcome_of(st_)
             if jobs.start(pdir, f"流水线 {gear}", run, scope="pipeline"):
                 st.rerun()
 
@@ -164,7 +166,12 @@ def _control_body(pdir) -> None:
                    "重新运行整条流水线。生图缓存默认保留。G0 / G1 会在大纲等检查点停下，等待你确认。")
         imgs_all = st.checkbox("同时清空生图缓存（会重新生图，产生费用）", value=False, key="rst_all_imgs")
         ok_all = st.checkbox("我确认清空全部产出并重新生成", value=False, key="rst_all_ok")
-        if st.button("清空所有并重新生成（后台）", disabled=busy or not ok_all, key="rst_all_go", type="primary"):
+        blocked = until == "export" and export_needs_approval(gear, approve)
+        if blocked:
+            st.warning("当前挡位在导出前需要终审。请先勾选上方「确认终审（允许导出）」，否则流水线会停在导出前，"
+                       "不会生成视频。")
+        if st.button("清空所有并重新生成（后台）", disabled=busy or not ok_all or blocked, key="rst_all_go",
+                     type="primary"):
             mi_all = int(max_images) or None
             mm_all = float(max_minutes) or None
             try:
@@ -181,6 +188,7 @@ def _control_body(pdir) -> None:
                                          outline_engine="rules" if offline else pl["outline_engine"])
                     joblog.log(pdir, "pipeline", f"清空所有并重新生成：删除 {len(out['removed'])} 项"
                                + ("（含生图缓存）" if imgs_all else ""), level="warn")
+                    return outcome_of(out["status"])
                 if jobs.start(pdir, f"清空所有并重新生成（{gear}）", run_all, scope="pipeline"):
                     st.rerun()
 

@@ -36,3 +36,8 @@ def check_budget_requirement(gear: str, max_images, max_minutes) -> None:
     """G2 必须设置预算上限，否则拒绝启动（设计 14.3）。"""
     if gear == "G2" and max_images is None and max_minutes is None:
         raise PipelineError("G2（全自动）必须设置预算上限：图像调用数或总耗时（分钟）至少一项")
+
+
+def export_needs_approval(gear: str, approve: bool) -> bool:
+    """该挡位在导出前是否要求终审，且尚未确认（此时流水线会停在导出前，不会生成视频）。"""
+    return "export" in manual_checkpoints(gear) and not approve
