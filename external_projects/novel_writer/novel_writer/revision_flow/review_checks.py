@@ -30,6 +30,8 @@ CATEGORY_LABEL = {
     "character_logic": "人物", "foreshadow": "伏笔", "pacing": "节奏", "redundancy": "冗余", "style_drift": "文风漂移",
 }
 
+ADJ_LABEL = {"confirmed": "确认为问题", "false_positive": "误报", "uncertain": "无法判定"}
+
 _DEAD = re.compile(r"(死亡|身亡|去世|战死|被杀|遇害|殒命|病逝|牺牲|已死|死去)")
 _NEG = "未没不险差假免"
 _REVIVE = re.compile(r"(复活|重生|复生|还魂)")
@@ -64,9 +66,9 @@ def _finding(check: str, key: str, *, category: str, severity: str, chapters: Li
             "notes": ""}
 
 
-def _card_ev(n: int, note: str) -> Dict[str, Any]:
-    """来自事实卡的陈述（没有原文引文）：R2 仲裁时会取原文片段核实。"""
-    return {"chapter": n, "quote": "", "verified": False, "source": "card", "note": note}
+def _card_ev(n: int, note: str, term: str = "") -> Dict[str, Any]:
+    """来自事实卡的陈述（没有原文引文）：R2 仲裁时用 term（章节里的定位词）在原文中取上下文核实。"""
+    return {"chapter": n, "quote": "", "verified": False, "source": "card", "note": note, "term": term}
 
 
 # ─────────────────────────────── 各项检查 ───────────────────────────────
@@ -125,8 +127,8 @@ def check_departed_reappear(cards: Dict[int, Dict[str, Any]]) -> List[Dict[str, 
                     title=f"「{name}」第{died[name]}章已死亡，之后仍出现",
                     description=f"事实卡显示「{name}」在第{died[name]}章末已死亡，但第{'、'.join(str(m) for m in later)}章"
                                 "又作为在场人物出现。可能是回忆/幻觉/被提及，也可能是遗漏的矛盾。",
-                    evidence=[_card_ev(died[name], f"{name} 末状态：{died_state[name]}")]
-                             + [_card_ev(m, f"{name} 在场") for m in later[:5]],
+                    evidence=[_card_ev(died[name], f"{name} 末状态：{died_state[name]}", name)]
+                             + [_card_ev(m, f"{name} 在场", name) for m in later[:5]],
                     adjudicate=True))
             m = _DEAD.search(state)
             if m and name not in died and not any(ch in state[max(0, m.start() - 4):m.start()] for ch in _NEG):
@@ -167,8 +169,8 @@ def check_timeline(cards: Dict[int, Dict[str, Any]]) -> List[Dict[str, Any]]:
                 title=f"第{prev[0]}章到第{n}章时间标记倒退",
                 description=f"第{prev[0]}章标记为「{cards[prev[0]]['time_marker']}」，第{n}章标记为「{cards[n]['time_marker']}」，"
                             "天数反而变小。可能是倒叙/回忆，也可能是时间线错误。",
-                evidence=[_card_ev(prev[0], f"时间标记：{cards[prev[0]]['time_marker']}"),
-                          _card_ev(n, f"时间标记：{cards[n]['time_marker']}")],
+                evidence=[_card_ev(prev[0], f"时间标记：{cards[prev[0]]['time_marker']}", cards[prev[0]]["time_marker"]),
+                          _card_ev(n, f"时间标记：{cards[n]['time_marker']}", cards[n]["time_marker"])],
                 adjudicate=True))
         prev = (n, day)
     return out
@@ -222,7 +224,7 @@ def check_unregistered(cards: Dict[int, Dict[str, Any]]) -> List[Dict[str, Any]]
                      title=f"「{name}」多章出现但未登记",
                      description=f"「{name}」出现在第{'、'.join(str(c) for c in chs)}章，角色档案里没有它。"
                                  "若是重要人物，建议补登记；若只是群演可以忽略。",
-                     evidence=[_card_ev(c, f"{name} 在场") for c in chs[:5]], adjudicate=False)
+                     evidence=[_card_ev(c, f"{name} 在场", name) for c in chs[:5]], adjudicate=False)
             for name, chs in sorted(seen.items()) if len(chs) >= 2]
 
 
@@ -240,8 +242,8 @@ def check_handoff(cards: Dict[int, Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "handoff_break", f"{n}|{n + 1}", category="continuity", severity="轻", chapters=[n, n + 1],
                 title=f"第{n}章结尾与第{n + 1}章开头的地点不同",
                 description=f"第{n}章结尾在「{a}」，第{n + 1}章开头在「{b}」。若中间有转场交代则无问题。",
-                evidence=[_card_ev(n, f"结尾：{cards[n]['ending_state'] or a}"),
-                          _card_ev(n + 1, f"开头：{nxt['opening_state'] or b}")],
+                evidence=[_card_ev(n, f"结尾：{cards[n]['ending_state'] or a}", a),
+                          _card_ev(n + 1, f"开头：{nxt['opening_state'] or b}", b)],
                 adjudicate=True))
     return out
 
@@ -302,6 +304,8 @@ def run_checks(ws, version: Optional[str] = None) -> Dict[str, Any]:
             f["status"], f["notes"] = prev.get("status", "open"), prev.get("notes", "")
             if prev.get("options"):
                 f["options"] = prev["options"]
+            if prev.get("adjudication"):                    # R2 的仲裁结果随问题保留
+                f["adjudication"] = prev["adjudication"]
         merged.append(f)
     merged.extend(f for f in old["findings"] if f.get("source") != "deterministic")   # 其它来源的问题原样保留
     merged.sort(key=lambda f: (_SEV_ORDER.get(f["severity"], 9), f["category"], f["chapters"][:1], f["id"]))
@@ -337,6 +341,9 @@ def render_report(data: Dict[str, Any]) -> str:
             lines.append(f"### [{CATEGORY_LABEL.get(f['category'], f['category'])}] {f['title']}{tag}")
             lines.append(f"- 编号：{f['id']}　状态：{f['status']}　涉及章节：{'、'.join(str(c) for c in f['chapters'])}")
             lines.append(f"- {f['description']}")
+            if f.get("adjudication"):
+                adj = f["adjudication"]
+                lines.append(f"- 模型仲裁：{ADJ_LABEL.get(adj.get('verdict'), adj.get('verdict'))}——{adj.get('reason', '')}")
             for e in f["evidence"]:
                 body = f"“{e['quote']}”" if e.get("quote") else (e.get("note") or "")
                 note = f"（{e['note']}）" if e.get("quote") and e.get("note") else ""

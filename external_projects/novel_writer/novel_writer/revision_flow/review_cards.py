@@ -53,6 +53,32 @@ def quote_in_text(quote: str, text_norm: str) -> bool:
     return bool(q) and q in text_norm
 
 
+def locate_span(quote: str, text: str) -> Optional[Tuple[int, int]]:
+    """在原文中定位 quote（同样忽略空白与标点），返回原文中的 (起, 止) 下标；找不到返回 None。"""
+    q = normalize_for_match(quote)
+    if not q:
+        return None
+    idx = [i for i, ch in enumerate(text) if not _IGNORE.match(ch)]
+    norm = "".join(text[i] for i in idx)
+    pos = norm.find(q)
+    if pos < 0:
+        return None
+    return idx[pos], idx[pos + len(q) - 1] + 1
+
+
+def context_for(evidence: Dict[str, Any], text: str, snip: int) -> str:
+    """取一条证据在章节原文中的上下文（前后各 snip 字）：优先引文，其次定位词，都没有则取章首。"""
+    span = locate_span(evidence.get("quote") or "", text) if evidence.get("quote") else None
+    if span:
+        return text[max(0, span[0] - snip): min(len(text), span[1] + snip)]
+    term = (evidence.get("term") or "").strip()
+    if term:
+        i = text.find(term)
+        if i >= 0:
+            return text[max(0, i - snip): min(len(text), i + len(term) + snip)]
+    return text[: snip * 2]
+
+
 # ─────────────────────────────── 缓存 ───────────────────────────────
 
 def cards_dir(ws) -> Path:

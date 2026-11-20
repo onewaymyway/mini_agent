@@ -21,6 +21,7 @@
     python entrypoints/post_revision.py --novel <dir> review-cards [--version v00N] [--chapters 1 2] [--force]  # R0 生成事实卡（调用 LLM）
     python entrypoints/post_revision.py --novel <dir> review-checks [--version v00N]     # R1 确定性检查，更新问题池与报告（不调用 LLM）
     python entrypoints/post_revision.py --novel <dir> review-findings [--version v00N] [--set f_xxx --status rejected]  # R1 查看/标记问题
+    python entrypoints/post_revision.py --novel <dir> review-llm [--version v00N]   # R2 LLM 复核：候选仲裁、衔接审阅、全书维度审阅（调用 LLM，可续跑）
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ import _common  # noqa: F401
 
 from novel_writer.revision_flow import changes as CH
 from novel_writer.revision_flow import config as CFG
-from novel_writer.revision_flow import derived, executor, feedback, review_cards, review_checks
+from novel_writer.revision_flow import derived, executor, feedback, review_cards, review_checks, review_llm
 from novel_writer.revision_flow import versions as V
 from novel_writer.revision_flow.common import FlowError
 from novel_writer.workspace import Workspace
@@ -101,6 +102,8 @@ def main(argv=None) -> int:
     sp.add_argument("--force", action="store_true", help="忽略缓存重新生成")
     sp = sub.add_parser("review-checks")
     sp.add_argument("--version", default=None)
+    sp = sub.add_parser("review-llm")
+    sp.add_argument("--version", default=None)
     sp = sub.add_parser("review-findings")
     sp.add_argument("--version", default=None)
     sp.add_argument("--set", dest="fid", default=None, help="要标记的问题编号")
@@ -157,13 +160,17 @@ def main(argv=None) -> int:
             problems = V.verify(ws, args.version)
             return _out({"ok": not problems, "problems": problems})
         if args.cmd == "review-estimate":
-            return _out(review_cards.estimate(ws, args.version))
+            return _out(review_cards.estimate(ws, args.version) | {"llm_review": review_llm.estimate_llm(ws, args.version)})
         if args.cmd == "review-cards":
             return _out(review_cards.generate_cards(ws, args.version, _invoker(), progress=print,
                                                     chapters=args.chapters, force=args.force))
         if args.cmd == "review-checks":
             res = review_checks.run_checks(ws, args.version)
             return _out({k: res[k] for k in ("review_id", "version", "counts", "missing")}
+                        | {"report": f"_revision/review/{res['review_id']}/report.md"})
+        if args.cmd == "review-llm":
+            res = review_llm.run_review(ws, args.version, _invoker(), progress=print)
+            return _out({k: res[k] for k in ("review_id", "version", "calls", "paused", "failed", "counts", "missing")}
                         | {"report": f"_revision/review/{res['review_id']}/report.md"})
         if args.cmd == "review-findings":
             vid = review_cards.resolve_version(ws, args.version)

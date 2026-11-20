@@ -1,6 +1,6 @@
 # novel_writer 完稿后评估、大纲重生成与大纲分析方案（设计，待确认后实施）
 
-> 状态：方案已确认（2026-11-20，见第 9 节），按第 7 节分期实施，每期更新文档并打包 diff zip。**R0、R1 已完成**，其余待做。
+> 状态：方案已确认（2026-11-20，见第 9 节），按第 7 节分期实施，每期更新文档并打包 diff zip。**R0、R1、R2 已完成**，其余待做。
 > 依据：`next_doc/novel_writer_post_completion_revision_plan.md`、`external_projects/novel_writer/docs/revision_flow.md`、
 > `docs/outline_first.md`，以及对 `revision_flow/*`、`blueprint_store.py`、`act_planning.py`、`brief.py`、`ui/post_revision.py` 的阅读。
 
@@ -177,7 +177,7 @@ _revision/
 | 步骤 | skill | 说明 |
 |---|---|---|
 | 事实卡 | `memory-manager` | 本就负责章节总结与状态抽取 |
-| 候选仲裁 / 衔接审阅 | `consistency-checker` | 五维一致性 |
+| 候选仲裁 / 衔接审阅 | `consistency-checker` | 五维一致性（R2 已接入） |
 | 全书维度审阅 | `revision-editor`（主动巡检）、`reader-simulator` | 巡检八维度含情感分布、人物出场、伏笔激活、弧线 |
 | 反推大纲 | `novel-planner` | 大纲/结构规划 |
 | 大纲偏离检查 | `consistency-checker`、`novel-planner` | 对照大纲核对正文、给出修改意见 |
@@ -222,7 +222,8 @@ _revision/
 |---|---|---|
 | R0 | 完成 | `revision_flow/review_cards.py`、设置项、CLI `review-estimate`/`review-cards`、`tests/test_revision_review_cards.py`（13 例；人工破坏 6 处逻辑均转红） |
 | R1 | 完成 | `revision_flow/review_checks.py`、CLI `review-checks`/`review-findings`、`tests/test_revision_review_checks.py`（13 例；人工破坏 10 处逻辑均转红）。偏离原计划：伏笔账本与事实卡的交叉核对暂缓，自由文本伏笔不做顺序检查（无法可靠匹配） |
-| R2–R6 | 待做 | |
+| R2 | 完成 | `revision_flow/review_llm.py`、界面「🔎 评估」页、CLI `review-llm`、`tests/test_revision_review_llm.py`（17 例，桩执行器）。C1 候选仲裁、C2 衔接窗口、C3 全书维度审阅；引文经子串核对，不过的问题 `evidence_ok=False` 默认折叠；调用上限暂停、`llm_state.json` 断点续跑；章节 sha 变化只重判受影响单元。人工破坏 4 处逻辑（跳过引文核对、取消上限暂停、不清理旧窗口缓存、缓存键忽略章节 sha），4 处全部转红。偏离原计划：①「证据未核实」只对模型来源的问题折叠；规则来源的候选证据为事实卡陈述（无引文），不折叠，而是用定位词取原文上下文供仲裁；②候选仲裁由 `consistency-checker`、全书维度由 `revision-editor` 执行；③ R1 证据增加 `term` 字段（向后兼容） |
+| R3–R6 | 待做 | |
 
 ## 11. 风险与已知限制
 

@@ -1,6 +1,6 @@
 """📝 完稿修改：完稿后的版本化修改（独立于写作流水线）。
 
-五个分页：版本 / 变更与预览 / 运行 / 章节反馈 / 设置。
+六个分页：版本 / 变更与预览 / 运行 / 章节反馈 / 评估 / 设置。
   * 每一个按钮都经过 _act：开始、成功（含结果摘要）、失败都写入持久化的「操作日志」，页面底部可见。
   * 会调用 LLM 的操作（生成预览、开始改写、续跑、分诊）在后台线程执行，按钮旁边显示实时进度日志。
 """
@@ -17,6 +17,7 @@ import streamlit as st
 from novel_writer.revision_flow import changes as CH
 from novel_writer.revision_flow import config as CFG
 from novel_writer.revision_flow import derived, executor, feedback, jobs
+from novel_writer.revision_flow import review_cards, review_checks, review_llm
 from novel_writer.revision_flow import versions as V
 from novel_writer.revision_flow.common import FlowError, sub_dir
 from novel_writer.workspace import Workspace
@@ -27,6 +28,8 @@ _STATUS_LABEL = {
     "running": "运行中", "paused_limit": "已达上限（可续跑）", "stopped": "已停止（可续跑）",
     "interrupted": "已中断（可续跑）", "done": "已完成", "failed": "失败",
     "draft": "草稿", "confirmed": "已确认", "applied": "已应用",
+    "open": "待处理", "adopted": "已采纳", "rejected": "已驳回", "resolved": "已解决",
+    "still_open": "仍存在", "stale": "基于旧版本",
 }
 _JOB_STATE = {"running": "运行中", "done": "已完成", "failed": "失败", "unknown": "未开始"}
 
@@ -165,6 +168,17 @@ def _triage_job(ws: Workspace, name: str, base: str, chapter: int, text: str, se
     rec = feedback.triage(ws, base, chapter, text, jobs.make_invoker(ws, name, _invoker()),
                           selection=sel, progress=progress)
     return {"triage_id": rec["id"], "status": rec["status"]}
+
+
+def _cards_job(ws: Workspace, name: str, progress) -> Dict[str, Any]:
+    res = review_cards.generate_cards(ws, None, jobs.make_invoker(ws, name, _invoker()), progress=progress)
+    return {"generated": res["generated"], "failed": len(res["failed"]), "paused": res["paused"]}
+
+
+def _review_job(ws: Workspace, name: str, progress) -> Dict[str, Any]:
+    res = review_llm.run_review(ws, None, jobs.make_invoker(ws, name, _invoker()), progress=progress)
+    return {"review_id": res["review_id"], "calls": res["calls"], "paused": res["paused"],
+            "failed": len(res["failed"])}
 
 
 def _split(text: str):
@@ -413,6 +427,98 @@ def _tab_feedback(root: Workspace) -> None:
             st.rerun()
 
 
+# ─────────────────────────────── 评估 ───────────────────────────────
+
+_VERDICT_TEXT = {"confirmed": "确认为问题", "false_positive": "误报", "uncertain": "无法判定"}
+
+
+def _tab_review(root: Workspace) -> None:
+    if not V.is_baseline_ready(root):
+        st.info("全书评估只在完稿后可用：请先在「版本」页创建 v001。")
+        return
+    st.caption("只读 head 版本：不改版本、不写流水线状态。所有问题都由作者裁决，不会自动修改任何章节。")
+    est = review_cards.estimate(root)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("章节数", est["chapters"])
+    c2.metric("事实卡已缓存", est["cards_cached"])
+    c3.metric("待生成事实卡", est["cards_to_generate"])
+    lest = review_llm.estimate_llm(root)
+    hint = "" if lest["checks_run"] else "（尚未运行确定性检查，候选数未知）"
+    st.caption(f"预计 LLM 调用：事实卡 {est['cards_calls']} 次；复核约 {lest['calls_typical']} 次"
+               f"（候选仲裁 {lest['adjudication_pending']}、衔接窗口 {lest['windows']}、全书 {lest['whole_book']}）"
+               f"{hint}。调用上限：{lest['max_llm_calls'] or '不限'}")
+    b1, b2, b3 = st.columns(3)
+    if b1.button("① 生成事实卡（调用模型）", key="rv_e_cards", disabled=_busy(root)):
+        _start_job(root, "生成事实卡", "cards", _cards_job)
+    if b2.button("② 确定性检查（不调用模型）", key="rv_e_checks"):
+        if _act(root, "确定性检查", review_checks.run_checks, root, None,
+                summarize=lambda r: f"问题 {sum(r['counts'].values())} 条") is not None:
+            st.rerun()
+    if b3.button("③ LLM 复核：仲裁 / 衔接 / 全书（调用模型）", key="rv_e_llm", disabled=_busy(root)):
+        _start_job(root, "LLM 复核", "review", _review_job)
+
+    vid = review_cards.resolve_version(root, None)
+    data = review_checks.load_findings(root, vid)
+    fs = data["findings"]
+    if not fs:
+        st.info("还没有问题记录。先运行 ② 确定性检查，再运行 ③ LLM 复核。")
+        return
+    st.markdown(f"**问题池（版本 {vid}）**")
+    f1, f2, f3, f4 = st.columns(4)
+    sev = f1.multiselect("严重度", list(review_checks.SEVERITIES), default=list(review_checks.SEVERITIES), key="rv_e_sev")
+    cats = sorted({f["category"] for f in fs})
+    cat = f2.multiselect("类别", cats, default=cats, key="rv_e_cat",
+                         format_func=lambda c: review_checks.CATEGORY_LABEL.get(c, c))
+    src = f3.multiselect("来源", ["deterministic", "llm"], default=["deterministic", "llm"], key="rv_e_src",
+                         format_func=lambda s: "规则候选" if s == "deterministic" else "模型复核")
+    stat = f4.multiselect("处理状态", list(review_checks.STATUSES), default=list(review_checks.STATUSES), key="rv_e_stat",
+                          format_func=_status)
+    s1, s2 = st.columns(2)
+    show_fp = s1.checkbox("显示已被模型仲裁为误报的条目", value=False, key="rv_e_fp")
+    show_unv = s2.checkbox("显示证据未核实的条目（默认折叠）", value=False, key="rv_e_unv")
+
+    visible, folded = [], 0
+    for f in fs:
+        if f["severity"] not in sev or f["category"] not in cat or f["source"] not in src or f["status"] not in stat:
+            continue
+        verdict = (f.get("adjudication") or {}).get("verdict")
+        unverified = f["source"] == "llm" and not f.get("evidence_ok", True)
+        if (verdict == "false_positive" and not show_fp) or (unverified and not show_unv):
+            folded += 1
+            continue
+        visible.append(f)
+    st.caption(f"显示 {len(visible)} 条；折叠 {folded} 条（误报或证据未核实，可用上方开关展开）")
+
+    for f in visible:
+        chapters = "、".join(str(c) for c in f["chapters"])
+        cat_text = review_checks.CATEGORY_LABEL.get(f["category"], f["category"])
+        with st.expander(f"{f['severity']}｜{cat_text}｜{f['title']}　（第{chapters}章）"):
+            st.write(f["description"])
+            origin = "规则候选" if f["source"] == "deterministic" else "模型复核"
+            st.caption(f"编号 {f['id']}　来源 {origin}　状态 {_status(f['status'])}")
+            adj = f.get("adjudication")
+            if adj:
+                st.info(f"模型仲裁：{_VERDICT_TEXT.get(adj.get('verdict'), adj.get('verdict'))}——{adj.get('reason', '')}")
+            elif f.get("needs_adjudication"):
+                st.caption("待仲裁：规则只是候选，请运行 ③ LLM 复核或自行判断。")
+            if f["source"] == "llm" and not f.get("evidence_ok", True):
+                st.warning("证据未核实：有引文不在章节原文中。该条不参与批量采纳，请核对原文后再决定。")
+            for e in f["evidence"]:
+                if e.get("quote"):
+                    mark = "原文已核实" if e.get("verified") else "原文未核实"
+                    st.write(f"- 第{e['chapter']}章（{mark}）：「{e['quote']}」")
+                else:
+                    st.write(f"- 第{e['chapter']}章：{e.get('note', '')}")
+            new_status = st.selectbox("处理状态", list(review_checks.STATUSES),
+                                      index=list(review_checks.STATUSES).index(f["status"]),
+                                      key=f"rv_e_st_{f['id']}", format_func=_status)
+            notes = st.text_input("备注", value=f.get("notes", ""), key=f"rv_e_nt_{f['id']}")
+            if st.button("保存处理", key=f"rv_e_save_{f['id']}"):
+                if _act(root, f"标记问题 {f['id']}", review_checks.set_status, root, vid, f["id"], new_status, notes,
+                        summarize=lambda _: f"状态 {_status(new_status)}") is not None:
+                    st.rerun()
+
+
 # ─────────────────────────────── 设置 ───────────────────────────────
 
 def _tab_settings(root: Workspace) -> None:
@@ -446,8 +552,8 @@ def page_post_revision() -> None:
     st.header("📝 完稿修改")
     st.caption("完稿后的版本化修改：原稿只读，每次修改生成新版本。独立于写作流水线。")
     _task_panel(root)
-    tabs = st.tabs(["📌 版本", "🧾 变更与预览", "▶ 运行", "💬 章节反馈", "⚙ 设置"])
-    renders = [_tab_versions, _tab_changes, _tab_runs, _tab_feedback, _tab_settings]
+    tabs = st.tabs(["📌 版本", "🧾 变更与预览", "▶ 运行", "💬 章节反馈", "🔎 评估", "⚙ 设置"])
+    renders = [_tab_versions, _tab_changes, _tab_runs, _tab_feedback, _tab_review, _tab_settings]
     for tab, render in zip(tabs, renders):
         with tab:
             render(root)
