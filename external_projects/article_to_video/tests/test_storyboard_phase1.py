@@ -194,4 +194,5 @@ def test_rules_director_uses_stack_and_records_truncation(blocks):
     assert sc["type"] == "stack" and sc["items"] == STACK["nodes"]
     sc2 = _build_beat({"id": "P03.b02", "role": "claim", "source_refs": ["s03.p08"],
                        "sentences": [{"text": "y", "quote": False}]}, 1, [lst], illustrate=False)
-    assert len(sc2["items"]) == 5 and sc2["truncated"] == 9
+    # R27：列表不再被静默截断到 5 条（自适应布局保证全部显示），所有条目都在镜头里，没有截断记录
+    assert len(sc2["items"]) == len(lst["items"]) and "truncated" not in sc2

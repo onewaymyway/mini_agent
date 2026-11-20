@@ -65,7 +65,10 @@ _NOTE_FLOW = re.compile(r"原文流程：.*?（共 (\d+) 个节点")
 _NOTE_STACK = re.compile(r"原文堆叠层级[^：]*：.*?（共 (\d+) 层）")
 _NOTE_TABLE = re.compile(r"原文表格（共 (\d+) 行）")
 _NOTE_LIST = re.compile(r"原文列表（共 (\d+) 项）")
-CAPS = {"flow": 6, "stack": 6, "table": 6, "list": 5}
+from article_to_video.visual.director import MAX_DIAGRAM_NODES, MAX_LIST_ITEMS, MAX_TABLE_ROWS  # noqa: E402
+
+# 与分镜规则的每镜上限保持一致（列表上限在 R27 中提高，假模型按新上限分页）
+CAPS = {"flow": MAX_DIAGRAM_NODES, "stack": MAX_DIAGRAM_NODES, "table": MAX_TABLE_ROWS, "list": MAX_LIST_ITEMS}
 
 
 def _structure_pages(block, items):

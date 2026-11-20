@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from ..visual.states import visible_counts
 from .fonts import load_font
@@ -44,64 +44,142 @@ def _center_x(ctx: _Ctx, w: float) -> float:
     return (ctx.W - w) / 2
 
 
+# ---------- 自适应布局（条目全部显示；字号与分栏随数量与画面大小调整） ----------
+
+def _sizes(base: float, lo: float, step: float = 2.0) -> List[float]:
+    """字号候选（由大到小，含下限）。"""
+    out: List[float] = []
+    s = float(base)
+    while s > lo:
+        out.append(s)
+        s -= step
+    out.append(float(lo))
+    return out
+
+
+def _text_height(font, lines: List[str], ratio: float) -> int:
+    return font.size * len(lines) + int(font.size * ratio) * max(0, len(lines) - 1)
+
+
+def _pack_columns(heights: List[int], avail_h: float, gap: float) -> Optional[List[List[int]]]:
+    """按顺序把块装进若干列，每列高度不超过 avail_h；任一块单独超高则返回 None。"""
+    cols: List[List[int]] = []
+    cur: List[int] = []
+    cur_h = 0.0
+    for i, h in enumerate(heights):
+        if h > avail_h:
+            return None
+        need = h if not cur else cur_h + gap + h
+        if need <= avail_h:
+            cur.append(i)
+            cur_h = need
+        else:
+            cols.append(cur)
+            cur = [i]
+            cur_h = h
+    if cur:
+        cols.append(cur)
+    return cols
+
+
+def _stack_fit(draw, ctx: _Ctx, texts: List[str], *, base: float, lo: float, avail_w: float, avail_h: float,
+               gap_v: float, gap_x: float, pad_v: float, pad_h: float, text_extra: float, ratio: float):
+    """为一组竖排块找到最大的字号与列数，使全部条目都能画下（不截断文字）。"""
+    n = max(1, len(texts))
+    fallback = None
+    for size in _sizes(base, lo):
+        font = ctx.font(size)
+        for cols in range(1, n + 1):
+            col_w = (avail_w - gap_x * (cols - 1)) / cols
+            inner = col_w - 2 * pad_h - text_extra
+            if inner < font.size * 2:
+                continue
+            blocks = [wrap_text(draw, t, font, int(inner)) for t in texts]
+            heights = [_text_height(font, b, ratio) + 2 * pad_v for b in blocks]
+            assign = _pack_columns(heights, avail_h, gap_v)
+            if assign is None:
+                continue
+            if fallback is None:
+                fallback = (font, col_w, assign, blocks, heights)
+            if len(assign) <= cols:
+                return font, col_w, assign, blocks, heights
+    if fallback is not None:
+        return fallback
+    font = ctx.font(lo)
+    col_w = avail_w
+    blocks = [wrap_text(draw, t, font, int(col_w - 2 * pad_h - text_extra)) for t in texts]
+    heights = [_text_height(font, b, ratio) + 2 * pad_v for b in blocks]
+    return font, col_w, [[i] for i in range(n)], blocks, heights
+
+
+def _place_columns(ctx: _Ctx, assign, heights, col_w, gap_v, gap_x):
+    """返回每个块的左上角坐标（水平居中，竖直居中）。"""
+    total_w = len(assign) * col_w + (len(assign) - 1) * gap_x
+    x0 = (ctx.W - total_w) / 2
+    col_h = max(sum(heights[i] for i in col) + gap_v * (len(col) - 1) for col in assign)
+    y0 = (ctx.H - col_h) / 2
+    pos = {}
+    for c, col in enumerate(assign):
+        y = y0
+        for i in col:
+            pos[i] = (x0 + c * (col_w + gap_x), y)
+            y += heights[i] + gap_v
+    return pos
+
+
 # ---------- 各类型 ----------
 
 def _draw_keypoint(draw, ctx: _Ctx, scene, vis: int) -> None:
-    items = _items(scene)[:vis]
+    """要点卡：全部条目参与布局，逐条按 vis 显示；字号与分栏自适应，不截断。"""
+    items = _items(scene)
     if not items:
         return
-    font = ctx.font(66 if ctx.landscape else 54)
-    pad = 36 * ctx.u
     gap = 30 * ctx.u
-    maxw = (ctx.content_w * 0.82 if ctx.landscape else ctx.content_w) - 2 * pad
-    blocks = []
-    for t in items:
-        lines = wrap_text(draw, t, font, int(maxw), max_lines=2)
-        h = font.size * len(lines) + int(font.size * 0.25) * max(0, len(lines) - 1)
-        blocks.append((lines, h))
-    total = sum(h + 2 * pad for _, h in blocks) + gap * (len(blocks) - 1)
-    y = (ctx.H - total) / 2
-    for lines, h in blocks:
-        box_w = maxw + 2 * pad
-        x0 = _center_x(ctx, box_w)
-        draw.rounded_rectangle([x0, y, x0 + box_w, y + h + 2 * pad], radius=18 * ctx.u, fill=ctx.c("card"))
-        draw.rectangle([x0, y + pad, x0 + 8 * ctx.u, y + h + pad], fill=ctx.c("accent"))
-        ty = y + pad
+    pad = 36 * ctx.u
+    avail_w = ctx.content_w * (0.9 if ctx.landscape else 1.0)
+    font, col_w, assign, blocks, heights = _stack_fit(
+        draw, ctx, items, base=66 if ctx.landscape else 54, lo=30 if ctx.landscape else 26,
+        avail_w=avail_w, avail_h=ctx.H - 2 * ctx.my, gap_v=gap, gap_x=60 * ctx.u,
+        pad_v=pad, pad_h=pad, text_extra=10 * ctx.u, ratio=0.25)
+    pos = _place_columns(ctx, assign, heights, col_w, gap, 60 * ctx.u)
+    for i in range(min(vis, len(items))):
+        x0, y0 = pos[i]
+        lines, h = blocks[i], heights[i]
+        draw.rounded_rectangle([x0, y0, x0 + col_w, y0 + h], radius=18 * ctx.u, fill=ctx.c("card"))
+        draw.rectangle([x0, y0 + pad, x0 + 8 * ctx.u, y0 + h - pad], fill=ctx.c("accent"))
+        ty = y0 + pad
         for line in lines:
             draw_rich_line(draw, (x0 + pad + 10 * ctx.u, ty), line, font, ctx.c("text"),
                            ctx.c("accent"), scene.get("emphasis") or [])
             ty += font.size + int(font.size * 0.25)
-        y += h + 2 * pad + gap
 
 
 def _draw_list(draw, ctx: _Ctx, scene, vis: int) -> None:
-    items = _items(scene)[:vis]
+    """列表：编号行；全部条目参与布局，超出一列时分栏，字号自适应，不截断。"""
+    items = _items(scene)
     if not items:
         return
-    font = ctx.font(52 if ctx.landscape else 44)
-    marker = ctx.font(40 if ctx.landscape else 34)
+    gap = 34 * ctx.u
     r = 30 * ctx.u
-    row_gap = 34 * ctx.u
-    text_w = ctx.content_w * (0.7 if ctx.landscape else 0.9) - 2 * r
-    rows = []
-    for t in items:
-        lines = wrap_text(draw, t, font, int(text_w), max_lines=2)
-        rows.append((lines, font.size * len(lines) + int(font.size * 0.2) * max(0, len(lines) - 1)))
-    total = sum(h for _, h in rows) + row_gap * (len(rows) - 1)
-    y = (ctx.H - total) / 2
-    x = _center_x(ctx, ctx.content_w * (0.7 if ctx.landscape else 0.9))
-    for i, (lines, h) in enumerate(rows, start=1):
-        cy = y + min(h, font.size) / 2
+    avail_w = ctx.content_w * (0.8 if ctx.landscape else 0.92)
+    font, col_w, assign, blocks, heights = _stack_fit(
+        draw, ctx, items, base=52 if ctx.landscape else 44, lo=26 if ctx.landscape else 24,
+        avail_w=avail_w, avail_h=ctx.H - 2 * ctx.my, gap_v=gap, gap_x=80 * ctx.u,
+        pad_v=0, pad_h=0, text_extra=2 * r + 36 * ctx.u, ratio=0.2)
+    pos = _place_columns(ctx, assign, heights, col_w, gap, 80 * ctx.u)
+    marker = ctx.font(max(16, round(font.size * 0.8 / ctx.u)))
+    for i in range(min(vis, len(items))):
+        x, y = pos[i]
+        cy = y + min(heights[i], font.size) / 2
         draw.ellipse([x, cy - r, x + 2 * r, cy + r], fill=ctx.c("accent"))
-        num = str(i)
+        num = str(i + 1)
         nw = draw.textlength(num, font=marker)
         draw.text((x + r - nw / 2, cy - marker.size * 0.6), num, font=marker, fill=ctx.c("card")[:3] + (255,))
         ty = y
-        for line in lines:
+        for line in blocks[i]:
             draw_rich_line(draw, (x + 2 * r + 36 * ctx.u, ty), line, font, ctx.c("text"),
                            ctx.c("accent"), scene.get("emphasis") or [])
             ty += font.size + int(font.size * 0.2)
-        y += h + row_gap
 
 
 def _draw_timeline(draw, ctx: _Ctx, scene, vis: int) -> None:
@@ -155,22 +233,51 @@ def _arrow(draw, p0, p1, color, width: int, head: float) -> None:
     draw.polygon([p1, a1, a2], fill=color)
 
 
+def _grid_fit(draw, ctx: _Ctx, nodes: List[str], *, avail_w: float, avail_h: float, base: float, lo: float,
+              gx: float, gy: float, prefer_wide: bool):
+    """流程节点的网格：找最大字号与列数，使全部节点都能画下（节点高度随文字行数增加）。"""
+    n = len(nodes)
+    cand = list(range(n, 0, -1)) if prefer_wide else list(range(1, n + 1))
+    pad = 36 * ctx.u
+    for size in _sizes(base, lo):
+        font = ctx.font(size)
+        lh = font.size + int(font.size * 0.15)
+        for cols in cand:
+            node_w = (avail_w - (cols - 1) * gx) / cols
+            inner = node_w - 40 * ctx.u
+            if inner < font.size * 2:
+                continue
+            blocks = [wrap_text(draw, t, font, int(inner)) for t in nodes]
+            node_h = max(len(b) for b in blocks) * lh + 2 * pad
+            rows = math.ceil(n / cols)
+            total_h = rows * node_h + (rows - 1) * gy
+            if total_h <= avail_h:
+                return font, cols, node_w, node_h, blocks, lh
+    font = ctx.font(lo)
+    lh = font.size + int(font.size * 0.15)
+    blocks = [wrap_text(draw, t, font, int(avail_w - 40 * ctx.u)) for t in nodes]
+    return font, 1, avail_w, max(len(b) for b in blocks) * lh + 2 * pad, blocks, lh
+
+
 def _draw_diagram(draw, ctx: _Ctx, scene, vis: int) -> None:
+    """流程图：全部节点参与布局（网格自适应，文字不截断）；逐个显示；箭头与回路随之绘制。"""
     nodes = _items(scene)
     if not nodes:
         return
     n = len(nodes)
-    cols = 2 if not ctx.landscape else min(n, 3)
-    cols = max(1, cols)
-    rows = math.ceil(n / cols)
-    font = ctx.font(42 if ctx.landscape else 36)
     gx = 90 * ctx.u
     gy = 70 * ctx.u
-    node_w = (ctx.content_w * (0.78 if ctx.landscape else 1.0) - (cols - 1) * gx) / cols
-    node_h = 150 * ctx.u
+    loop_space = 110 * ctx.u if scene.get("loop") else 0
+    avail_w = ctx.content_w * (0.8 if ctx.landscape else 0.92)
+    avail_h = ctx.H - 2 * ctx.my - loop_space
+    font, cols, node_w, node_h, blocks, lh = _grid_fit(
+        draw, ctx, nodes, avail_w=avail_w, avail_h=avail_h, base=42 if ctx.landscape else 36,
+        lo=24 if ctx.landscape else 22, gx=gx, gy=gy, prefer_wide=ctx.landscape)
+    rows = math.ceil(n / cols)
     total_h = rows * node_h + (rows - 1) * gy
-    ox = (ctx.W - (cols * node_w + (cols - 1) * gx)) / 2
-    oy = (ctx.H - total_h - (110 * ctx.u if scene.get("loop") else 0)) / 2
+    total_w = cols * node_w + (cols - 1) * gx
+    ox = (ctx.W - total_w) / 2
+    oy = (ctx.H - total_h - loop_space) / 2
     boxes = []
     for i in range(n):
         r_, c_ = divmod(i, cols)
@@ -183,8 +290,7 @@ def _draw_diagram(draw, ctx: _Ctx, scene, vis: int) -> None:
         x0, y0, x1, y1 = boxes[i]
         draw.rounded_rectangle([x0, y0, x1, y1], radius=20 * ctx.u, fill=ctx.c("card"),
                                outline=ctx.c("line"), width=max(2, round(3 * ctx.u)))
-        lines = wrap_text(draw, nodes[i], font, int(node_w - 40 * ctx.u), max_lines=3)
-        lh = font.size + int(font.size * 0.15)
+        lines = blocks[i]
         ty = (y0 + y1) / 2 - lh * len(lines) / 2
         for k, line in enumerate(lines):
             lwid = draw.textlength(line, font=font)
@@ -455,7 +561,7 @@ def _draw_recap(draw, ctx: _Ctx, scene, vis: int) -> None:
     inner = int(w - 2 * pad - 24 * ctx.u)
     rows = []
     for t in items:
-        lines = wrap_text(draw, t, font, inner, max_lines=2)
+        lines = wrap_text(draw, t, font, inner)
         rows.append((lines, font.size * len(lines) + int(font.size * 0.25) * max(0, len(lines) - 1)))
     total = sum(h for _, h in rows) + gap * (len(rows) - 1) + 2 * pad
     top = (ctx.H - total) / 2
@@ -488,10 +594,10 @@ def _draw_contrast(draw, ctx: _Ctx, scene, vis: int) -> None:
     inner = int(col_w - 2 * pad)
 
     def column(title: str, lines_src: List[str]):
-        head = wrap_text(draw, title, head_font, inner, max_lines=1) if title else []
+        head = wrap_text(draw, title, head_font, inner) if title else []
         body = []
         for t in lines_src:
-            body.append(wrap_text(draw, t, body_font, inner, max_lines=3))
+            body.append(wrap_text(draw, t, body_font, inner))
         h = pad
         if head:
             h += head_font.size + int(head_font.size * 0.5)
