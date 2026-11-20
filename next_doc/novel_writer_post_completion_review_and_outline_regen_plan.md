@@ -1,6 +1,6 @@
 # novel_writer 完稿后评估、大纲重生成与大纲分析方案（设计，待确认后实施）
 
-> 状态：方案已确认（2026-11-20，见第 9 节），按第 7 节分期实施，每期更新文档并打包 diff zip。**R0–R3 已完成**，其余待做。
+> 状态：方案已确认（2026-11-20，见第 9 节），按第 7 节分期实施，每期更新文档并打包 diff zip。**R0–R4 已完成**，其余待做。
 > 依据：`next_doc/novel_writer_post_completion_revision_plan.md`、`external_projects/novel_writer/docs/revision_flow.md`、
 > `docs/outline_first.md`，以及对 `revision_flow/*`、`blueprint_store.py`、`act_planning.py`、`brief.py`、`ui/post_revision.py` 的阅读。
 
@@ -224,7 +224,8 @@ _revision/
 | R1 | 完成 | `revision_flow/review_checks.py`、CLI `review-checks`/`review-findings`、`tests/test_revision_review_checks.py`（13 例；人工破坏 10 处逻辑均转红）。偏离原计划：伏笔账本与事实卡的交叉核对暂缓，自由文本伏笔不做顺序检查（无法可靠匹配） |
 | R2 | 完成 | `revision_flow/review_llm.py`、界面「🔎 评估」页、CLI `review-llm`、`tests/test_revision_review_llm.py`（17 例，桩执行器）。C1 候选仲裁、C2 衔接窗口、C3 全书维度审阅；引文经子串核对，不过的问题 `evidence_ok=False` 默认折叠；调用上限暂停、`llm_state.json` 断点续跑；章节 sha 变化只重判受影响单元。人工破坏 4 处逻辑（跳过引文核对、取消上限暂停、不清理旧窗口缓存、缓存键忽略章节 sha），4 处全部转红。偏离原计划：①「证据未核实」只对模型来源的问题折叠；规则来源的候选证据为事实卡陈述（无引文），不折叠，而是用定位词取原文上下文供仲裁；②候选仲裁由 `consistency-checker`、全书维度由 `revision-editor` 执行；③ R1 证据增加 `term` 字段（向后兼容） |
 | R3 | 完成 | `revision_flow/review_adopt.py`、`changes.py`（可选 `evidence`、`origin` 字段，向后兼容）、`executor.py`（改写提示加入「问题定位」）、界面「🔎 评估」采纳区与增量复评、CLI `review-options`/`adopt`/`adopt-batch`/`review-increment`、`tests/test_revision_review_adopt.py`（12 例）。人工破坏 3 处逻辑（矛盾类免选方向、跳过 `ADOPTABLE` 状态门禁、取消 resolved/still_open 对照）均转红。偏离原计划：①选项按需生成，不落盘（同一问题内容一致，无需存储）；②「不处理」以「已驳回」表达；③采纳的修正全部是 `chapter` 变更，设定类变更不由评估产生；④问题编号改为不含章节 sha（窗口编号用章节范围），否则章节一改编号即变，无法对照；⑤「stale」状态只在设计中，界面未单独呈现旧版本的失效 |
-| R4–R6 | 待做 | |
+| R4 | 完成 | `revision_flow/outline_regen.py`、界面「📚 大纲」、CLI `outline-candidate`/`outline-list`/`outline-diff`/`outline-adopt`/`outline-discard`、`tests/test_revision_outline_regen.py`（14 例）。人工破坏 2 处（取消 head 变化检查、采纳时复制全部字段包括字数）中 2 处转红；严格读回的守卫测试未能触发（写入是确定性的），作为兜底保留。偏离原计划：①章名保留蓝图中的章名，没有才取正文标题；②候选的幕与主线概要写入 `structure.acts` 与 `structure.actual_summary`；③章节大纲.md 不重写（它由规划步骤的 LLM 生成，重写会丢内容），变更日志注明；④LLM 按每 20 章分批，超过 20 章时调用次数随章数增长 |
+| R5–R6 | 待做 | |
 
 ## 11. 风险与已知限制
 

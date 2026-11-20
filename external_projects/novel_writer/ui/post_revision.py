@@ -1,6 +1,6 @@
 """📝 完稿修改：完稿后的版本化修改（独立于写作流水线）。
 
-六个分页：版本 / 变更与预览 / 运行 / 章节反馈 / 评估 / 设置。
+七个分页：版本 / 变更与预览 / 运行 / 章节反馈 / 评估 / 大纲 / 设置。
   * 每一个按钮都经过 _act：开始、成功（含结果摘要）、失败都写入持久化的「操作日志」，页面底部可见。
   * 会调用 LLM 的操作（生成预览、开始改写、续跑、分诊）在后台线程执行，按钮旁边显示实时进度日志。
 """
@@ -16,7 +16,7 @@ import streamlit as st
 
 from novel_writer.revision_flow import changes as CH
 from novel_writer.revision_flow import config as CFG
-from novel_writer.revision_flow import derived, executor, feedback, jobs
+from novel_writer.revision_flow import derived, executor, feedback, jobs, outline_regen
 from novel_writer.revision_flow import review_adopt, review_cards, review_checks, review_llm
 from novel_writer.revision_flow import versions as V
 from novel_writer.revision_flow.common import FlowError, sub_dir
@@ -181,6 +181,11 @@ def _review_job(ws: Workspace, name: str, progress) -> Dict[str, Any]:
     res = review_llm.run_review(ws, None, jobs.make_invoker(ws, name, _invoker()), progress=progress)
     return {"review_id": res["review_id"], "calls": res["calls"], "paused": res["paused"],
             "failed": len(res["failed"])}
+
+
+def _outline_job(ws: Workspace, name: str, progress) -> Dict[str, Any]:
+    res = outline_regen.generate_candidate(ws, None, jobs.make_invoker(ws, name, _invoker()), progress=progress)
+    return {"id": res["id"], "changed": res["summary"]["changed"]}
 
 
 def _increment_job(ws: Workspace, name: str, progress) -> Dict[str, Any]:
@@ -583,6 +588,77 @@ def _adopt_block(root: Workspace, vid: str, f: Dict[str, Any]) -> None:
             st.rerun()
 
 
+# ─────────────────────────────── 大纲 ───────────────────────────────
+
+_FIELD_TEXT = {"function": "功能", "chapter_type": "类型", "pov": "视角", "tension_level": "张力",
+               "word_budget": "字数预算", "characters_present": "出场人物"}
+
+
+def _tab_outline(root: Workspace) -> None:
+    if not V.is_baseline_ready(root):
+        st.info("请先创建完稿基线。")
+        return
+    st.caption("根据 head 版本已写出的正文，反推实际大纲。候选不进入版本；采纳后派生「仅大纲」新版本，正文一字不动。")
+    est = outline_regen.estimate(root)
+    st.caption(f"共 {est['chapters']} 章，分 {est['batches']} 批判定，预计约 {est['calls_typical']} 次模型调用。"
+               "需要每章都有事实卡（请先在「🔎 评估」页生成）。")
+    if est["outline_first"]:
+        st.info("本书为大纲先行：采纳大纲不会同步章节简述，请在变更日志中留意。")
+    if st.button("生成候选大纲（调用模型）", key="rv_o_gen", disabled=_busy(root)):
+        _start_job(root, "反推大纲", "outline", _outline_job)
+
+    cands = [c for c in outline_regen.list_candidates(root) if c["status"] == "candidate"]
+    if not cands:
+        st.info("没有待处理的候选大纲。")
+        return
+    pick = st.selectbox("候选大纲", [c["id"] for c in cands], key="rv_o_pick",
+                        format_func=lambda i: next(f"{c['id']}（基于 {c['base_version']}，"
+                                                   f"{c['summary']['changed']} 章有变化）" for c in cands if c["id"] == i))
+    cand = outline_regen.load_candidate(root, pick)
+    head = V.load_index(root)["head"]
+    if cand["base_version"] != head:
+        st.warning(f"head 已变为 {head}，本候选基于 {cand['base_version']}，不能采纳。请放弃后重新生成。")
+    diff = outline_regen.diff_blueprints(outline_regen.current_blueprint(root, cand["base_version"]), cand["candidate"])
+    rows = []
+    for ch in diff["chapters"]:
+        if ch["kind"] == "changed":
+            for f, v in ch["fields"].items():
+                rows.append({"章": ch["id"], "字段": _FIELD_TEXT.get(f, f), "旧": str(v["old"]), "新": str(v["new"])})
+        else:
+            rows.append({"章": ch["id"], "字段": "—", "旧": "—", "新": "蓝图中有、正文中没有" if ch["kind"] == "unwritten"
+                         else "新增"})
+    st.markdown(f"**差异**：{diff['counts']['changed']} 章有字段变化；结构{'有' if diff['structure_changed'] else '无'}变化")
+    if rows:
+        st.dataframe(rows, hide_index=True, use_container_width=True)
+    if cand.get("unwritten"):
+        st.warning(f"蓝图中有 {len(cand['unwritten'])} 个章节没有正文，采纳时保持不动：{cand['unwritten']}")
+    changed = [ch["id"] for ch in diff["chapters"] if ch["kind"] == "changed"]
+    chosen, edits = [], {}
+    if changed:
+        st.markdown("**采纳范围**（取消勾选则保持原样；可就地改功能描述）")
+        for n in changed:
+            cand_fn = next(c["function"] for c in cand["candidate"]["chapters"] if c["id"] == n)
+            c1, c2 = st.columns([1, 3])
+            take = c1.checkbox(f"第{n}章", value=True, key=f"rv_o_take_{pick}_{n}")
+            fn = c2.text_input("功能", value=cand_fn, key=f"rv_o_fn_{pick}_{n}", label_visibility="collapsed")
+            if take:
+                chosen.append(n)
+                if fn.strip() and fn.strip() != cand_fn:
+                    edits[n] = {"function": fn.strip()}
+    take_struct = st.checkbox("采用候选的幕划分与主线、支线概要", value=True, key=f"rv_o_struct_{pick}")
+    b1, b2 = st.columns(2)
+    if b1.button("采纳为新版本（仅大纲）", key=f"rv_o_adopt_{pick}", disabled=cand["base_version"] != head):
+        res = _act(root, f"采纳大纲 {pick}", outline_regen.adopt, root, pick, chapters=chosen, edits=edits,
+                   take_structure=take_struct,
+                   summarize=lambda r: f"已生成 {r['version']}（正文未改动）")
+        if res is not None:
+            st.rerun()
+    if b2.button("放弃候选", key=f"rv_o_disc_{pick}"):
+        if _act(root, f"放弃候选 {pick}", outline_regen.discard_candidate, root, pick,
+                summarize=lambda _: "已放弃") is not None:
+            st.rerun()
+
+
 # ─────────────────────────────── 设置 ───────────────────────────────
 
 def _tab_settings(root: Workspace) -> None:
@@ -616,8 +692,8 @@ def page_post_revision() -> None:
     st.header("📝 完稿修改")
     st.caption("完稿后的版本化修改：原稿只读，每次修改生成新版本。独立于写作流水线。")
     _task_panel(root)
-    tabs = st.tabs(["📌 版本", "🧾 变更与预览", "▶ 运行", "💬 章节反馈", "🔎 评估", "⚙ 设置"])
-    renders = [_tab_versions, _tab_changes, _tab_runs, _tab_feedback, _tab_review, _tab_settings]
+    tabs = st.tabs(["📌 版本", "🧾 变更与预览", "▶ 运行", "💬 章节反馈", "🔎 评估", "📚 大纲", "⚙ 设置"])
+    renders = [_tab_versions, _tab_changes, _tab_runs, _tab_feedback, _tab_review, _tab_outline, _tab_settings]
     for tab, render in zip(tabs, renders):
         with tab:
             render(root)

@@ -81,6 +81,11 @@ python entrypoints/post_revision.py --novel <dir> review-options --finding f_xxx
 python entrypoints/post_revision.py --novel <dir> adopt --finding f_xxx [--option 0|1] [--instruction "…"] [--chapters 2 3] [--allow-unverified]  # R3 采纳为 chapter 变更
 python entrypoints/post_revision.py --novel <dir> adopt-batch --findings f_a f_b [--choose f_x=1]   # R3 批量采纳（跳过矛盾未选方向、证据未核实）
 python entrypoints/post_revision.py --novel <dir> review-increment   # R3 增量复评：基于 head 重算，与父版本对照（调用 LLM）
+python entrypoints/post_revision.py --novel <dir> outline-candidate [--version v00N]   # R4 反推实际大纲，生成候选（调用 LLM，不进入版本）
+python entrypoints/post_revision.py --novel <dir> outline-list                         # R4 列出候选
+python entrypoints/post_revision.py --novel <dir> outline-diff --id ol_xxx             # R4 候选与当前蓝图的差异
+python entrypoints/post_revision.py --novel <dir> outline-adopt --id ol_xxx [--chapters 1 3] [--set 3:function=...] [--no-structure]  # R4 采纳为仅大纲的新版本
+python entrypoints/post_revision.py --novel <dir> outline-discard --id ol_xxx          # R4 放弃候选
 ```
 
 变更 JSON 示例（设定变更）：
@@ -110,11 +115,12 @@ python entrypoints/post_revision.py --novel <dir> review-increment   # R3 增量
 | R1 确定性检查与问题池 | 完成 | `review_checks.py` | 零 LLM，只读事实卡。六项检查：同主体同属性取值不同、已死亡人物再出场（带否定词/复活保护）、「第N天」时间倒退、F+数字伏笔的先回收后种下/无种下/未回收、多章出现的未登记人物、相邻章地点衔接。结果都是**候选**（`needs_adjudication`），由 R2 的 LLM 对照原文仲裁；各检查按 `review_dimensions` 开关，「未纳入评估的章节」不受开关影响。问题 id 稳定，重算保留已做的处理。**未覆盖**：伏笔账本与事实卡的交叉核对、自由文本伏笔的顺序 |
 | R2 LLM 复核 | 完成 | `review_llm.py`、`ui/post_revision.py`「🔎 评估」 | 三个阶段，均只读版本：**C1 候选仲裁**：每条规则候选取两处原文片段（前后 `review_snippet_chars` 字，无引文的用定位词取上下文），判定 确认 / 误报 / 无法判定 并给理由；**C2 衔接审阅**：按 `review_window` 章一窗（相邻窗口重叠 1 章）审阅转场与人物连续性，问题须带原文引文；**C3 全书维度审阅**：一次调用，只针对已启用的节奏 / 冗余 / 文风（及人物、连续性）维度。所有引文经子串核对，核对不过的证据 `verified=False`，问题 `evidence_ok=False`，界面默认折叠（不参与 R3 的批量采纳）。调用达到 `review_max_llm_calls` 即暂停，已完成单元缓存在 `llm_state.json`，续跑不重复调用；缓存键含章节 sha，章节变化后只重判受影响的窗口与全书，候选消失时清理其仲裁结论。界面「🔎 评估」页：生成事实卡 / 确定性检查 / LLM 复核（后台任务与实时日志），问题池按严重度、类别、来源、状态筛选，展示仲裁结论与引文核实标记，可标记处理状态与备注 |
 | R3 采纳与增量复评 | 完成 | `review_adopt.py`、「🔎 评估」页 | **采纳**：问题 → `chapter` 变更（`origin` 记录来源问题、版本与所选方向；`evidence` 为核实过的原文，写入改写提示的「问题定位」）。矛盾类必须先选「以 A 为准改 B / 以 B 为准改 A」，不预选；证据未核实的问题单条采纳需明确允许，批量采纳一律跳过；仲裁为误报的问题不能采纳。采纳后走现有预览 → 确认 → 执行，原稿不动。执行完成后问题标为 `applied`（`sync_applied`）。**增量复评**：基于 head 重生成事实卡（未改章节命中缓存）、确定性检查与 LLM 复核；父版本的仲裁结论沿用未改章节的部分；问题编号不含章节 sha，改动后同一问题仍能对上：父版本已应用的问题消失 → `resolved`，仍在 → `still_open`，新出现的标 `new_since`；作者的驳回随问题带入新版本。**未做**：「stale」只是设计上的状态，界面未单独显示旧版本评估的失效；设定类变更未由评估产生（评估的修正都是改章节对齐） |
+| R4 大纲重生成 | 完成 | `outline_regen.py`、「📚 大纲」页 | 以 head 的正文为准反推「实际写成的大纲」。确定性部分由 Python 产出：章号、章名（保留蓝图章名）、实际字数（取整百作 `word_budget`）、出场人物（事实卡人物经角色档案归一）。LLM 只判断功能（`function`）、类型、视角、张力，以及全书幕划分与主线、支线概要（每批 20 章，另一次调用做幕划分）。结果是候选，写入 `_revision/outline/ol_<id>/`，不进入版本。**逐章 diff**（字段变化、未写出的章节、结构变化）；作者可按章勾选、就地改功能描述、选择是否采用幕划分。采纳时派生「仅大纲」新版本：从 head 复制，只写 `大纲规划/蓝图`（经 `blueprint_store` 写入并严格读回比对），正文哈希不变，追加 `修订记录/蓝图变更日志.md`，定稿并设为 head；可 `discard` 撤销。采纳前若 head 已变化则拒绝，要求重新生成。未写出正文的蓝图章节原样保留。**未做**：章节大纲.md 不重写（由规划步骤的 LLM 生成，重写会丢内容，变更日志注明可能不一致）；章节简述不同步（大纲先行书会提示） |
 | 实时进度 | 完成 | `jobs.py`、`ui/post_revision.py` | 生成预览、开始改写、续跑、分诊都在后台线程执行。页面顶部只有一个「当前任务」面板（同一时间只允许一个任务），每 1.5 秒刷新，日志按时间顺序排列、最新在最下（面板显示最近 40 行，完整日志在下方展开项），显示状态、开始时间、已输出行数；包含每章开始判定、每次尝试、判定与校验结果，以及 agent 的逐行输出 |
 | 版本导出与阅读 | 完成 | `derived.py`、`ui/reading.py` | 📖 阅读页顶部可选择工作稿或任一版本（v001 只读完稿、修改版本）；选中版本后预览该版本正文，并可分别导出全书合稿（md / txt / docx / epub）和最终稿。导出文件统一放在 `_versions/exports/<版本号>/`，版本目录不留产物；页面列出该版本已导出的文件供下载。版本快照包含 `项目状态/workspace_config.json`（书名） |
 | 版本差异 | 完成 | `derived.py`、`ui/post_revision.py` | 「查看差异」输出 git 风格的 unified diff（`diff --git` 头、`@@` 块、`+`/`-` 行，带 diff 语法高亮）；先列出变化文件及增删行数，可选单个文件或全部文件；新增/删除文件有 `new file` / `deleted file` 标记 |
 | 操作日志 | 完成 | `ui/post_revision.py` | 每个按钮都经过统一的 `_act`，开始 / 完成（含结果摘要）/ 失败都写入 `jobs/ops.log`，页面底部可展开查看；后台任务另有各自的实时日志 |
-| 界面 | 完成 | `ui/post_revision.py` | 导航「📝 完稿修改」：版本（基线、校验、差异、导出、撤销）/ 变更与预览（排除、确认）/ 运行（后台执行、停止、续跑、派生物建议与日志）/ 章节反馈（分诊、采纳）/ 评估（R2，见上）/ 设置 |
+| 界面 | 完成 | `ui/post_revision.py` | 导航「📝 完稿修改」：版本（基线、校验、差异、导出、撤销）/ 变更与预览（排除、确认）/ 运行（后台执行、停止、续跑、派生物建议与日志）/ 章节反馈（分诊、采纳）/ 评估（R2–R3）/ 大纲（R4）/ 设置 |
 
 ## 已知限制
 
@@ -133,6 +139,8 @@ python entrypoints/post_revision.py --novel <dir> review-increment   # R3 增量
 - 流程完全不读写流水线状态；若作者在完稿后又回去用流水线重跑章节，那是独立于本流程的操作，两者不会自动同步。
 
 ## 测试
+
+`tests/test_revision_outline_regen.py`（14 例，R4）：候选由确定性与判断两部分组成（章名保留、字数取整百、人物归一）、候选不改版本、事实卡缺失拒绝、坏输出重试、幕必须覆盖全书、20 章分批、未写出章节保留、采纳派生仅大纲版本且正文哈希不变、按章勾选与就地改写、未勾选不得改、head 变化拒绝、撤销、diff 纯函数、界面冒烟。
 
 `tests/test_revision_review_adopt.py`（12 例，R3）：矛盾类两个方向且须选定、采纳生成的变更带 origin 与核实过的 evidence、未核实证据门禁、批量采纳跳过规则、误报不可采纳、采纳 → 现有预览 → 执行（原稿不动、改写提示含定位与方向）、`applied` 同步、增量复评的已解决 / 仍存在 / 新出现、仲裁结论沿用、驳回跨版本保留、门禁与界面冒烟。
 

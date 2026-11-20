@@ -289,7 +289,7 @@ def test_review_tab_renders_and_folds_unverified(tmp_path, monkeypatch):
     RL.run_review(ws, None, ReviewStub(fake_quote=True, whole_issue=False))
     at = _render(ws, monkeypatch)
     assert not at.exception
-    assert len(at.tabs) == 6 and any("评估" in t.label for t in at.tabs)
+    assert len(at.tabs) == 7 and any("评估" in t.label for t in at.tabs)
     captions = [c.value for c in at.caption]
     assert any("折叠 1 条" in c for c in captions)            # 证据未核实的模型问题默认折叠
     assert any("问题池（版本 v001）" in m.value for m in at.markdown)

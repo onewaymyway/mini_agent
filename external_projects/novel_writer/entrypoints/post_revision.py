@@ -26,6 +26,11 @@
     python entrypoints/post_revision.py --novel <dir> adopt --finding f_xxx [--option 0|1] [--instruction "…"] [--chapters 2 3] [--allow-unverified]  # R3 采纳为变更
     python entrypoints/post_revision.py --novel <dir> adopt-batch --findings f_a f_b [--choose f_x=1]   # R3 批量采纳（跳过矛盾未选方向、证据未核实）
     python entrypoints/post_revision.py --novel <dir> review-increment   # R3 增量复评（基于 head，对照父版本；调用 LLM）
+    python entrypoints/post_revision.py --novel <dir> outline-candidate [--version v00N]   # R4 反推实际大纲，生成候选（调用 LLM，不进入版本）
+    python entrypoints/post_revision.py --novel <dir> outline-list                         # R4 列出候选
+    python entrypoints/post_revision.py --novel <dir> outline-diff --id ol_xxx             # R4 候选与当前蓝图的差异
+    python entrypoints/post_revision.py --novel <dir> outline-adopt --id ol_xxx [--chapters 1 3] [--set 3:function=...] [--no-structure]  # R4 采纳为仅大纲的新版本
+    python entrypoints/post_revision.py --novel <dir> outline-discard --id ol_xxx          # R4 放弃候选
 """
 
 from __future__ import annotations
@@ -38,7 +43,7 @@ import _common  # noqa: F401
 
 from novel_writer.revision_flow import changes as CH
 from novel_writer.revision_flow import config as CFG
-from novel_writer.revision_flow import derived, executor, feedback, review_adopt, review_cards, review_checks, review_llm
+from novel_writer.revision_flow import derived, executor, feedback, outline_regen, review_adopt, review_cards, review_checks, review_llm
 from novel_writer.revision_flow import versions as V
 from novel_writer.revision_flow.common import FlowError
 from novel_writer.workspace import Workspace
@@ -124,6 +129,18 @@ def main(argv=None) -> int:
     sp.add_argument("--choose", action="append", default=[], help="f_xxx=序号，矛盾类选定方向")
     sp = sub.add_parser("review-increment")
     sp.add_argument("--version", default=None)
+    sp = sub.add_parser("outline-candidate")
+    sp.add_argument("--version", default=None)
+    sub.add_parser("outline-list")
+    sp = sub.add_parser("outline-diff")
+    sp.add_argument("--id", required=True)
+    sp = sub.add_parser("outline-adopt")
+    sp.add_argument("--id", required=True)
+    sp.add_argument("--chapters", nargs="+", type=int, default=None)
+    sp.add_argument("--set", action="append", default=[], help="章号:字段=值（如 3:function=新功能）")
+    sp.add_argument("--no-structure", action="store_true", help="不采用候选的幕划分")
+    sp = sub.add_parser("outline-discard")
+    sp.add_argument("--id", required=True)
     sp = sub.add_parser("review-findings")
     sp.add_argument("--version", default=None)
     sp.add_argument("--set", dest="fid", default=None, help="要标记的问题编号")
@@ -210,6 +227,25 @@ def main(argv=None) -> int:
             return _out(review_adopt.adopt_batch(ws, args.version, args.findings, choices))
         if args.cmd == "review-increment":
             return _out(review_adopt.increment(ws, _invoker(), progress=print))
+        if args.cmd == "outline-candidate":
+            return _out(outline_regen.generate_candidate(ws, args.version, _invoker(), progress=print))
+        if args.cmd == "outline-list":
+            return _out(outline_regen.list_candidates(ws))
+        if args.cmd == "outline-diff":
+            cand = outline_regen.load_candidate(ws, args.id)
+            base = outline_regen.current_blueprint(ws, cand["base_version"])
+            return _out(outline_regen.diff_blueprints(base, cand["candidate"]))
+        if args.cmd == "outline-adopt":
+            edits: dict = {}
+            for item in args.set:
+                head_, _, value = item.partition("=")
+                num, _, field = head_.partition(":")
+                edits.setdefault(int(num), {})[field.strip()] = json.loads(value) if field.strip() == "tension_level" \
+                    or field.strip() == "word_budget" else value
+            return _out(outline_regen.adopt(ws, args.id, chapters=args.chapters, edits=edits,
+                                            take_structure=not args.no_structure))
+        if args.cmd == "outline-discard":
+            return _out(outline_regen.discard_candidate(ws, args.id))
         if args.cmd == "review-findings":
             vid = review_cards.resolve_version(ws, args.version)
             if args.fid:
