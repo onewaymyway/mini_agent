@@ -45,7 +45,7 @@ def default_pipeline_runner(pdir: Path, params: Dict[str, Any]) -> Dict[str, Any
     engine = effective_group(pdir, "pipeline")["outline_engine"]
     return run_pipeline(pdir, until=params["until"], gear=params["gear"],
                         max_images=params["max_images"] or None, max_minutes=params["max_minutes"] or None,
-                        approve=False, llm=prov["llm"], tts=prov["tts"], image_provider=prov["image"],
+                        approve=bool(params.get("auto_export", True)), llm=prov["llm"], tts=prov["tts"], image_provider=prov["image"],
                         merge_all=params["merge_all"], outline_engine=engine)
 
 

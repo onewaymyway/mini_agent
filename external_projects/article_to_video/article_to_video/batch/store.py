@@ -37,6 +37,7 @@ QUEUE_LOCK_WAIT_SEC = 10.0
 
 DEFAULT_PARAMS: Dict[str, Any] = {
     "gear": "G3",                 # 队列默认使用完全无人值守档位（需用户显式点击「开始」才会运行）
+    "auto_export": True,          # 导出成片自动进行（终审自动通过）；关闭则队列停在终审，需在驾驶舱确认
     "author": "",                 # 共用作者：非空时对队列里所有文章生效（优先于逐篇作者）；留空 = 逐篇设置
     "until": "export",
     "max_images": 0,              # 0 = 不限
@@ -136,6 +137,7 @@ def normalize_params(raw: Optional[Dict[str, Any]]) -> Tuple[Dict[str, Any], Lis
     p["max_minutes"] = _num(raw.get("max_minutes", 0), 0.0, 0.0, 10_000_000.0)
     p["merge_all"] = bool(raw.get("merge_all", False))
     p["author"] = str(raw.get("author") or "").strip()
+    p["auto_export"] = bool(raw.get("auto_export", True))
     p["max_retries"] = int(_num(raw.get("max_retries", 3), 3, 0, 10))
     delays = raw.get("retry_delays", p["retry_delays"])
     if not isinstance(delays, (list, tuple)) or not delays:

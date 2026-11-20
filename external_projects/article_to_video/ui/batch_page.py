@@ -24,7 +24,7 @@ REFRESH_SECONDS = 3
 GEAR_HELP = {
     "G0": "四个检查点都需人工确认——队列会停在每篇的大纲，不适合无人值守。",
     "G1": "大纲与终审需人工——队列会停在每篇的大纲，不适合无人值守。",
-    "G2": "全自动，但终审需要在驾驶舱里人工确认才会导出；必须设置预算上限（生图次数或耗时）。",
+    "G2": "全自动（含终审与导出）；必须设置预算上限（生图次数或耗时）。",
     "G3": "完全无人值守：无人工检查点，终审自动通过并导出，**不设预算上限**（可能产生较多费用）。",
 }
 
@@ -48,6 +48,8 @@ def _params_panel(root) -> None:
         gear = c1.radio("挡位", list(GEARS), index=list(GEARS).index(params["gear"]), key="bq_gear")
         until = c2.selectbox("运行到", list(STAGES), index=list(STAGES).index(params["until"]), key="bq_until")
         merge_all = c3.checkbox("多期时导出全集合并版", value=params["merge_all"], key="bq_merge")
+        auto_export = st.checkbox("自动导出成片（终审自动通过）", value=params.get("auto_export", True), key="bq_autoexport",
+                                  help="开启：队列中每篇走到导出时自动通过终审并导出。关闭：停在终审，需要在驾驶舱逐篇确认。")
         if gear == "G3":
             st.warning(GEAR_HELP["G3"])
         else:
@@ -98,7 +100,7 @@ def _params_panel(root) -> None:
                 delays = prep.parse_delays(delays_text)
                 warnings = store.set_params(root, {
                     "gear": gear, "until": until, "merge_all": merge_all, "max_images": max_images,
-                    "author": shared_author,
+                    "author": shared_author, "auto_export": auto_export,
                     "max_minutes": max_minutes, "max_retries": retries, "retry_delays": delays,
                     "settings": {"mode": mode, "target_minutes": target, "persona": persona,
                                  "video": {"orientation": orientation, "resolution": resolution}},
