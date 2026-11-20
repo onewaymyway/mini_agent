@@ -121,7 +121,8 @@ def _next_hint(rows) -> str:
     return "全部步骤已完成。"
 
 
-def _deck_panel(pdir, busy: bool) -> None:
+def _deck_panel(pdir, busy: bool, *, gear: str = "G0", until: str = "export", approve: bool = False,
+                max_images: int = 0, max_minutes: float = 0.0, offline: bool = False) -> None:
     """新方案：逐章生成幻灯片规划 → 确认 → 生成讲稿 → 确认。配音与按页渲染为后续阶段。"""
     from article_to_video.deck.script import plan_script, script_status
     from article_to_video.deck.voice import synthesize_deck, voice_status
@@ -155,6 +156,36 @@ def _deck_panel(pdir, busy: bool) -> None:
         })
     st.table(rows)
 
+    st.markdown("**一键运行**（使用上方的挡位、运行到、终审与预算设置）")
+    st.caption({"G0": "G0：规划、讲稿、终审需要人工确认。",
+                "G1": "G1：规划与讲稿自动确认，只有终审需要人工。",
+                "G2": "G2：全自动，需要设置预算上限。",
+                "G3": "G3：完全无人值守，终审自动通过并导出，不设预算上限。"}[gear])
+    if st.button("▶ 一键运行新方案（后台）", disabled=busy, type="primary", key="deck_run_all"):
+        mi = int(max_images) or None
+        mm = float(max_minutes) or None
+        try:
+            from article_to_video.pipeline.gates import check_budget_requirement
+            check_budget_requirement(gear, mi, mm)
+        except Exception as exc:  # noqa: BLE001 — 界面展示原因
+            st.error(str(exc))
+        else:
+            def run_all_deck():
+                from article_to_video.deck.pipeline import run_deck_pipeline
+                from article_to_video.pipeline.run import default_providers
+                prov = default_providers(pdir, offline=offline)
+                out = run_deck_pipeline(pdir, gear=gear, until=until, approve=approve, max_images=mi,
+                                        max_minutes=mm, llm=prov["llm"], tts=prov["tts"])
+                if out["state"] == "done":
+                    return {"state": "done", "message": "新方案已完成" + (f"：{'、'.join(out['outputs'])}" if out["outputs"] else "")}
+                if out["state"] == "waiting":
+                    w = out.get("waiting") or {}
+                    return {"state": "waiting", "message": f"停在「{w.get('stage', '')}」：{w.get('detail', '')}"}
+                return {"state": "error", "message": out.get("error") or out["state"]}
+
+            if jobs.start(pdir, f"新方案一键运行（{gear}）", run_all_deck, scope="deck"):
+                st.rerun()
+    st.divider()
     c1, c2 = st.columns(2)
     if c1.button("生成全部章的幻灯片规划（后台）", disabled=busy):
         def run_plan():
@@ -277,7 +308,8 @@ def _control_body(pdir) -> None:
         offline = st.checkbox("离线冒烟（语音静音、生图占位，大纲改用离线规则，不产生费用）", value=False)
 
     if mode == "deck":
-        _deck_panel(pdir, busy)
+        _deck_panel(pdir, busy, gear=gear, until=until, approve=approve, max_images=max_images,
+                    max_minutes=max_minutes, offline=offline)
     elif st.button("▶ 运行流水线（后台）", disabled=busy):
         mi = int(max_images) or None
         mm = float(max_minutes) or None

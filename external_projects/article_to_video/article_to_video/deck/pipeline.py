@@ -1,0 +1,167 @@
+"""新方案的一键流程：规划 → 讲稿 → 配音 → 合成 → 导出，挡位与现有方案一致。
+
+挡位对应的人工检查点（新方案）：
+  G0：规划、讲稿、终审都需要人工确认；
+  G1：规划与讲稿通过校验后自动确认，只有终审需要人工；
+  G2：全自动，必须设置预算上限（与现有方案相同的规则）；
+  G3：完全无人值守，无检查点，终审自动通过并导出，不要求预算上限。
+
+流程是可重入的：停在检查点后，确认相应内容再次运行即可继续；已完成且未变化的阶段会复用结果。
+状态写入 deck/run_status.json，格式与现有流水线状态相近。
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, Optional, Set
+
+from .. import cancel, joblog
+from ..pipeline.gates import GEARS, check_budget_requirement
+from ..planning.errors import PlanError
+from ..planning.runner import load_spine
+from ..project_store import now_iso, write_json_atomic
+from .compose import compose_deck_part, export_deck_video
+from .script import confirm_script, load_script, plan_script, script_status
+from .store import confirm_deck, deck_home, deck_status, load_deck, plan_deck
+from .voice import synthesize_deck
+
+STAGES = ("plan", "script", "voice", "compose", "export")
+_MANUAL = {
+    "G0": {"plan", "script", "export"},
+    "G1": {"export"},
+    "G2": set(),
+    "G3": set(),
+}
+STAGE_NAME = {"plan": "幻灯片规划", "script": "讲稿", "voice": "配音", "compose": "合成", "export": "导出"}
+
+
+def deck_manual_checkpoints(gear: str) -> Set[str]:
+    if gear not in _MANUAL:
+        raise PlanError(f"未知挡位：{gear}（可选 {' / '.join(GEARS)}）")
+    return set(_MANUAL[gear])
+
+
+def _parts(pdir: Path):
+    spine = load_spine(pdir)
+    if spine is None or not spine.get("confirmed"):
+        raise PlanError("请先确认大纲（C0），再运行新方案")
+    return spine["parts"]
+
+
+def _save(pdir: Path, status: Dict[str, Any], now: Optional[datetime]) -> None:
+    status["updated_at"] = now_iso(now)
+    write_json_atomic(deck_home(pdir) / "run_status.json", status)
+
+
+def run_deck_pipeline(pdir: Path, *, gear: str = "G0", until: str = "export", approve: bool = False,
+                      max_images: Optional[int] = None, max_minutes: Optional[float] = None,
+                      llm=None, tts=None, now: Optional[datetime] = None) -> Dict[str, Any]:
+    """运行新方案的一键流程，返回状态 {state: done|waiting|failed, stage, waiting, error, steps, outputs}。"""
+    pdir = Path(pdir)
+    if until not in STAGES:
+        raise PlanError(f"未知阶段：{until}")
+    check_budget_requirement(gear, max_images, max_minutes)
+    manual = deck_manual_checkpoints(gear)
+    if gear == "G3":
+        approve = True                       # G3：终审自动通过并导出
+    parts = _parts(pdir)
+    status: Dict[str, Any] = {"gear": gear, "until": until, "state": "running", "steps": [],
+                              "waiting": None, "error": None, "outputs": [], "started_at": now_iso(now)}
+    deck_home(pdir).mkdir(parents=True, exist_ok=True)
+    _save(pdir, status, now)
+    stop_after = STAGES.index(until)
+
+    def done_stage(stage: str, detail: str) -> None:
+        status["steps"].append({"stage": stage, "result": "ok", "detail": detail})
+        _save(pdir, status, now)
+
+    def wait(stage: str, detail: str) -> Dict[str, Any]:
+        status.update(state="waiting", waiting={"stage": stage, "detail": detail})
+        status["steps"].append({"stage": stage, "result": "waiting", "detail": detail})
+        _save(pdir, status, now)
+        joblog.bound_log(f"新方案停在「{STAGE_NAME[stage]}」：{detail}", level="warn")
+        return status
+
+    try:
+        # 1. 幻灯片规划
+        for p in parts:
+            cancel.check()
+            plan_deck(pdir, p["id"])
+        if "plan" in manual:
+            pending = [p["id"] for p in parts if not deck_status(pdir, p["id"])["confirmed"]]
+            if pending:
+                return wait("plan", f"请确认幻灯片规划：{'、'.join(pending)}")
+        else:
+            for p in parts:
+                if not deck_status(pdir, p["id"])["confirmed"]:
+                    confirm_deck(pdir, p["id"], now=now)
+        done_stage("plan", f"{len(parts)} 章规划就绪")
+        if STAGES.index("plan") >= stop_after:
+            return _finish(pdir, status, now)
+
+        # 2. 讲稿
+        if llm is None:
+            raise PlanError("新方案需要文本模型生成讲稿（mini_agent 配置）")
+        for p in parts:
+            cancel.check()
+            plan_script(pdir, p["id"], llm=llm, part_title=p["title"])
+        if "script" in manual:
+            pending = [p["id"] for p in parts if not script_status(pdir, p["id"])["confirmed"]]
+            if pending:
+                return wait("script", f"请确认讲稿：{'、'.join(pending)}")
+        else:
+            for p in parts:
+                if not script_status(pdir, p["id"])["confirmed"]:
+                    confirm_script(pdir, p["id"], now=now)
+        done_stage("script", f"{len(parts)} 章讲稿就绪")
+        if STAGES.index("script") >= stop_after:
+            return _finish(pdir, status, now)
+
+        # 3. 配音
+        if tts is None:
+            raise PlanError("新方案需要语音引擎（配音）")
+        for p in parts:
+            cancel.check()
+            synthesize_deck(pdir, p["id"], tts, now=now)
+        done_stage("voice", f"{len(parts)} 章配音完成")
+        if STAGES.index("voice") >= stop_after:
+            return _finish(pdir, status, now)
+
+        # 4. 合成
+        for p in parts:
+            cancel.check()
+            compose_deck_part(pdir, p["id"], now=now)
+        done_stage("compose", f"{len(parts)} 章视频合成完成")
+        if STAGES.index("compose") >= stop_after:
+            return _finish(pdir, status, now)
+
+        # 5. 导出（终审）
+        if "export" in manual and not approve:
+            return wait("export", "终审待人工确认：确认成片后，以「确认终审」再次运行即可导出")
+        out = export_deck_video(pdir, now=now)
+        status["outputs"] = [str(out.name)]
+        done_stage("export", f"导出 {out.name}")
+        return _finish(pdir, status, now)
+    except PlanError as exc:
+        status.update(state="failed", error=str(exc))
+        _save(pdir, status, now)
+        joblog.bound_log(f"新方案运行失败：{exc}", level="error")
+        return status
+    except cancel.Cancelled:
+        status.update(state="stopped", error="用户请求停止")
+        _save(pdir, status, now)
+        return status
+
+
+def _finish(pdir: Path, status: Dict[str, Any], now: Optional[datetime]) -> Dict[str, Any]:
+    status["state"] = "done"
+    _save(pdir, status, now)
+    joblog.bound_log("新方案运行完成", level="ok")
+    return status
+
+
+def load_run_status(pdir: Path) -> Optional[Dict[str, Any]]:
+    from ..project_store import read_json
+    p = deck_home(Path(pdir)) / "run_status.json"
+    return read_json(p) if p.is_file() else None
