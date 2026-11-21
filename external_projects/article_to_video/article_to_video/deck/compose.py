@@ -31,7 +31,7 @@ from .script import load_script
 from .voice import load_deck_timeline
 from .store import deck_root, load_deck
 
-RENDER_VERSION = "deck-render-v2"
+RENDER_VERSION = "deck-render-v3"
 
 
 def _out_dir(pdir: Path, part_id: str) -> Path:
@@ -61,7 +61,7 @@ def _fit_title(canvas, orientation: str, theme_name: str, title: str):
     W, H = canvas
     theme = get_theme(theme_name)
     scale = 1.0 if orientation != "portrait" else 0.8
-    max_w = int(W * 0.84)
+    max_w = int(W * 0.88)
     max_band = H * 0.26                     # 标题区最高不超过画面的 26%
     probe = ImageDraw.Draw(Image.new("RGBA", (4, 4)))
     chosen = None
@@ -78,9 +78,9 @@ def _fit_title(canvas, orientation: str, theme_name: str, title: str):
     d = ImageDraw.Draw(img, "RGBA")
     y = H * 0.03
     for ln in lines:
-        d.text((W * 0.08, y), ln, font=font, fill=theme["text"])
+        d.text((W * 0.06, y), ln, font=font, fill=theme["text"])
         y += lh
-    d.rectangle([W * 0.08, img.size[1] - 6, W * 0.08 + W * 0.12, img.size[1] - 2], fill=theme["accent"])
+    d.rectangle([W * 0.06, img.size[1] - 6, W * 0.06 + W * 0.12, img.size[1] - 2], fill=theme["accent"])
     return img
 
 
@@ -106,6 +106,19 @@ def page_state_images(page: Dict[str, Any], slide: Dict[str, Any], canvas, orien
     body_h = H - top - int(H * 0.04)
     gap = int(H * 0.035)
     elements = slide.get("elements") or []
+    from .textlayout import build_text_layout
+    tl_ = build_text_layout(elements, canvas, top, body_h, orientation, theme_name, columns=columns)
+    if tl_ is not None:                      # 文字页（要点/列表/金句）：整页网格排版（R32）
+        if meta is not None:
+            meta.update({k: tl_[k] for k in ("mode", "split", "effective_px", "floor_px", "small")})
+            meta["columns"] = tl_["columns"]
+        states = []
+        for k in range(len(elements)):
+            img = bg.copy()
+            img.alpha_composite(title, (0, int(H * 0.03)))
+            tl_["paint"](img, k + 1)
+            states.append(img.convert("RGB"))
+        return states
     lay = layout_page(elements, canvas, body_h, gap, orientation, theme_name, _scene_for, columns=columns)
     if meta is not None:
         meta.update({k: lay[k] for k in ("mode", "split", "effective_px", "floor_px", "small")})

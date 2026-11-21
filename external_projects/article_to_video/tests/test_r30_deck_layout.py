@@ -70,7 +70,7 @@ def test_states_reveal_elements_one_by_one_in_the_columns_layout():
     meta = {}
     st = page_state_images({"title": "t"}, {"title": "页", "elements": els}, CANVAS, "landscape", DEFAULT_THEME,
                            meta=meta)
-    assert len(st) == len(els) and meta["mode"] == "columns"
+    assert len(st) == len(els) and meta["mode"] in ("columns", "grid")      # 纯文字页自 R32 起走网格排版
     from PIL import ImageChops
     for a, b in zip(st, st[1:]):
         assert ImageChops.difference(a, b).getbbox() is not None
@@ -87,7 +87,7 @@ def test_build_segments_records_layout_per_page(tmp_path, monkeypatch):
     log = []
     build_segments(pdir, "P01", deck, tl, CANVAS, "landscape", DEFAULT_THEME,
                    {"number": "第 1 章", "title": "测试", "one_line": ""}, layout_log=log)
-    assert log[0]["id"] == "P01.S01" and log[0]["mode"] == "columns" and log[0]["small"] is False
+    assert log[0]["id"] == "P01.S01" and log[0]["mode"] in ("columns", "grid") and log[0]["small"] is False
 
 
 def test_setting_defaults_to_on_and_normalizes():
