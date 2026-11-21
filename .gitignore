@@ -228,3 +228,4 @@ external_projects/novel_writer/.agent/
 .agent/daemon_restart_status.json
 .agent/daemon_restart.log
 external_projects/info_hub/browser/dedicated_profile/
+.agent/cron_sync_reports/
