@@ -177,3 +177,49 @@ def load_run_status(pdir: Path) -> Optional[Dict[str, Any]]:
     from ..project_store import read_json
     p = deck_home(Path(pdir)) / "run_status.json"
     return read_json(p) if p.is_file() else None
+
+
+def reset_deck(pdir: Path, *, keep_audio: bool = False, confirm: bool = False) -> list:
+    """清空新方案的全部产出（规划、讲稿、时间线、视频、成片、封面、运行记录）。
+
+    只触及 deck/ 目录（与现有方案的 parts/、exports/ 平级），大纲与现有方案不受影响。
+    keep_audio=True 时保留逐句配音缓存（重新运行时不必重新配音）。未确认（confirm=False）不删除任何文件。
+    """
+    import shutil
+
+    if not confirm:
+        raise PlanError("清空新方案数据需要确认")
+    pdir = Path(pdir)
+    home = deck_home(pdir)
+    removed: list = []
+    if not home.is_dir():
+        return removed
+    parts_dir = home / "parts"
+    if parts_dir.is_dir():
+        for part in sorted(parts_dir.iterdir()):
+            if keep_audio and (part / "audio").is_dir():
+                for child in list(part.iterdir()):
+                    if child.name == "audio":
+                        continue
+                    shutil.rmtree(child) if child.is_dir() else child.unlink()
+                    removed.append(f"deck/parts/{part.name}/{child.name}")
+                continue
+            shutil.rmtree(part)
+            removed.append(f"deck/parts/{part.name}/")
+    for name in ("exports", "run_status.json", "errors.json"):
+        target = home / name
+        if target.is_dir():
+            shutil.rmtree(target)
+            removed.append(f"deck/{name}/")
+        elif target.is_file():
+            target.unlink()
+            removed.append(f"deck/{name}")
+    joblog.bound_log(f"已清空新方案数据（{len(removed)} 项）" + ("，保留配音缓存" if keep_audio else ""), level="warn")
+    return removed
+
+
+def regenerate_deck(pdir: Path, *, keep_audio: bool = False, confirm: bool = False, **run_kwargs) -> Dict[str, Any]:
+    """清空新方案的当前数据，然后按给定挡位重新运行整条流程。返回 {"removed": [...], "status": ...}。"""
+    removed = reset_deck(pdir, keep_audio=keep_audio, confirm=confirm)
+    status = run_deck_pipeline(pdir, **run_kwargs)
+    return {"removed": removed, "status": status}

@@ -14,7 +14,7 @@ from article_to_video import app_settings as S
 from article_to_video.compose.export import list_all_exports
 from article_to_video.deck import status as DS
 from article_to_video.deck.compose import compose_deck_part, export_deck_video
-from article_to_video.deck.pipeline import load_run_status, run_deck_pipeline
+from article_to_video.deck.pipeline import load_run_status, regenerate_deck, run_deck_pipeline
 from article_to_video.deck.script import confirm_script, plan_script
 from article_to_video.deck.store import confirm_deck, deck_status, plan_deck
 from article_to_video.deck.voice import synthesize_deck
@@ -140,6 +140,31 @@ def render_control(pdir: Path) -> None:
 
             if jobs.start(pdir, f"新方案一键运行（{gear}）", run_all, scope="deck"):
                 st.rerun()
+    with st.expander("🗑️ 清空当前新方案数据并全部重新生成", expanded=False):
+        st.caption("清空新方案的全部产出（规划、讲稿、配音、视频、成片、封面、运行记录），然后按上方的挡位与设置重新运行整条流程。"
+                   "大纲与现有方案的数据不受影响。")
+        keep_audio = st.checkbox("保留配音缓存（不重新配音，节省时间和费用）", value=False, key="deck_keep_audio")
+        confirm_all = st.checkbox("我确认清空新方案的全部数据并重新生成", value=False, key="deck_reset_ok")
+        if st.button("清空并全部重新生成（后台）", disabled=busy or not confirm_all, key="deck_reset_go",
+                     type="primary"):
+            mi = int(max_images) or None
+            mm = float(max_minutes) or None
+
+            def reset_and_run():
+                prov = _providers(pdir, offline)
+                out = regenerate_deck(pdir, keep_audio=keep_audio, confirm=True, gear=gear, until=until,
+                                      approve=approve, max_images=mi, max_minutes=mm,
+                                      llm=prov["llm"], tts=prov["tts"])
+                st_ = out["status"]
+                if st_["state"] == "done":
+                    return {"state": "done", "message": f"已清空 {len(out['removed'])} 项并重新生成完成"}
+                if st_["state"] == "waiting":
+                    w = st_.get("waiting") or {}
+                    return {"state": "waiting", "message": f"停在「{w.get('stage', '')}」：{w.get('detail', '')}"}
+                return {"state": "error", "message": st_.get("error") or st_["state"]}
+
+            if jobs.start(pdir, f"新方案清空并重新生成（{gear}）", reset_and_run, scope="deck"):
+                st.rerun()
     last = load_run_status(pdir)
     if last:
         st.caption(f"上次一键运行：{last.get('state')}（{last.get('updated_at', '')[:19]}）"
@@ -261,6 +286,9 @@ def render_export(pdir: Path) -> None:
         st.subheader("新方案成片")
         for r in videos:
             st.markdown(f"**{r['name']}**")
+            cover = r["path"].with_name(r["path"].stem + "_cover.png")
+            if cover.is_file():
+                st.image(str(cover), caption="封面")
             st.video(str(r["path"]))
             st.download_button("下载视频", r["path"].read_bytes(), file_name=r["name"], mime="video/mp4",
                                key=f"deck_dl_{r['name']}")

@@ -32,9 +32,6 @@ from .voice import load_deck_timeline
 from .store import deck_root, load_deck
 
 RENDER_VERSION = "deck-render-v1"
-TITLE_BAND = 0.14        # 页标题区高度占画面高度的比例
-PAD = 0.04               # 元素之间的留白（占画面高度）
-MIN_ELEMENT_SHARE = 0.12  # 单个元素最少占用的画面高度比例
 
 
 def _out_dir(pdir: Path, part_id: str) -> Path:
@@ -58,69 +55,79 @@ def _scene_for(el: Dict[str, Any]) -> Dict[str, Any]:
     return {"type": typ, "items": el.get("items") or [], "emphasis": []}
 
 
-def _element_weights(elements: List[Dict[str, Any]]) -> List[float]:
-    """元素占用的相对高度。表格按（表头 + 行数）加权，因为表格的行高固定，需要足够的区域。"""
-    from .plan import element_count
-    out = []
-    for e in elements:
-        if e.get("kind") == "table":
-            out.append(max(2.0, 1.4 * (element_count(e) + 1)))
-        else:
-            out.append(max(1.0, float(element_count(e))))
-    return out
-
-
-def _min_share(el: Dict[str, Any]) -> float:
-    return 0.26 if el.get("kind") == "table" else MIN_ELEMENT_SHARE
-
-
-def _page_title(canvas, orientation: str, theme_name: str, title: str):
+def _fit_title(canvas, orientation: str, theme_name: str, title: str):
+    """页标题：字号自动缩小，使标题完整显示（不截断），标题区高度随行数变化。返回标题图。"""
     from PIL import Image, ImageDraw
     W, H = canvas
-    img = Image.new("RGBA", (W, int(H * TITLE_BAND)), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img, "RGBA")
     theme = get_theme(theme_name)
-    scale = 1.0 if orientation != "portrait" else 0.85
-    font = load_font(round(W / 1920 * 64 * scale))
-    lines = wrap_text(d, title, font, int(W * 0.84), max_lines=2)
-    y = img.size[1] * 0.25
+    scale = 1.0 if orientation != "portrait" else 0.8
+    max_w = int(W * 0.84)
+    max_band = H * 0.26                     # 标题区最高不超过画面的 26%
+    probe = ImageDraw.Draw(Image.new("RGBA", (4, 4)))
+    chosen = None
+    for base in range(64, 27, -4):
+        font = load_font(max(20, round(W / 1920 * base * scale)))
+        lines = wrap_text(probe, title, font, max_w)
+        lh = font.size * 1.2
+        band = len(lines) * lh + H * 0.06
+        if band <= max_band or base == 28:
+            chosen = (font, lines, lh, band)
+            break
+    font, lines, lh, band = chosen
+    img = Image.new("RGBA", (W, int(round(band))), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img, "RGBA")
+    y = H * 0.03
     for ln in lines:
         d.text((W * 0.08, y), ln, font=font, fill=theme["text"])
-        y += font.size * 1.2
+        y += lh
     d.rectangle([W * 0.08, img.size[1] - 6, W * 0.08 + W * 0.12, img.size[1] - 2], fill=theme["accent"])
     return img
 
 
+def _crop_to_content(img):
+    """裁掉透明留白，返回只含内容的图（无内容返回 None）。"""
+    box = img.getchannel("A").getbbox()
+    return img.crop(box) if box else None
+
+
 def page_state_images(page: Dict[str, Any], slide: Dict[str, Any], canvas, orientation: str,
                       theme_name: str) -> List[Any]:
-    """页面的状态图：第 k 张显示前 k+1 个元素（背景 + 标题 + 已出现的元素）。元素高度按条目数分配。"""
+    """页面的状态图：第 k 张显示前 k+1 个元素（背景 + 标题 + 已出现的元素）。
+
+    每个元素按整块高度渲染（自适应布局，不截断），裁掉留白后纵向排列；
+    如果所有元素加起来超过页面可用高度，整体等比缩小，保证每一项都完整可见。
+    """
     from PIL import Image
     W, H = canvas
     bg = render_background(canvas, theme_name).convert("RGBA")
-    title = _page_title(canvas, orientation, theme_name, slide.get("title", page.get("title", "")))
+    title = _fit_title(canvas, orientation, theme_name, slide.get("title", page.get("title", "")))
+    top = int(H * 0.03) + title.size[1] + int(H * 0.03)
+    body_h = H - top - int(H * 0.04)
+    gap = int(H * 0.035)
     elements = slide.get("elements") or []
-    weights = _element_weights(elements)
-    body_top = H * (TITLE_BAND + PAD)
-    body_h = H - body_top - H * PAD
-    gap = H * PAD * 0.5
-    total_gap = gap * max(0, len(elements) - 1)
-    unit = (body_h - total_gap) / max(1e-6, sum(weights))
-    heights = [max(H * _min_share(el), w * unit) for w, el in zip(weights, elements)]
-    scale = min(1.0, (body_h - total_gap) / max(1e-6, sum(heights)))
-    heights = [h * scale for h in heights]
-    rendered: List[Any] = []
-    for i, el in enumerate(elements):
-        h = int(round(heights[i]))
-        frames = render_scene_frames(_scene_for(el), (W, h), orientation, theme_name)
-        rendered.append(frames[-1].convert("RGBA"))
+    pieces: List[Any] = []
+    for el in elements:
+        full = render_scene_frames(_scene_for(el), (W, body_h), orientation, theme_name)[-1].convert("RGBA")
+        cropped = _crop_to_content(full)
+        if cropped is not None:
+            pieces.append(cropped)
+    if not pieces:
+        pieces = [Image.new("RGBA", (1, 1), (0, 0, 0, 0))]
+    total = sum(p.size[1] for p in pieces) + gap * (len(pieces) - 1)
+    if total > body_h:                       # 放不下：整体等比缩小，保证完整显示
+        f = (body_h - gap * (len(pieces) - 1)) / max(1, sum(p.size[1] for p in pieces))
+        pieces = [p.resize((max(1, int(p.size[0] * f)), max(1, int(p.size[1] * f))), Image.LANCZOS)
+                  for p in pieces]
+        total = sum(p.size[1] for p in pieces) + gap * (len(pieces) - 1)
     states = []
-    for k in range(max(1, len(elements))):
+    for k in range(max(1, len(pieces))):
         img = bg.copy()
-        img.alpha_composite(title, (0, 0))
-        y = body_top
-        for i in range(min(k + 1, len(rendered))):
-            img.alpha_composite(rendered[i], (0, int(round(y))))
-            y += heights[i] + gap
+        img.alpha_composite(title, (int(W * 0.0), int(H * 0.03)))
+        y = top + max(0, (body_h - total) // 2)
+        for i in range(min(k + 1, len(pieces))):
+            p = pieces[i]
+            img.alpha_composite(p, (int((W - p.size[0]) / 2), int(y)))
+            y += p.size[1] + gap
         states.append(img.convert("RGB"))
     return states
 
@@ -249,5 +256,28 @@ def export_deck_video(pdir: Path, *, now: Optional[datetime] = None) -> Path:
     out = exports / f"{name}.mp4"
     ffmpeg(["-f", "concat", "-safe", "0", "-i", str(lst), "-c", "copy", "-movflags", "+faststart", str(out)])
     lst.unlink(missing_ok=True)
+    _write_cover(pdir, exports, name, spine)
     append_progress(pdir, f"导出新方案成片：{out.name}", now)
+    return out
+
+
+def _write_cover(pdir: Path, exports: Path, name: str, spine: Dict[str, Any]) -> Path:
+    """新方案成片的封面：与现有方案相同的封面设置（标题、作者、副标题、AI 声明、水印）。"""
+    from ..app_settings import load_effective_project
+    from ..compose.branding import resolve_branding
+    from ..compose.cover import build_cover, cover_subtitle
+    project = load_effective_project(pdir)
+    title = project.get("title") or spine.get("title") or "video"
+    branding, _warn = resolve_branding(project)
+    wm = dict(branding["watermark"])
+    wm["mode"] = "diagonal_tile" if wm.get("position") == "diagonal_tile" else wm.get("mode", "static")
+    ai = branding["ai_disclosure"]
+    video = project.get("settings", {}).get("video", {})
+    orientation = video.get("orientation", "landscape")
+    canvas = canvas_size(orientation, video.get("resolution", "1080P"))
+    img = build_cover(canvas=canvas, orientation=orientation, title=title, author=branding.get("author") or "",
+                      subtitle=cover_subtitle(spine), ai_text=ai["text"] if ai.get("enabled") else "", wm=wm,
+                      pdir=pdir, source_image=None)
+    out = exports / f"{name}_cover.png"
+    img.save(out)
     return out
