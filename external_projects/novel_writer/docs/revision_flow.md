@@ -93,6 +93,7 @@ python entrypoints/post_revision.py --novel <dir> outline-diff --id ol_xxx      
 python entrypoints/post_revision.py --novel <dir> outline-adopt --id ol_xxx [--chapters 1 3] [--set 3:function=...] [--no-structure]  # R4 采纳为仅大纲的新版本
 python entrypoints/post_revision.py --novel <dir> outline-discard --id ol_xxx          # R4 放弃候选
 python entrypoints/post_revision.py --novel <dir> review-pipeline [--auto-fix | --no-auto-fix]   # 评估全流程：失败自动重试、步骤自动衔接；--auto-fix 本次开启自动修改
+python entrypoints/post_revision.py --novel <dir> review-clear --yes        # 清空评估数据（事实卡、问题池、候选、流程状态、未执行的评估变更）；保留版本与已应用的变更
 python entrypoints/post_revision.py --novel <dir> outline-check [--version v00N] [--llm]   # R5 以大纲为准的偏离检查（--llm 调用模型；否则只做确定性比对）
 ```
 
@@ -157,6 +158,8 @@ python entrypoints/post_revision.py --novel <dir> outline-check [--version v00N]
 - 流程完全不读写流水线状态；若作者在完稿后又回去用流水线重跑章节，那是独立于本流程的操作，两者不会自动同步。
 
 ## 测试
+
+`tests/test_revision_clear.py`（7 例）：清空必须显式确认；预览（不改动任何文件）；清空评估目录、未执行的评估变更与引用它们的预览；保留版本、已应用的历史变更与手动变更；清空后从头评估；界面入口渲染。
 
 `tests/test_revision_profile_review.py`（8 例）：无档案则跳过、人设与逻辑问题的引文核对、档案与邻章上下文进入提示、批次缓存、维度开关、估算、规则式死亡 / 地点检查默认关闭且可手动开启。
 

@@ -34,6 +34,7 @@
     python entrypoints/post_revision.py --novel <dir> outline-check [--version v00N] [--llm]   # R5 以大纲为准的偏离检查（--llm 调用模型；否则只做确定性比对）
     python entrypoints/post_revision.py --novel <dir> review-export [--version v00N]        # R6 导出评估报告（Markdown，写入 _revision/review/rev_<版本>/export.md）
     python entrypoints/post_revision.py --novel <dir> review-pipeline [--auto-fix | --no-auto-fix]   # 评估全流程：失败自动重试、步骤自动衔接；--auto-fix 本次开启自动修改
+    python entrypoints/post_revision.py --novel <dir> review-clear --yes        # 清空评估数据（事实卡、问题池、候选、流程状态、未执行的评估变更）；保留版本与已应用的变更
     python entrypoints/post_revision.py --novel <dir> stop --run run_xxx                   # 请求停止改写运行（当前章结束后生效）
 """
 
@@ -52,7 +53,7 @@ def _log(text: str) -> None:
 
 from novel_writer.revision_flow import changes as CH
 from novel_writer.revision_flow import config as CFG
-from novel_writer.revision_flow import derived, executor, feedback, outline_check, outline_regen, review_adopt, review_cards, review_checks, review_llm, review_pipeline, review_report
+from novel_writer.revision_flow import derived, executor, feedback, outline_check, outline_regen, review_adopt, review_cards, review_checks, review_clear, review_llm, review_pipeline, review_report
 from novel_writer.revision_flow import versions as V
 from novel_writer.revision_flow.common import FlowError
 from novel_writer.workspace import Workspace
@@ -155,6 +156,8 @@ def main(argv=None) -> int:
     grp = sp.add_mutually_exclusive_group()
     grp.add_argument("--auto-fix", action="store_true")
     grp.add_argument("--no-auto-fix", action="store_true")
+    sp = sub.add_parser("review-clear")
+    sp.add_argument("--yes", action="store_true", help="确认清空（必填）")
     sp = sub.add_parser("review-export")
     sp.add_argument("--version", default=None)
     sp = sub.add_parser("outline-discard")
@@ -270,6 +273,10 @@ def main(argv=None) -> int:
             res = review_pipeline.run(ws, _invoker(), progress=_log, auto_fix=fix)
             return _out({k: res[k] for k in ("version_start", "version_end", "steps", "stopped_reason",
                                               "pending_adoptable")})
+        if args.cmd == "review-clear":
+            if not args.yes:
+                raise FlowError("清空评估数据需要 --yes 确认")
+            return _out(review_clear.clear(ws, confirm=True, progress=_log))
         if args.cmd == "review-export":
             res = review_report.export(ws, args.version, progress=_log)
             return _out({k: res[k] for k in ("version", "path", "findings")})

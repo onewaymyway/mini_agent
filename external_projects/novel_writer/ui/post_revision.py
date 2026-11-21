@@ -19,7 +19,7 @@ import streamlit as st
 
 from novel_writer.revision_flow import changes as CH
 from novel_writer.revision_flow import config as CFG
-from novel_writer.revision_flow import derived, executor, feedback, jobs, outline_check, outline_regen, review_pipeline, review_report
+from novel_writer.revision_flow import derived, executor, feedback, jobs, outline_check, outline_regen, review_clear, review_pipeline, review_report
 from novel_writer.revision_flow import review_adopt, review_cards, review_checks, review_llm
 from novel_writer.revision_flow import versions as V
 from novel_writer.revision_flow.common import FlowError, sub_dir
@@ -551,6 +551,18 @@ def _tab_review(root: Workspace) -> None:
                 "步骤之间自动衔接；开启自动修改后还会自动采纳、改写、增量复评，直到没有可处理的问题。")
     if st.button("一键评估全流程", key="rv_e_pipe", disabled=_busy(root) or _op_running()):
         _start_job(root, "评估全流程", "pipeline", _pipeline_job)
+    with st.expander("清空评估数据（保留版本与已应用的变更）", expanded=False):
+        sm = review_clear.summary(root)
+        st.write(f"将删除：事实卡与问题池等评估文件（review/ {sm['files']['review']} 项、outline/ {sm['files']['outline']} 项、"
+                 f"pipeline/ {sm['files']['pipeline']} 项），尚未执行的评估变更 {len(sm['draft_changes'])} 个，"
+                 f"相关预览 {len(sm['previews'])} 个。")
+        st.caption("保留：全部版本、已应用的变更、手动创建的变更、执行记录、章节正文与设定。删除不可恢复。")
+        ok = st.checkbox("我确认清空以上评估数据", key="rv_clear_ok")
+        if st.button("清空评估数据", key="rv_clear_go", disabled=not ok or _op_running() or _busy(root)):
+            _act(root, "清空评估数据", review_clear.clear, root, confirm=True,
+                 summarize=lambda r: f"删除目录 {len(r['removed_dirs'])} 个，变更 {len(r['removed_changes'])} 个，预览 {len(r['removed_previews'])} 个")
+            st.session_state.pop("rv_verify_res", None)
+            st.session_state.pop("rv_export_text", None)
     ps = review_pipeline.load_state(root)
     if ps:
         with st.expander(f"最近一次全流程（版本 {ps.get('version_start')} → {ps.get('version_end')}，"
