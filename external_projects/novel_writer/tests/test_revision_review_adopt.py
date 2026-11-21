@@ -52,6 +52,7 @@ class Router:
 def _ready(tmp_path):
     """三章完稿；甲在第 1 章战死、第 3 章又在场 → 一条矛盾候选；第 2 章与第 1 章的窗口审阅会给出一条衔接问题。"""
     ws = _novel(tmp_path)
+    CFG.update(ws, {"review_dimensions": list(CFG.REVIEW_DEFAULT_DIMENSIONS) + ["rule_legacy"]})   # 死亡/地点规则默认关闭，这些用例需要它
     RC.generate_cards(ws, None, CardInvoker())
     _inject(ws, 1, characters=chars(("甲", "战死沙场")))
     _inject(ws, 3, characters=chars(("甲", "在场")))

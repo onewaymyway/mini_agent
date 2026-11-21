@@ -76,11 +76,11 @@ def _state_path(ws, vid: str) -> Path:
 def _load_state(ws, vid: str) -> Dict[str, Any]:
     data = load_json(_state_path(ws, vid), default=None)
     if isinstance(data, dict) and data.get("schema") == STATE_SCHEMA:
-        for key in ("adjudications", "windows", "whole"):
+        for key in ("adjudications", "windows", "whole", "profile"):
             if not isinstance(data.get(key), dict):
                 data[key] = {}
         return data
-    return {"schema": STATE_SCHEMA, "adjudications": {}, "windows": {}, "whole": {}}
+    return {"schema": STATE_SCHEMA, "adjudications": {}, "windows": {}, "whole": {}, "profile": {}}
 
 
 def _save_state(ws, vid: str, state: Dict[str, Any]) -> None:
@@ -380,6 +380,117 @@ def _whole_stage(ws, vid: str, cards, texts, paths, allowed, key, state, budget,
     say(f"  得到 {len(res)} 条问题")
 
 
+# ─────────────────────────────── C4 人设与逻辑审阅 ───────────────────────────────
+
+PROFILE_CATEGORIES = ("character_profile", "logic")     # 人设不符 / 逻辑硬伤
+PROFILE_BATCH = 5                                       # 每次调用的章数（模型会读取原文，篇幅较大）
+PROFILE_CHARS = 1200                                    # 每个人物档案在提示中的最大字数
+
+
+def _profiles(ws, vid: str) -> Dict[str, str]:
+    """人物档案：规范名 → 档案文本（字段拼接，截断）。没有角色档案时返回空。"""
+    try:
+        from novel_writer import character_store as CS
+        recs, _ = CS.load_records(version_dir(ws, vid) / "大纲规划" / "人物设定" / "角色")
+    except Exception:
+        return {}
+    out: Dict[str, str] = {}
+    for rec in (recs or {}).values():
+        if not isinstance(rec, dict) or not _s(rec.get("name")):
+            continue
+        parts = []
+        for k, v in rec.items():
+            if k in ("id", "name") or v in ("", None, [], {}):
+                continue
+            parts.append(f"{k}：{v}")
+        text = f"{rec['name']}　" + "；".join(parts)
+        out[rec["name"]] = text[:PROFILE_CHARS]
+    return out
+
+
+def _profile_plan(ws, vid: str, cards, texts, dims, settings):
+    """本次有效的人设与逻辑审阅：(允许的类别, [(章号批, 缓存键)])。没有人物档案或维度未启用则为空。"""
+    allowed = tuple(c for c in PROFILE_CATEGORIES if c in dims)
+    profiles = _profiles(ws, vid) if allowed else {}
+    if not allowed or not profiles:
+        return allowed, [], profiles
+    from novel_writer.revision_flow import review_cards as _RC
+    names = _RC.known_names(ws, vid)
+    nums = sorted(n for n in cards if n in texts)
+    plan = []
+    for i in range(0, len(nums), PROFILE_BATCH):
+        batch = nums[i:i + PROFILE_BATCH]
+        near = sorted({n for x in batch for n in (x - 1, x, x + 1) if n in cards})
+        chars = sorted({_RC.canon_name(c["name"], names)[0] for x in batch for c in cards[x]["characters"]})
+        raw = "|".join(cards[n]["source_sha256"] for n in near) + "|" + \
+            "|".join(profiles.get(c, "") for c in chars) + "|" + ",".join(allowed)
+        key = f"p{batch[0]:03d}-{batch[-1]:03d}-" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8]
+        plan.append((batch, key))
+    return allowed, plan, profiles
+
+
+def _profile_prompt(batch, cards, paths, profiles, names, allowed, out_file: Path, errors: List[str]) -> str:
+    from novel_writer.revision_flow import review_cards as _RC
+    blocks = []
+    for n in batch:
+        c = cards[n]
+        who = sorted({_RC.canon_name(x["name"], names)[0] for x in c["characters"]})
+        prof = "\n".join(f"  · {profiles[w]}" if w in profiles else f"  · {w}：（无人物档案）" for w in who) or "  · （无人物）"
+        prev = cards.get(n - 1)
+        nxt = cards.get(n + 1)
+        blocks.append(
+            f"第{n}章《{c['title']}》　正文路径：{paths[n]}\n"
+            f"  事件：{'；'.join(c['events'][:8]) or '—'}\n"
+            f"  结尾局面：{c['ending_state'] or '—'}\n"
+            f"  本章出场人物的档案：\n{prof}\n"
+            + (f"  前一章（第{n - 1}章）结尾：{prev['ending_state'] or '—'}\n" if prev else "")
+            + (f"  后一章（第{n + 1}章）开头：{nxt['opening_state'] or '—'}\n" if nxt else ""))
+    parts = [
+        "【任务】人设与逻辑审阅：对照人物档案，检查本批章节中人物的言行是否符合其人设（性格、能力、立场、"
+        "已确立的经历与关系）；检查情节是否有逻辑硬伤（已丢失、已消耗的物品或能力无解释地再次出现；前文已确定的事实"
+        "被无交代地推翻；人物在不可能的时间或地点出现且无交代；因果断裂）。只报有原文证据的问题，没有就写空列表。"
+        "不要评价文笔、节奏与情节好坏。",
+        f"【允许的 category】{list(allowed)}：character_profile = 人设不符（言行与档案矛盾）；logic = 逻辑硬伤。",
+        "【本批章节】（来自事实卡与人物档案；需要核对时请读取对应章节路径）\n" + "\n\n".join(blocks),
+        "【证据】每个问题必须带 evidence：章号 + 该章原文中逐字摘抄的一句话。拿不出原文的不要写。",
+        f"【输出】把一个 JSON 对象写入文件：{out_file}\n"
+        "格式：{\"issues\": [{\"category\": \"...\", \"severity\": \"严重|中|轻\", \"chapters\": [章号], "
+        "\"title\": \"简短标题\", \"description\": \"问题说明（写明与哪份档案或哪处前文矛盾）\", "
+        "\"evidence\": [{\"chapter\": 章号, \"quote\": \"原文\"}]}]}\n"
+        "只写 JSON，不要代码围栏，不要多余文字。",
+    ]
+    if errors:
+        parts.append("【上一次输出未通过校验】\n" + "\n".join(f"- {e}" for e in errors))
+    return "\n\n".join(parts) + "\n"
+
+
+def _profile_stage(ws, vid, cards, texts, paths, allowed, plan, profiles, state, budget, invoker, say, failed) -> None:
+    if not plan:
+        say("人设与逻辑审阅：没有人物档案或维度未启用，跳过")
+        return
+    from novel_writer.revision_flow import review_cards as _RC
+    names = _RC.known_names(ws, vid)
+    say(f"人设与逻辑审阅：{len(plan)} 批（每批 {PROFILE_BATCH} 章）")
+    for batch, key in plan:
+        if key in state["profile"]:
+            say(f"第 {batch[0]}–{batch[-1]} 章：命中缓存")
+            continue
+        say(f"第 {batch[0]}–{batch[-1]} 章：对照人设与逻辑判定")
+        span = f"p{batch[0]}-{batch[-1]}"
+        res, errs = _ask(
+            ws, vid, kind="profile", key=key, skill=SKILL_WINDOW, invoker=invoker, budget=budget,
+            make_prompt=lambda out, errors, b=batch: _profile_prompt(b, cards, paths, profiles, names, allowed,
+                                                                     out, errors),
+            parse=lambda raw: parse_issues(raw, allowed), say=say)
+        if res is None:
+            failed.append({"stage": "profile", "id": key, "errors": errs})
+            say(f"  判定失败，下次运行再试：{'；'.join(errs)}")
+            continue
+        state["profile"][key] = {"at": _now(), "findings": [_llm_finding("profile", span, i, texts) for i in res]}
+        _save_state(ws, vid, state)
+        say(f"  得到 {len(res)} 条问题")
+
+
 # ─────────────────────────────── 合并进问题池 ───────────────────────────────
 
 def _merge_pool(ws, vid: str, state: Dict[str, Any], live_keys: List[str]) -> Dict[str, Any]:
@@ -395,7 +506,7 @@ def _merge_pool(ws, vid: str, state: Dict[str, Any], live_keys: List[str]) -> Di
             f.pop("adjudication", None)
     llm: List[Dict[str, Any]] = []
     for key in live_keys:
-        bucket = state["windows"].get(key) or state["whole"].get(key)
+        bucket = state["windows"].get(key) or state["whole"].get(key) or state["profile"].get(key)
         for f in (bucket or {}).get("findings", []):
             prev = old_llm.get(f["id"])
             if prev:
@@ -439,13 +550,16 @@ def run_review(ws, version: Optional[str] = None, invoker: Optional[Invoker] = N
     wins = _windows(sorted(cards), settings["review_window"]) if win_allowed else []
     whole_allowed = tuple(c for c in WHOLE_CATEGORIES if c in dims)
     whole_key = _whole_key(cards, whole_allowed) if whole_allowed else None
-    live_keys = [_window_key(c, cards) for c in wins] + ([whole_key] if whole_key else [])
+    prof_allowed, prof_plan, profiles = _profile_plan(ws, vid, cards, texts, dims, settings)
+    live_keys = [_window_key(c, cards) for c in wins] + ([whole_key] if whole_key else []) + [k for _, k in prof_plan]
     result: Dict[str, Any] = {"review_id": RK.review_id(vid), "version": vid, "paused": False}
     say(f"LLM 复核：版本 {vid}，事实卡 {len(cards)} 章，调用上限 {settings['review_max_llm_calls'] or '不限'}")
     try:
         _adjudicate(ws, vid, cands, state, texts, settings, budget, invoker, say, failed)
         _window_stage(ws, vid, cards, texts, paths, win_allowed, wins, settings, state, budget, invoker, say, failed)
         _whole_stage(ws, vid, cards, texts, paths, whole_allowed, whole_key, state, budget, invoker, say, failed)
+        _profile_stage(ws, vid, cards, texts, paths, prof_allowed, prof_plan, profiles, state, budget, invoker,
+                       say, failed)
     except _Paused:
         result["paused"] = True
         say(f"已达调用上限（{budget.limit}），暂停；再次运行会从断点继续")
@@ -456,6 +570,7 @@ def run_review(ws, version: Optional[str] = None, invoker: Optional[Invoker] = N
         state["adjudications"] = {k: v for k, v in state["adjudications"].items() if k in live_ids}
         state["windows"] = {k: v for k, v in state["windows"].items() if k in live}
         state["whole"] = {k: v for k, v in state["whole"].items() if k in live}
+        state["profile"] = {k: v for k, v in state["profile"].items() if k in live}
         _save_state(ws, vid, state)
         data = _merge_pool(ws, vid, state, live_keys)
     counts: Dict[str, int] = {}
@@ -480,8 +595,11 @@ def estimate_llm(ws, version: Optional[str] = None) -> Dict[str, Any]:
     windows = len(_windows(sorted(cards), settings["review_window"])) if any(
         c in dims for c in WINDOW_CATEGORIES) else 0
     whole = 1 if any(c in dims for c in WHOLE_CATEGORIES) and cards else 0
+    _, prof_plan, _ = _profile_plan(ws, vid, cards, {n: "" for n in cards}, dims, settings)
+    profile = len([k for _, k in prof_plan if k not in state["profile"]])
     return {"version": vid, "checks_run": bool(pool.get("updated_at")),
             "adjudication_pending": len(pending), "windows": windows, "whole_book": whole,
-            "calls_typical": len(pending) + windows + whole,
+            "profile_batches": profile,
+            "calls_typical": len(pending) + windows + whole + profile,
             "max_llm_calls": settings["review_max_llm_calls"] or None,
             "note": "典型调用数不含重试；实际次数以运行结果为准，缓存命中的单元不再调用"}

@@ -6,9 +6,12 @@ from typing import Any, Dict
 from novel_writer.revision_flow.common import FlowError, load_json, revision_root, save_json
 
 # 评估维度。默认只开客观性强的五类；主观、误报多的三类需作者手动开启（保守的 opt-in 默认）
-REVIEW_ALL_DIMENSIONS = ("contradiction", "continuity", "timeline", "character_logic", "foreshadow",
-                         "pacing", "redundancy", "style_drift")
-REVIEW_DEFAULT_DIMENSIONS = ("contradiction", "continuity", "timeline", "character_logic", "foreshadow")
+REVIEW_ALL_DIMENSIONS = ("character_profile", "logic", "contradiction", "continuity", "timeline", "character_logic",
+                         "foreshadow", "pacing", "redundancy", "style_drift", "rule_legacy")
+# 默认启用：人设与逻辑（LLM 对照人物档案与原文判断）+ 其它高信噪比的维度。
+# rule_legacy（旧的规则判断：死亡后出现、地点是否衔接）误判多，默认关闭，需要时手动开启。
+REVIEW_DEFAULT_DIMENSIONS = ("character_profile", "logic", "contradiction", "continuity", "timeline",
+                             "character_logic", "foreshadow")
 
 DEFAULTS: Dict[str, Any] = {
     "max_chapters_per_run": 20,        # 单次运行最多改写的章数，超出则暂停，续跑时继续

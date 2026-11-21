@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from novel_writer.revision_flow import config as CFG
+
 from novel_writer.revision_flow import outline_check as OC
 from novel_writer.revision_flow import review_adopt as RA
 from novel_writer.revision_flow import review_checks as RK
@@ -37,6 +39,7 @@ def test_every_subcommand_parses_help(capsys):
 
 def _ready(tmp_path):
     ws = _novel(tmp_path)
+    CFG.update(ws, {"review_dimensions": list(CFG.REVIEW_DEFAULT_DIMENSIONS) + ["rule_legacy"]})   # 死亡/地点规则默认关闭，这些用例需要它
     RC.generate_cards(ws, None, CardInvoker())
     _inject(ws, 1, characters=chars(("甲", "战死沙场")))
     _inject(ws, 3, characters=chars(("甲", "在场")))

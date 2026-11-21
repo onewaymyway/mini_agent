@@ -97,6 +97,7 @@ def test_handoff_break_only_adjacent_and_different():
 def _ready(tmp_path):
     ws = _novel(tmp_path)
     RC.generate_cards(ws, None, CardInvoker())
+    CFG.update(ws, {"review_dimensions": list(CFG.REVIEW_DEFAULT_DIMENSIONS) + ["rule_legacy"]})  # 死亡/地点规则默认关闭
     return ws
 
 

@@ -34,7 +34,9 @@ class ReviewStub:
     raise_for: 这些 kind 直接抛异常
     """
 
-    def __init__(self, *, verdicts=None, fake_quote=False, bad_json_first=(), raise_for=(), whole_issue=True):
+    def __init__(self, *, verdicts=None, fake_quote=False, bad_json_first=(), raise_for=(), whole_issue=True,
+                 profile_issues=()):
+        self.profile_issues = list(profile_issues)
         self.calls = []
         self.verdicts = verdicts or {}
         self.fake_quote = fake_quote
@@ -49,6 +51,8 @@ class ReviewStub:
             return "win"
         if "【任务】全书维度审阅" in prompt:
             return "whole"
+        if "【任务】人设与逻辑审阅" in prompt:
+            return "profile"
         raise AssertionError("未知任务")
 
     def __call__(self, *, skill, prompt, export_dir, step_id):
@@ -76,6 +80,8 @@ class ReviewStub:
                                "title": f"第{c}章开头承接不畅", "description": "桩：衔接存在疑点",
                                "evidence": [{"chapter": c, "quote": quote}]})
             data = {"issues": issues}
+        elif kind == "profile":
+            data = {"issues": list(self.profile_issues)}
         else:
             issues = []
             if self.whole_issue:
@@ -92,6 +98,7 @@ class ReviewStub:
 def _ready_with_candidates(tmp_path, n_candidates=1):
     """三章完稿，并注入 n 个「已死亡又出现」候选（R1 确定性检查产生，needs_adjudication=True）。"""
     ws = _novel(tmp_path)
+    CFG.update(ws, {"review_dimensions": list(CFG.REVIEW_DEFAULT_DIMENSIONS) + ["rule_legacy"]})   # 死亡/地点规则默认关闭，这些用例需要它
     RC.generate_cards(ws, None, CardInvoker())
     names = ["甲", "乙", "丙"][:n_candidates]
     _inject(ws, 1, characters=chars(*[(nm, "战死沙场") for nm in names]))

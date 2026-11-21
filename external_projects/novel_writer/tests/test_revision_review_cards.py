@@ -94,7 +94,9 @@ def test_review_settings_defaults_and_validation(tmp_path):
     ws = _novel(tmp_path)
     cur = CFG.load(ws)
     assert cur["review_max_llm_calls"] == 0              # 不设上限
-    assert cur["review_dimensions"] == ["contradiction", "continuity", "timeline", "character_logic", "foreshadow"]
+    assert cur["review_dimensions"] == ["character_profile", "logic", "contradiction", "continuity", "timeline",
+                                        "character_logic", "foreshadow"]
+    assert "rule_legacy" not in cur["review_dimensions"]            # 规则式死亡/地点判断默认关闭
     assert "pacing" not in cur["review_dimensions"]        # 主观维度默认关闭
     CFG.update(ws, {"review_dimensions": ["style_drift", "contradiction", "contradiction"]})
     assert CFG.load(ws)["review_dimensions"] == ["contradiction", "style_drift"]

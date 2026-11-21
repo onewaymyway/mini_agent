@@ -29,6 +29,7 @@ CATEGORY_LABEL = {
     "coverage": "评估覆盖", "contradiction": "前后矛盾", "continuity": "衔接连贯", "timeline": "时间线",
     "character_logic": "人物", "foreshadow": "伏笔", "pacing": "节奏", "redundancy": "冗余", "style_drift": "文风漂移",
     "outline_deviation": "大纲偏离",
+    "character_profile": "人设不符", "logic": "逻辑硬伤",
 }
 
 ADJ_LABEL = {"confirmed": "确认为问题", "false_positive": "误报", "uncertain": "无法判定"}
@@ -252,11 +253,11 @@ def check_handoff(cards: Dict[int, Dict[str, Any]]) -> List[Dict[str, Any]]:
 # 检查名 → (所属维度, 函数)
 CHECKS = {
     "fact_conflict": ("contradiction", check_fact_conflicts),
-    "departed_reappear": ("contradiction", check_departed_reappear),
+    "departed_reappear": ("rule_legacy", check_departed_reappear),
     "timeline_regress": ("timeline", check_timeline),
     "foreshadow_order": ("foreshadow", check_foreshadow_order),
     "unregistered_character": ("character_logic", check_unregistered),
-    "handoff_break": ("continuity", check_handoff),
+    "handoff_break": ("rule_legacy", check_handoff),
 }
 
 
