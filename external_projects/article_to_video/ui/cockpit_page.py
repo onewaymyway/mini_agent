@@ -13,6 +13,7 @@ import streamlit as st
 
 from article_to_video.paths import projects_root
 from article_to_video.pipeline.gates import GEARS, PipelineError, STAGES
+from article_to_video import app_settings as S
 from article_to_video import joblog
 from article_to_video.pipeline.gates import export_needs_approval
 from article_to_video.pipeline.regenerate import outcome_of, regenerate_all
@@ -121,177 +122,11 @@ def _next_hint(rows) -> str:
     return "全部步骤已完成。"
 
 
-def _deck_panel(pdir, busy: bool, *, gear: str = "G0", until: str = "export", approve: bool = False,
-                max_images: int = 0, max_minutes: float = 0.0, offline: bool = False) -> None:
-    """新方案：逐章生成幻灯片规划 → 确认 → 生成讲稿 → 确认。配音与按页渲染为后续阶段。"""
-    from article_to_video.deck.script import plan_script, script_status
-    from article_to_video.deck.voice import synthesize_deck, voice_status
-    from article_to_video.deck.compose import compose_deck_part, deck_part_ready, export_deck_video
-    from article_to_video.deck.store import confirm_deck, deck_status, load_deck, plan_deck
-    from article_to_video.planning.errors import PlanError
-
-    st.subheader("新方案：幻灯片讲解")
-    st.caption("先把文章规划为幻灯片（确定性规则），确认后为每页生成讲稿（需要文本模型）。"
-               "配音与按页渲染将在后续阶段接入；在此之前，新方案下流水线按钮不可用。")
-    spine = load_spine(pdir)
-    if spine is None or not spine.get("confirmed"):
-        st.info("请先在「🗺️ 大纲」生成并确认大纲（C0）。")
-        return
-    rows = []
-    for p in spine["parts"]:
-        d = deck_status(pdir, p["id"])
-        sc = script_status(pdir, p["id"])
-        rows.append({
-            "章": f"{p['id']} {p['title'][:20]}",
-            "幻灯片规划": ("⬜ 未生成" if not d["exists"] else
-                          ("⚠️ 已过期" if d["stale"] else ("✅ 已确认" if d["confirmed"] else "🟡 待确认"))),
-            "页数": d["slides"],
-            "讲稿": ("⬜ 未生成" if not sc["exists"] else
-                     ("⚠️ 已过期" if sc["stale"] else ("✅ 已确认" if sc["confirmed"] else "🟡 待确认"))),
-            "讲稿字数": sc.get("total_chars", 0),
-            "视频": ("✅ 已合成" if deck_part_ready(pdir, p["id"]) else "⬜ 未合成"),
-            "配音": ("⬜ 未生成" if not voice_status(pdir, p["id"])["exists"] else
-                    ("⚠️ 已过期" if voice_status(pdir, p["id"])["stale"] else
-                     f"✅ {voice_status(pdir, p['id'])['total_sec'] / 60:.1f} 分钟")),
-        })
-    st.table(rows)
-
-    st.markdown("**一键运行**（使用上方的挡位、运行到、终审与预算设置）")
-    st.caption({"G0": "G0：规划、讲稿、终审需要人工确认。",
-                "G1": "G1：规划与讲稿自动确认，只有终审需要人工。",
-                "G2": "G2：全自动，需要设置预算上限。",
-                "G3": "G3：完全无人值守，终审自动通过并导出，不设预算上限。"}[gear])
-    if st.button("▶ 一键运行新方案（后台）", disabled=busy, type="primary", key="deck_run_all"):
-        mi = int(max_images) or None
-        mm = float(max_minutes) or None
-        try:
-            from article_to_video.pipeline.gates import check_budget_requirement
-            check_budget_requirement(gear, mi, mm)
-        except Exception as exc:  # noqa: BLE001 — 界面展示原因
-            st.error(str(exc))
-        else:
-            def run_all_deck():
-                from article_to_video.deck.pipeline import run_deck_pipeline
-                from article_to_video.pipeline.run import default_providers
-                prov = default_providers(pdir, offline=offline)
-                out = run_deck_pipeline(pdir, gear=gear, until=until, approve=approve, max_images=mi,
-                                        max_minutes=mm, llm=prov["llm"], tts=prov["tts"])
-                if out["state"] == "done":
-                    return {"state": "done", "message": "新方案已完成" + (f"：{'、'.join(out['outputs'])}" if out["outputs"] else "")}
-                if out["state"] == "waiting":
-                    w = out.get("waiting") or {}
-                    return {"state": "waiting", "message": f"停在「{w.get('stage', '')}」：{w.get('detail', '')}"}
-                return {"state": "error", "message": out.get("error") or out["state"]}
-
-            if jobs.start(pdir, f"新方案一键运行（{gear}）", run_all_deck, scope="deck"):
-                st.rerun()
-    st.divider()
-    c1, c2 = st.columns(2)
-    if c1.button("生成全部章的幻灯片规划（后台）", disabled=busy):
-        def run_plan():
-            errs = []
-            for p in spine["parts"]:
-                try:
-                    plan_deck(pdir, p["id"])
-                except PlanError as exc:
-                    errs.append(f"{p['id']}：{exc}")
-            if errs:
-                return {"state": "error", "message": "；".join(errs)}
-            return {"state": "done", "message": "幻灯片规划已生成"}
-
-        if jobs.start(pdir, "幻灯片规划", run_plan, scope="deck"):
-            st.rerun()
-    if c2.button("确认全部章的幻灯片规划", disabled=busy):
-        for p in spine["parts"]:
-            if load_deck(pdir, p["id"]) and not deck_status(pdir, p["id"])["stale"]:
-                try:
-                    confirm_deck(pdir, p["id"])
-                except PlanError as exc:
-                    st.error(str(exc))
-        st.rerun()
-
-    d1, d2 = st.columns(2)
-    if d1.button("生成全部章的讲稿（后台，需要文本模型）", disabled=busy):
-        def run_script():
-            from article_to_video.pipeline.run import default_providers
-            llm = default_providers(pdir, offline=False)["llm"]
-            errs = []
-            for p in spine["parts"]:
-                try:
-                    plan_script(pdir, p["id"], llm=llm, part_title=p["title"])
-                except PlanError as exc:
-                    errs.append(f"{p['id']}：{exc}")
-            if errs:
-                return {"state": "error", "message": "；".join(errs)}
-            return {"state": "done", "message": "讲稿已生成"}
-
-        if jobs.start(pdir, "幻灯片讲稿", run_script, scope="deck"):
-            st.rerun()
-    v1 = st.columns(1)[0]
-    if v1.button("生成全部章的配音（后台，需要语音引擎）", disabled=busy):
-        def run_voice():
-            from article_to_video.pipeline.run import default_providers
-            tts = default_providers(pdir, offline=False)["tts"]
-            errs = []
-            for p in spine["parts"]:
-                try:
-                    synthesize_deck(pdir, p["id"], tts)
-                except PlanError as exc:
-                    errs.append(f"{p['id']}：{exc}")
-            if errs:
-                return {"state": "error", "message": "；".join(errs)}
-            return {"state": "done", "message": "配音与页面时间线已生成"}
-
-        if jobs.start(pdir, "幻灯片配音", run_voice, scope="deck"):
-            st.rerun()
-    v2 = st.columns(2)
-    if v2[0].button("合成全部章的新方案视频（后台）", disabled=busy):
-        def run_compose():
-            errs = []
-            for p in spine["parts"]:
-                try:
-                    compose_deck_part(pdir, p["id"])
-                except (PlanError, Exception) as exc:  # noqa: BLE001 — 界面展示错误文字
-                    errs.append(f"{p['id']}：{exc}")
-            if errs:
-                return {"state": "error", "message": "；".join(errs)}
-            return {"state": "done", "message": "新方案视频已合成"}
-
-        if jobs.start(pdir, "新方案合成", run_compose, scope="deck"):
-            st.rerun()
-    if v2[1].button("导出新方案成片（后台）", disabled=busy):
-        def run_export():
-            out = export_deck_video(pdir)
-            return {"state": "done", "message": f"已导出 {out.name}"}
-
-        if jobs.start(pdir, "新方案导出", run_export, scope="deck"):
-            st.rerun()
-    if d2.button("确认全部章的讲稿", disabled=busy):
-        from article_to_video.deck.script import confirm_script
-        for p in spine["parts"]:
-            if load_script_doc(pdir, p["id"]):
-                try:
-                    confirm_script(pdir, p["id"])
-                except PlanError as exc:
-                    st.error(str(exc))
-        st.rerun()
-
-    render_job_panel(pdir, ["deck"], title="新方案运行日志（实时）", height=360)
-
-
-def load_script_doc(pdir, part_id):
-    from article_to_video.deck.script import load_script
-    return load_script(pdir, part_id)
-
-
 def _control_body(pdir) -> None:
     busy = run_state(pdir, None)["busy"]
 
     from article_to_video import app_settings as S  # 默认值来自「⚙️ 设置」（R4）
     pl = S.effective_group(pdir, "pipeline")
-    mode_labels = {"classic": "现有方案：口播稿 → 分镜 → 画面", "deck": "新方案：幻灯片 → 讲解（第一阶段：仅规划）"}
-    mode = st.radio("生成方案（每个项目单独记忆）", list(mode_labels), index=list(mode_labels).index(pl["mode"]),
-                    format_func=lambda k: mode_labels[k], key="gen_mode")
     with st.expander("挡位与预算", expanded=True):
         st.caption("默认值来自「⚙️ 设置」的「流水线」分组；这里的挡位与预算会记为本项目的设置，下次打开自动使用。")
         gear = st.radio("挡位", list(GEARS), horizontal=True, index=list(GEARS).index(pl["gear"]))
@@ -301,7 +136,7 @@ def _control_body(pdir) -> None:
         max_images = c2.number_input("预算：最多生图次数（0 = 不限）", min_value=0, value=int(pl["max_images"]), step=1)
         max_minutes = c3.number_input("预算：最长耗时（分钟，0 = 不限）", min_value=0.0, value=float(pl["max_minutes"]),
                                       step=5.0)
-        if S.save_budget(pdir, gear=gear, max_images=int(max_images), max_minutes=float(max_minutes), mode=mode):
+        if S.save_budget(pdir, gear=gear, max_images=int(max_images), max_minutes=float(max_minutes)):
             joblog.log(pdir, "settings", f"挡位与预算已保存为本项目设置：{gear}，生图 {int(max_images) or '不限'}，"
                                          f"耗时 {float(max_minutes) or '不限'} 分钟")
         c4, c5 = st.columns(2)
@@ -309,10 +144,7 @@ def _control_body(pdir) -> None:
         merge_all = c5.checkbox("多期时导出全集合并版", value=False)
         offline = st.checkbox("离线冒烟（语音静音、生图占位，大纲改用离线规则，不产生费用）", value=False)
 
-    if mode == "deck":
-        _deck_panel(pdir, busy, gear=gear, until=until, approve=approve, max_images=max_images,
-                    max_minutes=max_minutes, offline=offline)
-    elif st.button("▶ 运行流水线（后台）", disabled=busy):
+    if st.button("▶ 运行流水线（后台）", disabled=busy):
         mi = int(max_images) or None
         mm = float(max_minutes) or None
         try:
@@ -339,7 +171,7 @@ def _control_body(pdir) -> None:
         if blocked:
             st.warning("当前挡位在导出前需要终审。请先勾选上方「确认终审（允许导出）」，否则流水线会停在导出前，"
                        "不会生成视频。")
-        if st.button("清空所有并重新生成（后台）", disabled=busy or not ok_all or blocked or mode == "deck", key="rst_all_go",
+        if st.button("清空所有并重新生成（后台）", disabled=busy or not ok_all or blocked, key="rst_all_go",
                      type="primary"):
             mi_all = int(max_images) or None
             mm_all = float(max_minutes) or None
@@ -392,22 +224,12 @@ def _control_body(pdir) -> None:
     render_reset_panel(pdir, stage=None, key="rst_cockpit", busy=busy)
 
 
-def render_cockpit_page() -> None:
-    st.header("🧭 驾驶舱")
-    root = projects_root()
-    projects = [p for p in list_projects(root) if "error" not in p]
-    if not projects:
-        st.info("还没有项目。先到「📥 新建项目」导入文章。")
-        return
-    pid = st.selectbox("项目", [p["id"] for p in projects],
-                       format_func=lambda i: next(p["title"] for p in projects if p["id"] == i))
-    pdir = root / pid
-
+def _render_classic(pdir) -> None:
+    """现有方案的驾驶舱：流程总览 + 总控 / 大纲 / 口播 / 配音 / 分镜 / 合成导出。"""
     rows = overview(pdir)
-    st.subheader("流程总览")
+    st.subheader("现有方案：流程总览")
     st.table([{"步骤": r["步骤"], "状态": r["状态"], "说明": r["说明"]} for r in rows])
     st.caption(_next_hint(rows))
-
     step = st.radio("步骤", [CONTROL, *STEPS], horizontal=True, key="cockpit_step", label_visibility="collapsed")
     if step == CONTROL:
         try:
@@ -421,3 +243,49 @@ def render_cockpit_page() -> None:
         body_fn(pdir)
     finally:
         render_job_panel(pdir, scopes, title=panel_title)
+
+
+def _render_deck(pdir) -> None:
+    """新方案的驾驶舱：只包含新方案自己的标签页（大纲为所有方案共用）。"""
+    from ui import deck_cockpit as DC
+
+    st.subheader("新方案：流程总览")
+    st.table(DC.overview_rows(pdir))
+    pages = [DC.CONTROL, "🗺️ 大纲", *DC.PAGES]
+    step = st.radio("步骤", pages, horizontal=True, key="deck_step", label_visibility="collapsed")
+    if step == DC.CONTROL:
+        DC.render_control(pdir)
+    elif step == "🗺️ 大纲":
+        heading, body_fn, scopes, panel_title = STEPS["🗺️ 大纲"]
+        st.header(heading)
+        body_fn(pdir)
+        render_job_panel(pdir, scopes, title=panel_title)
+    else:
+        {"📑 幻灯片规划": DC.render_plan, "✍️ 讲稿": DC.render_script,
+         "🎙️ 配音": DC.render_voice, "📤 合成导出": DC.render_export}[step](pdir)
+
+
+def render_cockpit_page() -> None:
+    st.header("🧭 驾驶舱")
+    root = projects_root()
+    projects = [p for p in list_projects(root) if "error" not in p]
+    if not projects:
+        st.info("还没有项目。先到「📥 新建项目」导入文章。")
+        return
+    pid = st.selectbox("项目", [p["id"] for p in projects],
+                       format_func=lambda i: next(p["title"] for p in projects if p["id"] == i))
+    pdir = root / pid
+    # 第一步：选择生成方案。之后的总览、标签页与操作都只属于所选方案。
+    pl = S.effective_group(pdir, "pipeline")
+    labels = {"classic": "现有方案：口播稿 → 分镜 → 画面 → 视频",
+              "deck": "新方案：幻灯片 → 讲稿 → 配音 → 视频"}
+    mode = st.radio("生成方案（每个项目单独记忆）", list(labels), index=list(labels).index(pl["mode"]),
+                    format_func=lambda k: labels[k], horizontal=True, key="gen_mode")
+    if mode != pl["mode"]:
+        S.save_budget(pdir, gear=pl["gear"], max_images=pl["max_images"], max_minutes=pl["max_minutes"], mode=mode)
+        st.rerun()
+    st.divider()
+    if mode == "deck":
+        _render_deck(pdir)
+    else:
+        _render_classic(pdir)

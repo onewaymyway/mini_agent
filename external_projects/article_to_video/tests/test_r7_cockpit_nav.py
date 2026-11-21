@@ -96,5 +96,5 @@ def test_overview_hint_when_everything_done(home):
 def test_overview_table_is_shown_on_cockpit(home):
     make_project(home)
     at = _app()
-    assert any(h.value == "流程总览" for h in at.subheader)
+    assert any("流程总览" in h.value for h in at.subheader)   # 标题写明所选方案（现有方案：流程总览）
     assert len(at.table) >= 1

@@ -88,6 +88,19 @@ def element_count(el: Dict[str, Any]) -> int:
     return len(el.get("items", []))
 
 
+def _fallback(b: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """块没能转换成任何元素，但原文中有内容：回退为要点，保证原文内容不会因此丢失。"""
+    if b.get("kind") in ("heading", "rule"):
+        return []
+    items = [str(x).strip() for x in (b.get("items") or b.get("nodes") or []) if str(x).strip()]
+    if not items:
+        items = _sentences(_text(b))
+    if not items:
+        items = [ln.strip() for ln in str(b.get("content", "")).splitlines() if ln.strip()]
+    return [{"kind": "keypoint", "items": c, "emphasis": [], "source": b.get("id")}
+            for c in _chunks(items, MAX_ELEMENT_ITEMS)]
+
+
 def _element_chars(el: Dict[str, Any]) -> int:
     if el["kind"] == "table":
         return sum(len(c) for c in el.get("header", [])) + sum(len(c) for r in el.get("rows", []) for c in r)
@@ -134,7 +147,7 @@ def plan_slides(part: Dict[str, Any], blocks: List[Dict[str, Any]], part_id: str
             cur_chars = 0
             cur["source_blocks"].append(b.get("id"))
             continue
-        els = elements_of(b)
+        els = elements_of(b) or _fallback(b)
         if not els:
             continue
         if cur is None:
