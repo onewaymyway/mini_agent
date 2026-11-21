@@ -1711,3 +1711,44 @@ external_projects/article_to_video/
 
 **需要的操作**：已合成过的章节需要重新「合成」，排版才会更新。
 
+### 45.10 R36 生图未生效排查与日志诊断（已完成，2026-11-21）
+
+**现象**：生成的视频里没有 AI 图；生成过程中看不到任何调用生图的提示。
+
+**原因分析**
+
+1. **key 没找到，静默降级**。`providers/keypool.py` 只读环境变量 `AGNES_API_KEYS` / `AGNES_API_KEY`。而 mini_agent 的生图 skill（`.claude/skills/gen_image_with_text`，`novel_to_video` 也通过它生图）解析 key 的顺序是：环境变量 `AGNES_API_KEYS` → `providers.json`（`AGNES_PROVIDERS_JSON` 指定，或从 skill 目录向上查找）→ 环境变量 `AGNES_API_KEY`。用户的 key 在 `providers.json` 中、并未设置环境变量时，本项目取不到 key，`make_image_provider` 返回 `None`，插图与背景全部退回卡片或渐变，页面不报错。
+2. **日志缺失**。生图提供者为 `None` 时，只有真正需要生图的那一步才写一条警告，且新方案背景的提示只在合成时出现；流水线开始时、分镜页与渲染入口都不说明“生图是否开启、用了哪个服务、key 从哪里来”；生图请求本身（尝试次数、限流切换、耗时）也没有日志，因此无法判断是“没调用”还是“调用失败”。
+3. **构造入口分散**。流水线、分镜页（两处）、渲染命令行各自读设置、各自构造提供者，行为与日志不一致。
+
+**改动**
+
+- `providers/keypool.py`：`resolve_keys(env, start)` 按 skill 的顺序解析 key（与 skill 相同的 providers.json 结构：`providers.agnes.api_keys` / `api_key`，或 `llm_fallback_chain` 中 agnes 的 key；去重保序）。返回来源、数量与检查过的位置，**不返回 key 内容**。传入环境字典时只读该字典（测试确定性）。
+- `providers/image.py`：
+  - `image_diagnosis(name)`：provider、是否可用、key 数量与来源、检查过的位置；
+  - `log_image_diagnosis(diag, enabled, scope)`：写入任务日志（“已开启，服务 agnes，N 把 key，来源 …”；未找到时列出检查过的位置；关闭时写明“已在设置中关闭”）；
+  - `project_image_provider(pdir, scope)`：项目统一入口（读生效设置 → 诊断 → 写日志 → 构造提供者），替代各处重复的构造代码；
+  - 生图请求日志：每次请求（模型、尺寸、参考图数、提示词字数）、限流切换（第几把 key）、非重试错误、失败次数、成功（用时、文件大小）；
+  - 提供者 `describe()`：如 `agnes（模型 …，N 把 key，来源 …）`。
+- 调用点统一改为 `project_image_provider`：流水线（`default_providers`）、分镜页（渲染本章 / 渲染全部）、命令行 `render_visuals`。
+- 新方案背景（`deck/background.py`、`deck/compose.py`）：开始时写明“生图服务 …”或“生图服务不可用（…），本章各节使用渐变色”；未生图时写明原因（背景开关关闭 / 「启用 AI 插图」关闭）。
+- `entrypoints/health.py`：新增 `agnes_image_key` 检查（默认不花钱，只检查 key 能否找到，并列出检查过的位置）；`health --probe-image` 才真正调用一次生图接口，用来确认接口能否正常使用。
+
+**行为变化**
+
+- 有 `providers.json`（即使没有设置环境变量）时，生图会自动启用，这与 `novel_to_video` 的行为一致。
+- 之前“没有 key 就静默渐变”的行为保留，但现在日志会写明原因。
+
+**验证**
+
+- `tests/test_r36_image_key_diagnostics.py`（11 项）：环境变量优先；providers.json 与 skill 一致（去重、fallback 结构）；显式 `AGNES_PROVIDERS_JSON`；找不到时列出检查过的位置；传入环境字典不读磁盘；诊断不泄露 key；日志写入任务日志（未找到、检查过、已开启、已关闭）；生图请求日志（限流换 key、成功耗时）；`project_image_provider` 随设置开关变化；新方案背景日志。
+- `health` 实测：沙箱中正确列出四个检查位置，并给出未找到的提示。
+- 全量回归结果见交付说明。
+
+**需要你确认 / 排查步骤**
+
+- 运行 `python entrypoints/health.py`（或在界面运行流水线后看日志）：若出现“已开启，服务 agnes，N 把 key，来源 providers.json（…）”，说明生图已可用。
+- 若仍显示“未找到”，日志中的“检查过”列表会给出实际查找的位置；把 `providers.json` 放到 mini_agent 仓库根目录，或设置 `AGNES_PROVIDERS_JSON` 指向它即可。
+- `python entrypoints/health.py --probe-image` 会真实生成一张测试图（会计费一次），用于确认接口可用。
+- 沙箱中没有用户的 `providers.json`，因此 providers.json 的读取只在单元测试（模拟仓库结构）中验证；真实 key 需要在你的环境中运行一次确认。
+

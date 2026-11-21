@@ -39,6 +39,9 @@ class RejectingProvider:
     """模拟鉴权失败：第一次调用即返回不可重试错误。"""
     name = "reject"
 
+    def describe(self):
+        return "reject（测试用）"
+
     def __init__(self):
         self.calls = 0
 

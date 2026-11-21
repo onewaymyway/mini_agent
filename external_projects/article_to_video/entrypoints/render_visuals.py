@@ -37,12 +37,17 @@ def main(argv=None) -> int:
 
     pdir = Path(args.project) if args.project else projects_root() / args.id
     cancel.bind(cancel.begin(pdir))
+    from article_to_video.providers.image import log_image_diagnosis, image_diagnosis
     cfg = load_visual_config(pdir)
     if args.provider == "none" or not cfg["images"]["enabled"]:
+        log_image_diagnosis({"provider": "none", "ok": False, "keys": 0, "source": "", "searched": []},
+                            enabled=False)
         provider = None
     else:
         name = cfg["images"]["provider"] if args.provider == "auto" else args.provider
-        provider = make_image_provider(name)
+        diag = image_diagnosis(name)
+        log_image_diagnosis(diag, enabled=True)
+        provider = make_image_provider(name) if diag["ok"] else None
     try:
         spine = load_spine(pdir)
         if spine is None:

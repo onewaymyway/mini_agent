@@ -161,7 +161,9 @@ def ensure_section_backgrounds(pdir: Path, part_id: str, sections: List[Dict[str
     result: Dict[str, Optional[Path]] = {}
     disabled = False
     if provider is None:
-        joblog.bound_log(f"{part_id}：未配置生图服务（缺少 API key 或已关闭），背景使用渐变色")
+        joblog.bound_log(f"{part_id} 背景：生图服务不可用（见上方「生图」诊断），本章各节使用渐变色", level="warn")
+    else:
+        joblog.bound_log(f"{part_id} 背景：生图服务 {provider.describe()}，共 {len(sections)} 节")
     for sec in sections:
         key, title, context = sec["key"], sec["title"], sec["context"]
         sha = background_sha(title, context, style_anchor, orientation, size)

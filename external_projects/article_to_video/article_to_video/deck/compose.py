@@ -246,7 +246,12 @@ def compose_deck_part(pdir: Path, part_id: str, *, now: Optional[datetime] = Non
         ok = sum(1 for v in backgrounds.values() if v)
         joblog.bound_log(f"{part_id}：背景 {len(sections)} 节，插图 {ok} 节，渐变 {len(sections) - ok} 节")
     else:
-        joblog.bound_log(f"{part_id}：背景插图已关闭，使用渐变背景")
+        why = []
+        if not bg_cfg.get("enabled", True):
+            why.append("背景插图开关（设置 → 视觉 → 新方案：页面背景插图）为关闭")
+        if not vcfg.get("images", {}).get("enabled", True):
+            why.append("「启用 AI 插图」为关闭")
+        joblog.bound_log(f"{part_id} 背景：未生图，原因：{'；'.join(why)}，使用渐变色", level="warn")
     layout_log: List[Dict[str, Any]] = []
     segs, total = build_segments(pdir, part_id, deck, tl, canvas, orientation, theme_name, chapter,
                                  columns=columns, layout_log=layout_log,

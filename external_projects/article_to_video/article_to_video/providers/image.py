@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import base64
 import io
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-from .. import cancel
-from .keypool import KeyPool, is_non_retryable, is_rate_limit, pool_from_env
+from .. import cancel, joblog
+from .keypool import KeyPool, is_non_retryable, is_rate_limit, pool_from_env, resolve_keys
 
 AGNES_IMAGE_ENDPOINT = "https://apihub.agnes-ai.com/v1/images/generations"
 AGNES_IMAGE_MODEL = "agnes-image-2.5-flash"
@@ -40,6 +41,9 @@ class ImageResult:
 
 class ImageProvider:
     name = "base"
+
+    def describe(self) -> str:  # pragma: no cover - 子类覆盖
+        return self.name
 
     def generate(self, prompt: str, save_path: Path, *, ratio: Optional[str] = None,
                  size: str = "1024x1024",
@@ -109,6 +113,10 @@ class AgnesImageProvider(ImageProvider):
             session.trust_env = bool(use_system_proxy)   # 默认不读取环境变量与系统代理
         self.session = session
 
+    def describe(self) -> str:
+        src = getattr(self.pool, "source", "环境变量")
+        return f"agnes（模型 {self.model}，{len(self.pool)} 把 key，来源 {src}）"
+
     def generate(self, prompt: str, save_path: Path, *, ratio: Optional[str] = None,
                  size: str = "1024x1024",
                  reference_images: Optional[Sequence[Path]] = None) -> ImageResult:
@@ -133,6 +141,9 @@ class AgnesImageProvider(ImageProvider):
 
         attempts = 0
         last_error = "未知错误"
+        started = time.monotonic()
+        joblog.bound_log(f"生图请求：{self.model}，{size}，参考图 {ref_info['ref_count']} 张，"
+                         f"提示词 {len(prompt)} 字")
         while attempts < self.max_retries:
             key = self.pool.acquire()
             if key is None:
@@ -157,10 +168,14 @@ class AgnesImageProvider(ImageProvider):
                 if is_rate_limit(status, text):
                     self.pool.report_rate_limit(key)  # 换 key 立即重试，不计次数
                     last_error = f"限流（HTTP {status}）"
+                    joblog.bound_log(f"生图限流（HTTP {status}，key #{self.pool.key_index(key)}），换 key 重试",
+                                     level="warn")
                     continue
                 if is_non_retryable(status, text):
+                    joblog.bound_log(f"生图被拒绝（HTTP {status}）：{text[:160]}", level="warn")
                     return ImageResult(False, error=f"参数/鉴权错误（HTTP {status}）：{text[:200]}",
                                        non_retryable=True)
+                joblog.bound_log(f"生图失败（HTTP {status}），第 {attempts + 1}/{self.max_retries} 次", level="warn")
                 attempts += 1
                 last_error = f"HTTP {status}：{text[:200]}"
                 self._sleep(1.5 * attempts)
@@ -177,6 +192,8 @@ class AgnesImageProvider(ImageProvider):
             self.pool.report_success(key)
             save_path.parent.mkdir(parents=True, exist_ok=True)
             save_path.write_bytes(raw)
+            joblog.bound_log(f"生图成功：{save_path.name}（key #{self.pool.key_index(key)}，"
+                             f"用时 {time.monotonic() - started:.1f} 秒，{len(raw) // 1024} KB）", level="ok")
             return ImageResult(True, path=str(save_path), **ref_info)
 
         return ImageResult(False, error=last_error, **ref_info)
@@ -186,6 +203,9 @@ class StubImageProvider(ImageProvider):
     """离线占位图：纯色渐变 + 几何图形，不画任何文字（插图禁文字约束在离线也成立）。"""
 
     name = "stub"
+
+    def describe(self) -> str:
+        return "stub（离线占位图，不调用接口）"
 
     def __init__(self) -> None:
         # 每次调用记录参考图情况，供测试断言（不含图像内容）
@@ -216,6 +236,49 @@ class StubImageProvider(ImageProvider):
         draw.ellipse([w * 0.2, h * 0.25, w * 0.8, h * 0.85], outline=(217, 164, 65), width=10)
         img.save(save_path, format="PNG")
         return ImageResult(True, path=str(save_path), **info)
+
+
+def image_diagnosis(name: str, env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    """生图诊断（不发起请求、不返回 key 内容）：provider、是否可用、key 数量与来源、检查过的位置。"""
+    if name == "stub":
+        return {"provider": "stub", "ok": True, "keys": 0, "source": "离线占位图", "searched": []}
+    if name == "agnes":
+        info = resolve_keys(env)
+        return {"provider": "agnes", "ok": bool(info["keys"]), "keys": len(info["keys"]),
+                "source": info["source"], "searched": list(info["searched"]),
+                "endpoint": AGNES_IMAGE_ENDPOINT, "model": AGNES_IMAGE_MODEL}
+    return {"provider": name, "ok": False, "keys": 0, "source": "未知的生图服务", "searched": []}
+
+
+def log_image_diagnosis(diag: Dict[str, Any], *, enabled: bool = True, scope: str = "") -> None:
+    """把生图状态写入任务日志：是否开启、用哪个服务、key 来源与数量；不可用时列出检查过的位置。"""
+    head = f"{scope}生图：" if scope else "生图："
+    if not enabled:
+        joblog.bound_log(head + "AI 插图已在设置中关闭，不调用生图接口")
+        return
+    if diag["ok"]:
+        joblog.bound_log(head + f"已开启，服务 {diag['provider']}，{diag['keys']} 把 key，来源 {diag['source']}",
+                         level="ok")
+    else:
+        joblog.bound_log(head + f"未找到可用的 {diag['provider']} key，本次不生图（页面使用卡片或渐变）",
+                         level="warn")
+        for item in diag.get("searched", []):
+            joblog.bound_log(f"    · 检查过：{item}", level="warn")
+
+
+def project_image_provider(pdir, *, scope: str = "") -> Optional[ImageProvider]:
+    """项目的生图服务（统一入口）：读取生效设置（是否启用 AI 插图、服务名、代理开关），
+    诊断 key，写入任务日志；未开启或没有可用 key 时返回 None（调用方降级为卡片/渐变）。"""
+    from pathlib import Path as _P
+    from ..app_settings import effective_group  # 延迟导入，避免循环依赖
+    images = effective_group(_P(pdir), "visual")["images"]
+    enabled = bool(images.get("enabled", True))
+    name = str(images.get("provider", "agnes"))
+    diag = image_diagnosis(name)
+    log_image_diagnosis(diag, enabled=enabled, scope=scope)
+    if not enabled or not diag["ok"]:
+        return None
+    return make_image_provider(name, use_system_proxy=bool(images.get("use_system_proxy", False)))
 
 
 def make_image_provider(name: str, env: Optional[Dict[str, str]] = None, *, use_system_proxy: bool = False) -> Optional[ImageProvider]:

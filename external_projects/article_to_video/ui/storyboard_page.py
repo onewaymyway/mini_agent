@@ -244,10 +244,9 @@ def _storyboard_body(pdir) -> None:
             st.error(str(exc))
     if status["confirmed"]:
         if c4.button("🖼️ 渲染本章画面（后台）", disabled=job is not None and job["state"] == "running"):
-            from article_to_video.providers.image import make_image_provider as mk
+            from article_to_video.providers.image import project_image_provider
             from article_to_video.render.compose_part import render_part
-            cfg = load_visual_config(pdir)
-            provider = mk(cfg["images"]["provider"]) if cfg["images"]["enabled"] else None
+            provider = project_image_provider(pdir, scope="渲染 ")
 
             def run():
                 render_part(pdir, part_id, provider=provider)
@@ -268,10 +267,9 @@ def _render_all_controls(pdir, ready, busy: bool) -> None:
                "已生成的图片直接复用，不会重新生图。")
     if st.button(f"🖼️ 渲染所有章的画面（{len(ready_now)} 章）", disabled=busy or not ready_now,
                  key="batch_render_all"):
-        from article_to_video.providers.image import make_image_provider as mk
+        from article_to_video.providers.image import project_image_provider
         from article_to_video.render.compose_part import render_all_parts
-        cfg = load_visual_config(pdir)
-        provider = mk(cfg["images"]["provider"]) if cfg["images"]["enabled"] else None
+        provider = project_image_provider(pdir, scope="渲染全部 ")
         if jobs.start(pdir, f"渲染所有章的画面（{len(ids)} 章）",
                       lambda: render_all_parts(pdir, ids, provider=provider), scope="render"):
             st.rerun()

@@ -30,6 +30,24 @@ def main() -> int:
         {"name": "edge-tts", "ok": find_spec("edge_tts") is not None, "required": False,
          "detail": "在线配音引擎：pip install edge-tts"},
     ]
+    # 生图：默认只检查 key 能否找到（不花钱）；加 --probe-image 才真正调用一次接口
+    from article_to_video.providers.image import image_diagnosis, make_image_provider
+    diag = image_diagnosis("agnes")
+    detail = f"{diag['source']}，{diag['keys']} 把 key"
+    if not diag["ok"]:
+        detail += "；检查过：" + " → ".join(diag["searched"])
+    checks.append({"name": "agnes_image_key", "ok": diag["ok"], "required": False, "detail": detail})
+    if "--probe-image" in sys.argv:
+        if not diag["ok"]:
+            checks.append({"name": "agnes_image_call", "ok": False, "required": False, "detail": "没有 key，未调用"})
+        else:
+            import tempfile
+            from pathlib import Path as _P
+            out = _P(tempfile.mkdtemp()) / "probe.png"
+            res = make_image_provider("agnes").generate("一个简单的蓝色圆形，纯色背景，无文字", out, ratio="16:9")
+            checks.append({"name": "agnes_image_call", "ok": res.ok, "required": False,
+                           "detail": (f"调用成功，图片 {out.stat().st_size // 1024} KB" if res.ok
+                                      else f"调用失败：{res.error}")})
     root = projects_root()
     try:
         root.mkdir(parents=True, exist_ok=True)
