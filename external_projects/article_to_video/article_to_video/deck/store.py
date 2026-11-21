@@ -12,7 +12,7 @@ from .. import joblog
 from ..planning.errors import PlanError
 from ..planning.runner import load_spine
 from ..project_store import now_iso, read_json, write_json_atomic
-from .plan import DECK_VERSION, plan_slides
+from .plan import DECK_VERSION, RETRY_CAPS, plan_slides
 from .validate import validate_deck
 
 
@@ -60,6 +60,22 @@ def _part(pdir: Path, part_id: str) -> Dict[str, Any]:
     raise PlanError(f"大纲中没有章 {part_id}")
 
 
+def _plan_with_retry(part: Dict[str, Any], blocks: List[Dict[str, Any]], part_id: str) -> Dict[str, Any]:
+    """规划；不合格时自动改用更细的分页重试（RETRY_CAPS），每次失败写入日志。全部失败才抛出 PlanError。"""
+    last: List[str] = []
+    for i, (pc, ec) in enumerate(RETRY_CAPS, 1):
+        deck = plan_slides(part, blocks, part_id, page_cap=pc, element_cap=ec)
+        v = validate_deck(deck, blocks, page_cap=pc, element_cap=ec)
+        if not v["errors"]:
+            deck["attempts"] = i
+            return deck
+        last = v["errors"]
+        nxt = RETRY_CAPS[i][0] if i < len(RETRY_CAPS) else None
+        joblog.bound_log(f"{part_id} 幻灯片规划第 {i} 次不合格（每页最多 {pc} 条）：{last[0]}"
+                         + (f"；改为每页最多 {nxt} 条，更多分页重试" if nxt else ""), level="warn")
+    raise PlanError(f"{part_id} 幻灯片规划经 {len(RETRY_CAPS)} 次分页仍不合格：" + "；".join(last[:4]))
+
+
 def plan_deck(pdir: Path, part_id: str, *, force: bool = False, now: Optional[datetime] = None) -> Dict[str, Any]:
     """生成本章的幻灯片规划（确定性规则）。输入未变时复用已有结果。校验有错误则不写入。"""
     pdir = Path(pdir)
@@ -70,10 +86,8 @@ def plan_deck(pdir: Path, part_id: str, *, force: bool = False, now: Optional[da
     if existing and existing.get("input_sha") == sha and not force:
         joblog.bound_log(f"{part_id}：幻灯片规划输入未变，复用已有结果")
         return existing
-    deck = plan_slides(part, blocks, part_id)
-    v = validate_deck(deck, blocks)
-    if v["errors"]:
-        raise PlanError(f"{part_id} 幻灯片规划不合格：" + "；".join(v["errors"][:5]))
+    deck = _plan_with_retry(part, blocks, part_id)
+    v = validate_deck(deck, blocks, page_cap=deck["page_cap"], element_cap=deck["element_cap"])
     deck.update(input_sha=sha, confirmed=False, confirmed_at=None, generated_at=now_iso(now),
                 warnings=v["warnings"], errors=[])
     write_json_atomic(deck_path(pdir, part_id), deck)

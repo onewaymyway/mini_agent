@@ -18,9 +18,9 @@ from .sharing import allocate_shared_images, count_groups
 from .states import uniform_reveal
 
 TEXT_LIMIT = 60          # 单张卡文字上限（字）
-MAX_KEYPOINT_ITEMS = 8        # 显示上限：渲染端自适应布局保证全部条目可见（字号、分栏随数量调整）
+MAX_KEYPOINT_ITEMS = 12       # 显示上限（实测：横屏/竖屏下，渲染端自适应布局可放下全部条目）
 MAX_LIST_ITEMS = 12
-MAX_DIAGRAM_NODES = 12
+MAX_DIAGRAM_NODES = 16
 MAX_TABLE_ROWS = 6
 MAX_TABLE_COLS = 4
 DIRECTOR_VERSION = "p4-rules-v2"

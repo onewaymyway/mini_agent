@@ -84,29 +84,38 @@ def _pack_columns(heights: List[int], avail_h: float, gap: float) -> Optional[Li
 
 def _stack_fit(draw, ctx: _Ctx, texts: List[str], *, base: float, lo: float, avail_w: float, avail_h: float,
                gap_v: float, gap_x: float, pad_v: float, pad_h: float, text_extra: float, ratio: float):
-    """为一组竖排块找到最大的字号与列数，使全部条目都能画下（不截断文字）。"""
+    """为一组竖排块找到最大的字号与列数，使全部条目都能画下（不截断文字）。
+
+    两段搜索：
+      1. 首选：字号由大到小，列数由少到多，要求每栏至少约 6 个字宽（可读性），且全部条目装得下；
+      2. 回退（大字号都装不下时）：最小字号，按需要增加栏数（不再限制栏宽），保证全部条目仍然画得下。
+    """
     n = max(1, len(texts))
-    fallback = None
     for size in _sizes(base, lo):
         font = ctx.font(size)
         for cols in range(1, n + 1):
             col_w = (avail_w - gap_x * (cols - 1)) / cols
             inner = col_w - 2 * pad_h - text_extra
-            if inner < font.size * 2:
+            if inner < font.size * 6:
                 continue
             blocks = [wrap_text(draw, t, font, int(inner)) for t in texts]
             heights = [_text_height(font, b, ratio) + 2 * pad_v for b in blocks]
             assign = _pack_columns(heights, avail_h, gap_v)
-            if assign is None:
-                continue
-            if fallback is None:
-                fallback = (font, col_w, assign, blocks, heights)
-            if len(assign) <= cols:
+            if assign is not None and len(assign) <= cols:
                 return font, col_w, assign, blocks, heights
-    if fallback is not None:
-        return fallback
     font = ctx.font(lo)
-    col_w = avail_w
+    for cols in range(1, n + 1):
+        col_w = (avail_w - gap_x * (cols - 1)) / cols
+        inner = col_w - 2 * pad_h - text_extra
+        if inner < font.size * 2:
+            continue
+        blocks = [wrap_text(draw, t, font, int(inner)) for t in texts]
+        heights = [_text_height(font, b, ratio) + 2 * pad_v for b in blocks]
+        assign = _pack_columns(heights, avail_h, gap_v)
+        if assign is not None and len(assign) <= cols:
+            return font, col_w, assign, blocks, heights
+    # 仍然装不下：说明条目数超过本布局的容量（上游应按容量分页）；保持最小字号，逐条单独成栏
+    col_w = avail_w / n
     blocks = [wrap_text(draw, t, font, int(col_w - 2 * pad_h - text_extra)) for t in texts]
     heights = [_text_height(font, b, ratio) + 2 * pad_v for b in blocks]
     return font, col_w, [[i] for i in range(n)], blocks, heights

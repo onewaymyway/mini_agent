@@ -27,7 +27,11 @@ def _source_text(blocks_by_id: Dict[str, Dict[str, Any]], ids: List[str]) -> str
     return norm_key(" ".join(parts))
 
 
-def validate_deck(deck: Dict[str, Any], blocks: List[Dict[str, Any]]) -> Dict[str, List[str]]:
+def validate_deck(deck: Dict[str, Any], blocks: List[Dict[str, Any]], *, page_cap: int = None,
+                  element_cap: int = None) -> Dict[str, List[str]]:
+    """校验规划。page_cap / element_cap 默认取规划结果中记录的分页上限。"""
+    page_cap = page_cap or deck.get("page_cap") or MAX_SLIDE_ITEMS
+    element_cap = element_cap or deck.get("element_cap") or MAX_ELEMENT_ITEMS
     errors: List[str] = []
     warnings: List[str] = []
     by_id = {b.get("id"): b for b in blocks}
@@ -64,11 +68,11 @@ def validate_deck(deck: Dict[str, Any], blocks: List[Dict[str, Any]]) -> Dict[st
             items = el.get("items") or []
             if not items:
                 errors.append(f"{sid}：{k} 元素没有条目")
-            if len(items) > MAX_ELEMENT_ITEMS:
-                errors.append(f"{sid}：{k} 元素 {len(items)} 条，超过 {MAX_ELEMENT_ITEMS}")
+            if len(items) > element_cap:
+                errors.append(f"{sid}：{k} 元素 {len(items)} 条，超过 {element_cap}")
             n_items += len(items)
-        if n_items > MAX_SLIDE_ITEMS:
-            errors.append(f"{sid}：条目 {n_items} 个，超过一页上限 {MAX_SLIDE_ITEMS}")
+        if n_items > page_cap:
+            errors.append(f"{sid}：条目 {n_items} 个，超过一页上限 {page_cap}")
         for bid in s.get("source_blocks") or []:
             used.add(bid)
         # 内容须出自原文：文字条目必须能在本页引用的原文块中找到

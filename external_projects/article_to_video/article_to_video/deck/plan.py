@@ -13,9 +13,10 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional
 
-DECK_VERSION = "deck-rules-v1"
-MAX_SLIDE_ITEMS = 10          # 一页的条目上限（超过则续页）
-MAX_ELEMENT_ITEMS = MAX_SLIDE_ITEMS   # 一个元素的条目上限（与一页上限一致，超过则拆分到多个元素）
+DECK_VERSION = "deck-rules-v2"
+MAX_SLIDE_ITEMS = 12         # 一页的条目上限（实测：多元素同页时仍可放下；超过则续页）
+MAX_ELEMENT_ITEMS = 12        # 一个元素的条目上限（超过则拆分到多个元素）
+RETRY_CAPS = ((12, 12), (8, 8), (5, 5))   # 规划不合格时依次改用更细的分页重试
 SPEECH_CHARS_PER_SEC = 4.2    # 讲解语速估算（字/秒）
 PAGE_OVERHEAD_SEC = 2.0       # 每页的固定停顿
 MAX_PAGE_SEC = 60.0           # 单页讲解时长上限（超过则续页）
@@ -36,8 +37,8 @@ def _chunks(seq: List[str], n: int) -> List[List[str]]:
     return [seq[i:i + n] for i in range(0, len(seq), n)] or []
 
 
-def elements_of(b: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """一个文章块转换成若干页面元素（标题与无内容的块返回空列表）。"""
+def elements_of(b: Dict[str, Any], cap: int = MAX_ELEMENT_ITEMS) -> List[Dict[str, Any]]:
+    """一个文章块转换成若干页面元素（标题与无内容的块返回空列表）。cap 为一个元素的条目上限。"""
     kind = b.get("kind")
     bid = b.get("id")
     if kind in ("heading", "rule"):
@@ -45,19 +46,21 @@ def elements_of(b: Dict[str, Any]) -> List[Dict[str, Any]]:
     if kind == "list":
         items = [str(x).strip() for x in b.get("items") or [] if str(x).strip()]
         return [{"kind": "list", "items": c, "emphasis": [], "source": bid}
-                for c in _chunks(items, MAX_ELEMENT_ITEMS)]
+                for c in _chunks(items, cap)]
     if kind == "table":
         header = [str(h) for h in b.get("header") or []]
         rows = [[str(c) for c in r] for r in b.get("rows") or []]
         if not rows:
             return []
         return [{"kind": "table", "header": header, "rows": c, "items": [], "emphasis": [], "source": bid}
-                for c in _chunks(rows, MAX_SLIDE_ITEMS)]           # 表格超过一页时按行拆分，每段保留表头
+                for c in _chunks(rows, cap)]                       # 表格超过一页时按行拆分，每段保留表头
     if kind == "code":
         shape = b.get("shape")
         nodes = [str(x).strip() for x in b.get("nodes") or [] if str(x).strip()]
         if shape == "chain" and nodes:
-            return [{"kind": "diagram", "items": nodes, "loop": bool(b.get("loop")), "emphasis": [], "source": bid}]
+            # 流程超过一个元素的上限时拆成多段（每段一个流程），按顺序续页
+            return [{"kind": "diagram", "items": c, "loop": bool(b.get("loop")) and len(nodes) <= cap,
+                     "emphasis": [], "source": bid} for c in _chunks(nodes, cap)]
         if b.get("hint") == "formula":
             text = str((b.get("items") or [b.get("content", "")])[0]).strip()
             return [{"kind": "formula", "text": text, "items": [], "emphasis": [], "source": bid}] if text else []
@@ -65,17 +68,17 @@ def elements_of(b: Dict[str, Any]) -> List[Dict[str, Any]]:
         if not items:
             items = [ln.strip() for ln in str(b.get("content", "")).splitlines() if ln.strip()]
         return [{"kind": "keypoint", "items": c, "emphasis": [], "source": bid}
-                for c in _chunks(items, MAX_ELEMENT_ITEMS)]
+                for c in _chunks(items, cap)]
     if kind == "quote":
         lines = [ln.strip().strip("“”\"「」").strip() for ln in _text(b).split("\n") if ln.strip()]
         if len(lines) == 1:
             return [{"kind": "quote", "items": lines, "emphasis": [], "source": bid}]
         return [{"kind": "keypoint", "items": c, "emphasis": [], "source": bid}
-                for c in _chunks(lines, MAX_ELEMENT_ITEMS)] if lines else []
+                for c in _chunks(lines, cap)] if lines else []
     if kind == "paragraph":
         sents = _sentences(_text(b))
         return [{"kind": "keypoint", "items": c, "emphasis": [], "source": bid}
-                for c in _chunks(sents, MAX_ELEMENT_ITEMS)] if sents else []
+                for c in _chunks(sents, cap)] if sents else []
     return []
 
 
@@ -88,7 +91,7 @@ def element_count(el: Dict[str, Any]) -> int:
     return len(el.get("items", []))
 
 
-def _fallback(b: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _fallback(b: Dict[str, Any], cap: int = MAX_ELEMENT_ITEMS) -> List[Dict[str, Any]]:
     """块没能转换成任何元素，但原文中有内容：回退为要点，保证原文内容不会因此丢失。"""
     if b.get("kind") in ("heading", "rule"):
         return []
@@ -98,7 +101,39 @@ def _fallback(b: Dict[str, Any]) -> List[Dict[str, Any]]:
     if not items:
         items = [ln.strip() for ln in str(b.get("content", "")).splitlines() if ln.strip()]
     return [{"kind": "keypoint", "items": c, "emphasis": [], "source": b.get("id")}
-            for c in _chunks(items, MAX_ELEMENT_ITEMS)]
+            for c in _chunks(items, cap)]
+
+
+def _take_budget(el: Dict[str, Any], budget: int):
+    """取元素的前若干条，使字数不超过 budget（至少取一条）。返回 (前段, 余下段)；无法再拆时余下段为 None。"""
+    items = list(el.get("items") or [])
+    take, used = [], 0
+    for item in items:
+        n = len(str(item))
+        if take and used + n > budget:
+            break
+        take.append(item)
+        used += n
+    if len(take) >= len(items):
+        return el, None
+    return dict(el, items=take), dict(el, items=items[len(take):])
+
+
+def _split_by_time(el: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """元素本身的讲解时长超过单页上限时，按字数把条目拆成多个元素（只拆文字类元素）。"""
+    if el.get("kind") not in ("keypoint", "list", "quote") or _element_chars(el) <= MAX_PAGE_CHARS:
+        return [el]
+    out, cur, cur_n = [], [], 0
+    for item in el.get("items") or []:
+        n = len(str(item))
+        if cur and cur_n + n > MAX_PAGE_CHARS:
+            out.append(dict(el, items=cur))
+            cur, cur_n = [], 0
+        cur.append(item)
+        cur_n += n
+    if cur:
+        out.append(dict(el, items=cur))
+    return out
 
 
 def _element_chars(el: Dict[str, Any]) -> int:
@@ -121,8 +156,10 @@ def _finish(s: Dict[str, Any]) -> Dict[str, Any]:
     return s
 
 
-def plan_slides(part: Dict[str, Any], blocks: List[Dict[str, Any]], part_id: str) -> Dict[str, Any]:
-    """按章节规划幻灯片。blocks 为本章的文章块（已按原文顺序）。"""
+def plan_slides(part: Dict[str, Any], blocks: List[Dict[str, Any]], part_id: str, *,
+                page_cap: int = MAX_SLIDE_ITEMS, element_cap: int = MAX_ELEMENT_ITEMS) -> Dict[str, Any]:
+    """按章节规划幻灯片。blocks 为本章的文章块（已按原文顺序）。
+    page_cap：一页的条目上限；element_cap：一个元素的条目上限（超过则拆分或续页）。"""
     slides: List[Dict[str, Any]] = []
     cur: Optional[Dict[str, Any]] = None
     cur_items = 0
@@ -144,25 +181,36 @@ def plan_slides(part: Dict[str, Any], blocks: List[Dict[str, Any]], part_id: str
                 base_title = title
             cur = new_slide(title, sec)
             cur_items = 0
-            cur_chars = 0
+            cur_chars = len(title)          # 标题也要朗读，计入页面时长
             cur["source_blocks"].append(b.get("id"))
             continue
-        els = elements_of(b) or _fallback(b)
+        els = elements_of(b, element_cap) or _fallback(b, element_cap)
         if not els:
             continue
         if cur is None:
             cur = new_slide(base_title, sec)
             cur_items = 0
-            cur_chars = 0
-        for el in els:
+            cur_chars = len(base_title)
+        pending = [x for e in els for x in _split_by_time(e)]
+        while pending:
+            el = pending.pop(0)
             n = element_count(el)
             c = _element_chars(el)
-            too_many = cur_items + n > MAX_SLIDE_ITEMS
+            too_many = cur_items + n > page_cap
             too_long = cur_chars + c > MAX_PAGE_CHARS
             if cur["elements"] and (too_many or too_long):
                 cur = new_slide(f"{base_title}（续）", sec)
                 cur_items = 0
-                cur_chars = 0
+                cur_chars = len(f"{base_title}（续）")
+                pending.insert(0, el)         # 放回队首，在新页上重新判断（新页的标题也占用时长）
+                continue
+            if too_long and el.get("kind") in ("keypoint", "list", "quote") and len(el.get("items") or []) > 1:
+                head, rest = _take_budget(el, MAX_PAGE_CHARS - cur_chars)
+                if head is not None and rest is not None:
+                    pending.insert(0, rest)
+                    el = head
+                    n = element_count(el)
+                    c = _element_chars(el)
             cur["elements"].append(el)
             cur["source_blocks"].append(b.get("id"))
             cur["_sections"].append(sec)
@@ -173,4 +221,5 @@ def plan_slides(part: Dict[str, Any], blocks: List[Dict[str, Any]], part_id: str
         s["id"] = f"{part_id}.S{i:02d}"
     total_sec = round(sum(s["est_sec"] for s in finished), 1)
     return {"schema": 1, "part": part_id, "title": part.get("title", ""), "mode": "deck",
-            "slides": finished, "total_est_sec": total_sec, "version": DECK_VERSION}
+            "slides": finished, "total_est_sec": total_sec, "version": DECK_VERSION,
+            "page_cap": page_cap, "element_cap": element_cap}

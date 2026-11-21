@@ -83,8 +83,8 @@ def test_v4_rejects_overlong_item_and_too_many_items():
     sc["reveal"] = [{"step": 0, "at_sentence": 0}, {"step": 1, "at_sentence": 1}]
     assert any("密度" in e for e in _verdict([sc], 1)["errors"])
     sc2 = _good_scene(1)
-    sc2["items"] = ["a"] * 9
-    sc2["reveal"] = [{"step": i, "at_sentence": 0} for i in range(9)]
+    sc2["items"] = ["a"] * 13            # 上限为 12（R27 提高后）；超过即报错
+    sc2["reveal"] = [{"step": i, "at_sentence": 0} for i in range(13)]
     assert any("超过上限" in e for e in _verdict([sc2], 1)["errors"])
 
 
