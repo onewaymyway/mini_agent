@@ -95,7 +95,7 @@ def test_compose_renders_a_video_whose_length_matches_the_voice(small_project):
 def test_export_concatenates_parts_into_one_file(small_project):
     compose_deck_part(small_project, "P01")
     out = export_deck_video(small_project)
-    assert out.is_file() and out.name.endswith("_新方案.mp4")
+    assert out.is_file() and "新方案" not in out.name and out.suffix == ".mp4"        # 文件名即文章标题，不再带“_新方案”
 
 
 def test_export_refuses_when_a_part_has_no_video(tmp_path, monkeypatch):

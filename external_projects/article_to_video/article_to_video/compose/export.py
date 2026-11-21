@@ -66,19 +66,36 @@ def _cached(state: Dict[str, Any], step: str, key: str, target: Path) -> bool:
     return state.get(step) == key and target.is_file()
 
 
+class ExportSource:
+    """成片导出的素材来源。默认是现有方案（parts/<章>/video/，输出到 exports/）；
+    新方案（R29）换成 deck 的章视频与 deck/exports/，并把封面合成进成片开头。"""
+
+    def __init__(self, video_dir_of=None, info_of=None, hold_of=None, exports_dir=None, cover_in_video: bool = False,
+                 mark_stage: bool = True):
+        self.video_dir_of = video_dir_of or video_dir
+        self.info_of = info_of
+        self.hold_of = hold_of or _cover_hold
+        self.exports_dir = exports_dir
+        self.cover_in_video = cover_in_video      # True：成片开头放封面（停留 TITLE_SEC 秒，不淡入）
+        self.mark_stage = mark_stage
+
+
 def export_final(pdir: Path, *, part_ids: Optional[List[str]] = None, episode: Optional[Dict[str, Any]] = None,
-                 label: str = "", now: Optional[datetime] = None) -> Dict[str, Any]:
+                 label: str = "", now: Optional[datetime] = None,
+                 source: Optional[ExportSource] = None) -> Dict[str, Any]:
     """导出成片。episode（可选）：{index, total, recap, preview}，用于多期的期号与上期回顾/下期预告。
     label（可选）：文件名后缀，如 「_第2期」「_全集」；同时决定中间文件目录，各期互不覆盖。"""
     pdir = Path(pdir)
     spine = load_spine(pdir)
     if spine is None:
         raise ComposeError("还没有大纲")
+    src = source or ExportSource()
+    exports = Path(src.exports_dir) if src.exports_dir else pdir / "exports"
     ids = part_ids or [p["id"] for p in spine["parts"]]
-    missing = [pid for pid in ids if not (video_dir(pdir, pid) / "part.mp4").is_file()]
+    missing = [pid for pid in ids if not (src.video_dir_of(pdir, pid) / "part.mp4").is_file()]
     if missing:
         raise ComposeError("以下章还没有合成视频：" + "、".join(missing) + "（请先合成本章）")
-    infos = {pid: read_json(video_dir(pdir, pid) / "info.json") for pid in ids}
+    infos = {pid: read_json(src.video_dir_of(pdir, pid) / "info.json") for pid in ids}
     cfg = load_compose_config(pdir)
     from ..app_settings import load_effective_project  # 延迟导入
     project = load_effective_project(pdir)
@@ -99,7 +116,7 @@ def export_final(pdir: Path, *, part_ids: Optional[List[str]] = None, episode: O
     orientation = video.get("orientation", "landscape")
     canvas = canvas_size(orientation, video.get("resolution", "1080P"))
 
-    work = pdir / "exports" / ".work" / (safe_filename(label) if label else "main")
+    work = exports / ".work" / (safe_filename(label) if label else "main")
     work.mkdir(parents=True, exist_ok=True)
     state_path = work / "state.json"
     state: Dict[str, Any] = read_json(state_path) if state_path.is_file() else {}
@@ -107,6 +124,19 @@ def export_final(pdir: Path, *, part_ids: Optional[List[str]] = None, episode: O
     # ---- 1 序列：片头、各章、片尾 ----
     seq: List[Tuple[Path, float]] = []
     holds: List[float] = []   # 每段开头封面的秒数（不淡入，直接显示）
+    if src.cover_in_video:    # 封面合成进成片：开头先放封面（与封面图文件相同的画面）
+        cover_png = work / "cover_card.png"
+        build_cover(canvas=canvas, orientation=orientation, title=title, author=author,
+                    subtitle=cover_subtitle(spine), ai_text=ai_text, wm=wm, pdir=pdir,
+                    source_image=pick_cover_image(pdir, ids)).convert("RGB").save(cover_png)
+        clip = work / "cover.mp4"
+        key = fingerprint({"png": cover_png.stat().st_size, "sec": TITLE_SEC, "canvas": canvas,
+                           "title": title, "author": author, "ai": ai_text, "wm": wm})
+        if state.get("cover") != key or not clip.is_file():
+            make_still_clip(cover_png, TITLE_SEC, clip, canvas)
+            state["cover"] = key
+        seq.append((clip, TITLE_SEC))
+        holds.append(TITLE_SEC)
     ep = episode or {}
     ep_total = int(ep.get("total") or 1)
     if credits.get("title_card"):
@@ -129,8 +159,8 @@ def export_final(pdir: Path, *, part_ids: Optional[List[str]] = None, episode: O
         seq.append((clip, TITLE_SEC))
         holds.append(TITLE_SEC)
     for pid in ids:
-        seq.append((video_dir(pdir, pid) / "part.mp4", float(infos[pid]["duration"])))
-        holds.append(_cover_hold(pdir, pid))
+        seq.append((src.video_dir_of(pdir, pid) / "part.mp4", float(infos[pid]["duration"])))
+        holds.append(src.hold_of(pdir, pid))
     if credits.get("end_card"):
         lines = [(title, "title")]
         if author:
@@ -161,7 +191,6 @@ def export_final(pdir: Path, *, part_ids: Optional[List[str]] = None, episode: O
     starts, total = part_offsets(durations, mode, d)
 
     name = safe_filename(title) + (label or "")
-    exports = pdir / "exports"
     exports.mkdir(parents=True, exist_ok=True)
     meta = _meta(title, author, source_url, ai_text)
 
@@ -175,7 +204,8 @@ def export_final(pdir: Path, *, part_ids: Optional[List[str]] = None, episode: O
 
     # ---- 3 主版本（下三分之一条、角标、BGM） ----
     lower = None
-    lt_at = (TITLE_SEC if credits.get("title_card") else 0.0) + LOWER_AFTER
+    n_lead = (1 if src.cover_in_video else 0) + (1 if credits.get("title_card") else 0)   # 开头的封面 / 片头卡段数
+    lt_at = TITLE_SEC * n_lead + LOWER_AFTER
     body_end = total - (END_SEC if credits.get("end_card") else 0.0)  # 下三分之一条不得压到片尾卡
     if credits.get("lower_third") and lt_at + LOWER_SEC <= body_end:
         png = work / "lower_third.png"
@@ -244,7 +274,7 @@ def export_final(pdir: Path, *, part_ids: Optional[List[str]] = None, episode: O
     # ---- 字幕、封面、校验 ----
     entries = []
     for k, pid in enumerate(ids):
-        off = starts[k + (1 if credits.get("title_card") else 0)]
+        off = starts[k + n_lead]
         for s in infos[pid].get("subtitles", []):
             entries.append({"start": off + float(s["start"]), "end": off + float(s["end"]), "text": s["text"]})
     srt = exports / f"{name}.srt"
@@ -254,7 +284,7 @@ def export_final(pdir: Path, *, part_ids: Optional[List[str]] = None, episode: O
     cover = exports / f"{name}_cover.png"
     cover_img = build_cover(canvas=canvas, orientation=orientation, title=title, author=author,
                             subtitle=cover_subtitle(spine), ai_text=ai_text, wm=wm, pdir=pdir,
-                            source_image=pick_cover_image(pdir, ids))
+                            source_image=pick_cover_image(pdir, ids))   # 与成片开头的封面是同一张图
     cover_img.save(cover)
 
     pr = probe(final)
@@ -266,7 +296,7 @@ def export_final(pdir: Path, *, part_ids: Optional[List[str]] = None, episode: O
         "schema": 1, "title": title, "author": author, "parts": ids, "transition": mode,
         "transition_sec": d, "duration": round(total, 3),
         "sequence": [{"kind": k, "start": round(starts[i], 3), "duration": round(durations[i], 3)}
-                     for i, k in enumerate(_kinds(credits, ids))],
+                     for i, k in enumerate(_kinds(credits, ids, src.cover_in_video))],
         "lower_third": None if not lower else [round(lower[1][0], 3), round(lower[1][1], 3)],
         "corner_tag": bool(corner), "corner_position": credits.get("corner_position") if corner else None, "bgm": bgm["enabled"],
         "watermark": {"enabled": bool(wm.get("enabled")), "mode": wm["mode"], "box": wm_box},
@@ -278,9 +308,10 @@ def export_final(pdir: Path, *, part_ids: Optional[List[str]] = None, episode: O
     write_json_atomic(exports / f"{name}_report.json", report)
     if verdict["errors"]:
         raise ComposeError("成片校验未通过：" + "；".join(verdict["errors"]))
-    raw = load_project(pdir)           # 只写阶段标记：基于原始内容，不写回生效值
-    raw["stage"] = "P6_exported"
-    write_json_atomic(pdir / "project.json", raw)
+    if src.mark_stage:
+        raw = load_project(pdir)       # 只写阶段标记：基于原始内容，不写回生效值
+        raw["stage"] = "P6_exported"
+        write_json_atomic(pdir / "project.json", raw)
     return report
 
 
@@ -291,8 +322,8 @@ def _cover_hold(pdir: Path, part_id: str) -> float:
     return float(tl.get("lead_in_sec", 0.0)) if tl else 0.0
 
 
-def _kinds(credits: Dict[str, Any], ids: List[str]) -> List[str]:
-    out = []
+def _kinds(credits: Dict[str, Any], ids: List[str], cover_in_video: bool = False) -> List[str]:
+    out = ["cover"] if cover_in_video else []
     if credits.get("title_card"):
         out.append("title_card")
     out += ["chapter"] * len(ids)

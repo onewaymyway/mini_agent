@@ -234,50 +234,30 @@ def deck_part_ready(pdir: Path, part_id: str) -> Optional[Dict[str, Any]]:
     return read_json(p) if p.is_file() else None
 
 
+def _deck_hold(pdir: Path, part_id: str) -> float:
+    """章开头章封面的秒数：取新方案时间线的 lead_in_sec。"""
+    tl = load_deck_timeline(pdir, part_id)
+    return float(tl.get("lead_in_sec", 0.0)) if tl else 0.0
+
+
 def export_deck_video(pdir: Path, *, now: Optional[datetime] = None) -> Path:
-    """把各章的新方案视频按章节顺序拼接为一个成片（exports/<标题>_新方案.mp4）。"""
+    """把各章的新方案视频导出为成片 deck/exports/<文章标题>.mp4。
+
+    与现有方案共用同一套导出（R29）：封面合成进成片开头；片头/片尾卡、下三分之一条、角标、BGM、水印按同样的设置叠加；
+    同时输出无水印版 _clean、字幕、封面图与报告。文件名与文章标题一致（两种方案在各自的目录里，互不覆盖）。
+    """
+    from ..compose.export import ExportSource, export_final
+    from .store import deck_home
     pdir = Path(pdir)
     spine = load_spine(pdir)
     if spine is None:
         raise ComposeError("还没有大纲")
-    files = []
     for p in spine["parts"]:
-        f = _out_dir(pdir, p["id"]) / "part.mp4"
-        if not f.is_file():
+        if not (_out_dir(pdir, p["id"]) / "part.mp4").is_file():
             raise ComposeError(f"{p['id']} 还没有新方案视频，请先合成本章")
-        files.append(f)
-    from .store import deck_home
-    exports = deck_home(pdir) / "exports"          # 新方案的成片在 deck/exports/
-    exports.mkdir(parents=True, exist_ok=True)
-    name = safe_filename(spine.get("title") or "video") + "_新方案"
-    lst = exports / f".{name}_concat.txt"
-    lst.write_text("\n".join(f"file '{str(f.resolve()).replace(chr(39), chr(39) * 2 + chr(39))}'" for f in files) + "\n",
-                   encoding="utf-8")
-    out = exports / f"{name}.mp4"
-    ffmpeg(["-f", "concat", "-safe", "0", "-i", str(lst), "-c", "copy", "-movflags", "+faststart", str(out)])
-    lst.unlink(missing_ok=True)
-    _write_cover(pdir, exports, name, spine)
+    source = ExportSource(video_dir_of=_out_dir, hold_of=_deck_hold, exports_dir=deck_home(pdir) / "exports",
+                          cover_in_video=True, mark_stage=False)
+    rep = export_final(pdir, now=now, source=source)
+    out = deck_home(pdir) / "exports" / rep["files"]["video"]
     append_progress(pdir, f"导出新方案成片：{out.name}", now)
-    return out
-
-
-def _write_cover(pdir: Path, exports: Path, name: str, spine: Dict[str, Any]) -> Path:
-    """新方案成片的封面：与现有方案相同的封面设置（标题、作者、副标题、AI 声明、水印）。"""
-    from ..app_settings import load_effective_project
-    from ..compose.branding import resolve_branding
-    from ..compose.cover import build_cover, cover_subtitle
-    project = load_effective_project(pdir)
-    title = project.get("title") or spine.get("title") or "video"
-    branding, _warn = resolve_branding(project)
-    wm = dict(branding["watermark"])
-    wm["mode"] = "diagonal_tile" if wm.get("position") == "diagonal_tile" else wm.get("mode", "static")
-    ai = branding["ai_disclosure"]
-    video = project.get("settings", {}).get("video", {})
-    orientation = video.get("orientation", "landscape")
-    canvas = canvas_size(orientation, video.get("resolution", "1080P"))
-    img = build_cover(canvas=canvas, orientation=orientation, title=title, author=branding.get("author") or "",
-                      subtitle=cover_subtitle(spine), ai_text=ai["text"] if ai.get("enabled") else "", wm=wm,
-                      pdir=pdir, source_image=None)
-    out = exports / f"{name}_cover.png"
-    img.save(out)
     return out

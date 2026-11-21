@@ -4,7 +4,7 @@ import json
 import pytest
 
 from article_to_video.compose.ffrun import ComposeError  # noqa: F401
-from article_to_video.deck.compose import _fit_title, _write_cover, page_state_images
+from article_to_video.deck.compose import _fit_title, page_state_images
 from article_to_video.deck.pipeline import regenerate_deck, reset_deck, run_deck_pipeline
 from article_to_video.planning.errors import PlanError
 from article_to_video.project_store import write_json_atomic
@@ -37,16 +37,6 @@ def test_page_with_many_elements_is_complete_and_within_the_canvas():
     # 最后一页包含全部元素：与第一页相比内容明显增加（说明后续元素没有被挤出画面）
     from PIL import ImageChops
     assert ImageChops.difference(states[0], last).getbbox() is not None
-
-
-def test_cover_is_written_for_the_new_scheme(tmp_path, monkeypatch):
-    monkeypatch.setenv("ARTICLE_TO_VIDEO_HOME", str(tmp_path))
-    pdir = make_project(tmp_path)
-    exports = tmp_path / "x" / "deck" / "exports"
-    exports.mkdir(parents=True)
-    spine = {"title": "测试文章", "parts": []}
-    out = _write_cover(pdir, exports, "测试文章_新方案", spine)
-    assert out.is_file() and out.name == "测试文章_新方案_cover.png"
 
 
 def _deck_project(tmp_path, monkeypatch):
