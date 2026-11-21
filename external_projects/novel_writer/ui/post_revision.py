@@ -551,18 +551,21 @@ def _tab_review(root: Workspace) -> None:
                 "步骤之间自动衔接；开启自动修改后还会自动采纳、改写、增量复评，直到没有可处理的问题。")
     if st.button("一键评估全流程", key="rv_e_pipe", disabled=_busy(root) or _op_running()):
         _start_job(root, "评估全流程", "pipeline", _pipeline_job)
-    with st.expander("清空评估数据（保留版本与已应用的变更）", expanded=False):
-        sm = review_clear.summary(root)
-        st.write(f"将删除：事实卡与问题池等评估文件（review/ {sm['files']['review']} 项、outline/ {sm['files']['outline']} 项、"
-                 f"pipeline/ {sm['files']['pipeline']} 项），尚未执行的评估变更 {len(sm['draft_changes'])} 个，"
-                 f"相关预览 {len(sm['previews'])} 个。")
-        st.caption("保留：全部版本、已应用的变更、手动创建的变更、执行记录、章节正文与设定。删除不可恢复。")
-        ok = st.checkbox("我确认清空以上评估数据", key="rv_clear_ok")
-        if st.button("清空评估数据", key="rv_clear_go", disabled=not ok or _op_running() or _busy(root)):
-            _act(root, "清空评估数据", review_clear.clear, root, confirm=True,
-                 summarize=lambda r: f"删除目录 {len(r['removed_dirs'])} 个，变更 {len(r['removed_changes'])} 个，预览 {len(r['removed_previews'])} 个")
-            st.session_state.pop("rv_verify_res", None)
-            st.session_state.pop("rv_export_text", None)
+    with st.expander("清空评估数据", expanded=False):
+        ok = st.checkbox("我确认清空评估数据（删除不可恢复）", key="rv_clear_ok")
+        for keep, label, key in ((True, "只清空评估数据（保留事实卡）", "rv_clear_keep"),
+                                 (False, "清空全部（包括事实卡）", "rv_clear_all")):
+            sm = review_clear.summary(root, keep_cards=keep)
+            st.write(f"**{label}**：删除评估结果（问题池、缓存、报告、候选、流程状态等，共 "
+                     f"{sum(sm['files'].values())} 项），尚未执行的评估变更 {len(sm['draft_changes'])} 个，"
+                     f"相关预览 {len(sm['previews'])} 个；" +
+                     (f"保留事实卡 {sm['cards_kept']} 项。" if keep else "事实卡也一并删除，之后需要重新生成。"))
+            if st.button(label, key=key, disabled=not ok or _op_running() or _busy(root)):
+                _act(root, label, review_clear.clear, root, confirm=True, keep_cards=keep,
+                     summarize=lambda r: f"删除目录 {len(r['removed_dirs'])} 个，变更 {len(r['removed_changes'])} 个，预览 {len(r['removed_previews'])} 个")
+                st.session_state.pop("rv_verify_res", None)
+                st.session_state.pop("rv_export_text", None)
+        st.caption("保留：全部版本、已应用的变更、手动创建的变更、执行记录、章节正文与设定。")
     ps = review_pipeline.load_state(root)
     if ps:
         with st.expander(f"最近一次全流程（版本 {ps.get('version_start')} → {ps.get('version_end')}，"

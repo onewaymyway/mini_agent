@@ -158,6 +158,7 @@ def main(argv=None) -> int:
     grp.add_argument("--no-auto-fix", action="store_true")
     sp = sub.add_parser("review-clear")
     sp.add_argument("--yes", action="store_true", help="确认清空（必填）")
+    sp.add_argument("--keep-cards", action="store_true", help="保留事实卡，只清空评估结果")
     sp = sub.add_parser("review-export")
     sp.add_argument("--version", default=None)
     sp = sub.add_parser("outline-discard")
@@ -276,7 +277,7 @@ def main(argv=None) -> int:
         if args.cmd == "review-clear":
             if not args.yes:
                 raise FlowError("清空评估数据需要 --yes 确认")
-            return _out(review_clear.clear(ws, confirm=True, progress=_log))
+            return _out(review_clear.clear(ws, confirm=True, keep_cards=args.keep_cards, progress=_log))
         if args.cmd == "review-export":
             res = review_report.export(ws, args.version, progress=_log)
             return _out({k: res[k] for k in ("version", "path", "findings")})

@@ -95,3 +95,29 @@ def test_clear_control_renders_on_review_tab(tmp_path, monkeypatch):
     at = _render(ws, monkeypatch)
     assert not at.exception
     assert any("清空评估数据" in e.label for e in at.expander)
+
+
+def test_keep_cards_clears_results_but_keeps_fact_cards(tmp_path):
+    ws = _ready(tmp_path)
+    adopted, manual = _populate(ws)
+    cards_before = sorted(p.relative_to(revision_root(ws)).as_posix() for p in (revision_root(ws) / "review" / "cards").rglob("*") if p.is_file())
+    assert cards_before
+    res = RCL.clear(ws, confirm=True, keep_cards=True)
+    assert res["keep_cards"] is True
+    cards_after = sorted(p.relative_to(revision_root(ws)).as_posix() for p in (revision_root(ws) / "review" / "cards").rglob("*") if p.is_file())
+    assert cards_after == cards_before                                     # 事实卡一个不少
+    review = revision_root(ws) / "review"
+    assert not any(c.name != "cards" for c in review.iterdir())             # 评估结果都已删除
+    assert adopted["id"] not in {c["id"] for c in CH.list_changes(ws)} and manual["id"] in {c["id"] for c in CH.list_changes(ws)}
+    RK.run_checks(ws)                                                      # 不需要重新生成事实卡
+
+
+def test_keep_cards_summary_reports_cards_kept(tmp_path):
+    ws = _ready(tmp_path)
+    _populate(ws)
+    sm = RCL.summary(ws, keep_cards=True)
+    assert sm["keep_cards"] is True and sm["cards_kept"] > 0
+    assert sm["files"]["review"] >= 0
+    before = sorted(p.name for p in revision_root(ws).rglob("*"))
+    RCL.summary(ws, keep_cards=True)
+    assert sorted(p.name for p in revision_root(ws).rglob("*")) == before   # 预览不改动文件
