@@ -92,6 +92,7 @@ python entrypoints/post_revision.py --novel <dir> outline-list                  
 python entrypoints/post_revision.py --novel <dir> outline-diff --id ol_xxx             # R4 候选与当前蓝图的差异
 python entrypoints/post_revision.py --novel <dir> outline-adopt --id ol_xxx [--chapters 1 3] [--set 3:function=...] [--no-structure]  # R4 采纳为仅大纲的新版本
 python entrypoints/post_revision.py --novel <dir> outline-discard --id ol_xxx          # R4 放弃候选
+python entrypoints/post_revision.py --novel <dir> review-pipeline [--auto-fix | --no-auto-fix]   # 评估全流程：失败自动重试、步骤自动衔接；--auto-fix 本次开启自动修改
 python entrypoints/post_revision.py --novel <dir> outline-check [--version v00N] [--llm]   # R5 以大纲为准的偏离检查（--llm 调用模型；否则只做确定性比对）
 ```
 
@@ -125,7 +126,8 @@ python entrypoints/post_revision.py --novel <dir> outline-check [--version v00N]
 | R4 大纲重生成 | 完成 | `outline_regen.py`、「📚 大纲」页 | 以 head 的正文为准反推「实际写成的大纲」。确定性部分由 Python 产出：章号、章名（保留蓝图章名）、实际字数（取整百作 `word_budget`）、出场人物（事实卡人物经角色档案归一）。LLM 只判断功能（`function`）、类型、视角、张力，以及全书幕划分与主线、支线概要（每批 20 章，另一次调用做幕划分）。结果是候选，写入 `_revision/outline/ol_<id>/`，不进入版本。**逐章 diff**（字段变化、未写出的章节、结构变化）；作者可按章勾选、就地改功能描述、选择是否采用幕划分。采纳时派生「仅大纲」新版本：从 head 复制，只写 `大纲规划/蓝图`（经 `blueprint_store` 写入并严格读回比对），正文哈希不变，追加 `修订记录/蓝图变更日志.md`，定稿并设为 head；可 `discard` 撤销。采纳前若 head 已变化则拒绝，要求重新生成。未写出正文的蓝图章节原样保留。**未做**：章节大纲.md 不重写（由规划步骤的 LLM 生成，重写会丢内容，变更日志注明可能不一致）；章节简述不同步（大纲先行书会提示） |
 | R5 以大纲为准的偏离检查 | 完成 | `outline_check.py`、「📚 大纲」页、问题池 `source="outline"`、`category="outline_deviation"` | 权威大纲 = 检查版本的蓝图（采纳过的重生成大纲即当前蓝图）。**确定性比对**（不调用模型）：正文有而大纲无的章节（多写）、大纲有而正文无的章节（少写）、字数超出预算 1.5 倍或不足 0.6 倍（轻）、出场人物与大纲不一致（轻）。这些是规则比对，统一标轻，且**不提供采纳选项**（只是提示）。**LLM 偏离判断**（每批 20 章，对照大纲条目、章节简述的必须事件与事实卡）：多写、少写、走样、顺序、幕边界。多写 / 走样 / 顺序 / 幕边界必须带正文引文（子串核对，不过则 `evidence_ok=False` 并默认折叠）；少写可无引文。只提供「以大纲为准修改正文」一种处理，经 R3 采纳为 chapter 变更；未写出的章节与多写的章节没有可改的正文，分别交给大纲重生成与正文续写处理。批次结果缓存在 `outline_check_state.json`，键含章节 sha 与大纲内容，改动后只重判受影响批次。问题状态跨重算保留；R1 / R2 的重算不会误删大纲偏离 |
 | R6 收尾 | 完成 | `review_report.py`、CLI、`docs/`、本文档 | 评估报告导出：概况（纳入 / 未纳入章节、丢弃的事实条目、按来源与状态统计、证据未核实数）、改动追踪（已采纳 / 已应用 / 已解决 / 仍存在）、按严重度分组的全部问题（证据与核实标记、模型仲裁结论、变更关联、增量复评新出现、作者备注）。只读整理问题池，写入 `review/rev_<版本>/export.md`；界面「🔎 评估」页提供导出与下载。CLI 子命令与文档已对齐，并有测试逐个检查解析与非 LLM 流程 |
-| 实时进度 | 完成 | `jobs.py`、`ui/post_revision.py` | 生成预览、开始改写、续跑、分诊都在后台线程执行。页面顶部只有一个「当前任务」面板（同一时间只允许一个任务），每 1.5 秒刷新，日志按时间顺序排列、最新在最下（面板显示最近 40 行，完整日志在下方展开项），显示状态、开始时间、已输出行数；包含每章开始判定、每次尝试、判定与校验结果，以及 agent 的逐行输出 |
+| 自动流程 | 完成 | `review_pipeline.py`、设置页、「🔎 评估」页「一键评估全流程」、CLI `review-pipeline` | **失败自动重试**：每个评估步骤（事实卡 / 确定性检查 / LLM 复核 / 大纲偏离 / 报告）最多 `auto_retry_attempts` 次，等待 `auto_retry_backoff_seconds` 起按 1、2、4… 倍递增；FlowError（前置条件不满足）不重试。模型调用单元内部最多 3 次，执行器异常同样退避。步骤内部的单元失败由缓存兜底，重试只做失败的部分。**自动衔接**：步骤之间不需要点按钮；事实卡失败才停止，其它步骤失败只记录并继续，最后汇报。**自动修改**（`auto_fix_enabled`，默认关闭，因为会改写正文）：每轮挑出证据已核实、非矛盾、未驳回、未判误报、严重度不低于 `auto_fix_min_severity` 的 LLM 复核与大纲偏离问题，以证据章节为目标采纳 → 生成预览（模型判定不涉及的章节默认排除）→ 确认 → 改写（失败按续跑自动继续）→ 增量复评 → 大纲偏离检查；最多 `auto_fix_rounds` 轮，某轮没有可处理问题即停止。矛盾类、确定性规则候选从不自动采纳。状态写入 `pipeline/state.json`，结束原因与各轮结果显示在评估页 |
+| 实时进度 | 完成 | `jobs.py`、`ui/post_revision.py` | 生成预览、开始改写、续跑、分诊都在后台线程执行。页面顶部只有一个「当前任务」面板（同一时间只允许一个任务），每 1.5 秒刷新，日志按时间顺序排列、最新在最下（面板显示最近 40 行，完整日志在下方展开项）；页面操作的实时日志与之一样统一放在页面最下方，显示状态、开始时间、已输出行数；包含每章开始判定、每次尝试、判定与校验结果，以及 agent 的逐行输出 |
 | 版本导出与阅读 | 完成 | `derived.py`、`ui/reading.py` | 📖 阅读页顶部可选择工作稿或任一版本（v001 只读完稿、修改版本）；选中版本后预览该版本正文，并可分别导出全书合稿（md / txt / docx / epub）和最终稿。导出文件统一放在 `_versions/exports/<版本号>/`，版本目录不留产物；页面列出该版本已导出的文件供下载。版本快照包含 `项目状态/workspace_config.json`（书名） |
 | 版本差异 | 完成 | `derived.py`、`ui/post_revision.py` | 「查看差异」输出 git 风格的 unified diff（`diff --git` 头、`@@` 块、`+`/`-` 行，带 diff 语法高亮）；先列出变化文件及增删行数，可选单个文件或全部文件；新增/删除文件有 `new file` / `deleted file` 标记 |
 | 操作日志 | 完成 | `ui/post_revision.py` | 每个按钮都经过统一的 `_act`，开始 / 完成（含结果摘要）/ 失败都写入 `jobs/ops.log`，页面底部可展开查看；后台任务另有各自的实时日志 |
@@ -155,6 +157,8 @@ python entrypoints/post_revision.py --novel <dir> outline-check [--version v00N]
 - 流程完全不读写流水线状态；若作者在完稿后又回去用流水线重跑章节，那是独立于本流程的操作，两者不会自动同步。
 
 ## 测试
+
+`tests/test_revision_pipeline.py`（9 例，自动流程）：步骤自动衔接且不擅自采纳、单元失败后步骤自动重试恢复、单步失败不阻断后续、事实卡失败停止、自动修改的采纳 → 预览 → 改写 → 增量复评闭环与终止条件、矛盾类从不自动采纳、严重度门槛、设置边界、界面渲染。
 
 `tests/test_revision_cli_and_report.py`（6 例，R6）：每个 CLI 子命令都能解析 `--help`；非 LLM 的完整流程（确定性检查、估算、问题列表、选项、导出）在真实工作目录上运行；业务错误以退出码 2 返回；评估报告的状态、仲裁、备注与改动追踪；未评估时拒绝导出；导出不改问题池。
 

@@ -21,6 +21,7 @@ from __future__ import annotations
 import datetime as _dt
 import hashlib
 import json
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -31,7 +32,8 @@ from novel_writer.revision_flow.common import FlowError, load_json, save_json, s
 from novel_writer.textio import read_text_lenient
 
 STATE_SCHEMA = 1
-MAX_ATTEMPTS = 2
+MAX_ATTEMPTS = 3
+RETRY_BACKOFF_SECONDS = 3          # 执行器异常时的基础等待（秒），按 1、2、4… 倍递增；输出不合法则立即带错误重试
 SKILL_ADJUDICATE = "consistency-checker"
 SKILL_WINDOW = "consistency-checker"
 SKILL_WHOLE = "revision-editor"
@@ -115,6 +117,10 @@ def _ask(ws, vid: str, *, kind: str, key: str, skill: str, invoker: Invoker, bud
         except Exception as exc:
             errors = [f"执行器异常：{exc}"]
             say(f"  执行器异常：{exc}")
+            if attempt < MAX_ATTEMPTS and RETRY_BACKOFF_SECONDS > 0:
+                wait = RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1))
+                say(f"  {wait} 秒后自动重试")
+                time.sleep(wait)
             continue
         if not out_file.is_file():
             errors = ["没有写出 out.json"]

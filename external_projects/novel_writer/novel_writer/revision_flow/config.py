@@ -23,7 +23,16 @@ DEFAULTS: Dict[str, Any] = {
     "review_dimensions": list(REVIEW_DEFAULT_DIMENSIONS),   # 启用的评估维度；节奏冗余 / 文风漂移默认关闭
     "review_window": 5,                # 衔接审阅的窗口章数（相邻窗口重叠 1 章）
     "review_snippet_chars": 300,       # 仲裁时每处原文片段的前后长度（字）
+    # ── 自动流程（review_pipeline）──
+    "auto_retry_attempts": 3,          # 每个评估步骤（事实卡 / 检查 / 复核 / 偏离 / 导出）最多尝试次数，失败自动重试
+    "auto_retry_backoff_seconds": 5,   # 重试的基础等待秒数，按 1、2、4… 倍递增
+    "auto_fix_enabled": False,         # 自动修改：评估后自动采纳、预览、执行改写、增量复评（会改写正文，需作者明确开启）
+    "auto_fix_rounds": 2,              # 自动修改最多轮数（每轮 = 采纳 → 改写 → 增量复评）
+    "auto_fix_min_severity": "中",     # 自动修改只处理不低于该严重度的问题：严重 / 中 / 轻
 }
+
+# 字符串设置的可选值（未列出的字符串设置只能是 hits / all）
+_STR_CHOICES: Dict[str, tuple] = {"auto_fix_min_severity": ("严重", "中", "轻")}
 
 # (类型, 最小, 最大)
 _BOUNDS: Dict[str, tuple] = {
@@ -38,6 +47,11 @@ _BOUNDS: Dict[str, tuple] = {
     "review_dimensions": (None, None, list),
     "review_window": (2, 20, int),
     "review_snippet_chars": (50, 2000, int),
+    "auto_retry_attempts": (1, 10, int),
+    "auto_retry_backoff_seconds": (0, 300, int),
+    "auto_fix_enabled": (None, None, bool),
+    "auto_fix_rounds": (1, 10, int),
+    "auto_fix_min_severity": (None, None, str),
 }
 
 
@@ -60,8 +74,9 @@ def validate(patch: Dict[str, Any]) -> Dict[str, Any]:
                 raise FlowError(f"{key} 必须是非空列表，取值只能来自 {list(REVIEW_ALL_DIMENSIONS)}")
             value = [d for d in REVIEW_ALL_DIMENSIONS if d in value]   # 去重并按固定顺序
         elif kind is str:
-            if value not in ("hits", "all"):
-                raise FlowError(f"{key} 只能是 hits 或 all")
+            allowed = _STR_CHOICES.get(key, ("hits", "all"))
+            if value not in allowed:
+                raise FlowError(f"{key} 只能是 " + (" 或 ".join(allowed)))
         else:
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise FlowError(f"{key} 必须是数字")

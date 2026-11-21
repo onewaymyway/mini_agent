@@ -33,6 +33,7 @@
     python entrypoints/post_revision.py --novel <dir> outline-discard --id ol_xxx          # R4 放弃候选
     python entrypoints/post_revision.py --novel <dir> outline-check [--version v00N] [--llm]   # R5 以大纲为准的偏离检查（--llm 调用模型；否则只做确定性比对）
     python entrypoints/post_revision.py --novel <dir> review-export [--version v00N]        # R6 导出评估报告（Markdown，写入 _revision/review/rev_<版本>/export.md）
+    python entrypoints/post_revision.py --novel <dir> review-pipeline [--auto-fix | --no-auto-fix]   # 评估全流程：失败自动重试、步骤自动衔接；--auto-fix 本次开启自动修改
     python entrypoints/post_revision.py --novel <dir> stop --run run_xxx                   # 请求停止改写运行（当前章结束后生效）
 """
 
@@ -51,7 +52,7 @@ def _log(text: str) -> None:
 
 from novel_writer.revision_flow import changes as CH
 from novel_writer.revision_flow import config as CFG
-from novel_writer.revision_flow import derived, executor, feedback, outline_check, outline_regen, review_adopt, review_cards, review_checks, review_llm, review_report
+from novel_writer.revision_flow import derived, executor, feedback, outline_check, outline_regen, review_adopt, review_cards, review_checks, review_llm, review_pipeline, review_report
 from novel_writer.revision_flow import versions as V
 from novel_writer.revision_flow.common import FlowError
 from novel_writer.workspace import Workspace
@@ -150,6 +151,10 @@ def main(argv=None) -> int:
     sp = sub.add_parser("outline-check")
     sp.add_argument("--version", default=None)
     sp.add_argument("--llm", action="store_true", help="调用模型做 LLM 偏离判断")
+    sp = sub.add_parser("review-pipeline")
+    grp = sp.add_mutually_exclusive_group()
+    grp.add_argument("--auto-fix", action="store_true")
+    grp.add_argument("--no-auto-fix", action="store_true")
     sp = sub.add_parser("review-export")
     sp.add_argument("--version", default=None)
     sp = sub.add_parser("outline-discard")
@@ -260,6 +265,11 @@ def main(argv=None) -> int:
         if args.cmd == "outline-check":
             res = outline_check.run_check(ws, args.version, _invoker() if args.llm else None, progress=_log)
             return _out({k: res[k] for k in ("version", "counts", "calls", "failed", "llm")})
+        if args.cmd == "review-pipeline":
+            fix = True if args.auto_fix else (False if args.no_auto_fix else None)
+            res = review_pipeline.run(ws, _invoker(), progress=_log, auto_fix=fix)
+            return _out({k: res[k] for k in ("version_start", "version_end", "steps", "stopped_reason",
+                                              "pending_adoptable")})
         if args.cmd == "review-export":
             res = review_report.export(ws, args.version, progress=_log)
             return _out({k: res[k] for k in ("version", "path", "findings")})

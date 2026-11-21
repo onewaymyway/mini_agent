@@ -19,7 +19,7 @@ import streamlit as st
 
 from novel_writer.revision_flow import changes as CH
 from novel_writer.revision_flow import config as CFG
-from novel_writer.revision_flow import derived, executor, feedback, jobs, outline_check, outline_regen, review_report
+from novel_writer.revision_flow import derived, executor, feedback, jobs, outline_check, outline_regen, review_pipeline, review_report
 from novel_writer.revision_flow import review_adopt, review_cards, review_checks, review_llm
 from novel_writer.revision_flow import versions as V
 from novel_writer.revision_flow.common import FlowError, sub_dir
@@ -287,6 +287,10 @@ def _outline_check_job(ws: Workspace, name: str, progress) -> Dict[str, Any]:
     return {"counts": res["counts"], "calls": res["calls"], "failed": len(res["failed"])}
 
 
+def _pipeline_job(ws: Workspace, name: str, progress) -> Dict[str, Any]:
+    return review_pipeline.run(ws, jobs.make_invoker(ws, name, _invoker()), progress=progress)
+
+
 def _increment_job(ws: Workspace, name: str, progress) -> Dict[str, Any]:
     return review_adopt.increment(ws, jobs.make_invoker(ws, name, _invoker()), progress=progress)
 
@@ -542,7 +546,22 @@ def _tab_review(root: Workspace) -> None:
     if not V.is_baseline_ready(root):
         st.info("全书评估只在完稿后可用：请先在「版本」页创建 v001。")
         return
-    st.caption("只读 head 版本：不改版本、不写流水线状态。所有问题都由作者裁决，不会自动修改任何章节。")
+    st.caption("只读 head 版本：不改版本、不写流水线状态。问题的采纳与修改由作者决定（设置中可开启自动修改）。")
+    st.markdown("**一键评估全流程**：事实卡 → 确定性检查 → LLM 复核 → 大纲偏离 → 报告。每步失败自动重试，"
+                "步骤之间自动衔接；开启自动修改后还会自动采纳、改写、增量复评，直到没有可处理的问题。")
+    if st.button("一键评估全流程", key="rv_e_pipe", disabled=_busy(root) or _op_running()):
+        _start_job(root, "评估全流程", "pipeline", _pipeline_job)
+    ps = review_pipeline.load_state(root)
+    if ps:
+        with st.expander(f"最近一次全流程（版本 {ps.get('version_start')} → {ps.get('version_end')}，"
+                         f"{'含自动修改' if ps.get('auto_fix') else '不自动修改'}）", expanded=False):
+            st.write("结束原因：" + (ps.get("stopped_reason") or "（未结束）"))
+            st.dataframe([{"步骤": review_pipeline.STEP_LABEL[k], "结果": "成功" if v["ok"] else "未成功",
+                           "说明": v["detail"]} for k, v in ps.get("steps", {}).items()],
+                         hide_index=True, use_container_width=True)
+            for r in ps.get("rounds", []):
+                st.write(f"第 {r['round']} 轮：采纳 {len(r['adopted'])} 条，改写 "
+                         f"{(r.get('run') or {}).get('status', '—')}，增量复评 {r.get('increment', '—')}")
     est = review_cards.estimate(root)
     c1, c2, c3 = st.columns(3)
     c1.metric("章节数", est["chapters"])
@@ -769,6 +788,13 @@ def _tab_settings(root: Workspace) -> None:
         max_ch = c1.number_input("单次运行最多章数", 1, 200, int(cur["max_chapters_per_run"]), key="rv_s_ch")
         max_calls = c2.number_input("单次运行最多 LLM 调用", 1, 1000, int(cur["max_llm_calls_per_run"]), key="rv_s_calls")
         attempts = c1.number_input("单章最多尝试次数", 1, 5, int(cur["max_attempts_per_chapter"]), key="rv_s_att")
+        retry_n = c2.number_input("评估步骤最多尝试次数", 1, 10, int(cur["auto_retry_attempts"]), key="rv_s_retry")
+        backoff = c1.number_input("重试基础等待（秒）", 0, 300, int(cur["auto_retry_backoff_seconds"]), key="rv_s_backoff")
+        auto_fix = c2.checkbox("评估后自动修改（会自动采纳、改写正文并增量复评，需确认）", value=bool(cur["auto_fix_enabled"]),
+                               key="rv_s_autofix")
+        fix_rounds = c1.number_input("自动修改最多轮数", 1, 10, int(cur["auto_fix_rounds"]), key="rv_s_fixrounds")
+        fix_sev = c2.selectbox("自动修改的最低严重度", ["严重", "中", "轻"],
+                               index=["严重", "中", "轻"].index(cur["auto_fix_min_severity"]), key="rv_s_fixsev")
         scope = c2.selectbox("语义判定候选范围", ["hits", "all"], index=0 if cur["review_scope"] == "hits" else 1,
                              format_func=lambda s: "只判定命中定位词的章节" if s == "hits" else "全书逐章判定（成本高，能找到指代）",
                              key="rv_s_scope")
@@ -779,7 +805,10 @@ def _tab_settings(root: Workspace) -> None:
     if saved:
         patch = {"max_chapters_per_run": int(max_ch), "max_llm_calls_per_run": int(max_calls),
                  "max_attempts_per_chapter": int(attempts), "review_scope": scope,
-                 "length_ratio_min": float(lo), "length_ratio_max": float(hi), "stop_on_failure": bool(stop)}
+                 "length_ratio_min": float(lo), "length_ratio_max": float(hi), "stop_on_failure": bool(stop),
+                 "auto_retry_attempts": int(retry_n), "auto_retry_backoff_seconds": int(backoff),
+                 "auto_fix_enabled": bool(auto_fix), "auto_fix_rounds": int(fix_rounds),
+                 "auto_fix_min_severity": fix_sev}
         _act(root, "保存设置", CFG.update, root, patch, summarize=lambda s: f"候选范围 {s['review_scope']}")
 
 
