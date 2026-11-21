@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from ..validators.fidelity import norm_key
-from .plan import MAX_ELEMENT_ITEMS, MAX_SLIDE_ITEMS, _text, element_count
+from .plan import MAX_ELEMENT_ITEMS, MAX_PAGE_ELEMENTS, MAX_SLIDE_ITEMS, _text, element_count
 
 PAGE_WARN_SEC = 60.0   # 单页讲解超过这个秒数给出警告（建议拆页）
 ELEMENT_KINDS = ("keypoint", "list", "quote", "diagram", "formula", "table")
@@ -87,6 +87,8 @@ def validate_deck(deck: Dict[str, Any], blocks: List[Dict[str, Any]], *, page_ca
             for t in texts:
                 if t and norm_key(str(t)) and norm_key(str(t)) not in src:
                     errors.append(f"{sid}：「{str(t)[:16]}」不在原文中")
+        if len(els) > MAX_PAGE_ELEMENTS:       # 只提示：连续前言等不可拆的组可能无法避免，不作为错误以免修复无解
+            warnings.append(f"{sid}：{len(els)} 个元素，超过 {MAX_PAGE_ELEMENTS}，文字可能偏小，建议拆页")
         if float(s.get("est_sec", 0)) > PAGE_WARN_SEC:
             warnings.append(f"{sid}：讲解约 {s['est_sec']:.0f} 秒，超过 {PAGE_WARN_SEC:.0f} 秒，建议拆页")
     # 覆盖：原文中有内容的块都应被某一页承载

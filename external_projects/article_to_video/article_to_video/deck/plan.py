@@ -13,9 +13,10 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional
 
-DECK_VERSION = "deck-rules-v3"
+DECK_VERSION = "deck-rules-v4"
 MAX_SLIDE_ITEMS = 12         # 一页的条目上限（实测：多元素同页时仍可放下；超过则续页）
 MAX_ELEMENT_ITEMS = 12        # 一个元素的条目上限（超过则拆分到多个元素）
+MAX_PAGE_ELEMENTS = 6         # 一页的元素个数上限（R31：元素太多时卡片内边距与间距占掉大半高度，字会很小；超过则续页）
 RETRY_CAPS = ((12, 12), (8, 8), (5, 5))   # 规划不合格时依次改用更细的分页重试
 SPEECH_CHARS_PER_SEC = 4.2    # 讲解语速估算（字/秒）
 PAGE_OVERHEAD_SEC = 2.0       # 每页的固定停顿
@@ -277,7 +278,8 @@ def plan_slides(part: Dict[str, Any], blocks: List[Dict[str, Any]], part_id: str
     def fits(pg: Dict[str, Any], grp: List[Dict[str, Any]]) -> bool:
         n = sum(element_count(e) for e in grp)
         c = sum(_element_chars(e) for e in grp)
-        return pg["items"] + n <= page_cap and pg["chars"] + c <= MAX_PAGE_CHARS
+        return (pg["items"] + n <= page_cap and pg["chars"] + c <= MAX_PAGE_CHARS
+                and len(pg["els"]) + len(grp) <= MAX_PAGE_ELEMENTS)
 
     def open_page(title: str, sec: Any, cont: bool) -> Dict[str, Any]:
         pg = {"title": title, "sec": sec, "cont": cont, "els": [], "items": 0,
@@ -353,6 +355,7 @@ def _merge_tails(pages: List[Dict[str, Any]], page_cap: int) -> List[Dict[str, A
         prev = out[-1] if out else None
         if (prev is not None and pg["cont"] and prev["sec"] == pg["sec"] and pg["items"] <= MIN_TAIL_ITEMS
                 and prev["items"] + pg["items"] <= page_cap
+                and len(prev["els"]) + len(pg["els"]) <= MAX_PAGE_ELEMENTS
                 and prev["chars"] + pg["chars"] - len(pg["title"]) <= MAX_PAGE_CHARS):
             prev["els"] += pg["els"]
             prev["items"] += pg["items"]

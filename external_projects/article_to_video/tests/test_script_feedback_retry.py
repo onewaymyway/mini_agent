@@ -72,7 +72,7 @@ def test_only_the_failing_page_is_redone_and_good_pages_are_kept(tmp_path, monke
     write_json_atomic(pdir / "plan" / "spine.json",
                       {"title": "t", "confirmed": True,
                        "parts": [{"id": "P01", "title": "章", "role": "claim", "one_line": "", "weight": 1.0,
-                                  "budget_minutes": 6.0, "section_ids": ["s01", "s02", "s03"]}]})
+                                  "budget_minutes": 6.0, "section_ids": ["s01", "s02"]}]})
     plan_deck(pdir, "P01")
     confirm_deck(pdir, "P01")
     llm = ScriptedLLM(lambda p, n: _respond_good(p, n, short_until=1))
