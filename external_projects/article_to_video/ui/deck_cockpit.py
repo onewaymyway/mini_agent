@@ -130,7 +130,7 @@ def render_control(pdir: Path) -> None:
             def run_all():
                 prov = _providers(pdir, offline)
                 out = run_deck_pipeline(pdir, gear=gear, until=until, approve=approve, max_images=mi,
-                                        max_minutes=mm, llm=prov["llm"], tts=prov["tts"])
+                                        max_minutes=mm, llm=prov["llm"], tts=prov["tts"], image=prov["image"])
                 if out["state"] == "done":
                     return {"state": "done", "message": "新方案已完成"}
                 if out["state"] == "waiting":
@@ -154,7 +154,7 @@ def render_control(pdir: Path) -> None:
                 prov = _providers(pdir, offline)
                 out = regenerate_deck(pdir, keep_audio=keep_audio, confirm=True, gear=gear, until=until,
                                       approve=approve, max_images=mi, max_minutes=mm,
-                                      llm=prov["llm"], tts=prov["tts"])
+                                      llm=prov["llm"], tts=prov["tts"], image=prov["image"])
                 st_ = out["status"]
                 if st_["state"] == "done":
                     return {"state": "done", "message": f"已清空 {len(out['removed'])} 项并重新生成完成"}
@@ -271,7 +271,10 @@ def render_export(pdir: Path) -> None:
     c1, c2 = st.columns(2)
     if c1.button("合成全部章（后台）", key="deck_compose_go"):
         def job():
-            return _run_per_part(pdir, "compose", parts, lambda pid: compose_deck_part(pdir, pid), "章合成")
+            prov = _providers(pdir, offline=False)           # 背景插图需要生图服务与文本模型（主体描述）
+            return _run_per_part(pdir, "compose", parts,
+                                 lambda pid: compose_deck_part(pdir, pid, image=prov["image"], llm=prov["llm"]),
+                                 "章合成")
         if jobs.start(pdir, "新方案：章合成", job, scope="deck"):
             st.rerun()
     if c2.button("导出新方案成片（后台）", key="deck_export_go"):

@@ -386,6 +386,7 @@ _IMPACT: List[Tuple[str, str]] = [
     ("settings.tts.tail_sec", "只重建时间轴，再重新渲染画面、合成（不重新配音、不重写分镜、不重新生图）（章尾停顿变化）"),
     ("settings.llm", "无：只影响之后的大模型请求，不改动已生成的产物"),
     ("visual.images.use_system_proxy", "无：只影响之后的生图请求，不改动已生成的产物"),
+    ("visual.deck_background", "新方案：重新合成章视频即可（背景图按输入复用，改压暗度不重新生图）"),
     ("settings.tts", "配音、章合成与导出"),
     ("visual", "分镜（插图预算与风格）、画面渲染、章合成与导出"),
     ("compose.subtitles", "章合成与导出（字幕，不重渲染画面）"),

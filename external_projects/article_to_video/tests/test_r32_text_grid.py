@@ -103,4 +103,4 @@ def test_real_article_pages_are_all_legible():
 
 
 def test_render_version_bumped():
-    assert RENDER_VERSION == "deck-render-v3"
+    assert RENDER_VERSION == "deck-render-v4"

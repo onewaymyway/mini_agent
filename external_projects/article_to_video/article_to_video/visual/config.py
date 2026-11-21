@@ -31,6 +31,8 @@ def default_visual() -> Dict[str, Any]:
         "storyboard": {"strict_coverage": False, "subject_from_source": False},
         # 新方案排版（R30）：一页内容多、字会被缩得很小时，把元素分成左右两栏（可关闭）
         "deck_layout": {"columns": True},
+        # 新方案页面背景插图（R34）：默认开启；还需要「启用 AI 插图」。darken 为基础压暗度（0..1，越大越暗）
+        "deck_background": {"enabled": True, "darken": 0.55},
     }
 
 
@@ -65,6 +67,15 @@ def normalize_visual(raw: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, An
     if not 1 <= shots <= 3:
         warnings.append(f"每图镜头数 {shots} 超出 1–3，已限制在范围内")
     shots = min(3, max(1, shots))
+    db_raw = raw.get("deck_background") if isinstance(raw.get("deck_background"), dict) else {}
+    try:
+        darken = float(db_raw.get("darken", base["deck_background"]["darken"]))
+    except (TypeError, ValueError):
+        darken = base["deck_background"]["darken"]
+        warnings.append("背景压暗度不是数字，已改用默认值")
+    if not 0.3 <= darken <= 0.8:
+        warnings.append(f"背景压暗度 {darken} 超出 0.3–0.8，已限制在范围内")
+    darken = min(0.8, max(0.3, darken))
     out = {
         "theme": theme,
         "bible": {"style_anchor": anchor[:300]},
@@ -82,6 +93,8 @@ def normalize_visual(raw: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, An
         },
         "deck_layout": {"columns": bool((raw.get("deck_layout") if isinstance(raw.get("deck_layout"), dict) else {})
                                         .get("columns", True))},
+        "deck_background": {"enabled": bool(db_raw.get("enabled", base["deck_background"]["enabled"])),
+                            "darken": round(darken, 2)},
     }
     return out, warnings
 

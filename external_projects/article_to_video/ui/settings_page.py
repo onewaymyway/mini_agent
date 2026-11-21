@@ -74,6 +74,9 @@ FIELDS = {
         {"path": "storyboard.strict_coverage", "label": "严格覆盖：公式、递进、概念、流程、表格、列表未被镜头承载时本章分镜失败（默认关闭=只提示）", "kind": "bool"},
         {"path": "deck_layout.columns", "label": "新方案排版：一页内容多、文字会被缩得很小时，分成左右两栏（默认开启）", "kind": "bool"},
         {"path": "storyboard.subject_from_source", "label": "插图主体必须出自原文的具象类比（默认关闭）", "kind": "bool"},
+        {"path": "deck_background.enabled", "label": "新方案：页面背景插图（按节共用，默认开启；需要「启用 AI 插图」，无生图 key 时自动用渐变）", "kind": "bool"},
+        {"path": "deck_background.darken", "label": "新方案：背景压暗度（0.3 浅 – 0.8 深，默认 0.55，保证文字可读）", "kind": "number",
+         "min": 0.3, "max": 0.8, "step": 0.05},
     ],
     "compose": [
         {"path": "transition", "label": "章间转场", "kind": "select", "options": list(TRANSITIONS), "labels": LABELS["transition"]},

@@ -22,16 +22,19 @@ from ..compose.export import safe_filename
 from ..planning.runner import load_spine
 from ..project_store import append_progress, now_iso, read_json, write_json_atomic
 from ..render.fonts import load_font
-from ..render.renderers import render_background, render_chapter_card, render_scene_frames
+from ..render.renderers import (render_background, render_chapter_card, render_illustration_background,
+                                render_scene_frames)
 from ..render.text import wrap_text
 from ..render.themes import canvas_size, get_theme
 from ..validators.compose import check_video
 from ..visual.config import load_visual_config
+from .background import (DEFAULT_DARKEN, ensure_section_backgrounds, page_background_params, plan_sections,
+                         section_key)
 from .script import load_script
 from .voice import load_deck_timeline
 from .store import deck_root, load_deck
 
-RENDER_VERSION = "deck-render-v3"
+RENDER_VERSION = "deck-render-v4"   # v4（R34）：页面背景插图（按节共用）
 
 
 def _out_dir(pdir: Path, part_id: str) -> Path:
@@ -91,7 +94,9 @@ def _crop_to_content(img):
 
 
 def page_state_images(page: Dict[str, Any], slide: Dict[str, Any], canvas, orientation: str,
-                      theme_name: str, *, columns: bool = True, meta: Optional[Dict[str, Any]] = None) -> List[Any]:
+                      theme_name: str, *, columns: bool = True, meta: Optional[Dict[str, Any]] = None,
+                      background: Optional[Path] = None, bg_focus: float = 0.5,
+                      bg_darken: float = DEFAULT_DARKEN) -> List[Any]:
     """页面的状态图：第 k 张显示前 k+1 个元素（背景 + 标题 + 已出现的元素）。
 
     排版见 deck/layout.py（R30）：先按高度预算让渲染器自己缩字号/分栏，不够再把元素分成左右两栏，
@@ -100,7 +105,13 @@ def page_state_images(page: Dict[str, Any], slide: Dict[str, Any], canvas, orien
     from PIL import Image
     from .layout import layout_page
     W, H = canvas
-    bg = render_background(canvas, theme_name).convert("RGBA")
+    if background is not None:              # 背景插图（R34）：按取景与压暗度铺满画面
+        bg = render_illustration_background(Path(background), canvas, bg_focus, theme_name,
+                                            darken=bg_darken).convert("RGBA")
+    else:                                   # 没有插图：原来的渐变背景
+        bg = render_background(canvas, theme_name).convert("RGBA")
+    if meta is not None:
+        meta["background"] = background is not None
     title = _fit_title(canvas, orientation, theme_name, slide.get("title", page.get("title", "")))
     top = int(H * 0.03) + title.size[1] + int(H * 0.03)
     body_h = H - top - int(H * 0.04)
@@ -135,7 +146,9 @@ def page_state_images(page: Dict[str, Any], slide: Dict[str, Any], canvas, orien
 
 def build_segments(pdir: Path, part_id: str, deck: Dict[str, Any], tl: Dict[str, Any], canvas, orientation: str,
                    theme_name: str, chapter: Dict[str, str], *, columns: bool = True,
-                   layout_log: Optional[List[Dict[str, Any]]] = None) -> Tuple[List[Tuple[Path, float]], float]:
+                   layout_log: Optional[List[Dict[str, Any]]] = None,
+                   backgrounds: Optional[Dict[str, Optional[Path]]] = None,
+                   bg_darken: float = DEFAULT_DARKEN) -> Tuple[List[Tuple[Path, float]], float]:
     """生成 PNG 图层与各自的显示时长（concat 列表用）。返回 (图层列表, 总时长)。
     layout_log 非空时追加每页的排版信息（页号、分栏与否、实际字号、是否过小）。"""
     vdir = _out_dir(pdir, part_id)
@@ -150,10 +163,16 @@ def build_segments(pdir: Path, part_id: str, deck: Dict[str, Any], tl: Dict[str,
     card.save(cpath)
     segs.append((cpath, lead))
     pages = tl["pages"]
+    seen: Dict[str, int] = {}               # 同一节内第几页（用于取景与压暗度的变化）
     for pi, page in enumerate(pages):
         slide = slides[page["id"]]
         meta: Dict[str, Any] = {}
-        states = page_state_images(page, slide, canvas, orientation, theme_name, columns=columns, meta=meta)
+        key = section_key(page, slide)
+        j = seen.get(key, 0)
+        seen[key] = j + 1
+        focus, dark = page_background_params(j, bg_darken)
+        states = page_state_images(page, slide, canvas, orientation, theme_name, columns=columns, meta=meta,
+                                   background=(backgrounds or {}).get(key), bg_focus=focus, bg_darken=dark)
         if layout_log is not None:
             layout_log.append(dict(meta, id=page["id"]))
         reveals = page["reveals"] or [{"element": 0, "at_sec": page["start"]}]
@@ -186,8 +205,12 @@ def _concat_list(segs: List[Tuple[Path, float]], path: Path) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def compose_deck_part(pdir: Path, part_id: str, *, now: Optional[datetime] = None) -> Dict[str, Any]:
-    """渲染并合成一章的新方案视频（parts/<章>/deck_video/part.mp4）。"""
+def compose_deck_part(pdir: Path, part_id: str, *, now: Optional[datetime] = None,
+                      image=None, llm=None) -> Dict[str, Any]:
+    """渲染并合成一章的新方案视频（parts/<章>/deck_video/part.mp4）。
+
+    image：生图服务（None 表示无 key，不生图）；llm：文本模型，用于为各节写画面主体（可省略）。
+    背景插图按节生成并缓存（R34）；关闭或无生图服务时使用渐变背景。"""
     pdir = Path(pdir)
     deck = load_deck(pdir, part_id)
     tl = load_deck_timeline(pdir, part_id)
@@ -209,10 +232,25 @@ def compose_deck_part(pdir: Path, part_id: str, *, now: Optional[datetime] = Non
     vdir = _out_dir(pdir, part_id)
     vdir.mkdir(parents=True, exist_ok=True)
     joblog.bound_log(f"{part_id}：开始渲染 {len(tl['pages'])} 页画面（{canvas[0]}×{canvas[1]}）")
-    columns = bool(load_visual_config(pdir).get("deck_layout", {}).get("columns", True))
+    vcfg = load_visual_config(pdir)
+    columns = bool(vcfg.get("deck_layout", {}).get("columns", True))
+    bg_cfg = vcfg.get("deck_background", {})
+    bg_darken = float(bg_cfg.get("darken", DEFAULT_DARKEN))
+    backgrounds: Dict[str, Optional[Path]] = {}
+    if bg_cfg.get("enabled", True) and vcfg.get("images", {}).get("enabled", True):
+        slides_by_id = {s["id"]: s for s in deck["slides"]}
+        sections = plan_sections(tl["pages"], slides_by_id)
+        backgrounds = ensure_section_backgrounds(
+            pdir, part_id, sections, provider=image, style_anchor=vcfg["bible"]["style_anchor"],
+            orientation=orientation, size=vcfg["images"]["size"], llm=llm)
+        ok = sum(1 for v in backgrounds.values() if v)
+        joblog.bound_log(f"{part_id}：背景 {len(sections)} 节，插图 {ok} 节，渐变 {len(sections) - ok} 节")
+    else:
+        joblog.bound_log(f"{part_id}：背景插图已关闭，使用渐变背景")
     layout_log: List[Dict[str, Any]] = []
     segs, total = build_segments(pdir, part_id, deck, tl, canvas, orientation, theme_name, chapter,
-                                 columns=columns, layout_log=layout_log)
+                                 columns=columns, layout_log=layout_log,
+                                 backgrounds=backgrounds, bg_darken=bg_darken)
     for m in layout_log:
         if m.get("mode") == "columns":
             joblog.bound_log(f"{m['id']}：内容较多，分两栏显示（实际字号约 {m['effective_px']:.0f}px）")
@@ -239,6 +277,7 @@ def compose_deck_part(pdir: Path, part_id: str, *, now: Optional[datetime] = Non
     info = {"schema": 1, "part": part_id, "title": title, "canvas": list(canvas), "fps": FPS,
             "duration": round(total, 3), "pages": len(tl["pages"]), "segments": len(segs),
             "layout": layout_log, "small_text_pages": [m["id"] for m in layout_log if m.get("small")],
+            "backgrounds": {k: (v.name if v else None) for k, v in backgrounds.items()},
             "column_pages": [m["id"] for m in layout_log if m.get("mode") == "columns"],
             "render_version": RENDER_VERSION, "rendered_at": now_iso(now), "deck_sha": deck.get("input_sha")}
     write_json_atomic(vdir / "info.json", info)

@@ -56,7 +56,7 @@ def _save(pdir: Path, status: Dict[str, Any], now: Optional[datetime]) -> None:
 
 def run_deck_pipeline(pdir: Path, *, gear: str = "G0", until: str = "export", approve: bool = False,
                       max_images: Optional[int] = None, max_minutes: Optional[float] = None,
-                      llm=None, tts=None, now: Optional[datetime] = None) -> Dict[str, Any]:
+                      llm=None, tts=None, image=None, now: Optional[datetime] = None) -> Dict[str, Any]:
     """运行新方案的一键流程，返回状态 {state: done|waiting|failed, stage, waiting, error, steps, outputs}。"""
     pdir = Path(pdir)
     if until not in STAGES:
@@ -142,7 +142,7 @@ def run_deck_pipeline(pdir: Path, *, gear: str = "G0", until: str = "export", ap
         start_stage("compose")
         for p in parts:
             cancel.check()
-            compose_deck_part(pdir, p["id"], now=now)
+            compose_deck_part(pdir, p["id"], now=now, image=image, llm=llm)
         done_stage("compose", f"{len(parts)} 章视频合成完成")
         if STAGES.index("compose") >= stop_after:
             return _finish(pdir, status, now)
