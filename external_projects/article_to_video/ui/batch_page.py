@@ -235,6 +235,16 @@ def _monitor(root_str: str) -> None:
     else:
         st.info("队列是空的。在上面加入文章。")
 
+    # 当前正在运行的那一篇：显示其项目日志（流水线的详细步骤），随监控刷新
+    running = next((i for i in data["items"] if i["state"] == "running" and i.get("project_id")), None)
+    if running:
+        from article_to_video import joblog
+        pdir = root / running["project_id"]
+        st.markdown(f"**当前文章的运行日志**　·　《{running['title']}》")
+        tail = joblog.tail(pdir, 160)
+        text = "\n".join(joblog.format_row(r) for r in tail) if tail else "（还没有日志）"
+        st.code(text, language=None)
+
     removable = [i for i in data["items"] if i["state"] != "running"]
     if removable:
         r1, r2 = st.columns([3, 1])

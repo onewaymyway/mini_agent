@@ -42,24 +42,30 @@ def default_pipeline_runner(pdir: Path, params: Dict[str, Any]) -> Dict[str, Any
     """按共用参数运行一遍流水线（旧方案或新方案，由 params["scheme"] 决定）。
     引擎配置不可用等异常会抛出，由调用方当作一次失败。"""
     from ..app_settings import effective_group
+    from ..pipeline.run import SCOPE as OLD_SCOPE
     scheme = params.get("scheme", "old")
-    prov = default_providers(pdir)
-    joblog.bound_log(f"批量：本篇使用{'新方案（幻灯片）' if scheme == 'new' else '旧方案'}，"
-                     f"挡位 {params['gear']}，运行到「{params['until']}」")
-    if scheme == "new":
-        if params.get("merge_all"):
-            joblog.bound_log("批量：新方案暂不支持「多期合并版」，本次忽略该选项", level="warn")
-        from ..deck.pipeline import run_deck_pipeline
-        return run_deck_pipeline(pdir, gear=params["gear"], until=params["until"],
-                                 approve=bool(params.get("auto_export", True)),
-                                 max_images=params["max_images"] or None,
-                                 max_minutes=params["max_minutes"] or None,
-                                 llm=prov["llm"], tts=prov["tts"], image=prov["image"])
-    outline_engine = effective_group(pdir, "pipeline")["outline_engine"]
-    return run_pipeline(pdir, until=params["until"], gear=params["gear"],
-                        max_images=params["max_images"] or None, max_minutes=params["max_minutes"] or None,
-                        approve=bool(params.get("auto_export", True)), llm=prov["llm"], tts=prov["tts"], image_provider=prov["image"],
-                        merge_all=params["merge_all"], outline_engine=outline_engine)
+    # 绑定本篇项目的日志：流水线内部的详细日志（大纲、讲稿、配音、合成…）才能写入项目日志，批量监控页可见。
+    # 旧方案的 run_pipeline 自己也会绑定同一项目的 scope；新方案没有绑定，必须在这里绑定。
+    scope = "deck" if scheme == "new" else OLD_SCOPE
+    with joblog.bind(pdir, scope):
+        prov = default_providers(pdir)
+        joblog.bound_log(f"批量：本篇使用{'新方案（幻灯片）' if scheme == 'new' else '旧方案'}，"
+                         f"挡位 {params['gear']}，运行到「{params['until']}」")
+        if scheme == "new":
+            if params.get("merge_all"):
+                joblog.bound_log("批量：新方案暂不支持「多期合并版」，本次忽略该选项", level="warn")
+            from ..deck.pipeline import run_deck_pipeline
+            return run_deck_pipeline(pdir, gear=params["gear"], until=params["until"],
+                                     approve=bool(params.get("auto_export", True)),
+                                     max_images=params["max_images"] or None,
+                                     max_minutes=params["max_minutes"] or None,
+                                     llm=prov["llm"], tts=prov["tts"], image=prov["image"])
+        outline_engine = effective_group(pdir, "pipeline")["outline_engine"]
+        return run_pipeline(pdir, until=params["until"], gear=params["gear"],
+                            max_images=params["max_images"] or None, max_minutes=params["max_minutes"] or None,
+                            approve=bool(params.get("auto_export", True)), llm=prov["llm"], tts=prov["tts"],
+                            image_provider=prov["image"], merge_all=params["merge_all"],
+                            outline_engine=outline_engine)
 
 
 def request_stop(root: Path) -> None:

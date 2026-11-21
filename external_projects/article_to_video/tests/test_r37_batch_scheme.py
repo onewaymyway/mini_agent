@@ -49,10 +49,9 @@ def test_new_scheme_warns_that_merge_all_is_ignored(small_project, monkeypatch):
     from article_to_video import joblog
     monkeypatch.setattr(runner, "default_providers", lambda pdir: {"llm": None, "tts": None, "image": None})
     monkeypatch.setattr(dp, "run_deck_pipeline", lambda pdir, **kw: {"state": "done"})
-    with joblog.bind(small_project, "batch"):
-        runner.default_pipeline_runner(small_project, {"scheme": "new", "gear": "G0", "until": "export",
-                                                       "max_images": 0, "max_minutes": 0.0,
-                                                       "merge_all": True, "auto_export": True})
-    msgs = [r["message"] for r in joblog.tail(small_project, scopes=["batch"])]
+    runner.default_pipeline_runner(small_project, {"scheme": "new", "gear": "G0", "until": "export",
+                                                   "max_images": 0, "max_minutes": 0.0,
+                                                   "merge_all": True, "auto_export": True})
+    msgs = [r["message"] for r in joblog.tail(small_project, scopes=["deck"])]
     assert any("新方案暂不支持" in m for m in msgs)
     assert any("本篇使用新方案" in m for m in msgs)
