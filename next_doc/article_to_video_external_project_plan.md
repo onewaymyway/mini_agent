@@ -1752,3 +1752,34 @@ external_projects/article_to_video/
 - `python entrypoints/health.py --probe-image` 会真实生成一张测试图（会计费一次），用于确认接口可用。
 - 沙箱中没有用户的 `providers.json`，因此 providers.json 的读取只在单元测试（模拟仓库结构）中验证；真实 key 需要在你的环境中运行一次确认。
 
+### 45.11 R37 批量生成可选新方案或旧方案（已完成，2026-11-21）
+
+**需求**：批量队列（「📦 批量生成」与命令行 `batch_run.py`）原来只能运行旧方案，现在增加选择：旧方案或新方案。
+
+**设计**
+
+- 队列共用参数新增 `scheme`（`old` / `new`），默认 `old`，已有的队列不受影响。
+- 两套方案阶段名不同（旧：大纲、分镜、画面等；新：幻灯片规划），因此「运行到」的可选项按方案决定：`store.stages_for(scheme)`。规范化时，若 `until` 不属于所选方案，回退为 `export` 并给出警告。
+- 运行器 `default_pipeline_runner` 按 `scheme` 分派：新方案调用 `deck.pipeline.run_deck_pipeline`（同样的挡位、预算、自动导出、提供者），旧方案保持原来的 `run_pipeline`。两者的返回状态结构一致，重试与报告逻辑不变。
+- 新方案不支持「多期合并版」：该选项被忽略，并写入日志警告。
+- 每篇开始运行时写入日志：“批量：本篇使用新方案（幻灯片）/旧方案，挡位 …，运行到「…」”。
+- 界面：共用参数中加「生成方案」单选；「运行到」下拉框的选项随方案切换（使用随方案变化的 key，避免切换后残留无效值）。
+
+**改动文件**
+
+- `article_to_video/batch/store.py`：`SCHEMES`、`SCHEME_LABELS`、`stages_for`、`normalize_params` 校验 `scheme` 并按方案校验 `until`；`DEFAULT_PARAMS` 增加 `scheme`。
+- `article_to_video/batch/runner.py`：`default_pipeline_runner` 按方案分派，新增启动日志与 `merge_all` 提示。
+- `ui/batch_page.py`：方案单选；阶段选项随方案变化；保存时写入 `scheme`。
+- 测试：`tests/test_r37_batch_scheme.py`（6 项）：默认旧方案；新方案可用新阶段；阶段按方案校验并回退；共用阶段在两套方案中都有；运行器按方案分派（参数正确传递，`approve` 随自动导出）；新方案忽略多期合并并给出提示。
+
+**验证**
+
+- 新增 6 项通过。
+- 已有的批量队列测试（R15 分镜批量、R23 队列核心、CLI、报告、界面、自动导出、共用作者）共 90 项全部通过，默认行为未变。
+
+**未做（如实记录）**
+
+- 批量队列报告（`report.md`）的表格没有单列“方案”一栏；本次通过每篇的启动日志体现。如需在报告中展示，可以再加一列。
+- 新方案的「多期合并版」尚未实现，批量时该选项无效。
+- 没有对新方案做真实的端到端批量运行（需要模型与生图 key），仅通过运行器分派测试和已有队列测试验证。
+

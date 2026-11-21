@@ -39,6 +39,7 @@ DEFAULT_PARAMS: Dict[str, Any] = {
     "gear": "G3",                 # 队列默认使用完全无人值守档位（需用户显式点击「开始」才会运行）
     "auto_export": True,          # 导出成片自动进行（终审自动通过）；关闭则队列停在终审，需在驾驶舱确认
     "author": "",                 # 共用作者：非空时对队列里所有文章生效（优先于逐篇作者）；留空 = 逐篇设置
+    "scheme": "old",              # 生成方案：old = 旧方案（大纲→分镜→画面）；new = 新方案（幻灯片）
     "until": "export",
     "max_images": 0,              # 0 = 不限
     "max_minutes": 0.0,           # 0 = 不限
@@ -117,6 +118,17 @@ def _num(value: Any, default: float, lo: float, hi: float) -> float:
     return min(max(v, lo), hi)
 
 
+SCHEMES = ("old", "new")
+SCHEME_LABELS = {"old": "旧方案", "new": "新方案"}
+
+
+def stages_for(scheme: str) -> Tuple[str, ...]:
+    """某方案可选的「运行到」阶段（两套方案阶段名不同：旧方案有大纲/分镜/画面，新方案有幻灯片规划）。"""
+    from ..deck.pipeline import STAGES as DECK_STAGES
+    from ..pipeline.gates import STAGES as OLD_STAGES
+    return tuple(DECK_STAGES) if scheme == "new" else tuple(OLD_STAGES)
+
+
 def normalize_params(raw: Optional[Dict[str, Any]]) -> Tuple[Dict[str, Any], List[str]]:
     """校验并补全共用参数；不合法的字段回退默认并给出警告。G2 缺预算上限直接报错（与流水线一致）。"""
     raw = raw if isinstance(raw, dict) else {}
@@ -128,9 +140,14 @@ def normalize_params(raw: Optional[Dict[str, Any]]) -> Tuple[Dict[str, Any], Lis
         warnings.append(f"挡位 {gear!r} 不合法，已改用 {DEFAULT_PARAMS['gear']}")
         gear = DEFAULT_PARAMS["gear"]
     p["gear"] = gear
+    scheme = raw.get("scheme", p["scheme"])
+    if scheme not in SCHEMES:
+        warnings.append(f"生成方案 {scheme!r} 不合法，已改用旧方案")
+        scheme = "old"
+    p["scheme"] = scheme
     until = raw.get("until", p["until"])
-    if until not in STAGES:
-        warnings.append(f"运行到 {until!r} 不合法，已改用 export")
+    if until not in stages_for(scheme):
+        warnings.append(f"运行到 {until!r} 在{SCHEME_LABELS[scheme]}中不存在，已改用 export")
         until = "export"
     p["until"] = until
     p["max_images"] = int(_num(raw.get("max_images", 0), 0, 0, 10_000_000))

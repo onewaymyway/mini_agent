@@ -15,7 +15,7 @@ from article_to_video import app_settings as S
 from article_to_video.batch import prep, runner, store
 from article_to_video.batch.store import QueueError
 from article_to_video.paths import projects_root
-from article_to_video.pipeline.gates import GEARS, STAGES
+from article_to_video.pipeline.gates import GEARS
 from article_to_video.project_store import MODES, ORIENTATIONS, PERSONAS, RESOLUTIONS, WATERMARK_POSITIONS
 from ui.import_page import (MODE_LABELS, ORIENTATION_LABELS, PERSONA_LABELS, POSITION_LABELS, _decode)
 from ui.joblog_panel import render_job_panel
@@ -44,9 +44,15 @@ def _params_panel(root) -> None:
 
     with st.expander("共用参数（对队列里所有文章生效）", expanded=False):
         st.caption("修改只影响**之后开始处理**的文章；正在运行的那一篇不受影响。")
+        scheme = st.radio("生成方案", [store.SCHEME_LABELS[k] for k in store.SCHEMES], horizontal=True,
+                          index=list(store.SCHEMES).index(params.get("scheme", "old")), key="bq_scheme",
+                          help="旧方案：大纲→分镜→画面；新方案：幻灯片（规划→讲稿→配音→合成→导出）。两者都可用于批量队列。")
+        scheme = next(k for k in store.SCHEMES if store.SCHEME_LABELS[k] == scheme)
+        stages = list(store.stages_for(scheme))
+        until_default = params["until"] if params["until"] in stages else "export"
         c1, c2, c3 = st.columns(3)
         gear = c1.radio("挡位", list(GEARS), index=list(GEARS).index(params["gear"]), key="bq_gear")
-        until = c2.selectbox("运行到", list(STAGES), index=list(STAGES).index(params["until"]), key="bq_until")
+        until = c2.selectbox("运行到", stages, index=stages.index(until_default), key=f"bq_until_{scheme}")
         merge_all = c3.checkbox("多期时导出全集合并版", value=params["merge_all"], key="bq_merge")
         auto_export = st.checkbox("自动导出成片（终审自动通过）", value=params.get("auto_export", True), key="bq_autoexport",
                                   help="开启：队列中每篇走到导出时自动通过终审并导出。关闭：停在终审，需要在驾驶舱逐篇确认。")
@@ -99,7 +105,7 @@ def _params_panel(root) -> None:
             try:
                 delays = prep.parse_delays(delays_text)
                 warnings = store.set_params(root, {
-                    "gear": gear, "until": until, "merge_all": merge_all, "max_images": max_images,
+                    "scheme": scheme, "gear": gear, "until": until, "merge_all": merge_all, "max_images": max_images,
                     "author": shared_author, "auto_export": auto_export,
                     "max_minutes": max_minutes, "max_retries": retries, "retry_delays": delays,
                     "settings": {"mode": mode, "target_minutes": target, "persona": persona,
