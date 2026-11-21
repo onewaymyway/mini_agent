@@ -49,6 +49,11 @@ def validate_deck(deck: Dict[str, Any], blocks: List[Dict[str, Any]], *, page_ca
         els = s.get("elements") or []
         if not els:
             errors.append(f"{sid}：没有任何元素")
+        # 分页标准：页面不能只有标题或前言；前言不能留在页尾（关键内容必须与前言在同一页）
+        if els and all(e.get("lead_in") for e in els):
+            errors.append(f"{sid}：只有标题或前言，没有实际内容")
+        elif els and els[-1].get("lead_in"):
+            errors.append(f"{sid}：前言留在页尾，关键内容被分到了下一页")
         n_items = 0
         for el in els:
             k = el.get("kind")

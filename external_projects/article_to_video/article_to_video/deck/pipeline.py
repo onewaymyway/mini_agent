@@ -94,7 +94,7 @@ def run_deck_pipeline(pdir: Path, *, gear: str = "G0", until: str = "export", ap
         start_stage("plan")
         for p in parts:
             cancel.check()
-            plan_deck(pdir, p["id"])
+            plan_deck(pdir, p["id"], llm=llm)
         if "plan" in manual:
             pending = [p["id"] for p in parts if not deck_status(pdir, p["id"])["confirmed"]]
             if pending:

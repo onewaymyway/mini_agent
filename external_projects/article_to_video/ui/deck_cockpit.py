@@ -178,7 +178,7 @@ def render_control(pdir: Path) -> None:
 def render_plan(pdir: Path) -> None:
     parts = _parts(pdir)
     st.subheader("幻灯片规划")
-    st.caption("按文章结构确定性地规划每页幻灯片（不调用模型）。规划结果需要确认后，才能生成讲稿。")
+    st.caption("按文章结构用规则规划每页幻灯片；规则规划不合格时，自动把具体问题交给文本模型修复并持续重试。规划结果需要确认后，才能生成讲稿。")
     if parts is None:
         st.info("请先确认大纲。")
         return
@@ -186,7 +186,9 @@ def render_plan(pdir: Path) -> None:
     c1, c2 = st.columns(2)
     if c1.button("生成全部章的规划（后台）", key="deck_plan_go"):
         def job():
-            return _run_per_part(pdir, "plan", parts, lambda pid: plan_deck(pdir, pid), "幻灯片规划")
+            prov = _providers(pdir, offline=False)           # 规则不合格时由文本模型修复（没有模型则不修复）
+            return _run_per_part(pdir, "plan", parts, lambda pid: plan_deck(pdir, pid, llm=prov["llm"]),
+                                 "幻灯片规划")
         if jobs.start(pdir, "新方案：幻灯片规划", job, scope="deck"):
             st.rerun()
     if c2.button("确认全部章的规划", key="deck_plan_confirm"):
