@@ -10,8 +10,8 @@
   2. 搜索：字号从大到小，栏数 1–3，找到第一个能把全部条目放下的组合（即“能放下的最大字号”）；栏数多了字号能更大时自然分栏；
   3. 栏内统一：同一栏所有条目同宽同左边缘；前言排成无卡片的小标题，并与后面的条目同栏同页（不拆开）；
      要点是卡片，列表是编号行，金句是带强调底色与竖条的整宽标注；
-  4. 顺序：按元素顺序先左栏自上而下，再右栏；各栏按最小高度均衡，整体垂直居中；
-     一个列表不拆到左右两栏，整体放在一栏内；条目字数少时，列表在这一栏内部排成 2–4 列的编号网格（按行从左到右、从上到下），
+  4. 顺序：按元素顺序先填满左栏（自上而下），再填右栏；按个数分栏，左栏最多比右栏多一个，整体垂直居中；
+     一个列表不拆到左右两栏，整体放在一栏内；条目字数少时，列表在这一栏内部排成 2–4 列的编号网格（先填满左列自上而下，再填右列），
      这样比“左边一半右边一半”更紧凑、更易读；只有整个列表一栏也放不下时，才退回逐条排列（可跨栏）；
   5. 逐个出现：位置在整页上一次算定，每个状态只画已出现的元素，页面不会跳动。
 只覆盖文字类元素（keypoint / list / quote）；含表格、流程、公式的页仍走 deck/layout.py。
@@ -120,7 +120,7 @@ class _Metrics:
         e.update(lines=lines, font=font, pv=pv, h=text_h + 2 * pv + (0.3 * f if k == "lead" else 0.1 * f))
 
     def _measure_list(self, e: Dict[str, Any]) -> None:
-        """列表整体放在一栏内：条目少用 1 列；条目多且字少时在栏内排成 2–4 列网格（行优先），取高度最小者。"""
+        """列表整体放在一栏内：条目少用 1 列；条目多且字少时在栏内排成 2–4 列网格（先填满左列），取高度最小者。"""
         d, f, items = self.draw, self.f, e["items"]
         n = len(items)
         k_max = min(4, max(1, n // 3))
@@ -137,10 +137,11 @@ class _Metrics:
                 continue
             sz = self.font.size
             th = [sz * len(ln) + int(sz * 0.25) * max(0, len(ln) - 1) + 2 * pv for ln in lines]
-            rows = [max(th[i:i + k]) for i in range(0, n, k)]
-            h = sum(rows)
+            cols = _count_split(n, k)
+            h = max(sum(th[i] for i in col) for col in cols)
             if best is None or h < best["h"] - 1e-6:
-                best = {"k": k, "cell_w": cell_w, "gx": gx, "lines": lines, "rows": rows, "h": h, "pv": pv}
+                best = {"k": k, "cell_w": cell_w, "gx": gx, "lines": lines, "th": th, "cols": cols,
+                        "h": h, "pv": pv}
         e.update(grid=best, h=best["h"] + 0.1 * f, font=self.font)
 
     def unit_h(self, u: List[Dict[str, Any]]) -> float:
@@ -166,18 +167,17 @@ def _pack(heights: List[float], cap: float, gap: float, cols: int) -> Optional[L
     return out if len(out) <= cols else None
 
 
-def _balanced(heights: List[float], cap: float, gap: float, cols: int):
-    """在不超过 cap 的前提下，让最高的一栏尽量矮（二分），栏间更均衡。"""
-    lo, hi = max(heights), cap
-    best = _pack(heights, hi, gap, cols)
-    for _ in range(14):
-        mid = (lo + hi) / 2
-        t = _pack(heights, mid, gap, cols)
-        if t is not None:
-            best, hi = t, mid
-        else:
-            lo = mid
-    return best
+def _count_split(n: int, cols: int) -> List[List[int]]:
+    """按个数分栏：从左到右依次填满；左边每栏最多比右边多一个（靠左的栏多取一个）。
+    例：7 个条目分 2 栏 → [0..3] 与 [4..6]；9 个分 3 栏 → 3、3、3。"""
+    q, extra = divmod(n, cols)
+    out: List[List[int]] = []
+    i = 0
+    for c in range(cols):
+        size = q + (1 if c < extra else 0)
+        out.append(list(range(i, i + size)))
+        i += size
+    return out
 
 
 def build_text_layout(elements: List[Dict[str, Any]], canvas: Tuple[int, int], top: int, body_h: int,
@@ -224,8 +224,15 @@ def _search(entries, elements, canvas, top, body_h, orientation, theme_name, col
             m = _Metrics(probe, f, cw)
             for e in entries:
                 m.measure(e)
+            if c > len(units):
+                continue
             hs = [m.unit_h(un) for un in units]
-            assign = _balanced(hs, body_h, m.gap, c) if max(hs) <= body_h else None
+            assign = None
+            if max(hs) <= body_h:
+                split = _count_split(len(units), c)
+                col_h = [sum(hs[i] for i in col) + m.gap * (len(col) - 1) for col in split]
+                if max(col_h) <= body_h:
+                    assign = split
             if assign is not None:
                 chosen = (f, c, cw, gx, m, hs, assign)
                 break
@@ -275,12 +282,10 @@ def _search(entries, elements, canvas, top, body_h, orientation, theme_name, col
                 mf = load_font(max(10, round(f * 0.55)))
                 r = 0.42 * f
                 yy = y
-                for ri, rh in enumerate(g["rows"]):
-                    for ci in range(g["k"]):
-                        i = ri * g["k"] + ci
-                        if i >= len(e["items"]):
-                            break
-                        cx = x + ci * (g["cell_w"] + g["gx"])
+                for ci, col in enumerate(g["cols"]):          # 先填满左列，再填右列
+                    cx = x + ci * (g["cell_w"] + g["gx"])
+                    yy = y
+                    for i in col:
                         cy = yy + g["pv"] + sz * 0.5
                         d.ellipse([cx, cy - r, cx + 2 * r, cy + r], fill=accent)
                         d.text((cx + r, cy), str(i + 1), font=mf, fill=card[:3] + (255,), anchor="mm")
@@ -288,7 +293,7 @@ def _search(entries, elements, canvas, top, body_h, orientation, theme_name, col
                         for ln in g["lines"][i]:
                             d.text((cx + 2 * r + 0.5 * f, ty + sz / 2), ln, font=font, fill=text_c, anchor="lm")
                             ty += step
-                    yy += rh
+                        yy += g["th"][i]
                 continue
             font, lines, h = e["font"], e["lines"], e["h"]
             sz = font.size
