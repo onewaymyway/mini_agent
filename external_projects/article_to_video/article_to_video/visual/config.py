@@ -29,6 +29,8 @@ def default_visual() -> Dict[str, Any]:
         # 分镜改进三期：均为保守默认（关闭）。strict_coverage=结构块未被镜头承载则整章失败；
         # subject_from_source=插图主体必须出自原文（原文的具象类比）。
         "storyboard": {"strict_coverage": False, "subject_from_source": False},
+        # 新方案排版（R30）：一页内容多、字会被缩得很小时，把元素分成左右两栏（可关闭）
+        "deck_layout": {"columns": True},
     }
 
 
@@ -78,6 +80,8 @@ def normalize_visual(raw: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, An
             "strict_coverage": bool(sb_raw.get("strict_coverage", False)),
             "subject_from_source": bool(sb_raw.get("subject_from_source", False)),
         },
+        "deck_layout": {"columns": bool((raw.get("deck_layout") if isinstance(raw.get("deck_layout"), dict) else {})
+                                        .get("columns", True))},
     }
     return out, warnings
 

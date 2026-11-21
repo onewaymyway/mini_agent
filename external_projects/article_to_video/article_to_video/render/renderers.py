@@ -20,10 +20,11 @@ SHOT_ZOOM = 1.35  # 插图底图的放大倍数，为水平取景留出余量
 
 
 class _Ctx:
-    def __init__(self, canvas: Canvas, orientation: str, theme_name: str):
+    def __init__(self, canvas: Canvas, orientation: str, theme_name: str, unit: Optional[float] = None):
         self.W, self.H = canvas
         self.landscape = orientation != "portrait"
-        self.u = unit_for(canvas, orientation)
+        self.u = unit if unit else unit_for(canvas, orientation)   # unit：分栏/分高渲染时固定字号基准，不随画布缩小
+        self.font_px: Optional[int] = None                          # 本次绘制用到的最小字号（像素），供排版判断"是否缩得太小"
         self.theme = get_theme(theme_name)
         self.mx = self.W * 0.08
         self.my = self.H * 0.10
@@ -31,6 +32,11 @@ class _Ctx:
 
     def font(self, base: float):
         return load_font(round(base * self.u))
+
+    def note_font(self, font) -> None:
+        px = int(getattr(font, "size", 0) or 0)
+        if px:
+            self.font_px = px if self.font_px is None else min(self.font_px, px)
 
     def c(self, key: str):
         return self.theme[key]
@@ -150,6 +156,7 @@ def _draw_keypoint(draw, ctx: _Ctx, scene, vis: int) -> None:
         draw, ctx, items, base=66 if ctx.landscape else 54, lo=30 if ctx.landscape else 26,
         avail_w=avail_w, avail_h=ctx.H - 2 * ctx.my, gap_v=gap, gap_x=60 * ctx.u,
         pad_v=pad, pad_h=pad, text_extra=10 * ctx.u, ratio=0.25)
+    ctx.note_font(font)
     pos = _place_columns(ctx, assign, heights, col_w, gap, 60 * ctx.u)
     for i in range(min(vis, len(items))):
         x0, y0 = pos[i]
@@ -175,6 +182,7 @@ def _draw_list(draw, ctx: _Ctx, scene, vis: int) -> None:
         draw, ctx, items, base=52 if ctx.landscape else 44, lo=26 if ctx.landscape else 24,
         avail_w=avail_w, avail_h=ctx.H - 2 * ctx.my, gap_v=gap, gap_x=80 * ctx.u,
         pad_v=0, pad_h=0, text_extra=2 * r + 36 * ctx.u, ratio=0.2)
+    ctx.note_font(font)
     pos = _place_columns(ctx, assign, heights, col_w, gap, 80 * ctx.u)
     marker = ctx.font(max(16, round(font.size * 0.8 / ctx.u)))
     for i in range(min(vis, len(items))):
@@ -476,6 +484,7 @@ def _draw_table(draw, ctx: _Ctx, scene, vis: int) -> None:
         return
     ncol = len(header)
     font = ctx.font(40 if ctx.landscape else 34)
+    ctx.note_font(font)
     pad = 18 * ctx.u
     table_w = ctx.content_w * (0.86 if ctx.landscape else 1.0)
     colw = table_w / ncol
@@ -517,6 +526,7 @@ def _draw_quote(draw, ctx: _Ctx, scene, vis: int) -> None:
     if not items:
         return
     font = ctx.font(64 if ctx.landscape else 50)
+    ctx.note_font(font)
     mark = ctx.font(220 if ctx.landscape else 160)
     maxw = ctx.content_w * (0.72 if ctx.landscape else 0.86)
     lines = wrap_text(draw, items[0], font, int(maxw), max_lines=5)
@@ -534,6 +544,7 @@ def _draw_quote(draw, ctx: _Ctx, scene, vis: int) -> None:
 def _draw_formula(draw, ctx: _Ctx, scene, vis: int) -> None:
     formula = str(scene.get("formula") or "").strip()
     font = ctx.font(60 if ctx.landscape else 48)
+    ctx.note_font(font)
     maxw = ctx.content_w * (0.76 if ctx.landscape else 0.9)
     lines = wrap_text(draw, formula or "（公式）", font, int(maxw - 60 * ctx.u), max_lines=3)
     lh = font.size + int(font.size * 0.2)
@@ -688,6 +699,21 @@ def render_scene_frames(scene: Dict[str, Any], canvas: Canvas, orientation: str,
             _draw_page_tag(draw, ctx, scene["page"])
         frames.append(img)
     return frames
+
+
+def render_scene_final(scene: Dict[str, Any], canvas: Canvas, orientation: str, theme_name: str,
+                       *, unit: Optional[float] = None) -> Tuple[Any, Optional[int]]:
+    """只渲染最后一个状态（全部条目可见）。返回 (RGBA 图, 实际用到的最小字号像素或 None)。
+    unit 给定时固定字号基准（在较窄/较矮的画布上渲染时，字号不随画布缩小，由自适应布局分栏或换行来适应）。"""
+    from PIL import Image, ImageDraw
+
+    ctx = _Ctx(canvas, orientation, theme_name, unit=unit)
+    drawer = _DRAWERS.get(scene.get("type", "keypoint"))
+    if drawer is None:
+        raise ValueError(f"未知的场景类型：{scene.get('type')}")
+    img = Image.new("RGBA", canvas, (0, 0, 0, 0))
+    drawer(ImageDraw.Draw(img, "RGBA"), ctx, scene, visible_counts(scene)[-1])
+    return img, ctx.font_px
 
 
 def render_background(canvas: Canvas, theme_name: str):

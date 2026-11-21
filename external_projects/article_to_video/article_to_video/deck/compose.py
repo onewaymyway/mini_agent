@@ -31,7 +31,7 @@ from .script import load_script
 from .voice import load_deck_timeline
 from .store import deck_root, load_deck
 
-RENDER_VERSION = "deck-render-v1"
+RENDER_VERSION = "deck-render-v2"
 
 
 def _out_dir(pdir: Path, part_id: str) -> Path:
@@ -91,13 +91,14 @@ def _crop_to_content(img):
 
 
 def page_state_images(page: Dict[str, Any], slide: Dict[str, Any], canvas, orientation: str,
-                      theme_name: str) -> List[Any]:
+                      theme_name: str, *, columns: bool = True, meta: Optional[Dict[str, Any]] = None) -> List[Any]:
     """页面的状态图：第 k 张显示前 k+1 个元素（背景 + 标题 + 已出现的元素）。
 
-    每个元素按整块高度渲染（自适应布局，不截断），裁掉留白后纵向排列；
-    如果所有元素加起来超过页面可用高度，整体等比缩小，保证每一项都完整可见。
+    排版见 deck/layout.py（R30）：先按高度预算让渲染器自己缩字号/分栏，不够再把元素分成左右两栏，
+    最后才整体缩小；每个元素完整可见。meta 非空时写入排版信息（mode、实际字号、是否过小）。
     """
     from PIL import Image
+    from .layout import layout_page
     W, H = canvas
     bg = render_background(canvas, theme_name).convert("RGBA")
     title = _fit_title(canvas, orientation, theme_name, slide.get("title", page.get("title", "")))
@@ -105,36 +106,25 @@ def page_state_images(page: Dict[str, Any], slide: Dict[str, Any], canvas, orien
     body_h = H - top - int(H * 0.04)
     gap = int(H * 0.035)
     elements = slide.get("elements") or []
-    pieces: List[Any] = []
-    for el in elements:
-        full = render_scene_frames(_scene_for(el), (W, body_h), orientation, theme_name)[-1].convert("RGBA")
-        cropped = _crop_to_content(full)
-        if cropped is not None:
-            pieces.append(cropped)
-    if not pieces:
-        pieces = [Image.new("RGBA", (1, 1), (0, 0, 0, 0))]
-    total = sum(p.size[1] for p in pieces) + gap * (len(pieces) - 1)
-    if total > body_h:                       # 放不下：整体等比缩小，保证完整显示
-        f = (body_h - gap * (len(pieces) - 1)) / max(1, sum(p.size[1] for p in pieces))
-        pieces = [p.resize((max(1, int(p.size[0] * f)), max(1, int(p.size[1] * f))), Image.LANCZOS)
-                  for p in pieces]
-        total = sum(p.size[1] for p in pieces) + gap * (len(pieces) - 1)
+    lay = layout_page(elements, canvas, body_h, gap, orientation, theme_name, _scene_for, columns=columns)
+    if meta is not None:
+        meta.update({k: lay[k] for k in ("mode", "split", "effective_px", "floor_px", "small")})
+    pieces = lay["pieces"] or [(Image.new("RGBA", (1, 1), (0, 0, 0, 0)), 0, 0)]
     states = []
-    for k in range(max(1, len(pieces))):
+    for k in range(len(pieces)):
         img = bg.copy()
-        img.alpha_composite(title, (int(W * 0.0), int(H * 0.03)))
-        y = top + max(0, (body_h - total) // 2)
-        for i in range(min(k + 1, len(pieces))):
-            p = pieces[i]
-            img.alpha_composite(p, (int((W - p.size[0]) / 2), int(y)))
-            y += p.size[1] + gap
+        img.alpha_composite(title, (0, int(H * 0.03)))
+        for p, x, y in pieces[:k + 1]:
+            img.alpha_composite(p, (int(x), int(top + y)))
         states.append(img.convert("RGB"))
     return states
 
 
 def build_segments(pdir: Path, part_id: str, deck: Dict[str, Any], tl: Dict[str, Any], canvas, orientation: str,
-                   theme_name: str, chapter: Dict[str, str]) -> Tuple[List[Tuple[Path, float]], float]:
-    """生成 PNG 图层与各自的显示时长（concat 列表用）。返回 (图层列表, 总时长)。"""
+                   theme_name: str, chapter: Dict[str, str], *, columns: bool = True,
+                   layout_log: Optional[List[Dict[str, Any]]] = None) -> Tuple[List[Tuple[Path, float]], float]:
+    """生成 PNG 图层与各自的显示时长（concat 列表用）。返回 (图层列表, 总时长)。
+    layout_log 非空时追加每页的排版信息（页号、分栏与否、实际字号、是否过小）。"""
     vdir = _out_dir(pdir, part_id)
     fdir = vdir / "frames"
     fdir.mkdir(parents=True, exist_ok=True)
@@ -149,7 +139,10 @@ def build_segments(pdir: Path, part_id: str, deck: Dict[str, Any], tl: Dict[str,
     pages = tl["pages"]
     for pi, page in enumerate(pages):
         slide = slides[page["id"]]
-        states = page_state_images(page, slide, canvas, orientation, theme_name)
+        meta: Dict[str, Any] = {}
+        states = page_state_images(page, slide, canvas, orientation, theme_name, columns=columns, meta=meta)
+        if layout_log is not None:
+            layout_log.append(dict(meta, id=page["id"]))
         reveals = page["reveals"] or [{"element": 0, "at_sec": page["start"]}]
         times = [max(page["start"], reveals[k]["at_sec"] if k < len(reveals) else page["start"])
                  for k in range(len(states))]
@@ -203,7 +196,16 @@ def compose_deck_part(pdir: Path, part_id: str, *, now: Optional[datetime] = Non
     vdir = _out_dir(pdir, part_id)
     vdir.mkdir(parents=True, exist_ok=True)
     joblog.bound_log(f"{part_id}：开始渲染 {len(tl['pages'])} 页画面（{canvas[0]}×{canvas[1]}）")
-    segs, total = build_segments(pdir, part_id, deck, tl, canvas, orientation, theme_name, chapter)
+    columns = bool(load_visual_config(pdir).get("deck_layout", {}).get("columns", True))
+    layout_log: List[Dict[str, Any]] = []
+    segs, total = build_segments(pdir, part_id, deck, tl, canvas, orientation, theme_name, chapter,
+                                 columns=columns, layout_log=layout_log)
+    for m in layout_log:
+        if m.get("mode") == "columns":
+            joblog.bound_log(f"{m['id']}：内容较多，分两栏显示（实际字号约 {m['effective_px']:.0f}px）")
+        if m.get("small"):
+            joblog.bound_log(f"{m['id']}：内容过多，文字偏小（约 {m['effective_px']:.0f}px，低于 {m['floor_px']:.0f}px），"
+                             "建议在幻灯片规划中拆页", level="warn")
     joblog.bound_log(f"{part_id}：画面 {len(segs)} 段渲染完成，共 {total:.1f} 秒；开始编码合成")
     cancel.check()
     part_dir = deck_root(pdir, part_id)        # 新方案的配音在 parts/<章>/deck/audio/
@@ -223,6 +225,8 @@ def compose_deck_part(pdir: Path, part_id: str, *, now: Optional[datetime] = Non
         raise ComposeError(f"{part_id} 新方案成片校验未通过：" + "；".join(verdict["errors"]))
     info = {"schema": 1, "part": part_id, "title": title, "canvas": list(canvas), "fps": FPS,
             "duration": round(total, 3), "pages": len(tl["pages"]), "segments": len(segs),
+            "layout": layout_log, "small_text_pages": [m["id"] for m in layout_log if m.get("small")],
+            "column_pages": [m["id"] for m in layout_log if m.get("mode") == "columns"],
             "render_version": RENDER_VERSION, "rendered_at": now_iso(now), "deck_sha": deck.get("input_sha")}
     write_json_atomic(vdir / "info.json", info)
     append_progress(pdir, f"合成新方案章 {part_id}：{total:.1f} 秒，{len(tl['pages'])} 页", now)

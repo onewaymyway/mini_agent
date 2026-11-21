@@ -72,6 +72,7 @@ FIELDS = {
         {"path": "images.shots_per_image", "label": "每张图的镜头数（一图多用）", "kind": "int", "min": 1, "max": 3},
         {"path": "images.size", "label": "生图尺寸", "kind": "text"},
         {"path": "storyboard.strict_coverage", "label": "严格覆盖：公式、递进、概念、流程、表格、列表未被镜头承载时本章分镜失败（默认关闭=只提示）", "kind": "bool"},
+        {"path": "deck_layout.columns", "label": "新方案排版：一页内容多、文字会被缩得很小时，分成左右两栏（默认开启）", "kind": "bool"},
         {"path": "storyboard.subject_from_source", "label": "插图主体必须出自原文的具象类比（默认关闭）", "kind": "bool"},
     ],
     "compose": [
