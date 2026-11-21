@@ -254,3 +254,5 @@ python entrypoints/batch_run.py --root D:\video_projects --status
 
 每次运行的状态写入 `deck/run_status.json`。已完成且未变化的阶段会复用结果。
 
+新方案运行时，面板下方的「新方案运行日志（实时）」会每 2 秒刷新，显示运行开始、各阶段的开始与完成、每章的进度、画面渲染与编码。运行结束后页面会自动刷新。
+

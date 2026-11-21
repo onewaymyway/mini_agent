@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .. import cancel
+from .. import cancel, joblog
 from ..compose.audio_track import build_part_audio
 from ..compose.config import FPS, load_compose_config  # noqa: F401  (配置来源与现有方案一致)
 from ..compose.ffrun import ComposeError, ffmpeg, probe
@@ -195,7 +195,9 @@ def compose_deck_part(pdir: Path, part_id: str, *, now: Optional[datetime] = Non
 
     vdir = _out_dir(pdir, part_id)
     vdir.mkdir(parents=True, exist_ok=True)
+    joblog.bound_log(f"{part_id}：开始渲染 {len(tl['pages'])} 页画面（{canvas[0]}×{canvas[1]}）")
     segs, total = build_segments(pdir, part_id, deck, tl, canvas, orientation, theme_name, chapter)
+    joblog.bound_log(f"{part_id}：画面 {len(segs)} 段渲染完成，共 {total:.1f} 秒；开始编码合成")
     cancel.check()
     part_dir = deck_root(pdir, part_id)        # 新方案的配音在 parts/<章>/deck/audio/
     audio_tl = {"total_sec": total,

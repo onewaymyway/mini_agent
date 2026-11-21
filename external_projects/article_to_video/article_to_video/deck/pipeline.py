@@ -75,6 +75,10 @@ def run_deck_pipeline(pdir: Path, *, gear: str = "G0", until: str = "export", ap
     def done_stage(stage: str, detail: str) -> None:
         status["steps"].append({"stage": stage, "result": "ok", "detail": detail})
         _save(pdir, status, now)
+        joblog.bound_log(f"✔ {STAGE_NAME[stage]}完成：{detail}", level="ok")
+
+    def start_stage(stage: str) -> None:
+        joblog.bound_log(f"▶ 开始{STAGE_NAME[stage]}（{len(parts)} 章：{'、'.join(p['id'] for p in parts)}）")
 
     def wait(stage: str, detail: str) -> Dict[str, Any]:
         status.update(state="waiting", waiting={"stage": stage, "detail": detail})
@@ -84,7 +88,10 @@ def run_deck_pipeline(pdir: Path, *, gear: str = "G0", until: str = "export", ap
         return status
 
     try:
+        joblog.bound_log(f"新方案开始运行：挡位 {gear}，运行到「{STAGE_NAME[until]}」"
+                         + ("（终审自动通过）" if approve and gear == "G3" else ""))
         # 1. 幻灯片规划
+        start_stage("plan")
         for p in parts:
             cancel.check()
             plan_deck(pdir, p["id"])
@@ -103,6 +110,7 @@ def run_deck_pipeline(pdir: Path, *, gear: str = "G0", until: str = "export", ap
         # 2. 讲稿
         if llm is None:
             raise PlanError("新方案需要文本模型生成讲稿（mini_agent 配置）")
+        start_stage("script")
         for p in parts:
             cancel.check()
             plan_script(pdir, p["id"], llm=llm, part_title=p["title"])
@@ -121,6 +129,7 @@ def run_deck_pipeline(pdir: Path, *, gear: str = "G0", until: str = "export", ap
         # 3. 配音
         if tts is None:
             raise PlanError("新方案需要语音引擎（配音）")
+        start_stage("voice")
         for p in parts:
             cancel.check()
             synthesize_deck(pdir, p["id"], tts, now=now)
@@ -129,6 +138,7 @@ def run_deck_pipeline(pdir: Path, *, gear: str = "G0", until: str = "export", ap
             return _finish(pdir, status, now)
 
         # 4. 合成
+        start_stage("compose")
         for p in parts:
             cancel.check()
             compose_deck_part(pdir, p["id"], now=now)
@@ -139,6 +149,7 @@ def run_deck_pipeline(pdir: Path, *, gear: str = "G0", until: str = "export", ap
         # 5. 导出（终审）
         if "export" in manual and not approve:
             return wait("export", "终审待人工确认：确认成片后，以「确认终审」再次运行即可导出")
+        joblog.bound_log("▶ 开始导出新方案成片")
         out = export_deck_video(pdir, now=now)
         status["outputs"] = [str(out.name)]
         done_stage("export", f"导出 {out.name}")

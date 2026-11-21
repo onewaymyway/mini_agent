@@ -276,6 +276,8 @@ def _deck_panel(pdir, busy: bool, *, gear: str = "G0", until: str = "export", ap
                     st.error(str(exc))
         st.rerun()
 
+    render_job_panel(pdir, ["deck"], title="新方案运行日志（实时）", height=360)
+
 
 def load_script_doc(pdir, part_id):
     from article_to_video.deck.script import load_script
