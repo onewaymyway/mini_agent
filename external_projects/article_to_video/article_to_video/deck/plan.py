@@ -11,9 +11,9 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-DECK_VERSION = "deck-rules-v4"
+DECK_VERSION = "deck-rules-v5"
 MAX_SLIDE_ITEMS = 12         # 一页的条目上限（实测：多元素同页时仍可放下；超过则续页）
 MAX_ELEMENT_ITEMS = 12        # 一个元素的条目上限（超过则拆分到多个元素）
 MAX_PAGE_ELEMENTS = 6         # 一页的元素个数上限（R31：元素太多时卡片内边距与间距占掉大半高度，字会很小；超过则续页）
@@ -180,6 +180,7 @@ def _finish(s: Dict[str, Any]) -> Dict[str, Any]:
 #  5. 同一节的续页如果只剩很少内容（不超过 MIN_TAIL_ITEMS 条），并入前一页（放得下时）。
 MIN_TAIL_ITEMS = 2
 LEAD_MAX_CHARS = 60
+QUESTION_LEAD_CHARS = 12
 
 
 def is_lead_in(b: Dict[str, Any]) -> bool:
@@ -187,6 +188,8 @@ def is_lead_in(b: Dict[str, Any]) -> bool:
     if b.get("kind") != "paragraph":
         return False
     t = _text(b)
+    if 0 < len(t) <= QUESTION_LEAD_CHARS and t.endswith(("？", "?")):   # “为什么？”——答案紧随其后，不能分开
+        return True
     return 0 < len(t) <= LEAD_MAX_CHARS and (t.endswith(("：", ":")) or "如下" in t or "以下" in t)
 
 
@@ -273,60 +276,34 @@ def plan_slides(part: Dict[str, Any], blocks: List[Dict[str, Any]], part_id: str
     """按分页标准规划幻灯片。blocks 为本章的文章块（已按原文顺序）。
     page_cap：一页的条目上限；element_cap：一个元素的条目上限（超过则拆分）。"""
     base_title = part.get("title", "")
-    pages: List[Dict[str, Any]] = []
-
-    def fits(pg: Dict[str, Any], grp: List[Dict[str, Any]]) -> bool:
-        n = sum(element_count(e) for e in grp)
-        c = sum(_element_chars(e) for e in grp)
-        return (pg["items"] + n <= page_cap and pg["chars"] + c <= MAX_PAGE_CHARS
-                and len(pg["els"]) + len(grp) <= MAX_PAGE_ELEMENTS)
-
-    def open_page(title: str, sec: Any, cont: bool) -> Dict[str, Any]:
-        pg = {"title": title, "sec": sec, "cont": cont, "els": [], "items": 0,
-              "chars": len(title), "blocks": []}
-        pages.append(pg)
-        return pg
-
-    def place(pg: Dict[str, Any], grp: List[Dict[str, Any]], sec: Any) -> None:
-        for e in grp:
-            pg["els"].append(e)
-            pg["items"] += element_count(e)
-            pg["chars"] += _element_chars(e)
-            if e.get("source") and e["source"] not in pg["blocks"]:
-                pg["blocks"].append(e["source"])
-        pg["sec"] = sec
-
-    cur: Optional[Dict[str, Any]] = None
+    blocks = heading_punchlines(blocks)
+    # 1. 按一、二级标题切成节；每节内的“组”（前言 + 它引出的内容）是分页的最小单位
+    sections: List[Dict[str, Any]] = []
     for u in units_of(blocks):
         if any((h.get("level", 2) or 2) <= 2 for h in u["heads"]):
             base_title = _text([h for h in u["heads"] if (h.get("level", 2) or 2) <= 2][-1]) or base_title
-            cur = open_page(base_title, u["sec"], cont=False)   # 一、二级标题：新的一页
-        elif cur is None:
-            cur = open_page(base_title, u["sec"], cont=False)
-        queue = _unit_groups(u, element_cap, page_cap)
-        while queue:
-            grp = queue.pop(0)
-            if cur["els"] and not fits(cur, grp):
-                cur = open_page(f"{base_title}（续）", u["sec"], cont=True)
-            if not fits(cur, grp) and not cur["els"]:
-                # 单组放不进一个空页：拆分其中的内容元素（前言留在第一段）
-                content = grp[-1]
-                used_items = sum(element_count(x) for x in grp[:-1])
-                used_chars = sum(_element_chars(x) for x in grp[:-1]) + len(cur["title"])
-                head, rest = _take_fit(content, page_cap - used_items, MAX_PAGE_CHARS - used_chars)
-                if rest is not None and content.get("kind") in ("keypoint", "list", "quote"):
-                    place(cur, grp[:-1] + [head], u["sec"])
-                    queue.insert(0, [rest])
-                    cur = open_page(f"{base_title}（续）", u["sec"], cont=True)
-                    continue
-                # 无法再拆分的单个元素：独占一页
-                place(cur, grp, u["sec"])
-                if queue:
-                    cur = open_page(f"{base_title}（续）", u["sec"], cont=True)
-                continue
-            place(cur, grp, u["sec"])
-    # 合并过小的续页（同一节）
-    pages = _merge_tails(pages, page_cap)
+            sections.append({"title": base_title, "groups": []})
+        elif not sections:
+            sections.append({"title": base_title, "groups": []})
+        for grp in _unit_groups(u, element_cap, page_cap):
+            sections[-1]["groups"].append((grp, u["sec"]))
+    # 2. 每节内用动态规划选分页点：页尽量充实，并避开语义上不该断开的位置（见 _break_cost）
+    pages: List[Dict[str, Any]] = []
+    for sec in sections:
+        groups = _split_oversize(sec["groups"], page_cap)
+        for k, run in enumerate(_paginate(groups, sec["title"], page_cap)):
+            title = sec["title"] if k == 0 else f"{sec['title']}（续）"
+            pg = {"title": title, "sec": None, "cont": k > 0, "els": [], "items": 0, "chars": len(title),
+                  "blocks": []}
+            for grp, usec in run:
+                for e in grp:
+                    pg["els"].append(e)
+                    pg["items"] += element_count(e)
+                    pg["chars"] += _element_chars(e)
+                    if e.get("source") and e["source"] not in pg["blocks"]:
+                        pg["blocks"].append(e["source"])
+                pg["sec"] = usec
+            pages.append(pg)
     slides = []
     for pg in pages:
         if not pg["els"]:
@@ -342,6 +319,129 @@ def plan_slides(part: Dict[str, Any], blocks: List[Dict[str, Any]], part_id: str
     return {"schema": 1, "part": part_id, "title": part.get("title", ""), "mode": "deck",
             "slides": finished, "total_est_sec": total_sec, "version": DECK_VERSION,
             "page_cap": page_cap, "element_cap": element_cap}
+
+
+# ---------- 语义分页（R33） ----------
+CONTINUATIONS = ("还有", "另外", "同时", "此外", "而", "但", "然而", "因此", "所以", "于是", "这意味着", "最终",
+                 "换句话说", "也就是说", "比如", "例如", "然后", "再往后", "进一步")
+SHORT_PARA_CHARS = 30
+
+
+def heading_punchlines(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """“空章节”的标题其实是上一句的答案（如“但还有一个更加重要的问题：”后面紧跟的标题“语义带宽。”）：
+    一、二级标题后面没有任何内容就是下一个标题，且它前面是前言、或它本身是一句完整的话（以句末标点结束）时，
+    把它当作金句放回正文流里，而不是新开一个只有标题的页（那样标题会丢失、前言被甩到下一章）。"""
+    out: List[Dict[str, Any]] = []
+    n = len(blocks)
+    for i, b in enumerate(blocks):
+        if b.get("kind") == "heading" and (b.get("level", 2) or 2) <= 2 and out:
+            nxt = next((x for x in blocks[i + 1:] if x.get("kind") != "rule"), None)
+            empty = nxt is None or (nxt.get("kind") == "heading" and (nxt.get("level", 2) or 2) <= 2)
+            prev = next((x for x in reversed(out) if x.get("kind") != "rule"), None)
+            text = _text(b)
+            sentence = text.endswith(("。", "！", "？", "!", "?"))
+            if empty and text and prev is not None and prev.get("kind") != "heading" and (
+                    is_lead_in(prev) or sentence):
+                out.append({"id": b.get("id"), "kind": "quote", "plain": text, "section": prev.get("section"),
+                            "_from_heading": True})
+                continue
+        out.append(b)
+    return out
+
+
+def _group_stats(grp: List[Dict[str, Any]]) -> Tuple[int, int, int]:
+    return (sum(element_count(e) for e in grp), sum(_element_chars(e) for e in grp), len(grp))
+
+
+def _split_oversize(groups, page_cap: int):
+    """单个组放不进一个空页时，拆分其中的内容元素（前言留在第一段）；无法再拆的整块元素独占一页。"""
+    out = []
+    queue = list(groups)
+    while queue:
+        grp, sec = queue.pop(0)
+        n, c, k = _group_stats(grp)
+        title_room = 40
+        if n <= page_cap and c + title_room <= MAX_PAGE_CHARS and k <= MAX_PAGE_ELEMENTS:
+            out.append((grp, sec))
+            continue
+        content = grp[-1]
+        used_items = sum(element_count(x) for x in grp[:-1])
+        used_chars = sum(_element_chars(x) for x in grp[:-1]) + title_room
+        head, rest = _take_fit(content, max(1, page_cap - used_items), MAX_PAGE_CHARS - used_chars)
+        if rest is not None and content.get("kind") in ("keypoint", "list", "quote"):
+            out.append((grp[:-1] + [head], sec))
+            queue.insert(0, ([rest], sec))
+        else:
+            out.append((grp, sec))                 # 无法再拆：独占一页
+    return out
+
+
+def _first_text(e: Dict[str, Any]) -> str:
+    items = e.get("items") or []
+    return str(items[0]) if items else str(e.get("text", ""))
+
+
+def _last_text(e: Dict[str, Any]) -> str:
+    items = e.get("items") or []
+    return str(items[-1]) if items else str(e.get("text", ""))
+
+
+def _break_cost(a_grp: List[Dict[str, Any]], b_grp: List[Dict[str, Any]]) -> float:
+    """在两个组之间分页的代价：越小越适合断开。完整的结论/列表之后断开最好；
+    问句与它的回答之间、短过渡句之后、同一原文块中间、以“还有/但/因此…”接续上文的地方不宜断开。"""
+    a, b = a_grp[-1], b_grp[0]
+    cost = 1.0
+    atext = _last_text(a)
+    if a.get("kind") in ("quote", "list", "table", "diagram", "formula"):
+        cost = 0.2
+    elif atext.endswith(("？", "?")):
+        cost += 3.0
+    elif len(atext) <= SHORT_PARA_CHARS:
+        cost += 1.5
+    if b.get("lead_in") and _first_text(b).startswith(CONTINUATIONS):
+        cost += 1.5
+    if a.get("source") and a.get("source") == b.get("source"):
+        cost += 4.0                                 # 同一段/同一列表被切开
+    return cost
+
+
+def _paginate(groups, title: str, page_cap: int) -> List[List[Tuple[List[Dict[str, Any]], Any]]]:
+    """把一节的组按顺序切成页。动态规划：最小化 页面空疏代价 + 断点代价。
+    页面容量：条目 ≤ page_cap、字数 ≤ MAX_PAGE_CHARS、元素 ≤ MAX_PAGE_ELEMENTS；放不下的单个组独占一页。"""
+    m = len(groups)
+    if m == 0:
+        return []
+    stats = [_group_stats(g) for g, _ in groups]
+    INF = float("inf")
+    best = [INF] * (m + 1)
+    prev = [0] * (m + 1)
+    best[0] = 0.0
+    tl = len(title) + 3
+    for j in range(1, m + 1):
+        n = c = k = 0
+        for i in range(j - 1, max(-1, j - 1 - MAX_PAGE_ELEMENTS), -1):
+            n += stats[i][0]
+            c += stats[i][1]
+            k += stats[i][2]
+            alone = (i == j - 1)
+            if not alone and (n > page_cap or c + tl > MAX_PAGE_CHARS or k > MAX_PAGE_ELEMENTS):
+                break
+            r = min(1.0, max(k / MAX_PAGE_ELEMENTS, n / page_cap, (c + tl) / MAX_PAGE_CHARS))
+            fill = 2.0 * (1.0 - r) ** 2
+            if j == m:
+                fill *= 0.4                          # 节的最后一页允许不满
+            if k <= 1 and m > 1:
+                fill += 1.0                          # 避免只有一个元素的孤页
+            brk = 0.0 if j == m else _break_cost(groups[j - 1][0], groups[j][0])
+            cost = best[i] + fill + brk
+            if cost < best[j]:
+                best[j], prev[j] = cost, i
+    runs, j = [], m
+    while j > 0:
+        i = prev[j]
+        runs.append(groups[i:j])
+        j = i
+    return runs[::-1]
 
 
 def units_of(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

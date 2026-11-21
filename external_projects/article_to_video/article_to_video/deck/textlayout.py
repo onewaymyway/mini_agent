@@ -11,6 +11,8 @@
   3. 栏内统一：同一栏所有条目同宽同左边缘；前言排成无卡片的小标题，并与后面的条目同栏同页（不拆开）；
      要点是卡片，列表是编号行，金句是带强调底色与竖条的整宽标注；
   4. 顺序：按元素顺序先左栏自上而下，再右栏；各栏按最小高度均衡，整体垂直居中；
+     一个列表不拆到左右两栏，整体放在一栏内；条目字数少时，列表在这一栏内部排成 2–4 列的编号网格（按行从左到右、从上到下），
+     这样比“左边一半右边一半”更紧凑、更易读；只有整个列表一栏也放不下时，才退回逐条排列（可跨栏）；
   5. 逐个出现：位置在整页上一次算定，每个状态只画已出现的元素，页面不会跳动。
 只覆盖文字类元素（keypoint / list / quote）；含表格、流程、公式的页仍走 deck/layout.py。
 """
@@ -31,14 +33,34 @@ MAX_COLUMNS = 3
 MIN_COL_CHARS = 9                                 # 多栏时每栏至少约 9 个字宽，避免过窄
 
 
+_NO_LINE_START = "。，、；：！？）》」』”’.,;:!?)]"
+
+
+def _wrap(draw, text: str, font, width: int) -> List[str]:
+    """换行；标点不单独成行（把上一行最后一个字带到下一行，避免“。”孤零零占一行）。"""
+    lines = wrap_text(draw, text, font, width)
+    for i in range(1, len(lines)):
+        while lines[i] and lines[i][0] in _NO_LINE_START and len(lines[i - 1]) > 1:
+            lines[i] = lines[i - 1][-1] + lines[i]
+            lines[i - 1] = lines[i - 1][:-1]
+            if len(lines[i]) > 1 and lines[i][1] not in _NO_LINE_START:
+                break
+    return lines
+
+
 def supports(elements: List[Dict[str, Any]]) -> bool:
     return bool(elements) and all(e.get("kind") in TEXT_KINDS for e in elements)
 
 
-def _entries(elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _entries(elements: List[Dict[str, Any]], split_lists: bool = False) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for ei, el in enumerate(elements):
         kind = el.get("kind")
+        if kind == "list" and not split_lists:           # 整个列表是一个条目：不拆到两栏
+            items = [str(x) for x in el.get("items") or [] if str(x).strip()]
+            if items:
+                out.append({"kind": "list", "items": items, "text": "", "el": ei, "num": 1})
+            continue
         for n, text in enumerate(str(x) for x in el.get("items") or [] if str(x).strip()):
             if kind == "keypoint" and el.get("lead_in"):
                 k = "lead"
@@ -81,6 +103,9 @@ class _Metrics:
     def measure(self, e: Dict[str, Any]) -> None:
         d, f = self.draw, self.f
         k = e["kind"]
+        if k == "list":
+            self._measure_list(e)
+            return
         if k == "card":
             font, inner, pv = self.font, self.cw - 2 * self.pad_h - self.bar, self.pad_v
         elif k == "row":
@@ -89,10 +114,34 @@ class _Metrics:
             font, inner, pv = self.fq, self.cw - 2 * 0.7 * f - self.bar, 0.5 * f
         else:
             font, inner, pv = self.fl, self.cw, 0.0
-        lines = wrap_text(d, e["text"], font, max(20, int(inner)))
+        lines = _wrap(d, e["text"], font, max(20, int(inner)))
         sz = font.size
         text_h = sz * len(lines) + int(sz * 0.25) * max(0, len(lines) - 1)
         e.update(lines=lines, font=font, pv=pv, h=text_h + 2 * pv + (0.3 * f if k == "lead" else 0.1 * f))
+
+    def _measure_list(self, e: Dict[str, Any]) -> None:
+        """列表整体放在一栏内：条目少用 1 列；条目多且字少时在栏内排成 2–4 列网格（行优先），取高度最小者。"""
+        d, f, items = self.draw, self.f, e["items"]
+        n = len(items)
+        k_max = min(4, max(1, n // 3))
+        gx = 0.8 * f
+        pv = 0.2 * f
+        best = None
+        for k in range(1, k_max + 1):
+            cell_w = (self.cw - gx * (k - 1)) / k
+            inner = cell_w - 1.5 * f
+            if k > 1 and inner < 4 * f:
+                continue
+            lines = [_wrap(d, t, self.font, max(20, int(inner))) for t in items]
+            if k > 1 and any(len(ln) > 2 for ln in lines):       # 栏内分列后不要让条目折成三行以上
+                continue
+            sz = self.font.size
+            th = [sz * len(ln) + int(sz * 0.25) * max(0, len(ln) - 1) + 2 * pv for ln in lines]
+            rows = [max(th[i:i + k]) for i in range(0, n, k)]
+            h = sum(rows)
+            if best is None or h < best["h"] - 1e-6:
+                best = {"k": k, "cell_w": cell_w, "gx": gx, "lines": lines, "rows": rows, "h": h, "pv": pv}
+        e.update(grid=best, h=best["h"] + 0.1 * f, font=self.font)
 
     def unit_h(self, u: List[Dict[str, Any]]) -> float:
         return sum(e["h"] for e in u) + self.gap * 0.5 * (len(u) - 1)
@@ -140,6 +189,17 @@ def build_text_layout(elements: List[Dict[str, Any]], canvas: Tuple[int, int], t
     entries = _entries(elements)
     if not entries:
         return None
+    result = _search(entries, elements, canvas, top, body_h, orientation, theme_name, columns)
+    if result["small"]:                                   # 整个列表一栏放不下时，退回逐条排列（可跨栏）
+        alt = _search(_entries(elements, split_lists=True), elements, canvas, top, body_h, orientation,
+                      theme_name, columns)
+        if alt["effective_px"] > result["effective_px"]:
+            result = alt
+    return result
+
+
+def _search(entries, elements, canvas, top, body_h, orientation, theme_name, columns):
+    from PIL import Image, ImageDraw
     W, H = canvas
     key = "portrait" if orientation == "portrait" else "landscape"
     u = unit_for(canvas, orientation)
@@ -207,7 +267,30 @@ def build_text_layout(elements: List[Dict[str, Any]], canvas: Tuple[int, int], t
         for e, x, y, w in placed:
             if e["el"] >= visible:
                 continue
-            font, lines, h, k = e["font"], e["lines"], e["h"], e["kind"]
+            k = e["kind"]
+            if k == "list":
+                g, font = e["grid"], e["font"]
+                sz = font.size
+                step = sz + int(sz * 0.25)
+                mf = load_font(max(10, round(f * 0.55)))
+                r = 0.42 * f
+                yy = y
+                for ri, rh in enumerate(g["rows"]):
+                    for ci in range(g["k"]):
+                        i = ri * g["k"] + ci
+                        if i >= len(e["items"]):
+                            break
+                        cx = x + ci * (g["cell_w"] + g["gx"])
+                        cy = yy + g["pv"] + sz * 0.5
+                        d.ellipse([cx, cy - r, cx + 2 * r, cy + r], fill=accent)
+                        d.text((cx + r, cy), str(i + 1), font=mf, fill=card[:3] + (255,), anchor="mm")
+                        ty = yy + g["pv"] + 0.0
+                        for ln in g["lines"][i]:
+                            d.text((cx + 2 * r + 0.5 * f, ty + sz / 2), ln, font=font, fill=text_c, anchor="lm")
+                            ty += step
+                    yy += rh
+                continue
+            font, lines, h = e["font"], e["lines"], e["h"]
             sz = font.size
             step = sz + int(sz * 0.25)
             if k == "card":

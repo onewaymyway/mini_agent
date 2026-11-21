@@ -54,5 +54,5 @@ def test_too_many_elements_is_a_warning_not_an_error():
 
 
 def test_rules_version_changed_and_repair_prompt_mentions_the_cap():
-    assert DECK_VERSION == "deck-rules-v4"
+    assert DECK_VERSION == "deck-rules-v5"
     assert "尽量不超过 6 个" in build_repair_prompt("章", _blocks(1), None, ["x"], 12, 12)
