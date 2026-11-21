@@ -97,8 +97,8 @@ def test_numbers_not_in_the_page_or_source_are_rejected(project):
 def test_gives_up_after_max_attempts(project):
     llm = FakeLLM(always_bad=True)
     with pytest.raises(PlanError):
-        plan_script(project, "P01", llm=llm)
-    assert llm.calls >= MAX_ATTEMPTS
+        plan_script(project, "P01", llm=llm, max_attempts=MAX_ATTEMPTS)
+    assert llm.calls == MAX_ATTEMPTS
 
 
 def test_script_requires_a_confirmed_deck(tmp_path, monkeypatch):

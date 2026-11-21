@@ -22,7 +22,7 @@ from article_to_video.pipeline.gates import check_budget_requirement
 from article_to_video.planning.errors import PlanError
 from article_to_video.planning.runner import load_spine
 from ui import jobs
-from article_to_video.deck.script import script_status
+from article_to_video.deck.script import AUTO_ATTEMPTS, script_status
 from ui.joblog_panel import is_busy, render_job_panel
 
 CONTROL = "🧭 总控"
@@ -193,7 +193,7 @@ def render_script(pdir: Path) -> None:
                     DS.record_error(pdir, "script", p["id"], msg)
                 return {"state": "error", "message": msg}
             return _run_per_part(pdir, "script", parts,
-                                 lambda pid: plan_script(pdir, pid, llm=prov["llm"],
+                                 lambda pid: plan_script(pdir, pid, llm=prov["llm"], max_attempts=AUTO_ATTEMPTS,
                                                          part_title=next(x["title"] for x in parts
                                                                          if x["id"] == pid)),
                                  "讲稿生成")

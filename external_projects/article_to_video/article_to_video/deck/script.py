@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .. import joblog
+from .. import cancel, joblog
 from ..planning.errors import PlanError
 from ..planning.jsonio import parse_json_object
 from ..project_store import now_iso, read_json, write_json_atomic
@@ -24,7 +24,8 @@ from .store import deck_root, load_deck
 
 SCRIPT_VERSION = "deck-script-v1"
 BATCH_PAGES = 8
-MAX_ATTEMPTS = 3
+MAX_ATTEMPTS = 3              # 人工挡位（G0/G1）每批的最多尝试次数
+AUTO_ATTEMPTS = 30            # 全自动挡位（G2/G3）：持续修改直到通过（安全上限，可随时停止）
 TOL_LOW, TOL_HIGH = 0.6, 1.4
 SYSTEM = ("你是讲解视频的解说撰稿人。只输出一个 JSON 对象，不要任何解释、前言或 Markdown 围栏。"
           "只使用给定页面的内容与原文中已有的词，不得添加原文没有的数字、年份或专有名词。")
@@ -70,46 +71,85 @@ def page_source(slide: Dict[str, Any]) -> str:
     return " ".join(str(x) for x in parts)
 
 
-def build_prompt(part_title: str, batch: List[Dict[str, Any]]) -> str:
+def _bounds(slide: Dict[str, Any]) -> Tuple[int, int, int]:
+    tc = target_chars(slide)
+    return tc, int(tc * TOL_LOW), int(tc * TOL_HIGH)
+
+
+def slide_problems(text: str, slide: Dict[str, Any]) -> List[str]:
+    """单页讲稿的问题（具体到字数与数字），空列表表示合格。"""
+    tc, low, high = _bounds(slide)
+    problems = []
+    n = len(text)
+    if not text:
+        problems.append("缺少讲稿")
+        return problems
+    if n < low:
+        problems.append(f"讲稿只有 {n} 字，太短（目标约 {tc} 字，需要 {low}–{high} 字）")
+    elif n > high:
+        problems.append(f"讲稿有 {n} 字，太长（目标约 {tc} 字，需要 {low}–{high} 字）")
+    src = page_source(slide)
+    bad = [x for x in _NUM.findall(text) if x not in src]
+    if bad:
+        problems.append("出现了页面与原文中都没有的数字：" + "、".join(bad[:4]))
+    return problems
+
+
+def _fix_hint(slide: Dict[str, Any], problems: List[str]) -> str:
+    tc, low, high = _bounds(slide)
+    hints = []
+    for pr in problems:
+        if "太短" in pr:
+            hints.append(f"扩写：补充本页要点的解释与衔接，使总字数落在 {low}–{high} 字之间（目标约 {tc} 字）。")
+        elif "太长" in pr:
+            hints.append(f"压缩：删去重复与次要的表述，使总字数落在 {low}–{high} 字之间（目标约 {tc} 字）。")
+        elif "数字" in pr:
+            hints.append("删除那些数字，或只使用页面内容中出现过的数字。")
+        elif "缺少" in pr:
+            hints.append("请为这一页输出讲稿。")
+    return " ".join(dict.fromkeys(hints))
+
+
+def build_prompt(part_title: str, batch: List[Dict[str, Any]],
+                 feedback: Optional[Dict[str, List[str]]] = None) -> str:
     lines = [f"章标题：{part_title}", "请为下列每一页写一段口播讲稿（像在讲一页 PPT，口吻清楚自然）。",
              "规则：",
              "1. 每页讲稿围绕本页的要点与流程展开，讲清楚这一页要传达的意思；不要只念标题；",
-             "2. 字数接近“目标字数”（允许上下约 40%）；",
+             "2. 字数必须落在“允许字数”区间内（目标字数只是参考）；",
              "3. 只使用本页内容与原文已有的数字、词语，不得新增数字、年份或人名；",
              "4. 不要提及“下一页”“这张幻灯片”之类的界面词。",
              "", "页面（按顺序）："]
     for s in batch:
-        lines.append(f"[{s['id']}] 标题：{s.get('title', '')}；目标字数：{target_chars(s)}")
+        tc, low, high = _bounds(s)
+        lines.append(f"[{s['id']}] 标题：{s.get('title', '')}；目标字数：{tc}；允许字数：{low}–{high}")
         for el in s.get("elements") or []:
             lines += ["  " + x for x in _element_lines(el)]
-    lines += ["", "输出 JSON：", json.dumps({"slides": [{"id": batch[0]["id"], "narration": "讲稿文字"}]},
-                                              ensure_ascii=False)]
+        if feedback and s["id"] in feedback:
+            lines.append(f"  【上一次输出的问题，必须修正】{'；'.join(feedback[s['id']])}")
+            hint = _fix_hint(s, feedback[s["id"]])
+            if hint:
+                lines.append(f"  【修改要求】{hint}")
+    lines += ["", "输出 JSON（每一页都要输出，包括没有问题的页）：",
+              json.dumps({"slides": [{"id": batch[0]["id"], "narration": "讲稿文字"}]}, ensure_ascii=False)]
     return "\n".join(lines)
 
 
 def check_batch(obj: Any, batch: List[Dict[str, Any]]) -> Tuple[Dict[str, str], List[str]]:
-    errors: List[str] = []
-    out: Dict[str, str] = {}
+    """逐页校验。返回 (合格的页 {id: 讲稿}, 全部问题的文字列表)。"""
     got = {}
     for item in (obj.get("slides") if isinstance(obj, dict) else None) or []:
         if isinstance(item, dict) and item.get("id"):
             got[str(item["id"])] = str(item.get("narration") or "").strip()
+    ok: Dict[str, str] = {}
+    errors: List[str] = []
     for s in batch:
-        sid = s["id"]
-        text = got.get(sid, "")
-        if not text:
-            errors.append(f"{sid}：缺少讲稿")
-            continue
-        tc = target_chars(s)
-        n = len(text)
-        if not (tc * TOL_LOW <= n <= tc * TOL_HIGH):
-            errors.append(f"{sid}：讲稿 {n} 字，目标 {tc} 字（允许 {int(tc * TOL_LOW)}–{int(tc * TOL_HIGH)}）")
-        src = page_source(s)
-        bad = [x for x in _NUM.findall(text) if x not in src]
-        if bad:
-            errors.append(f"{sid}：讲稿出现页面与原文中没有的数字：{'、'.join(bad[:4])}")
-        out[sid] = text
-    return out, errors
+        text = got.get(s["id"], "")
+        problems = slide_problems(text, s)
+        if problems:
+            errors += [f"{s['id']}：{pr}" for pr in problems]
+        else:
+            ok[s["id"]] = text
+    return ok, errors
 
 
 def _sha(deck_sha: str, llm_key: str) -> str:
@@ -118,8 +158,12 @@ def _sha(deck_sha: str, llm_key: str) -> str:
 
 
 def plan_script(pdir: Path, part_id: str, *, llm, part_title: str = "", force: bool = False,
-                now: Optional[datetime] = None) -> Dict[str, Any]:
-    """为本章每一页生成讲稿。需要幻灯片规划已确认。输入未变时复用。"""
+                now: Optional[datetime] = None, max_attempts: int = AUTO_ATTEMPTS) -> Dict[str, Any]:
+    """为本章每一页生成讲稿。需要幻灯片规划已确认。输入未变时复用。
+
+    不合格的页会带着具体问题（字数、数字）反馈给模型，只重做这些页；合格的页保留。
+    max_attempts 为每批的最多尝试次数（全自动挡位应足够大，持续修改直到通过）。
+    """
     pdir = Path(pdir)
     deck = load_deck(pdir, part_id)
     if deck is None:
@@ -138,30 +182,38 @@ def plan_script(pdir: Path, part_id: str, *, llm, part_title: str = "", force: b
     slides = deck["slides"]
     done: Dict[str, str] = {}
     for i in range(0, len(slides), BATCH_PAGES):
-        batch = slides[i:i + BATCH_PAGES]
-        issues: List[str] = []
-        ok = False
-        for attempt in range(1, MAX_ATTEMPTS + 1):
-            prompt = build_prompt(title, batch)
-            if issues:
-                prompt += "\n上一次输出的问题（请修正，只输出修正后的完整 JSON）：\n" + "\n".join(issues[:12])
+        batch_no = i // BATCH_PAGES + 1
+        pending = list(slides[i:i + BATCH_PAGES])
+        feedback: Dict[str, List[str]] = {}
+        attempt = 0
+        while pending:
+            attempt += 1
+            if attempt > max_attempts:
+                msgs = [f"{sid}：{m}" for sid, ms in feedback.items() for m in ms]
+                raise PlanError(f"{part_id} 讲稿批次 {batch_no} 经 {max_attempts} 次仍不合格：" + "；".join(msgs[:6]))
+            cancel.check()
+            prompt = build_prompt(title, pending, feedback)
             raw = llm.ask(prompt, system=SYSTEM)
             try:
                 obj = parse_json_object(raw)
             except ValueError as exc:
-                issues = [f"JSON 解析失败：{exc}"]
-                joblog.bound_log(f"{part_id} 讲稿批次 {i // BATCH_PAGES + 1}：输出不是有效 JSON，重做", level="warn")
+                joblog.bound_log(f"{part_id} 讲稿批次 {batch_no} 第 {attempt} 次：输出不是有效 JSON（{exc}），重做",
+                                 level="warn")
+                feedback = {s["id"]: ["输出不是有效的 JSON，请只输出 JSON 对象"] for s in pending}
                 continue
-            got, errs = check_batch(obj, batch)
+            ok, errs = check_batch(obj, pending)
+            done.update(ok)
             if not errs:
-                done.update(got)
-                ok = True
+                joblog.bound_log(f"{part_id} 讲稿批次 {batch_no}：第 {attempt} 次通过（{len(ok)} 页）")
                 break
-            issues = errs
-            joblog.bound_log(f"{part_id} 讲稿批次 {i // BATCH_PAGES + 1}：校验发现 {len(errs)} 处问题，第 {attempt} 次重做",
-                             level="warn")
-        if not ok:
-            raise PlanError(f"{part_id} 讲稿批次 {i // BATCH_PAGES + 1} 经 {MAX_ATTEMPTS} 次仍不合格：" + "；".join(issues[:4]))
+            joblog.bound_log(f"{part_id} 讲稿批次 {batch_no} 第 {attempt} 次：{len(errs)} 处问题，只重做这些页", level="warn")
+            for e in errs:
+                joblog.bound_log(f"    · {e}", level="warn")
+            feedback = {}
+            for e in errs:
+                sid, _, msg = e.partition("：")
+                feedback.setdefault(sid, []).append(msg)
+            pending = [s for s in pending if s["id"] in feedback]
     out_slides = []
     for s in slides:
         text = done[s["id"]]
@@ -171,7 +223,7 @@ def plan_script(pdir: Path, part_id: str, *, llm, part_title: str = "", force: b
            "input_sha": sha, "slides": out_slides, "total_chars": sum(x["chars"] for x in out_slides),
            "confirmed": False, "confirmed_at": None, "generated_at": now_iso(now)}
     write_json_atomic(script_path(pdir, part_id), doc)
-    joblog.bound_log(f"{part_id}：幻灯片讲稿已生成（{len(out_slides)} 页，{doc['total_chars']} 字）")
+    joblog.bound_log(f"{part_id}：幻灯片讲稿已生成（{len(out_slides)} 页，{doc['total_chars']} 字）", level="ok")
     return doc
 
 

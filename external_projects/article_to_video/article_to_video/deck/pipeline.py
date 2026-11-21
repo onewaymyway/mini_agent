@@ -22,7 +22,7 @@ from ..planning.errors import PlanError
 from ..planning.runner import load_spine
 from ..project_store import now_iso, write_json_atomic
 from .compose import compose_deck_part, export_deck_video
-from .script import confirm_script, load_script, plan_script, script_status
+from .script import AUTO_ATTEMPTS, MAX_ATTEMPTS, confirm_script, load_script, plan_script, script_status
 from .store import confirm_deck, deck_home, deck_status, load_deck, plan_deck
 from .voice import synthesize_deck
 
@@ -107,13 +107,14 @@ def run_deck_pipeline(pdir: Path, *, gear: str = "G0", until: str = "export", ap
         if STAGES.index("plan") >= stop_after:
             return _finish(pdir, status, now)
 
-        # 2. 讲稿
+        # 2. 讲稿：全自动挡位持续修改直到通过；人工挡位次数较少，失败即停下来让人检查
+        attempts = AUTO_ATTEMPTS if gear in ("G2", "G3") else MAX_ATTEMPTS
         if llm is None:
             raise PlanError("新方案需要文本模型生成讲稿（mini_agent 配置）")
         start_stage("script")
         for p in parts:
             cancel.check()
-            plan_script(pdir, p["id"], llm=llm, part_title=p["title"])
+            plan_script(pdir, p["id"], llm=llm, part_title=p["title"], max_attempts=attempts)
         if "script" in manual:
             pending = [p["id"] for p in parts if not script_status(pdir, p["id"])["confirmed"]]
             if pending:
