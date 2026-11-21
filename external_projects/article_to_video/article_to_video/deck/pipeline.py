@@ -14,12 +14,13 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 from .. import cancel, joblog
-from ..pipeline.gates import GEARS, check_budget_requirement
+from ..app_settings import effective_group
+from ..pipeline.gates import GEARS, check_budget_requirement, manual_checkpoints
 from ..planning.errors import PlanError
-from ..planning.runner import load_spine
+from ..planning.runner import confirm_spine, load_spine, plan_outline
 from ..project_store import now_iso, write_json_atomic
 from .compose import compose_deck_part, export_deck_video
 from .script import AUTO_ATTEMPTS, MAX_ATTEMPTS, confirm_script, load_script, plan_script, script_status
@@ -33,7 +34,7 @@ _MANUAL = {
     "G2": set(),
     "G3": set(),
 }
-STAGE_NAME = {"plan": "幻灯片规划", "script": "讲稿", "voice": "配音", "compose": "合成", "export": "导出"}
+STAGE_NAME = {"outline": "大纲", "plan": "幻灯片规划", "script": "讲稿", "voice": "配音", "compose": "合成", "export": "导出"}
 
 
 def deck_manual_checkpoints(gear: str) -> Set[str]:
@@ -47,6 +48,27 @@ def _parts(pdir: Path):
     if spine is None or not spine.get("confirmed"):
         raise PlanError("请先确认大纲（C0），再运行新方案")
     return spine["parts"]
+
+
+def ensure_outline(pdir: Path, gear: str, llm=None, now: Optional[datetime] = None) -> Optional[str]:
+    """新方案开始前保证大纲已确认（与旧方案的大纲阶段规则一致）：
+    没有大纲则按生效设置生成（模型版或离线规则）；已确认则直接通过；
+    人工挡位设有 C0 检查点则返回等待原因；其余挡位（如 G3）自动确认。返回 None 表示可以继续。"""
+    spine = load_spine(pdir)
+    if spine is None:
+        engine = effective_group(Path(pdir), "pipeline")["outline_engine"]
+        if engine == "llm" and llm is None:
+            raise PlanError("大纲选择了模型版，但未配置文本模型")
+        joblog.bound_log(f"▶ 生成大纲（{'模型' if engine == 'llm' else '离线规则'}）")
+        plan_outline(Path(pdir), engine=engine, llm=llm if engine == "llm" else None, now=now)
+        spine = load_spine(pdir)
+    if spine.get("confirmed"):
+        return None
+    if "outline" in manual_checkpoints(gear):
+        return "C0 大纲待人工确认（界面：🗺️ 大纲）"
+    confirm_spine(Path(pdir), now=now)                    # 未通过 V1 校验时抛出，流水线记为失败
+    joblog.bound_log("大纲已自动确认（本挡位无 C0 人工检查点）")
+    return None
 
 
 def _save(pdir: Path, status: Dict[str, Any], now: Optional[datetime]) -> None:
@@ -65,7 +87,7 @@ def run_deck_pipeline(pdir: Path, *, gear: str = "G0", until: str = "export", ap
     manual = deck_manual_checkpoints(gear)
     if gear == "G3":
         approve = True                       # G3：终审自动通过并导出
-    parts = _parts(pdir)
+    parts: List[Dict[str, Any]] = []
     status: Dict[str, Any] = {"gear": gear, "until": until, "state": "running", "steps": [],
                               "waiting": None, "error": None, "outputs": [], "started_at": now_iso(now)}
     deck_home(pdir).mkdir(parents=True, exist_ok=True)
@@ -90,6 +112,11 @@ def run_deck_pipeline(pdir: Path, *, gear: str = "G0", until: str = "export", ap
     try:
         joblog.bound_log(f"新方案开始运行：挡位 {gear}，运行到「{STAGE_NAME[until]}」"
                          + ("（终审自动通过）" if approve and gear == "G3" else ""))
+        # 0. 大纲（C0）：没有则生成；G3 等挡位自动确认；人工挡位停下等待
+        waiting_reason = ensure_outline(pdir, gear, llm=llm, now=now)
+        if waiting_reason:
+            return wait("outline", waiting_reason)
+        parts = _parts(pdir)                  # 大纲的生成与确认已在日志中记录，不计入流水线步骤
         # 1. 幻灯片规划
         start_stage("plan")
         for p in parts:
