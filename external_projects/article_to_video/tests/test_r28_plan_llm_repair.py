@@ -54,6 +54,16 @@ def _bad_deck(blocks, part_id, **kw):
     return dict(good, slides=slides, page_cap=kw.get("page_cap", 12), element_cap=kw.get("element_cap", 12))
 
 
+def _model_only(deck):
+    """R42 后确定性修复会处理前言、超长等机械问题；这里在一页有实际内容的页上去掉标题（确定性修复解决不了），
+    确保这些用例仍然需要模型修复。（只有前言的页会被并入后一页，故不选它。）"""
+    for sl in deck["slides"]:
+        if any(not e.get("lead_in") for e in sl["elements"]):
+            sl["title"] = ""
+            break
+    return deck
+
+
 class ScriptedLLM:
     model = "scripted"
 
@@ -75,19 +85,20 @@ def test_chained_lead_ins_no_longer_leave_a_lead_only_page():
 
 
 def test_repair_loop_feeds_specific_problems_and_retries_until_valid():
-    base = _bad_deck(BLOCKS, "P01")
+    base = _model_only(_bad_deck(BLOCKS, "P01"))
     errs = validate_deck(base, BLOCKS)["errors"]
     assert any("前言留在页尾" in e or "只有标题或前言" in e for e in errs)
     cheat = json.loads(_answer_from(_good_deck()))
-    cheat["slides"][0]["elements"][0]["items"] = ["原文里根本没有的一句话"]
+    _model_only(cheat)                                            # 确定性修复解决不了：必须交给模型
     llm = ScriptedLLM(["这不是JSON", json.dumps(cheat, ensure_ascii=False), _answer_from(_good_deck())])
     deck = repair_deck(PART, BLOCKS, "P01", base, errs, llm)
     assert validate_deck(deck, BLOCKS, page_cap=12, element_cap=12)["errors"] == []
     assert deck["repaired_by_llm"] and deck["repair_attempts"] == 3
     assert len(llm.prompts) == 3
-    assert errs[0] in llm.prompts[0]                              # 第一次：校验给出的具体问题
+    assert "缺少标题" in llm.prompts[0]                            # 第一次：确定性修复之后剩下的具体问题
+    assert "没有实际内容" not in llm.prompts[0]                    # 前言问题已由确定性修复解决，不再交给模型（分页标准里的措辞不算）
     assert "不是有效的 JSON" in llm.prompts[1]                      # 第二次：JSON 错误
-    assert "不在原文中" in llm.prompts[2]                           # 第三次：上一版内容不在原文中的具体问题
+    assert "缺少标题" in llm.prompts[2]                            # 第三次：上一版的具体问题（确定性修复无法处理）
     assert "先看三点如下：" in llm.prompts[0]                       # 原文随提示一并给出
 
 
@@ -101,8 +112,12 @@ def test_lead_in_flags_come_from_the_source_not_from_the_model():
         ensure_ascii=False)
     llm = ScriptedLLM([bad, _answer_from(_good_deck())])
     deck = repair_deck(PART, BLOCKS, "P01", None, ["x"], llm)
-    assert deck["repair_attempts"] == 2                           # 模型自称无前言也无效：前言单独成页被校验拒绝
-    assert "只有标题或前言" in llm.prompts[1] or "前言留在页尾" in llm.prompts[1]
+    # R42：模型“自称无前言”的单独前言页，由确定性修复并入后一页，无需再问模型；前言标记仍由原文决定
+    assert deck["repair_attempts"] == 1
+    assert validate_deck(deck, BLOCKS, page_cap=12, element_cap=12)["errors"] == []
+    flags = [e.get("lead_in") for sl in deck["slides"] for e in sl["elements"]
+             if "先看三点如下" in str(e.get("items"))]
+    assert flags == [True]
 
 
 def test_unknown_source_and_kind_are_reported_back():
@@ -154,7 +169,8 @@ def project(tmp_path, monkeypatch):
 
 
 def _break_rules(monkeypatch):
-    monkeypatch.setattr(deck_store, "plan_slides", lambda part, blocks, pid, **kw: _bad_deck(blocks, pid, **kw))
+    monkeypatch.setattr(deck_store, "plan_slides",
+                        lambda part, blocks, pid, **kw: _model_only(_bad_deck(blocks, pid, **kw)))
 
 
 def test_plan_deck_repairs_with_llm_when_rules_keep_failing(project, monkeypatch):

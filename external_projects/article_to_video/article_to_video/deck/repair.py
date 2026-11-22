@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from .. import cancel, joblog
 from ..planning.errors import PlanError
 from ..planning.jsonio import parse_json_object
+from .autofix import autofix_deck
 from .plan import _finish, _slide, _text, is_lead_in
 from .validate import ELEMENT_KINDS, validate_deck
 
@@ -163,44 +164,95 @@ def normalize_repaired(obj: Any, blocks: List[Dict[str, Any]], part_id: str, pag
     return deck, problems
 
 
+def _accept(deck: Dict[str, Any], how: str, attempt: int) -> Dict[str, Any]:
+    deck["attempts"] = how
+    deck["repaired_by_llm"] = attempt > 0
+    deck["repair_attempts"] = attempt
+    return deck
+
+
 def repair_deck(part: Dict[str, Any], blocks: List[Dict[str, Any]], part_id: str, base: Optional[Dict[str, Any]],
                 errors: List[str], llm, *, max_attempts: int = REPAIR_ATTEMPTS) -> Dict[str, Any]:
-    """让模型修复不合格的规划，直到通过校验。用完次数仍不合格才抛 PlanError（附最后一次的具体问题）。"""
+    """修复不合格的规划，直到通过校验。
+
+    R42 的修复顺序：
+      1. 确定性修复（autofix）：能用代码修好的先修，不占用模型次数；修好则直接通过；
+      2. 模型修复：只处理确定性修复解决不了的问题；模型输出同样先经过确定性修复；
+      3. 只接受更好的结果：始终基于“问题最少的最好版本”继续，新版本变差就回退；
+         同一组问题再次出现时停止调用模型（避免空耗轮次），以最好版本的问题报错。
+    """
     if llm is None:
         raise PlanError("幻灯片规划不合格且未配置文本模型，无法自动修复")
     pc, ec = REPAIR_CAPS
     title = part.get("title", part_id)
-    current, cur_errors = base, list(errors)
+    base = base or {"slides": []}
+
+    # 第 1 步：确定性修复
+    fixed, notes = autofix_deck(base, blocks, part_id, page_cap=pc, element_cap=ec)
+    fv = validate_deck(fixed, blocks, page_cap=pc, element_cap=ec)
+    if notes:
+        joblog.bound_log(f"{part_id} 自动修复（不调用模型）：" + "；".join(notes))
+    if not fv["errors"]:
+        joblog.bound_log(f"{part_id} 幻灯片规划经自动修复通过（{len(fixed['slides'])} 页）", level="ok")
+        return _accept(fixed, "autofix", 0)
+    best = (len(fv["errors"]), fixed, fv["errors"])
+    if len(fv["errors"]) > len(errors):             # 不应发生，但保证起点不比原规划差
+        best = (len(errors), base, list(errors))
+
+    # 第 2 步：模型修复（以最好版本为基础）
+    seen = set()                                     # 模型给出过的失败结果（问题组合），用于发现重复
+    calls = 0
+    last_errs: List[str] = []                        # 模型最近一次输出的问题（提示中一并给出，便于它理解自己哪里错了）
     for attempt in range(1, max_attempts + 1):
         cancel.check()
+        cur_errors = list(dict.fromkeys(last_errs + best[2]))
         joblog.bound_log(f"{part_id} 幻灯片规划交给模型修复（第 {attempt} 次）：{len(cur_errors)} 处问题", level="warn")
         for e in cur_errors[:8]:
             joblog.bound_log(f"    · {e}", level="warn")
-        prompt = build_repair_prompt(title, blocks, current, cur_errors, pc, ec)
+        prompt = build_repair_prompt(title, blocks, best[1], cur_errors, pc, ec)
+        calls += 1
         try:
             raw = llm.ask(prompt, system=SYSTEM)
-        except Exception as exc:                        # 网络/限流等：记录后继续重试，不中断
+        except Exception as exc:                        # 网络/限流等：记录后继续重试，不中断（不计入重复判断）
             joblog.bound_log(f"{part_id} 模型调用失败（{exc}），重试", level="warn")
-            cur_errors = cur_errors or [f"模型调用失败：{exc}"]
+            calls -= 1
             continue
         try:
             obj = parse_json_object(raw)
         except ValueError as exc:
             joblog.bound_log(f"{part_id} 修复第 {attempt} 次：输出不是有效 JSON（{exc}），重做", level="warn")
-            cur_errors = ["上一次输出不是有效的 JSON，请只输出 JSON 对象"] + [e for e in cur_errors
-                                                                      if "JSON" not in e]
+            last_errs = ["上一次输出不是有效的 JSON，请只输出 JSON 对象"]
             continue
         deck, structural = normalize_repaired(obj, blocks, part_id, pc, ec)
-        if deck is None:
-            cur_errors = structural
+        if deck is None:                             # 结构不合格：同样参与重复判断
+            if frozenset(structural) in seen:
+                joblog.bound_log(f"{part_id} 模型第 {attempt} 次给出的结构与之前相同，停止调用模型", level="warn")
+                break
+            seen.add(frozenset(structural))
+            last_errs = structural
+            if len(structural) < best[0]:
+                best = (len(structural), best[1], structural)
             continue
-        v = validate_deck(deck, blocks, page_cap=pc, element_cap=ec)
-        errs = structural + v["errors"]
+        raw_v = validate_deck(deck, blocks, page_cap=pc, element_cap=ec)
+        cand, _ = autofix_deck(deck, blocks, part_id, page_cap=pc, element_cap=ec)
+        cand_v = validate_deck(cand, blocks, page_cap=pc, element_cap=ec)
+        if len(cand_v["errors"]) <= len(raw_v["errors"]):
+            deck_c, errs = cand, structural + cand_v["errors"]
+        else:
+            deck_c, errs = deck, structural + raw_v["errors"]
         if not errs:
-            deck["attempts"] = f"repair-{attempt}"
-            deck["repaired_by_llm"] = True
-            deck["repair_attempts"] = attempt
-            joblog.bound_log(f"{part_id} 幻灯片规划由模型修复通过（第 {attempt} 次，{len(deck['slides'])} 页）", level="ok")
-            return deck
-        current, cur_errors = deck, errs                # 下一次基于最新一版继续改
-    raise PlanError(f"{part_id} 幻灯片规划经 {max_attempts} 次模型修复仍不合格：" + "；".join(cur_errors[:4]))
+            joblog.bound_log(f"{part_id} 幻灯片规划由模型修复通过（第 {attempt} 次，{len(deck_c['slides'])} 页）",
+                             level="ok")
+            return _accept(deck_c, f"repair-{attempt}", attempt)
+        last_errs = errs
+        sig = frozenset(errs)
+        if sig in seen:                              # 模型又给出了一个已经出现过的失败结果：继续问只会重复
+            joblog.bound_log(f"{part_id} 模型第 {attempt} 次给出的结果与之前相同（{len(errs)} 处问题），停止调用模型",
+                             level="warn")
+            break
+        seen.add(sig)
+        if len(errs) < best[0]:
+            best = (len(errs), deck_c, errs)
+        else:
+            joblog.bound_log(f"{part_id} 第 {attempt} 次修复问题未减少（{len(errs)} 处），保留上一版", level="warn")
+    raise PlanError(f"{part_id} 幻灯片规划经 {calls} 次模型修复仍不合格（剩余 {best[0]} 处）：" + "；".join(best[2][:4]))

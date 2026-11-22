@@ -27,6 +27,12 @@ def _source_text(blocks_by_id: Dict[str, Dict[str, Any]], ids: List[str]) -> str
     return norm_key(" ".join(parts))
 
 
+def content_block_ids(blocks: List[Dict[str, Any]]) -> List[str]:
+    """原文中有内容、需要被某一页承载的块（标题与分隔线不算）。校验与自动修复共用此定义。"""
+    return [b.get("id") for b in blocks if b.get("kind") not in ("heading", "rule")
+            and (_text(b) or b.get("items") or b.get("rows") or b.get("nodes") or b.get("content"))]
+
+
 def validate_deck(deck: Dict[str, Any], blocks: List[Dict[str, Any]], *, page_cap: int = None,
                   element_cap: int = None) -> Dict[str, List[str]]:
     """校验规划。page_cap / element_cap 默认取规划结果中记录的分页上限。"""
@@ -92,8 +98,7 @@ def validate_deck(deck: Dict[str, Any], blocks: List[Dict[str, Any]], *, page_ca
         if float(s.get("est_sec", 0)) > PAGE_WARN_SEC:
             warnings.append(f"{sid}：讲解约 {s['est_sec']:.0f} 秒，超过 {PAGE_WARN_SEC:.0f} 秒，建议拆页")
     # 覆盖：原文中有内容的块都应被某一页承载
-    content_ids = [b.get("id") for b in blocks if b.get("kind") not in ("heading", "rule")
-                   and (_text(b) or b.get("items") or b.get("rows") or b.get("nodes") or b.get("content"))]
+    content_ids = content_block_ids(blocks)
     missing = [bid for bid in content_ids if bid not in used]
     if missing:
         errors.append(f"原文内容未被任何幻灯片承载：{', '.join(missing[:8])}" + (" 等" if len(missing) > 8 else ""))
