@@ -19,6 +19,7 @@ from .. import cancel, joblog
 from ..planning.errors import PlanError
 from ..planning.jsonio import parse_json_object
 from ..project_store import now_iso, read_json, write_json_atomic
+from ..providers.tts import has_speakable
 from .plan import PAGE_OVERHEAD_SEC, SPEECH_CHARS_PER_SEC
 from .store import deck_root, load_deck
 
@@ -83,6 +84,9 @@ def slide_problems(text: str, slide: Dict[str, Any]) -> List[str]:
     n = len(text)
     if not text:
         problems.append("缺少讲稿")
+        return problems
+    if not has_speakable(text):
+        problems.append("讲稿没有可朗读的文字（只有标点或空白），请写出完整的讲解句子")
         return problems
     if n < low:
         problems.append(f"讲稿只有 {n} 字，太短（目标约 {tc} 字，需要 {low}–{high} 字）")

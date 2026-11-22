@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..audio.synth import synthesize_script
 from ..planning.errors import PlanError
 from ..project_store import now_iso, read_json, write_json_atomic
+from ..providers.tts import has_speakable
 from .plan import element_count
 from .script import load_script, script_status
 from .store import deck_root
@@ -35,7 +36,8 @@ def load_deck_timeline(pdir: Path, part_id: str) -> Optional[Dict[str, Any]]:
 
 
 def split_sentences(text: str) -> List[str]:
-    return [m.group(0) for m in _SPLIT.finditer(text) if m.group(0).strip()]
+    """按句切分讲稿；去掉没有可朗读字符的碎片（纯标点、空白），它们不会进入配音。"""
+    return [m.group(0) for m in _SPLIT.finditer(text or "") if has_speakable(m.group(0))]
 
 
 def pages_as_script(part_id: str, doc: Dict[str, Any]) -> Dict[str, Any]:

@@ -48,6 +48,23 @@ def has_speakable(text: str) -> bool:
     return bool(_SPEAKABLE_RE.search(text or ""))
 
 
+def speakable_text(text: str) -> str:
+    """清理后的可朗读文本；没有汉字/字母/数字时返回空字符串（空白、纯标点、不可见字符都算空）。"""
+    s = sanitize_tts_text(text)
+    return s if has_speakable(s) else ""
+
+
+def describe_input(text: str, limit: int = 120) -> str:
+    """用于日志与错误信息的输入文本摘要：压缩空白、超长截断，并标明字数。"""
+    raw = "" if text is None else str(text)
+    shown = re.sub(r"\s+", " ", raw).strip()
+    if not shown:
+        return "（空字符串）"
+    if len(shown) > limit:
+        shown = shown[:limit] + "…"
+    return f"「{shown}」（原文 {len(raw)} 字）"
+
+
 def edge_tts_version() -> str:
     try:
         import importlib.metadata as md

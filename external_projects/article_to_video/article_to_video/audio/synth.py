@@ -21,7 +21,7 @@ from .. import cancel, joblog
 from ..planning.errors import PlanError
 from ..planning.runner import load_spine
 from ..project_store import append_progress, now_iso, read_json, write_json_atomic
-from ..providers.tts import sanitize_tts_text
+from ..providers.tts import describe_input, has_speakable, sanitize_tts_text
 from ..script.writer import load_script
 from .config import rate_for
 from .timeline import assign_voices, build_timeline
@@ -98,7 +98,11 @@ def synthesize_script(pdir: Path, part_id: str, script: Dict[str, Any], tts, *, 
             sid = f"{b['id']}.s{i + 1:02d}"
             voice = voices[sid]
             rate = rate_for(b.get("pace", "normal"), b["role"])
-            tts_text = sanitize_tts_text(s.get("tts") or s["text"])
+            raw_input = s.get("tts") or s["text"]
+            tts_text = sanitize_tts_text(raw_input)
+            if not has_speakable(tts_text):   # 空或只有标点：不调用任何引擎，直接指出是哪一句
+                raise PlanError(f"{sid} 没有可朗读的文字（汉字/字母/数字），无法配音。"
+                                f"输入：{describe_input(raw_input)}。请回到讲稿修改这一句。")
             key = _sentence_key(voice, rate, tts_text, tts.name)
             entry = manifest.get(sid)
             if entry and entry.get("key") == key and (audio_dir / entry["file"]).is_file():
@@ -107,7 +111,12 @@ def synthesize_script(pdir: Path, part_id: str, script: Dict[str, Any], tts, *, 
                 continue
             cancel.check()
             out = audio_dir / f"{sid}.wav"
-            dur = float(tts.synth(tts_text, out, voice, rate))
+            try:
+                dur = float(tts.synth(tts_text, out, voice, rate))
+            except Exception as exc:  # noqa: BLE001 - 记录输入后原样上抛，便于按句排查
+                joblog.bound_log(f"{sid} 配音失败：{exc}\n    输入：{describe_input(tts_text)}（音色 {voice}，语速 {rate}）",
+                                 level="error")
+                raise RuntimeError(f"{sid} 配音失败（{exc}）；输入：{describe_input(tts_text)}") from exc
             engine = getattr(tts, "last_engine", None) or tts.name
             joblog.bound_log(f"{sid}：已合成（{voice}，{dur:.1f} 秒，{engine}）")
             manifest[sid] = {"key": key, "file": out.name, "duration": round(dur, 3), "voice": voice,
