@@ -235,15 +235,6 @@ def _monitor(root_str: str) -> None:
     else:
         st.info("队列是空的。在上面加入文章。")
 
-    # 当前正在运行的那一篇：显示其项目日志（流水线的详细步骤），随监控刷新
-    running = next((i for i in data["items"] if i["state"] == "running" and i.get("project_id")), None)
-    if running:
-        from article_to_video import joblog
-        pdir = root / running["project_id"]
-        st.markdown(f"**当前文章的运行日志**　·　《{running['title']}》")
-        tail = joblog.tail(pdir, 160)
-        text = "\n".join(joblog.format_row(r) for r in tail) if tail else "（还没有日志）"
-        st.code(text, language=None)
 
     removable = [i for i in data["items"] if i["state"] != "running"]
     if removable:
@@ -275,6 +266,24 @@ def _monitor(root_str: str) -> None:
                     st.write(f"📦 {o}")
 
 
+@st.fragment(run_every=REFRESH_SECONDS)
+def _running_log(root_str: str) -> None:
+    """当前正在运行那一篇的项目日志：固定高度、可滚动，独立自动刷新，放在页面最下方。"""
+    from pathlib import Path
+    from article_to_video import joblog
+    root = Path(root_str)
+    data = store.load(root)
+    running = next((i for i in data["items"] if i["state"] == "running" and i.get("project_id")), None)
+    if not running:
+        st.caption("当前没有正在运行的文章；开始队列后这里显示该篇的详细步骤。")
+        return
+    st.markdown(f"**《{running['title']}》**　·　最近 300 条（可在框内滚动查看更多）")
+    rows = joblog.tail(root / running["project_id"], 300)
+    text = "\n".join(joblog.format_row(r) for r in rows) if rows else "（还没有日志）"
+    with st.container(height=420, border=True):
+        st.code(text, language=None)
+
+
 def render_batch_page() -> None:
     st.header("📦 批量生成")
     st.caption("持续的队列：逐篇导入、自动运行流水线；失败自动重试，仍失败则记录后继续下一篇。")
@@ -287,3 +296,5 @@ def render_batch_page() -> None:
     st.subheader("队列与监控")
     _monitor(str(root))
     render_job_panel(store.queue_dir(root), ["queue"], title="队列日志", height=200)
+    st.subheader("当前文章的运行日志")
+    _running_log(str(root))
