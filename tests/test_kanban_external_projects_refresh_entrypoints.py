@@ -78,6 +78,14 @@ def _run(refresh_result):
     return AppTest.from_string(code, default_timeout=30).run()
 
 
+def _open_details(at):
+    """精简卡片默认收起，需先点「📂 详情」才会渲染更新按钮/执行记录等。"""
+    btn = [b for b in at.button if b.key == "ext_proj_detail_btn_demo"]
+    assert btn, [b.key for b in at.button]
+    btn[0].click().run()
+    return at
+
+
 def _refresh_button(at):
     btns = [b for b in at.button if b.key == "ext_proj_refresh_ep_demo"]
     assert btns, [b.key for b in at.button]
@@ -85,7 +93,7 @@ def _refresh_button(at):
 
 
 def test_card_times_are_shown_in_local_time():
-    at = _run(OK_RESULT)
+    at = _open_details(_run(OK_RESULT))
     assert not at.exception
     captions = [c.value for c in at.caption]
     assert any("最近一次执行" in c and "2026-10-14 10:30:00" in c for c in captions)
@@ -95,7 +103,7 @@ def test_card_times_are_shown_in_local_time():
 
 
 def test_refresh_button_click_shows_result_after_rerun():
-    at = _run(OK_RESULT)
+    at = _open_details(_run(OK_RESULT))
     _refresh_button(at).click().run()
     assert not at.exception
     assert any("删除旧定时任务 1 个，重新注册 1 个" in s.value for s in at.success)
@@ -105,7 +113,7 @@ def test_refresh_button_click_shows_result_after_rerun():
 
 
 def test_refresh_result_is_shown_only_once():
-    at = _run(OK_RESULT)
+    at = _open_details(_run(OK_RESULT))
     _refresh_button(at).click().run()
     assert at.success
     at.run()  # 再普通重跑一次，提示不应重复出现
@@ -113,13 +121,13 @@ def test_refresh_result_is_shown_only_once():
 
 
 def test_refresh_error_is_shown():
-    at = _run({"_error": "project.yaml 解析失败，已保留现有定时任务不变: boom"})
+    at = _open_details(_run({"_error": "project.yaml 解析失败，已保留现有定时任务不变: boom"}))
     _refresh_button(at).click().run()
     assert any("更新失败" in e.value and "已保留现有定时任务不变" in e.value for e in at.error)
 
 
 def test_refresh_when_cron_not_synced_shows_warning():
     res = dict(OK_RESULT, cron_synced=False, removed=[], registered=[])
-    at = _run(res)
+    at = _open_details(_run(res))
     _refresh_button(at).click().run()
     assert any("cron 调度器当前不可用" in w.value for w in at.warning)

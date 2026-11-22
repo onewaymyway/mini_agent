@@ -13317,10 +13317,10 @@ def _wa_bind_choice(name: str, default_bind: str):
         default = _WA_BIND_CUSTOM
         custom_prefill = default_bind or ""
     choice = st.selectbox(
-        "监听地址（启动时生效，决定能否从其它设备访问）",
+        "监听地址",
         options=values, index=values.index(default),
         format_func=lambda v: labels[v], key=f"webapp_bind_{name}",
-        help="0.0.0.0：局域网其它设备可用 IP 访问，但页面无登录保护；127.0.0.1：仅本机。",
+        help="启动时生效，决定能否从其它设备访问。0.0.0.0：局域网其它设备可用 IP 访问，但页面无登录保护；127.0.0.1：仅本机。",
     )
     if choice != _WA_BIND_CUSTOM:
         return choice
@@ -13359,9 +13359,6 @@ def _render_web_app_row(name: str, entry) -> None:
     c1.markdown(f"🌐 Streamlit：{status.label} · 端口 {spec.port}{where}")
     if status.is_up:
         c2.link_button("🌐 打开", status.url)
-    if spec.is_remote:
-        st.caption("ℹ️ 填了 host 视为远程部署，看板只探测/打开不启停。"
-                   "若要在本机启动并允许局域网 IP 访问，请删除 host，启动时选择监听地址即可。")
     lan = wa.lan_url(spec, status.bind) if (status.is_up and status.bind and not spec.is_remote) else None
     if lan:
         st.caption(f"🌍 局域网访问：{lan}（该页面无登录保护，仅在可信网络内使用）")
@@ -13378,13 +13375,16 @@ def _render_web_app_row(name: str, entry) -> None:
     bind_value = None
     auth_value = bool(spec.require_login)
     if status.can_start and not spec.is_remote:
-        bind_value = _wa_bind_choice(name, spec.bind_address)
-        auth_value = st.checkbox(
-            "🔐 需要登录（使用看板共享的账户登录）", value=bool(spec.require_login),
-            key=f"webapp_auth_{name}",
-            help="启用后，打开此应用需先用看板账户登录；账户与看板共用（~/.agent/web_auth/）。"
-                 "声明了自定义 command 的项目无法启用。",
-        )
+        opt1, opt2 = st.columns([3, 2])
+        with opt1:
+            bind_value = _wa_bind_choice(name, spec.bind_address)
+        with opt2:
+            auth_value = st.checkbox(
+                "🔐 需要登录（看板账户）", value=bool(spec.require_login),
+                key=f"webapp_auth_{name}",
+                help="启用后，打开此应用需先用看板账户登录；账户与看板共用（~/.agent/web_auth/）。"
+                     "声明了自定义 command 的项目无法启用。",
+            )
         if auth_value:
             from mini_agent.web_auth.gate import accounts_empty, shared_auth_dir
             if accounts_empty():
@@ -13397,7 +13397,7 @@ def _render_web_app_row(name: str, entry) -> None:
         if ok:
             with st.spinner("等待 Streamlit 就绪…"):
                 status = wa.wait_until_ready(name, entry.root, spec)
-            ready = "已就绪" if status.is_up else "未在超时内就绪，请查看日志"
+            ready = "已就绪" if status.is_up else "未在超时内就绪，请点「📂 详情」查看日志"
             st.session_state[f"webapp_flash_{name}"] = f"{msg} → {ready}"
         else:
             st.session_state[f"webapp_flash_{name}"] = f"❌ {msg}"
@@ -13426,9 +13426,22 @@ def _render_web_app_row(name: str, entry) -> None:
         st.caption("该实例不是由看板启动。勾选上方确认后，可由看板结束或重启；否则只能打开。")
     if status.state == wa.STATE_PORT_BUSY:
         st.warning(status.message)
+
+
+def _render_web_app_extra(name: str, entry) -> None:
+    """Streamlit 应用的次要信息，只在项目「📂 详情」展开后渲染：
+    远程部署说明、Streamlit 日志（最近 40 行）。启动/停止/重启等管理操作仍在精简卡片上。"""
+    if entry is None or entry.error:
+        return
+    from mini_agent.external_projects import web_app as wa
+
+    spec = entry.spec
     if spec.is_remote:
-        st.caption("远程项目：看板只探测与打开，不负责启停。")
-    if status.log_path and not spec.is_remote:
+        st.caption("ℹ️ 填了 host 视为远程部署，看板只探测/打开不启停。"
+                   "若要在本机启动并允许局域网 IP 访问，请删除 host，启动时选择监听地址即可。")
+        return
+    status = wa.get_status(name, entry.root, spec)
+    if status.log_path:
         log_tail = _tail_text(status.log_path)
         if log_tail:
             with st.expander("Streamlit 日志（最近 40 行）"):
@@ -13539,271 +13552,311 @@ def render_external_projects_tab(client: AgentClient):
 
     web_entries = _load_web_app_entries()
     for proj in projects:
-        name = proj.get("name", "")
-        health = proj.get("health", "unknown")
-        health_label = _EXTERNAL_PROJECT_HEALTH_LABEL.get(health, health)
-        with st.container(border=True):
-            top1, top2, top3 = st.columns([3, 1, 1])
-            top1.markdown(f"**{name}**")
-            top2.markdown(health_label)
-            # [external_projects_cron_dispatch_plan.md 3.3/3.4] 项目粒度
-            # 的 daemon 自动调度开关：勾选后 daemon 会按 project.yaml 里
-            # 每个 entrypoint 的 schedule 自动触发（走与普通 cron job
-            # 共享并发/仲裁资源的同一条通道）；取消勾选会把该项目名下
-            # 的 ext:* cron job 真正删除，不是仅仅 disable。不影响该
-            # 项目被 OS 原生 cron / 上面「▶️ 手动触发」按钮触发。
-            new_enabled = top3.checkbox(
-                "自动调度",
-                value=bool(proj.get("enabled")),
-                key=f"ext_proj_enabled_{name}",
-                help="按 project.yaml 声明的 schedule 由 daemon 自动触发定时 entrypoint",
+        _render_external_project_card(client, proj, web_entries.get(proj.get("name", "")))
+
+
+
+def _render_external_project_card(client: AgentClient, proj: dict, web_entry) -> None:
+    """[外部项目卡片精简展示] 默认只显示最关键的信息：项目名、健康状态、
+    最近一次执行摘要、Streamlit 应用的启动管理（状态/打开/启动/停止/重启）。
+    其余功能（自动调度、更新 entrypoints、执行记录、手动触发、改进积压、
+    Review、状态看板、注销等）全部收进「📂 详情」，点击后才渲染——
+    详情区里的后端请求（改进积压、状态看板数据）也只在展开后才发起。
+
+    展开状态按项目存在 session_state（`ext_proj_detail_open_<name>`），
+    默认全部收起。"""
+    name = proj.get("name", "")
+    health = proj.get("health", "unknown")
+    health_label = _EXTERNAL_PROJECT_HEALTH_LABEL.get(health, health)
+    open_key = f"ext_proj_detail_open_{name}"
+    is_open = bool(st.session_state.get(open_key))
+
+    with st.container(border=True):
+        top1, top2, top3 = st.columns([3, 1, 1])
+        top1.markdown(f"**{name}**")
+        top2.markdown(health_label)
+        if top3.button("🔼 收起" if is_open else "📂 详情", key=f"ext_proj_detail_btn_{name}",
+                       help="展开/收起该项目的全部管理功能"):
+            st.session_state[open_key] = not is_open
+            st.rerun()
+
+        _render_web_app_row(name, web_entry)
+
+        if proj.get("manifest_error"):
+            st.warning(f"manifest 解析失败：{proj['manifest_error']}")
+        _render_external_project_summary(proj)
+
+        if is_open:
+            st.divider()
+            _render_external_project_details(client, proj, name, web_entry)
+
+
+def _render_external_project_summary(proj: dict) -> None:
+    """精简卡片的一行摘要：最近一次执行 + 自动调度状态（只读）。"""
+    last_run = proj.get("last_run")
+    sched_txt = "⏱ 自动调度：开" if proj.get("enabled") else "⏱ 自动调度：关"
+    if last_run:
+        status_txt = "✅ 成功" if last_run.get("exit_code") == 0 else "❌ 失败"
+        st.caption(
+            f"最近一次执行：{last_run.get('entrypoint', '')} · {status_txt} "
+            f"· {_to_local_time_str(last_run.get('finished_at'))} · {sched_txt}"
+        )
+        if last_run.get("exit_code") != 0:
+            st.caption("失败详情请点「📂 详情」查看。")
+    else:
+        st.caption(f"最近一次执行：（暂无记录） · {sched_txt}")
+
+
+def _render_external_project_details(client: AgentClient, proj: dict, name: str, web_entry) -> None:
+    """「📂 详情」展开后才渲染的全部内容（原卡片里除精简信息外的所有功能，
+    行为与此前完全一致，仅整体下沉了一层）。"""
+    # [external_projects_cron_dispatch_plan.md 3.3/3.4] 项目粒度
+    # 的 daemon 自动调度开关：勾选后 daemon 会按 project.yaml 里
+    # 每个 entrypoint 的 schedule 自动触发（走与普通 cron job
+    # 共享并发/仲裁资源的同一条通道）；取消勾选会把该项目名下
+    # 的 ext:* cron job 真正删除，不是仅仅 disable。不影响该
+    # 项目被 OS 原生 cron / 下面「▶️ 手动触发」按钮触发。
+    new_enabled = st.checkbox(
+        "自动调度",
+        value=bool(proj.get("enabled")),
+        key=f"ext_proj_enabled_{name}",
+        help="按 project.yaml 声明的 schedule 由 daemon 自动触发定时 entrypoint",
+    )
+    if new_enabled != bool(proj.get("enabled")):
+        res = client.set_external_project_enabled(name, new_enabled)
+        if res and "_error" in res:
+            st.error(f"切换失败：{res['_error']}")
+        else:
+            st.rerun()
+    st.caption(f"路径：{proj.get('path', '')}")
+    _render_web_app_extra(name, web_entry)
+
+    # 更新 entrypoints：用户改了该项目的 project.yaml 之后点一次，
+    # 后端先校验最新 manifest，通过后删除该项目名下旧的 ext:* cron
+    # 任务并按最新配置重新注册（见 POST .../refresh_entrypoints）。
+    # 点击才请求，不在每次页面重跑时触发。
+    if st.button(
+        "🔄 更新 entrypoints",
+        key=f"ext_proj_refresh_ep_{name}",
+        help=(
+            "重新读取 project.yaml：删除该项目已注册的定时任务，"
+            "并按最新 entrypoints/schedule 重新注册。"
+            "会重置这些定时任务的累计运行次数等历史。"
+        ),
+    ):
+        with st.spinner("正在按最新 project.yaml 重建定时任务…"):
+            refresh_res = client.refresh_external_project_entrypoints(name)
+        if refresh_res and "_error" in refresh_res:
+            st.error(f"更新失败：{refresh_res['_error']}")
+        else:
+            # 本轮脚本里项目列表是刷新之前拉的，卡片上的
+            # entrypoints 还是旧的——存下结果后 rerun，下一轮
+            # 重新拉状态并在这里展示结果提示。
+            st.session_state[f"ext_proj_refresh_result_{name}"] = refresh_res or {}
+            st.rerun()
+    _flash_refresh = st.session_state.pop(f"ext_proj_refresh_result_{name}", None)
+    if _flash_refresh is not None:
+        _render_entrypoint_refresh_result(_flash_refresh)
+
+    last_run = proj.get("last_run")
+    # [2026-08-27 追加] error_summary 只是一行摘要（比如
+    # "entrypoint exited with code 1"），排查问题时完全没有
+    # 信息量；detail 字段（子进程 stdout/stderr 尾部，或
+    # entrypoint 脚本主动上报的失败明细）才是真正能定位问题
+    # 的内容。
+    if last_run and last_run.get("exit_code") != 0 and last_run.get("detail"):
+        with st.expander("查看失败详情", expanded=True):
+            st.code(last_run["detail"], language=None)
+
+    recent_runs = proj.get("recent_runs") or []
+    if recent_runs:
+        with st.expander(f"最近 {len(recent_runs)} 条执行记录"):
+            for r in reversed(recent_runs):
+                status_txt = "✅" if r.get("exit_code") == 0 else "❌"
+                st.caption(
+                    f"{status_txt} {r.get('entrypoint', '')} · {r.get('trigger', '')} "
+                    f"· {_to_local_time_str(r.get('started_at'))} → "
+                    f"{_to_local_time_str(r.get('finished_at'))}"
+                )
+                if r.get("error_summary"):
+                    st.caption(f"　　{r['error_summary']}")
+                if r.get("detail"):
+                    st.code(r["detail"], language=None)
+
+    with st.expander("▶️ 手动触发"):
+        entrypoints = proj.get("entrypoints") or []
+        if not entrypoints:
+            st.caption(
+                "该项目的 project.yaml 未声明任何 entrypoints，或 manifest "
+                "解析失败（见上方警告），没有可触发的按钮。"
             )
-            if new_enabled != bool(proj.get("enabled")):
-                res = client.set_external_project_enabled(name, new_enabled)
-                if res and "_error" in res:
-                    st.error(f"切换失败：{res['_error']}")
-                else:
-                    st.rerun()
-            st.caption(f"路径：{proj.get('path', '')}")
-            _render_web_app_row(name, web_entries.get(name))
+        for ep in entrypoints:
+            ep_key = ep.get("key", "")
+            ep_params = ep.get("params") or []
+            schedule_txt = f" · {ep['schedule']}" if ep.get("schedule") else ""
+            st.caption(f"`{ep_key}`{schedule_txt}\n\n{ep.get('cmd', '')}")
 
-            # 更新 entrypoints：用户改了该项目的 project.yaml 之后点一次，
-            # 后端先校验最新 manifest，通过后删除该项目名下旧的 ext:* cron
-            # 任务并按最新配置重新注册（见 POST .../refresh_entrypoints）。
-            # 点击才请求，不在每次页面重跑时触发。
-            if st.button(
-                "🔄 更新 entrypoints",
-                key=f"ext_proj_refresh_ep_{name}",
-                help=(
-                    "重新读取 project.yaml：删除该项目已注册的定时任务，"
-                    "并按最新 entrypoints/schedule 重新注册。"
-                    "会重置这些定时任务的累计运行次数等历史。"
-                ),
-            ):
-                with st.spinner("正在按最新 project.yaml 重建定时任务…"):
-                    refresh_res = client.refresh_external_project_entrypoints(name)
-                if refresh_res and "_error" in refresh_res:
-                    st.error(f"更新失败：{refresh_res['_error']}")
-                else:
-                    # 本轮脚本里项目列表是刷新之前拉的，卡片上的
-                    # entrypoints 还是旧的——存下结果后 rerun，下一轮
-                    # 重新拉状态并在这里展示结果提示。
-                    st.session_state[f"ext_proj_refresh_result_{name}"] = refresh_res or {}
-                    st.rerun()
-            _flash_refresh = st.session_state.pop(f"ext_proj_refresh_result_{name}", None)
-            if _flash_refresh is not None:
-                _render_entrypoint_refresh_result(_flash_refresh)
-
-            if proj.get("manifest_error"):
-                st.warning(f"manifest 解析失败：{proj['manifest_error']}")
-
-            last_run = proj.get("last_run")
-            if last_run:
-                status_txt = "✅ 成功" if last_run.get("exit_code") == 0 else "❌ 失败"
-                st.caption(
-                    f"最近一次执行：{last_run.get('entrypoint', '')} · {status_txt} "
-                    f"· {_to_local_time_str(last_run.get('finished_at'))}"
-                )
-                # [2026-08-27 追加] error_summary 只是一行摘要（比如
-                # "entrypoint exited with code 1"），排查问题时完全没有
-                # 信息量；detail 字段（子进程 stdout/stderr 尾部，或
-                # entrypoint 脚本主动上报的失败明细）才是真正能定位问题
-                # 的内容，之前只在账本文件里存了，看板从未渲染过。
-                if last_run.get("exit_code") != 0 and last_run.get("detail"):
-                    with st.expander("查看失败详情", expanded=True):
-                        st.code(last_run["detail"], language=None)
-            else:
-                st.caption("最近一次执行：（暂无记录）")
-
-            recent_runs = proj.get("recent_runs") or []
-            if recent_runs:
-                with st.expander(f"最近 {len(recent_runs)} 条执行记录"):
-                    for r in reversed(recent_runs):
-                        status_txt = "✅" if r.get("exit_code") == 0 else "❌"
-                        st.caption(
-                            f"{status_txt} {r.get('entrypoint', '')} · {r.get('trigger', '')} "
-                            f"· {_to_local_time_str(r.get('started_at'))} → "
-                            f"{_to_local_time_str(r.get('finished_at'))}"
-                        )
-                        if r.get("error_summary"):
-                            st.caption(f"　　{r['error_summary']}")
-                        if r.get("detail"):
-                            st.code(r["detail"], language=None)
-
-            with st.expander("▶️ 手动触发"):
-                entrypoints = proj.get("entrypoints") or []
-                if not entrypoints:
-                    st.caption(
-                        "该项目的 project.yaml 未声明任何 entrypoints，或 manifest "
-                        "解析失败（见上方警告），没有可触发的按钮。"
+            # [external_projects_kanban_integration_plan.md 阶段6
+            # 追加修复] 参数输入框必须包在 st.form 里：裸的
+            # st.text_input 每次失焦/回车都会触发整个脚本重跑
+            # （包括本函数顶部的 client.external_projects_status()
+            # 网络请求），使用者反馈"填参数的时候看板会卡一下"
+            # 正是这个原因。放进 st.form 后，表单内控件的变化不会
+            # 触发重跑，只有点「▶️ 触发」（st.form_submit_button）
+            # 才提交一次，此时才应该发请求、才应该刷新。
+            with st.form(key=f"ext_trigger_form_{name}_{ep_key}"):
+                param_values: dict[str, str] = {}
+                for p in ep_params:
+                    p_name = p.get("name", "")
+                    required = p.get("required", True)
+                    default = p.get("default") or ""
+                    help_text = p.get("help") or ""
+                    label = f"{p_name}{'（必填）' if required else '（可选）'}"
+                    param_values[p_name] = st.text_input(
+                        label,
+                        value=default,
+                        help=help_text or None,
+                        key=f"ext_trigger_param_{name}_{ep_key}_{p_name}",
                     )
-                for ep in entrypoints:
-                    ep_key = ep.get("key", "")
-                    ep_params = ep.get("params") or []
-                    schedule_txt = f" · {ep['schedule']}" if ep.get("schedule") else ""
-                    st.caption(f"`{ep_key}`{schedule_txt}\n\n{ep.get('cmd', '')}")
+                submitted = st.form_submit_button("▶️ 触发")
 
-                    # [external_projects_kanban_integration_plan.md 阶段6
-                    # 追加修复] 参数输入框必须包在 st.form 里：裸的
-                    # st.text_input 每次失焦/回车都会触发整个脚本重跑
-                    # （包括本函数顶部的 client.external_projects_status()
-                    # 网络请求），使用者反馈"填参数的时候看板会卡一下"
-                    # 正是这个原因。放进 st.form 后，表单内控件的变化不会
-                    # 触发重跑，只有点「▶️ 触发」（st.form_submit_button）
-                    # 才提交一次，此时才应该发请求、才应该刷新。
-                    with st.form(key=f"ext_trigger_form_{name}_{ep_key}"):
-                        param_values: dict[str, str] = {}
-                        for p in ep_params:
-                            p_name = p.get("name", "")
-                            required = p.get("required", True)
-                            default = p.get("default") or ""
-                            help_text = p.get("help") or ""
-                            label = f"{p_name}{'（必填）' if required else '（可选）'}"
-                            param_values[p_name] = st.text_input(
-                                label,
-                                value=default,
-                                help=help_text or None,
-                                key=f"ext_trigger_param_{name}_{ep_key}_{p_name}",
-                            )
-                        submitted = st.form_submit_button("▶️ 触发")
-
-                    if submitted:
-                        missing = [
-                            p.get("name", "")
-                            for p in ep_params
-                            if p.get("required", True) and not param_values.get(p.get("name", "")).strip()
-                        ]
-                        if missing:
-                            st.error(f"缺少必填参数：{', '.join(missing)}")
-                        else:
-                            # [2026-08-28 追加 — 「异步型按钮体验」改进]
-                            # trigger_run 现在服务端已经不会阻塞 daemon
-                            # 了（见 external_projects_kanban_integration_
-                            # plan.md 同日条目），但 HTTP 请求本身仍然
-                            # 要等 entrypoint 真正跑完才返回（部分
-                            # entrypoint 的 timeout_sec 声明到 900 秒），
-                            # 客户端超时也相应放宽到了 960s。Streamlit
-                            # 里一次脚本运行是同步的，点击按钮到收到
-                            # 响应之间页面本来就"卡住不动"，区别只在于
-                            # 有没有给用户一个"知道它在处理、不是坏了"
-                            # 的信号——`st.spinner()` 正是为这种"本轮
-                            # 脚本内有一次耗时阻塞调用"场景设计的：包住
-                            # 调用期间会在原地显示旋转图标+提示文案，
-                            # 调用返回后自动消失，紧接着显示的
-                            # success/error 就是"已完成"的提示，不需要
-                            # 额外状态机或轮询。
-                            spinner_msg = f"正在触发「{ep_key}」，请稍候…"
-                            ep_timeout = ep.get("timeout_sec")
-                            if ep_timeout:
-                                spinner_msg += f"（该 entrypoint 最长可能运行 {ep_timeout} 秒）"
-                            with st.spinner(spinner_msg):
-                                res = client.trigger_external_project_run(
-                                    name, ep_key, params=param_values or None
-                                )
-                            if res and "_error" in res:
-                                st.error(f"触发失败：{res['_error']}")
-                            else:
-                                ok = res.get("returncode") == 0
-                                (st.success if ok else st.error)(
-                                    f"「{ep_key}」执行完成，returncode={res.get('returncode')}"
-                                )
-                                # [2026-08-27 追加] 手动触发的响应现在也带
-                                # 上了 detail（见 scheduler.py::
-                                # EntrypointRunResult），失败时直接在这里
-                                # 展示，不用用户再去展开下方"最近执行记录"
-                                # 或翻账本文件。
-                                if not ok and res.get("detail"):
-                                    st.code(res["detail"], language=None)
-
-            with st.expander("📋 改进积压"):
-                status_filter = st.selectbox(
-                    "按状态筛选",
-                    ["全部", "open", "proposed", "landed", "dismissed"],
-                    key=f"ext_backlog_status_{name}",
-                )
-                backlog_resp = client.external_project_backlog(
-                    name, status="" if status_filter == "全部" else status_filter
-                )
-                if backlog_resp and "_error" in backlog_resp:
-                    st.error(f"获取改进积压失败：{backlog_resp['_error']}")
+            if submitted:
+                missing = [
+                    p.get("name", "")
+                    for p in ep_params
+                    if p.get("required", True) and not param_values.get(p.get("name", "")).strip()
+                ]
+                if missing:
+                    st.error(f"缺少必填参数：{', '.join(missing)}")
                 else:
-                    items = (backlog_resp or {}).get("items") or []
-                    if not items:
-                        st.caption("（暂无符合条件的待办）")
-                    for item in items:
-                        label = _EXTERNAL_PROJECT_BACKLOG_STATUS_LABEL.get(
-                            item.get("status", ""), item.get("status", "")
+                    # [2026-08-28 追加 — 「异步型按钮体验」改进]
+                    # trigger_run 现在服务端已经不会阻塞 daemon
+                    # 了（见 external_projects_kanban_integration_
+                    # plan.md 同日条目），但 HTTP 请求本身仍然
+                    # 要等 entrypoint 真正跑完才返回（部分
+                    # entrypoint 的 timeout_sec 声明到 900 秒），
+                    # 客户端超时也相应放宽到了 960s。Streamlit
+                    # 里一次脚本运行是同步的，点击按钮到收到
+                    # 响应之间页面本来就"卡住不动"，区别只在于
+                    # 有没有给用户一个"知道它在处理、不是坏了"
+                    # 的信号——`st.spinner()` 正是为这种"本轮
+                    # 脚本内有一次耗时阻塞调用"场景设计的：包住
+                    # 调用期间会在原地显示旋转图标+提示文案，
+                    # 调用返回后自动消失，紧接着显示的
+                    # success/error 就是"已完成"的提示，不需要
+                    # 额外状态机或轮询。
+                    spinner_msg = f"正在触发「{ep_key}」，请稍候…"
+                    ep_timeout = ep.get("timeout_sec")
+                    if ep_timeout:
+                        spinner_msg += f"（该 entrypoint 最长可能运行 {ep_timeout} 秒）"
+                    with st.spinner(spinner_msg):
+                        res = client.trigger_external_project_run(
+                            name, ep_key, params=param_values or None
                         )
-                        st.caption(f"[{item.get('source', '')} · {label}] {item.get('summary', '')}")
-                        if item.get("evidence_ref"):
-                            st.caption(f"　　证据：{item['evidence_ref']}")
-
-                st.markdown("---")
-                new_summary = st.text_area(
-                    "新增一条待办（source 固定为用户反馈）", key=f"ext_backlog_new_{name}", height=68
-                )
-                if st.button("➕ 提交待办", key=f"ext_backlog_submit_{name}"):
-                    if not new_summary.strip():
-                        st.error("待办内容不能为空。")
-                    else:
-                        res = client.append_external_project_backlog(name, new_summary.strip())
-                        if res and "_error" in res:
-                            st.error(f"新增失败：{res['_error']}")
-                        else:
-                            st.success("已新增一条待办。")
-                            st.rerun()
-
-            with st.expander("🔍 Review 预览"):
-                if st.button("生成本周 review 任务模板", key=f"ext_review_gen_{name}"):
-                    res = client.external_project_review(name)
                     if res and "_error" in res:
-                        st.error(f"生成失败：{res['_error']}")
+                        st.error(f"触发失败：{res['_error']}")
                     else:
-                        if not res.get("enabled"):
-                            st.caption("⚪ 未开启定期 review，但仍可手动预览下方模板。")
-                        st.code(res.get("template", ""), language="markdown")
-                        st.session_state[f"ext_review_template_{name}"] = res.get("template", "")
+                        ok = res.get("returncode") == 0
+                        (st.success if ok else st.error)(
+                            f"「{ep_key}」执行完成，returncode={res.get('returncode')}"
+                        )
+                        # [2026-08-27 追加] 手动触发的响应现在也带
+                        # 上了 detail（见 scheduler.py::
+                        # EntrypointRunResult），失败时直接在这里
+                        # 展示，不用用户再去展开下方"最近执行记录"
+                        # 或翻账本文件。
+                        if not ok and res.get("detail"):
+                            st.code(res["detail"], language=None)
 
-                cached_template = st.session_state.get(f"ext_review_template_{name}")
-                if cached_template and st.button("📋 复制到对话框", key=f"ext_review_copy_{name}"):
-                    # 只是把模板文本送进对话输入框，不自动发送——真正发起
-                    # review session 仍然由用户自己点发送，agent 仍然要走
-                    # 一遍正常的工具调用+权限确认流程。
-                    st.session_state["chat_prefill_text"] = cached_template
-                    st.session_state["_active_tab"] = "chat"
+    with st.expander("📋 改进积压"):
+        status_filter = st.selectbox(
+            "按状态筛选",
+            ["全部", "open", "proposed", "landed", "dismissed"],
+            key=f"ext_backlog_status_{name}",
+        )
+        backlog_resp = client.external_project_backlog(
+            name, status="" if status_filter == "全部" else status_filter
+        )
+        if backlog_resp and "_error" in backlog_resp:
+            st.error(f"获取改进积压失败：{backlog_resp['_error']}")
+        else:
+            items = (backlog_resp or {}).get("items") or []
+            if not items:
+                st.caption("（暂无符合条件的待办）")
+            for item in items:
+                label = _EXTERNAL_PROJECT_BACKLOG_STATUS_LABEL.get(
+                    item.get("status", ""), item.get("status", "")
+                )
+                st.caption(f"[{item.get('source', '')} · {label}] {item.get('summary', '')}")
+                if item.get("evidence_ref"):
+                    st.caption(f"　　证据：{item['evidence_ref']}")
+
+        st.markdown("---")
+        new_summary = st.text_area(
+            "新增一条待办（source 固定为用户反馈）", key=f"ext_backlog_new_{name}", height=68
+        )
+        if st.button("➕ 提交待办", key=f"ext_backlog_submit_{name}"):
+            if not new_summary.strip():
+                st.error("待办内容不能为空。")
+            else:
+                res = client.append_external_project_backlog(name, new_summary.strip())
+                if res and "_error" in res:
+                    st.error(f"新增失败：{res['_error']}")
+                else:
+                    st.success("已新增一条待办。")
                     st.rerun()
 
-            _render_kanban_view_panel(client, name, proj.get("kanban_view"))
+    with st.expander("🔍 Review 预览"):
+        if st.button("生成本周 review 任务模板", key=f"ext_review_gen_{name}"):
+            res = client.external_project_review(name)
+            if res and "_error" in res:
+                st.error(f"生成失败：{res['_error']}")
+            else:
+                if not res.get("enabled"):
+                    st.caption("⚪ 未开启定期 review，但仍可手动预览下方模板。")
+                st.code(res.get("template", ""), language="markdown")
+                st.session_state[f"ext_review_template_{name}"] = res.get("template", "")
 
-            # [external_projects_agent_skill_workflow_integration_plan.md]
-            # 注销项目——只删注册表记录，不删项目本身的文件（外部项目的
-            # 代码/数据不归 daemon 管）；后端会联动清理该项目名下所有
-            # ext:* cron job。放进折叠区 + 二次确认，与上面 cron job 的
-            # 删除交互（confirm_delete_cron_<id>）同一套模式，避免误触。
-            with st.expander("⚠️ 危险操作"):
-                st.caption(
-                    "注销后 daemon 不再管理该项目（自动调度会被关闭、"
-                    "ext:* 定时任务会被删除），但不会删除项目本身的任何"
-                    "文件——之后仍可以用「注册新项目」重新接回来。"
-                )
-                confirm_key = f"confirm_unregister_ext_proj_{name}"
-                if not st.session_state.get(confirm_key):
-                    if st.button("🗑️ 注销此项目", key=f"unregister_ext_proj_{name}"):
-                        st.session_state[confirm_key] = True
-                        st.rerun()
+        cached_template = st.session_state.get(f"ext_review_template_{name}")
+        if cached_template and st.button("📋 复制到对话框", key=f"ext_review_copy_{name}"):
+            # 只是把模板文本送进对话输入框，不自动发送——真正发起
+            # review session 仍然由用户自己点发送，agent 仍然要走
+            # 一遍正常的工具调用+权限确认流程。
+            st.session_state["chat_prefill_text"] = cached_template
+            st.session_state["_active_tab"] = "chat"
+            st.rerun()
+
+    _render_kanban_view_panel(client, name, proj.get("kanban_view"))
+
+    # [external_projects_agent_skill_workflow_integration_plan.md]
+    # 注销项目——只删注册表记录，不删项目本身的文件（外部项目的
+    # 代码/数据不归 daemon 管）；后端会联动清理该项目名下所有
+    # ext:* cron job。放进折叠区 + 二次确认，与上面 cron job 的
+    # 删除交互（confirm_delete_cron_<id>）同一套模式，避免误触。
+    with st.expander("⚠️ 危险操作"):
+        st.caption(
+            "注销后 daemon 不再管理该项目（自动调度会被关闭、"
+            "ext:* 定时任务会被删除），但不会删除项目本身的任何"
+            "文件——之后仍可以用「注册新项目」重新接回来。"
+        )
+        confirm_key = f"confirm_unregister_ext_proj_{name}"
+        if not st.session_state.get(confirm_key):
+            if st.button("🗑️ 注销此项目", key=f"unregister_ext_proj_{name}"):
+                st.session_state[confirm_key] = True
+                st.rerun()
+        else:
+            uc1, uc2 = st.columns(2)
+            if uc1.button("⚠️ 确认注销", key=f"unregister_ext_proj_confirm_{name}"):
+                res = client.unregister_external_project(name)
+                st.session_state.pop(confirm_key, None)
+                if res and "_error" in res:
+                    st.error(f"注销失败：{res['_error']}")
                 else:
-                    uc1, uc2 = st.columns(2)
-                    if uc1.button("⚠️ 确认注销", key=f"unregister_ext_proj_confirm_{name}"):
-                        res = client.unregister_external_project(name)
-                        st.session_state.pop(confirm_key, None)
-                        if res and "_error" in res:
-                            st.error(f"注销失败：{res['_error']}")
-                        else:
-                            st.success(f"已注销项目 '{name}'。")
-                            st.rerun()
-                    if uc2.button("取消", key=f"unregister_ext_proj_cancel_{name}"):
-                        st.session_state.pop(confirm_key, None)
-                        st.rerun()
+                    st.success(f"已注销项目 '{name}'。")
+                    st.rerun()
+            if uc2.button("取消", key=f"unregister_ext_proj_cancel_{name}"):
+                st.session_state.pop(confirm_key, None)
+                st.rerun()
 
 
 # [external_projects_generic_kanban_view_refactor_plan.md 阶段C] 通用看板

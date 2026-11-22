@@ -73,3 +73,27 @@ novel_to_video）各自带一个 Streamlit 页面，但此前看板只能看到 
 - manifest 的 `bind` 降级为启动时的建议值，默认 0.0.0.0。
 
 验证：`tests/test_web_app_bind.py`；端到端用默认 0.0.0.0 与具体网卡 IP 各启动一次，127.0.0.1 探测与局域网健康检查均正常，停止正常。
+
+## 补充三：外部项目卡片精简展示（2026-11-22）
+
+需求：卡片默认只显示最关键的信息与启动管理，其他按钮和功能放进「详情」，点击后再显示。
+
+实现（`apps/mini_agent_kanban/app.py`）：
+- `render_external_projects_tab()` 的循环体拆为 `_render_external_project_card()`（精简卡片）、
+  `_render_external_project_summary()`（最近一次执行 + 只读的自动调度状态）、
+  `_render_external_project_details()`（原卡片里其余全部功能，逻辑不变、整体下沉一层）。
+- 精简卡片保留：项目名、健康徽标、「📂 详情/🔼 收起」按钮、`_render_web_app_row()`
+  （Streamlit 状态/打开/启动/停止/结束/重启；监听地址与登录选项改为同一行并排）、manifest 错误警告、摘要行。
+- 详情区采用「按钮切换 + 条件渲染」而不是 `st.expander`：expander 内容每次重跑都会执行
+  （包括改进积压、状态看板的后端请求），条件渲染则收起时完全不请求。展开状态存
+  `session_state["ext_proj_detail_open_<name>"]`，默认收起。
+- `_render_web_app_row()` 的 Streamlit 日志与远程部署说明拆到 `_render_web_app_extra()`，只在详情里渲染；
+  启动超时提示改为「请点『📂 详情』查看日志」。
+- 默认行为即为精简；没有新增开关（需求即默认如此）。
+
+验证：新增 `tests/test_kanban_external_projects_compact_card.py`（6 用例：默认收起、摘要内容、
+失败详情仅在展开后出现、展开/收起切换与后端请求时机、停止态/运行态下启动管理仍在精简卡片上）；
+既有 `test_kanban_external_projects_refresh_entrypoints.py` 改为先点「详情」再操作。
+
+未做：未在真实浏览器里目视检查布局（只有 AppTest 级验证）；Windows 实际渲染未实测。
+
