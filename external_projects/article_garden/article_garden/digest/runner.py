@@ -87,13 +87,17 @@ def run_digest(ctx, llm, *, only: Optional[Iterable[str]] = None, force: bool = 
 def _digest_one(ctx, llm, row: Dict[str, Any], max_rounds: int, counts: Dict[str, int]) -> None:
     body = catalog.read_body(ctx, row)
     with joblog.step(ctx.root, SCOPE, "摘要", item=row["id"]) as info:
+        def on_round(msg: str) -> None:
+            joblog.log(ctx.root, SCOPE, f"{row['id']}：{msg}", level="warn")
+
         try:
-            digest = sm.summarize(body, llm, max_repair_rounds=max_rounds, title_hint=row.get("title", ""))
+            digest = sm.summarize(body, llm, max_repair_rounds=max_rounds, title_hint=row.get("title", ""),
+                                  on_round=on_round)
         except sm.DigestFailed as exc:
             _write_failed(ctx, row, exc.issues, exc.last_output)
             counts["failed"] += 1
             info["status"] = "failed"
-            info["detail"] = "；".join(exc.issues[:3])
+            info["detail"] = "；".join(exc.issues)[:600]
             return
         record = {
             "id": row["id"],

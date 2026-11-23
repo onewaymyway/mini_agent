@@ -85,7 +85,8 @@
 - **导入**：支持 `.md / .txt / .zip` 与目录（递归）。导入前先**预览**（新增 / 重复 / 跳过 及原因），确认后才写入。源文件只读，入库的是复制品 `library/imported/a-0001.md`。
 - **去重**：按正文哈希判断，忽略空白差异（换行、缩进、空格不影响判定）；既对照已入库文章，也对照本次导入内部。正文不足 200 字的跳过。
 - **文章编号**：`a-0001`、`a-0002`…… 稳定、不随改名变化。索引 `library/index.json` 丢失或手放的 Markdown 会自动从文件重建。
-- **单篇摘要**：每篇一次结构化输出（论点、类型、层级、自评、概念、断言、悬空概念）。**引文必须逐字出现在原文中、概念名必须出现在原文中**，由代码校验；不通过时把具体问题回喂模型修复。每篇有修复轮数上限（`budget.max_repair_rounds`，默认 6），用尽则标记为失败并保留最后一次输出，不影响其它篇。
+- **单篇摘要**：每篇一次结构化输出（论点、类型、层级、自评、概念、断言、悬空概念）。**引文必须逐字出现在原文中、概念名必须出现在原文中**，由代码校验；不通过时把具体问题回喂模型修复。
+  - 修复反馈（摘要修复记录，`next_doc/article_garden_digest_repair_feedback_fix_record.md`）：引文不逐字时，提示会给出原文中最接近的一句供照抄；与原文高度接近（相似度 ≥ 0.9）的引文由代码直接校正，不耗模型调用；每轮未通过的具体问题写入运行日志，失败行显示完整原因。每篇有修复轮数上限（`budget.max_repair_rounds`，默认 6），用尽则标记为失败并保留最后一次输出，不影响其它篇。
 - **长文分块**：超过约 6000 字的文章按章节分块，逐块提取概念与断言，代码合并去重，再做一次元信息调用。
 - **增量**：内容哈希与摘要版本都未变且上次成功 → 零模型调用。
 - **章程草稿**：由已摘要文章反推章程草稿，写入 `drafts/charter_draft.yaml`。**草稿不会自动生效**，需在看板点击「采用为正式章程」（旧章程先备份为 `charter.yaml.bak`）。
@@ -113,7 +114,7 @@ external_projects/article_garden/
 │   ├── research/    queries  search（缓存）  fetch（robots/节流/缓存）  extract  sources（来源卡）  pack（证据包）  runner
 │   └── writing/     brief（简报）  outline（大纲）  draft（逐节初稿与组装）  checks（代码校验）  critic（独立评审）  runner（流程与审阅）
 ├── ui/              state  topbar  jobs  home/library/graph/tree/topics/research/review/runs/settings/wizard 页面  placeholder_pages
-├── tests/           190 项（单元 + 入口 + Streamlit AppTest 冒烟；摘要、成文、调研测试均使用确定性的假模型与假网络）
+├── tests/           194 项（单元 + 入口 + Streamlit AppTest 冒烟；摘要、成文、调研测试均使用确定性的假模型与假网络）
 └── data/            运行产物，已加入 .gitignore（可用环境变量 ARTICLE_GARDEN_HOME 改位置）
     ├── domains.json         文章库注册表
     ├── settings.yaml        全局默认设置（稀疏覆盖）

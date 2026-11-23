@@ -6,8 +6,9 @@
 
 from __future__ import annotations
 
+import difflib
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 KINDS = ("概念讲解", "对比", "教程", "综述", "FAQ", "案例")
 LEVELS = ("入门", "进阶", "专题")
@@ -23,6 +24,46 @@ def squash(s: str) -> str:
 def appears(needle: str, haystack: str) -> bool:
     n = squash(needle)
     return bool(n) and n in squash(haystack)
+
+
+_SENT_SPLIT = re.compile(r"(?<=[。！？!?；;\n])")
+
+
+def sentences(text: str) -> List[str]:
+    return [s.strip() for s in _SENT_SPLIT.split(text or "") if squash(s).strip()]
+
+
+def nearest_sentence(quote: str, text: str) -> Tuple[str, float]:
+    """原文中与 quote 最接近的句子及相似度（比较时忽略空白与标记）。"""
+    q = squash(quote)
+    best: Tuple[str, float] = ("", 0.0)
+    if not q:
+        return best
+    for s in sentences(text):
+        r = difflib.SequenceMatcher(None, q, squash(s), autojunk=False).ratio()
+        if r > best[1]:
+            best = (s, r)
+    return best
+
+
+def autofix_quotes(obj: Any, text: str, threshold: float = 0.9) -> List[str]:
+    """代码校正：引文与原文某句高度接近（≥ threshold）时，直接改为该句的逐字原文，不再请模型修复。
+    原地修改 obj；返回校正说明（供日志）。"""
+    notes: List[str] = []
+    claims = obj.get("claims") if isinstance(obj, dict) else None
+    if not isinstance(claims, list):
+        return notes
+    for i, cl in enumerate(claims, 1):
+        if not isinstance(cl, dict):
+            continue
+        q = str(cl.get("quote") or "")
+        if not q.strip() or appears(q, text):
+            continue
+        s, r = nearest_sentence(q, text)
+        if s and r >= threshold:
+            cl["quote"] = s
+            notes.append(f"第 {i} 条引文与原文高度接近（相似度 {r:.2f}），已校正为原文逐字句子")
+    return notes
 
 
 def _is_int(v: Any) -> bool:
@@ -47,8 +88,12 @@ def check_concepts_and_claims(obj: Dict[str, Any], text: str) -> List[str]:
             issues.append(f"第 {i} 条断言缺少 text 或 quote")
             continue
         if not appears(str(cl["quote"]), text):
+            s, r = nearest_sentence(str(cl["quote"]), text)
+            # 即使相似度不高，也给出一句真实原文：让模型“照抄”比“重新改写”更容易成功
+            hint = (f"；原文中最接近的句子是「{s[:80]}」，请把 quote 改为该句的逐字复制"
+                    if s else "；请从原文中逐字复制一句作为 quote")
             issues.append(f"第 {i} 条断言的 quote 不是原文中的逐字摘录："
-                          f"「{str(cl['quote'])[:40]}」")
+                          f"「{str(cl['quote'])[:40]}」{hint}")
     return issues
 
 

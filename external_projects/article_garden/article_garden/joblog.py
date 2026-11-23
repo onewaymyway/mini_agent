@@ -205,7 +205,7 @@ def step(project_dir: Path, scope: str, stage: str, item: Optional[str] = None, 
         secs = round(time.monotonic() - t0, 1)
         text = {"ok": "完成", "waiting": "等待人工确认", "stopped": "已停止"}.get(status, "失败")
         level = {"ok": "ok", "waiting": "warn", "stopped": "warn"}.get(status, "error")
-        detail = f"（{info['detail']}）" if info.get("detail") and status in ("ok", "waiting") else ""
+        detail = f"（{info['detail']}）" if info.get("detail") else ""
         log(project_dir, scope, f"{label}：{text}{detail}（{secs} 秒）" + (f"：{error}" if error else ""),
             level=level, event="step_end", run=run_name, run_id=run_id, stage=stage, item=item, status=status,
             started_at=started, ended_at=_now(), seconds=secs, error=error, detail=info.get("detail") or None,

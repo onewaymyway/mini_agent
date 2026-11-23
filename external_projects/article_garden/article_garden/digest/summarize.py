@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 from . import validate
 from .llm_io import parse_yaml
@@ -82,13 +82,17 @@ def repair_prompt(original: str, reply: str, issues: List[str]) -> str:
 # ------------------------------------------------------------------ 调用与修复
 
 def ask_validated(llm, prompt: str, validator: Callable[[Dict[str, Any]], List[str]],
-                  budget: RepairBudget) -> Dict[str, Any]:
+                  budget: RepairBudget, on_round: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
+    """调用模型并校验；不通过则把具体问题回喂模型修复（修复轮数共享预算）。
+    on_round 收到每一轮未通过的具体问题，用于运行日志。"""
     reply = llm.ask(prompt, system=SYSTEM)
     while True:
         obj, err = parse_yaml(reply)
         issues = [err] if err else validator(obj)
         if not issues:
             return obj
+        if on_round:
+            on_round(f"第 {budget.used + 1} 次修复前，校验未通过：" + "；".join(issues[:4]))
         if not budget.take():
             raise DigestFailed(issues, reply)
         reply = llm.ask(repair_prompt(prompt, reply, issues), system=SYSTEM)
@@ -138,25 +142,38 @@ def _dedupe(items: List[str]) -> List[str]:
 
 # ------------------------------------------------------------------ 主入口
 
-def summarize(text: str, llm, *, max_repair_rounds: int = 6, title_hint: str = "") -> Dict[str, Any]:
-    """返回规范化的摘要字典；修复预算用尽则抛 DigestFailed。"""
+def _with_autofix(check, text: str, on_round):
+    """先做代码校正（近似引文 → 原文逐字），再做校验。校正直接改动解析出的对象，因此会被保留。"""
+    def _v(obj):
+        notes = validate.autofix_quotes(obj, text)
+        if notes and on_round:
+            on_round("代码校正：" + "；".join(notes[:3]))
+        return check(obj, text)
+    return _v
+
+
+def summarize(text: str, llm, *, max_repair_rounds: int = 6, title_hint: str = "",
+              on_round: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
+    """返回规范化的摘要字典；修复预算用尽则抛 DigestFailed（携带全部问题与最后输出）。"""
     budget = RepairBudget(max_repair_rounds)
     if len(text) <= CHUNK_THRESHOLD:
-        obj = ask_validated(llm, full_prompt(text), lambda o: validate.validate_full(o, text), budget)
+        obj = ask_validated(llm, full_prompt(text), _with_autofix(validate.validate_full, text, on_round),
+                            budget, on_round)
         return _normalize(obj, chunks=1)
 
     concepts: List[str] = []
     claims: List[Dict[str, str]] = []
     chunks = split_chunks(text)
     for chunk in chunks:
-        part = ask_validated(llm, extract_prompt(chunk), lambda o, c=chunk: validate.validate_extract(o, c), budget)
+        part = ask_validated(llm, extract_prompt(chunk),
+                             _with_autofix(validate.validate_extract, chunk, on_round), budget, on_round)
         concepts += [str(c) for c in part.get("concepts") or []]
         claims += [{"text": str(c.get("text", "")).strip(), "quote": str(c.get("quote", "")).strip()}
                    for c in part.get("claims") or [] if isinstance(c, dict)]
     concepts = _dedupe(concepts)
     claims = _dedupe_claims(claims)
     meta = ask_validated(llm, meta_prompt(concepts, [c["text"] for c in claims], text[:1500]),
-                         lambda o: validate.validate_meta(o, text), budget)
+                         lambda o: validate.validate_meta(o, text), budget, on_round)
     meta.update(concepts=concepts, claims=claims)
     if title_hint and not meta.get("title"):
         meta["title"] = title_hint
