@@ -61,22 +61,28 @@ def run(ctx, tid: str, *, llm: Any = None, max_rounds: Optional[int] = None,
                     seen.add(h.url)
                     hits.append(h)
 
+        joblog.log(ctx.root, SCOPE, f"调研：{len(qs)} 条查询，去重后共 {len(hits)} 个候选网址")
         attempts = 0
         for h in hits:
             if sources.has_url(ctx, tid, h.url):
+                joblog.log(ctx.root, SCOPE, f"调研：{h.url} 已有来源，跳过")
                 continue
             if attempts >= max_pages:
                 result["skipped"].append(f"已达每题抓取上限 {max_pages} 页")
+                joblog.log(ctx.root, SCOPE, f"调研：已达每题抓取上限 {max_pages} 页，停止抓取", level="warn")
                 break
             attempts += 1
+            joblog.log(ctx.root, SCOPE, f"调研：抓取 {attempts}/{max_pages}：{h.url}")
             page = fetcher.fetch(h.url)
             if not page["ok"]:
                 result["skipped"].append(f"{h.url}：{page['error']}")
+                joblog.log(ctx.root, SCOPE, f"调研：未抓取，{page['error']}", level="warn")
                 continue
             title, text = extract.extract(page["html"])
             ex = sources.excerpt(text, must, excerpt_max)
             if not ex:
                 result["skipped"].append(f"{h.url}：与选题要点无关")
+                joblog.log(ctx.root, SCOPE, "调研：页面与选题要点无关，不入库")
                 continue
             card = sources.make_card(sources.next_id(ctx, tid), tid, url=h.url,
                                      title=title or h.title or h.url, text=ex,
@@ -84,6 +90,8 @@ def run(ctx, tid: str, *, llm: Any = None, max_rounds: Optional[int] = None,
                                      source_type="web", points=must)
             sources.write(ctx, tid, card)
             result["added"] += 1
+            joblog.log(ctx.root, SCOPE, f"调研：已入库 {card['id']}（可信度 {card['credibility']}，"
+                                        f"摘录 {len(ex)} 字，覆盖要点 {len(card['covers'])}/{len(must)}）")
         result["pages"] = attempts
 
         ev = pack.evaluate(ctx, tid, topic, _min_cred(ctx, eff))

@@ -100,15 +100,22 @@ def _write_article_inner(ctx, tid: str, topic: Dict[str, Any], llm, rounds: int,
     lib_snippets = [f"{a['title']}：{'、'.join(a['concepts'])}" for a in brief["existing_articles"]
                     if a.get("origin") != "generated"]
 
+    joblog.log(ctx.root, SCOPE, f"成文：简报完成，{len(brief['sources'])} 个来源，"
+                                f"{len(brief['must_cover'])} 个必须覆盖的概念，文体「{brief['kind']}」")
     secs_all = outline.make(llm, brief, budget)
     store.write_yaml_atomic(d / "outline.yaml", {"sections": secs_all})
     body_secs = [s for s in secs_all if not outline.is_refs(s["heading"])]
     headings = [s["heading"] for s in body_secs]
+    joblog.log(ctx.root, SCOPE, f"成文：大纲 {len(secs_all)} 节（正文 {len(body_secs)} 节）："
+                                + "、".join(headings))
 
     texts: Dict[int, str] = {}
     for i, sec in enumerate(body_secs):
+        joblog.log(ctx.root, SCOPE, f"成文：正文第 {i + 1}/{len(body_secs)} 节「{sec['heading']}」，"
+                                    f"依据来源 {'、'.join(sec['sources'])}")
         texts[i] = draft.draft_section(llm, brief, sec, by_id, budget, headings[:i], [], rules_for_check)
         store.write_text_atomic(d / "sections" / f"{i + 1:02d}.md", f"## {sec['heading']}\n\n{texts[i]}\n")
+        joblog.log(ctx.root, SCOPE, f"成文：第 {i + 1}/{len(body_secs)} 节完成，{len(texts[i])} 字")
 
     library_links = brief["library_links"]
     attempts = 0
@@ -118,11 +125,14 @@ def _write_article_inner(ctx, tid: str, topic: Dict[str, Any], llm, rounds: int,
         body = draft.assemble(brief, parts, by_id, library_links)
         doc = _doc_issues(body, brief)
         if doc:
+            joblog.log(ctx.root, SCOPE, f"成文：全文检查未通过：{'；'.join(doc[:3])}", level="warn")
             per_sec = {i: list(doc) for i in range(len(body_secs))}
             pending = doc
         else:
             cr = critic.review(llm, body, brief["sources"], lib_snippets)
             critic_log.append({"round": attempts, "issues": cr})
+            joblog.log(ctx.root, SCOPE, f"成文：独立评审第 {len(critic_log)} 轮，"
+                                        + (f"发现 {len(cr)} 个问题" if cr else "未发现问题"))
             if not cr:
                 store.write_text_atomic(d / "draft.md", body)
                 return {"body": body, "brief": brief, "by_id": by_id, "budget": budget,

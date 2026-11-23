@@ -78,10 +78,17 @@ def _build(ctx, llm, digests, terms, max_rounds, force) -> Dict[str, Any]:
         budget = sm.RepairBudget(max_rounds)
         obj = sm.ask_validated(llm, normalize.ask_prompt(pairs), normalize.ask_validator({p for p, _, _ in pairs}),
                                budget)
-        return {str(x["id"]): bool(x["same"]) for x in obj["decisions"]}
+        decisions = {str(x["id"]): bool(x["same"]) for x in obj["decisions"]}
+        joblog.log(ctx.root, SCOPE, f"归一：本批判定同义 {sum(decisions.values())}/{len(pairs)} 对")
+        return decisions
 
     with joblog.step(ctx.root, SCOPE, "归一") as info:
-        clusters = normalize.cluster(surfaces, terms, ask_fn)
+        def on_batch(k, n, size):
+            info["progress"] = f"第 {k}/{n} 批，{size} 对候选"
+            joblog.log(ctx.root, SCOPE, f"归一：第 {k}/{n} 批开始，{size} 对候选")
+
+        joblog.log(ctx.root, SCOPE, f"归一：{len(surfaces)} 种写法，{len(terms)} 组已知术语")
+        clusters = normalize.cluster(surfaces, terms, ask_fn, progress=on_batch)
         info["detail"] = f"{len(surfaces)} 种写法 → {len(clusters)} 个概念"
 
     # 2. 概念 id（按写法重叠匹配旧 id，保证稳定） -----------------------------
@@ -119,12 +126,18 @@ def _build(ctx, llm, digests, terms, max_rounds, force) -> Dict[str, Any]:
     # 4. 概念页（定义，增量） -----------------------------------------------
     failed_concepts = 0
     with joblog.step(ctx.root, SCOPE, "定义") as info:
-        for c in clusters:
+        for i, c in enumerate(clusters, 1):
             cid = assigned[c["canonical"]]
             claims = claims_by_cid.get(cid, [])
+            info["progress"] = f"概念 {i}/{len(clusters)}：{c['canonical']}"
             _write_concept(ctx, llm, cid, c, claims, max_rounds, force)
-            if (model.read_page(ctx, cid) or ({}, ""))[0].get("status") == "failed":
+            status = (model.read_page(ctx, cid) or ({}, ""))[0].get("status")
+            if status == "failed":
                 failed_concepts += 1
+            label = {"ok": "已生成", "failed": "失败", "no_source": "无依据断言",
+                     "generated_only": "仅有生成文章提及，暂不生成"}.get(status or "", status or "未知")
+            joblog.log(ctx.root, SCOPE, f"定义 {i}/{len(clusters)}「{c['canonical']}」：{label}"
+                                        f"（依据断言 {len(claims)} 条）")
         info["detail"] = f"{len(clusters)} 个概念，{failed_concepts} 个失败"
         if failed_concepts:
             info["status"] = "failed"
@@ -200,15 +213,20 @@ def _build_edges(ctx, llm, digests, clusters, assigned, max_rounds, force=False)
     edges: Dict[tuple, Dict[str, Any]] = {}
     dropped_total = 0
     with joblog.step(ctx.root, SCOPE, "关系") as info:
-        for d in digests:
+        for i, d in enumerate(digests, 1):
             row = d["row"]
+            head = f"{i}/{len(digests)}「{row.get('title', row['id'])}」"
+            info["progress"] = head
             if row.get("origin") == "generated":
+                joblog.log(ctx.root, SCOPE, f"关系 {head}：跳过（生成文章不产生关系边）")
                 continue  # P6：生成文章不产生关系边（边必须有导入文章的依据）
             present = by_art.get(row["id"], [])
             if len(present) < 2:
+                joblog.log(ctx.root, SCOPE, f"关系 {head}：本文只有 {len(present)} 个概念，跳过")
                 continue
             body = catalog.read_body(ctx, row)
             if len(body) > content.MAX_BODY_FOR_EDGES:
+                joblog.log(ctx.root, SCOPE, f"关系 {head}：正文 {len(body)} 字超过上限，跳过")
                 continue
             pairs, display = [], {}
             for i, a in enumerate(present):
@@ -221,7 +239,8 @@ def _build_edges(ctx, llm, digests, clusters, assigned, max_rounds, force=False)
             cache_p = ctx.path("wiki", "cache", "edges", f"{row['id']}.json")
             ck = _key(str(EDGE_VERSION), row["content_hash"], repr(pairs))
             cached = store.read_json(cache_p, default=None)
-            if not force and cached and cached.get("key") == ck:   # 文章与概念对都没变：复用上次结果
+            cached_hit = bool(not force and cached and cached.get("key") == ck)
+            if cached_hit:   # 文章与概念对都没变：复用上次结果
                 accepted, dropped_n = cached["accepted"], cached["dropped"]
             else:
                 obj = sm.ask_validated(llm, content.edge_prompt(row.get("title", ""), body, pairs),
@@ -231,6 +250,8 @@ def _build_edges(ctx, llm, digests, clusters, assigned, max_rounds, force=False)
                 dropped_n = len(dropped)
                 store.write_json_atomic(cache_p, {"key": ck, "accepted": accepted, "dropped": dropped_n})
             dropped_total += dropped_n
+            joblog.log(ctx.root, SCOPE, f"关系 {head}：{len(pairs)} 个概念对，采纳 {len(accepted)} 条，"
+                                        f"丢弃 {dropped_n} 条" + ("（沿用缓存）" if cached_hit else ""))
             for e in accepted:
                 s, t = display[e["src"]], display[e["dst"]]
                 sid, tid = assigned[s["canonical"]], assigned[t["canonical"]]
@@ -257,11 +278,14 @@ def _display(cluster, aid, digest) -> str:
 def _build_conflicts(ctx, llm, clusters, assigned, claims_by_cid, max_rounds, force=False) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     with joblog.step(ctx.root, SCOPE, "冲突") as info:
-        for c in clusters:
+        for i, c in enumerate(clusters, 1):
             cid = assigned[c["canonical"]]
+            info["progress"] = f"概念 {i}/{len(clusters)}：{c['canonical']}"
             claims = [x for x in claims_by_cid.get(cid, []) if x["text"] and x.get("origin", "imported") != "generated"]
             if len({x["article_id"] for x in claims}) < 2:
                 continue
+            joblog.log(ctx.root, SCOPE, f"冲突 {i}/{len(clusters)} {c['canonical']}：{len(claims)} 条断言，"
+                                        f"来自 {len({x['article_id'] for x in claims})} 篇文章")
             cache_p = ctx.path("wiki", "cache", "conflicts", f"{cid}.json")
             ck = _key(str(CONFLICT_VERSION), *[f"{x['id']}={x['text']}" for x in claims])
             cached = store.read_json(cache_p, default=None)

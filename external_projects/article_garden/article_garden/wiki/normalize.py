@@ -91,7 +91,8 @@ def ask_validator(expected: Set[str]):
     return _v
 
 
-def cluster(surfaces: Dict[str, Set[str]], terms: Dict[str, List[str]], ask_fn) -> List[Dict[str, Any]]:
+def cluster(surfaces: Dict[str, Set[str]], terms: Dict[str, List[str]], ask_fn,
+            progress=None) -> List[Dict[str, Any]]:
     """surfaces: {写法: {文章 id…}}。ask_fn(prompt_pairs) -> {pid: bool}，由调用方提供（含修复循环）。
 
     返回簇列表：[{canonical, surfaces[], articles[]}]，按规范名排序。
@@ -107,8 +108,11 @@ def cluster(surfaces: Dict[str, Set[str]], terms: Dict[str, List[str]], ask_fn) 
                 uf.union(a, b)
             elif s >= ASK_MIN:
                 ask.append((f"p{len(ask) + 1}", a, b))
-    for start in range(0, len(ask), ASK_BATCH):
+    total_batches = (len(ask) + ASK_BATCH - 1) // ASK_BATCH
+    for k, start in enumerate(range(0, len(ask), ASK_BATCH), 1):
         batch = ask[start:start + ASK_BATCH]
+        if progress:
+            progress(k, total_batches, len(batch))
         decisions = ask_fn(batch)
         for pid, a, b in batch:
             if decisions.get(pid):

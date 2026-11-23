@@ -209,6 +209,11 @@ def _pid_alive(pid: Any, started_at: Optional[datetime] = None) -> bool:
     return True
 
 
+def current_stage() -> Optional[str]:
+    """当前线程所在的步骤名（用于把模型调用归到对应步骤）。"""
+    return getattr(_TLS, "stage", None)
+
+
 def running_runs(project_dir: Path, scopes: Optional[Iterable[str]] = None) -> List[Dict[str, Any]]:
     """真正在运行的任务：有开始记录、没有结束记录，且进程仍然存在。
     进程已不存在（崩溃、被杀）的任务不算运行中，它们只是“中断”的历史记录。"""
@@ -251,7 +256,9 @@ def step(project_dir: Path, scope: str, stage: str, item: Optional[str] = None, 
     label = stage if not item else f"{stage} · {item}"
     started = _now()
     t0 = time.monotonic()
-    info: Dict[str, Any] = {"status": "ok", "detail": ""}
+    info: Dict[str, Any] = {"status": "ok", "detail": "", "progress": ""}
+    prev_stage = getattr(_TLS, "stage", None)
+    _TLS.stage = label                  # 本步骤内发出的模型调用，会记录到这一步名下
     log(project_dir, scope, f"{label}：开始", event="step_start", run=run_name, run_id=run_id, stage=stage,
         item=item, started_at=started)
 
@@ -261,7 +268,8 @@ def step(project_dir: Path, scope: str, stage: str, item: Optional[str] = None, 
 
         def _beat() -> None:
             while not stop.wait(interval):
-                log(project_dir, scope, f"{label}：仍在进行（已 {time.monotonic() - t0:.0f} 秒）")
+                where = f"；当前：{info['progress']}" if info.get("progress") else ""
+                log(project_dir, scope, f"{label}：仍在进行（已 {time.monotonic() - t0:.0f} 秒）{where}")
 
         threading.Thread(target=_beat, daemon=True).start()
 
@@ -279,6 +287,7 @@ def step(project_dir: Path, scope: str, stage: str, item: Optional[str] = None, 
         yield info
     except BaseException as exc:
         stop.set()
+        _TLS.stage = prev_stage
         if type(exc).__name__ == "Cancelled":
             _end("stopped", "用户请求停止")
         else:
@@ -286,4 +295,5 @@ def step(project_dir: Path, scope: str, stage: str, item: Optional[str] = None, 
         raise
     else:
         stop.set()
+        _TLS.stage = prev_stage
         _end(str(info.get("status") or "ok"))

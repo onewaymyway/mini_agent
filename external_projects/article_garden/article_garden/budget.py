@@ -138,6 +138,9 @@ class GuardedLLM:
             raise cancel.Cancelled("用户请求停止")
         deadline = time.monotonic() + self.timeout_sec if self.timeout_sec else None
         charge(self.ctx)
+        stage = joblog.current_stage() or "未命名步骤"
+        t0 = time.monotonic()
+        joblog.log(self.ctx.root, "llm", f"调用模型（{stage}）：发送 {len(prompt)} 字")
         box: dict = {}
 
         def run():
@@ -154,9 +157,14 @@ class GuardedLLM:
                 raise cancel.Cancelled("用户请求停止")
             if deadline is not None and time.monotonic() > deadline:
                 raise StepTimeout(f"单次模型调用超过 {self.timeout_sec / 60:.1f} 分钟未返回")
+        secs = time.monotonic() - t0
         if "error" in box:
+            joblog.log(self.ctx.root, "llm", f"调用模型（{stage}）失败，用时 {secs:.0f} 秒：{box['error']}",
+                       level="error")
             raise box["error"]
-        return box.get("value", "")
+        value = box.get("value", "")
+        joblog.log(self.ctx.root, "llm", f"调用模型（{stage}）返回：用时 {secs:.0f} 秒，回复 {len(value)} 字")
+        return value
 
 
 def guard(ctx, inner: Any, *, timeout_min: Optional[float] = None, since: Optional[float] = None) -> GuardedLLM:
