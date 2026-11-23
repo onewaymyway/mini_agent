@@ -135,3 +135,30 @@ def test_unreadable_or_odd_stop_content_does_not_stop_new_runs(data_home):
     old = time.time() - 60
     os.utime(p, (old, old))
     assert budget.stop_requested(ctx, since=time.time()) is False
+
+
+def test_runs_page_shows_stopping_only_for_a_stop_after_the_run_started(data_home):
+    from tests.test_ui_smoke import run_app
+    ctx = _library(data_home, 1)
+    rid = joblog.run_start(ctx.root, "digest", "文章摘要")          # 正在运行（本进程）
+    # 1) 遗留的停止文件（早于本次运行）：不得显示“正在停止”
+    p = ctx.path("logs", "stop.flag")
+    p.write_text("stop\n", encoding="utf-8")
+    old = time.time() - 3600
+    os.utime(p, (old, old))
+    at = run_app("runs", domain="ai")
+    assert not at.exception and not any("正在停止" in w.value for w in at.warning)
+    # 2) 运行开始之后发出的停止请求：应显示
+    budget.request_stop(ctx)
+    at = run_app("runs", domain="ai")
+    assert any("正在停止" in w.value for w in at.warning)
+    joblog.run_end(ctx.root, "digest", rid, "文章摘要", status="stopped")
+
+
+def test_stale_stop_file_is_removed_when_nothing_is_running(data_home):
+    from tests.test_ui_smoke import run_app
+    ctx = _library(data_home, 1)
+    p = ctx.path("logs", "stop.flag")
+    p.write_text("stop\n", encoding="utf-8")
+    run_app("runs", domain="ai")
+    assert not p.exists()

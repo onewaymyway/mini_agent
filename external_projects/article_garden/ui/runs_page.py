@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import streamlit as st
+from datetime import datetime
 
 from article_garden import joblog
 from ui import state
@@ -21,10 +22,18 @@ def render_runs_page() -> None:
     render_topbar(ctx, "▶ 运行日志")
     from article_garden import budget
     running = joblog.running_runs(ctx.root)
+    starts = []
+    for r in running:
+        try:
+            starts.append(datetime.fromisoformat(r["ts"]).timestamp())
+        except (KeyError, ValueError):
+            pass
+    if not running:
+        budget.clear_stop(ctx)          # 没有运行中的任务时，遗留的停止请求没有任何意义
     if running:
         names = "、".join(r.get("run", "") for r in running)
         st.info(f"正在运行：{names}")
-    if budget.stop_requested(ctx) and running:
+    if running and budget.stop_pending_for(ctx, starts):
         st.warning("正在停止……（当前模型调用返回后立即结束，选题会退回原状态）")
     if st.button("■ 请求停止正在运行的任务", key="runs_stop", disabled=not running):
         budget.request_stop(ctx)

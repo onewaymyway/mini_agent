@@ -156,3 +156,8 @@ class GuardedLLM:
 
 def guard(ctx, inner: Any, *, timeout_min: Optional[float] = None, since: Optional[float] = None) -> GuardedLLM:
     return GuardedLLM(inner, ctx, timeout_sec=float(timeout_min) * 60 if timeout_min else None, since=since)
+
+
+def stop_pending_for(ctx, run_starts) -> bool:
+    """是否有停止请求作用于正在运行的任务：run_starts 为各运行中任务的开始时间（epoch 秒）。"""
+    return any(stop_requested(ctx, since=t) for t in run_starts)
