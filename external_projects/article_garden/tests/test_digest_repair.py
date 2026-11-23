@@ -39,7 +39,7 @@ def test_near_verbatim_quote_is_corrected_in_code_without_a_repair_call():
     obj = sm.summarize(TEXT, llm, max_repair_rounds=3, on_round=log.append)
     assert len(llm.prompts) == 1                           # 没有发起修复调用
     assert obj["claims"][0]["quote"] == FIRST              # 引文已校正为原文逐字句子
-    assert any("已校正为原文逐字句子" in m for m in log)
+    assert any("原文中的逐字句子" in m for m in log)
 
 
 def test_far_quote_gets_closest_real_sentence_in_the_repair_prompt():
@@ -75,3 +75,37 @@ def test_failed_digest_writes_concrete_reasons_to_run_log(data_home):
     text = "\n".join(lines)
     assert "失败（" in text and "逐字摘录" in text                       # 失败行带具体原因
     assert "校验未通过" in text                                          # 每一轮修复的原因都有记录
+
+
+ARTICLE = ("> **AI 经济的价值体系必须从“劳动数量”逐渐转向“有效贡献”。**\n\n"
+           "因此，一个真正的 AI Economic Protocol，至少需要同时解决：身份、价值和结算。\n\n"
+           "向量数据库用于存储和检索高维向量，常见于语义搜索与检索增强生成场景。")
+
+
+def _quote_case(quote):
+    llm = Scripted([_reply(quote)])
+    obj = sm.summarize(ARTICLE, llm, max_repair_rounds=3)
+    return llm, obj["claims"][0]["quote"]
+
+
+def test_quote_marks_punctuation_and_markdown_differences_are_accepted():
+    # 引号、标点、Markdown 标记不同，意思完全相同：不得因此失败，也不耗修复调用
+    llm, q = _quote_case('> **AI 经济的价值体系必须从"劳动数量"逐渐转向"有效贡献".**')
+    assert len(llm.prompts) == 1
+    assert q == "> **AI 经济的价值体系必须从“劳动数量”逐渐转向“有效贡献”。"
+    assert q in ARTICLE                                        # 存储的是原文中的逐字句子
+
+
+def test_truncated_quote_is_accepted_and_stored_as_the_full_original_sentence():
+    llm, q = _quote_case("因此 一个真正的AI Economic Protocol 至少需要同时解决：身份")
+    assert len(llm.prompts) == 1
+    assert q == "因此，一个真正的 AI Economic Protocol，至少需要同时解决：身份、价值和结算。"
+
+
+def test_small_wording_change_is_accepted_but_meaning_change_is_rejected():
+    llm, q = _quote_case("向量数据库用来存储和检索高维向量，常见于语义搜索与检索增强生成场景")
+    assert len(llm.prompts) == 1 and q.startswith("向量数据库用于存储")
+    llm2 = Scripted([_reply("向量数据库主要用于关系型交易结算与账本记录"), _reply(
+        "向量数据库用于存储和检索高维向量，常见于语义搜索与检索增强生成场景。")])
+    sm.summarize(ARTICLE, llm2, max_repair_rounds=3)
+    assert len(llm2.prompts) == 2                             # 含义不同：仍然要求修复

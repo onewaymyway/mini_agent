@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import difflib
 import re
+import unicodedata
 from typing import Any, Dict, List, Tuple
 
 KINDS = ("概念讲解", "对比", "教程", "综述", "FAQ", "案例")
@@ -21,9 +22,15 @@ def squash(s: str) -> str:
     return _MD_NOISE.sub("", s or "")
 
 
+def norm(s: str) -> str:
+    """比较用的规范形式：统一全角/半角，去掉所有标点、空白、Markdown 标记，忽略大小写。
+    只改变书写形式，不改变用词；因此“意思与用词不变、只是标点或引号不同”的文字会视为相同。"""
+    return re.sub(r"[\W_]+", "", unicodedata.normalize("NFKC", s or "")).lower()
+
+
 def appears(needle: str, haystack: str) -> bool:
-    n = squash(needle)
-    return bool(n) and n in squash(haystack)
+    n = norm(needle)
+    return bool(n) and n in norm(haystack)
 
 
 _SENT_SPLIT = re.compile(r"(?<=[。！？!?；;\n])")
@@ -33,21 +40,58 @@ def sentences(text: str) -> List[str]:
     return [s.strip() for s in _SENT_SPLIT.split(text or "") if squash(s).strip()]
 
 
+def _candidates(text: str) -> List[str]:
+    sents = sentences(text)
+    out = list(sents)
+    out += [f"{a}{b}" for a, b in zip(sents, sents[1:])]    # 引文可能跨两句
+    return out
+
+
 def nearest_sentence(quote: str, text: str) -> Tuple[str, float]:
-    """原文中与 quote 最接近的句子及相似度（比较时忽略空白与标记）。"""
-    q = squash(quote)
+    """原文中与 quote 最接近的句子（或相邻两句）及相似度，比较时使用规范形式。"""
+    q = norm(quote)
     best: Tuple[str, float] = ("", 0.0)
     if not q:
         return best
-    for s in sentences(text):
-        r = difflib.SequenceMatcher(None, q, squash(s), autojunk=False).ratio()
+    for s in _candidates(text):
+        r = difflib.SequenceMatcher(None, q, norm(s), autojunk=False).ratio()
         if r > best[1]:
             best = (s, r)
     return best
 
 
-def autofix_quotes(obj: Any, text: str, threshold: float = 0.9) -> List[str]:
-    """代码校正：引文与原文某句高度接近（≥ threshold）时，直接改为该句的逐字原文，不再请模型修复。
+COVER_MIN = 0.8     # 引文中有 80% 以上能在原文中找到连续的对应片段（容许截断、改写少量字词）
+SIM_MIN = 0.85      # 或整体相似度 ≥ 0.85
+
+
+def grounded_sentence(quote: str, text: str) -> str:
+    """如果 quote 能在原文中找到对应（标点、引号、标记、少量用词不同均可），返回原文中的那一句；否则返回空串。"""
+    q = norm(quote)
+    if not q:
+        return ""
+    best = ("", 0.0)
+    for s in _candidates(text):
+        ns = norm(s)
+        if q in ns:
+            return s
+        m = difflib.SequenceMatcher(None, q, ns, autojunk=False)
+        match = m.find_longest_match(0, len(q), 0, len(ns)).size
+        if match >= COVER_MIN * len(q):
+            return s
+        r = m.ratio()
+        if r > best[1]:
+            best = (s, r)
+    return best[0] if best[1] >= SIM_MIN else ""
+
+
+def _verbatim(quote: str, text: str) -> bool:
+    """引文是否就是原文中的一段（只忽略空白）。存储的引文必须是逐字原文。"""
+    strip = lambda x: re.sub(r"\s+", "", x or "")
+    return bool(strip(quote)) and strip(quote) in strip(text)
+
+
+def autofix_quotes(obj: Any, text: str) -> List[str]:
+    """代码校正：引文与原文某处对应（只差标点、引号、标记或个别用词）时，直接改为原文中的逐字句子，不再请模型修复。
     原地修改 obj；返回校正说明（供日志）。"""
     notes: List[str] = []
     claims = obj.get("claims") if isinstance(obj, dict) else None
@@ -57,12 +101,12 @@ def autofix_quotes(obj: Any, text: str, threshold: float = 0.9) -> List[str]:
         if not isinstance(cl, dict):
             continue
         q = str(cl.get("quote") or "")
-        if not q.strip() or appears(q, text):
+        if not q.strip() or _verbatim(q, text):
             continue
-        s, r = nearest_sentence(q, text)
-        if s and r >= threshold:
+        s = grounded_sentence(q, text)
+        if s:
             cl["quote"] = s
-            notes.append(f"第 {i} 条引文与原文高度接近（相似度 {r:.2f}），已校正为原文逐字句子")
+            notes.append(f"第 {i} 条引文与原文对应（允许标点、引号或个别用词不同），已改为原文中的逐字句子")
     return notes
 
 
@@ -90,6 +134,7 @@ def check_concepts_and_claims(obj: Dict[str, Any], text: str) -> List[str]:
         if not appears(str(cl["quote"]), text):
             s, r = nearest_sentence(str(cl["quote"]), text)
             # 即使相似度不高，也给出一句真实原文：让模型“照抄”比“重新改写”更容易成功
+            s = s.replace("*", "").replace(">", "").strip()
             hint = (f"；原文中最接近的句子是「{s[:80]}」，请把 quote 改为该句的逐字复制"
                     if s else "；请从原文中逐字复制一句作为 quote")
             issues.append(f"第 {i} 条断言的 quote 不是原文中的逐字摘录："
