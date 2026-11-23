@@ -8,5 +8,6 @@
 - `../../../next_doc/article_garden_p2_implementation_record.md` — P2 实施记录（概念与关系）
 - `../../../next_doc/article_garden_p3_implementation_record.md` — P3 实施记录（知识树与覆盖度）
 - `../../../next_doc/article_garden_p4_implementation_record.md` — P4 实施记录（缺口检测与选题）
+- `../../../next_doc/article_garden_p5_implementation_record.md` — P5 实施记录（资料收集）
 
-当前已完成 **P0 骨架**、**P1 导入与摘要**、**P2 概念与关系** 与 **P3 知识树与覆盖度** 与 **P4 缺口检测与选题**。
+当前已完成 **P0 骨架**、**P1 导入与摘要**、**P2 概念与关系** 与 **P3 知识树与覆盖度** 与 **P4 缺口检测与选题** 与 **P5 资料收集**。

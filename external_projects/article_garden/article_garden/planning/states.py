@@ -15,9 +15,15 @@ from typing import Any, Dict, List
 from .. import store
 
 PROPOSED, APPROVED, REJECTED, DROPPED = "proposed", "approved", "rejected", "dropped"
+RESEARCHING, RESEARCHED = "researching", "researched"
 TERMINAL = {REJECTED, DROPPED}
 REJECT_REASONS = ("重复已有内容", "超出范围", "证据不足", "暂不需要", "其它")
-TRANSITIONS = {PROPOSED: {APPROVED, REJECTED, DROPPED}, APPROVED: {REJECTED}}
+TRANSITIONS = {
+    PROPOSED: {APPROVED, REJECTED, DROPPED},
+    APPROVED: {REJECTED, RESEARCHING},
+    RESEARCHING: {RESEARCHED, DROPPED},
+    RESEARCHED: {RESEARCHING, DROPPED},
+}
 
 
 def _now() -> str:
@@ -99,6 +105,24 @@ def reject(ctx, tid: str, reason: str) -> Dict[str, Any]:
         rej = load_rejected(ctx)
         rej.append({"gap_key": r.get("gap_key"), "title": r["title"], "reason": reason, "at": _now()})
         save_rejected(ctx, rej)
+    return _replace(ctx, tid, _do)
+
+
+def begin_research(ctx, tid: str) -> Dict[str, Any]:
+    return _replace(ctx, tid, lambda r: _move(r, RESEARCHING, "开始调研"))
+
+
+def end_research(ctx, tid: str, to: str, note: str) -> Dict[str, Any]:
+    if to not in (RESEARCHED, DROPPED):
+        raise ValueError("调研只能结束为 researched 或 dropped")
+    return _replace(ctx, tid, lambda r: _move(r, to, note))
+
+
+def revert_research(ctx, tid: str, to: str, note: str) -> Dict[str, Any]:
+    """调研中途出错或被停止：退回调研前的状态（不走转换表，仅用于异常恢复），并记录原因。"""
+    def _do(r):
+        r.setdefault("history", []).append({"from": r["status"], "to": to, "at": _now(), "note": note})
+        r["status"] = to
     return _replace(ctx, tid, _do)
 
 

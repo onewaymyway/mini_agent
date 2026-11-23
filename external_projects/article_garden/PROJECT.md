@@ -7,7 +7,7 @@
 > 遵循外部项目标准结构：完全自包含、可独立于 mini_agent daemon 运行，可整体移动到任意路径，
 > 在 daemon 侧 `mini-agent projects register external_projects/article_garden`（或看板「外部项目 → 注册新项目」扫描选择）即可被看见。
 
-## 当前进度：P4 缺口检测与选题已完成
+## 当前进度：P5 资料收集已完成
 
 | 期 | 内容 | 状态 |
 |---|---|---|
@@ -16,9 +16,20 @@
 | **P2** | 概念归一、概念页、断言账本、关系边、冲突 | ✅ |
 | **P3** | 知识树（骨架 + 增量挂载提案）、覆盖度、树页面 | ✅ |
 | **P4** | 缺口检测（G1–G6）、选题生成、去重打分、选题队列与状态机 | ✅ |
-| P5 | 资料收集 | 待做 |
+| **P5** | 查询生成、搜索（带缓存）、抓取（robots/节流/缓存）、摘录、来源卡、证据包、充分性判断 | ✅ |
 | P6 | 成文 | 待做 |
 | P7 | 闭环、挡位、预算、定时、导出 | 待做 |
+
+**P5 新增的能力**
+- **查询生成**：有模型时由模型按“必须覆盖的概念 + 角度”生成 3–8 条查询；无模型时用模板（标题、概念 + 入门、标题 + 官方文档）。去重、限长。
+- **搜索**：默认复用 mini_agent 的 web_search（duckduckgo，无需 key）。结果按查询缓存 30 天，命中缓存不再搜索。搜索失败时记录原因并降级，仍可使用手动资料。
+- **抓取**：先检查 robots.txt（200 按规则判断；404/410 允许；其它错误或 401/403 不抓取）；同一域名两次请求之间至少间隔 1 秒；超时 15 秒；只接受 HTML；超过 2 MB 截断；网页缓存 30 天；不读取系统代理。每个选题最多处理 `budget.max_fetch_pages_per_topic` 页。
+- **正文提取**：优先 trafilatura（若已安装），否则用标准库解析段落，去掉导航、页脚、脚本与样式。
+- **摘录**：只保留包含“必须覆盖概念”的段落，拼接到 `thresholds.excerpt_chars_max` 字以内（只摘事实与短摘录，不整段复制）。
+- **来源卡** `research/packs/<tid>/sources/src-0001.yaml`：网址、标题、抓取时间、来源类型、可信度 A–D、摘录、覆盖的要点。可信度按域名启发式分级：学术与官方文档为 A，开源与技术社区为 B，其它为 C，章程 `sources.avoid` 命中为 D。
+- **证据包** `pack.yaml`：按要点归类；充分的条件为要点覆盖率 ≥ 60%，且达到章程最低可信度的来源 ≥ 2 条，其中至少一条为 A 或 B。
+- **状态**：`已放行 → 调研中 → 已调研`；证据不足则 `调研中 → 已放弃`，原因写入证据包与状态历史。调研中断或被停止时，选题退回调研前的状态。
+- **手动补充**：可以粘贴资料正文（指定可信度），也可以粘贴网址（后台抓取）。手动来源不会因重新调研而被删除，但可以在来源卡上删除。
 
 **P4 新增的能力**
 - **缺口检测（纯规则，可审计）**：G1 主题无文章（或只有浅文）；G2 概念被多篇提到却没有专文；G3 前置概念没有入门讲解；G4 常一起出现的两个概念没有对比文；G5 有进阶文章却没有入门文；G6 主题已有 ≥ 3 篇却没有综述。每条缺口记录理由与依据文章，并保存在 `plan/gaps.json`。
@@ -74,9 +85,10 @@ external_projects/article_garden/
 │   └── digest/      llm_io  validate（校验）  summarize（提示词/修复/分块）  runner（增量）  charter_draft
 │   └── wiki/        model（存储）  normalize（归一）  content（定义/关系/冲突校验）  build（编排）  validate_util
 │   ├── wiki/        ... + tree（树存储与人工操作）  placement（挂载提案）  coverage（覆盖度）
-│   └── planning/    gaps（缺口 G1–G6）  topics（候选、去重、打分、运行）  dedup  states（状态机与拒绝记录）
-├── ui/              state  topbar  jobs  home/library/graph/tree/topics/runs/settings/wizard 页面  placeholder_pages
-├── tests/           136 项（单元 + 入口 + Streamlit AppTest 冒烟；摘要测试使用确定性的假模型）
+│   ├── planning/    gaps（缺口 G1–G6）  topics（候选、去重、打分、运行）  dedup  states（状态机与拒绝记录）
+│   └── research/    queries  search（缓存）  fetch（robots/节流/缓存）  extract  sources（来源卡）  pack（证据包）  runner
+├── ui/              state  topbar  jobs  home/library/graph/tree/topics/research/runs/settings/wizard 页面  placeholder_pages
+├── tests/           152 项（单元 + 入口 + Streamlit AppTest 冒烟；摘要测试使用确定性的假模型）
 └── data/            运行产物，已加入 .gitignore（可用环境变量 ARTICLE_GARDEN_HOME 改位置）
     ├── domains.json         文章库注册表
     ├── settings.yaml        全局默认设置（稀疏覆盖）
@@ -94,6 +106,7 @@ python entrypoints/draft_charter.py ai                    生成章程草稿（�
 python entrypoints/build_wiki.py ai                       构建概念与关系（需模型）；--force 重写全部定义
 python entrypoints/build_tree.py ai                       生成挂载提案（需模型）并计算覆盖度；--apply 确认应用；--discard 放弃
 python entrypoints/plan_topics.py ai                      检测缺口并生成选题；--approve t-0001 放行；--reject t-0001 --reason 原因 拒绝
+python entrypoints/research.py ai t-0001                  调研已放行的选题（需网络）；--add-url <网址>；--remove-source src-0002
 streamlit run app.py --server.port 8508                   看板（端口约定：world_simulator 8502 … article_to_video 8507，本项目 8508）
 python -m pytest                                          测试
 ```
@@ -107,6 +120,13 @@ python -m pytest                                          测试
 - `cancel.py / joblog.py / netproxy.py` 复制精简自 article_to_video（自包含，不跨项目 import）。
 
 ## 已知限制 / 待验证事项
+- **搜索、抓取、查询生成都没有在真实网络环境中验证**：测试全部使用假网络（注入的搜索与 HTTP 函数）。robots 与节流逻辑已测试，但真实网站的兼容性（编码、反爬、重定向）未知。
+- **站内优先只用选题的互链文章**：方案 §7 的三段式检索（FTS 召回、概念扩展、摘要精排）未做。
+- **“提取候选事实”未做**：来源卡只有摘录，没有模型抽取的候选事实（留给 P6 的成文阶段按需要再抽取）。
+- **可信度是域名启发式**：不能判断内容质量，只能作为起点；需要人工通过删除或手动补充来修正。
+- **trafilatura 未安装**：正文提取回退到标准库，段落质量一般。
+- **证据不足的选题直接放弃**，不回到待审。需要重新考虑时请新建选题（缺口仍在则会再次提议，除非被拒绝过）。
+- 看板的调研页没有批量调研。
 - **G5（层级断档）只有代码路径，没有专门的自动化测试**：测试库中所有文章都是入门级，无法触发。
 - **标题由模板生成，没有 LLM 润色**：方案 §6.2 允许模型润色标题与角度，首版未做。
 - **新鲜度缺口（G6 的“外部新进展”部分）未实现**：需要 info_hub 的信号，计划在后续接入。

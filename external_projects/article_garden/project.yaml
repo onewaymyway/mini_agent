@@ -1,5 +1,5 @@
 # project.yaml — article_garden 与 daemon 之间的契约（字段规范见 src/mini_agent/external_projects/manifest.py）。
-# 当前为 P4：文章导入、单篇摘要（增量）、章程草稿反推、概念与关系、知识树与覆盖度、缺口检测与选题。
+# 当前为 P5：文章导入、单篇摘要（增量）、章程草稿反推、概念与关系、知识树与覆盖度、缺口检测与选题、资料收集。
 # 默认不登记 cron：摘要与章程草稿会调用模型，属于高成本操作，由你在看板或命令行手动触发；
 # 定时 cycle 在 P7 提供，届时也须在文章库设置里显式打开。
 # 参数按声明顺序以位置参数追加在 cmd 后面；其它选项（如 --article-id、--apply）请直接在命令行使用，见 docs/USAGE.md。
@@ -66,6 +66,17 @@ entrypoints:
       - name: domain_id
         required: true
         help: "文章库 id。放行/拒绝请在命令行追加 --approve <id> 或 --reject <id> --reason <原因>"
+  research:
+    cmd: "python entrypoints/research.py"
+    timeout_sec: 3600
+    concurrency: managed        # 搜索、抓取（访问任意网站）；查询生成可选调用模型
+    params:
+      - name: domain_id
+        required: true
+        help: "文章库 id"
+      - name: topic_id
+        required: true
+        help: "选题 id（须已放行或已调研），如 t-0003"
   draft_charter:
     cmd: "python entrypoints/draft_charter.py"
     timeout_sec: 1800
@@ -79,7 +90,8 @@ health_check:
   cmd: "python entrypoints/health.py"
 
 resources:
-  # P1 起调用模型（经 mini_agent 的 LLMHelper）；调研访问任意网站在 P5 才会出现，届时再补充。
+  # 调研（P5 起）会访问搜索结果中的任意网站，域名不固定，因此 allowed_domains 留空；
+  # robots.txt 与按域名节流在代码中强制执行（article_garden/research/fetch.py）。
   allowed_domains: []
   max_concurrency: 1
 
