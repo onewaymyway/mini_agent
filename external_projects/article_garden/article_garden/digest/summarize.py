@@ -19,7 +19,7 @@ CHUNK_THRESHOLD = 6000
 CHUNK_TARGET = 4000
 
 SYSTEM = ("你是文章结构化摘要助手。只输出 YAML：不要解释、不要前言、不要 Markdown 代码围栏。"
-          "quote 必须逐字摘自原文，不得改写、不得翻译。")
+          "quote 必须逐字摘自原文，不得改写、不得翻译；quote 的值必须用英文双引号括起来（内部如有双引号，改用单引号）。")
 
 
 class DigestFailed(Exception):

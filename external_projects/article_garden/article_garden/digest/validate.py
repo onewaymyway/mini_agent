@@ -84,6 +84,15 @@ def grounded_sentence(quote: str, text: str) -> str:
     return best[0] if best[1] >= SIM_MIN else ""
 
 
+def clean_edges(sentence: str) -> str:
+    """去掉句首的引用/加粗标记与句末的加粗标记。只删除两端，所以结果仍是原文的子串。"""
+    s = sentence.strip()
+    s = re.sub(r"^(?:>\s*)+", "", s)
+    s = re.sub(r"^\*\*", "", s)
+    s = re.sub(r"\*\*$", "", s)
+    return s.strip()
+
+
 def _verbatim(quote: str, text: str) -> bool:
     """引文是否就是原文中的一段（只忽略空白）。存储的引文必须是逐字原文。"""
     strip = lambda x: re.sub(r"\s+", "", x or "")
@@ -105,7 +114,7 @@ def autofix_quotes(obj: Any, text: str) -> List[str]:
             continue
         s = grounded_sentence(q, text)
         if s:
-            cl["quote"] = s
+            cl["quote"] = clean_edges(s)
             notes.append(f"第 {i} 条引文与原文对应（允许标点、引号或个别用词不同），已改为原文中的逐字句子")
     return notes
 

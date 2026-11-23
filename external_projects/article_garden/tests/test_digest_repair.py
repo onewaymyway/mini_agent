@@ -92,8 +92,8 @@ def test_quote_marks_punctuation_and_markdown_differences_are_accepted():
     # 引号、标点、Markdown 标记不同，意思完全相同：不得因此失败，也不耗修复调用
     llm, q = _quote_case('> **AI 经济的价值体系必须从"劳动数量"逐渐转向"有效贡献".**')
     assert len(llm.prompts) == 1
-    assert q == "> **AI 经济的价值体系必须从“劳动数量”逐渐转向“有效贡献”。"
-    assert q in ARTICLE                                        # 存储的是原文中的逐字句子
+    assert q == "AI 经济的价值体系必须从“劳动数量”逐渐转向“有效贡献”。"   # 去掉了引用/加粗标记
+    assert q in ARTICLE                                        # 仍是原文中的逐字片段
 
 
 def test_truncated_quote_is_accepted_and_stored_as_the_full_original_sentence():
@@ -109,3 +109,30 @@ def test_small_wording_change_is_accepted_but_meaning_change_is_rejected():
         "向量数据库用于存储和检索高维向量，常见于语义搜索与检索增强生成场景。")])
     sm.summarize(ARTICLE, llm2, max_repair_rounds=3)
     assert len(llm2.prompts) == 2                             # 含义不同：仍然要求修复
+
+
+def test_yaml_error_names_line_column_and_offending_text():
+    from article_garden.digest.llm_io import parse_yaml
+    _, err = parse_yaml("claims:\n  - text: x\n    quote: > **AI 经济\n")
+    assert "第 3 行" in err and "quote: > **AI 经济" in err and "双引号" in err
+
+
+def test_prompt_asks_for_double_quoted_quote_values():
+    from article_garden.digest import summarize as sm
+    assert "英文双引号" in sm.SYSTEM                          # 该要求放在系统指令中，每次调用都会发送
+
+
+def test_round_log_names_the_source_file(data_home):
+    from article_garden import domains, joblog
+    from article_garden.digest import runner as drunner
+    from article_garden.library import catalog, importer
+    ctx = domains.create_domain("ai", "人工智能", "ai")
+    importer.apply(ctx, importer.collect([("某篇文章.md", TEXT.encode("utf-8"))]))
+    row = catalog.list_articles(ctx)[0]
+
+    class Bad:
+        def ask(self, prompt, system=""):
+            return _reply("永远找不到的引文句子甲乙丙丁戊己庚辛")
+    drunner.run_digest(ctx, Bad(), force=True)
+    msgs = "\n".join(r["message"] for r in joblog.tail(ctx.root, limit=500))
+    assert f"{row['id']}「" in msgs and "来源文件：某篇文章.md" in msgs

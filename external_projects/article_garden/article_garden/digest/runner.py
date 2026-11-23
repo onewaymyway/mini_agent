@@ -93,7 +93,8 @@ def _digest_one(ctx, llm, row: Dict[str, Any], max_rounds: int, counts: Dict[str
     body = catalog.read_body(ctx, row)
     with joblog.step(ctx.root, SCOPE, "摘要", item=row["id"]) as info:
         def on_round(msg: str) -> None:
-            joblog.log(ctx.root, SCOPE, f"{row['id']}：{msg}", level="warn")
+            where = f"{row['id']}「{row.get('title', '')}」（来源文件：{row.get('source_name', '')}）"
+            joblog.log(ctx.root, SCOPE, f"{where}：{msg}", level="warn")
 
         try:
             digest = sm.summarize(body, llm, max_repair_rounds=max_rounds, title_hint=row.get("title", ""),
