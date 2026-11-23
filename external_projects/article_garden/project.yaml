@@ -1,5 +1,5 @@
 # project.yaml — article_garden 与 daemon 之间的契约（字段规范见 src/mini_agent/external_projects/manifest.py）。
-# 当前为 P1：文章导入、单篇摘要（增量）、章程草稿反推。
+# 当前为 P2：文章导入、单篇摘要（增量）、章程草稿反推、概念与关系构建。
 # 默认不登记 cron：摘要与章程草稿会调用模型，属于高成本操作，由你在看板或命令行手动触发；
 # 定时 cycle 在 P7 提供，届时也须在文章库设置里显式打开。
 # 参数按声明顺序以位置参数追加在 cmd 后面；其它选项（如 --article-id、--apply）请直接在命令行使用，见 docs/USAGE.md。
@@ -42,6 +42,14 @@ entrypoints:
       - name: domain_id
         required: true
         help: "文章库 id"
+  build_wiki:
+    cmd: "python entrypoints/build_wiki.py"
+    timeout_sec: 7200
+    concurrency: managed        # 调用模型（归一确认、定义、关系、冲突）
+    params:
+      - name: domain_id
+        required: true
+        help: "文章库 id（需已有摘要成功的文章）"
   draft_charter:
     cmd: "python entrypoints/draft_charter.py"
     timeout_sec: 1800

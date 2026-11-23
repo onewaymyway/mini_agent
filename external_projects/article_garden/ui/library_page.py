@@ -6,10 +6,6 @@
 
 from __future__ import annotations
 
-import subprocess
-import sys
-from pathlib import Path
-
 import streamlit as st
 import yaml
 
@@ -17,16 +13,8 @@ from article_garden import joblog
 from article_garden.digest import charter_draft, runner
 from article_garden.library import catalog, importer
 from ui import state
+from ui.jobs import spawn as _spawn
 from ui.topbar import render_topbar
-
-PROJECT_DIR = Path(__file__).resolve().parent.parent
-
-
-def _spawn(entry: str, *args: str) -> None:
-    """后台运行 entrypoints/<entry>；与看板进程解耦，关闭页面不影响任务。"""
-    subprocess.Popen([sys.executable, str(PROJECT_DIR / "entrypoints" / entry), *args],
-                     cwd=str(PROJECT_DIR), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                     stderr=subprocess.DEVNULL, start_new_session=True)
 
 
 def render_library_page() -> None:

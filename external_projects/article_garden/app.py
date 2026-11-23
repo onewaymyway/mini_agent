@@ -15,10 +15,11 @@ import streamlit as st  # noqa: E402
 
 from article_garden import domains  # noqa: E402
 from ui import state  # noqa: E402
+from ui.graph_page import render_graph_page  # noqa: E402
 from ui.home_page import render_home_page  # noqa: E402
 from ui.library_page import render_library_page  # noqa: E402
 from ui.placeholder_pages import (  # noqa: E402
-    render_graph_page, render_research_page, render_review_page, render_topics_page, render_tree_page,
+    render_research_page, render_review_page, render_topics_page, render_tree_page,
 )
 from ui.runs_page import render_runs_page  # noqa: E402
 from ui.settings_page import render_settings_page  # noqa: E402

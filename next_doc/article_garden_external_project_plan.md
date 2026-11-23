@@ -1,7 +1,7 @@
 # article_garden 外部项目设计方案（领域文章库 → 知识 wiki → 自动扩展成文）
 
-- **状态**：**方案已确认（2026-11-23，Q1–Q20 全部按推荐）**，按 P0→P7 一期一期实施，每期结束更新文档、测试并打包 diff zip，等待确认后再进入下一期；**当前：P1 已完成，等待确认后进入 P2**
-- **版本**：v0.4（2026-11-23；v0.3 记录确认结果并开始 P0；v0.4 完成 P1 导入与摘要）
+- **状态**：**方案已确认（2026-11-23，Q1–Q20 全部按推荐）**，按 P0→P7 一期一期实施，每期结束更新文档、测试并打包 diff zip，等待确认后再进入下一期；**当前：P2 已完成，等待确认后进入 P3**
+- **版本**：v0.5（2026-11-23；v0.3 记录确认结果并开始 P0；v0.4 完成 P1 导入与摘要；v0.5 完成 P2 概念与关系）
 - **性质**：新的外部项目 `external_projects/article_garden`（项目名待确认，见 Q1），遵循外部项目标准结构（`project.yaml` + `entrypoints/` + Streamlit 看板，完全自包含，可脱离 daemon 独立运行）
 - **关联文档**：`docs/external-projects-guide.md`、`docs/wiki-knowledge-base-guide.md`（借鉴思路，不复用代码）、`next_doc/article_to_video_external_project_plan.md`（项目骨架/设置页/日志的做法参照）、`next_doc/info_hub_external_project_plan.md`（可作为后续的资料来源）
 
@@ -384,7 +384,7 @@ external_projects/article_garden/
 - [x] 方案确认（Q1–Q20 全按推荐；Q3=人工智能/Markdown/中文/20+ 篇；Q2=多文章库）
 - [x] P0 骨架（2026-11-23 完成，实施记录见 `next_doc/article_garden_p0_implementation_record.md`；64 项测试通过；**待你确认后进入 P1**）
 - [x] P1 导入与摘要（2026-11-23 完成，实施记录见 `next_doc/article_garden_p1_implementation_record.md`；94 项测试通过；**待你确认后进入 P2**。预算强制执行与看板停止按钮顺延至 P7）
-- [ ] P2 概念与关系
+- [x] P2 概念与关系（2026-11-23 完成，实施记录见 `next_doc/article_garden_p2_implementation_record.md`；108 项测试通过；**待你确认后进入 P3**）
 - [ ] P3 知识树与覆盖度
 - [ ] P4 缺口与选题
 - [ ] P5 资料收集

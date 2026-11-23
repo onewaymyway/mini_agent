@@ -7,18 +7,26 @@
 > 遵循外部项目标准结构：完全自包含、可独立于 mini_agent daemon 运行，可整体移动到任意路径，
 > 在 daemon 侧 `mini-agent projects register external_projects/article_garden`（或看板「外部项目 → 注册新项目」扫描选择）即可被看见。
 
-## 当前进度：P1 导入与摘要已完成
+## 当前进度：P2 概念与关系已完成
 
 | 期 | 内容 | 状态 |
 |---|---|---|
 | **P0** | 项目骨架、多文章库（新建/切换/归档/删除）、章程、两层设置、看板框架、health | ✅ |
 | **P1** | 文章导入（预览→确认）、单篇摘要（增量、校验、修复循环、长文分块）、章程草稿反推 | ✅ |
-| P2 | 概念归一与关系 | 待做 |
+| **P2** | 概念归一、概念页、断言账本、关系边、冲突 | ✅ |
 | P3 | 知识树与覆盖度 | 待做 |
 | P4 | 缺口检测与选题 | 待做 |
 | P5 | 资料收集 | 待做 |
 | P6 | 成文 | 待做 |
 | P7 | 闭环、挡位、预算、定时、导出 | 待做 |
+
+**P2 新增的能力**
+- **概念归一**：规则打分（去空白后相同、章程术语表别名、字符串相似度、包含关系），中间分交给模型逐对确认“是否同指”，拿不准一律不合并。规范名优先取章程术语表。
+- **概念页** `wiki/concepts/c-0001.md`：定义（点名概念、长度 60–400 字）与依据断言。定义中引用的断言 id 必须是提供给模型的，否则修复。没有依据断言的概念标记为「无依据」，不编造定义。
+- **断言账本** `wiki/claims.jsonl`：每条断言 → 文章、原文摘录、所属概念。依据摘录必须在原文中。
+- **关系边** `wiki/edges.jsonl`：类型为 is_a / part_of / prerequisite / related / contrasts / causes / example_of。每条边必须附带能在原文中找到的摘录和理由，否则**整条丢弃**（丢弃数量计入运行日志）。
+- **冲突** `wiki/conflicts.jsonl`：同一概念来自不同文章的互相矛盾断言，保留双方出处；只允许跨文章的冲突。
+- **增量与保护**：定义按依据哈希复用；关系与冲突按文章内容与概念对缓存；`human_edited: true` 的概念页不会被自动覆盖；概念 id 按写法重叠保持稳定。
 
 **P1 新增的能力**
 - **导入**：支持 `.md / .txt / .zip` 与目录（递归）。导入前先**预览**（新增 / 重复 / 跳过 及原因），确认后才写入。源文件只读，入库的是复制品 `library/imported/a-0001.md`。
@@ -46,8 +54,9 @@ external_projects/article_garden/
 │                    cancel  joblog  netproxy  providers/text.py
 │   ├── library/     front_matter  hashing  catalog（索引）  importer（收集/预览/入库）
 │   └── digest/      llm_io  validate（校验）  summarize（提示词/修复/分块）  runner（增量）  charter_draft
-├── ui/              state  topbar  home/library/runs/settings/wizard 页面  placeholder_pages
-├── tests/           94 项（单元 + 入口 + Streamlit AppTest 冒烟；摘要测试使用确定性的假模型）
+│   └── wiki/        model（存储）  normalize（归一）  content（定义/关系/冲突校验）  build（编排）  validate_util
+├── ui/              state  topbar  jobs  home/library/graph/runs/settings/wizard 页面  placeholder_pages
+├── tests/           108 项（单元 + 入口 + Streamlit AppTest 冒烟；摘要测试使用确定性的假模型）
 └── data/            运行产物，已加入 .gitignore（可用环境变量 ARTICLE_GARDEN_HOME 改位置）
     ├── domains.json         文章库注册表
     ├── settings.yaml        全局默认设置（稀疏覆盖）
@@ -62,6 +71,7 @@ python entrypoints/list_domains.py [--all]                列出文章库（--al
 python entrypoints/import_library.py ai <路径…>           导入预览（不写入）；加 --apply 确认导入
 python entrypoints/digest.py ai                           增量摘要（需模型）；--article-id a-0003 / --force
 python entrypoints/draft_charter.py ai                    生成章程草稿（需模型）；--adopt 采用为正式章程
+python entrypoints/build_wiki.py ai                       构建概念与关系（需模型）；--force 重写全部定义
 streamlit run app.py --server.port 8508                   看板（端口约定：world_simulator 8502 … article_to_video 8507，本项目 8508）
 python -m pytest                                          测试
 ```
@@ -75,6 +85,11 @@ python -m pytest                                          测试
 - `cancel.py / joblog.py / netproxy.py` 复制精简自 article_to_video（自包含，不跨项目 import）。
 
 ## 已知限制 / 待验证事项
+- **P2 的关系与归一质量未在真实模型上验证**：测试使用按阶段分派的假模型。
+- **归一的两两比较是 O(n²)**：几百种写法以内没有问题；规模再大需要分桶预筛（P3 前评估）。
+- **超长文章不做关系抽取**：正文超过 12000 字的文章跳过关系步骤（依据摘录需要整篇原文做校验）。
+- **冲突只读展示**：看板不能直接“采纳 A / 采纳 B / 并存”，也没有概念合并建议与手动加删边界面（方案 §19.3 中这些属 P3/之后的交互）。人工编辑目前只能直接改概念页并设 `human_edited: true`。
+- **未使用共现信号**：方案 §5.2 提到的文章共现分在首版归一中未参与打分。
 - **真实模型的摘要质量未验证**：所有测试用确定性的假模型。提示词在真实模型上是否稳定、修复轮数是否够用，需要用你的 20 余篇文章实际跑一遍再调整。
 - **以下预算项在 P1 只是设置项，尚未强制执行**：`budget.step_timeout_minutes`（单步超时）、`budget.max_llm_calls_per_day` 与 `global_max_llm_calls_per_day`（日调用上限）。它们属于 P7「预算与自动化」，届时统一强制执行。当前只有“每篇修复轮数上限”真正生效。
 - **看板里没有“停止”按钮**：摘要以子进程后台运行，而停止信号目前只在同一进程内有效；跨进程停止需要文件信号，留待 P7。
