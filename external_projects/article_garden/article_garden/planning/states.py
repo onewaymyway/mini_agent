@@ -1,10 +1,12 @@
 """planning/states.py — 选题状态机（方案 §6.4）。
 
-  proposed ──放行──▶ approved ──（P5 起）──▶ researching → researched → drafting → drafted → reviewed → published
-     │                 │
-     └──拒绝/放弃──▶ rejected / dropped（终态；拒绝必须给原因，并写入拒绝记录用于去重）
+  proposed ─放行─▶ approved ─▶ researching ─▶ researched ─▶ drafting ─▶ drafted ─▶ reviewed ─▶ published
+     │                 │             ▲            │  ▲        │  │         │            │
+     └─拒绝/放弃─▶ rejected / dropped │      drafting◀┘  └─ failed ◀┘         └─退回重写─▶ drafting
+                                     （调研不足 → dropped）   （成文不通过 → failed，可重试）
 
-P4 只实现 proposed/approved/rejected/dropped 之间的转换；后续状态由对应阶段写入。
+P4 实现 proposed/approved/rejected/dropped；P5 实现调研段；P6 实现成文与审阅段。
+异常恢复（停止、报错）只用 revert_to，不走转换表，但会记录原因。
 """
 
 from __future__ import annotations
@@ -16,13 +18,18 @@ from .. import store
 
 PROPOSED, APPROVED, REJECTED, DROPPED = "proposed", "approved", "rejected", "dropped"
 RESEARCHING, RESEARCHED = "researching", "researched"
-TERMINAL = {REJECTED, DROPPED}
+DRAFTING, DRAFTED, FAILED, REVIEWED, PUBLISHED = "drafting", "drafted", "failed", "reviewed", "published"
+TERMINAL = {REJECTED, DROPPED, PUBLISHED}
 REJECT_REASONS = ("重复已有内容", "超出范围", "证据不足", "暂不需要", "其它")
 TRANSITIONS = {
     PROPOSED: {APPROVED, REJECTED, DROPPED},
     APPROVED: {REJECTED, RESEARCHING},
     RESEARCHING: {RESEARCHED, DROPPED},
-    RESEARCHED: {RESEARCHING, DROPPED},
+    RESEARCHED: {RESEARCHING, DROPPED, DRAFTING},
+    DRAFTING: {DRAFTED, FAILED, RESEARCHED},
+    FAILED: {DRAFTING, DROPPED},
+    DRAFTED: {REVIEWED, DRAFTING, DROPPED},
+    REVIEWED: {PUBLISHED, DRAFTING, DROPPED},
 }
 
 
@@ -123,6 +130,36 @@ def revert_research(ctx, tid: str, to: str, note: str) -> Dict[str, Any]:
     def _do(r):
         r.setdefault("history", []).append({"from": r["status"], "to": to, "at": _now(), "note": note})
         r["status"] = to
+    return _replace(ctx, tid, _do)
+
+
+def begin_draft(ctx, tid: str, note: str) -> Dict[str, Any]:
+    return _replace(ctx, tid, lambda r: _move(r, DRAFTING, note))
+
+
+def end_draft(ctx, tid: str, to: str, note: str) -> Dict[str, Any]:
+    if to not in (DRAFTED, FAILED):
+        raise ValueError("成文只能结束为 drafted 或 failed")
+    return _replace(ctx, tid, lambda r: _move(r, to, note))
+
+
+def move(ctx, tid: str, to: str, note: str) -> Dict[str, Any]:
+    """审阅动作（通过 / 发布 / 放弃 / 退回重写）：走转换表。"""
+    return _replace(ctx, tid, lambda r: _move(r, to, note))
+
+
+def revert_to(ctx, tid: str, to: str, note: str) -> Dict[str, Any]:
+    """停止或异常时退回之前的状态（不走转换表，仅用于异常恢复），并记录原因。"""
+    def _do(r):
+        r.setdefault("history", []).append({"from": r["status"], "to": to, "at": _now(), "note": note})
+        r["status"] = to
+    return _replace(ctx, tid, _do)
+
+
+def link_article(ctx, tid: str, article_id: str) -> Dict[str, Any]:
+    """记录选题对应的成稿文章 id（重写时复用同一 id）。"""
+    def _do(r):
+        r["article_id"] = article_id
     return _replace(ctx, tid, _do)
 
 

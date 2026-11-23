@@ -101,6 +101,7 @@ def _build(ctx, llm, digests, terms, max_rounds, force) -> Dict[str, Any]:
         new_map[cid] = {"canonical": c["canonical"], "surfaces": c["surfaces"]}
     # 3. 断言账本：每条断言 → 所属概念 -----------------------------------------
     ledger: List[Dict[str, Any]] = []
+    origin_of = {r["id"]: r.get("origin", "imported") for r in catalog.list_articles(ctx)}
     for d in digests:
         aid = d["row"]["id"]
         for n, cl in enumerate(d["rec"].get("claims") or [], 1):
@@ -108,7 +109,7 @@ def _build(ctx, llm, digests, terms, max_rounds, force) -> Dict[str, Any]:
             concepts = [assigned[c["canonical"]] for c in clusters
                         if any(vu.appears(s, text + quote) for s in c["surfaces"])]
             ledger.append({"id": f"{aid}#{n}", "article_id": aid, "text": text, "quote": quote,
-                           "concepts": concepts})
+                           "concepts": concepts, "origin": origin_of.get(aid, "imported")})
     claims_by_cid: Dict[str, List[Dict[str, Any]]] = {}
     for row in ledger:
         for cid in row["concepts"]:
@@ -157,6 +158,8 @@ def _write_concept(ctx, llm, cid, c, claims, max_rounds, force) -> None:
     existing = model.read_page(ctx, cid)
     if existing and existing[0].get("human_edited"):
         return  # 人工改过的页面不自动覆盖
+    # P6：生成文章不能成为定义的唯一出处（方案 §8.1 第 7 步）。定义只依据导入文章的断言。
+    imported = [x for x in claims if x.get("origin", "imported") != "generated"]
     sh = _source_hash(c["canonical"], claims)
     meta_base = {"id": cid, "name": c["canonical"],
                  "aliases": [s for s in c["surfaces"] if s != c["canonical"]],
@@ -168,10 +171,15 @@ def _write_concept(ctx, llm, cid, c, claims, max_rounds, force) -> None:
         model.write_page(ctx, cid, {**meta_base, "status": "no_source", "generated_at": _now()},
                          f"# {c['canonical']}\n\n暂无可追溯的依据断言。")
         return
-    prompt_claims = [{"id": x["id"], "text": x["text"], "quote": x["quote"]} for x in claims]
+    if not imported:
+        model.write_page(ctx, cid, {**meta_base, "status": "generated_only", "generated_at": _now()},
+                         f"# {c['canonical']}\n\n目前只有系统生成的文章提及该概念，暂不生成定义"
+                         "（生成文章不能作为唯一出处）。\n")
+        return
+    prompt_claims = [{"id": x["id"], "text": x["text"], "quote": x["quote"]} for x in imported]
     try:
         obj = sm.ask_validated(llm, content.definition_prompt(c["canonical"], prompt_claims),
-                               content.definition_validator(c["canonical"], [x["id"] for x in claims]),
+                               content.definition_validator(c["canonical"], [x["id"] for x in imported]),
                                sm.RepairBudget(max_rounds))
     except sm.DigestFailed as exc:
         model.write_page(ctx, cid, {**meta_base, "status": "failed", "issues": exc.issues,
@@ -179,7 +187,7 @@ def _write_concept(ctx, llm, cid, c, claims, max_rounds, force) -> None:
         return
     definition = str(obj["definition"]).strip()
     based = [str(b) for b in obj["based_on"]]
-    refs = "\n".join(f"- {x['id']}：{x['quote'][:80]}" for x in claims if x["id"] in based)
+    refs = "\n".join(f"- {x['id']}：{x['quote'][:80]}" for x in imported if x["id"] in based)
     model.write_page(ctx, cid, {**meta_base, "status": "ok", "based_on": based, "generated_at": _now()},
                      f"# {c['canonical']}\n\n{definition}\n\n## 依据\n{refs}\n")
 
@@ -194,6 +202,8 @@ def _build_edges(ctx, llm, digests, clusters, assigned, max_rounds, force=False)
     with joblog.step(ctx.root, SCOPE, "关系") as info:
         for d in digests:
             row = d["row"]
+            if row.get("origin") == "generated":
+                continue  # P6：生成文章不产生关系边（边必须有导入文章的依据）
             present = by_art.get(row["id"], [])
             if len(present) < 2:
                 continue
@@ -249,7 +259,7 @@ def _build_conflicts(ctx, llm, clusters, assigned, claims_by_cid, max_rounds, fo
     with joblog.step(ctx.root, SCOPE, "冲突") as info:
         for c in clusters:
             cid = assigned[c["canonical"]]
-            claims = [x for x in claims_by_cid.get(cid, []) if x["text"]]
+            claims = [x for x in claims_by_cid.get(cid, []) if x["text"] and x.get("origin", "imported") != "generated"]
             if len({x["article_id"] for x in claims}) < 2:
                 continue
             cache_p = ctx.path("wiki", "cache", "conflicts", f"{cid}.json")

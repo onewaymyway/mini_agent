@@ -7,7 +7,7 @@
 > 遵循外部项目标准结构：完全自包含、可独立于 mini_agent daemon 运行，可整体移动到任意路径，
 > 在 daemon 侧 `mini-agent projects register external_projects/article_garden`（或看板「外部项目 → 注册新项目」扫描选择）即可被看见。
 
-## 当前进度：P5 资料收集已完成
+## 当前进度：P6 成文与审阅已完成
 
 | 期 | 内容 | 状态 |
 |---|---|---|
@@ -17,8 +17,21 @@
 | **P3** | 知识树（骨架 + 增量挂载提案）、覆盖度、树页面 | ✅ |
 | **P4** | 缺口检测（G1–G6）、选题生成、去重打分、选题队列与状态机 | ✅ |
 | **P5** | 查询生成、搜索（带缓存）、抓取（robots/节流/缓存）、摘录、来源卡、证据包、充分性判断 | ✅ |
-| P6 | 成文 | 待做 |
+| **P6** | 成文与审阅：选题简报、大纲、逐节初稿、代码校验与修复循环、独立评审、入库回灌、审阅页 | ✅ |
 | P7 | 闭环、挡位、预算、定时、导出 | 待做 |
+
+**P6 新增的能力**
+- **成文流程**（`write_article.py` 或看板「✍ 审阅 → 开始成文」）：选题简报 → 大纲 → 逐节初稿 → 组装 → 全文校验 → 独立评审 → 入库 → 摘要。只有证据充分（`pack.sufficient`）的已调研选题可以成文。
+- **逐节初稿**：每节只拿到本节的要点、依据来源（含摘录）与前文小节标题。每个段落必须带证据标记 `[^src-NNNN]`，且只能引用分配给本节的来源。
+- **代码校验**（不依赖模型自觉）：段落缺少证据标记；引用未授权来源；与摘录连续重合超过 `copy_chars_max`（默认 60 字）；出现章程禁用说法或范围外内容；术语别名未统一；段落与库内文章相似度超过 `overlap_max`（默认 0.35）。全文：字数区间、必备小节、免责声明、文体模板（对比表、教程的「前置知识」与「步骤」、综述互链、FAQ 问题数）。
+- **修复循环**：校验不通过时把具体问题回喂模型，只重写相关小节；每篇修复轮数共享 `budget.max_repair_rounds`（默认 6）。评审或全文问题最多重写 3 轮。用尽则选题变为「成文失败」，`drafts/<tid>/` 中的大纲、各节草稿与最后输出全部保留。
+- **独立评审**：另起一次模型调用，只看成稿与来源摘录，输出「无证据支持 / 与证据矛盾 / 与库内冲突」问题，按小节归属后回喂修复。
+- **入库**：`library/generated/<id>.md`，`origin: generated`、`status: draft`，front matter 记录 `derived_from`、`evidence`、`concepts`、`content_hash`；入库后立即摘要（回灌 A 步）。选题变为「已成稿」。
+- **生成文章的守卫**（wiki 构建）：只出自生成文章的概念不生成定义（`status: generated_only`）；定义与冲突只依据导入文章；生成文章不参与关系抽取。
+- **审阅**：通过（已成稿 → 已审阅）→ 确认发布（已审阅 → 已发布，需明确点击）；退回重写（附意见，复用同一文章 id，旧版保存在 `revisions/`）；放弃（必须给原因，文章归档）。
+- **状态**：`已调研 → 成文中 → 已成稿 → 已审阅 → 已发布`；失败为 `成文中 → 成文失败`（可重试）；停止或异常退回成文前状态。
+
+> **注意（P6 期间恢复）**：上传的代码包缺少 P5 的 `article_garden/research/` 包，本期已按 `tests/test_research.py` 与 P5 记录重建，详见 `next_doc/article_garden_p6_implementation_record.md` 第 6 节。
 
 **P5 新增的能力**
 - **查询生成**：有模型时由模型按“必须覆盖的概念 + 角度”生成 3–8 条查询；无模型时用模板（标题、概念 + 入门、标题 + 官方文档）。去重、限长。
@@ -77,7 +90,7 @@
 ```
 external_projects/article_garden/
 ├── project.yaml  PROJECT.md  app.py  requirements.txt  pytest.ini
-├── entrypoints/     health  list_domains  create_domain  import_library  digest  draft_charter
+├── entrypoints/     health  list_domains  create_domain  import_library  digest  draft_charter  plan_topics  research  write_article
 │                    # 每个看板动作都有对应入口（后续各期补齐）
 ├── article_garden/  paths  store  charter  charter_form  templates  domains  settings  overview
 │                    cancel  joblog  netproxy  providers/text.py
@@ -86,9 +99,10 @@ external_projects/article_garden/
 │   └── wiki/        model（存储）  normalize（归一）  content（定义/关系/冲突校验）  build（编排）  validate_util
 │   ├── wiki/        ... + tree（树存储与人工操作）  placement（挂载提案）  coverage（覆盖度）
 │   ├── planning/    gaps（缺口 G1–G6）  topics（候选、去重、打分、运行）  dedup  states（状态机与拒绝记录）
-│   └── research/    queries  search（缓存）  fetch（robots/节流/缓存）  extract  sources（来源卡）  pack（证据包）  runner
-├── ui/              state  topbar  jobs  home/library/graph/tree/topics/research/runs/settings/wizard 页面  placeholder_pages
-├── tests/           152 项（单元 + 入口 + Streamlit AppTest 冒烟；摘要测试使用确定性的假模型）
+│   ├── research/    queries  search（缓存）  fetch（robots/节流/缓存）  extract  sources（来源卡）  pack（证据包）  runner
+│   └── writing/     brief（简报）  outline（大纲）  draft（逐节初稿与组装）  checks（代码校验）  critic（独立评审）  runner（流程与审阅）
+├── ui/              state  topbar  jobs  home/library/graph/tree/topics/research/review/runs/settings/wizard 页面  placeholder_pages
+├── tests/           173 项（单元 + 入口 + Streamlit AppTest 冒烟；摘要、成文、调研测试均使用确定性的假模型与假网络）
 └── data/            运行产物，已加入 .gitignore（可用环境变量 ARTICLE_GARDEN_HOME 改位置）
     ├── domains.json         文章库注册表
     ├── settings.yaml        全局默认设置（稀疏覆盖）
@@ -107,6 +121,7 @@ python entrypoints/build_wiki.py ai                       构建概念与关系�
 python entrypoints/build_tree.py ai                       生成挂载提案（需模型）并计算覆盖度；--apply 确认应用；--discard 放弃
 python entrypoints/plan_topics.py ai                      检测缺口并生成选题；--approve t-0001 放行；--reject t-0001 --reason 原因 拒绝
 python entrypoints/research.py ai t-0001                  调研已放行的选题（需网络）；--add-url <网址>；--remove-source src-0002
+python entrypoints/write_article.py ai t-0001              成文（需模型）；--feedback "意见" 退回重写；--approve 通过；--publish 发布；--abandon "原因"
 streamlit run app.py --server.port 8508                   看板（端口约定：world_simulator 8502 … article_to_video 8507，本项目 8508）
 python -m pytest                                          测试
 ```
@@ -120,6 +135,12 @@ python -m pytest                                          测试
 - `cancel.py / joblog.py / netproxy.py` 复制精简自 article_to_video（自包含，不跨项目 import）。
 
 ## 已知限制 / 待验证事项
+- **P6 的成文提示词与评审质量未在真实模型上验证**：测试使用确定性的假模型（按提示词阶段分派）。大纲、正文、评审在真实模型上是否稳定，需要用你的文章库实际跑一遍再调整。
+- **文体模板是代码而非配置**：方案 §8.2 要求纯配置，本期的文体要求写在 `writing/checks.py`（`KIND_HINTS` 与 `check_document`），新增文章类型仍需改代码。
+- **审阅页不能直接编辑正文**：只能通过、退回（附意见）、放弃。需要细改时，请退回重写，或直接改 `library/generated/<id>.md` 后再通过（改动可能被下一次重写覆盖）。
+- **入库后的 B/C 步（概念、知识树）需手动运行** `build_wiki` 与 `build_tree`；自动闭环在 P7。
+- **文章的 `tree_node` 字段**来自选题生成时的节点，未随挂载提案更新。
+- **成文中间产物不跨进程续跑**：每次成文从大纲开始；重写复用文章 id，但内容重新生成。
 - **搜索、抓取、查询生成都没有在真实网络环境中验证**：测试全部使用假网络（注入的搜索与 HTTP 函数）。robots 与节流逻辑已测试，但真实网站的兼容性（编码、反爬、重定向）未知。
 - **站内优先只用选题的互链文章**：方案 §7 的三段式检索（FTS 召回、概念扩展、摘要精排）未做。
 - **“提取候选事实”未做**：来源卡只有摘录，没有模型抽取的候选事实（留给 P6 的成文阶段按需要再抽取）。

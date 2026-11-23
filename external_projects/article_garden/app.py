@@ -20,9 +20,7 @@ from ui.topics_page import render_topics_page  # noqa: E402
 from ui.tree_page import render_tree_page  # noqa: E402
 from ui.home_page import render_home_page  # noqa: E402
 from ui.library_page import render_library_page  # noqa: E402
-from ui.placeholder_pages import (  # noqa: E402
-    render_review_page,
-)
+from ui.review_page import render_review_page  # noqa: E402
 from ui.research_page import render_research_page  # noqa: E402
 from ui.runs_page import render_runs_page  # noqa: E402
 from ui.settings_page import render_settings_page  # noqa: E402

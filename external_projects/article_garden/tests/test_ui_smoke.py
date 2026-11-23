@@ -14,7 +14,7 @@ PAGE_FUNCS = {
     "home": ("ui.home_page", "render_home_page"), "tree": ("ui.tree_page", "render_tree_page"),
     "library": ("ui.library_page", "render_library_page"), "graph": ("ui.graph_page", "render_graph_page"),
     "topics": ("ui.topics_page", "render_topics_page"), "research": ("ui.research_page", "render_research_page"),
-    "review": ("ui.placeholder_pages", "render_review_page"), "runs": ("ui.runs_page", "render_runs_page"),
+    "review": ("ui.review_page", "render_review_page"), "runs": ("ui.runs_page", "render_runs_page"),
     "settings": ("ui.settings_page", "render_settings_page"), "domains": ("ui.wizard_page", "render_domains_overview_page"),
     "wizard": ("ui.wizard_page", "render_wizard_page"),
 }

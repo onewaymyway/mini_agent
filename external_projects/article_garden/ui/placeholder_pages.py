@@ -26,6 +26,3 @@ render_topics_page = _page("💡 选题队列", "P4",
 render_research_page = _page("🔎 调研", "P5",
                              "每个选题的证据包：来源卡、可信度徽章、手动补充链接或文本。",
                              "需要先有已放行的选题（P4）。")
-render_review_page = _page("✍ 审阅", "P6",
-                           "成稿 + 校验与 critic 结果 + 来源并排；通过 / 直接编辑 / 退回重写并附意见。",
-                           "需要先有成稿（P6）。")
