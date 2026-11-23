@@ -279,3 +279,56 @@ def test_home_page_has_cycle_and_budget_caption(data_home):
     assert not at.exception, [e.value for e in at.exception]
     assert any("运行一轮" in b.label for b in at.button)
     assert any("今日 LLM 调用" in c.value for c in at.caption)
+
+
+# ------------------------------------------------------------------ 全部执行
+
+def _manual_world(data_home):
+    ctx = _world(data_home)
+    c, _ = ctx.load_charter()
+    c["style"]["length"] = [20, 5000]
+    ctx.save_charter(c)
+    return ctx
+
+
+def test_run_everything_works_from_default_g0_and_stops_before_publishing(data_home):
+    ctx = _manual_world(data_home)                    # 默认挡位 G0：按挡位运行会被拒绝
+    with pytest.raises(ValueError, match="G0"):
+        cycle.run_cycle(ctx, World(), search_backend=FakeSearch(HITS), fetcher=_fetcher(ctx))
+    rep = cycle.run_cycle(ctx, World(), manual=True, search_backend=FakeSearch(HITS), fetcher=_fetcher(ctx))
+    assert rep["stopped"] is None and rep["gear"] == "全部执行"
+    rows = states.load_topics(ctx)
+    assert any(r["status"] in (states.REVIEWED, states.DRAFTED) for r in rows)   # 已成稿并标为已审阅
+    assert not any(r["status"] == states.PUBLISHED for r in rows)                  # 从不自动发布
+    detail = {s["step"]: s["detail"] for s in rep["steps"]}
+    assert "全部执行已放行" in detail["缺口与选题"]
+
+
+def test_run_everything_respects_the_daily_budget(data_home):
+    ctx = _manual_world(data_home)
+    store.write_yaml_atomic(ctx.settings_path, {"budget": {"max_llm_calls_per_day": 1}})
+    rep = cycle.run_cycle(ctx, World(), manual=True, search_backend=FakeSearch(HITS), fetcher=_fetcher(ctx))
+    assert rep["stopped"] == "budget"
+
+
+def test_run_everything_approves_at_most_the_per_cycle_topic_limit(data_home):
+    from article_garden.planning import topics
+    ctx = _manual_world(data_home)
+    topics.run(ctx, World())                                   # 先生成待放行选题（G0 下不会放行）
+    before = sum(r["status"] == states.PROPOSED for r in states.load_topics(ctx))
+    assert before >= 2                                         # 前提：至少两个待放行，上限才有意义
+    store.write_yaml_atomic(ctx.settings_path, {"budget": {"max_topics_per_cycle": 1}})
+    cycle.run_cycle(ctx, World(), manual=True, steps=["缺口与选题"])
+    approved = [r for r in states.load_topics(ctx) if r["status"] == states.APPROVED]
+    assert len(approved) == 1                                  # 恰好放行上限的数量
+
+
+def test_home_page_offers_run_everything_behind_a_confirmation(data_home):
+    from tests.test_ui_smoke import run_app
+    _world(data_home)
+    at = run_app("home", domain="ai")
+    assert not at.exception
+    labels = [b.label for b in at.button]
+    assert any("全部执行" in l for l in labels)
+    run_btn = next(b for b in at.button if "全部执行" in b.label)
+    assert run_btn.disabled                                    # 未勾选确认前不可点击

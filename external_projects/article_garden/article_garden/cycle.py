@@ -72,7 +72,15 @@ def _step_tree(ctx, llm, eff, rep, sr) -> str:
 
 def _step_topics(ctx, llm, eff, rep, sr) -> str:
     res = topics.run(ctx, _g(ctx, llm, eff, sr))
-    return f"新增选题 {res['proposed']} 个" + ("（已自动放行）" if res.get("auto_approved") else "")
+    msg = f"新增选题 {res['proposed']} 个" + ("（已自动放行）" if res.get("auto_approved") else "")
+    if sr.get("manual"):
+        # 「全部执行」：点击即授权放行，但仍受每轮选题上限约束
+        limit = int(eff["budget"]["max_topics_per_cycle"])
+        pending = [r["id"] for r in states.load_topics(ctx) if r["status"] == states.PROPOSED][:limit]
+        for tid in pending:
+            states.approve(ctx, tid)
+        msg += f"；全部执行已放行 {len(pending)} 个"
+    return msg
 
 
 def _step_research(ctx, llm, eff, rep, sr) -> str:
@@ -122,20 +130,34 @@ STEPS = [("摘要", _step_digest), ("概念与关系", _step_wiki), ("知识树�
          ("缺口与选题", _step_topics), ("调研", _step_research), ("成文", _step_write), ("审阅与发布", _step_review)]
 
 
-def run_cycle(ctx, llm, *, scheduled: bool = False, search_backend: Any = None, fetcher: Any = None,
-              steps: Optional[list] = None) -> Dict[str, Any]:
+MANUAL_OVERRIDES = {"gear": "G3", "auto_approve": True, "auto_research": True, "auto_write": True,
+                    "auto_publish": False, "scheduled_cycle": False}
+
+
+def _manual_eff(eff: Dict[str, Any]) -> Dict[str, Any]:
+    """「全部执行」的有效设置：用户点击即授权自动放行、调研、成文、标为已审阅；
+    但不自动发布（auto_publish 保持关闭），知识树提案仍需人工确认。预算与停止照常生效。"""
+    return {**eff, "automation": {**eff["automation"], **MANUAL_OVERRIDES}}
+
+
+def run_cycle(ctx, llm, *, scheduled: bool = False, manual: bool = False, search_backend: Any = None,
+              fetcher: Any = None, steps: Optional[list] = None) -> Dict[str, Any]:
     eff, _ = settings.effective_settings(ctx)
-    ok, why = gears.allowed(eff, "cycle")
-    if not ok:
-        raise ValueError(why)
-    if scheduled and not gears.allowed(eff, "scheduled")[0]:
-        raise ValueError("定时运行未开启（设置 → 自动化 → 定时运行一轮）")
+    if manual:
+        eff = _manual_eff(eff)
+    else:
+        ok, why = gears.allowed(eff, "cycle")
+        if not ok:
+            raise ValueError(why)
+        if scheduled and not gears.allowed(eff, "scheduled")[0]:
+            raise ValueError("定时运行未开启（设置 → 自动化 → 定时运行一轮）")
     if llm is None:
         raise ValueError("运行一轮需要文本模型，请先确认模型配置可用")
 
     budget.clear_stop(ctx)
-    sr = {"search": search_backend, "fetcher": fetcher, "since": time.time()}
-    rep: Dict[str, Any] = {"started_at": _now(), "gear": eff["automation"]["gear"], "scheduled": scheduled,
+    sr = {"search": search_backend, "fetcher": fetcher, "since": time.time(), "manual": manual}
+    rep: Dict[str, Any] = {"started_at": _now(), "gear": "全部执行" if manual else eff["automation"]["gear"],
+                           "scheduled": scheduled,
                            "steps": [], "stopped": None}
     run_id = joblog.run_start(ctx.root, SCOPE, "一轮闭环")
     chosen = [s for s in STEPS if steps is None or s[0] in steps]

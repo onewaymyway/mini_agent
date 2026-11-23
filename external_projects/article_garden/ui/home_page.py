@@ -25,8 +25,16 @@ def render_home_page() -> None:
     gear = eff["automation"]["gear"]
     busy = joblog.is_running(ctx.root, scopes=("cycle",))
     can_run, why = gear_allowed(eff, "cycle")
-    c1, c2 = st.columns(2)
-    if c1.button("▶ 运行一轮（后台）", disabled=(not can_run or busy), type="primary", key="home_cycle",
+    st.markdown("**一键执行**")
+    confirm = st.checkbox("我确认：全部执行会自动放行选题、调研、成文，并把草稿标为已审阅；"
+                          "不会自动发布，也不会应用知识树提案。", key="home_all_ok")
+    c0, c1, c2 = st.columns(3)
+    if c0.button("▶ 全部执行（后台）", disabled=(busy or not confirm), type="primary", key="home_all",
+                 help="按顺序执行全部步骤：摘要 → 概念与关系 → 知识树提案 → 缺口与选题 → 放行 → 调研 → 成文 → 标为已审阅。"
+                      "预算与停止照常生效；发布需要你在审阅页手动确认。"):
+        spawn("cycle.py", ctx.id, "--all")
+        st.success("已在后台开始全部执行，进度见「▶ 运行日志」。")
+    if c1.button("▶ 按挡位运行一轮（后台）", disabled=(not can_run or busy), key="home_cycle",
                  help=why if not can_run else "按当前挡位与开关自动执行各步骤，进度见「▶ 运行日志」"):
         spawn("cycle.py", ctx.id)
         st.success("已在后台开始一轮闭环，进度见「▶ 运行日志」。")
