@@ -1,0 +1,46 @@
+# project.yaml — article_garden 与 daemon 之间的契约（字段规范见 src/mini_agent/external_projects/manifest.py）。
+# 当前为 P0：文章库管理（新建/切换/归档）、章程、两层设置与看板框架。
+# 默认不登记 cron：摘要/调研/成文会调用模型与网络，属于高成本操作，由你在看板或命令行手动触发；
+# 定时 cycle 在 P7 提供，届时也须在文章库设置里显式打开。
+
+name: article_garden
+
+entrypoints:
+  list_domains:
+    cmd: "python entrypoints/list_domains.py"
+    timeout_sec: 60
+    concurrency: unmanaged      # 不调 LLM 的纯脚本
+  create_domain:
+    cmd: "python entrypoints/create_domain.py"
+    timeout_sec: 60
+    concurrency: unmanaged
+    params:
+      - name: domain_id
+        required: true
+        help: "文章库 id（小写字母开头，如 ai、finance_cn）"
+      - name: name
+        required: true
+        help: "文章库显示名称，如 人工智能"
+      - name: template
+        required: false
+        default: "blank"
+        help: "章程模板：blank / general_tech / ai"
+
+health_check:
+  cmd: "python entrypoints/health.py"
+
+resources:
+  # P0 不访问网络。P5 起调研会按搜索结果访问任意网站，届时在此补充说明（域名不固定，allowed_domains 留空）。
+  allowed_domains: []
+  max_concurrency: 1
+
+review:
+  cadence: weekly
+  enabled: false
+
+# Streamlit 看板（端口 8508；8502–8507 已被其它项目占用）。
+# 无登录保护且后续会调用付费模型接口，默认只监听本机。
+web_app:
+  entry: app.py
+  port: 8508
+  bind: 127.0.0.1

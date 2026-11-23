@@ -1,0 +1,36 @@
+"""ui/runs_page.py — ▶ 运行日志：读取本库 logs/job.jsonl，实时轮询展示（所有后台任务都写这里）。"""
+
+from __future__ import annotations
+
+import streamlit as st
+
+from article_garden import joblog
+from ui import state
+from ui.topbar import render_topbar
+
+try:  # 较新的 Streamlit 才有 run_every；没有则退化为手动刷新
+    _fragment = st.fragment(run_every=3)
+except TypeError:  # pragma: no cover
+    _fragment = st.fragment
+
+
+def render_runs_page() -> None:
+    ctx = state.current_ctx()
+    if ctx is None:
+        return
+    render_topbar(ctx, "▶ 运行日志")
+    _log_panel(str(ctx.id))
+
+
+@_fragment
+def _log_panel(domain_id: str) -> None:
+    from article_garden.domains import DomainContext
+    ctx = DomainContext(domain_id)
+    level = st.radio("级别", ["全部", "仅警告与错误"], horizontal=True, key="runs_level")
+    rows = joblog.tail(ctx.root, limit=300)
+    if level != "全部":
+        rows = [r for r in rows if r.get("level") in ("warn", "error")]
+    if not rows:
+        st.info("还没有运行记录。摘要、调研、成文等后台任务（P1 起）都会在这里显示步骤时间表与实时日志。")
+        return
+    st.code("\n".join(joblog.format_row(r) for r in rows[-200:]), language=None)
