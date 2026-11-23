@@ -1,7 +1,8 @@
 # project.yaml — article_garden 与 daemon 之间的契约（字段规范见 src/mini_agent/external_projects/manifest.py）。
-# 当前为 P0：文章库管理（新建/切换/归档）、章程、两层设置与看板框架。
-# 默认不登记 cron：摘要/调研/成文会调用模型与网络，属于高成本操作，由你在看板或命令行手动触发；
+# 当前为 P1：文章导入、单篇摘要（增量）、章程草稿反推。
+# 默认不登记 cron：摘要与章程草稿会调用模型，属于高成本操作，由你在看板或命令行手动触发；
 # 定时 cycle 在 P7 提供，届时也须在文章库设置里显式打开。
+# 参数按声明顺序以位置参数追加在 cmd 后面；其它选项（如 --article-id、--apply）请直接在命令行使用，见 docs/USAGE.md。
 
 name: article_garden
 
@@ -25,12 +26,36 @@ entrypoints:
         required: false
         default: "blank"
         help: "章程模板：blank / general_tech / ai"
+  import_library:
+    cmd: "python entrypoints/import_library.py"
+    timeout_sec: 300
+    concurrency: unmanaged      # 只读写文件，不调 LLM
+    params:
+      - name: domain_id
+        required: true
+        help: "文章库 id。导入的路径请在命令行追加：... <domain_id> <路径…> [--apply]"
+  digest:
+    cmd: "python entrypoints/digest.py"
+    timeout_sec: 7200           # 整库增量摘要可能较久；单篇步骤超时由设置项控制
+    concurrency: managed        # 调用模型，占用并发槽位
+    params:
+      - name: domain_id
+        required: true
+        help: "文章库 id"
+  draft_charter:
+    cmd: "python entrypoints/draft_charter.py"
+    timeout_sec: 1800
+    concurrency: managed        # 调用模型
+    params:
+      - name: domain_id
+        required: true
+        help: "文章库 id（需已有摘要成功的文章）"
 
 health_check:
   cmd: "python entrypoints/health.py"
 
 resources:
-  # P0 不访问网络。P5 起调研会按搜索结果访问任意网站，届时在此补充说明（域名不固定，allowed_domains 留空）。
+  # P1 起调用模型（经 mini_agent 的 LLMHelper）；调研访问任意网站在 P5 才会出现，届时再补充。
   allowed_domains: []
   max_concurrency: 1
 
@@ -39,7 +64,7 @@ review:
   enabled: false
 
 # Streamlit 看板（端口 8508；8502–8507 已被其它项目占用）。
-# 无登录保护且后续会调用付费模型接口，默认只监听本机。
+# 无登录保护且会调用付费模型接口，默认只监听本机。
 web_app:
   entry: app.py
   port: 8508

@@ -7,18 +7,27 @@
 > 遵循外部项目标准结构：完全自包含、可独立于 mini_agent daemon 运行，可整体移动到任意路径，
 > 在 daemon 侧 `mini-agent projects register external_projects/article_garden`（或看板「外部项目 → 注册新项目」扫描选择）即可被看见。
 
-## 当前进度：P0 骨架已完成
+## 当前进度：P1 导入与摘要已完成
 
 | 期 | 内容 | 状态 |
 |---|---|---|
 | **P0** | 项目骨架、多文章库（新建/切换/归档/删除）、章程、两层设置、看板框架、health | ✅ |
-| P1 | 文章导入与单篇摘要 | 待做 |
+| **P1** | 文章导入（预览→确认）、单篇摘要（增量、校验、修复循环、长文分块）、章程草稿反推 | ✅ |
 | P2 | 概念归一与关系 | 待做 |
 | P3 | 知识树与覆盖度 | 待做 |
 | P4 | 缺口检测与选题 | 待做 |
 | P5 | 资料收集 | 待做 |
 | P6 | 成文 | 待做 |
 | P7 | 闭环、挡位、预算、定时、导出 | 待做 |
+
+**P1 新增的能力**
+- **导入**：支持 `.md / .txt / .zip` 与目录（递归）。导入前先**预览**（新增 / 重复 / 跳过 及原因），确认后才写入。源文件只读，入库的是复制品 `library/imported/a-0001.md`。
+- **去重**：按正文哈希判断，忽略空白差异（换行、缩进、空格不影响判定）；既对照已入库文章，也对照本次导入内部。正文不足 200 字的跳过。
+- **文章编号**：`a-0001`、`a-0002`…… 稳定、不随改名变化。索引 `library/index.json` 丢失或手放的 Markdown 会自动从文件重建。
+- **单篇摘要**：每篇一次结构化输出（论点、类型、层级、自评、概念、断言、悬空概念）。**引文必须逐字出现在原文中、概念名必须出现在原文中**，由代码校验；不通过时把具体问题回喂模型修复。每篇有修复轮数上限（`budget.max_repair_rounds`，默认 6），用尽则标记为失败并保留最后一次输出，不影响其它篇。
+- **长文分块**：超过约 6000 字的文章按章节分块，逐块提取概念与断言，代码合并去重，再做一次元信息调用。
+- **增量**：内容哈希与摘要版本都未变且上次成功 → 零模型调用。
+- **章程草稿**：由已摘要文章反推章程草稿，写入 `drafts/charter_draft.yaml`。**草稿不会自动生效**，需在看板点击「采用为正式章程」（旧章程先备份为 `charter.yaml.bak`）。
 
 **P0 已有的能力**
 - 多文章库：每个文章库是一个完全独立的工作空间（`data/domains/<id>/`），页面代码只能经 `DomainContext` 访问当前库，路径越界会被拒绝；归档只隐藏、不删数据；彻底删除须输入库名确认并先导出 zip 备份。
@@ -31,16 +40,18 @@
 ```
 external_projects/article_garden/
 ├── project.yaml  PROJECT.md  app.py  requirements.txt  pytest.ini
-├── entrypoints/     health.py  list_domains.py  create_domain.py   # 每个看板动作都有对应入口（后续各期补齐）
+├── entrypoints/     health  list_domains  create_domain  import_library  digest  draft_charter
+│                    # 每个看板动作都有对应入口（后续各期补齐）
 ├── article_garden/  paths  store  charter  charter_form  templates  domains  settings  overview
 │                    cancel  joblog  netproxy  providers/text.py
+│   ├── library/     front_matter  hashing  catalog（索引）  importer（收集/预览/入库）
+│   └── digest/      llm_io  validate（校验）  summarize（提示词/修复/分块）  runner（增量）  charter_draft
 ├── ui/              state  topbar  home/library/runs/settings/wizard 页面  placeholder_pages
-├── tests/           64 项（单元 + 入口 + Streamlit AppTest 冒烟）
+├── tests/           94 项（单元 + 入口 + Streamlit AppTest 冒烟；摘要测试使用确定性的假模型）
 └── data/            运行产物，已加入 .gitignore（可用环境变量 ARTICLE_GARDEN_HOME 改位置）
     ├── domains.json         文章库注册表
     ├── settings.yaml        全局默认设置（稀疏覆盖）
     ├── backups/             删除/导出文章库时的 zip 备份
-    └── domains/<id>/        一个文章库：charter.yaml settings.yaml library/ wiki/ plan/ research/ drafts/ runs/ logs/
 ```
 
 ## 命令
@@ -48,6 +59,9 @@ external_projects/article_garden/
 python entrypoints/health.py                              环境自检（JSON，不访问网络、不调用模型）
 python entrypoints/create_domain.py ai 人工智能 ai         新建文章库（模板 blank/general_tech/ai；--copy-charter-from <id>）
 python entrypoints/list_domains.py [--all]                列出文章库（--all 含已归档）
+python entrypoints/import_library.py ai <路径…>           导入预览（不写入）；加 --apply 确认导入
+python entrypoints/digest.py ai                           增量摘要（需模型）；--article-id a-0003 / --force
+python entrypoints/draft_charter.py ai                    生成章程草稿（需模型）；--adopt 采用为正式章程
 streamlit run app.py --server.port 8508                   看板（端口约定：world_simulator 8502 … article_to_video 8507，本项目 8508）
 python -m pytest                                          测试
 ```
@@ -56,12 +70,17 @@ python -m pytest                                          测试
 
 ## 依赖与 mini_agent 的关系
 - 依赖见 `requirements.txt`：streamlit、PyYAML、pytest。
-- 模型：复用 mini_agent 的 `LLMHelper`（与 article_to_video / info_hub 同一套 provider 配置），P1 起使用；P0 只在设置页做“就绪检查”。搜索：P5 起复用 `mini_agent.web_search`。
+- 模型：复用 mini_agent 的 `LLMHelper`（与 article_to_video / info_hub 同一套 provider 配置）。P1 起摘要与章程草稿使用；测试中全部用假模型，不访问真实模型。搜索：P5 起复用 `mini_agent.web_search`。
 - 不 import `src/mini_agent/wiki`（那套服务于 agent 自身记忆，语义与领域文章库不同），只借鉴其判重与生命周期思路。
 - `cancel.py / joblog.py / netproxy.py` 复制精简自 article_to_video（自包含，不跨项目 import）。
 
 ## 已知限制 / 待验证事项
+- **真实模型的摘要质量未验证**：所有测试用确定性的假模型。提示词在真实模型上是否稳定、修复轮数是否够用，需要用你的 20 余篇文章实际跑一遍再调整。
+- **以下预算项在 P1 只是设置项，尚未强制执行**：`budget.step_timeout_minutes`（单步超时）、`budget.max_llm_calls_per_day` 与 `global_max_llm_calls_per_day`（日调用上限）。它们属于 P7「预算与自动化」，届时统一强制执行。当前只有“每篇修复轮数上限”真正生效。
+- **看板里没有“停止”按钮**：摘要以子进程后台运行，而停止信号目前只在同一进程内有效；跨进程停止需要文件信号，留待 P7。
+- 导入的文章默认标记为 `status: published`（视为你已发布的既有文章）；生成文章（P6 起）才会有 `draft / reviewed` 流程。
+- 看板只做了 Streamlit AppTest 级别的冒烟测试，**没有在真实浏览器里点过**。
 - 看板只做了 Streamlit AppTest 级别的冒烟测试（脚本真实执行、控件交互），**没有在真实浏览器里点过**；布局与观感需要你实际打开看一眼。
 - 文本模型就绪检查依赖本机 mini_agent 的 provider 配置，未在真实模型环境验证。
 - `data/domains.json` 损坏时看板会提示并停止（不会当作“空”继续，避免覆盖你的注册表），需手动修复或恢复备份。
-- 自动化开关在 P0 只被记录，不产生任何行为。
+- 自动化开关目前只被记录，不产生任何行为（P7 生效）。

@@ -234,9 +234,6 @@ class DomainContext:
         return get_domain(self.id)
 
     def article_count(self) -> int:
-        """库内文章数（P0 只数 Markdown 文件；P1 起改为读文章索引）。"""
-        n = 0
-        for d in (self.imported_dir, self.generated_dir):
-            if d.is_dir():
-                n += sum(1 for _ in d.rglob("*.md"))
-        return n
+        """库内文章数（读文章索引，P1 起）。"""
+        from .library import catalog  # 延迟导入：catalog 依赖本模块的 DomainError
+        return len(catalog.list_articles(self))
