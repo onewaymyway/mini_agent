@@ -7,18 +7,27 @@
 > 遵循外部项目标准结构：完全自包含、可独立于 mini_agent daemon 运行，可整体移动到任意路径，
 > 在 daemon 侧 `mini-agent projects register external_projects/article_garden`（或看板「外部项目 → 注册新项目」扫描选择）即可被看见。
 
-## 当前进度：P2 概念与关系已完成
+## 当前进度：P3 知识树与覆盖度已完成
 
 | 期 | 内容 | 状态 |
 |---|---|---|
 | **P0** | 项目骨架、多文章库（新建/切换/归档/删除）、章程、两层设置、看板框架、health | ✅ |
 | **P1** | 文章导入（预览→确认）、单篇摘要（增量、校验、修复循环、长文分块）、章程草稿反推 | ✅ |
 | **P2** | 概念归一、概念页、断言账本、关系边、冲突 | ✅ |
-| P3 | 知识树与覆盖度 | 待做 |
+| **P3** | 知识树（骨架 + 增量挂载提案）、覆盖度、树页面 | ✅ |
 | P4 | 缺口检测与选题 | 待做 |
 | P5 | 资料收集 | 待做 |
 | P6 | 成文 | 待做 |
 | P7 | 闭环、挡位、预算、定时、导出 | 待做 |
+
+**P3 新增的能力**
+- **知识树** `wiki/tree.yaml`：方向 → 主题 → 概念。顶层方向来自章程的范围（scope.in）；没有范围时使用「未分类」。
+- **增量挂载提案**：只把**尚未挂载**的概念交给模型，每批 ≤ 20 个：挂入已有主题，或在某个方向下新建主题。已挂载的概念不会被重新安排。代码校验：每个概念恰好一次，主题存在且未锁定，方向存在，新主题不与同方向已有主题重名。
+- **确认后才生效**：提案列出全部操作（新建方向/主题、挂载、解除挂载），在看板或 `build_tree.py --apply` 确认后才写入树。提案记录生成时的树版本，树若已变化则拒绝应用（提示重新生成）。
+- **无变化零调用**：没有未挂载概念、骨架也没有变化时，不调用模型，也不生成提案。
+- **id 稳定**：节点 id 一经分配永不改变；改名、移动、合并都不换 id。
+- **人工操作**（立即生效，每次保存前把旧树备份为 `wiki/tree.prev.yaml`）：改名、移动主题到其它方向、合并同层节点、锁定（锁定的节点不接收自动挂载）、在方向下新建主题。
+- **覆盖度**（纯代码，`wiki/coverage.json`）：每个节点的文章数、平均字数、断言数、层级分布、有依据概念占比、最新导入时间、悬空概念数，以及红/黄/绿等级。阈值按库规模分档（< 50 篇时：充足需 ≥ 2 篇且平均 ≥ 1500 字）。
 
 **P2 新增的能力**
 - **概念归一**：规则打分（去空白后相同、章程术语表别名、字符串相似度、包含关系），中间分交给模型逐对确认“是否同指”，拿不准一律不合并。规范名优先取章程术语表。
@@ -55,8 +64,9 @@ external_projects/article_garden/
 │   ├── library/     front_matter  hashing  catalog（索引）  importer（收集/预览/入库）
 │   └── digest/      llm_io  validate（校验）  summarize（提示词/修复/分块）  runner（增量）  charter_draft
 │   └── wiki/        model（存储）  normalize（归一）  content（定义/关系/冲突校验）  build（编排）  validate_util
-├── ui/              state  topbar  jobs  home/library/graph/runs/settings/wizard 页面  placeholder_pages
-├── tests/           108 项（单元 + 入口 + Streamlit AppTest 冒烟；摘要测试使用确定性的假模型）
+│   └── wiki/        ... + tree（树存储与人工操作）  placement（挂载提案）  coverage（覆盖度）
+├── ui/              state  topbar  jobs  home/library/graph/tree/runs/settings/wizard 页面  placeholder_pages
+├── tests/           119 项（单元 + 入口 + Streamlit AppTest 冒烟；摘要测试使用确定性的假模型）
 └── data/            运行产物，已加入 .gitignore（可用环境变量 ARTICLE_GARDEN_HOME 改位置）
     ├── domains.json         文章库注册表
     ├── settings.yaml        全局默认设置（稀疏覆盖）
@@ -72,6 +82,7 @@ python entrypoints/import_library.py ai <路径…>           导入预览（不
 python entrypoints/digest.py ai                           增量摘要（需模型）；--article-id a-0003 / --force
 python entrypoints/draft_charter.py ai                    生成章程草稿（需模型）；--adopt 采用为正式章程
 python entrypoints/build_wiki.py ai                       构建概念与关系（需模型）；--force 重写全部定义
+python entrypoints/build_tree.py ai                       生成挂载提案（需模型）并计算覆盖度；--apply 确认应用；--discard 放弃
 streamlit run app.py --server.port 8508                   看板（端口约定：world_simulator 8502 … article_to_video 8507，本项目 8508）
 python -m pytest                                          测试
 ```
@@ -85,6 +96,12 @@ python -m pytest                                          测试
 - `cancel.py / joblog.py / netproxy.py` 复制精简自 article_to_video（自包含，不跨项目 import）。
 
 ## 已知限制 / 待验证事项
+- **未做独立的自底向上聚类**：首版按章程骨架 + 模型逐批挂载。方案 §5.3 的自底向上聚类在文章库变大后再评估（§21-2 允许 20 篇规模如此）。
+- **文章未回填 `tree_node`**：文章与节点的对应关系由概念推导，没有写回文章的 front matter。
+- **提案预览是操作清单，不是“应用后的树”图**（方案 §19.3 的预览图未做）。
+- **覆盖度的“证据强度”**取有依据定义的概念占比，而不是方案中的“有来源断言占比”；“新鲜度”只看导入时间。
+- 删除的方向不会自动删除（保留节点 id），需要人工合并或改名。
+- 真实模型下的挂载质量未验证（测试使用按阶段分派的假模型）。
 - **P2 的关系与归一质量未在真实模型上验证**：测试使用按阶段分派的假模型。
 - **归一的两两比较是 O(n²)**：几百种写法以内没有问题；规模再大需要分桶预筛（P3 前评估）。
 - **超长文章不做关系抽取**：正文超过 12000 字的文章跳过关系步骤（依据摘录需要整篇原文做校验）。
