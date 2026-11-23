@@ -102,11 +102,16 @@ def charge(ctx) -> None:
         d = _read(_domain_path(ctx))
         g = _read(_global_path())
         if d["calls"] >= dl:
-            joblog.log(ctx.root, "budget", f"本库今日 LLM 调用已达上限 {dl}，已停止", level="error")
-            raise BudgetStop(f"本库今日 LLM 调用已达上限 {dl}")
+            msg = (f"本库今日 LLM 调用已达上限：已用 {d['calls']} / 上限 {dl}。"
+                   f"该上限在「设置 → 本库」的「每日最多 LLM 调用」中修改。")
+            joblog.log(ctx.root, "budget", msg, level="error")
+            raise BudgetStop(msg)
         if g["calls"] >= gl:
-            joblog.log(ctx.root, "budget", f"全局今日 LLM 调用已达上限 {gl}，已停止", level="error")
-            raise BudgetStop(f"全局今日 LLM 调用已达上限 {gl}")
+            msg = (f"全局今日 LLM 调用已达上限：所有文章库合计已用 {g['calls']} / 上限 {gl}。"
+                   f"该上限只能在「设置 → 全局默认」的「全局每日最多 LLM 调用」中修改"
+                   f"（保存位置：{paths.global_settings_path()}）。")
+            joblog.log(ctx.root, "budget", msg, level="error")
+            raise BudgetStop(msg)
         d["calls"] += 1
         g["calls"] += 1
         store.write_json_atomic(_domain_path(ctx), d)

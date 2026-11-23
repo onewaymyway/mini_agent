@@ -113,6 +113,9 @@ def _widget(spec: Dict[str, Any], key: str, value: Any):
 
 def _group_editor(layer: str, group: str, ctx: domains.DomainContext | None) -> None:
     eff, warns = settings.effective_settings(ctx if layer == "domain" else None)
+    if layer == "domain" and group == "budget":
+        st.caption(f"全局每日上限（所有文章库合计）为 {eff['budget']['global_max_llm_calls_per_day']}，"
+                   f"只能在「全局默认」中修改，保存位置：`{paths.global_settings_path()}`。")
     for w in warns:
         st.warning(w)
     overridden = settings.override_keys(ctx) if layer == "domain" else set()

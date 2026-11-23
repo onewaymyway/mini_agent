@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from article_garden import budget, cancel, domains, joblog
+from article_garden import budget, cancel, domains, joblog, store
 from article_garden.digest import runner as drunner
 from article_garden.library import catalog, importer
 from tests.fakes import article, good_reply
@@ -162,3 +162,33 @@ def test_stale_stop_file_is_removed_when_nothing_is_running(data_home):
     p.write_text("stop\n", encoding="utf-8")
     run_app("runs", domain="ai")
     assert not p.exists()
+
+
+def test_global_budget_message_names_the_setting_usage_and_file(data_home):
+    from article_garden import paths
+    ctx = _library(data_home, 1)
+    store.write_yaml_atomic(paths.global_settings_path(), {"budget": {"global_max_llm_calls_per_day": 2}})
+    store.write_json_atomic(budget._global_path(), {"date": budget._today(), "calls": 2})
+    with pytest.raises(budget.BudgetStop) as info:
+        budget.charge(ctx)
+    msg = str(info.value)
+    assert "已用 2 / 上限 2" in msg and "设置 → 全局默认" in msg and str(paths.global_settings_path()) in msg
+
+
+def test_library_budget_message_points_to_library_setting(data_home):
+    ctx = _library(data_home, 1)
+    store.write_yaml_atomic(ctx.settings_path, {"budget": {"max_llm_calls_per_day": 1}})
+    store.write_json_atomic(ctx.path("logs", "budget.json"), {"date": budget._today(), "calls": 1})
+    with pytest.raises(budget.BudgetStop) as info:
+        budget.charge(ctx)
+    assert "设置 → 本库" in str(info.value) and "已用 1 / 上限 1" in str(info.value)
+
+
+def test_library_settings_tab_shows_the_global_cap_read_only(data_home):
+    from tests.test_ui_smoke import run_app
+    from article_garden import paths
+    _library(data_home, 1)
+    store.write_yaml_atomic(paths.global_settings_path(), {"budget": {"global_max_llm_calls_per_day": 1234}})
+    at = run_app("settings", domain="ai")
+    assert not at.exception
+    assert any("1234" in c.value for c in at.caption)
