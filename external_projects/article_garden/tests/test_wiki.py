@@ -249,3 +249,14 @@ def test_rerun_reuses_edge_and_conflict_results(data_home):
     build.build(ctx, router)
     assert router.stage_calls.get("关系", 0) == 0 and router.stage_calls.get("冲突", 0) == 0
     assert model.read_jsonl(ctx, "edges.jsonl") == first_edges and len(model.read_jsonl(ctx, "conflicts.jsonl")) == 1
+
+
+def test_force_bypasses_edge_and_conflict_caches(data_home):
+    ctx = _lib(data_home)
+    _seed(ctx, SPECS)
+    build.build(ctx, Router())                       # 第一次：没有任何关系
+    assert model.read_jsonl(ctx, "edges.jsonl") == []
+    build.build(ctx, Router(edge_pairs={frozenset(("检索增强生成", "向量数据库")): "related"}))
+    assert model.read_jsonl(ctx, "edges.jsonl") == []   # 缓存命中（依据未变）
+    build.build(ctx, Router(edge_pairs={frozenset(("检索增强生成", "向量数据库")): "related"}), force=True)
+    assert model.read_jsonl(ctx, "edges.jsonl")          # --force 必须重做

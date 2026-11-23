@@ -137,11 +137,11 @@ def _build(ctx, llm, digests, terms, max_rounds, force) -> Dict[str, Any]:
     model.save_id_map(ctx, idmap)
 
     # 5. 关系边 ---------------------------------------------------------
-    edges = _build_edges(ctx, llm, digests, clusters, assigned, max_rounds)
+    edges = _build_edges(ctx, llm, digests, clusters, assigned, max_rounds, force)
     model.write_jsonl(ctx, "edges.jsonl", edges)
 
     # 6. 冲突 -----------------------------------------------------------
-    conflicts = _build_conflicts(ctx, llm, clusters, assigned, claims_by_cid, max_rounds)
+    conflicts = _build_conflicts(ctx, llm, clusters, assigned, claims_by_cid, max_rounds, force)
     model.write_jsonl(ctx, "conflicts.jsonl", conflicts)
 
     return {"concepts": len(clusters), "claims": len(ledger), "edges": len(edges),
@@ -184,7 +184,7 @@ def _write_concept(ctx, llm, cid, c, claims, max_rounds, force) -> None:
                      f"# {c['canonical']}\n\n{definition}\n\n## 依据\n{refs}\n")
 
 
-def _build_edges(ctx, llm, digests, clusters, assigned, max_rounds) -> List[Dict[str, Any]]:
+def _build_edges(ctx, llm, digests, clusters, assigned, max_rounds, force=False) -> List[Dict[str, Any]]:
     by_art: Dict[str, List[Dict[str, Any]]] = {}
     for c in clusters:
         for aid in c["articles"]:
@@ -211,7 +211,7 @@ def _build_edges(ctx, llm, digests, clusters, assigned, max_rounds) -> List[Dict
             cache_p = ctx.path("wiki", "cache", "edges", f"{row['id']}.json")
             ck = _key(str(EDGE_VERSION), row["content_hash"], repr(pairs))
             cached = store.read_json(cache_p, default=None)
-            if cached and cached.get("key") == ck:          # 文章与概念对都没变：复用上次结果
+            if not force and cached and cached.get("key") == ck:   # 文章与概念对都没变：复用上次结果
                 accepted, dropped_n = cached["accepted"], cached["dropped"]
             else:
                 obj = sm.ask_validated(llm, content.edge_prompt(row.get("title", ""), body, pairs),
@@ -244,7 +244,7 @@ def _display(cluster, aid, digest) -> str:
     return cluster["canonical"]
 
 
-def _build_conflicts(ctx, llm, clusters, assigned, claims_by_cid, max_rounds) -> List[Dict[str, Any]]:
+def _build_conflicts(ctx, llm, clusters, assigned, claims_by_cid, max_rounds, force=False) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     with joblog.step(ctx.root, SCOPE, "冲突") as info:
         for c in clusters:
@@ -255,7 +255,7 @@ def _build_conflicts(ctx, llm, clusters, assigned, claims_by_cid, max_rounds) ->
             cache_p = ctx.path("wiki", "cache", "conflicts", f"{cid}.json")
             ck = _key(str(CONFLICT_VERSION), *[f"{x['id']}={x['text']}" for x in claims])
             cached = store.read_json(cache_p, default=None)
-            if cached and cached.get("key") == ck:
+            if not force and cached and cached.get("key") == ck:
                 items = cached["items"]
             else:
                 try:

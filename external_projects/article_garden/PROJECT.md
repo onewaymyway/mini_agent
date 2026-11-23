@@ -7,7 +7,7 @@
 > 遵循外部项目标准结构：完全自包含、可独立于 mini_agent daemon 运行，可整体移动到任意路径，
 > 在 daemon 侧 `mini-agent projects register external_projects/article_garden`（或看板「外部项目 → 注册新项目」扫描选择）即可被看见。
 
-## 当前进度：P3 知识树与覆盖度已完成
+## 当前进度：P4 缺口检测与选题已完成
 
 | 期 | 内容 | 状态 |
 |---|---|---|
@@ -15,10 +15,19 @@
 | **P1** | 文章导入（预览→确认）、单篇摘要（增量、校验、修复循环、长文分块）、章程草稿反推 | ✅ |
 | **P2** | 概念归一、概念页、断言账本、关系边、冲突 | ✅ |
 | **P3** | 知识树（骨架 + 增量挂载提案）、覆盖度、树页面 | ✅ |
-| P4 | 缺口检测与选题 | 待做 |
+| **P4** | 缺口检测（G1–G6）、选题生成、去重打分、选题队列与状态机 | ✅ |
 | P5 | 资料收集 | 待做 |
 | P6 | 成文 | 待做 |
 | P7 | 闭环、挡位、预算、定时、导出 | 待做 |
+
+**P4 新增的能力**
+- **缺口检测（纯规则，可审计）**：G1 主题无文章（或只有浅文）；G2 概念被多篇提到却没有专文；G3 前置概念没有入门讲解；G4 常一起出现的两个概念没有对比文；G5 有进阶文章却没有入门文；G6 主题已有 ≥ 3 篇却没有综述。每条缺口记录理由与依据文章，并保存在 `plan/gaps.json`。
+- **候选选题**：由模板生成标题、类型、层级、必须覆盖的概念与互链文章，每个候选带理由（缺口说明）与分数（严重度 × 重要度 × 可取证度 − 重叠度），分数的各项明细可展开查看。
+- **去重**：与已有文章的概念集合相似度 ≥ 0.6 直接剔除；0.3–0.6 之间交给模型判断是否实质重复（无模型时标记“未判重”）；标题二元组相似度 ≥ 0.7 剔除；与队列中已有选题同一缺口不重复入队；**被拒绝过的缺口不会再次提议**。
+- **范围**：章程 `scope.out` 命中的直接剔除；节点不在 `scope.in` 方向之下的也剔除。
+- **选题状态机**：`待审 → 已放行`；待审或已放行 → `已拒绝`（必须给原因，写入拒绝记录）；待审 → `已放弃`。已放行的选题在 P5 起才会进入调研。
+- **预算与挡位**：每轮最多新增 `budget.max_topics_per_cycle` 个（默认 5）。只有挡位为 G2/G3 且打开「自动放行」时才会自动放行，G0/G1 一律需人工放行。
+- **开放命题**（默认关闭）：打开 `automation.open_topics` 后，模型可在范围内提出最多 3 个题目；其节点必须是已有主题，类型与层级必须合法，并同样经过去重与范围过滤。
 
 **P3 新增的能力**
 - **知识树** `wiki/tree.yaml`：方向 → 主题 → 概念。顶层方向来自章程的范围（scope.in）；没有范围时使用「未分类」。
@@ -64,9 +73,10 @@ external_projects/article_garden/
 │   ├── library/     front_matter  hashing  catalog（索引）  importer（收集/预览/入库）
 │   └── digest/      llm_io  validate（校验）  summarize（提示词/修复/分块）  runner（增量）  charter_draft
 │   └── wiki/        model（存储）  normalize（归一）  content（定义/关系/冲突校验）  build（编排）  validate_util
-│   └── wiki/        ... + tree（树存储与人工操作）  placement（挂载提案）  coverage（覆盖度）
-├── ui/              state  topbar  jobs  home/library/graph/tree/runs/settings/wizard 页面  placeholder_pages
-├── tests/           119 项（单元 + 入口 + Streamlit AppTest 冒烟；摘要测试使用确定性的假模型）
+│   ├── wiki/        ... + tree（树存储与人工操作）  placement（挂载提案）  coverage（覆盖度）
+│   └── planning/    gaps（缺口 G1–G6）  topics（候选、去重、打分、运行）  dedup  states（状态机与拒绝记录）
+├── ui/              state  topbar  jobs  home/library/graph/tree/topics/runs/settings/wizard 页面  placeholder_pages
+├── tests/           136 项（单元 + 入口 + Streamlit AppTest 冒烟；摘要测试使用确定性的假模型）
 └── data/            运行产物，已加入 .gitignore（可用环境变量 ARTICLE_GARDEN_HOME 改位置）
     ├── domains.json         文章库注册表
     ├── settings.yaml        全局默认设置（稀疏覆盖）
@@ -83,6 +93,7 @@ python entrypoints/digest.py ai                           增量摘要（需模�
 python entrypoints/draft_charter.py ai                    生成章程草稿（需模型）；--adopt 采用为正式章程
 python entrypoints/build_wiki.py ai                       构建概念与关系（需模型）；--force 重写全部定义
 python entrypoints/build_tree.py ai                       生成挂载提案（需模型）并计算覆盖度；--apply 确认应用；--discard 放弃
+python entrypoints/plan_topics.py ai                      检测缺口并生成选题；--approve t-0001 放行；--reject t-0001 --reason 原因 拒绝
 streamlit run app.py --server.port 8508                   看板（端口约定：world_simulator 8502 … article_to_video 8507，本项目 8508）
 python -m pytest                                          测试
 ```
@@ -96,6 +107,13 @@ python -m pytest                                          测试
 - `cancel.py / joblog.py / netproxy.py` 复制精简自 article_to_video（自包含，不跨项目 import）。
 
 ## 已知限制 / 待验证事项
+- **G5（层级断档）只有代码路径，没有专门的自动化测试**：测试库中所有文章都是入门级，无法触发。
+- **标题由模板生成，没有 LLM 润色**：方案 §6.2 允许模型润色标题与角度，首版未做。
+- **新鲜度缺口（G6 的“外部新进展”部分）未实现**：需要 info_hub 的信号，计划在后续接入。
+- **选题的“可取证度”是估计值**：只按库内提及文章数估算，尚未检查网络上是否有来源（P5 时再校准）。
+- **模型未就绪时选题仍会生成**（标记“未判重”），这些选题在放行前请自行检查是否重复。
+- 看板的选题页没有批量放行。
+- 真实模型下的开放命题与判重质量未验证。
 - **未做独立的自底向上聚类**：首版按章程骨架 + 模型逐批挂载。方案 §5.3 的自底向上聚类在文章库变大后再评估（§21-2 允许 20 篇规模如此）。
 - **文章未回填 `tree_node`**：文章与节点的对应关系由概念推导，没有写回文章的 front matter。
 - **提案预览是操作清单，不是“应用后的树”图**（方案 §19.3 的预览图未做）。
