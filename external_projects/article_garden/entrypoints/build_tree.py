@@ -16,6 +16,7 @@ import sys
 from _common import force_utf8_stdio  # noqa: E402
 
 from article_garden import domains, joblog, settings  # noqa: E402
+from article_garden import budget  # noqa: E402
 from article_garden.providers.text import MiniAgentTextLLM, text_model_status  # noqa: E402
 from article_garden.wiki import coverage, placement  # noqa: E402
 
@@ -54,7 +55,8 @@ def main(argv=None) -> int:
             joblog.log(ctx.root, "tree", msg, level="error")
             return 1
         eff, _ = settings.effective_settings(ctx)
-        llm = MiniAgentTextLLM(use_system_proxy=eff["llm"]["use_system_proxy"])
+        llm = budget.guard(ctx, MiniAgentTextLLM(use_system_proxy=eff["llm"]["use_system_proxy"]),
+                                timeout_min=eff["budget"]["step_timeout_minutes"])
         proposal = placement.make_proposal(ctx, llm, max_repair_rounds=eff["budget"]["max_repair_rounds"])
         coverage.compute(ctx)
         joblog.log(ctx.root, "tree", "挂载提案：" + ("已生成，待确认" if proposal else "无变化"), level="ok")

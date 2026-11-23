@@ -7,7 +7,7 @@
 > 遵循外部项目标准结构：完全自包含、可独立于 mini_agent daemon 运行，可整体移动到任意路径，
 > 在 daemon 侧 `mini-agent projects register external_projects/article_garden`（或看板「外部项目 → 注册新项目」扫描选择）即可被看见。
 
-## 当前进度：P6 成文与审阅已完成
+## 当前进度：P7 闭环与自动化已完成（全部分期完成）
 
 | 期 | 内容 | 状态 |
 |---|---|---|
@@ -18,7 +18,18 @@
 | **P4** | 缺口检测（G1–G6）、选题生成、去重打分、选题队列与状态机 | ✅ |
 | **P5** | 查询生成、搜索（带缓存）、抓取（robots/节流/缓存）、摘录、来源卡、证据包、充分性判断 | ✅ |
 | **P6** | 成文与审阅：选题简报、大纲、逐节初稿、代码校验与修复循环、独立评审、入库回灌、审阅页 | ✅ |
-| P7 | 闭环、挡位、预算、定时、导出 | 待做 |
+| **P7** | 闭环（cycle）、挡位闸门、每日预算与单步超时、停止信号、待办收件箱与流水线真实状态、静态站与已发布文章导出 | ✅ |
+
+**P7 新增的能力**
+- **一轮闭环** `cycle.py`（看板「▶ 运行一轮（后台）」）：固定顺序 摘要 → 概念与关系 → 知识树提案 → 缺口与选题 → 调研 → 成文 → 审阅与发布。单步失败不影响其它步骤；预算用尽或用户停止则整轮结束。报告写入 `runs/last_cycle.json` 并记入运行日志。
+- **挡位闸门**（`gears.py`）：G0 拒绝运行 cycle（全手动）；G1 自动整理与选题（选题仍需人工放行）；G2 另需「自动放行 / 自动调研 / 自动成文」开关，发布前需人工审核；G3 另自动审阅到「已审阅」（只有证据充分、校验通过的草稿），发布仍需「自动发布」开关。每一项自动行为都是“挡位 + 开关”同时满足才执行。
+- **预算强制执行**（`budget.py`）：所有模型调用经 `GuardedLLM`。每次调用前检查停止信号与单步超时，并记入当日用量。`max_llm_calls_per_day`（本库）与 `global_max_llm_calls_per_day`（全局总闸）任一用尽即抛出 `BudgetStop`，整轮停止；0 表示不允许调用。`step_timeout_minutes` 超时则放弃该次调用（模型调用在辅助线程执行，超时立即返回）。超限与超时都是 `BaseException`，不会被流水线里的 `except Exception` 当作单篇失败吞掉。
+- **停止**：看板「■ 请求停止」或 `cycle.py <id> --stop` 写入 `logs/stop.flag`（跨进程可见）。停止在下一次模型调用前生效，选题退回原状态。停止信号在下一轮开始时清除；停止请求若发生在最后一次调用之后，报告仍如实记为已停止。
+- **无变化不调用模型**：摘要靠内容哈希；概念与关系靠“摘要签名”（`wiki/last_build.json`）；知识树提案只在有未挂载概念时生成；缺口选题对已在队列中的缺口不再判重。连续两次无变化的运行，零模型调用（已测试）。
+- **知识树提案不自动应用**：提案只生成待确认，必须在看板或 `build_tree.py --apply` 中确认（方案 §5.3）。
+- **待办收件箱与流水线（真实状态）**：待放行选题、待审草稿、成文失败的选题、待确认的树提案；流水线每一段按库内数据显示完成 / 待处理（不再是 P0 占位）。
+- **导出** `export_site.py`：静态站（`exports/site/index.html`，只含已发布文章与定义已确认的概念，纯 HTML、无脚本）；`--zip` 打包已发布文章 Markdown 与 `manifest.json`。草稿、已审阅、已归档均不导出。
+- **入口与契约**：`project.yaml` 登记 `cycle`（managed，超时 4 小时）与 `export_site`（unmanaged）；**仍不登记 cron**。定时运行需在设置中打开「定时运行一轮」，再由你自行登记计划任务（`cycle.py <id> --scheduled`）。
 
 **P6 新增的能力**
 - **成文流程**（`write_article.py` 或看板「✍ 审阅 → 开始成文」）：选题简报 → 大纲 → 逐节初稿 → 组装 → 全文校验 → 独立评审 → 入库 → 摘要。只有证据充分（`pack.sufficient`）的已调研选题可以成文。
@@ -90,10 +101,10 @@
 ```
 external_projects/article_garden/
 ├── project.yaml  PROJECT.md  app.py  requirements.txt  pytest.ini
-├── entrypoints/     health  list_domains  create_domain  import_library  digest  draft_charter  plan_topics  research  write_article
+├── entrypoints/     health  list_domains  create_domain  import_library  digest  draft_charter  plan_topics  research  write_article  cycle  export_site
 │                    # 每个看板动作都有对应入口（后续各期补齐）
 ├── article_garden/  paths  store  charter  charter_form  templates  domains  settings  overview
-│                    cancel  joblog  netproxy  providers/text.py
+│                    cancel  joblog  netproxy  providers/text.py  budget（预算/停止）  gears（挡位）  cycle（闭环）  export（导出）
 │   ├── library/     front_matter  hashing  catalog（索引）  importer（收集/预览/入库）
 │   └── digest/      llm_io  validate（校验）  summarize（提示词/修复/分块）  runner（增量）  charter_draft
 │   └── wiki/        model（存储）  normalize（归一）  content（定义/关系/冲突校验）  build（编排）  validate_util
@@ -102,7 +113,7 @@ external_projects/article_garden/
 │   ├── research/    queries  search（缓存）  fetch（robots/节流/缓存）  extract  sources（来源卡）  pack（证据包）  runner
 │   └── writing/     brief（简报）  outline（大纲）  draft（逐节初稿与组装）  checks（代码校验）  critic（独立评审）  runner（流程与审阅）
 ├── ui/              state  topbar  jobs  home/library/graph/tree/topics/research/review/runs/settings/wizard 页面  placeholder_pages
-├── tests/           173 项（单元 + 入口 + Streamlit AppTest 冒烟；摘要、成文、调研测试均使用确定性的假模型与假网络）
+├── tests/           190 项（单元 + 入口 + Streamlit AppTest 冒烟；摘要、成文、调研测试均使用确定性的假模型与假网络）
 └── data/            运行产物，已加入 .gitignore（可用环境变量 ARTICLE_GARDEN_HOME 改位置）
     ├── domains.json         文章库注册表
     ├── settings.yaml        全局默认设置（稀疏覆盖）
@@ -122,11 +133,13 @@ python entrypoints/build_tree.py ai                       生成挂载提案（�
 python entrypoints/plan_topics.py ai                      检测缺口并生成选题；--approve t-0001 放行；--reject t-0001 --reason 原因 拒绝
 python entrypoints/research.py ai t-0001                  调研已放行的选题（需网络）；--add-url <网址>；--remove-source src-0002
 python entrypoints/write_article.py ai t-0001              成文（需模型）；--feedback "意见" 退回重写；--approve 通过；--publish 发布；--abandon "原因"
+python entrypoints/cycle.py ai                            运行一轮闭环（需挡位 G1 以上；--scheduled 定时调用；--stop 请求停止）
+python entrypoints/export_site.py ai                      导出静态站到 exports/site/；--zip 打包已发布文章
 streamlit run app.py --server.port 8508                   看板（端口约定：world_simulator 8502 … article_to_video 8507，本项目 8508）
 python -m pytest                                          测试
 ```
 看板由 `project.yaml` 的 `web_app` 块声明，可在 mini_agent 看板「外部项目」里启动；默认只监听本机。
-注册：`mini-agent projects register external_projects/article_garden`。**默认不登记 cron**：摘要、调研、成文会调用模型与网络，属于高成本操作，由你手动触发；定时 cycle 在 P7 提供且需在文章库设置里显式打开。
+注册：`mini-agent projects register external_projects/article_garden`。**默认不登记 cron**：摘要、调研、成文会调用模型与网络，属于高成本操作，由你手动触发；定时 cycle 需在文章库设置里显式打开（「定时运行一轮」），再由你自行登记计划任务。
 
 ## 依赖与 mini_agent 的关系
 - 依赖见 `requirements.txt`：streamlit、PyYAML、pytest。
@@ -138,7 +151,7 @@ python -m pytest                                          测试
 - **P6 的成文提示词与评审质量未在真实模型上验证**：测试使用确定性的假模型（按提示词阶段分派）。大纲、正文、评审在真实模型上是否稳定，需要用你的文章库实际跑一遍再调整。
 - **文体模板是代码而非配置**：方案 §8.2 要求纯配置，本期的文体要求写在 `writing/checks.py`（`KIND_HINTS` 与 `check_document`），新增文章类型仍需改代码。
 - **审阅页不能直接编辑正文**：只能通过、退回（附意见）、放弃。需要细改时，请退回重写，或直接改 `library/generated/<id>.md` 后再通过（改动可能被下一次重写覆盖）。
-- **入库后的 B/C 步（概念、知识树）需手动运行** `build_wiki` 与 `build_tree`；自动闭环在 P7。
+- **入库后的 B/C 步**（概念、知识树）由一轮闭环自动运行（P7 起）；知识树的挂载提案仍需人工确认。
 - **文章的 `tree_node` 字段**来自选题生成时的节点，未随挂载提案更新。
 - **成文中间产物不跨进程续跑**：每次成文从大纲开始；重写复用文章 id，但内容重新生成。
 - **搜索、抓取、查询生成都没有在真实网络环境中验证**：测试全部使用假网络（注入的搜索与 HTTP 函数）。robots 与节流逻辑已测试，但真实网站的兼容性（编码、反爬、重定向）未知。
@@ -167,11 +180,12 @@ python -m pytest                                          测试
 - **冲突只读展示**：看板不能直接“采纳 A / 采纳 B / 并存”，也没有概念合并建议与手动加删边界面（方案 §19.3 中这些属 P3/之后的交互）。人工编辑目前只能直接改概念页并设 `human_edited: true`。
 - **未使用共现信号**：方案 §5.2 提到的文章共现分在首版归一中未参与打分。
 - **真实模型的摘要质量未验证**：所有测试用确定性的假模型。提示词在真实模型上是否稳定、修复轮数是否够用，需要用你的 20 余篇文章实际跑一遍再调整。
-- **以下预算项在 P1 只是设置项，尚未强制执行**：`budget.step_timeout_minutes`（单步超时）、`budget.max_llm_calls_per_day` 与 `global_max_llm_calls_per_day`（日调用上限）。它们属于 P7「预算与自动化」，届时统一强制执行。当前只有“每篇修复轮数上限”真正生效。
-- **看板里没有“停止”按钮**：摘要以子进程后台运行，而停止信号目前只在同一进程内有效；跨进程停止需要文件信号，留待 P7。
+- **P7 预算的已知限制**：日计数在本进程内加锁，多个进程同时运行时计数可能略有偏差；单步超时只能在模型调用边界或等待期间生效，无法中断已经发出的模型请求（其线程在后台结束）。
+- **停止与超时的边界**：停止在下一次模型调用前或等待期间生效；一次正在进行的调用会继续到返回为止（结果被丢弃）。
+- **定时运行只提供开关与命令**：未登记 cron，需要你自行配置计划任务。
 - 导入的文章默认标记为 `status: published`（视为你已发布的既有文章）；生成文章（P6 起）才会有 `draft / reviewed` 流程。
 - 看板只做了 Streamlit AppTest 级别的冒烟测试，**没有在真实浏览器里点过**。
 - 看板只做了 Streamlit AppTest 级别的冒烟测试（脚本真实执行、控件交互），**没有在真实浏览器里点过**；布局与观感需要你实际打开看一眼。
 - 文本模型就绪检查依赖本机 mini_agent 的 provider 配置，未在真实模型环境验证。
 - `data/domains.json` 损坏时看板会提示并停止（不会当作“空”继续，避免覆盖你的注册表），需手动修复或恢复备份。
-- 自动化开关目前只被记录，不产生任何行为（P7 生效）。
+- 自动化开关由挡位闸门（`gears.py`）与一轮闭环强制执行；cycle 不做的事（如自动应用知识树提案、自动发布在 G3 下未开启 `auto_publish` 时）按设计保留为人工。

@@ -17,6 +17,7 @@ import sys
 from _common import force_utf8_stdio  # noqa: E402
 
 from article_garden import domains, settings  # noqa: E402
+from article_garden import budget  # noqa: E402
 from article_garden.providers.text import MiniAgentTextLLM, text_model_status  # noqa: E402
 from article_garden.writing import runner  # noqa: E402
 
@@ -58,7 +59,8 @@ def main(argv=None) -> int:
             print(f"失败：成文需要文本模型（{why}）", file=sys.stderr)
             return 1
         eff, _ = settings.effective_settings(ctx)
-        llm = MiniAgentTextLLM(use_system_proxy=eff["llm"]["use_system_proxy"])
+        llm = budget.guard(ctx, MiniAgentTextLLM(use_system_proxy=eff["llm"]["use_system_proxy"]),
+                                timeout_min=eff["budget"]["step_timeout_minutes"])
         result = runner.write(ctx, tid, llm, max_rounds=eff["budget"]["max_repair_rounds"],
                               feedback=feedback or "")
         print(json.dumps({"ok": True, **result}, ensure_ascii=False, indent=2))

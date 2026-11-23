@@ -15,6 +15,7 @@ import sys
 from _common import force_utf8_stdio  # noqa: E402
 
 from article_garden import domains, joblog, settings  # noqa: E402
+from article_garden import budget  # noqa: E402
 from article_garden.digest import runner  # noqa: E402
 from article_garden.providers.text import MiniAgentTextLLM, text_model_status  # noqa: E402
 
@@ -48,7 +49,8 @@ def main(argv=None) -> int:
         joblog.log(ctx.root, "digest", msg, level="error")
         return 1
     eff, _ = settings.effective_settings(ctx)
-    llm = MiniAgentTextLLM(use_system_proxy=eff["llm"]["use_system_proxy"])
+    llm = budget.guard(ctx, MiniAgentTextLLM(use_system_proxy=eff["llm"]["use_system_proxy"]),
+                            timeout_min=eff["budget"]["step_timeout_minutes"])
     counts = runner.run_digest(ctx, llm, only=only or None, force=force)
     print(json.dumps({"ok": counts["failed"] == 0, "counts": counts}, ensure_ascii=False, indent=2))
     return 0 if counts["failed"] == 0 else 1

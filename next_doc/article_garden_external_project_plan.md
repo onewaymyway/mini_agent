@@ -1,7 +1,7 @@
 # article_garden 外部项目设计方案（领域文章库 → 知识 wiki → 自动扩展成文）
 
-- **状态**：**方案已确认（2026-11-23，Q1–Q20 全部按推荐）**，按 P0→P7 一期一期实施，每期结束更新文档、测试并打包 diff zip，等待确认后再进入下一期；**当前：P6 已完成，等待确认后进入 P7**
-- **版本**：v0.9（2026-11-23；v0.9 完成 P6 成文与审阅，并恢复上传包中缺失的 P5 `research/` 代码包；v0.3 记录确认结果并开始 P0；v0.4 完成 P1 导入与摘要；v0.5 完成 P2 概念与关系；v0.6 完成 P3 知识树与覆盖度；v0.7 完成 P4 缺口检测与选题；v0.8 完成 P5 资料收集）
+- **状态**：**方案已确认（2026-11-23，Q1–Q20 全部按推荐）**，按 P0→P7 一期一期实施，每期结束更新文档、测试并打包 diff zip，等待确认后再进入下一期；**当前：P0–P7 全部完成，等待确认**
+- **版本**：v1.0（2026-11-23；v1.0 完成 P7 闭环、挡位、预算、停止与导出，全部分期完成；v0.9 完成 P6 成文与审阅，并恢复上传包中缺失的 P5 `research/` 代码包；v0.3 记录确认结果并开始 P0；v0.4 完成 P1 导入与摘要；v0.5 完成 P2 概念与关系；v0.6 完成 P3 知识树与覆盖度；v0.7 完成 P4 缺口检测与选题；v0.8 完成 P5 资料收集）
 - **性质**：新的外部项目 `external_projects/article_garden`（项目名待确认，见 Q1），遵循外部项目标准结构（`project.yaml` + `entrypoints/` + Streamlit 看板，完全自包含，可脱离 daemon 独立运行）
 - **关联文档**：`docs/external-projects-guide.md`、`docs/wiki-knowledge-base-guide.md`（借鉴思路，不复用代码）、`next_doc/article_to_video_external_project_plan.md`（项目骨架/设置页/日志的做法参照）、`next_doc/info_hub_external_project_plan.md`（可作为后续的资料来源）
 
@@ -389,7 +389,7 @@ external_projects/article_garden/
 - [x] P4 缺口与选题（2026-11-23 完成，实施记录见 `next_doc/article_garden_p4_implementation_record.md`；136 项测试通过；**待你确认后进入 P5**）
 - [x] P5 资料收集（2026-11-23 完成，实施记录见 `next_doc/article_garden_p5_implementation_record.md`；152 项测试通过；**待你确认后进入 P6**）
 - [x] P6 成文与审阅（2026-11-23 完成，实施记录见 `next_doc/article_garden_p6_implementation_record.md`；173 项测试通过；**待你确认后进入 P7**。P5 代码包已在本期恢复，见该记录第 6 节）
-- [ ] P7 闭环与自动化
+- [x] P7 闭环与自动化（2026-11-23 完成，实施记录见 `next_doc/article_garden_p7_implementation_record.md`；190 项测试通过；**全部分期完成，待你确认**）
 
 ---
 

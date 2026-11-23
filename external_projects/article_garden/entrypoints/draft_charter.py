@@ -13,6 +13,7 @@ import sys
 from _common import force_utf8_stdio  # noqa: E402
 
 from article_garden import domains, joblog, settings  # noqa: E402
+from article_garden import budget  # noqa: E402
 from article_garden.digest import charter_draft  # noqa: E402
 from article_garden.providers.text import MiniAgentTextLLM, text_model_status  # noqa: E402
 
@@ -38,7 +39,8 @@ def main(argv=None) -> int:
             joblog.log(ctx.root, "charter", msg, level="error")
             return 1
         eff, _ = settings.effective_settings(ctx)
-        llm = MiniAgentTextLLM(use_system_proxy=eff["llm"]["use_system_proxy"])
+        llm = budget.guard(ctx, MiniAgentTextLLM(use_system_proxy=eff["llm"]["use_system_proxy"]),
+                                timeout_min=eff["budget"]["step_timeout_minutes"])
         result = charter_draft.draft(ctx, llm, max_repair_rounds=eff["budget"]["max_repair_rounds"])
     except (domains.DomainError, ValueError) as exc:
         print(f"失败：{exc}", file=sys.stderr)

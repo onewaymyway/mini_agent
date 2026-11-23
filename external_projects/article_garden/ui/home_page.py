@@ -17,7 +17,26 @@ def render_home_page() -> None:
         return
     render_topbar(ctx, "🏠 首页")
 
-    st.button("▶ 运行一轮", disabled=True, help="完整闭环（cycle）在 P7 提供；目前各步骤随各期逐步开放")
+    from article_garden import budget, joblog, settings as gsettings
+    from article_garden.gears import allowed as gear_allowed
+    from ui.jobs import spawn
+
+    eff, _ = gsettings.effective_settings(ctx)
+    gear = eff["automation"]["gear"]
+    busy = joblog.recently_active(ctx.root, scopes=("cycle",))
+    can_run, why = gear_allowed(eff, "cycle")
+    c1, c2 = st.columns(2)
+    if c1.button("▶ 运行一轮（后台）", disabled=(not can_run or busy), type="primary", key="home_cycle",
+                 help=why if not can_run else "按当前挡位与开关自动执行各步骤，进度见「▶ 运行日志」"):
+        spawn("cycle.py", ctx.id)
+        st.success("已在后台开始一轮闭环，进度见「▶ 运行日志」。")
+    if c2.button("导出静态站", key="home_export"):
+        from article_garden import export
+        out = export.export_site(ctx)
+        st.success(f"已导出：{out / 'index.html'}")
+    u = budget.usage(ctx)
+    st.caption(f"挡位 {gear} ｜ 今日 LLM 调用 {u['domain']['calls']}/{u['domain']['limit']}"
+               f"（全局 {u['global']['calls']}/{u['global']['limit']}）")
 
     st.markdown("##### 流水线")
     stages = overview.pipeline_status(ctx)

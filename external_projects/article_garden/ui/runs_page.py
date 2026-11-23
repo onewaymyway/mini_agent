@@ -19,6 +19,10 @@ def render_runs_page() -> None:
     if ctx is None:
         return
     render_topbar(ctx, "▶ 运行日志")
+    from article_garden import budget
+    if st.button("■ 请求停止正在运行的任务", key="runs_stop"):
+        budget.request_stop(ctx)
+        st.warning("已发出停止请求；任务会在下一次模型调用前停止，并把选题退回原状态。")
     _log_panel(str(ctx.id))
 
 

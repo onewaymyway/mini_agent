@@ -16,6 +16,7 @@ import sys
 from _common import force_utf8_stdio  # noqa: E402
 
 from article_garden import domains, joblog, settings  # noqa: E402
+from article_garden import budget  # noqa: E402
 from article_garden.planning import states, topics  # noqa: E402
 from article_garden.providers.text import MiniAgentTextLLM, text_model_status  # noqa: E402
 
@@ -55,7 +56,8 @@ def main(argv=None) -> int:
         ready, why = text_model_status()
         if ready:
             eff, _ = settings.effective_settings(ctx)
-            llm = MiniAgentTextLLM(use_system_proxy=eff["llm"]["use_system_proxy"])
+            llm = budget.guard(ctx, MiniAgentTextLLM(use_system_proxy=eff["llm"]["use_system_proxy"]),
+                                    timeout_min=eff["budget"]["step_timeout_minutes"])
         else:
             joblog.log(ctx.root, "plan", f"模型未就绪，选题未判重：{why}", level="warn")
         summary = topics.run(ctx, llm)
