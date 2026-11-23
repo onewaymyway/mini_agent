@@ -24,7 +24,7 @@
 - **一轮闭环** `cycle.py`（看板「▶ 运行一轮（后台）」）：固定顺序 摘要 → 概念与关系 → 知识树提案 → 缺口与选题 → 调研 → 成文 → 审阅与发布。单步失败不影响其它步骤；预算用尽或用户停止则整轮结束。报告写入 `runs/last_cycle.json` 并记入运行日志。
 - **挡位闸门**（`gears.py`）：G0 拒绝运行 cycle（全手动）；G1 自动整理与选题（选题仍需人工放行）；G2 另需「自动放行 / 自动调研 / 自动成文」开关，发布前需人工审核；G3 另自动审阅到「已审阅」（只有证据充分、校验通过的草稿），发布仍需「自动发布」开关。每一项自动行为都是“挡位 + 开关”同时满足才执行。
 - **预算强制执行**（`budget.py`）：所有模型调用经 `GuardedLLM`。每次调用前检查停止信号与单步超时，并记入当日用量。`max_llm_calls_per_day`（本库）与 `global_max_llm_calls_per_day`（全局总闸）任一用尽即抛出 `BudgetStop`，整轮停止；0 表示不允许调用。`step_timeout_minutes` 是**单次模型调用**的最长等待（超时只让该篇 / 该次调用失败，其它继续；不是整批的时长）。超限与超时都是 `BaseException`，不会被流水线里的 `except Exception` 当作单篇失败吞掉。
-- **停止**：看板「■ 请求停止」或 `cycle.py <id> --stop` 写入带时间戳的 `logs/stop.flag`。只影响停止请求**之后**开始的运行中调用，旧的停止请求不会影响新任务。停止在下一次模型调用前（或等待期间约 0.2 秒内）生效，选题退回原状态；停止请求若发生在最后一次调用之后，报告仍如实记为已停止。
+- **停止**：看板「■ 请求停止」或 `cycle.py <id> --stop` 写入带时间戳的 `logs/stop.flag`。只影响停止请求**之后**开始的运行中调用（以停止文件的修改时间判断，不解析内容），旧的停止请求不会影响新任务。停止在下一次模型调用前（或等待期间约 0.2 秒内）生效，选题退回原状态；停止请求若发生在最后一次调用之后，报告仍如实记为已停止。
 - **运行中的判断**：依据运行记录（开始记录、无结束记录、进程仍存在），不再依据“最近 90 秒有日志”。进程被杀死时，任务只作为“中断”的历史留在日志中。
 - **无变化不调用模型**：摘要靠内容哈希；概念与关系靠“摘要签名”（`wiki/last_build.json`）；知识树提案只在有未挂载概念时生成；缺口选题对已在队列中的缺口不再判重。连续两次无变化的运行，零模型调用（已测试）。
 - **知识树提案不自动应用**：提案只生成待确认，必须在看板或 `build_tree.py --apply` 中确认（方案 §5.3）。
@@ -115,7 +115,7 @@ external_projects/article_garden/
 │   ├── research/    queries  search（缓存）  fetch（robots/节流/缓存）  extract  sources（来源卡）  pack（证据包）  runner
 │   └── writing/     brief（简报）  outline（大纲）  draft（逐节初稿与组装）  checks（代码校验）  critic（独立评审）  runner（流程与审阅）
 ├── ui/              state  topbar  jobs  home/library/graph/tree/topics/research/review/runs/settings/wizard 页面  placeholder_pages
-├── tests/           202 项（单元 + 入口 + Streamlit AppTest 冒烟；摘要、成文、调研测试均使用确定性的假模型与假网络）
+├── tests/           204 项（单元 + 入口 + Streamlit AppTest 冒烟；摘要、成文、调研测试均使用确定性的假模型与假网络）
 └── data/            运行产物，已加入 .gitignore（可用环境变量 ARTICLE_GARDEN_HOME 改位置）
     ├── domains.json         文章库注册表
     ├── settings.yaml        全局默认设置（稀疏覆盖）

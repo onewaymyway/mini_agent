@@ -1,5 +1,6 @@
 """后台运行的可靠性回归测试：陈旧停止信号、停止的时效、单次调用超时、单篇超时不拖垮整批、真实的运行状态。全部假模型。"""
 
+import os
 import time
 
 import pytest
@@ -112,3 +113,25 @@ def test_run_context_manager_records_failure_and_stop(data_home):
             raise cancel.Cancelled("用户请求停止")
     ends = [r["status"] for r in joblog.tail(ctx.root, limit=50) if r.get("event") == "run_end"]
     assert ends == ["failed", "stopped"] and joblog.running_runs(ctx.root) == []
+
+
+def test_legacy_stop_flag_from_an_earlier_version_is_ignored(data_home):
+    """旧版本写入的停止文件内容是 ISO 时间字符串；它只是陈旧记录，不得让新任务立即停止。"""
+    ctx = _library(data_home, 1)
+    p = ctx.path("logs", "stop.flag")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("2026-11-23T14:50:00", encoding="utf-8")
+    old = time.time() - 3600
+    os.utime(p, (old, old))
+    g = budget.guard(ctx, Echo())
+    assert g.ask("<article>\n" + "x") != ""
+
+
+def test_unreadable_or_odd_stop_content_does_not_stop_new_runs(data_home):
+    ctx = _library(data_home, 1)
+    p = ctx.path("logs", "stop.flag")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(b"\xff\xfe garbage")
+    old = time.time() - 60
+    os.utime(p, (old, old))
+    assert budget.stop_requested(ctx, since=time.time()) is False

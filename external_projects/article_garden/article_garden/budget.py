@@ -37,7 +37,7 @@ def _stop_path(ctx):
 
 def request_stop(ctx) -> None:
     """写入停止请求（带时间戳）。只影响在此时间之后开始、仍在运行的任务。"""
-    store.write_text_atomic(_stop_path(ctx), repr(time.time()))
+    store.write_text_atomic(_stop_path(ctx), "stop\n")
 
 
 def clear_stop(ctx) -> None:
@@ -54,11 +54,11 @@ def stop_requested(ctx, since: Optional[float] = None) -> bool:
         return False
     if since is None:
         return True
+    # 以文件修改时间为准，不解析内容：旧版本写入的内容格式不同，也不能被误判为停止
     try:
-        ts = float(p.read_text(encoding="utf-8").strip())
-    except (ValueError, OSError):
-        return True
-    return ts >= since
+        return p.stat().st_mtime >= since
+    except OSError:
+        return False
 
 
 # ------------------------------------------------------------------ 用量
