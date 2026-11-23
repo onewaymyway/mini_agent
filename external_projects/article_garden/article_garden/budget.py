@@ -36,8 +36,8 @@ def _stop_path(ctx):
 
 
 def request_stop(ctx) -> None:
-    store.write_text_atomic(_stop_path(ctx), datetime.now().isoformat(timespec="seconds"))
-    cancel.request(ctx.root)
+    """写入停止请求（带时间戳）。只影响在此时间之后开始、仍在运行的任务。"""
+    store.write_text_atomic(_stop_path(ctx), repr(time.time()))
 
 
 def clear_stop(ctx) -> None:
@@ -46,8 +46,19 @@ def clear_stop(ctx) -> None:
         p.unlink()
 
 
-def stop_requested(ctx) -> bool:
-    return _stop_path(ctx).is_file() or cancel.is_requested(ctx.root)
+def stop_requested(ctx, since: Optional[float] = None) -> bool:
+    """since 为任务开始的时间（epoch 秒）：只有在它之后写入的停止请求才生效。
+    不传 since 时，只要存在停止请求即为真（看板与命令行用于显示状态）。"""
+    p = _stop_path(ctx)
+    if not p.is_file():
+        return False
+    if since is None:
+        return True
+    try:
+        ts = float(p.read_text(encoding="utf-8").strip())
+    except (ValueError, OSError):
+        return True
+    return ts >= since
 
 
 # ------------------------------------------------------------------ 用量
@@ -105,20 +116,22 @@ def charge(ctx) -> None:
 # ------------------------------------------------------------------ 包装
 
 class GuardedLLM:
-    """调用前：停止信号 → 单步超时 → 记账。调用在辅助线程执行，超时或停止时立即返回。"""
+    """每次模型调用前：停止信号 → 记账 → 单次调用超时。调用在辅助线程执行，超时或停止时立即返回。
 
-    def __init__(self, inner: Any, ctx, timeout_sec: Optional[float] = None):
+    超时是“单次模型调用”的最长等待（不是整批任务的时长）；停止只影响 since 之后发出的请求。"""
+
+    def __init__(self, inner: Any, ctx, timeout_sec: Optional[float] = None, since: Optional[float] = None):
         self.inner = inner
         self.ctx = ctx
-        self.deadline = time.monotonic() + timeout_sec if timeout_sec else None
+        self.timeout_sec = timeout_sec
+        self.since = time.time() if since is None else since
         self.name = getattr(inner, "name", "guarded")
 
     def ask(self, prompt: str, system: str = "") -> str:
         cancel.check()
-        if stop_requested(self.ctx):
+        if stop_requested(self.ctx, self.since):
             raise cancel.Cancelled("用户请求停止")
-        if self.deadline is not None and time.monotonic() > self.deadline:
-            raise StepTimeout("单步超时")
+        deadline = time.monotonic() + self.timeout_sec if self.timeout_sec else None
         charge(self.ctx)
         box: dict = {}
 
@@ -132,14 +145,14 @@ class GuardedLLM:
         t.start()
         while t.is_alive():
             t.join(0.2)
-            if stop_requested(self.ctx):
+            if stop_requested(self.ctx, self.since):
                 raise cancel.Cancelled("用户请求停止")
-            if self.deadline is not None and time.monotonic() > self.deadline:
-                raise StepTimeout("单步超时（模型调用未在时限内返回）")
+            if deadline is not None and time.monotonic() > deadline:
+                raise StepTimeout(f"单次模型调用超过 {self.timeout_sec / 60:.1f} 分钟未返回")
         if "error" in box:
             raise box["error"]
         return box.get("value", "")
 
 
-def guard(ctx, inner: Any, *, timeout_min: Optional[float] = None) -> GuardedLLM:
-    return GuardedLLM(inner, ctx, timeout_sec=float(timeout_min) * 60 if timeout_min else None)
+def guard(ctx, inner: Any, *, timeout_min: Optional[float] = None, since: Optional[float] = None) -> GuardedLLM:
+    return GuardedLLM(inner, ctx, timeout_sec=float(timeout_min) * 60 if timeout_min else None, since=since)

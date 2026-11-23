@@ -12,7 +12,7 @@ import hashlib
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from .. import settings, store
+from .. import joblog, settings, store
 from ..digest import runner as drunner
 from ..digest import summarize as sm
 from ..library import catalog
@@ -122,6 +122,11 @@ def _open_validator(data):
 
 
 def run(ctx, llm=None, *, open_topics: Optional[bool] = None) -> Dict[str, Any]:
+    with joblog.run(ctx.root, "plan", "缺口与选题"):
+        return _run(ctx, llm, open_topics=open_topics)
+
+
+def _run(ctx, llm=None, *, open_topics: Optional[bool] = None) -> Dict[str, Any]:
     eff, _ = settings.effective_settings(ctx)
     budget = eff["budget"]["max_topics_per_cycle"]
     gear = eff["automation"]["gear"]

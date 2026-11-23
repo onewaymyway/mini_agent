@@ -24,7 +24,7 @@ def render_research_page() -> None:
     if not topics:
         st.info("还没有已放行的选题。先在「💡 选题」中放行，再回到这里调研。")
         return
-    busy = joblog.recently_active(ctx.root, scopes=("research",))
+    busy = joblog.is_running(ctx.root, scopes=("research",))
     st.dataframe([{"编号": r["id"], "选题": r["title"], "状态": STATUS_NAMES[r["status"]]} for r in topics],
                  hide_index=True, use_container_width=True)
     labels = {r["id"]: f"{r['id']}  {r['title']}" for r in topics}

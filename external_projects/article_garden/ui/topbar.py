@@ -10,7 +10,7 @@ from article_garden.domains import DomainContext
 
 def render_topbar(ctx: DomainContext, title: str) -> None:
     eff, _ = settings.effective_settings(ctx)
-    busy = joblog.recently_active(ctx.log_dir.parent)
+    busy = joblog.is_running(ctx.root)
     c1, c2, c3 = st.columns([3, 1, 2])
     c1.subheader(title)
     c2.caption(f"📚 {ctx.info()['name']}")

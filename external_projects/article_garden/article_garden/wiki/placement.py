@@ -101,6 +101,12 @@ def _validator(batch, work):
 
 
 def make_proposal(ctx, llm, *, max_repair_rounds: int = 6) -> Optional[Dict[str, Any]]:
+    from .. import joblog
+    with joblog.run(ctx.root, "tree", "挂载提案"):
+        return _make_proposal(ctx, llm, max_repair_rounds=max_repair_rounds)
+
+
+def _make_proposal(ctx, llm, *, max_repair_rounds: int = 6) -> Optional[Dict[str, Any]]:
     """生成提案并保存；无变化时返回 None（不调用模型）。"""
     base = tree.load(ctx)
     work = copy.deepcopy(base)

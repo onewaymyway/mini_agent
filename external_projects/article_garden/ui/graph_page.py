@@ -21,7 +21,7 @@ def render_graph_page() -> None:
     if ctx is None:
         return
     render_topbar(ctx, "🕸 概念图")
-    busy = joblog.recently_active(ctx.root, scopes=("wiki",))
+    busy = joblog.is_running(ctx.root, scopes=("wiki",))
     digests_ok = sum(1 for r in catalog.list_articles(ctx) if (runner.load_digest(ctx, r["id"]) or {}).get("status") == "ok")
     concepts = model.list_concepts(ctx)
 

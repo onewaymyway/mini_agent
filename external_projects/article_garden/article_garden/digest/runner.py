@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, Optional
 
-from .. import cancel, joblog, settings, store
+from .. import budget, cancel, joblog, settings, store
 from ..library import catalog
 from . import summarize as sm
 
@@ -66,6 +66,11 @@ def run_digest(ctx, llm, *, only: Optional[Iterable[str]] = None, force: bool = 
                 _digest_one(ctx, llm, row, max_rounds, counts)
             except cancel.Cancelled:
                 raise  # 用户停止：不当作单篇失败，整体结束
+            except budget.StepTimeout as exc:
+                # 单次模型调用超时：只让这一篇失败，其它篇继续（超时是单次调用的限制，不是整批的）
+                counts["failed"] += 1
+                _write_failed(ctx, row, [str(exc)], "")
+                joblog.log(ctx.root, SCOPE, f"{row['id']}：{exc}，已跳过，继续其它文章", level="warn")
             except Exception as exc:  # noqa: BLE001 — 单篇失败不影响其它篇（step 已记录原因）
                 counts["failed"] += 1
                 _write_failed(ctx, row, [f"{type(exc).__name__}: {str(exc)[:200]}"], "")

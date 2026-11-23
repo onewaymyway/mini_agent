@@ -22,7 +22,7 @@ def render_tree_page() -> None:
     if ctx is None:
         return
     render_topbar(ctx, "🌳 知识树")
-    busy = joblog.recently_active(ctx.root, scopes=("tree",))
+    busy = joblog.is_running(ctx.root, scopes=("tree",))
     _proposal_section(ctx, busy)
     st.divider()
     data = tree.load(ctx)

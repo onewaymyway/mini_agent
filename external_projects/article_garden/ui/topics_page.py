@@ -20,7 +20,7 @@ def render_topics_page() -> None:
     if ctx is None:
         return
     render_topbar(ctx, "💡 选题")
-    busy = joblog.recently_active(ctx.root, scopes=("plan",))
+    busy = joblog.is_running(ctx.root, scopes=("plan",))
     if st.button("检测缺口并生成选题（后台）", disabled=busy, type="primary", key="plan_run"):
         spawn("plan_topics.py", ctx.id)
         st.success("已在后台检测，完成后刷新本页。")

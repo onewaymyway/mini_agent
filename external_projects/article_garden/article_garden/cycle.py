@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -38,12 +39,12 @@ def _digest_signature(ctx) -> list:
     return sorted(sig)
 
 
-def _g(ctx, llm, eff):
-    return budget.guard(ctx, llm, timeout_min=eff["budget"]["step_timeout_minutes"])
+def _g(ctx, llm, eff, sr):
+    return budget.guard(ctx, llm, timeout_min=eff["budget"]["step_timeout_minutes"], since=sr["since"])
 
 
 def _step_digest(ctx, llm, eff, rep, sr) -> str:
-    c = drunner.run_digest(ctx, _g(ctx, llm, eff))
+    c = drunner.run_digest(ctx, _g(ctx, llm, eff, sr))
     return f"成功 {c['ok']}，失败 {c['failed']}，跳过 {c['skipped']}"
 
 
@@ -54,7 +55,7 @@ def _step_wiki(ctx, llm, eff, rep, sr) -> str:
     last = store.read_json(ctx.path("wiki", "last_build.json"), default=None)
     if last and last.get("signature") == sig:
         return "文章与摘要没有变化，跳过（零模型调用）"
-    res = wbuild.build(ctx, _g(ctx, llm, eff))
+    res = wbuild.build(ctx, _g(ctx, llm, eff, sr))
     store.write_json_atomic(ctx.path("wiki", "last_build.json"), {"signature": sig, "at": _now()})
     return f"{res['concepts']} 个概念，{res['edges']} 条边，{res['conflicts']} 处冲突，失败 {res['failed_concepts']}"
 
@@ -62,7 +63,7 @@ def _step_wiki(ctx, llm, eff, rep, sr) -> str:
 def _step_tree(ctx, llm, eff, rep, sr) -> str:
     if placement.load_proposal(ctx):
         return "已有待确认的提案，未自动应用（请在看板或 build_tree --apply 中确认）"
-    proposal = placement.make_proposal(ctx, _g(ctx, llm, eff), max_repair_rounds=eff["budget"]["max_repair_rounds"])
+    proposal = placement.make_proposal(ctx, _g(ctx, llm, eff, sr), max_repair_rounds=eff["budget"]["max_repair_rounds"])
     coverage.compute(ctx)
     if proposal is None:
         return "没有未挂载的概念，无变化"
@@ -70,7 +71,7 @@ def _step_tree(ctx, llm, eff, rep, sr) -> str:
 
 
 def _step_topics(ctx, llm, eff, rep, sr) -> str:
-    res = topics.run(ctx, _g(ctx, llm, eff))
+    res = topics.run(ctx, _g(ctx, llm, eff, sr))
     return f"新增选题 {res['proposed']} 个" + ("（已自动放行）" if res.get("auto_approved") else "")
 
 
@@ -81,7 +82,7 @@ def _step_research(ctx, llm, eff, rep, sr) -> str:
     limit = int(eff["budget"]["max_topics_per_cycle"])
     done = []
     for row in [r for r in states.load_topics(ctx) if r["status"] == states.APPROVED][:limit]:
-        res = rrunner.run(ctx, row["id"], llm=_g(ctx, llm, eff), max_rounds=eff["budget"]["max_repair_rounds"],
+        res = rrunner.run(ctx, row["id"], llm=_g(ctx, llm, eff, sr), max_rounds=eff["budget"]["max_repair_rounds"],
                           search_backend=sr.get("search"), fetcher=sr.get("fetcher"))
         done.append(f"{row['id']}→{res['result']}")
     return "；".join(done) or "没有已放行的选题"
@@ -94,7 +95,7 @@ def _step_write(ctx, llm, eff, rep, sr) -> str:
     limit = int(eff["budget"]["max_articles_per_cycle"])
     done = []
     for row in [r for r in states.load_topics(ctx) if r["status"] == states.RESEARCHED][:limit]:
-        res = wrunner.write(ctx, row["id"], _g(ctx, llm, eff), max_rounds=eff["budget"]["max_repair_rounds"])
+        res = wrunner.write(ctx, row["id"], _g(ctx, llm, eff, sr), max_rounds=eff["budget"]["max_repair_rounds"])
         done.append(f"{row['id']}→{res['result']}")
     return "；".join(done) or "没有已调研且待成文的选题"
 
@@ -133,7 +134,7 @@ def run_cycle(ctx, llm, *, scheduled: bool = False, search_backend: Any = None, 
         raise ValueError("运行一轮需要文本模型，请先确认模型配置可用")
 
     budget.clear_stop(ctx)
-    sr = {"search": search_backend, "fetcher": fetcher}
+    sr = {"search": search_backend, "fetcher": fetcher, "since": time.time()}
     rep: Dict[str, Any] = {"started_at": _now(), "gear": eff["automation"]["gear"], "scheduled": scheduled,
                            "steps": [], "stopped": None}
     run_id = joblog.run_start(ctx.root, SCOPE, "一轮闭环")

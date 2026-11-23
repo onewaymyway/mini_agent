@@ -41,7 +41,8 @@ def main(argv=None) -> int:
         eff, _ = settings.effective_settings(ctx)
         llm = budget.guard(ctx, MiniAgentTextLLM(use_system_proxy=eff["llm"]["use_system_proxy"]),
                                 timeout_min=eff["budget"]["step_timeout_minutes"])
-        result = charter_draft.draft(ctx, llm, max_repair_rounds=eff["budget"]["max_repair_rounds"])
+        with joblog.run(ctx.root, "charter", "章程草稿"):
+            result = charter_draft.draft(ctx, llm, max_repair_rounds=eff["budget"]["max_repair_rounds"])
     except (domains.DomainError, ValueError) as exc:
         print(f"失败：{exc}", file=sys.stderr)
         return 1

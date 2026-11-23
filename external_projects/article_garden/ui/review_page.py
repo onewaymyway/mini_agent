@@ -45,7 +45,7 @@ def render_review_page() -> None:
     labels = {r["id"]: f"{r['id']}  {r['title']}" for r in rows}
     tid = st.selectbox("选择选题", list(labels), format_func=lambda i: labels[i], key="rev_sel")
     topic = states.get(ctx, tid)
-    busy = joblog.recently_active(ctx.root, scopes=(runner.SCOPE,))
+    busy = joblog.is_running(ctx.root, scopes=(runner.SCOPE,))
     d = ctx.path("drafts", tid)
 
     if topic["status"] in (states.RESEARCHED, states.FAILED):

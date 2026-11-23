@@ -23,7 +23,7 @@ def render_home_page() -> None:
 
     eff, _ = gsettings.effective_settings(ctx)
     gear = eff["automation"]["gear"]
-    busy = joblog.recently_active(ctx.root, scopes=("cycle",))
+    busy = joblog.is_running(ctx.root, scopes=("cycle",))
     can_run, why = gear_allowed(eff, "cycle")
     c1, c2 = st.columns(2)
     if c1.button("▶ 运行一轮（后台）", disabled=(not can_run or busy), type="primary", key="home_cycle",

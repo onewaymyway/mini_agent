@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import threading
 import time
 import traceback
@@ -159,7 +160,8 @@ def run_start(project_dir: Path, scope: str, name: str) -> str:
     """开始一次整体运行，返回 run_id；之后本线程里的 step() 自动归属这次运行。"""
     run_id = uuid.uuid4().hex[:8]
     _TLS.run = (run_id, name)
-    log(project_dir, scope, f"{name}：开始", event="run_start", run=name, run_id=run_id, started_at=_now())
+    log(project_dir, scope, f"{name}：开始", event="run_start", run=name, run_id=run_id, started_at=_now(),
+        pid=os.getpid())
     return run_id
 
 
@@ -172,6 +174,68 @@ def run_end(project_dir: Path, scope: str, run_id: str, name: str, status: str =
     log(project_dir, scope, msg, level=level, event="run_end", run=name, run_id=run_id, status=status,
         started_at=started_at, ended_at=_now(), error=error, traceback=tb)
     _TLS.run = None
+
+
+@contextlib.contextmanager
+def run(project_dir: Path, scope: str, name: str) -> Iterator[str]:
+    """包住一次整体运行：开始与结束（成功 / 停止 / 失败）都会写入记录。"""
+    rid = run_start(project_dir, scope, name)
+    try:
+        yield rid
+    except BaseException as exc:  # noqa: BLE001
+        stopped = type(exc).__name__ in ("Cancelled", "BudgetStop")
+        run_end(project_dir, scope, rid, name, status="stopped" if stopped else "failed",
+                error=None if stopped else f"{type(exc).__name__}: {exc}", tb=None if stopped else format_tb(exc))
+        raise
+    else:
+        run_end(project_dir, scope, rid, name, status="ok")
+
+
+def _pid_alive(pid: Any, started_at: Optional[datetime] = None) -> bool:
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if os.name == "nt":  # Windows 上 os.kill(pid, 0) 不安全，改用心跳时间近似判断
+        return started_at is not None and (datetime.now() - started_at).total_seconds() < 3 * HEARTBEAT_SEC
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def running_runs(project_dir: Path, scopes: Optional[Iterable[str]] = None) -> List[Dict[str, Any]]:
+    """真正在运行的任务：有开始记录、没有结束记录，且进程仍然存在。
+    进程已不存在（崩溃、被杀）的任务不算运行中，它们只是“中断”的历史记录。"""
+    rows = tail(project_dir, limit=20000)
+    started: Dict[str, Dict[str, Any]] = {}
+    ended = set()
+    for r in rows:
+        if r.get("event") == "run_start" and r.get("run_id"):
+            started[r["run_id"]] = r
+        elif r.get("event") == "run_end" and r.get("run_id"):
+            ended.add(r["run_id"])
+    wanted = set(scopes) if scopes else None
+    out = []
+    for rid, r in started.items():
+        if rid in ended or (wanted and r.get("scope") not in wanted):
+            continue
+        try:
+            when = datetime.fromisoformat(r["ts"])
+        except (KeyError, ValueError):
+            when = None
+        if _pid_alive(r.get("pid"), when):
+            out.append(r)
+    return out
+
+
+def is_running(project_dir: Path, scopes: Optional[Iterable[str]] = None) -> bool:
+    return bool(running_runs(project_dir, scopes))
 
 
 @contextlib.contextmanager

@@ -70,7 +70,7 @@ def _articles_section(ctx) -> None:
               "状态": r.get("status", ""), "字数": r.get("chars", 0), "摘要": statuses[r["id"]]} for r in rows]
     st.dataframe(table, hide_index=True, use_container_width=True)
 
-    busy = joblog.recently_active(ctx.root, scopes=("digest",))
+    busy = joblog.is_running(ctx.root, scopes=("digest",))
     pending = sum(1 for s in statuses.values() if s in ("未摘要", "待更新", "失败"))
     if st.button(f"开始摘要（{pending} 篇待处理，增量）", disabled=busy or pending == 0, type="primary",
                  key="digest_all"):
@@ -108,7 +108,7 @@ def _article_detail(ctx, row) -> None:
                 st.code(rec["last_output"], language="yaml")
     else:
         st.info("这篇还没有摘要。")
-    busy = joblog.recently_active(ctx.root, scopes=("digest",))
+    busy = joblog.is_running(ctx.root, scopes=("digest",))
     if st.button("重新摘要这篇", disabled=busy, key=f"redo_{row['id']}"):
         _spawn("digest.py", ctx.id, "--article-id", row["id"], "--force")
         st.success("已在后台开始重新摘要。")
@@ -117,7 +117,7 @@ def _article_detail(ctx, row) -> None:
 def _charter_section(ctx) -> None:
     st.subheader("章程草稿（由摘要反推）")
     st.caption("草稿只是建议。你确认后才会采用为正式章程；采用前旧章程会自动备份。")
-    busy = joblog.recently_active(ctx.root, scopes=("digest", "charter"))
+    busy = joblog.is_running(ctx.root, scopes=("digest", "charter"))
     if st.button("由已摘要文章生成章程草稿", disabled=busy, key="draft_charter"):
         _spawn("draft_charter.py", ctx.id)
         st.success("已在后台生成草稿，完成后刷新本页查看。")
