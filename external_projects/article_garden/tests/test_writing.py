@@ -492,3 +492,101 @@ def test_critic_issue_without_severity_counts_as_severe(data_home):
     assert critic.validator(obj) == []
     assert critic.actionable([{"section": "a", "kind": "其它", "note": "x", "severity": "严重"}], "标准")
     assert critic.validator({"issues": [{"section": "a", "kind": "其它", "note": "x", "severity": "中"}]})
+
+
+# ------------------------------------------------------------------ 按意见修改
+
+class ReviseLLM(WriterLLM):
+    """【阶段:修改】：小节标题含 target 的小节被改写（追加一句带证据标记的话），其余 changed: false。"""
+
+    def __init__(self, target="核心原理", reply=None, **kw):
+        super().__init__(**kw)
+        self.target, self.reply = target, reply
+
+    def ask(self, prompt, system=""):
+        if "【阶段:修改】" in prompt:
+            self.calls.append(prompt)
+            if self.reply:
+                return self.reply(prompt)
+            head = re.search(r"修改小节「(.+?)」", prompt).group(1)
+            if self.target not in head:
+                return "changed: false\n"
+            sid = _ids(prompt.split("可用来源")[1])[0]
+            cur = prompt.split("本小节当前正文：\n")[1].split("\n\n可用来源")[0]
+            new = cur + f"\n\n补充：向量数据库常用近似最近邻算法加速检索。[^{sid}]"
+            return "text: |\n" + "".join(("  " + ln if ln else "") + "\n" for ln in new.split("\n"))
+        return super().ask(prompt, system)
+
+
+def _drafted_pair(data_home):
+    ctx, tid = _setup(data_home)
+    assert runner.write(ctx, tid, WriterLLM())["result"] == "drafted"
+    return ctx, tid
+
+
+def _article_text(ctx, tid):
+    return ctx.path("library", "generated", states.get(ctx, tid)["article_id"] + ".md").read_text(encoding="utf-8")
+
+
+def test_split_sections_excludes_refs_and_tail():
+    from article_garden.writing import revise
+    body = "# 标题\n\n> 声明\n\n## 摘要\n\n甲。[^src-0001]\n\n## 核心原理\n\n乙。[^src-0001]\n\n## 延伸阅读\n\n[^src-0001]: x\n"
+    assert revise.split_sections(body) == [("摘要", "甲。[^src-0001]"), ("核心原理", "乙。[^src-0001]")]
+
+
+def test_revise_changes_only_relevant_section_and_returns_to_drafted_pair(data_home):
+    from article_garden.writing import revise
+    ctx, tid = _drafted_pair(data_home)
+    before = _article_text(ctx, tid)
+    states.move(ctx, tid, states.REVIEWED, "测试")
+    res = revise.revise(ctx, tid, ReviseLLM(), "核心原理一节补充近似最近邻")
+    assert res["result"] == "revised", res
+    assert res["changed_sections"] == ["核心原理"]
+    after = _article_text(ctx, tid)
+    assert "近似最近邻" in after and "近似最近邻" not in before
+    assert states.get(ctx, tid)["status"] == states.DRAFTED                   # 已审阅的修改后需重新审阅
+    assert list(ctx.path("drafts", tid, "revisions").glob("*.md"))              # 保存了修改前的版本
+    ck = store.read_json(ctx.path("drafts", tid, "checks.json"))
+    assert ck["last_revision"]["changed_sections"] == ["核心原理"]
+    sec = before.split("## 摘要")[1].split("## ")[0]
+    assert sec in after                                                         # 未涉及的小节原样不动
+
+
+def test_revise_without_relevant_section_leaves_article_untouched(data_home):
+    from article_garden.writing import revise
+    ctx, tid = _drafted_pair(data_home)
+    before = _article_text(ctx, tid)
+    res = revise.revise(ctx, tid, ReviseLLM(target="不存在的节"), "随便改改")
+    assert res["result"] == "unchanged" and _article_text(ctx, tid) == before
+    assert states.get(ctx, tid)["status"] == states.DRAFTED
+
+
+def test_revise_failure_keeps_original_article_and_status(data_home):
+    from article_garden.writing import revise
+    ctx, tid = _drafted_pair(data_home)
+    before = _article_text(ctx, tid)
+    bad = lambda p: "changed: true\ntext: |\n  没有证据标记的一段话。\n"
+    res = revise.revise(ctx, tid, ReviseLLM(reply=bad), "改一下", max_rounds=2)
+    assert res["result"] == "failed"
+    assert _article_text(ctx, tid) == before and states.get(ctx, tid)["status"] == states.DRAFTED
+
+
+def test_revise_validates_input_and_status(data_home):
+    from article_garden.writing import revise
+    ctx, tid = _setup(data_home)                                                # 仅已调研，尚未成稿
+    with pytest.raises(ValueError):
+        revise.revise(ctx, tid, ReviseLLM(), "意见")
+    runner.write(ctx, tid, WriterLLM())
+    with pytest.raises(ValueError):
+        revise.revise(ctx, tid, ReviseLLM(), "  ")
+    with pytest.raises(ValueError):
+        revise.revise(ctx, tid, None, "意见")
+
+
+def test_review_page_offers_revise_box(data_home):
+    from tests.test_ui_smoke import run_app
+    ctx, tid = _drafted_pair(data_home)
+    at = run_app("review", domain="ai")
+    assert not at.exception, [e.value for e in at.exception]
+    assert any(t.key == "rev_rv_note" for t in at.text_area)
+    assert any(b.label == "按意见修改（后台）" for b in at.button)

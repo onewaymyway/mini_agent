@@ -182,6 +182,10 @@ def _register(ctx, tid: str, topic: Dict[str, Any], result: Dict[str, Any], stat
     return aid
 
 
+def _article_row(ctx, aid: str) -> Optional[Dict[str, Any]]:
+    return next((r for r in catalog.load(ctx)["articles"] if r["id"] == aid), None)
+
+
 def _set_article_status(ctx, aid: str, status: str) -> None:
     data = catalog.load(ctx)
     row = next((r for r in data["articles"] if r["id"] == aid), None)

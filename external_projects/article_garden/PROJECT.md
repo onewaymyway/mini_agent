@@ -40,6 +40,9 @@
 **评审严格度（记录：`next_doc/article_garden_critic_level_record.md`）**
 - 独立评审的问题分「严重/轻微」。设置页「校验阈值」的「评审严格度」：严格（全部要修）/ 标准（默认，只修严重，轻微记录到 `checks.json` 的 `critic_notes`）/ 宽松（只记录）。
 
+**按意见修改（记录：`next_doc/article_garden_review_revise_record.md`）**
+- 审阅页「按意见修改」保留原文、只改意见涉及的小节（与整篇重新生成的「退回重写」不同）；修改后回到待审阅，旧版本存 `drafts/<tid>/revisions/`，失败保持原文。命令行：`write_article.py <domain> <topic_id> --revise "意见"`。
+
 **选题标题（选题质量记录：`next_doc/article_garden_topic_title_quality_record.md`）**
 - 缺口选题的标题与角度由模型撰写，参照文库已有标题的风格；模板式标题（“X是什么”“X入门”“X综述”）会被拒绝。未通过时保留模板标题。
 

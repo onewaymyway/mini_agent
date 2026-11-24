@@ -3,6 +3,7 @@
 用法：
   python entrypoints/write_article.py <domain_id> <topic_id>                      成文（需模型）
   python entrypoints/write_article.py <domain_id> <topic_id> --feedback "意见"      退回重写并附意见（需模型）
+  python entrypoints/write_article.py <domain_id> <topic_id> --revise "意见"        按意见修改：保留原文，只改相关小节（需模型）
   python entrypoints/write_article.py <domain_id> --batch t-0001,t-0002          批量成文（逐个进行，一题失败不影响其它）
   python entrypoints/write_article.py <domain_id> --batch-all                    批量成文：全部「已调研」且证据充分的选题
   python entrypoints/write_article.py <domain_id> <topic_id> --approve            审阅通过（drafted → reviewed）
@@ -21,7 +22,7 @@ from _common import force_utf8_stdio  # noqa: E402
 from article_garden import domains, settings  # noqa: E402
 from article_garden import budget  # noqa: E402
 from article_garden.providers.text import MiniAgentTextLLM, text_model_status  # noqa: E402
-from article_garden.writing import runner  # noqa: E402
+from article_garden.writing import revise, runner  # noqa: E402
 
 
 def _opt(args, flag):
@@ -64,6 +65,7 @@ def main(argv=None) -> int:
     try:
         feedback = _opt(args, "--feedback")
         abandon = _opt(args, "--abandon")
+        revise_note = _opt(args, "--revise")
         batch = _opt(args, "--batch")
         batch_all = "--batch-all" in args
         approve = "--approve" in args
@@ -92,6 +94,10 @@ def main(argv=None) -> int:
         eff, _ = settings.effective_settings(ctx)
         llm = budget.guard(ctx, MiniAgentTextLLM(use_system_proxy=eff["llm"]["use_system_proxy"]),
                                 timeout_min=eff["budget"]["step_timeout_minutes"])
+        if revise_note is not None:
+            result = revise.revise(ctx, tid, llm, revise_note, max_rounds=eff["budget"]["max_repair_rounds"])
+            print(json.dumps({"ok": True, **result}, ensure_ascii=False, indent=2))
+            return 0 if result["result"] in ("revised", "unchanged") else 1
         result = runner.write(ctx, tid, llm, max_rounds=eff["budget"]["max_repair_rounds"],
                               feedback=feedback or "")
         print(json.dumps({"ok": True, **result}, ensure_ascii=False, indent=2))

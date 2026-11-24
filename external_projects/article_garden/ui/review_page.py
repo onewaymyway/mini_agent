@@ -120,7 +120,15 @@ def render_review_page() -> None:
                 runner.approve(ctx, tid)
                 st.rerun()
         if topic["status"] in (states.DRAFTED, states.REVIEWED):
-            note = st.text_area("退回重写并附意见", key="rev_note", height=90)
+            rv = st.text_area("按意见修改（保留原文，只改意见涉及的小节）", key="rev_rv_note", height=90,
+                              placeholder="例如：第二节补充一个具体例子；语气再克制一些；删掉关于……的描述")
+            if st.button("按意见修改（后台）", key="rev_rv", disabled=(busy or not rv.strip())):
+                spawn("write_article.py", ctx.id, tid, "--revise", rv.strip())
+                st.success("已在后台修改，进度见「▶ 运行日志」；完成后刷新本页，修改后需重新审阅。")
+            last = (ck or {}).get("last_revision")
+            if last:
+                st.caption(f"上次修改：{last.get('at', '')[:16]}，改动小节：{'、'.join(last.get('changed_sections') or [])}；意见：{last.get('feedback', '')[:60]}")
+            note = st.text_area("退回重写并附意见（整篇重新生成）", key="rev_note", height=90)
             if st.button("退回重写（后台）", key="rev_rw", disabled=(busy or not note.strip())):
                 spawn("write_article.py", ctx.id, tid, "--feedback", note.strip())
                 st.success("已在后台重写，完成后刷新本页。")
