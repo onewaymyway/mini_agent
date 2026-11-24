@@ -8,12 +8,14 @@ from __future__ import annotations
 import html
 import json
 import shutil
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import generate, gaps, proposals, repo, store, timeline
 from .paths import data_root
 
+STATUS_LABEL = {"applied": "已写入", "pending": "待确认", "blocked": "已拦截", "rejected": "已拒绝"}
 DEFAULT_SETTINGS = {"auto_minor": True, "years_per_step": 10, "recent_events": 8}
 
 
@@ -70,7 +72,33 @@ def _resolve_map(wid: str) -> Dict[str, str]:
     return names
 
 
-def _submit_batch(wid: str, draft: Dict[str, Any], *, source: str) -> Dict[str, Any]:
+_OP_LABEL = {"create_entity": "新增实体", "create_character": "新增角色", "create_relation": "新增关系",
+             "update_entity": "更新实体", "update_character": "更新角色", "add_event": "新增事件",
+             "set_charter": "宪章"}
+_STATUS_LEVEL = {"applied": "ok", "pending": "warn", "blocked": "warn", "rejected": "info"}
+
+
+def _log_writes(wid: str, log, records: List[dict], skipped: List[str]) -> None:
+    if log is None:
+        return
+    names = {e["id"]: e["name"] for e in repo.load_entities(wid)}
+    names.update({c["id"]: c["name"] for c in repo.load_characters(wid)})
+    for r in records:
+        p = r["payload"]
+        if r["op"] == "create_relation":
+            head = f"{names.get(p.get('src'), p.get('src'))} —{p.get('type', '')}→ {names.get(p.get('dst'), p.get('dst'))}"
+        else:
+            head = p.get("title") or p.get("name") or names.get(r.get("target"), r.get("target") or "")
+        status_text = STATUS_LABEL.get(r["status"], r["status"])
+        msg = f"{_OP_LABEL.get(r['op'], r['op'])}「{head}」→ {status_text}"
+        if r.get("reasons"):
+            msg += "：" + "；".join(r["reasons"])
+        log.log("write", msg, level=_STATUS_LEVEL.get(r["status"], "info"), op=r["op"], status=r["status"])
+    for sk in skipped:
+        log.log("write", f"跳过：{sk}", level="warn")
+
+
+def _submit_batch(wid: str, draft: Dict[str, Any], *, source: str, log=None) -> Dict[str, Any]:
     ids = _resolve_map(wid)
     records: List[dict] = []
     skipped: List[str] = []
@@ -132,6 +160,7 @@ def _submit_batch(wid: str, draft: Dict[str, Any], *, source: str) -> Dict[str, 
                    "changes": changes, "violates_rules": ev.get("violates_rules") or []}
         records.append(proposals.submit(wid, "add_event", payload=payload, source=source))
 
+    _log_writes(wid, log, records, skipped)
     return {"records": records, "skipped": skipped}
 
 
@@ -165,21 +194,58 @@ def build_context(wid: str) -> Dict[str, Any]:
     }
 
 
-def advance(llm, wid: str, steps: int = 1) -> Dict[str, Any]:
+def advance(llm, wid: str, steps: int = 1, log=None) -> Dict[str, Any]:
+    """推进历史 steps 步。每个阶段写入运行日志（见 runlog.RunLog），失败时记录并重新抛出。"""
+    from .runlog import LoggedLLM, RunLog
+
     require_charter(wid)
-    results = []
-    for _ in range(max(1, int(steps))):
-        ctx = build_context(wid)
-        draft = generate.advance_draft(llm, context=ctx)   # 锁外调用模型
-        with _with_lock(wid):
-            report = _submit_batch(wid, draft, source="advance")
-            meta = repo.load_meta(wid)
-            year = meta["clock"]["year"]
-            meta["clock"]["year"] = year + int(meta["settings"].get("years_per_step", 10))
-            repo.save_meta(meta)
-        results.append({"year": year, "counts": _status_counts(report["records"]),
-                        "skipped": report["skipped"], "records": report["records"]})
-    return {"steps": results, "clock": repo.load_meta(wid)["clock"]}
+    log = log or RunLog(wid, "advance")
+    steps = max(1, int(steps))
+    started = time.monotonic()
+    meta = repo.load_meta(wid)
+    branch_name = repo.load_branches(wid).get(meta["active_branch"], {}).get("name", meta["active_branch"])
+    yps = int(meta["settings"].get("years_per_step", 10))
+    log.log("start", f"开始推进：{steps} 步，每步 {yps} 年", steps=steps, years_per_step=yps)
+    log.log("start", f"起点：第 {meta['clock']['year']} 年，活动分支「{branch_name}」，"
+                     f"运行 ID {log.run_id}")
+    results: List[dict] = []
+    try:
+        for i in range(steps):
+            step_t = time.monotonic()
+            log.log("step", f"第 {i + 1}/{steps} 步：收集世界状态")
+            ctx = build_context(wid)
+            alive = sum(1 for c in ctx["characters"] if c.get("status") == "alive")
+            log.log("context", f"上下文：实体 {len(ctx['entities'])}、角色 {len(ctx['characters'])}"
+                               f"（存活 {alive}）、近期事件 {len(ctx['events'])}、"
+                               f"硬规则 {len((ctx.get('charter') or {}).get('hard_rules') or [])} 条")
+            draft = generate.advance_draft(LoggedLLM(llm, log), context=ctx, log=log)   # 锁外调用模型
+            log.log("parse", f"模型输出解析通过：新角色 {len(draft.get('new_characters') or [])}、"
+                             f"新实体 {len(draft.get('entities') or [])}、关系 {len(draft.get('relations') or [])}、"
+                             f"设定更新 {len(draft.get('canon_updates') or [])}、"
+                             f"事件 {len(draft.get('events') or [])}", level="ok")
+            with _with_lock(wid):
+                report = _submit_batch(wid, draft, source="advance", log=log)
+                meta = repo.load_meta(wid)
+                year = meta["clock"]["year"]
+                meta["clock"]["year"] = year + yps
+                repo.save_meta(meta)
+            log.log("clock", f"时钟推进：第 {year} 年 → 第 {year + yps} 年")
+            counts = _status_counts(report["records"])
+            summary = "、".join(f"{STATUS_LABEL.get(k, k)} {v}" for k, v in counts.items()) or "无写入"
+            log.log("step", f"第 {i + 1} 步完成：{summary}，用时 {time.monotonic() - step_t:.1f} 秒", level="ok")
+            results.append({"year": year, "counts": counts, "skipped": report["skipped"],
+                            "records": report["records"]})
+    except Exception as exc:
+        log.log("error", f"推进中断：{type(exc).__name__}：{exc}", level="error")
+        raise
+    total: Dict[str, int] = {}
+    for r in results:
+        for k, v in r["counts"].items():
+            total[k] = total.get(k, 0) + v
+    log.log("done", f"推进结束：共 {steps} 步，用时 {time.monotonic() - started:.1f} 秒，"
+                    f"当前第 {repo.load_meta(wid)['clock']['year']} 年", level="ok", counts=total)
+    return {"steps": results, "clock": repo.load_meta(wid)["clock"], "run_id": log.run_id,
+            "log_path": str(log.path), "log": log.entries}
 
 
 # ---------- 扩展世界观

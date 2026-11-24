@@ -102,8 +102,13 @@ def _validate_storyboard(d: Dict[str, Any]) -> List[str]:
     return errs
 
 
+def _note(log, msg: str) -> None:
+    if log is not None:
+        log.log("retry", msg, level="warn")
+
+
 def call_json(llm, task: str, context: Dict[str, Any], instruction: str,
-              validate: Callable[[Dict[str, Any]], List[str]]) -> Dict[str, Any]:
+              validate: Callable[[Dict[str, Any]], List[str]], log=None) -> Dict[str, Any]:
     prompt = build_prompt(task, context, instruction)
     last_err = ""
     for attempt in range(2):
@@ -113,14 +118,19 @@ def call_json(llm, task: str, context: Dict[str, Any], instruction: str,
             data = parse_json(raw)
         except ValueError as exc:
             last_err = str(exc)
+            _note(log, f"{task} 第 {attempt + 1} 次输出无法解析：{last_err}" +
+                  ("，将重试一次" if attempt == 0 else ""))
             continue
         if not isinstance(data, dict):
             last_err = "顶层必须是对象"
+            _note(log, f"{task} 第 {attempt + 1} 次输出顶层不是对象" + ("，将重试一次" if attempt == 0 else ""))
             continue
         errs = validate(data)
         if not errs:
             return data
         last_err = "；".join(errs)
+        _note(log, f"{task} 第 {attempt + 1} 次输出结构不合格：{last_err}" +
+              ("，将重试一次" if attempt == 0 else ""))
     raise GenerationError(f"{task} 生成失败：{last_err}")
 
 
@@ -139,7 +149,7 @@ def gap_fill_draft(llm, *, context: Dict[str, Any], target_name: str, gap_label:
                      "attrs（对象，可为空）。", lambda d: [] if isinstance(d.get("summary"), str) else ["缺少 summary"])
 
 
-def advance_draft(llm, *, context: Dict[str, Any]) -> Dict[str, Any]:
+def advance_draft(llm, *, context: Dict[str, Any], log=None) -> Dict[str, Any]:
     return call_json(llm, "advance", context,
                      "请推进世界历史一个时间片。规则：1) 事件必须遵守宪章硬规则，违反时在 violates_rules 中写明；"
                      "2) 只能引用 context 中已存在的实体或角色（按名字），需要新人物请放入 new_characters；"
@@ -149,7 +159,7 @@ def advance_draft(llm, *, context: Dict[str, Any]) -> Dict[str, Any]:
                      "canon_updates（数组：target_name, target_type(entity|character), payload 对象），"
                      "events（数组：title, summary, involves（名字数组）, caused_by（事件标题数组，可空）, tags, "
                      "changes（数组：op(update_entity|update_character|create_relation), target_name, payload）, "
-                     "violates_rules（字符串数组，无则为空））。", _validate_advance)
+                     "violates_rules（字符串数组，无则为空））。", _validate_advance, log=log)
 
 
 def arc_draft(llm, *, context: Dict[str, Any]) -> Dict[str, Any]:

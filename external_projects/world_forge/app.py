@@ -20,7 +20,7 @@ for _p in (PROJECT_ROOT, *PROJECT_ROOT.parents[:2]):
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from world_forge import engine, gaps, graph as graph_mod, proposals, repo, store, timeline  # noqa: E402
+from world_forge import engine, gaps, graph as graph_mod, proposals, repo, runlog as runlog_mod, store, timeline  # noqa: E402
 from world_forge.providers.factory import make_image_provider, make_text_llm  # noqa: E402
 
 st.set_page_config(page_title="架空世界工坊", page_icon="🌍", layout="wide")
@@ -422,22 +422,46 @@ with tabs[5]:
     else:
         steps = st.number_input("推进步数", min_value=1, max_value=10, value=1)
         st.caption(f"每步 {meta['settings'].get('years_per_step', 10)} 年，当前第 {meta['clock']['year']} 年。"
-                   "宪章硬规则违反、引用不存在或已死亡的对象，会被自动拦截并记录原因。")
+                   "推进过程会实时显示在下方日志中，并保存到本世界的运行日志。")
         if st.button("推进", type="primary"):
-            with st.spinner("正在推演……"):
-                res = _safe(engine.advance, LLM, wid, int(steps))
-            if res:
-                for s in res["steps"]:
-                    st.markdown(f"**第 {s['year']} 年**　" + "　".join(
-                        f"{_tag(k)} {v}" for k, v in s["counts"].items()), unsafe_allow_html=True)
-                    for r in s["records"]:
-                        head = r["payload"].get("title") or r["payload"].get("name") or r["op"]
-                        st.markdown(f"{_tag(r['status'])} `{r['op']}` {head}", unsafe_allow_html=True)
-                        if r.get("reasons"):
-                            st.caption("；".join(r["reasons"]))
-                    for sk in s["skipped"]:
-                        st.caption(f"跳过：{sk}")
+            box = st.status("正在推进……", expanded=True)
+            sink = lambda e: box.text(runlog_mod.format_entry(e))  # noqa: E731
+            try:
+                res = engine.advance(LLM, wid, int(steps), log=runlog_mod.RunLog(wid, "advance", sink=sink))
+                box.update(label="推进完成", state="complete", expanded=False)
+                st.session_state.advance_report = res
+            except Exception as exc:  # noqa: BLE001
+                box.update(label="推进失败", state="error", expanded=True)
+                st.error(f"{type(exc).__name__}：{exc}")
+                st.session_state.pop("advance_report", None)
+        rep = st.session_state.get("advance_report")
+        if rep:
+            st.markdown("**本次推进结果**")
+            for s_ in rep["steps"]:
+                st.markdown(f"第 {s_['year']} 年　" + "　".join(
+                    f"{_tag(k)} {v}" for k, v in s_["counts"].items()), unsafe_allow_html=True)
+                for r in s_["records"]:
+                    head = r["payload"].get("title") or r["payload"].get("name") or r["op"]
+                    st.markdown(f"{_tag(r['status'])} `{r['op']}` {head}", unsafe_allow_html=True)
+                    if r.get("reasons"):
+                        st.caption("；".join(r["reasons"]))
+            if st.button("收起结果", key="close_advance_report"):
+                del st.session_state["advance_report"]
                 st.rerun()
+
+    st.markdown("#### 运行日志")
+    runs = runlog_mod.list_runs(wid)
+    if not runs:
+        st.caption("还没有运行记录。")
+    else:
+        labels = {r["path"]: f"{r['stamp']} · {'推进' if r['kind'] == 'advance' else r['kind']}" for r in runs}
+        chosen = st.selectbox("选择一次运行", list(labels), format_func=lambda k: labels[k], key="run_pick")
+        entries = runlog_mod.read_run(chosen)
+        lvl_count = {}
+        for e in entries:
+            lvl_count[e.get("level", "info")] = lvl_count.get(e.get("level", "info"), 0) + 1
+        st.caption(f"共 {len(entries)} 条记录：" + "　".join(f"{k} {v}" for k, v in lvl_count.items()))
+        st.code("\n".join(runlog_mod.format_entry(e) for e in entries), language=None)
 
 # ---------- 故事与漫画
 

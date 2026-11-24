@@ -93,8 +93,12 @@ def main(argv=None) -> int:
         elif args.cmd == "reject":
             _dump(proposals.reject(args.world, args.proposal))
         elif args.cmd == "advance":
+            from world_forge.runlog import RunLog, format_entry
             llm, _ = make_text_llm()
-            _dump(engine.advance(llm, args.world, args.steps))
+            log = RunLog(args.world, "advance",
+                         sink=lambda e: print(format_entry(e), file=sys.stderr, flush=True))
+            res = engine.advance(llm, args.world, args.steps, log=log)
+            _dump({k: v for k, v in res.items() if k != "log"})
         elif args.cmd == "fill":
             llm, _ = make_text_llm()
             _dump(engine.fill_gaps(llm, args.world, limit=args.limit))
