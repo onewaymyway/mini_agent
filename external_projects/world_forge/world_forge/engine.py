@@ -182,6 +182,29 @@ def advance(llm, wid: str, steps: int = 1) -> Dict[str, Any]:
     return {"steps": results, "clock": repo.load_meta(wid)["clock"]}
 
 
+# ---------- 世界观简介
+
+def get_overview(wid: str) -> Optional[Dict[str, Any]]:
+    """返回已保存的世界观简介：{"text", "generated_at", "year"}；没有则 None。"""
+    path = repo.world_dir(wid) / "overview.md"
+    if not path.is_file():
+        return None
+    info = repo.load_meta(wid).get("overview") or {}
+    return {"text": path.read_text(encoding="utf-8"), **info}
+
+
+def generate_overview(llm, wid: str) -> Dict[str, Any]:
+    """基于当前宪章、设定、角色与近期事件生成世界观背景介绍，保存为 overview.md（覆盖旧版本）。"""
+    require_charter(wid)
+    text = generate.overview_draft(llm, context=build_context(wid))   # 锁外调用模型
+    with _with_lock(wid):
+        (repo.world_dir(wid) / "overview.md").write_text(text + "\n", encoding="utf-8")
+        meta = repo.load_meta(wid)
+        meta["overview"] = {"generated_at": store.now_iso(), "year": meta["clock"]["year"]}
+        repo.save_meta(meta)
+    return get_overview(wid)
+
+
 # ---------- 删除世界
 
 def delete_world(wid: str) -> Dict[str, Any]:
@@ -198,39 +221,84 @@ def delete_world(wid: str) -> Dict[str, Any]:
 
 # ---------- 设定补全（交互与自动共用）
 
+FIXABLE_GAP_KINDS = {"missing_summary", "unlinked_faction_hint", "faction_without_relation", "isolated_entity"}
+
+
 def fill_gaps(llm, wid: str, *, gap_ids: Optional[List[str]] = None, limit: int = 5) -> Dict[str, Any]:
-    gap_list = gaps.find_gaps(wid)
-    if gap_ids:
-        gap_list = [g for g in gap_list if g["id"] in gap_ids]
-    filled, unfixed = [], []
+    """补全设定缺口。只对可补全的缺口计数，limit 作用于可补全项，不被无法处理的项占用。
+
+    返回 filled（已提交的提案）、skipped（跳过的缺口及原因）、remaining（补全后仍存在的缺口数）。
+    """
+    all_gaps = gaps.find_gaps(wid)
+    targets = [g for g in all_gaps if (not gap_ids or g["id"] in gap_ids)]
+    fixable = [g for g in targets if g["kind"] in FIXABLE_GAP_KINDS]
+    skipped = [{"gap": g, "reason": "需要手动处理（如角色所属势力不存在，请在角色页修改归属）"}
+               for g in targets if g["kind"] not in FIXABLE_GAP_KINDS]
     ctx_base = build_context(wid)
-    for g in gap_list[:limit]:
-        if g["kind"] == "missing_summary":
-            target = _find_target(wid, g["target"])
-            if target is None:
-                continue
-            draft = generate.gap_fill_draft(llm, context=ctx_base, target_name=target["name"], gap_label=g["label"])
-            with _with_lock(wid):
+    filled: List[dict] = []
+    done = 0
+    for g in fixable:
+        if done >= limit:
+            break
+        done += 1
+        try:
+            if g["kind"] == "missing_summary":
+                target = _find_target(wid, g["target"])
+                if target is None:
+                    skipped.append({"gap": g, "reason": "目标已不存在"})
+                    continue
+                draft = generate.gap_fill_draft(llm, context=ctx_base, target_name=target["name"], gap_label=g["label"])
                 op = "update_character" if g["entity_type"] == "character" else "update_entity"
-                rec = proposals.submit(wid, op, g["target"], {"summary": draft["summary"],
-                                                              "attrs": draft.get("attrs") or {}},
-                                       source="gap_fill")
-            filled.append({"gap": g, "proposal": rec})
-        elif g["kind"] == "unlinked_faction_hint":
-            hint = repo.load_characters(wid)
-            ch = next((c for c in hint if c["id"] == g["target"]), None)
-            fid = next((e["id"] for e in repo.load_entities(wid)
-                        if ch and e["name"] == ch.get("attrs", {}).get("faction_hint")), None)
-            if fid:
+                with _with_lock(wid):
+                    rec = proposals.submit(wid, op, g["target"], {"summary": draft["summary"],
+                                                                  "attrs": draft.get("attrs") or {}},
+                                           source="gap_fill")
+                filled.append({"gap": g, "proposals": [rec]})
+
+            elif g["kind"] == "unlinked_faction_hint":
+                ch = repo.find_by_id(repo.load_characters(wid), g["target"])
+                hint = (ch or {}).get("attrs", {}).get("faction_hint")
+                fid = next((e["id"] for e in repo.load_entities(wid) if e["name"] == hint), None)
+                if not fid:
+                    skipped.append({"gap": g, "reason": f"世界中还没有名为「{hint}」的实体，请先创建它"})
+                    continue
                 with _with_lock(wid):
                     rec = proposals.submit(wid, "update_character", g["target"], {"faction_id": fid},
                                            source="gap_fill")
-                filled.append({"gap": g, "proposal": rec})
-            else:
-                unfixed.append(g)
-        else:
-            unfixed.append(g)
-    return {"filled": filled, "unfixed": unfixed, "remaining": len(gaps.find_gaps(wid))}
+                filled.append({"gap": g, "proposals": [rec]})
+
+            else:  # faction_without_relation / isolated_entity：让模型建议关系
+                target = _find_target(wid, g["target"])
+                if target is None:
+                    skipped.append({"gap": g, "reason": "目标已不存在"})
+                    continue
+                others = [e for e in repo.load_entities(wid) if e["id"] != g["target"]]
+                if not others:
+                    skipped.append({"gap": g, "reason": "世界中没有其它实体可供建立关系"})
+                    continue
+                draft = generate.relation_draft(llm, context=ctx_base, target_name=target["name"],
+                                                target_kind=target["kind"],
+                                                options=[e["name"] for e in others])
+                by_name = {e["name"]: e["id"] for e in others}
+                recs = []
+                with _with_lock(wid):
+                    for r in draft.get("relations") or []:
+                        other_id = by_name.get(r.get("name"))
+                        if not other_id:
+                            continue
+                        recs.append(proposals.submit(wid, "create_relation", payload={
+                            "src": g["target"], "dst": other_id, "type": r.get("type") or "关联",
+                            "note": r.get("note", "")}, source="gap_fill"))
+                if recs and any(x["status"] == "applied" for x in recs):
+                    filled.append({"gap": g, "proposals": recs})
+                else:
+                    skipped.append({"gap": g, "reason": "模型未给出可用的关系"})
+        except generate.GenerationError as exc:
+            skipped.append({"gap": g, "reason": f"模型输出不合格：{exc}"})
+
+    remaining = len(gaps.find_gaps(wid))
+    return {"filled": filled, "skipped": skipped, "remaining": remaining,
+            "fixable_total": len(fixable)}
 
 
 def _find_target(wid: str, tid: str) -> Optional[dict]:

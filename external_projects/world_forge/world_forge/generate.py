@@ -182,3 +182,24 @@ def portrait_draft(llm, *, context: Dict[str, Any]) -> Dict[str, Any]:
                      "气质与年龄感，单人半身像，纯色背景，不要文字）。",
                      lambda d: [] if isinstance(d.get("visual_en"), str) and d["visual_en"].strip()
                      else ["缺少 visual_en"])
+
+
+def relation_draft(llm, *, context: Dict[str, Any], target_name: str, target_kind: str,
+                   options: List[str]) -> Dict[str, Any]:
+    return call_json(llm, "relations", {**context, "target_name": target_name, "target_kind": target_kind,
+                                        "options": options},
+                     "请为目标实体建议 1–3 条与世界其它实体的关系，只能从 options 中选择对象（用名字）。"
+                     "JSON 字段：relations（数组：name（必须是 options 中的名字）, type（关系类型，如 统治/贸易/敌对/依附）, "
+                     "note（一句话说明））。",
+                     lambda d: [] if isinstance(d.get("relations"), list) else ["relations 必须是数组"])
+
+
+def overview_draft(llm, *, context: Dict[str, Any]) -> str:
+    instr = ("请为读者写一篇中文的世界观背景介绍，约 800–1500 字，用 Markdown 小标题分段，依次涵盖："
+             "世界概况与基调、历史脉络、主要地理与势力、社会与技术/魔法体系（遵守硬规则）、当前局势、"
+             "近期重大事件、值得关注的人物。语言生动但要忠于已有设定，不要编造与设定冲突的内容，直接输出正文。")
+    raw = llm.ask(build_prompt("overview", context, instr), system=SYSTEM)
+    text = (raw or "").strip()
+    if not text:
+        raise GenerationError("世界观简介生成为空")
+    return text

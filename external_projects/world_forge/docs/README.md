@@ -9,6 +9,7 @@ streamlit run app.py --server.port 8509
 
 ## 典型流程
 
+0. **世界观简介**：在「总览」生成一篇背景介绍，快速了解当前世界观；世界推进后可重新生成。
 1. **新建**：输入一句概念，生成宪章草案与首批设定。
 2. **设定与提案**：批准宪章（`set_charter`）。查看待确认提案，补充设定缺口。
 3. **推进**：选择步数推进历史。每步生成事件、新角色与设定更新；被拦截的写入会注明原因。
@@ -23,6 +24,7 @@ python entrypoints/cli.py init --concept "蒸汽与符文并存的海上帝国"
 python entrypoints/cli.py approve --world <wid> --proposal <pid>
 python entrypoints/cli.py advance --world <wid> --steps 2
 python entrypoints/cli.py fill --world <wid>
+python entrypoints/cli.py overview --world <wid>
 python entrypoints/cli.py arc --world <wid> --from 0 --to 30
 python entrypoints/cli.py short --world <wid> --arc <sid>
 python entrypoints/cli.py board --world <wid> --story <sid>

@@ -124,6 +124,23 @@ with tabs[1]:
     cols[2].metric("角色", len(characters))
     cols[3].metric("待确认提案", len(pending))
     cols[4].metric("设定缺口", len(gap_list))
+    st.markdown("#### 世界观简介")
+    ov = engine.get_overview(wid)
+    if ov:
+        stale = ov.get("year") != meta["clock"]["year"]
+        st.caption(f"生成于 {ov.get('generated_at', '')}（当时第 {ov.get('year')} 年）"
+                   + ("　· 世界已推进，建议重新生成" if stale else ""))
+        with st.container(border=True):
+            st.markdown(ov["text"])
+    else:
+        st.caption("还没有世界观简介。宪章确认后可生成，用于快速了解当前世界观。")
+    can_overview = bool(meta.get("charter"))
+    if st.button("重新生成世界观简介" if ov else "生成世界观简介", type="primary", disabled=not can_overview,
+                 key="gen_overview"):
+        with st.spinner("正在撰写世界观简介……"):
+            res = _safe(engine.generate_overview, LLM, wid)
+        if res:
+            st.rerun()
     if meta.get("charter"):
         ch = meta["charter"]
         st.markdown(f"**题材** {ch.get('genre', '')}　**基调** {ch.get('tone', '')}")
@@ -165,11 +182,20 @@ with tabs[2]:
                 st.caption("；".join(p["reasons"]))
     with right:
         st.markdown("#### 设定缺口")
-        if st.button("自动补全前 5 个缺口", type="secondary", disabled=not gap_list):
+        if st.button("自动补全前 5 个可处理的缺口", type="secondary", disabled=not gap_list):
             with st.spinner("正在补全……"):
                 res = _safe(engine.fill_gaps, LLM, wid, limit=5)
             if res:
-                st.success(f"已提交 {len(res['filled'])} 条补全提案，剩余缺口 {res['remaining']} 个。")
+                st.session_state.fill_report = res
+                st.rerun()
+        rep = st.session_state.get("fill_report")
+        if rep:
+            st.info(f"本次补全 {len(rep['filled'])} 个缺口（可处理共 {rep['fixable_total']} 个），"
+                    f"剩余缺口 {rep['remaining']} 个。")
+            for sk in rep["skipped"]:
+                st.caption(f"跳过「{sk['gap']['label']}」：{sk['reason']}")
+            if st.button("收起结果", key="close_fill_report"):
+                del st.session_state["fill_report"]
                 st.rerun()
         for g in gap_list[:30]:
             c1, c2 = st.columns([4, 1])

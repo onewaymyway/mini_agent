@@ -59,3 +59,22 @@ def test_fill_gaps_summary_and_hint_link(world, llm):
     assert any(f["gap"]["kind"] == "missing_summary" for f in res["filled"])
     ent = next(e for e in repo.load_entities(world) if e["name"] == "无名湾")
     assert ent["summary"].startswith("（规则占位）")
+
+
+def test_auto_fill_handles_relation_gaps_not_just_first_five(world, llm):
+    """回归：前面都是无法处理的缺口时，自动补全仍应补全可处理的关系缺口。"""
+    for i in range(6):   # 制造多个“孤立地理”缺口（关系类，可补全）
+        proposals.submit(world, "create_entity", payload={"kind": "地理", "name": f"甲地{i}", "summary": "x"})
+    res = engine.fill_gaps(llm, world, limit=5)
+    assert len(res["filled"]) >= 1
+    assert res["fixable_total"] >= 1
+
+
+def test_overview_generated_and_persisted(world, llm):
+    assert engine.get_overview(world) is None
+    ov = engine.generate_overview(llm, world)
+    assert ov["text"].strip()
+    assert "世界概况" in ov["text"]
+    assert repo.load_meta(world)["overview"]["year"] == 0
+    engine.advance(llm, world, 1)
+    assert engine.get_overview(world)["text"] == ov["text"]   # 推进不会自动改写

@@ -114,6 +114,17 @@ class RuleTextLLM(TextLLM):
             "ending": "（规则占位）结局待定。",
         }
 
+    def _task_relations(self, ctx):
+        opts = ctx.get("options") or []
+        return {"relations": [{"name": opts[0], "type": "关联", "note": "（规则占位）"}] if opts else []}
+
+    def _task_overview(self, ctx):
+        ch = ctx.get("charter") or {}
+        names = [e.get("name") for e in ctx.get("entities", [])][:5]
+        return (f"## 世界概况\n\n（规则占位）{ch.get('summary') or '这是一个架空世界。'}\n\n"
+                f"## 主要地理与势力\n\n（规则占位）{'、'.join(names) or '待补充'}。\n\n"
+                "## 当前局势\n\n（规则占位）正文需要真实模型生成。")
+
     def _task_portrait(self, ctx):
         return {"visual_en": f"{ctx.get('name', 'character')}, adult person, neutral expression, "
                              "half body portrait, plain background, no text"}
