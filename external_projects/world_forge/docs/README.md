@@ -31,7 +31,11 @@ python entrypoints/cli.py overview --world <wid>
 python entrypoints/cli.py arc --world <wid> --from 0 --to 30
 python entrypoints/cli.py short --world <wid> --arc <sid>
 python entrypoints/cli.py board --world <wid> --story <sid> --pages 6 --reading ltr --color color   # --pages 可为 1–20 或 auto
-python entrypoints/cli.py comic --world <wid> --story <sid> --reading rtl --color bw            # 输出 pages/*.png 与 comic_pages.zip
+python entrypoints/cli.py comic --world <wid> --story <sid> --reading rtl --color bw --candidates 2   # 输出 pages/*.png 与 comic_pages.zip
+python entrypoints/cli.py style --world <wid>                                    # 风格指南（全世界一份）
+python entrypoints/cli.py sheets --world <wid> --story <sid> [--overwrite]       # 角色表：侧面 + 愤怒/悲伤/惊讶
+python entrypoints/cli.py scenes --world <wid> --story <sid> [--overwrite]       # 场景图：分镜中用到的地点
+python entrypoints/cli.py choose --world <wid> --story <sid> --page 1 --panel 1 --k 2   # 采用第 2 张候选
 python entrypoints/cli.py export --world <wid> --story <sid>
 ```
 
@@ -44,6 +48,7 @@ python entrypoints/cli.py export --world <wid> --story <sid>
 | `MINI_AGENT_ROOT` | mini_agent 仓库根，用于找到 LLMHelper 与 gen_image_with_text skill |
 | `WORLD_FORGE_SKILLS_DIR` | 手动指定 `.claude/skills` 目录 |
 | `AGNES_API_KEYS` / `AGNES_API_KEY` | 图像模型 key（与 skill 规则相同） |
+| `WORLD_FORGE_IMAGE_BUDGET` | 单次操作（漫画、角色表、场景图）的图像调用上限，默认 80 |
 | `WORLD_FORGE_FONT` | PNG 排字使用的中文字体路径（未设置时依次尝试 Noto CJK、文泉驿、微软雅黑、苹方等常见字体） |
 
 ## 测试
@@ -74,6 +79,17 @@ python -m pytest -q tests
 - **音效与旁白**：音效为描边粗体字，直接叠在画面上；旁白为黄色说明框。
 - **未生成的格子**：PNG 中显示占位框与失败原因，不会静默留白。
 - **黑白模式**：格子转灰度并加强对比，并使用「黑白网点」风格提示词；真正的网点纹理与印刷版式留到后续阶段。
+
+## 漫画的风格与设定图（P2）
+
+- **风格指南**：在故事页「风格与设定图」中生成一次（全世界共用）。它包含线条、主色、光照的英文描述，之后每次出图都会带上，保持全书画风一致。黑白模式不带配色。
+- **每幕配色**：节拍表为每页给出配色，写入该页每格的提示词；黑白模式不使用。
+- **角色表**：为本故事出场且已有立绘的角色生成侧面和三种表情（愤怒、悲伤、惊讶）。分镜格的「情绪」决定参考哪张表情图：愤怒/生气、悲伤/哭/难过、惊讶/震惊会命中对应表情，其它（包括平静）沿用立绘。
+- **场景图**：分镜格可以指定「地点」（取自地理类设定）。生成时先由文本模型写英文场景描述，结果保存在该设定条目上，再生成场景图；出图时作为参考图。
+- **参考图优先级**：上一格 → 主角表情图（无则立绘）→ 地点场景图 → 其它出场角色立绘；最多 3 张（与原先一致）。
+- **候选**：「每格候选数」可选 1–3（默认 1）。候选会全部保存，默认采用第一张成功的；在「单格重新生成」中可查看候选图并选用其中一张，选用后只重新拼装成品，不调用图像模型。
+- **调用上限**：每次操作的图像调用总数默认不超过 80 次（`WORLD_FORGE_IMAGE_BUDGET` 可调）。超限时停止，已完成的保留，并在日志中提示。
+- **注意**：风格指南、角色表、场景图都只是参考，不做自动质检；生成结果需要人工查看。
 
 ## 停止与重新生成
 

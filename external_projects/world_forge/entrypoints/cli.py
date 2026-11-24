@@ -11,7 +11,11 @@
   python entrypoints/cli.py arc --world <wid> [--events a,b] [--from 0] [--to 30]
   python entrypoints/cli.py short --world <wid> [--arc <sid>] [--brief 文字] [--events a,b]
   python entrypoints/cli.py board --world <wid> --story <sid> [--pages 6|auto] [--reading ltr|rtl] [--color color|bw]
-  python entrypoints/cli.py comic --world <wid> --story <sid> [--reading ltr|rtl] [--color color|bw]
+  python entrypoints/cli.py comic --world <wid> --story <sid> [--reading ltr|rtl] [--color color|bw] [--candidates 1-3]
+  python entrypoints/cli.py style --world <wid>
+  python entrypoints/cli.py sheets --world <wid> --story <sid> [--overwrite]
+  python entrypoints/cli.py scenes --world <wid> --story <sid> [--overwrite]
+  python entrypoints/cli.py choose --world <wid> --story <sid> --page 1 --panel 1 --k 2
   python entrypoints/cli.py export --world <wid> --story <sid>
   python entrypoints/cli.py expand --world <wid> [--request "北方增加一个冰原部族"] [--count 3]
   python entrypoints/cli.py relations --world <wid> [--limit 5]  # 自动补全实体之间的关系
@@ -75,6 +79,15 @@ def main(argv=None) -> int:
     p = sub.add_parser("comic"); p.add_argument("--world", required=True); p.add_argument("--story", required=True)
     p.add_argument("--reading", default=None, choices=["ltr", "rtl"])
     p.add_argument("--color", default=None, choices=["color", "bw"])
+    p.add_argument("--candidates", type=int, default=None, choices=[1, 2, 3], help="每格候选数，默认 1")
+    p = sub.add_parser("style"); p.add_argument("--world", required=True)
+    p = sub.add_parser("sheets"); p.add_argument("--world", required=True); p.add_argument("--story", required=True)
+    p.add_argument("--overwrite", action="store_true")
+    p = sub.add_parser("scenes"); p.add_argument("--world", required=True); p.add_argument("--story", required=True)
+    p.add_argument("--overwrite", action="store_true")
+    p = sub.add_parser("choose"); p.add_argument("--world", required=True); p.add_argument("--story", required=True)
+    p.add_argument("--page", type=int, required=True); p.add_argument("--panel", type=int, required=True)
+    p.add_argument("--k", type=int, required=True)
     p = sub.add_parser("export"); p.add_argument("--world", required=True); p.add_argument("--story", required=True)
     p = sub.add_parser("expand"); p.add_argument("--world", required=True)
     p.add_argument("--request", default="", help="扩展要求；留空则自动完善")
@@ -128,9 +141,22 @@ def main(argv=None) -> int:
             llm, _ = make_text_llm()
             _dump(engine.make_storyboard(llm, args.world, args.story, pages=args.pages,
                                          reading=args.reading, color=args.color))
+        elif args.cmd == "style":
+            llm, _ = make_text_llm()
+            _dump({"style_guide": engine.make_style_guide(llm, args.world)})
+        elif args.cmd == "sheets":
+            prov, note = make_image_provider()
+            _dump({**engine.make_character_sheets(prov, args.world, args.story, overwrite=args.overwrite), "note": note})
+        elif args.cmd == "scenes":
+            llm, _ = make_text_llm()
+            prov, note = make_image_provider()
+            _dump({**engine.make_scene_images(llm, prov, args.world, args.story, overwrite=args.overwrite), "note": note})
+        elif args.cmd == "choose":
+            _dump(engine.choose_candidate(args.world, args.story, args.page, args.panel, args.k))
         elif args.cmd == "comic":
             prov, note = make_image_provider()
-            res = engine.render_comic(prov, args.world, args.story, reading=args.reading, color=args.color)
+            res = engine.render_comic(prov, args.world, args.story, reading=args.reading, color=args.color,
+                                      candidates=args.candidates)
             _dump({**res, "note": note})
         elif args.cmd == "expand":
             llm, _ = make_text_llm()

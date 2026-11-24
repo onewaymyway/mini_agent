@@ -7,10 +7,11 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import shutil
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import cancel, comic_layout, comic_render, generate, gaps, perspective, proposals, repo, store, timeline
 from .calendar import (clock_minutes, format_time, step_label, step_minutes, validate_step, year_of)
@@ -1025,6 +1026,8 @@ def make_storyboard(llm, wid: str, sid: str, log=None, *, pages: Any = None, rea
             raise EngineError("该故事没有可用于分镜的内容")
         ctx["characters"] = [{"name": c["name"], "summary": c.get("summary", "")[:80]}
                              for c in repo.load_characters(wid)][:12]
+        ctx["locations"] = [{"name": e["name"], "summary": e.get("summary", "")[:80]}
+                            for e in repo.load_entities(wid) if e.get("kind") == "地理"][:8]
         own_focus = smeta.get("focus")
         if own_focus is None and smeta.get("parent"):
             own_focus = load_story_meta_safe(wid, smeta["parent"]).get("focus")
@@ -1037,12 +1040,12 @@ def make_storyboard(llm, wid: str, sid: str, log=None, *, pages: Any = None, rea
         log.log("parse", f"节拍表通过：{len(beats)} 页", level="ok")
         for b in beats:
             log.log("parse", f"第 {b['no']} 页｜{b['purpose']}｜焦点：{b['focus']}｜钩子：{b['hook'] or '（结尾）'}")
-        ctx["beats"] = [{"no": b["no"], "purpose": b["purpose"], "focus": b["focus"], "hook": b["hook"]}
-                        for b in beats]
+        ctx["beats"] = [{"no": b["no"], "purpose": b["purpose"], "focus": b["focus"], "hook": b["hook"],
+                         "palette": b.get("palette", "")} for b in beats]
         cancel.checkpoint()
         board = generate.storyboard_draft(LoggedLLM(llm, log), context=ctx, log=log, pages=len(beats))
         for pg, b in zip(board["pages"], beats):
-            pg["beat"], pg["hook"] = b["purpose"], b["hook"]
+            pg["beat"], pg["hook"], pg["palette"] = b["purpose"], b["hook"], b.get("palette", "")
         n_panels = sum(len(p["panels"]) for p in board["pages"])
         log.log("parse", f"分镜结构通过：{len(board['pages'])} 页，共 {n_panels} 格", level="ok")
         for pg in board["pages"]:
@@ -1081,16 +1084,108 @@ def _panel_ratio(span: int) -> str:
     return "16:9" if span == 2 else "1:1"
 
 
+def _image_budget_limit() -> int:
+    """单次操作（漫画/角色表/场景图）允许的图像调用总数。默认 80，可用 WORLD_FORGE_IMAGE_BUDGET 调整。"""
+    try:
+        return max(1, int(os.environ.get("WORLD_FORGE_IMAGE_BUDGET", "80")))
+    except ValueError:
+        return 80
+
+
+class _Budget:
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.used = 0
+
+    def take(self) -> bool:
+        if self.used >= self.limit:
+            return False
+        self.used += 1
+        return True
+
+
+def _comic_style(meta: Dict[str, Any], color: str) -> str:
+    """统一风格提示词：基础风格 + 世界类型/基调 + 风格指南（黑白模式不带配色）。"""
+    sg = meta.get("style_guide") or {}
+    parts = [COMIC_STYLE_BW if color == "bw" else COMIC_STYLE]
+    if meta.get("genre"):
+        parts.append(f"{meta['genre']} setting")
+    if meta.get("tone"):
+        parts.append(f"{meta['tone']} mood")
+    for key in ("line", "lighting") + (() if color == "bw" else ("palette",)):
+        if sg.get(key):
+            parts.append(sg[key])
+    return ", ".join(parts)
+
+
+def _panel_refs(wid: str, pn: Dict[str, Any], prev_img: Optional[Path], present: List[dict],
+                ent_by_name: Dict[str, dict]) -> Tuple[List[Path], List[str]]:
+    """参考图优先级：上一格 → 主角的表情图（无则立绘）→ 所在地点的场景图 → 其他出场角色立绘；最多 MAX_REFS 张。"""
+    refs: List[Path] = []
+    names: List[str] = []
+    if prev_img is not None:
+        refs.append(prev_img)
+        names.append("上一格")
+    if present:
+        main = present[0]
+        key = comic_layout.expression_key(pn.get("emotion"))
+        sheet = repo.resolve_sheet(wid, main["id"], key) if key else None
+        pth = sheet or repo.resolve_portrait(wid, main)
+        if pth is not None and len(refs) < MAX_REFS:
+            refs.append(pth)
+            names.append(f"{main['name']}{'表情图' if sheet else '立绘'}")
+    loc = ent_by_name.get(pn.get("location") or "")
+    if loc is not None:
+        sc = repo.resolve_scene(wid, loc["id"])
+        if sc is not None and len(refs) < MAX_REFS:
+            refs.append(sc)
+            names.append(f"场景「{loc['name']}」")
+    for ch in present[1:]:
+        pth = repo.resolve_portrait(wid, ch)
+        if pth is not None and len(refs) < MAX_REFS:
+            refs.append(pth)
+            names.append(f"{ch['name']}立绘")
+    return refs, names
+
+
+def _assemble_outputs(wid: str, sid: str, d: Path, board: Dict[str, Any], opts: Dict[str, Any], log) -> Dict[str, Any]:
+    """拼装成品：服务端排字导出 PNG 页与 zip，并生成网页预览 comic.html。"""
+    fonts = comic_render.Fonts()
+    if fonts.path is None:
+        log.log("assemble", "未找到中文字体，PNG 中的中文可能显示为方框（可设置环境变量 WORLD_FORGE_FONT 指定字体）",
+                level="warn")
+    log.log("assemble", "服务端排字，导出 PNG 页（pages/page_NN.png），并打包为 comic_pages.zip")
+    plans = [comic_layout.plan_page(pg, opts["reading"]) for pg in board["pages"]]
+    pages_dir = d / "pages"
+    if pages_dir.exists():
+        shutil.rmtree(pages_dir)
+    pngs = comic_render.write_pages(plans, base_dir=d, out_dir=pages_dir, color=opts["color"], fonts=fonts)
+    log.log("assemble", f"已导出 {len(pngs)} 页 PNG", level="ok")
+    log.log("assemble", "拼装网页预览 comic.html（图片嵌入文件，可独立打开）")
+    comic = render_comic_html(board, title=load_story_meta_safe(wid, sid).get("title", "漫画"), base_dir=d,
+                              reading=opts["reading"])
+    (d / "comic.html").write_text(comic, encoding="utf-8")
+    with _with_lock(wid):
+        meta_s = repo.load_story_meta(wid, sid)
+        meta_s["has_comic"] = True
+        meta_s["comic_opts"] = {**(meta_s.get("comic_opts") or {}), "reading": opts["reading"], "color": opts["color"]}
+        repo.save_story_meta(wid, sid, meta_s)
+    return {"pages": [str(p) for p in pngs], "pages_zip": str(d / "comic_pages.zip"), "comic": str(d / "comic.html")}
+
+
 def render_comic(provider, wid: str, sid: str, log=None,
                  only: Optional[List[tuple]] = None, *, reading: Optional[str] = None,
-                 color: Optional[str] = None) -> Dict[str, Any]:
+                 color: Optional[str] = None, candidates: Optional[int] = None) -> Dict[str, Any]:
     """逐格生成分镜图并拼装漫画页。only 为 [(页号, 格号), ...] 时只重做这些格，其余保留原图。
 
-    连贯性做法：统一风格前缀；每格带上出场角色的外观锚点；参考图包含上一格的画面和出场角色立绘。
+    连贯性：统一风格（含风格指南）；每页的配色；主角表情图/立绘、地点场景图与上一格作为参考。
+    候选：candidates=N（1–3）时每格生成 N 张，默认采用第一张成功的，其余保存在 candidates 中供人工选用。
+    调用上限：单次操作的图像调用总数不超过 WORLD_FORGE_IMAGE_BUDGET（默认 80）；超限则停止，已完成的保留。
     停止时：已完成的格子保存，并拼装部分漫画，返回 cancelled=True。
     """
     log = _log_or_new(log, wid, "comic")
     cancelled = False
+    exhausted = False
     try:
         d = repo.story_dir(wid, sid)
         board = store.read_json(d / "storyboard.json")
@@ -1099,32 +1194,35 @@ def render_comic(provider, wid: str, sid: str, log=None,
         meta = repo.load_meta(wid)
         chars = repo.load_characters(wid)
         by_name = {c["name"]: c for c in chars}
+        ent_by_name = {e["name"]: e for e in repo.load_entities(wid)}
         stored = board.get("opts") or {}
         opts = comic_layout.normalize_opts(pages=stored.get("pages"), reading=reading or stored.get("reading"),
                                            color=color or stored.get("color"))
         board["opts"] = opts
+        n_cand = max(1, min(int(candidates or comic_layout.CANDIDATE_DEFAULT), comic_layout.CANDIDATE_MAX))
+        budget = _Budget(_image_budget_limit())
         provider_name = getattr(provider, "name", "unknown")
         stub = bool(getattr(provider, "is_stub", False))
         total = sum(len(p["panels"]) for p in board["pages"])
         targets = {tuple(x) for x in only} if only else None
         n_todo = total if targets is None else sum(
             1 for pg in board["pages"] for i in range(1, len(pg["panels"]) + 1) if (pg["no"], i) in targets)
-        style = (COMIC_STYLE_BW if opts["color"] == "bw" else COMIC_STYLE) \
-            + (f", {meta['genre']} setting" if meta.get("genre") else "") \
-            + (f", {meta['tone']} mood" if meta.get("tone") else "")
+        style = _comic_style(meta, opts["color"])
         scope = "全部格子" if targets is None else f"指定的 {n_todo} 格"
         log.log("start", f"生成漫画图（{scope}）：{len(board['pages'])} 页，共 {total} 格，图像来源：{provider_name}"
+                         + (f"，每格 {n_cand} 张候选" if n_cand > 1 else "")
                          + ("（占位图，未调用真实模型）" if stub else ""), provider=provider_name, stub=stub)
         if stub:
             log.log("start", "注意：当前为占位图，不会调用图像模型", level="warn")
         log.log("start", f"版式：{comic_layout.READING_LABEL[opts['reading']]}，"
-                         f"{comic_layout.COLOR_LABEL[opts['color']]}；统一风格：{style[:60]}…")
+                         f"{comic_layout.COLOR_LABEL[opts['color']]}；图像调用上限 {budget.limit} 次")
         ok = fail = skipped = 0
         idx = 0
         done_now = 0
         prev_img = None
         try:
             for pg in board["pages"]:
+                palette = pg.get("palette") or ""
                 for i, pn in enumerate(pg["panels"], start=1):
                     idx += 1
                     rel = f"panels/p{pg['no']:02d}_{i:02d}.png"
@@ -1141,22 +1239,14 @@ def render_comic(provider, wid: str, sid: str, log=None,
                         if n not in by_name:
                             log.log("panel", f"第 {pg['no']} 页第 {i} 格：角色「{n}」不在世界中，无外观锚点",
                                     level="warn")
-                    refs: List[Path] = []
-                    ref_names: List[str] = []
-                    if prev_img is not None:
-                        refs.append(prev_img)
-                        ref_names.append("上一格")
-                    for ch in present:
-                        pth = repo.resolve_portrait(wid, ch)
-                        if pth is not None and len(refs) < MAX_REFS:
-                            refs.append(pth)
-                            ref_names.append(f"{ch['name']}立绘")
+                    refs, ref_names = _panel_refs(wid, pn, prev_img, present, ent_by_name)
                     anchors = "; ".join(f"{ch['name']}: {ch['attrs']['visual_en']}"
                                         for ch in present if (ch.get("attrs") or {}).get("visual_en"))
                     shot = pn.get("shot") or "中景"
                     span = int(pn.get("span") or 1)
                     prompt = (f"{style}. {SHOT_EN.get(shot, 'medium shot')}. {pn['visual_en']}."
                               + (f" Characters: {anchors}." if anchors else "")
+                              + (f" Color palette: {palette}." if palette and opts["color"] == "color" else "")
                               + " No text, no speech bubbles, no lettering.")
                     done_now += 1
                     log.log("panel", f"[{done_now}/{n_todo}] 第 {pg['no']} 页第 {i} 格（{shot}，"
@@ -1165,50 +1255,252 @@ def render_comic(provider, wid: str, sid: str, log=None,
                     if existing.is_file():
                         _archive(existing, log)
                     t = time.monotonic()
-                    res = provider.generate(prompt, existing, ratio=_panel_ratio(span),
-                                            reference_images=refs[:MAX_REFS])
+                    results = []
+                    for k in range(1, n_cand + 1):
+                        if not budget.take():
+                            exhausted = True
+                            break
+                        path = existing if n_cand == 1 else d / f"panels/p{pg['no']:02d}_{i:02d}_c{k}.png"
+                        if n_cand > 1 and path.is_file():
+                            _archive(path, log)
+                        res = provider.generate(prompt, path, ratio=_panel_ratio(span),
+                                                reference_images=refs[:MAX_REFS])
+                        results.append((k, path, res))
                     dur = time.monotonic() - t
-                    pn["image"] = rel if res.ok else None
-                    pn["image_error"] = None if res.ok else res.error
-                    if res.ok:
+                    if not results:
+                        break   # 调用上限已用尽：本格及之后的格子保持原样
+                    if n_cand == 1:
+                        res = results[0][2]
+                        pn["image"] = rel if res.ok else None
+                        pn["image_error"] = None if res.ok else res.error
+                        pn.pop("candidates", None)
+                        pn.pop("chosen", None)
+                    else:
+                        good = [(k, p) for k, p, r in results if r.ok]
+                        if good:
+                            shutil.copy2(good[0][1], existing)   # 默认采用第一张成功的
+                            pn["image"], pn["image_error"] = rel, None
+                            pn["candidates"] = [str((p).relative_to(d)) for _, p in good]
+                            pn["chosen"] = 1
+                        else:
+                            pn["image"], pn["image_error"] = None, results[-1][2].error
+                            pn.pop("candidates", None)
+                            pn.pop("chosen", None)
+                    if pn.get("image"):
                         ok += 1
                         prev_img = existing
-                        log.log("panel", f"[{done_now}/{n_todo}] 完成：{rel}，用时 {dur:.1f} 秒", level="ok")
+                        log.log("panel", f"[{done_now}/{n_todo}] 完成：{rel}"
+                                         + (f"（候选 {len(pn['candidates'])} 张）" if n_cand > 1 else "")
+                                         + f"，用时 {dur:.1f} 秒", level="ok")
                     else:
                         fail += 1
-                        log.log("panel", f"[{done_now}/{n_todo}] 失败：{res.error}，用时 {dur:.1f} 秒", level="warn")
+                        log.log("panel", f"[{done_now}/{n_todo}] 失败：{pn['image_error']}，用时 {dur:.1f} 秒",
+                                level="warn")
+                    if exhausted:
+                        break
+                if exhausted:
+                    break
         except cancel.Cancelled:
             cancelled = True
             log.log("cancel", f"已停止：已处理 {done_now}/{n_todo} 格，已完成的格子保留", level="warn")
+        if exhausted:
+            log.log("cancel", f"已达本次图像调用上限（{budget.limit} 次），剩余格子未生成。"
+                              "可调大 WORLD_FORGE_IMAGE_BUDGET 或分次生成", level="warn")
         board["provider"], board["stub"] = provider_name, stub
         store.write_json(d / "storyboard.json", board)
-        fonts = comic_render.Fonts()
-        if fonts.path is None:
-            log.log("assemble", "未找到中文字体，PNG 中的中文可能显示为方框（可设置环境变量 WORLD_FORGE_FONT 指定字体）",
-                    level="warn")
-        log.log("assemble", "服务端排字，导出 PNG 页（pages/page_NN.png），并打包为 comic_pages.zip")
-        plans = [comic_layout.plan_page(pg, opts["reading"]) for pg in board["pages"]]
-        pages_dir = d / "pages"
-        if pages_dir.exists():
-            shutil.rmtree(pages_dir)
-        pngs = comic_render.write_pages(plans, base_dir=d, out_dir=pages_dir, color=opts["color"], fonts=fonts)
-        log.log("assemble", f"已导出 {len(pngs)} 页 PNG", level="ok")
-        log.log("assemble", "拼装网页预览 comic.html（图片嵌入文件，可独立打开）")
-        comic = render_comic_html(board, title=load_story_meta_safe(wid, sid).get("title", "漫画"), base_dir=d,
-                                  reading=opts["reading"])
-        (d / "comic.html").write_text(comic, encoding="utf-8")
-        with _with_lock(wid):
-            meta_s = repo.load_story_meta(wid, sid)
-            meta_s["has_comic"] = True
-            meta_s["comic_opts"] = {**(meta_s.get("comic_opts") or {}), "reading": opts["reading"], "color": opts["color"]}
-            repo.save_story_meta(wid, sid, meta_s)
-        level = "warn" if (fail or cancelled) else "ok"
-        log.log("done", f"{'已停止' if cancelled else '完成'}：成功 {ok} 格，失败 {fail} 格"
+        out = _assemble_outputs(wid, sid, d, board, opts, log)
+        level = "warn" if (fail or cancelled or exhausted) else "ok"
+        log.log("done", f"{'已停止' if cancelled else '完成'}：成功 {ok} 格，失败 {fail} 格，"
+                        f"图像调用 {budget.used} 次"
                         + (f"，保留 {skipped} 格原图" if skipped else ""), level=level, ok=ok, failed=fail)
         return {"ok": ok, "failed": fail, "skipped": skipped, "stub": stub, "provider": provider_name,
-                "comic": str(d / "comic.html"), "pages": [str(p) for p in pngs],
-                "pages_zip": str(d / "comic_pages.zip"), "reading": opts["reading"], "color": opts["color"],
-                "cancelled": cancelled}
+                **out, "reading": opts["reading"], "color": opts["color"], "image_calls": budget.used,
+                "budget_exhausted": exhausted, "cancelled": cancelled}
+    except Exception as exc:
+        _fail(log, exc)
+        raise
+
+
+def choose_candidate(wid: str, sid: str, page_no: int, panel_no: int, k: int, log=None) -> Dict[str, Any]:
+    """人工选用第 k 张候选：复制为该格的正式图，并重新拼装成品（不调用图像模型）。"""
+    log = _log_or_new(log, wid, "comic")
+    try:
+        d = repo.story_dir(wid, sid)
+        with _with_lock(wid):
+            board = store.read_json(d / "storyboard.json")
+            if not board:
+                raise EngineError("请先生成分镜")
+            pn = next((p for pg in board["pages"] if pg["no"] == page_no
+                       for j, p in enumerate(pg["panels"], start=1) if j == panel_no), None)
+            if pn is None:
+                raise EngineError(f"没有第 {page_no} 页第 {panel_no} 格")
+            cands = pn.get("candidates") or []
+            if not (1 <= k <= len(cands)):
+                raise EngineError(f"该格没有第 {k} 张候选（共 {len(cands)} 张）")
+            rel = f"panels/p{page_no:02d}_{panel_no:02d}.png"
+            shutil.copy2(d / cands[k - 1], d / rel)
+            pn["image"], pn["image_error"], pn["chosen"] = rel, None, k
+            store.write_json(d / "storyboard.json", board)
+        opts = board.get("opts") or comic_layout.normalize_opts()
+        log.log("save", f"第 {page_no} 页第 {panel_no} 格改用第 {k} 张候选，重新拼装成品", level="ok")
+        out = _assemble_outputs(wid, sid, d, board, opts, log)
+        log.log("done", "完成", level="ok")
+        return {"chosen": k, **out}
+    except Exception as exc:
+        _fail(log, exc)
+        raise
+
+
+# ---------- P2：风格指南、角色表、场景图
+
+def make_style_guide(llm, wid: str, log=None) -> Dict[str, Any]:
+    """全世界一份风格指南（线条、主色、光照）；之后的漫画图都会带上它，保持全书画风一致。"""
+    log = _log_or_new(log, wid, "style")
+    try:
+        log.log("start", "生成风格指南（全书统一画风）")
+        require_charter(wid)
+        meta = repo.load_meta(wid)
+        cancel.checkpoint()
+        draft = generate.style_draft(LoggedLLM(llm, log), context={
+            "charter": meta.get("charter") or {}, "tone": meta.get("tone", ""), "genre": meta.get("genre", "")})
+        sg = {k: str(draft[k]).strip() for k in generate.STYLE_KEYS}
+        with _with_lock(wid):
+            cur = repo.load_meta(wid)
+            cur["style_guide"] = sg
+            repo.save_meta(cur)
+        log.log("save", f"风格指南：{sg['summary']}", level="ok")
+        log.log("done", "完成", level="ok")
+        return sg
+    except Exception as exc:
+        _fail(log, exc)
+        raise
+
+
+def _board_names(d: Path) -> Tuple[Dict[str, Any], set, set]:
+    board = store.read_json(d / "storyboard.json")
+    if not board:
+        raise EngineError("请先生成分镜（角色表与场景图依据分镜中的出场角色与地点）")
+    chars = {n for pg in board["pages"] for pn in pg["panels"] for n in (pn.get("characters") or [])}
+    locs = {pn.get("location") for pg in board["pages"] for pn in pg["panels"] if pn.get("location")}
+    return board, chars, locs
+
+
+def make_character_sheets(provider, wid: str, sid: str, log=None, *, overwrite: bool = False) -> Dict[str, Any]:
+    """为本故事出场、已有立绘的角色生成角色表：侧面 + 愤怒/悲伤/惊讶表情（以立绘为参考）。旧图归档。"""
+    log = _log_or_new(log, wid, "sheet")
+    made = skipped = failed = 0
+    exhausted = cancelled = False
+    try:
+        d = repo.story_dir(wid, sid)
+        _, names, _ = _board_names(d)
+        meta = repo.load_meta(wid)
+        chars = [c for c in repo.load_characters(wid) if c["name"] in names]
+        budget = _Budget(_image_budget_limit())
+        log.log("start", f"生成角色表：{len(chars)} 个出场角色，每人最多 {len(comic_layout.SHEET_KEYS)} 张"
+                         f"（已有的跳过，调用上限 {budget.limit} 次）")
+        try:
+            for ch in chars:
+                portrait = repo.resolve_portrait(wid, ch)
+                if portrait is None:
+                    log.log("sheet", f"「{ch['name']}」还没有立绘，跳过（先生成人设图）", level="warn")
+                    skipped += len(comic_layout.SHEET_KEYS)
+                    continue
+                base = (ch.get("attrs") or {}).get("visual_en") or ch.get("summary", "")
+                for key in comic_layout.SHEET_KEYS:
+                    path = repo.sheet_path(wid, ch["id"], key)
+                    if path.is_file() and not overwrite:
+                        skipped += 1
+                        continue
+                    cancel.checkpoint()
+                    if not budget.take():
+                        exhausted = True
+                        break
+                    if path.is_file():
+                        _archive(path, log)
+                    prompt = (f"{base}, {comic_layout.SHEET_PROMPTS[key]}, {meta.get('tone', '')} style, "
+                              "plain neutral background")
+                    log.log("sheet", f"「{ch['name']}」{key}：生成中……")
+                    res = provider.generate(prompt, path, ratio="3:4", reference_images=[portrait])
+                    if res.ok:
+                        made += 1
+                        log.log("sheet", f"「{ch['name']}」{key}：完成", level="ok")
+                    else:
+                        failed += 1
+                        log.log("sheet", f"「{ch['name']}」{key}：失败：{res.error}", level="warn")
+                if exhausted:
+                    break
+        except cancel.Cancelled:
+            cancelled = True
+            log.log("cancel", "已停止，已生成的角色表保留", level="warn")
+        if exhausted:
+            log.log("cancel", f"已达图像调用上限（{budget.limit} 次），其余角色表未生成", level="warn")
+        log.log("done", f"{'已停止' if cancelled else '完成'}：新生成 {made} 张，失败 {failed} 张，跳过 {skipped} 张",
+                level="warn" if (failed or cancelled or exhausted) else "ok")
+        return {"made": made, "failed": failed, "skipped": skipped, "budget_exhausted": exhausted,
+                "cancelled": cancelled, "image_calls": budget.used}
+    except Exception as exc:
+        _fail(log, exc)
+        raise
+
+
+def make_scene_images(llm, provider, wid: str, sid: str, log=None, *, overwrite: bool = False) -> Dict[str, Any]:
+    """为分镜中用到的地点生成场景设定图（先由文本模型写英文场景描述，结果保存在设定条目上）。"""
+    log = _log_or_new(log, wid, "sheet")
+    made = skipped = failed = 0
+    exhausted = cancelled = False
+    try:
+        d = repo.story_dir(wid, sid)
+        _, _, loc_names = _board_names(d)
+        meta = repo.load_meta(wid)
+        ents = [e for e in repo.load_entities(wid) if e["name"] in loc_names]
+        budget = _Budget(_image_budget_limit())
+        log.log("start", f"生成场景图：{len(ents)} 个地点（调用上限 {budget.limit} 次）")
+        try:
+            for e in ents:
+                path = repo.scene_path(wid, e["id"])
+                if path.is_file() and not overwrite:
+                    skipped += 1
+                    continue
+                cancel.checkpoint()
+                if not budget.take():
+                    exhausted = True
+                    break
+                visual = (e.get("attrs") or {}).get("visual_en")
+                if not visual:
+                    try:
+                        draft = generate.scene_draft(LoggedLLM(llm, log), context={
+                            "name": e["name"], "summary": e.get("summary", ""), "kind": e.get("kind", ""),
+                            "tone": meta.get("tone", ""), "genre": meta.get("genre", "")})
+                    except generate.GenerationError as exc:
+                        failed += 1
+                        log.log("sheet", f"「{e['name']}」场景描述生成失败：{exc}", level="warn")
+                        continue
+                    visual = draft["visual_en"]
+                    with _with_lock(wid):
+                        cur = repo.load_entities(wid)
+                        item = repo.find_by_id(cur, e["id"])
+                        if item is not None:
+                            item.setdefault("attrs", {})["visual_en"] = visual
+                            repo.save_entities(wid, cur)
+                if path.is_file():
+                    _archive(path, log)
+                res = provider.generate(f"{visual}, {meta.get('tone', '')} style, wide establishing shot, "
+                                        "no people, no text", path, ratio="16:9")
+                if res.ok:
+                    made += 1
+                    log.log("sheet", f"场景「{e['name']}」：完成", level="ok")
+                else:
+                    failed += 1
+                    log.log("sheet", f"场景「{e['name']}」：失败：{res.error}", level="warn")
+        except cancel.Cancelled:
+            cancelled = True
+            log.log("cancel", "已停止，已生成的场景图保留", level="warn")
+        if exhausted:
+            log.log("cancel", f"已达图像调用上限（{budget.limit} 次），其余场景图未生成", level="warn")
+        log.log("done", f"{'已停止' if cancelled else '完成'}：新生成 {made} 张，失败 {failed} 张，跳过 {skipped} 张",
+                level="warn" if (failed or cancelled or exhausted) else "ok")
+        return {"made": made, "failed": failed, "skipped": skipped, "budget_exhausted": exhausted,
+                "cancelled": cancelled, "image_calls": budget.used}
     except Exception as exc:
         _fail(log, exc)
         raise

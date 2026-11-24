@@ -34,6 +34,15 @@ POS_ZONE = {
     "左下": ("bottom", "left"), "右下": ("bottom", "right"),
     "中上": ("top", "center"), "中下": ("bottom", "center"),
 }
+CANDIDATE_MAX = 3          # 每格最多候选数（人工选用，不做自动质检）
+CANDIDATE_DEFAULT = 1
+SHEET_KEYS = ("side", "angry", "sad", "surprised")   # 角色表：侧面 + 三种表情；平静即立绘本身
+SHEET_PROMPTS = {
+    "side": "side view, full body, same character design",
+    "angry": "angry expression, furious, same character design",
+    "sad": "sad expression, tearful, same character design",
+    "surprised": "surprised expression, wide eyes, same character design",
+}
 TEMPLATE_LABEL = {"single": "整页单格", "stack": "上下排列", "grid": "标准两列", "mixed": "大小混排"}
 
 
@@ -208,3 +217,15 @@ def plan_page(page: Dict[str, Any], reading: str = "ltr") -> Dict[str, Any]:
         })
     return {"no": page.get("no"), "template": lay["template"], "reading": reading, "panels": out_panels,
             "beat": page.get("beat") or "", "hook": page.get("hook") or ""}
+
+
+def expression_key(emotion: Optional[str]) -> Optional[str]:
+    """把分镜中的情绪词映射到角色表的表情键；平静或无法识别时返回 None（沿用立绘）。"""
+    e = emotion or ""
+    if any(k in e for k in ("愤", "怒", "生气", "恼")):
+        return "angry"
+    if any(k in e for k in ("悲", "哭", "伤", "难过", "绝望")):
+        return "sad"
+    if any(k in e for k in ("惊", "震", "错愕")):
+        return "surprised"
+    return None

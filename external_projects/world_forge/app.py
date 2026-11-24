@@ -53,7 +53,7 @@ def _tag(status: str) -> str:
             f"{STATUS_LABEL.get(status, status)}</span>")
 
 
-KIND_LABEL = {"advance": "推进", "arc": "小故事线", "short": "短篇", "board": "分镜", "comic": "漫画",
+KIND_LABEL = {"advance": "推进", "arc": "小故事线", "short": "短篇", "board": "分镜", "comic": "漫画", "style": "风格指南", "sheet": "角色表/场景图",
               "export": "导出"}
 
 
@@ -703,7 +703,26 @@ with tabs[6]:
         color_pick = oc[2].radio("色彩", list(comic_layout.COLOR_OPTIONS),
                                  format_func=lambda k: comic_layout.COLOR_LABEL[k], horizontal=True,
                                  key="comic_color")
-        st.caption("页数在「生成分镜」时确定（节拍表据此规划）；阅读方向与色彩可在「生成漫画图」时调整，无需重新生成分镜。")
+        cand_pick = oc[0].selectbox("每格候选数（人工选用）", [1, 2, 3], key="comic_cands",
+                                    help="每格生成的候选张数，默认 1；最多 3。候选会增加图像调用次数。")
+        st.caption("页数在「生成分镜」时确定（节拍表据此规划）；阅读方向与色彩可在「生成漫画图」时调整，无需重新生成分镜。"
+                   "每次操作的图像调用上限默认 80 次（环境变量 WORLD_FORGE_IMAGE_BUDGET 可调）。")
+        st.markdown("**风格与设定图**")
+        rs = st.columns(3)
+        if rs[0].button("生成风格指南（全世界一份）", help="线条、主色、光照的英文描述，之后每次出图都会带上"):
+            if _start_job(wid, "style", "生成风格指南", engine.make_style_guide, LLM, wid):
+                st.rerun()
+        if rs[1].button("生成角色表（本故事出场角色）", disabled=not has_board,
+                        help="每人生成侧面与愤怒、悲伤、惊讶表情，需要先有立绘"):
+            if _start_job(wid, "sheet", "生成角色表", engine.make_character_sheets, IMG, wid, sid):
+                st.rerun()
+        if rs[2].button("生成场景图（分镜中的地点）", disabled=not has_board):
+            if _start_job(wid, "sheet", "生成场景图", engine.make_scene_images, LLM, IMG, wid, sid):
+                st.rerun()
+        if smeta.get("style_guide") or repo.load_meta(wid).get("style_guide"):
+            sg_now = repo.load_meta(wid).get("style_guide") or {}
+            if sg_now.get("summary"):
+                st.caption(f"风格指南：{sg_now['summary']}")
         r2 = st.columns(3)
         if r2[0].button("重新生成分镜" if has_board else "生成分镜",
                         disabled=smeta["kind"] == "arc" and not has_arc):
@@ -712,7 +731,7 @@ with tabs[6]:
                 st.rerun()
         if r2[1].button("重新生成漫画图" if has_comic else "生成漫画图", disabled=not has_board):
             if _start_job(wid, "comic", "生成漫画图", engine.render_comic, IMG, wid, sid,
-                          reading=reading_pick, color=color_pick):
+                          reading=reading_pick, color=color_pick, candidates=cand_pick):
                 st.rerun()
         if has_board:
             board_now = store.read_json(d / "storyboard.json")
@@ -721,8 +740,25 @@ with tabs[6]:
             pick = st.selectbox("选择一格", opts, format_func=lambda x: f"第 {x[0]} 页 第 {x[1]} 格", key="panel_pick")
             if st.button("重新生成这一格", key="regen_panel"):
                 if _start_job(wid, "comic", f"重新生成第{pick[0]}页第{pick[1]}格", engine.render_comic,
-                              IMG, wid, sid, only=[pick], reading=reading_pick, color=color_pick):
+                              IMG, wid, sid, only=[pick], reading=reading_pick, color=color_pick,
+                              candidates=cand_pick):
                     st.rerun()
+            pn_now = board_now["pages"][pick[0] - 1]["panels"][pick[1] - 1] if pick[0] - 1 < len(board_now["pages"]) else {}
+            cands_now = pn_now.get("candidates") or []
+            if len(cands_now) > 1:
+                st.caption(f"候选图（当前采用第 {pn_now.get('chosen', 1)} 张）")
+                cols = st.columns(len(cands_now))
+                for j, rel_c in enumerate(cands_now, start=1):
+                    if (d / rel_c).is_file():
+                        cols[j - 1].image(str(d / rel_c), caption=f"第 {j} 张", use_container_width=True)
+                k_pick = st.selectbox("选用哪一张", list(range(1, len(cands_now) + 1)), key="cand_pick",
+                                      format_func=lambda k: f"第 {k} 张")
+                if st.button("采用这张候选（重新拼装成品，不调用图像模型）", key="choose_cand"):
+                    try:
+                        engine.choose_candidate(wid, sid, pick[0], pick[1], k_pick)
+                        st.rerun()
+                    except engine.EngineError as exc:
+                        st.error(str(exc))
         if smeta.get("focus"):
             st.info(f"主体视角：以「{smeta['focus']['name']}」（{smeta['focus']['kind']}）为主角展开；"
                     "成文、分镜与漫画都沿用这一视角。")
@@ -783,7 +819,7 @@ with tabs[6]:
                             st.caption(f"{tag}{dl.get('speaker', '')}（{dl.get('position', '')}）：{dl.get('text', '')}")
 
     st.markdown("#### 运行日志（故事与漫画）")
-    s_runs = runlog_mod.list_runs(wid, kinds={"arc", "short", "board", "comic", "export"})
+    s_runs = runlog_mod.list_runs(wid, kinds={"arc", "short", "board", "comic", "export", "sheet", "style"})
     if not s_runs:
         st.caption("还没有故事或漫画相关的运行记录。")
     else:

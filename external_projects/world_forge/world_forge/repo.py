@@ -95,6 +95,24 @@ def portrait_path(wid: str, cid: str) -> Path:
     return _p(wid, "cast", "portraits", f"{cid}.png")
 
 
+def sheet_path(wid: str, cid: str, key: str) -> Path:
+    return _p(wid, "cast", "sheets", f"{cid}_{key}.png")
+
+
+def resolve_sheet(wid: str, cid: str, key: str) -> Optional[Path]:
+    p = sheet_path(wid, cid, key)
+    return p if p.is_file() and p.stat().st_size > 0 else None
+
+
+def scene_path(wid: str, eid: str) -> Path:
+    return _p(wid, "scenes", f"{eid}.png")
+
+
+def resolve_scene(wid: str, eid: str) -> Optional[Path]:
+    p = scene_path(wid, eid)
+    return p if p.is_file() and p.stat().st_size > 0 else None
+
+
 def resolve_portrait(wid: str, ch: dict) -> Optional[Path]:
     """角色的人设图实际位置：固定路径、或记录在角色属性中的路径；空文件视为不存在。没有则 None。"""
     candidates = [portrait_path(wid, ch["id"])]

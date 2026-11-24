@@ -1,6 +1,6 @@
 # world_forge 漫画质量升级设计
 
-> 状态：设计方案（P1 已实施，见 `comic_quality_p1_implementation_record.md`）
+> 状态：设计方案（P1、P2 已实施，见 `comic_quality_p1_implementation_record.md` 与 `comic_quality_p2_implementation_record.md`）
 > 范围：`external_projects/world_forge` 的分镜、版式、排字与导出
 > 说明：本文件由设计讨论内容重建。原设计文档未随上一版压缩包一同提供，此处内容以讨论结论为准。
 

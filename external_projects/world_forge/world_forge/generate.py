@@ -129,6 +129,7 @@ def normalize_panel(p: Dict[str, Any]) -> List[str]:
     p["characters"] = [str(c) for c in (p.get("characters") or []) if c]
     p["narration"] = str(p.get("narration") or "")
     p["sfx"] = str(p.get("sfx") or "").strip()
+    p["location"] = str(p.get("location") or "").strip()
     p["emotion"] = str(p.get("emotion") or "").strip()
     return errs
 
@@ -148,6 +149,7 @@ def _validate_beats(d: Dict[str, Any], expect: Optional[int] = None) -> List[str
         pg["purpose"] = str(pg["purpose"]).strip()
         pg["focus"] = str(pg["focus"]).strip()
         pg["hook"] = str(pg.get("hook") or "").strip()
+        pg["palette"] = str(pg.get("palette") or "").strip()
     return []
 
 
@@ -265,8 +267,35 @@ def beats_draft(llm, *, context: Dict[str, Any], pages: Optional[int] = None, lo
                      "请为这个故事规划漫画节拍表：" + count + "。整体结构为：开头铺垫、中段升级、一个转折、"
                      "一个高潮、结尾收束。每页说明：purpose（本页叙事作用，以 铺垫/升级/转折/高潮/收束 之一开头，"
                      "并用一句话说明）、focus（本页画面焦点，一句话）、hook（页末钩子：让读者想翻到下一页的悬念或情绪，"
-                     "最后一页可为空）。JSON 字段：pages（数组：no, purpose, focus, hook）。",
+                     "最后一页可为空）、palette（本幕配色，英文，写明具体颜色与明暗，如 cold blue and grey, low contrast；可空）。"
+                     "JSON 字段：pages（数组：no, purpose, focus, hook, palette）。",
                      lambda d: _validate_beats(d, pages), log=log)
+
+
+STYLE_KEYS = ("summary", "line", "palette", "lighting")
+
+
+def _validate_style(d: Dict[str, Any]) -> List[str]:
+    errs = [f"缺少 {k}" for k in STYLE_KEYS if not isinstance(d.get(k), str) or not d[k].strip()]
+    return errs
+
+
+def style_draft(llm, *, context: Dict[str, Any], log=None) -> Dict[str, Any]:
+    return call_json(llm, "style", context,
+                     "请为这个世界写一份漫画风格指南，用于图像模型保持全书画风一致。JSON 字段：summary（中文，"
+                     "一两句话概括画风）、line（英文：线条与绘画技法，如 clean ink linework, cel shading）、"
+                     "palette（英文：全书主色调，3–5 种颜色，描述要具体）、lighting（英文：光照与氛围）。",
+                     _validate_style, log=log)
+
+
+def _validate_scene(d: Dict[str, Any]) -> List[str]:
+    return [] if isinstance(d.get("visual_en"), str) and d["visual_en"].strip() else ["缺少 visual_en（英文场景描述）"]
+
+
+def scene_draft(llm, *, context: Dict[str, Any], log=None) -> Dict[str, Any]:
+    return call_json(llm, "scene", context,
+                     "请为这个地点写一段英文场景描述，用于图像模型生成场景设定图（不要出现人物）。"
+                     "JSON 字段：visual_en（英文，描述建筑、地貌、光线与氛围）。", _validate_scene, log=log)
 
 
 def storyboard_draft(llm, *, context: Dict[str, Any], log=None, pages: Optional[int] = None) -> Dict[str, Any]:
@@ -281,10 +310,11 @@ def storyboard_draft(llm, *, context: Dict[str, Any], log=None, pages: Optional[
                      "5) 对白每句不超过 24 字，短句为佳；kind 取 speech（说话，默认）/thought（心声）/shout（呼喊）；"
                      "speaker_side 取 左/中/右（说话人在画面中的大致位置）；position 取 左上/右上/左下/右下/中上/中下 之一；"
                      "6) 旁白 narration 只写画面无法表达的信息，不要复述画面；"
-                     "7) sfx 为画面中的音效字（如「轰」「咔嗒」，没有则为空）；8) emotion 为该格主角的情绪，一个词。"
+                     "7) sfx 为画面中的音效字（如「轰」「咔嗒」，没有则为空）；8) emotion 为该格主角的情绪，一个词；"
+                     "9) location 为该格所在地点的名字，必须取自 context.locations 中的名字，没有则为空。"
                      "JSON 字段：pages（数组，每页：no, panels）；panels（每格）：shot（远景/中景/近景/特写）, "
                      "span（1 或 2）, narration（可空）, dialogue（数组：speaker, text, kind, speaker_side, position）, "
-                     "sfx（可空）, emotion（可空）, characters（出场角色名数组）, visual_en（英文画面描述：构图、人物动作、"
+                     "sfx（可空）, emotion（可空）, location（可空）, characters（出场角色名数组）, visual_en（英文画面描述：构图、人物动作、"
                      "表情与场景，不要要求图中出现文字或气泡）。",
                      lambda d: _validate_storyboard(d, pages), log=log)
 

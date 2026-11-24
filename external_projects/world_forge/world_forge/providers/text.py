@@ -157,6 +157,8 @@ class RuleTextLLM(TextLLM):
                              "half body portrait, plain background, no text"}
 
     _BEAT_PURPOSES = ("铺垫", "升级", "转折", "高潮", "收束")
+    _PALETTES = ("warm amber and cream, soft contrast", "teal and grey, medium contrast",
+                 "deep red and black, high contrast", "pale blue, low saturation")
 
     def _task_beats(self, ctx):
         """规则版节拍表：目标页数固定时生成对应页数，auto 时按情节长度给 3 页。"""
@@ -169,13 +171,15 @@ class RuleTextLLM(TextLLM):
             act = acts[i % len(acts)] if acts else {"title": f"第 {i + 1} 页", "summary": ""}
             pages.append({"no": i + 1, "purpose": f"{purpose}：{act.get('title', '')}",
                           "focus": (act.get("summary") or "（规则占位）")[:40],
-                          "hook": "" if i == n - 1 else "（规则占位）下一页的悬念"})
+                          "hook": "" if i == n - 1 else "（规则占位）下一页的悬念",
+                          "palette": self._PALETTES[i % len(self._PALETTES)]})
         return {"pages": pages}
 
     def _task_storyboard(self, ctx):
         """规则版分镜：每个节拍一页，页数与 beats 一致；高潮页用整行大格。"""
         beats = ctx.get("beats") or [{"purpose": "铺垫", "focus": ""}]
         names = [c.get("name") for c in ctx.get("characters") or [] if c.get("name")][:2]
+        locs = [c.get("name") for c in ctx.get("locations") or [] if c.get("name")]
         shots = ["远景", "中景", "近景", "特写"]
         pages = []
         k = 0
@@ -192,11 +196,19 @@ class RuleTextLLM(TextLLM):
                     "shot": shot, "span": 2 if (beat.get("purpose") or "").startswith("高潮") and j == 0 else 1,
                     "narration": beat.get("focus", "") if j == 0 else "",
                     "dialogue": dialogue, "sfx": "轰" if (j == 1 and n == len(beats)) else "",
-                    "emotion": "平静", "characters": names[:1],
+                    "emotion": "平静", "characters": names[:1], "location": locs[0] if locs else "",
                     "visual_en": f"{shot} view, scene {n} panel {j + 1}, muted palette, no text",
                 })
             pages.append({"no": n, "panels": panels})
         return {"pages": pages}
+
+    def _task_style(self, ctx):
+        return {"summary": "（规则占位）线条干净、色彩统一的漫画风格",
+                "line": "clean ink linework, cel shading", "palette": "muted teal and amber palette",
+                "lighting": "soft dusk lighting"}
+
+    def _task_scene(self, ctx):
+        return {"visual_en": f"wide view of {ctx.get('name', 'a place')}, no people, muted palette"}
 
     def _task_short(self, ctx):
         return "（规则占位）" + (ctx.get("brief") or "这是一篇离线占位的短篇。") + "\n\n正文需要真实模型生成。"
