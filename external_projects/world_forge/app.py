@@ -224,17 +224,21 @@ with tabs[2]:
                 st.caption("；".join(p["reasons"]))
     with right:
         st.markdown("#### 实体关系")
+        min_deg = st.number_input("每个实体的目标关系数", min_value=1, max_value=6, value=2, key="rel_min_deg")
         if st.button("自动补全实体关系", disabled=not meta.get("charter") or len(entities) < 2,
                      key="complete_rel_btn"):
             with st.spinner("正在为实体建立关系……"):
-                res = _safe(engine.complete_relations, LLM, wid, limit=5)
+                res = _safe(engine.complete_relations, LLM, wid, limit=5, min_degree=int(min_deg))
             if res:
                 st.session_state.rel_report = res
                 st.rerun()
         rr = st.session_state.get("rel_report")
         if rr:
-            st.info(f"新增关系提案：" + ("　".join(f"{STATUS_LABEL.get(k, k)} {v}" for k, v in rr["counts"].items())
-                                     or "无") + f"（剩余未处理实体 {rr['pending_entities']} 个）")
+            st.info(f"本次处理 {rr['processed']} 个实体（目标：每个实体至少 {rr['min_degree']} 条关系）。"
+                    + ("新增关系：" + "　".join(f"{STATUS_LABEL.get(k, k)} {v}" for k, v in rr["counts"].items())
+                       if rr["counts"] else "本次没有新增关系。")
+                    + (f"　仍有 {rr['remaining']} 个实体关系不足，可再次点击。" if rr["remaining"]
+                       else "　所有实体都已达到目标。"))
             for sk in rr["skipped"]:
                 st.caption(sk)
             if st.button("收起结果", key="close_rel_report"):

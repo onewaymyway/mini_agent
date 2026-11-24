@@ -219,28 +219,51 @@ def _linked_pairs(relations: List[dict]) -> set:
     return {frozenset((r["src"], r["dst"])) for r in relations}
 
 
-def complete_relations(llm, wid: str, *, limit: int = 5) -> Dict[str, Any]:
-    """为缺少关系的实体自动补全与其它实体的关系（最多处理 limit 个实体，关系最少的优先）。
+def _degrees(ents: List[dict], rels: List[dict]) -> Dict[str, int]:
+    deg = {e["id"]: 0 for e in ents}
+    for r in rels:
+        for eid in (r["src"], r["dst"]):
+            if eid in deg:
+                deg[eid] += 1
+    return deg
 
-    每个实体让模型从其它实体中选择对象；已存在的关系不会重复建立。返回新增的提案与跳过原因。
+
+def complete_relations(llm, wid: str, *, limit: int = 5, min_degree: int = 2) -> Dict[str, Any]:
+    """为关系稀少的实体补全关系。
+
+    目标：关系数少于 min_degree 的实体（关系最少的优先），每次最多处理 limit 个。
+    每个目标实体让模型从尚未连接的其它实体中选择对象，最多建立 3 条。
+    remaining 只统计仍低于阈值、且仍有可连接对象的实体，即真正还缺关系的数量。
     """
     require_charter(wid)
+    min_degree = max(1, int(min_degree))
     ents = repo.load_entities(wid)
-    linked = _linked_pairs(repo.load_relations(wid))
-    degree = {e["id"]: 0 for e in ents}
-    for pair in linked:
-        for eid in pair:
-            if eid in degree:
-                degree[eid] += 1
-    queue = sorted([e for e in ents if any(frozenset((e["id"], o["id"])) not in linked
-                                           for o in ents if o["id"] != e["id"])],
-                   key=lambda e: degree[e["id"]])
+    by_id = {e["id"]: e for e in ents}
     ctx = build_context(wid)
     records: List[dict] = []
     skipped: List[str] = []
-    for e in queue[: max(1, int(limit))]:
-        options = [o for o in ents if o["id"] != e["id"] and frozenset((e["id"], o["id"])) not in linked]
-        options = options[:40]
+    processed = 0
+
+    def targets(rels):
+        linked = _linked_pairs(rels)
+        deg = _degrees(ents, rels)
+        out = []
+        for e in ents:
+            if deg[e["id"]] >= min_degree:
+                continue
+            opts = [o for o in ents if o["id"] != e["id"] and frozenset((e["id"], o["id"])) not in linked]
+            if opts:
+                out.append((deg[e["id"]], e, opts))
+        out.sort(key=lambda t: (t[0], t[1]["name"]))
+        return out
+
+    for _, e, _opts in targets(repo.load_relations(wid))[: max(1, int(limit))]:
+        rels_now = repo.load_relations(wid)
+        options = [o for o in ents if o["id"] != e["id"]
+                   and frozenset((e["id"], o["id"])) not in _linked_pairs(rels_now)][:40]
+        if not options:
+            continue
+        processed += 1
         try:
             draft = generate.relation_draft(llm, context=ctx, target_name=e["name"], target_kind=e["kind"],
                                             options=[o["name"] for o in options])
@@ -248,15 +271,13 @@ def complete_relations(llm, wid: str, *, limit: int = 5) -> Dict[str, Any]:
             skipped.append(f"「{e['name']}」：模型输出不合格（{exc}）")
             continue
         by_name = {o["name"]: o["id"] for o in options}
+        got = 0
         with _with_lock(wid):
             current = _linked_pairs(repo.load_relations(wid))
-            got = 0
-            for r in draft.get("relations") or []:
+            for r in (draft.get("relations") or [])[:3]:
                 oid = by_name.get(r.get("name"))
-                if not oid:
+                if not oid or frozenset((e["id"], oid)) in current:
                     continue
-                if frozenset((e["id"], oid)) in current:
-                    continue   # 上一轮已建立
                 rec = proposals.submit(wid, "create_relation", payload={
                     "src": e["id"], "dst": oid, "type": r.get("type") or "关联",
                     "note": r.get("note", "")}, source="relation_fill")
@@ -264,11 +285,13 @@ def complete_relations(llm, wid: str, *, limit: int = 5) -> Dict[str, Any]:
                 if rec["status"] == "applied":
                     current.add(frozenset((e["id"], oid)))
                     got += 1
-            if got == 0:
-                skipped.append(f"「{e['name']}」：模型没有给出可用的关系")
-        linked = _linked_pairs(repo.load_relations(wid))
+        if got == 0:
+            skipped.append(f"「{e['name']}」：模型没有给出可用的新关系，下次会再尝试")
+
+    rels_after = repo.load_relations(wid)
+    remaining = len(targets(rels_after))
     return {"records": records, "skipped": skipped, "counts": _status_counts(records),
-            "pending_entities": len(queue) - min(len(queue), max(1, int(limit)))}
+            "processed": processed, "remaining": remaining, "min_degree": min_degree}
 
 
 # ---------- 世界观简介

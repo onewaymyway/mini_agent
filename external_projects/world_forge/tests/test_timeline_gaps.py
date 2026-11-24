@@ -115,3 +115,37 @@ def test_graph_html_renders_and_escapes(world):
     assert "</script>危险" not in html_text
     assert "<svg" in html_text
     assert graph.render_html({"nodes": [], "edges": []}).startswith("<div")
+
+
+def test_complete_relations_targets_sparse_entities_and_terminates(world, llm):
+    """回归：剩余数应只统计仍关系不足的实体；反复点击应收敛到 0，而不是永远有剩余。"""
+    for name in ("北港", "南岬", "西原", "东林"):
+        proposals.submit(world, "create_entity", payload={"kind": "地理", "name": name, "summary": "x"})
+    total_rounds = 0
+    res = None
+    while total_rounds < 20:
+        res = engine.complete_relations(llm, world, limit=5, min_degree=2)
+        total_rounds += 1
+        if res["remaining"] == 0:
+            break
+    assert res["remaining"] == 0, "多次运行后应全部达到目标"
+    from world_forge.engine import _degrees
+    deg = _degrees(repo.load_entities(world), repo.load_relations(world))
+    assert all(v >= 2 for v in deg.values())
+    pairs = [frozenset((r["src"], r["dst"])) for r in repo.load_relations(world)]
+    assert len(pairs) == len(set(pairs))
+
+
+def test_complete_relations_does_not_count_well_connected_entities(world, llm):
+    """已经关系充足的实体不应被计入剩余或被再次处理。"""
+    ids = []
+    for name in ("甲", "乙", "丙"):
+        rec = proposals.submit(world, "create_entity", payload={"kind": "地理", "name": name, "summary": "x"})
+        ids.append(rec["result"]["id"])
+    for a in ids:
+        for b in ids:
+            if a < b:
+                proposals.submit(world, "create_relation", payload={"src": a, "dst": b, "type": "相邻"})
+    res = engine.complete_relations(llm, world, limit=5, min_degree=2)
+    sources = {r["payload"]["src"] for r in res["records"]}
+    assert not (sources & set(ids)), "关系已充足的实体不应作为处理目标（被其它实体连接是允许的）"
