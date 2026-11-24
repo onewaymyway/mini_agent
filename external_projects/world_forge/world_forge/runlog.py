@@ -67,15 +67,17 @@ class LoggedLLM:
         return out
 
 
-def list_runs(wid: str) -> List[dict]:
+def list_runs(wid: str, kinds: Optional[set] = None) -> List[dict]:
     d = repo.world_dir(wid) / "logs"
     if not d.is_dir():
         return []
     out = []
     for p in sorted(d.glob("*.jsonl"), reverse=True):
         parts = p.stem.split("_")
-        out.append({"path": str(p), "name": p.name, "kind": parts[1] if len(parts) > 1 else "",
-                    "stamp": parts[0] if parts else ""})
+        kind = parts[1] if len(parts) > 1 else ""
+        if kinds is not None and kind not in kinds:
+            continue
+        out.append({"path": str(p), "name": p.name, "kind": kind, "stamp": parts[0] if parts else ""})
     return out
 
 

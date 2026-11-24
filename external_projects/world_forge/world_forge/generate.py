@@ -162,10 +162,10 @@ def advance_draft(llm, *, context: Dict[str, Any], log=None) -> Dict[str, Any]:
                      "violates_rules（字符串数组，无则为空））。", _validate_advance, log=log)
 
 
-def arc_draft(llm, *, context: Dict[str, Any]) -> Dict[str, Any]:
+def arc_draft(llm, *, context: Dict[str, Any], log=None) -> Dict[str, Any]:
     return call_json(llm, "arc", context,
                      "请把给定事件整理为一条小故事线。JSON 字段：title, premise（一句话前提）, protagonist_names"
-                     "（字符串数组）, acts（数组：title, summary）, ending。acts 为 2–4 幕。", _validate_arc)
+                     "（字符串数组）, acts（数组：title, summary）, ending。acts 为 2–4 幕。", _validate_arc, log=log)
 
 
 def short_draft(llm, *, context: Dict[str, Any], form: str) -> str:
@@ -179,11 +179,11 @@ def short_draft(llm, *, context: Dict[str, Any], form: str) -> str:
     return text
 
 
-def storyboard_draft(llm, *, context: Dict[str, Any]) -> Dict[str, Any]:
+def storyboard_draft(llm, *, context: Dict[str, Any], log=None) -> Dict[str, Any]:
     return call_json(llm, "storyboard", context,
                      "请把故事改写为漫画分镜。JSON 字段：pages（数组，每页：no, panels）；panels 为 1–6 格，每格："
                      "narration（旁白，可空）, dialogue（数组：speaker, text）, characters（出场角色名数组）, "
-                     "visual_en（英文画面描述，写清构图、人物动作与场景，不要要求图中出现文字）。", _validate_storyboard)
+                     "visual_en（英文画面描述，写清构图、人物动作与场景，不要要求图中出现文字）。", _validate_storyboard, log=log)
 
 
 def portrait_draft(llm, *, context: Dict[str, Any]) -> Dict[str, Any]:

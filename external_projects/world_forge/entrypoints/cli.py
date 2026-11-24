@@ -40,6 +40,11 @@ def _ids(text):
     return [x.strip() for x in text.split(",") if x.strip()] if text else None
 
 
+def _stderr_log(wid, kind):
+    from world_forge.runlog import RunLog, format_entry
+    return RunLog(wid, kind, sink=lambda e: print(format_entry(e), file=sys.stderr, flush=True))
+
+
 def _dump(obj):
     print(json.dumps(obj, ensure_ascii=False, indent=2, default=str))
 

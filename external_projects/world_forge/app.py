@@ -50,6 +50,25 @@ def _tag(status: str) -> str:
             f"{STATUS_LABEL.get(status, status)}</span>")
 
 
+KIND_LABEL = {"advance": "推进", "arc": "小故事线", "short": "短篇", "board": "分镜", "comic": "漫画",
+              "export": "导出"}
+
+
+def _run_logged(wid: str, kind: str, label: str, fn, *args, **kwargs):
+    """执行一个带运行日志的操作：日志实时显示在状态框中，并保存到世界的运行日志。失败时返回 None。"""
+    box = st.status(f"{label}……", expanded=True)
+    sink = lambda e: box.text(runlog_mod.format_entry(e))  # noqa: E731
+    log = runlog_mod.RunLog(wid, kind, sink=sink)
+    try:
+        res = fn(*args, log=log, **kwargs)
+        box.update(label=f"{label}完成", state="complete", expanded=False)
+        return res
+    except Exception as exc:  # noqa: BLE001
+        box.update(label=f"{label}失败", state="error", expanded=True)
+        st.error(f"{type(exc).__name__}：{exc}")
+        return None
+
+
 def _safe(fn, *args, **kwargs):
     try:
         return fn(*args, **kwargs)
@@ -503,9 +522,9 @@ with tabs[5]:
                 st.rerun()
 
     st.markdown("#### 运行日志")
-    runs = runlog_mod.list_runs(wid)
+    runs = runlog_mod.list_runs(wid, kinds={"advance"})
     if not runs:
-        st.caption("还没有运行记录。")
+        st.caption("还没有推进记录。")
     else:
         labels = {r["path"]: f"{r['stamp']} · {'推进' if r['kind'] == 'advance' else r['kind']}" for r in runs}
         chosen = st.selectbox("选择一次运行", list(labels), format_func=lambda k: labels[k], key="run_pick")
@@ -524,8 +543,7 @@ with tabs[6]:
     ev_labels = {e["id"]: f"{e['t']} · {e['title']}" for e in evs}
     chosen_ev = st.multiselect("选择事件", list(ev_labels), format_func=lambda k: ev_labels[k])
     if st.button("生成小故事线", disabled=not chosen_ev or not meta.get("charter")):
-        with st.spinner("整理故事线……"):
-            sid = _safe(engine.make_arc, LLM, wid, event_ids=chosen_ev)
+        sid = _run_logged(wid, "arc", "生成小故事线", engine.make_arc, LLM, wid, event_ids=chosen_ev)
         if sid:
             st.session_state.story = sid
             st.rerun()
@@ -535,8 +553,7 @@ with tabs[6]:
         form = st.radio("形式", ["novel", "notes"], horizontal=True,
                         format_func=lambda x: "短篇小说" if x == "novel" else "故事说明")
         if st.form_submit_button("创作短篇") and brief.strip():
-            with st.spinner("创作中……"):
-                sid = _safe(engine.write_short, LLM, wid, brief=brief, form=form)
+            sid = _run_logged(wid, "short", "创作短篇", engine.write_short, LLM, wid, brief=brief, form=form)
             if sid:
                 st.session_state.story = sid
                 st.rerun()
@@ -552,23 +569,20 @@ with tabs[6]:
         d = repo.story_dir(wid, sid)
         a1, a2, a3, a4 = st.columns(4)
         if smeta["kind"] == "arc" and a1.button("成文短篇"):
-            with st.spinner("成文中……"):
-                new = _safe(engine.write_short, LLM, wid, arc_sid=sid)
+            new = _run_logged(wid, "short", "成文短篇", engine.write_short, LLM, wid, arc_sid=sid)
             if new:
                 st.session_state.story = new
                 st.rerun()
         if a2.button("生成分镜", disabled=smeta["kind"] == "arc" and not (d / "arc.json").is_file()):
-            with st.spinner("绘制分镜脚本……"):
-                _safe(engine.make_storyboard, LLM, wid, sid)
-            st.rerun()
+            if _run_logged(wid, "board", "生成分镜", engine.make_storyboard, LLM, wid, sid) is not None:
+                st.rerun()
         if a3.button("生成漫画图", disabled=not (d / "storyboard.json").is_file()):
-            with st.spinner("正在生成分镜图（可能需要数分钟）……"):
-                res = _safe(engine.render_comic, IMG, wid, sid)
+            res = _run_logged(wid, "comic", "生成漫画图", engine.render_comic, IMG, wid, sid)
             if res:
                 st.success(f"完成：成功 {res['ok']} 格，失败 {res['failed']} 格（{res['provider']}）")
                 st.rerun()
         if a4.button("导出给 novel_writer"):
-            out = _safe(engine.export_bundle, wid, sid)
+            out = _run_logged(wid, "export", "导出", engine.export_bundle, wid, sid)
             if out:
                 st.success(f"已导出到 {out}")
         if (d / "arc.json").is_file():
@@ -597,6 +611,20 @@ with tabs[6]:
                             st.caption(pn["narration"])
                         for dl in pn.get("dialogue") or []:
                             st.markdown(f"**{dl.get('speaker', '')}**：{dl.get('text', '')}")
+
+    st.markdown("#### 运行日志（故事与漫画）")
+    s_runs = runlog_mod.list_runs(wid, kinds={"arc", "short", "board", "comic", "export"})
+    if not s_runs:
+        st.caption("还没有故事或漫画相关的运行记录。")
+    else:
+        s_labels = {r["path"]: f"{r['stamp']} · {KIND_LABEL.get(r['kind'], r['kind'])}" for r in s_runs}
+        s_chosen = st.selectbox("选择一次运行", list(s_labels), format_func=lambda k: s_labels[k], key="story_run_pick")
+        s_entries = runlog_mod.read_run(s_chosen)
+        lv = {}
+        for e in s_entries:
+            lv[e.get("level", "info")] = lv.get(e.get("level", "info"), 0) + 1
+        st.caption(f"共 {len(s_entries)} 条记录：" + "　".join(f"{k} {v}" for k, v in lv.items()))
+        st.code("\n".join(runlog_mod.format_entry(e) for e in s_entries), language=None)
 
 # ---------- 设置
 
