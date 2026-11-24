@@ -1,0 +1,5 @@
+streamlit>=1.40
+pyyaml>=6.0
+pillow>=10.0
+json-repair>=0.30
+pytest>=8.0

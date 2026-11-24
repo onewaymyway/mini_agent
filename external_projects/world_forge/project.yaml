@@ -1,0 +1,50 @@
+# project.yaml — world_forge 与 daemon 之间的契约。
+# 注意：manifest 的 params 以“位置参数”追加在 cmd 末尾，因此 cmd 末尾写好 --flag，参数值自动补在其后。
+# 字段规范见 mini_agent 的 external-project-manager skill（reference/project_yaml_schema.md）。
+
+name: world_forge
+
+entrypoints:
+  health:
+    cmd: "python entrypoints/cli.py health"
+    timeout_sec: 120
+  list_worlds:
+    cmd: "python entrypoints/cli.py list"
+    timeout_sec: 120
+  init_world:
+    cmd: "python entrypoints/cli.py init --concept"
+    params:
+      - name: concept
+        required: true
+        help: "世界的初始概念（一句话）"
+    timeout_sec: 600
+  advance_world:
+    cmd: "python entrypoints/cli.py advance --steps 1 --world"
+    params:
+      - name: world
+        required: true
+        help: "世界 id（wld_ 开头）"
+    timeout_sec: 1800
+  fill_gaps:
+    cmd: "python entrypoints/cli.py fill --limit 5 --world"
+    params:
+      - name: world
+        required: true
+        help: "世界 id"
+    timeout_sec: 1200
+health_check:
+  cmd: "python entrypoints/cli.py health"
+
+resources:
+  # LLM 与图像调用由 mini_agent 宿主完成，本项目不直接访问外部站点。
+  allowed_domains: []
+  max_concurrency: 1
+
+review:
+  cadence: weekly
+  enabled: false
+
+# Streamlit 看板（端口 8509）。
+web_app:
+  entry: app.py
+  port: 8509

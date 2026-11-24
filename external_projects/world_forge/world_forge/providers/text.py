@@ -1,0 +1,132 @@
+"""providers/text.py — 文本 LLM 封装。
+
+  * MiniAgentTextLLM：复用 mini_agent 的 LLMHelper（与 novel_writer、world_simulator 同一套模型配置）。
+  * RuleTextLLM：离线规则生成器，按提示词中的任务名与 <<CONTEXT>> 数据返回结构正确的占位结果，
+    用于流程演示与测试。其内容是占位文本，会在界面标注为“规则占位”。
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from typing import Optional
+
+from ..paths import mini_agent_root
+
+
+class ProviderError(RuntimeError):
+    pass
+
+
+class TextLLM:
+    name = "base"
+
+    def ask(self, prompt: str, system: str = "") -> str:  # pragma: no cover - 接口
+        raise NotImplementedError
+
+
+class MiniAgentTextLLM(TextLLM):
+    name = "miniagent"
+
+    def __init__(self) -> None:
+        self._helper = None
+
+    def _get_helper(self):
+        if self._helper is None:
+            root = mini_agent_root()
+            if root is None:
+                raise ProviderError("找不到 mini_agent 仓库（可设置环境变量 MINI_AGENT_ROOT）")
+            from mini_agent.config import load_config
+            from mini_agent.llm.service import LLMHelper
+
+            cfg = load_config(project_root=root, verbose=False, sandbox=True, auto_approve=True)
+            self._helper = LLMHelper.from_config(cfg)
+        return self._helper
+
+    def ask(self, prompt: str, system: str = "") -> str:
+        return self._get_helper().ask(prompt, system=system)
+
+
+_CTX = re.compile(r"<<CONTEXT>>\n(.*?)\n<<END>>", re.S)
+_TASK = re.compile(r"^TASK: (\w+)", re.M)
+
+
+class RuleTextLLM(TextLLM):
+    name = "rules"
+
+    def ask(self, prompt: str, system: str = "") -> str:
+        m_task, m_ctx = _TASK.search(prompt), _CTX.search(prompt)
+        task = m_task.group(1) if m_task else ""
+        ctx = json.loads(m_ctx.group(1)) if m_ctx else {}
+        handler = getattr(self, f"_task_{task}", None)
+        if handler is None:
+            return "规则占位：该任务暂无离线结果。"
+        out = handler(ctx)
+        return out if isinstance(out, str) else json.dumps(out, ensure_ascii=False)
+
+    # 以下各任务返回与真实模型相同结构的占位数据
+    def _task_charter(self, ctx):
+        concept = ctx.get("concept") or "未命名世界"
+        return {
+            "title": ctx.get("title") or "未命名世界",
+            "genre": ctx.get("genre") or "架空",
+            "tone": ctx.get("tone") or "待定",
+            "summary": concept,
+            "hard_rules": ["（规则占位）请补充世界的基础规则，例如能量来源与物理限制"],
+            "initial_entities": [
+                {"kind": "地理", "name": "中心城邦", "summary": "（规则占位）世界的政治中心。", "attrs": {}},
+                {"kind": "势力", "name": "主导势力", "summary": "（规则占位）掌握主要资源的统治集团。",
+                 "attrs": {"leader": "待定"}},
+            ],
+            "initial_characters": [
+                {"name": "引导者", "role": "主角", "faction_name": "主导势力", "motive": "（规则占位）",
+                 "summary": "（规则占位）故事的第一位视角人物。"},
+            ],
+        }
+
+    def _task_gap_fill(self, ctx):
+        return {"summary": f"（规则占位）{ctx.get('target_name', '该条目')}的补充描述，待人工完善。", "attrs": {}}
+
+    def _task_advance(self, ctx):
+        year = ctx.get("year", 0)
+        ents = ctx.get("entities") or []
+        chars = [c for c in (ctx.get("characters") or []) if c.get("status") == "alive"]
+        new_chars = [{"name": f"居民{year}-{len(chars) + 1}", "role": "次要", "faction_name": None,
+                      "motive": "（规则占位）", "summary": "（规则占位）推进时自动生成的次要角色。"}]
+        events = []
+        if ents:
+            events.append({
+                "title": f"第{year}年的变动", "summary": f"（规则占位）{ents[0]['name']}出现了新的动向。",
+                "involves": [ents[0]["name"]], "caused_by": [], "tags": ["日常"],
+                "changes": [], "violates_rules": [],
+            })
+        return {"new_characters": new_chars, "entities": [], "relations": [], "canon_updates": [],
+                "events": events}
+
+    def _task_arc(self, ctx):
+        titles = [e.get("title", "") for e in ctx.get("events", [])][:3]
+        return {
+            "title": "（规则占位）" + (titles[0] if titles else "故事线"),
+            "premise": "（规则占位）围绕所选事件展开的小故事。",
+            "protagonist_names": [c.get("name") for c in ctx.get("characters", [])][:1],
+            "acts": [{"title": f"第{i + 1}幕", "summary": f"（规则占位）{t}"}
+                     for i, t in enumerate(titles or ["故事开端"])],
+            "ending": "（规则占位）结局待定。",
+        }
+
+    def _task_portrait(self, ctx):
+        return {"visual_en": f"{ctx.get('name', 'character')}, adult person, neutral expression, "
+                             "half body portrait, plain background, no text"}
+
+    def _task_storyboard(self, ctx):
+        acts = ctx.get("acts") or [{"title": "第一幕", "summary": ctx.get("text", "")[:60] or "（规则占位）"}]
+        panels = []
+        for n, act in enumerate(acts, start=1):
+            panels.append({
+                "narration": act.get("summary", ""), "dialogue": [],
+                "characters": [], "visual_en": f"wide shot, scene {n}, muted palette, no text",
+            })
+        return {"pages": [{"no": 1, "panels": panels[:6]}]}
+
+    def _task_short(self, ctx):
+        return "（规则占位）" + (ctx.get("brief") or "这是一篇离线占位的短篇。") + "\n\n正文需要真实模型生成。"
