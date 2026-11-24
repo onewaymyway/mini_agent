@@ -59,20 +59,22 @@ def _safe(fn, *args, **kwargs):
 
 worlds = repo.list_world_ids()
 titles = {w: repo.load_meta(w)["title"] for w in worlds}
-if "wid" not in st.session_state or st.session_state.wid not in worlds:
-    st.session_state.wid = worlds[0] if worlds else None
+# 当前世界存放在 current_wid（不作为控件的 key）：控件实例化之后不能再直接改它的 session_state 键。
+if st.session_state.get("current_wid") not in worlds:
+    st.session_state.current_wid = worlds[0] if worlds else None
 
 with st.sidebar:
     st.header("🌍 世界")
     if worlds:
-        st.selectbox("当前世界", worlds, index=worlds.index(st.session_state.wid),
-                     format_func=lambda w: f"{titles[w]}（{w}）", key="wid")
+        chosen = st.selectbox("当前世界", worlds, index=worlds.index(st.session_state.current_wid),
+                              format_func=lambda w: f"{titles[w]}（{w}）")
+        st.session_state.current_wid = chosen
     else:
         st.info("还没有世界，请到「新建」创建。")
     st.caption(f"文本：{LLM_NOTE}")
     st.caption(f"图像：{IMG_NOTE}")
 
-wid = st.session_state.wid
+wid = st.session_state.current_wid
 
 tabs = st.tabs(["🆕 新建", "📊 总览", "📚 设定与提案", "👤 角色", "🕰️ 时间线", "⏩ 推进", "🎞️ 故事与漫画", "⚙️ 设置"])
 
@@ -91,7 +93,7 @@ with tabs[0]:
         with st.spinner("正在生成宪章与首批设定……"):
             res = _safe(engine.create_world, LLM, concept=concept, title=title, genre=genre, tone=tone)
         if res:
-            st.session_state.wid = res["world_id"]
+            st.session_state.current_wid = res["world_id"]
             st.success(f"已创建世界 {res['world_id']}。宪章需要在「设定与提案」中批准后才能推进历史。")
             st.rerun()
 

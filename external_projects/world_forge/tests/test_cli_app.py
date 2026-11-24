@@ -40,3 +40,22 @@ def test_streamlit_app_smoke(tmp_path, monkeypatch, world):
     at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120).run()
     assert not at.exception, at.exception
     assert len(at.tabs) == 8
+
+
+def test_create_world_from_form_then_rerun_no_session_state_error(tmp_path, monkeypatch):
+    """回归：新建世界后切换当前世界不应触发 session_state 修改异常。"""
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.setenv("WORLD_FORGE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("WORLD_FORGE_PROVIDERS", "stub")
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120).run()
+    assert not at.exception
+    at.text_area[0].set_value("回归测试概念")
+    at.button[0].click().run()
+    assert not at.exception, at.exception
+    assert len(repo_list(tmp_path)) == 1
+
+
+def repo_list(tmp_path):
+    from pathlib import Path as _P
+    return [p for p in (_P(tmp_path) / "data").iterdir() if (p / "world.json").is_file()]
