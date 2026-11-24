@@ -135,7 +135,10 @@ def _write_article_inner(ctx, tid: str, topic: Dict[str, Any], llm, rounds: int,
                                         + (f"发现 {len(cr)} 个问题" if cr else "未发现问题"))
             if not cr:
                 store.write_text_atomic(d / "draft.md", body)
-                return {"body": body, "brief": brief, "by_id": by_id, "budget": budget,
+                note = checks.length_note(body, brief["style"]["length"])
+                if note:
+                    joblog.log(ctx.root, SCOPE, "成文：" + note, level="warn")
+                return {"length_note": note, "body": body, "brief": brief, "by_id": by_id, "budget": budget,
                         "critic_rounds": len(critic_log), "outline": secs_all}
             per_sec = _map_critic(cr, headings)
             pending = [f"{it['section']}：{it['note']}" for it in cr]
@@ -215,7 +218,8 @@ def write(ctx, tid: str, llm, *, max_rounds: Optional[int] = None, feedback: str
         aid = _register(ctx, tid, topic, res)
         states.link_article(ctx, tid, aid)
         ck = {"article_id": aid, "critic_rounds": res["critic_rounds"], "budget_used": res["budget"].used,
-              "budget_max": rounds, "checked_at": _now(), "passed": True}
+              "budget_max": rounds, "checked_at": _now(), "passed": True,
+              "length_note": res.get("length_note", "")}
         store.write_json_atomic(d / "checks.json", ck)
         (d / "failed.json").unlink(missing_ok=True)
         counts = drunner.run_digest(ctx, llm, only=[aid], force=True)

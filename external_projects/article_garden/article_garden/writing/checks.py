@@ -102,13 +102,28 @@ def check_section(text: str, *, allowed: Iterable[str], excerpts: Dict[str, str]
     return issues
 
 
+LENGTH_LOW, LENGTH_HIGH = 0.5, 3.0     # 字数只作软目标：低于下限的一半或高于上限的三倍才算严重偏离
+
+
+def body_chars(body: str) -> int:
+    return len(re.sub(r"\s+", "", strip_marks(body)))
+
+
+def length_note(body: str, length: Iterable[int]) -> str:
+    """字数超出章程区间（但未严重偏离）时给出提示；区间内返回空串。"""
+    lo, hi = list(length)[:2]
+    n = body_chars(body)
+    return f"正文约 {n} 字，超出章程建议的 {lo}–{hi} 字（仅提示，不影响成文）" if (n < lo or n > hi) else ""
+
+
 def check_document(body: str, *, length: Iterable[int], must_have: Iterable[str], kind: str,
                    disclaimer: str, library_titles: Iterable[str]) -> List[str]:
     issues: List[str] = []
-    n = len(re.sub(r"\s+", "", strip_marks(body)))
+    n = body_chars(body)
     lo, hi = list(length)[:2]
-    if n < lo or n > hi:
-        issues.append(f"正文约 {n} 字，不在章程要求的 {lo}–{hi} 字之间")
+    # 字数是软目标：只有严重偏离（低于下限一半、高于上限三倍）才判为问题；一般超出只作提示（见 length_note）
+    if n < lo * LENGTH_LOW or n > hi * LENGTH_HIGH:
+        issues.append(f"正文约 {n} 字，严重偏离章程建议的 {lo}–{hi} 字")
     headings = re.findall(r"(?m)^##\s+(.+)$", body)
     for item in must_have:
         if item and not any(item in h for h in headings):

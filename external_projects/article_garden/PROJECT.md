@@ -34,6 +34,9 @@
 **批量成文（记录：`next_doc/article_garden_review_batch_write_record.md`）**
 - 审阅页「批量成文」以勾选列表（含全选、清空）选择已调研或成文失败、且证据充分的选题，后台逐个成文；一题失败不影响其它，停止或预算用尽则整批结束。不会自动审阅或发布。命令行：`write_article.py <domain> --batch t-0001,t-0002` 或 `--batch-all`。
 
+**字数软目标（记录：`next_doc/article_garden_length_soft_target_record.md`）**
+- 章程字数区间只作目标：略超出只提示（日志与 `checks.json` 的 `length_note`），不判失败；低于下限一半或高于上限三倍才算严重偏离。
+
 **选题标题（选题质量记录：`next_doc/article_garden_topic_title_quality_record.md`）**
 - 缺口选题的标题与角度由模型撰写，参照文库已有标题的风格；模板式标题（“X是什么”“X入门”“X综述”）会被拒绝。未通过时保留模板标题。
 

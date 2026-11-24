@@ -407,3 +407,29 @@ def test_entrypoint_batch_all_with_nothing_says_so(data_home, capsys):
     import write_article as ep
     assert ep.main(["ai", "--batch-all"]) == 0
     assert "没有可成文的已调研选题" in capsys.readouterr().out
+
+
+# ------------------------------------------------------------------ 字数是软目标
+
+def test_length_outside_range_is_only_a_note_unless_far_off():
+    body = "## 摘要\n" + "字" * 700
+    soft = checks.check_document(body, length=(100, 500), must_have=[], kind="概念讲解", disclaimer="", library_titles=[])
+    assert soft == []                                              # 略超上限：不算问题
+    assert "超出" in checks.length_note(body, (100, 500)) and checks.length_note(body, (100, 1000)) == ""
+    far = checks.check_document("## 摘要\n" + "字" * 2000, length=(100, 500), must_have=[], kind="概念讲解",
+                                disclaimer="", library_titles=[])
+    assert far and "严重偏离" in far[0]
+    short = checks.check_document("## 摘要\n" + "字" * 20, length=(100, 500), must_have=[], kind="概念讲解",
+                                  disclaimer="", library_titles=[])
+    assert short and "严重偏离" in short[0]
+
+
+def test_write_succeeds_when_length_slightly_over_and_records_note(data_home):
+    ctx, tid = _setup(data_home, length=(100, 200))                 # 假模型正文约 334 字：超出上限但未超过 3 倍
+    res = runner.write(ctx, tid, WriterLLM())
+    assert res["result"] == "drafted" and "超出" in res["checks"]["length_note"]
+
+
+def test_write_fails_when_length_far_off(data_home):
+    ctx, tid = _setup(data_home, length=(5, 30))                    # 334 字 > 30×3，严重偏离
+    assert runner.write(ctx, tid, WriterLLM())["result"] == "failed"
