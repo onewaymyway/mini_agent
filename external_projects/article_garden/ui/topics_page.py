@@ -89,8 +89,16 @@ def _delete_section(ctx, rows) -> None:
     if not deletable:
         st.info("当前没有可以删除的选题。")
         return
-    labels = {r["id"]: f"{r['id']}  {r['title']}（{states.LABELS.get(r['status'], r['status'])}）" for r in deletable}
-    picked = st.multiselect("选择要删除的选题", list(labels), format_func=lambda i: labels[i], key="del_sel")
+    def _set_all(value: bool) -> None:
+        for r in deletable:
+            st.session_state[f"del_{r['id']}"] = value
+    b1, b2, _ = st.columns([1, 1, 6])
+    b1.button("全选", key="del_all", on_click=_set_all, args=(True,))
+    b2.button("清空", key="del_none", on_click=_set_all, args=(False,))
+    picked = []
+    for r in deletable:
+        if st.checkbox(f"{r['id']}  {r['title']}（{states.LABELS.get(r['status'], r['status'])}）", key=f"del_{r['id']}"):
+            picked.append(r["id"])
     again = st.checkbox("允许之后重新提出同一缺口的选题（默认不勾选：删除后同一缺口不会再被提出）", key="del_again")
     note = st.text_input("备注（可选）", key="del_note")
     sure = st.checkbox(f"确认删除所选的 {len(picked)} 个选题", key="del_sure")

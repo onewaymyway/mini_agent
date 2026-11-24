@@ -331,3 +331,18 @@ def test_topics_page_offers_delete_section(data_home):
     at = run_app("topics", domain="ai")
     assert not at.exception, [e.value for e in at.exception]
     assert any(b.label == "删除所选选题" for b in at.button)
+
+
+def test_delete_section_uses_checkboxes_and_deletes_checked(data_home):
+    from tests.test_ui_smoke import run_app
+    ctx = _world(data_home)
+    rows = _two_topics(ctx)
+    tid = rows[0]["id"]
+    at = run_app("topics", domain="ai")
+    assert not at.exception, [e.value for e in at.exception]
+    assert not any(m.label == "选择要删除的选题" for m in at.multiselect)
+    at.checkbox(key=f"del_{tid}").check().run()
+    at.checkbox(key="del_sure").check().run()
+    next(b for b in at.button if b.label == "删除所选选题").click().run()
+    assert tid not in [r["id"] for r in states.load_topics(ctx)]
+    assert len(states.load_topics(ctx)) == len(rows) - 1
