@@ -31,6 +31,7 @@ import _common  # noqa: F401
 from _common import force_utf8_stdio
 
 from world_forge import engine, proposals, repo, timeline
+from world_forge.calendar import clock_minutes, format_time
 from world_forge.paths import data_root, mini_agent_root
 from world_forge.providers.factory import make_image_provider, make_text_llm
 
@@ -54,6 +55,9 @@ def main(argv=None) -> int:
     p = sub.add_parser("approve"); p.add_argument("--world", required=True); p.add_argument("--proposal", required=True)
     p = sub.add_parser("reject"); p.add_argument("--world", required=True); p.add_argument("--proposal", required=True)
     p = sub.add_parser("advance"); p.add_argument("--world", required=True); p.add_argument("--steps", type=int, default=1)
+    p.add_argument("--amount", type=int, default=None, help="本次推进的步长数值（默认用世界设置）")
+    p.add_argument("--unit", choices=["minute", "hour", "day", "week", "month", "year"], default=None,
+                   help="本次推进的时间单位（默认用世界设置）")
     p = sub.add_parser("fill"); p.add_argument("--world", required=True); p.add_argument("--limit", type=int, default=5)
     p = sub.add_parser("arc"); p.add_argument("--world", required=True); p.add_argument("--events", default="")
     p.add_argument("--from", dest="year_from", type=int); p.add_argument("--to", dest="year_to", type=int)
@@ -83,7 +87,7 @@ def main(argv=None) -> int:
                    "mini_agent_root": str(mini_agent_root()) if mini_agent_root() else None,
                    "text": llm_note, "image": img_note, "worlds": len(repo.list_world_ids())})
         elif args.cmd == "list":
-            _dump([{"id": w, "title": repo.load_meta(w)["title"], "year": repo.load_meta(w)["clock"]["year"]}
+            _dump([{"id": w, "title": repo.load_meta(w)["title"], "time": format_time(clock_minutes(repo.load_meta(w)))}
                    for w in repo.list_world_ids()])
         elif args.cmd == "init":
             llm, _ = make_text_llm()
@@ -97,7 +101,7 @@ def main(argv=None) -> int:
             llm, _ = make_text_llm()
             log = RunLog(args.world, "advance",
                          sink=lambda e: print(format_entry(e), file=sys.stderr, flush=True))
-            res = engine.advance(llm, args.world, args.steps, log=log)
+            res = engine.advance(llm, args.world, args.steps, log=log, amount=args.amount, unit=args.unit)
             _dump({k: v for k, v in res.items() if k != "log"})
         elif args.cmd == "fill":
             llm, _ = make_text_llm()

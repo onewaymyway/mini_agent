@@ -8,7 +8,8 @@ from world_forge.providers.image import StubImageProvider
 
 def test_advance_creates_events_and_moves_clock(world, llm):
     out = engine.advance(llm, world, 2)
-    assert out["clock"]["year"] == 20
+    from world_forge.calendar import MINUTES_PER_UNIT
+    assert out["clock"]["minutes"] == 2 * 10 * MINUTES_PER_UNIT["year"]   # 两步，每步默认 10 年
     evs = repo.load_events(world, "main")
     assert len(evs) >= 2
     assert all(e["year"] in (0, 10) for e in evs)

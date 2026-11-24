@@ -13,10 +13,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import generate, gaps, proposals, repo, store, timeline
+from .calendar import (clock_minutes, format_time, step_label, step_minutes, validate_step, year_of)
 from .paths import data_root
 
 STATUS_LABEL = {"applied": "已写入", "pending": "待确认", "blocked": "已拦截", "rejected": "已拒绝"}
-DEFAULT_SETTINGS = {"auto_minor": True, "years_per_step": 10, "recent_events": 8}
+DEFAULT_SETTINGS = {"auto_minor": True, "step_amount": 10, "step_unit": "year", "recent_events": 8}
 
 
 class EngineError(RuntimeError):
@@ -40,7 +41,7 @@ def create_world(llm, *, concept: str, title: str = "", genre: str = "", tone: s
         "id": wid, "title": (title or draft.get("title") or "未命名世界").strip(),
         "concept": concept, "genre": draft.get("genre") or genre or "", "tone": draft.get("tone") or tone or "",
         "status": "draft", "created_at": now, "updated_at": now, "charter": None,
-        "clock": {"year": 0}, "active_branch": repo.MAIN, "settings": dict(DEFAULT_SETTINGS),
+        "clock": {"minutes": 0}, "active_branch": repo.MAIN, "settings": dict(DEFAULT_SETTINGS),
     }
     with _with_lock(wid):
         repo.save_meta(meta)
@@ -183,19 +184,23 @@ def build_context(wid: str) -> Dict[str, Any]:
     events = repo.load_events(wid, meta["active_branch"])
     recent = events[-int(meta["settings"].get("recent_events", 8)):]
     return {
-        "year": meta["clock"]["year"],
+        "now": format_time(clock_minutes(meta)),
         "charter": {k: charter.get(k) for k in ("title", "genre", "tone", "summary", "hard_rules")},
         "entities": [{"name": e["name"], "kind": e["kind"], "summary": e.get("summary", "")[:120]} for e in ents][:60],
         "characters": [{"name": c["name"], "role": c.get("role"), "status": c.get("status"),
                         "faction": ent_by_id.get(c.get("faction_id")) or c.get("attrs", {}).get("faction_hint"),
                         "summary": c.get("summary", "")[:100]} for c in chars][:60],
-        "events": [{"year": ev.get("year"), "title": ev["title"], "summary": ev.get("summary", "")[:160],
+        "events": [{"time": ev.get("t"), "title": ev["title"], "summary": ev.get("summary", "")[:160],
                     "involves": [ent_by_id.get(i, i) for i in ev.get("involves", [])]} for ev in recent],
     }
 
 
-def advance(llm, wid: str, steps: int = 1, log=None) -> Dict[str, Any]:
-    """推进历史 steps 步。每个阶段写入运行日志（见 runlog.RunLog），失败时记录并重新抛出。"""
+def advance(llm, wid: str, steps: int = 1, log=None, *, amount: Optional[int] = None,
+            unit: Optional[str] = None) -> Dict[str, Any]:
+    """推进历史 steps 步。每步时长默认取世界设置；amount/unit 可为本次推进临时指定（不改设置）。
+
+    每个阶段写入运行日志（见 runlog.RunLog），失败时记录并重新抛出。
+    """
     from .runlog import LoggedLLM, RunLog
 
     require_charter(wid)
@@ -204,9 +209,16 @@ def advance(llm, wid: str, steps: int = 1, log=None) -> Dict[str, Any]:
     started = time.monotonic()
     meta = repo.load_meta(wid)
     branch_name = repo.load_branches(wid).get(meta["active_branch"], {}).get("name", meta["active_branch"])
-    yps = int(meta["settings"].get("years_per_step", 10))
-    log.log("start", f"开始推进：{steps} 步，每步 {yps} 年", steps=steps, years_per_step=yps)
-    log.log("start", f"起点：第 {meta['clock']['year']} 年，活动分支「{branch_name}」，"
+    if amount is not None or unit is not None:
+        a, u = validate_step(amount if amount is not None else meta["settings"]["step_amount"],
+                             unit or meta["settings"]["step_unit"])
+        step_settings = {"step_amount": a, "step_unit": u}
+    else:
+        step_settings = meta["settings"]
+    step_min = step_minutes(step_settings)
+    step_text = step_label(step_settings["step_amount"], step_settings["step_unit"])
+    log.log("start", f"开始推进：{steps} 步，每步 {step_text}", steps=steps, step_minutes=step_min)
+    log.log("start", f"起点：{format_time(clock_minutes(meta))}，活动分支「{branch_name}」，"
                      f"运行 ID {log.run_id}")
     results: List[dict] = []
     try:
@@ -215,7 +227,7 @@ def advance(llm, wid: str, steps: int = 1, log=None) -> Dict[str, Any]:
             log.log("step", f"第 {i + 1}/{steps} 步：收集世界状态")
             ctx = build_context(wid)
             alive = sum(1 for c in ctx["characters"] if c.get("status") == "alive")
-            log.log("context", f"上下文：实体 {len(ctx['entities'])}、角色 {len(ctx['characters'])}"
+            log.log("context", f"上下文：当前 {format_time(clock_minutes(repo.load_meta(wid)))}，实体 {len(ctx['entities'])}、角色 {len(ctx['characters'])}"
                                f"（存活 {alive}）、近期事件 {len(ctx['events'])}、"
                                f"硬规则 {len((ctx.get('charter') or {}).get('hard_rules') or [])} 条")
             draft = generate.advance_draft(LoggedLLM(llm, log), context=ctx, log=log)   # 锁外调用模型
@@ -226,14 +238,14 @@ def advance(llm, wid: str, steps: int = 1, log=None) -> Dict[str, Any]:
             with _with_lock(wid):
                 report = _submit_batch(wid, draft, source="advance", log=log)
                 meta = repo.load_meta(wid)
-                year = meta["clock"]["year"]
-                meta["clock"]["year"] = year + yps
+                before = clock_minutes(meta)
+                meta["clock"]["minutes"] = before + step_min
                 repo.save_meta(meta)
-            log.log("clock", f"时钟推进：第 {year} 年 → 第 {year + yps} 年")
+            log.log("clock", f"时钟推进：{format_time(before)} → {format_time(before + step_min)}")
             counts = _status_counts(report["records"])
             summary = "、".join(f"{STATUS_LABEL.get(k, k)} {v}" for k, v in counts.items()) or "无写入"
             log.log("step", f"第 {i + 1} 步完成：{summary}，用时 {time.monotonic() - step_t:.1f} 秒", level="ok")
-            results.append({"year": year, "counts": counts, "skipped": report["skipped"],
+            results.append({"time": format_time(before), "year": year_of(before), "counts": counts, "skipped": report["skipped"],
                             "records": report["records"]})
     except Exception as exc:
         log.log("error", f"推进中断：{type(exc).__name__}：{exc}", level="error")
@@ -243,7 +255,7 @@ def advance(llm, wid: str, steps: int = 1, log=None) -> Dict[str, Any]:
         for k, v in r["counts"].items():
             total[k] = total.get(k, 0) + v
     log.log("done", f"推进结束：共 {steps} 步，用时 {time.monotonic() - started:.1f} 秒，"
-                    f"当前第 {repo.load_meta(wid)['clock']['year']} 年", level="ok", counts=total)
+                    f"当前 {format_time(clock_minutes(repo.load_meta(wid)))}", level="ok", counts=total)
     return {"steps": results, "clock": repo.load_meta(wid)["clock"], "run_id": log.run_id,
             "log_path": str(log.path), "log": log.entries}
 
@@ -468,7 +480,7 @@ def modify_world(llm, wid: str, request: str, target_ids: Optional[List[str]] = 
 # ---------- 世界观简介
 
 def get_overview(wid: str) -> Optional[Dict[str, Any]]:
-    """返回已保存的世界观简介：{"text", "generated_at", "year"}；没有则 None。"""
+    """返回已保存的世界观简介：{"text", "generated_at", "minutes", "time"}；没有则 None。"""
     path = repo.world_dir(wid) / "overview.md"
     if not path.is_file():
         return None
@@ -483,7 +495,8 @@ def generate_overview(llm, wid: str) -> Dict[str, Any]:
     with _with_lock(wid):
         (repo.world_dir(wid) / "overview.md").write_text(text + "\n", encoding="utf-8")
         meta = repo.load_meta(wid)
-        meta["overview"] = {"generated_at": store.now_iso(), "year": meta["clock"]["year"]}
+        meta["overview"] = {"generated_at": store.now_iso(), "minutes": clock_minutes(meta),
+                            "time": format_time(clock_minutes(meta))}
         repo.save_meta(meta)
     return get_overview(wid)
 
@@ -638,7 +651,7 @@ def _new_story(wid: str, kind: str, title: str, extra: Dict[str, Any]) -> str:
 def _event_context(wid: str, events: List[dict]) -> List[dict]:
     ent = {e["id"]: e["name"] for e in repo.load_entities(wid)}
     ent.update({c["id"]: c["name"] for c in repo.load_characters(wid)})
-    return [{"year": e.get("year"), "title": e["title"], "summary": e.get("summary", ""),
+    return [{"time": e.get("t"), "title": e["title"], "summary": e.get("summary", ""),
              "involves": [ent.get(i, i) for i in e.get("involves", [])]} for e in events]
 
 

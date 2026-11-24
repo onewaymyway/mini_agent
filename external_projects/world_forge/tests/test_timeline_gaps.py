@@ -75,7 +75,7 @@ def test_overview_generated_and_persisted(world, llm):
     ov = engine.generate_overview(llm, world)
     assert ov["text"].strip()
     assert "世界概况" in ov["text"]
-    assert repo.load_meta(world)["overview"]["year"] == 0
+    assert repo.load_meta(world)["overview"]["minutes"] == 0
     engine.advance(llm, world, 1)
     assert engine.get_overview(world)["text"] == ov["text"]   # 推进不会自动改写
 

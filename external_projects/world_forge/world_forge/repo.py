@@ -52,10 +52,12 @@ def list_world_ids() -> List[str]:
 # ---------- 世界元信息
 
 def load_meta(wid: str) -> Dict[str, Any]:
+    from .calendar import normalize_meta
+
     meta = store.read_json(_p(wid, "world.json"))
     if meta is None:
         raise WorldNotFound(wid)
-    return meta
+    return normalize_meta(meta)
 
 
 def save_meta(meta: Dict[str, Any]) -> None:

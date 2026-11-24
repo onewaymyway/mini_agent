@@ -22,6 +22,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from world_forge import engine, gaps, graph as graph_mod, proposals, repo, runlog as runlog_mod, store, timeline  # noqa: E402
 from world_forge.providers.factory import make_image_provider, make_text_llm  # noqa: E402
+from world_forge.calendar import (MINUTES_PER_UNIT, UNIT_LABELS, clock_minutes, format_time,  # noqa: E402
+                                  step_label, validate_step)
 
 st.set_page_config(page_title="架空世界工坊", page_icon="🌍", layout="wide")
 st.markdown("""<style>
@@ -120,7 +122,7 @@ with tabs[1]:
     st.subheader(meta["title"])
     st.caption(f"{wid} · 状态：{'宪章已确认' if meta.get('charter') else '宪章待确认'} · 当前分支：{branch_name}")
     cols = st.columns(5)
-    cols[0].metric("当前年份", f"第 {meta['clock']['year']} 年")
+    cols[0].metric("当前时间", format_time(clock_minutes(meta)))
     cols[1].metric("设定实体", len(entities))
     cols[2].metric("角色", len(characters))
     cols[3].metric("待确认提案", len(pending))
@@ -128,8 +130,8 @@ with tabs[1]:
     st.markdown("#### 世界观简介")
     ov = engine.get_overview(wid)
     if ov:
-        stale = ov.get("year") != meta["clock"]["year"]
-        st.caption(f"生成于 {ov.get('generated_at', '')}（当时第 {ov.get('year')} 年）"
+        stale = ov.get("minutes") != clock_minutes(meta)
+        st.caption(f"生成于 {ov.get('generated_at', '')}（当时 {ov.get('time', '')}）"
                    + ("　· 世界已推进，建议重新生成" if stale else ""))
         with st.container(border=True):
             st.markdown(ov["text"])
@@ -385,7 +387,7 @@ with tabs[4]:
             opts = [None] + [e["id"] for e in events]
             at = st.selectbox("从哪个事件之后分叉（None 表示从末尾）", opts,
                               format_func=lambda k: "末尾" if k is None else
-                              next(f"第{e['year']}年 · {e['title']}" for e in events if e["id"] == k))
+                              next(f"{e['t']} · {e['title']}" for e in events if e["id"] == k))
             if st.form_submit_button("开新分支并切换"):
                 bid = _safe(timeline.fork, wid, fname or "新分支", at)
                 if bid:
@@ -394,7 +396,7 @@ with tabs[4]:
     if not events:
         st.caption("该分支还没有事件。")
     for e in events:
-        st.markdown(f"**第{e['year']}年 · {e['title']}**")
+        st.markdown(f"**{e['t']} · {e['title']}**")
         st.write(e.get("summary", ""))
     if len(branches) > 1:
         st.markdown("#### 分支对比")
@@ -408,10 +410,10 @@ with tabs[4]:
             x1, x2 = st.columns(2)
             x1.markdown("**A 独有**")
             for e in res["only_a"]:
-                x1.markdown(f"- 第{e['year']}年 {e['title']}")
+                x1.markdown(f"- {e['t']} {e['title']}")
             x2.markdown("**B 独有**")
             for e in res["only_b"]:
-                x2.markdown(f"- 第{e['year']}年 {e['title']}")
+                x2.markdown(f"- {e['t']} {e['title']}")
 
 # ---------- 推进
 
@@ -421,13 +423,21 @@ with tabs[5]:
         st.warning("宪章未确认，暂不能推进。")
     else:
         steps = st.number_input("推进步数", min_value=1, max_value=10, value=1)
-        st.caption(f"每步 {meta['settings'].get('years_per_step', 10)} 年，当前第 {meta['clock']['year']} 年。"
+        tc1, tc2 = st.columns(2)
+        amt = tc1.number_input("每步时长", min_value=1, max_value=100000,
+                               value=int(meta["settings"]["step_amount"]), key="adv_amount")
+        unit_keys = list(UNIT_LABELS)
+        unit = tc2.selectbox("时间单位", unit_keys, index=unit_keys.index(meta["settings"]["step_unit"]),
+                             format_func=lambda u: UNIT_LABELS[u], key="adv_unit")
+        st.caption(f"本次每步 {step_label(int(amt), unit)}（默认取世界设置，可在此临时调整）。"
+                   f"当前时间：{format_time(clock_minutes(meta))}。"
                    "推进过程会实时显示在下方日志中，并保存到本世界的运行日志。")
         if st.button("推进", type="primary"):
             box = st.status("正在推进……", expanded=True)
             sink = lambda e: box.text(runlog_mod.format_entry(e))  # noqa: E731
             try:
-                res = engine.advance(LLM, wid, int(steps), log=runlog_mod.RunLog(wid, "advance", sink=sink))
+                res = engine.advance(LLM, wid, int(steps), log=runlog_mod.RunLog(wid, "advance", sink=sink),
+                                     amount=int(amt), unit=unit)
                 box.update(label="推进完成", state="complete", expanded=False)
                 st.session_state.advance_report = res
             except Exception as exc:  # noqa: BLE001
@@ -438,7 +448,7 @@ with tabs[5]:
         if rep:
             st.markdown("**本次推进结果**")
             for s_ in rep["steps"]:
-                st.markdown(f"第 {s_['year']} 年　" + "　".join(
+                st.markdown(f"{s_['time']}　" + "　".join(
                     f"{_tag(k)} {v}" for k, v in s_["counts"].items()), unsafe_allow_html=True)
                 for r in s_["records"]:
                     head = r["payload"].get("title") or r["payload"].get("name") or r["op"]
@@ -468,7 +478,7 @@ with tabs[5]:
 with tabs[6]:
     evs = repo.load_events(wid, meta["active_branch"])
     st.markdown("#### 从事件生成小故事线")
-    ev_labels = {e["id"]: f"第{e['year']}年 · {e['title']}" for e in evs}
+    ev_labels = {e["id"]: f"{e['t']} · {e['title']}" for e in evs}
     chosen_ev = st.multiselect("选择事件", list(ev_labels), format_func=lambda k: ev_labels[k])
     if st.button("生成小故事线", disabled=not chosen_ev or not meta.get("charter")):
         with st.spinner("整理故事线……"):
@@ -553,13 +563,24 @@ with tabs[7]:
     with st.form("settings"):
         auto_minor = st.toggle("次要设定自动写入（地名、物品、次要角色等）",
                                value=bool(meta["settings"].get("auto_minor", True)))
-        yps = st.number_input("每次推进的年数", min_value=1, max_value=500,
-                              value=int(meta["settings"].get("years_per_step", 10)))
+        sc1, sc2 = st.columns(2)
+        step_amt = sc1.number_input("默认每步时长", min_value=1, max_value=100000,
+                                    value=int(meta["settings"]["step_amount"]))
+        unit_keys = list(UNIT_LABELS)
+        step_unit = sc2.selectbox("默认时间单位", unit_keys, index=unit_keys.index(meta["settings"]["step_unit"]),
+                                  format_func=lambda u: UNIT_LABELS[u])
+        st.caption("历法：1 年 = 12 月，1 月 = 30 天，1 星期 = 7 天（周一至周日）。")
         recent = st.number_input("推进时参考的近期事件数", min_value=1, max_value=50,
                                  value=int(meta["settings"].get("recent_events", 8)))
         if st.form_submit_button("保存设置"):
             m = repo.load_meta(wid)
-            m["settings"].update(auto_minor=auto_minor, years_per_step=int(yps), recent_events=int(recent))
+            try:
+                amount_v, unit_v = validate_step(step_amt, step_unit)
+            except ValueError as exc:
+                st.error(str(exc))
+                st.stop()
+            m["settings"].update(auto_minor=auto_minor, step_amount=amount_v, step_unit=unit_v,
+                                 recent_events=int(recent))
             repo.save_meta(m)
             st.success("已保存。")
             st.rerun()

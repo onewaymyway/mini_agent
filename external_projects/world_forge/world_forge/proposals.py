@@ -258,14 +258,17 @@ def apply_op(wid: str, op: str, target: Optional[str], payload: Dict[str, Any], 
 
     if op == "add_event":
         meta = repo.load_meta(wid)
-        year = meta["clock"]["year"]
+        from .calendar import clock_minutes, format_time, year_of
+
+        minutes = clock_minutes(meta)
         eid = store.new_id("evt")
         applied = []
         for ch in payload.get("changes") or []:
             apply_op(wid, ch["op"], ch.get("target"), ch.get("payload") or {}, source)
             applied.append({"op": ch["op"], "target": ch.get("target")})
         repo.append_event(wid, meta["active_branch"], {
-            "id": eid, "year": year, "t": f"第{year}年", "title": payload["title"].strip(),
+            "id": eid, "minute": minutes, "year": year_of(minutes), "t": format_time(minutes),
+            "title": payload["title"].strip(),
             "summary": payload.get("summary", ""), "involves": payload.get("involves") or [],
             "caused_by": payload.get("caused_by") or [], "tags": payload.get("tags") or [],
             "changes": applied, "branch": meta["active_branch"], "source": source, "created_at": now,
