@@ -361,3 +361,49 @@ def test_generated_articles_produce_no_relation_edges(data_home):
                         {"canonical": "索引", "surfaces": ["索引"], "articles": [aid]}],
                        {"向量数据库": "c-0001", "索引": "c-0002"}, 3)
     assert calls["edge"] == 0
+
+
+# ------------------------------------------------------------------ 批量成文
+
+def test_write_batch_skips_ineligible_and_continues_after_failure(data_home):
+    ctx, tid = _setup(data_home)
+    res = runner.write_batch(ctx, ["t-9999", tid, tid], WriterLLM())      # 不存在的跳过；重复 id 只处理一次
+    assert res["total"] == 2 and res["drafted"] == 1
+    assert [r["result"] for r in res["results"]] == ["skipped", "drafted"]
+    assert states.get(ctx, tid)["status"] == states.DRAFTED
+    again = runner.write_batch(ctx, [tid], WriterLLM())                    # 已成稿不属于批量范围
+    assert again["results"][0]["result"] == "skipped"
+    with pytest.raises(ValueError):
+        runner.write_batch(ctx, [], WriterLLM())
+    with pytest.raises(ValueError):
+        runner.write_batch(ctx, [tid], None)
+
+
+def test_write_batch_stop_ends_whole_batch_and_reverts(data_home):
+    ctx, tid = _setup(data_home)
+
+    def section(prompt):
+        raise cancel.Cancelled("用户请求停止")
+    with pytest.raises(cancel.Cancelled):
+        runner.write_batch(ctx, [tid], WriterLLM(section=section))
+    assert states.get(ctx, tid)["status"] == states.RESEARCHED
+
+
+def test_review_page_batch_section_lists_writable_topics(data_home):
+    from tests.test_ui_smoke import run_app
+    ctx, tid = _setup(data_home)
+    at = run_app("review", domain="ai")
+    assert not at.exception, [e.value for e in at.exception]
+    assert any(c.key == f"wb_{tid}" for c in at.checkbox)
+    at.checkbox(key=f"wb_{tid}").check().run()
+    assert any(b.label == "批量成文（1 个，后台）" and not b.disabled for b in at.button)
+
+
+def test_entrypoint_batch_all_with_nothing_says_so(data_home, capsys):
+    import sys
+    from pathlib import Path
+    _world(data_home)
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "entrypoints"))
+    import write_article as ep
+    assert ep.main(["ai", "--batch-all"]) == 0
+    assert "没有可成文的已调研选题" in capsys.readouterr().out

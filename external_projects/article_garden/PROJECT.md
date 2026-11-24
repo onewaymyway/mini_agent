@@ -31,6 +31,9 @@
 **删除选题（记录：`next_doc/article_garden_topic_delete_record.md`）**
 - 选题页「删除选题」以勾选列表（含全选、清空）批量删除待放行、已放行、已拒绝、已放弃的选题；有调研或草稿产物的选题和进行中的选题不能删除。默认删除后同一缺口不会再被提出，勾选“允许重新提出”才会清除拒绝记录。只删除记录，不动已生成文件；被删选题留存在 `plan/deleted.jsonl`。
 
+**批量成文（记录：`next_doc/article_garden_review_batch_write_record.md`）**
+- 审阅页「批量成文」以勾选列表（含全选、清空）选择已调研或成文失败、且证据充分的选题，后台逐个成文；一题失败不影响其它，停止或预算用尽则整批结束。不会自动审阅或发布。命令行：`write_article.py <domain> --batch t-0001,t-0002` 或 `--batch-all`。
+
 **选题标题（选题质量记录：`next_doc/article_garden_topic_title_quality_record.md`）**
 - 缺口选题的标题与角度由模型撰写，参照文库已有标题的风格；模板式标题（“X是什么”“X入门”“X综述”）会被拒绝。未通过时保留模板标题。
 

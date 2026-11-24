@@ -31,6 +31,31 @@ def _article_body(ctx, aid: str):
     return meta, body
 
 
+def _batch_section(ctx, rows, busy: bool) -> None:
+    """批量成文：列出可成文的选题（已调研或成文失败，且证据充分），勾选后在后台逐个成文。"""
+    st.markdown("**批量成文**")
+    ready = [r for r in rows if runner.writable(ctx, r["id"])]
+    if not ready:
+        st.caption("没有可批量成文的选题（需「已调研」或「成文失败」，且证据充分）。")
+        return
+    st.caption("勾选后在后台逐个成文，一题失败不影响其它；点击停止或预算用尽则整批结束。成稿后仍需逐篇审阅。")
+
+    def _set_all(value: bool) -> None:
+        for r in ready:
+            st.session_state[f"wb_{r['id']}"] = value
+    b1, b2, _ = st.columns([1, 1, 6])
+    b1.button("全选", key="wb_all", on_click=_set_all, args=(True,))
+    b2.button("清空", key="wb_none", on_click=_set_all, args=(False,))
+    picked = []
+    for r in ready:
+        if st.checkbox(f"{r['id']}  {r['title']}（{STATUS_NAMES[r['status']]}）", key=f"wb_{r['id']}"):
+            picked.append(r["id"])
+    if st.button(f"批量成文（{len(picked)} 个，后台）", type="primary", key="wb_go",
+                 disabled=busy or not picked):
+        spawn("write_article.py", ctx.id, "--batch", ",".join(picked))
+        st.success("已在后台开始批量成文，进度见「▶ 运行日志」。完成后刷新本页。")
+
+
 def render_review_page() -> None:
     ctx = state.current_ctx()
     if ctx is None:
@@ -42,6 +67,9 @@ def render_review_page() -> None:
         return
     st.dataframe([{"编号": r["id"], "选题": r["title"], "状态": STATUS_NAMES[r["status"]],
                    "文章": r.get("article_id") or ""} for r in rows], hide_index=True, use_container_width=True)
+    busy = joblog.is_running(ctx.root, scopes=(runner.SCOPE,))
+    _batch_section(ctx, rows, busy)
+    st.divider()
     labels = {r["id"]: f"{r['id']}  {r['title']}" for r in rows}
     tid = st.selectbox("选择选题", list(labels), format_func=lambda i: labels[i], key="rev_sel")
     topic = states.get(ctx, tid)

@@ -239,6 +239,45 @@ def write(ctx, tid: str, llm, *, max_rounds: Optional[int] = None, feedback: str
         raise
 
 
+def writable(ctx, tid: str) -> bool:
+    """可批量成文：状态为已调研或成文失败，且证据充分。（已成稿、已审阅的重写需附意见，不在批量范围内。）"""
+    try:
+        t = states.get(ctx, tid)
+    except ValueError:
+        return False
+    if t["status"] not in (states.RESEARCHED, states.FAILED):
+        return False
+    pk = pack.read(ctx, tid)
+    return bool(pk and pk.get("sufficient"))
+
+
+def write_batch(ctx, tids: List[str], llm, *, max_rounds: Optional[int] = None) -> Dict[str, Any]:
+    """批量成文：按给定顺序逐个成文。不可成文的选题跳过并记录原因；单题成文失败不影响其它；
+    用户停止或预算用尽（异常向上抛出）则整批结束，当前选题已退回原状态。"""
+    tids = list(dict.fromkeys(tids or []))
+    if not tids:
+        raise ValueError("请至少选择一个选题")
+    if llm is None:
+        raise ValueError("成文需要文本模型，请先确认模型配置可用")
+    results: List[Dict[str, Any]] = []
+    with joblog.run(ctx.root, SCOPE, f"批量成文（{len(tids)} 个）"):
+        for i, tid in enumerate(tids, 1):
+            if not writable(ctx, tid):
+                joblog.log(ctx.root, SCOPE, f"批量成文 {i}/{len(tids)}：跳过 {tid}（需要「已调研」或「成文失败」且证据充分）",
+                           level="warn")
+                results.append({"topic": tid, "result": "skipped"})
+                continue
+            joblog.log(ctx.root, SCOPE, f"批量成文 {i}/{len(tids)}：{tid}「{states.get(ctx, tid)['title']}」")
+            try:
+                res = write(ctx, tid, llm, max_rounds=max_rounds)
+                results.append({"topic": tid, "result": res["result"], "article_id": res.get("article_id")})
+            except ValueError as exc:
+                results.append({"topic": tid, "result": "error", "error": str(exc)})
+                joblog.log(ctx.root, SCOPE, f"批量成文 {tid} 未执行：{exc}", level="warn")
+    drafted = sum(1 for r in results if r["result"] == "drafted")
+    return {"total": len(tids), "drafted": drafted, "results": results}
+
+
 # ------------------------------------------------------------------ 审阅动作（不调用模型）
 
 def approve(ctx, tid: str) -> Dict[str, Any]:
