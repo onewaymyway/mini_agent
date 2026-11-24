@@ -392,5 +392,16 @@ with tabs[7]:
             repo.save_meta(m)
             st.success("已保存。")
             st.rerun()
+    st.markdown("#### 危险操作：删除世界")
+    st.caption("将永久删除该世界的全部数据（设定、角色、时间线、分支、提案、故事、导出），无法恢复。")
+    with st.expander("删除当前世界"):
+        typed = st.text_input(f"输入世界 id「{wid}」以确认", key="delete_confirm_input")
+        if st.button("永久删除该世界", type="primary", disabled=typed != wid, key="delete_world_btn"):
+            res = _safe(engine.delete_world, wid)
+            if res:
+                remaining = repo.list_world_ids()
+                st.session_state.current_wid = remaining[0] if remaining else None
+                st.success(f"已删除「{res['title']}」。")
+                st.rerun()
     st.markdown("#### 冲突规则")
     st.write("与宪章硬规则冲突、名称重复、引用不存在或已死亡的对象，一律阻止写入，并记录原因，不会静默覆盖。")

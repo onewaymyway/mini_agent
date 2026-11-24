@@ -102,3 +102,15 @@ def test_make_arc_requires_events(world, llm):
 def test_create_world_requires_concept(llm):
     with pytest.raises(engine.EngineError):
         engine.create_world(llm, concept="   ")
+
+
+def test_delete_world_removes_everything(world, llm):
+    import pytest as _pt
+    engine.advance(llm, world, 1)
+    assert repo.world_dir(world).is_dir()
+    res = engine.delete_world(world)
+    assert res["deleted"] == world
+    assert not repo.world_dir(world).exists()
+    assert world not in repo.list_world_ids()
+    with _pt.raises(repo.WorldNotFound):
+        engine.delete_world(world)

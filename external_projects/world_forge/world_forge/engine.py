@@ -182,6 +182,20 @@ def advance(llm, wid: str, steps: int = 1) -> Dict[str, Any]:
     return {"steps": results, "clock": repo.load_meta(wid)["clock"]}
 
 
+# ---------- 删除世界
+
+def delete_world(wid: str) -> Dict[str, Any]:
+    """永久删除整个世界目录（设定、角色、时间线、分支、提案、故事、导出）。不可恢复。
+
+    不在锁内删除：锁文件位于世界目录内，Windows 下打开中的文件无法删除。
+    调用方应先确认用户意图（看板要求输入世界 id）。
+    """
+    meta = repo.load_meta(wid)   # 不存在则抛 WorldNotFound
+    d = repo.world_dir(wid)
+    shutil.rmtree(d)
+    return {"deleted": wid, "title": meta.get("title", "")}
+
+
 # ---------- 设定补全（交互与自动共用）
 
 def fill_gaps(llm, wid: str, *, gap_ids: Optional[List[str]] = None, limit: int = 5) -> Dict[str, Any]:

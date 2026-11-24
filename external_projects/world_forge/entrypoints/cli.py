@@ -13,6 +13,7 @@
   python entrypoints/cli.py board --world <wid> --story <sid>
   python entrypoints/cli.py comic --world <wid> --story <sid>
   python entrypoints/cli.py export --world <wid> --story <sid>
+  python entrypoints/cli.py delete --world <wid> --confirm <wid>   # 永久删除，不可恢复
 """
 
 from __future__ import annotations
@@ -56,6 +57,8 @@ def main(argv=None) -> int:
     p = sub.add_parser("board"); p.add_argument("--world", required=True); p.add_argument("--story", required=True)
     p = sub.add_parser("comic"); p.add_argument("--world", required=True); p.add_argument("--story", required=True)
     p = sub.add_parser("export"); p.add_argument("--world", required=True); p.add_argument("--story", required=True)
+    p = sub.add_parser("delete"); p.add_argument("--world", required=True)
+    p.add_argument("--confirm", required=True, help="必须与 --world 的值完全相同，用于防止误删")
     args = ap.parse_args(argv)
 
     try:
@@ -96,6 +99,10 @@ def main(argv=None) -> int:
             prov, note = make_image_provider()
             res = engine.render_comic(prov, args.world, args.story)
             _dump({**res, "note": note})
+        elif args.cmd == "delete":
+            if args.confirm != args.world:
+                raise ValueError("确认内容与世界 id 不一致，未删除")
+            _dump(engine.delete_world(args.world))
         elif args.cmd == "export":
             _dump({"path": str(engine.export_bundle(args.world, args.story))})
         return 0

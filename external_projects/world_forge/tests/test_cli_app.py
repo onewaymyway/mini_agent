@@ -59,3 +59,14 @@ def test_create_world_from_form_then_rerun_no_session_state_error(tmp_path, monk
 def repo_list(tmp_path):
     from pathlib import Path as _P
     return [p for p in (_P(tmp_path) / "data").iterdir() if (p / "world.json").is_file()]
+
+
+def test_cli_delete_requires_matching_confirm(tmp_path):
+    env = {"WORLD_FORGE_DATA_DIR": str(tmp_path / "d"), "WORLD_FORGE_PROVIDERS": "stub"}
+    wid = json.loads(_run("init", "--concept", "待删除", env_extra=env).stdout)["world_id"]
+    bad = _run("delete", "--world", wid, "--confirm", "wld_wrong", env_extra=env)
+    assert bad.returncode == 1
+    assert json.loads(_run("list", env_extra=env).stdout)  # 仍然存在
+    ok = _run("delete", "--world", wid, "--confirm", wid, env_extra=env)
+    assert ok.returncode == 0, ok.stderr
+    assert not any(w["id"] == wid for w in json.loads(_run("list", env_extra=env).stdout))
