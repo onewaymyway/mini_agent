@@ -28,6 +28,9 @@ from world_forge.calendar import (MINUTES_PER_UNIT, UNIT_LABELS, clock_minutes, 
 st.set_page_config(page_title="架空世界工坊", page_icon="🌍", layout="wide")
 st.markdown("""<style>
 .block-container {padding-top: 4.5rem;}
+/* 图片不超出所在列，避免覆盖相邻的文字 */
+div[data-testid="stImage"] img {max-width: 100% !important; height: auto !important;}
+div[data-testid="stImage"] {max-width: 100%; overflow: hidden;}
 .wf-card {border:1px solid #2a3350;border-radius:10px;padding:12px 14px;background:#141a2b;}
 .wf-tag {display:inline-block;padding:1px 8px;border-radius:999px;font-size:12px;margin-right:4px;}
 </style>""", unsafe_allow_html=True)
@@ -462,7 +465,7 @@ with tabs[3]:
             with img_col:
                 if has_portrait:
                     # 直接读取图片内容显示：同一路径重新生成后，Streamlit 不会继续显示旧缓存
-                    st.image(pth.read_bytes(), caption=f"{c['name']} · 人设图", width=220)
+                    st.image(pth.read_bytes(), caption=f"{c['name']} · 人设图")
                 else:
                     st.caption("（还没有人设图）")
             with info_col:
@@ -485,7 +488,7 @@ with tabs[3]:
                     with st.expander(f"历史人设图（{len(hist)}，重新生成前的旧图）"):
                         hcols = st.columns(min(4, len(hist)))
                         for i, hp in enumerate(hist):
-                            hcols[i % len(hcols)].image(hp.read_bytes(), width=140, caption=hp.name.split(".")[1][:15])
+                            hcols[i % len(hcols)].image(hp.read_bytes(), caption=hp.name.split(".")[1][:15])
 
 # ---------- 时间线
 
