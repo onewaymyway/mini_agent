@@ -55,6 +55,11 @@ SPEC: Dict[str, Dict[str, Dict[str, Any]]] = {
     "research": {
         "use_system_proxy": _s(False, "bool", "调研抓取使用系统代理",
                                "默认不使用。若访问外网网站需要代理，请打开（与大模型的代理设置相互独立）"),
+        "use_browser": _s(False, "bool", "普通抓取失败时改用浏览器（备用）",
+                          "页面内容为空或服务器出错时，改用已开启远程调试的 Chrome 渲染（需 pip install playwright）。"
+                          "不用于绕过 robots.txt，也不用于 401/403 等人工验证页面"),
+        "browser_port": _s(9222, "int", "浏览器远程调试端口",
+                           "启动 Chrome 时使用的 --remote-debugging-port", min=1, max=65535),
     },
     "search": {
         "provider": _s("duckduckgo", "enum", "搜索后端", "duckduckgo 无需 key；其它需在 mini_agent 配置对应 key", choices=SEARCH_PROVIDERS),

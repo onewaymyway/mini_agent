@@ -35,6 +35,7 @@ def run(ctx, tid: str, *, llm: Any = None, max_rounds: Optional[int] = None,
 
     prev = topic["status"]
     must = [str(m) for m in (topic.get("must_cover") or []) if str(m).strip()]
+    terms = ctx.load_charter()[0].get("terms") or {}
     max_pages = int(eff["budget"]["max_fetch_pages_per_topic"])
     excerpt_max = int(eff["thresholds"]["excerpt_chars_max"])
     backend = search_backend or search.MiniAgentSearch(eff["search"]["provider"])
@@ -78,8 +79,10 @@ def run(ctx, tid: str, *, llm: Any = None, max_rounds: Optional[int] = None,
                 result["skipped"].append(f"{h.url}：{page['error']}")
                 joblog.log(ctx.root, SCOPE, f"调研：未抓取，{page['error']}", level="warn")
                 continue
+            if page.get("note"):
+                joblog.log(ctx.root, SCOPE, f"调研：{h.url}：{page['note']}", level="warn")
             title, text = extract.extract(page["html"])
-            ex = sources.excerpt(text, must, excerpt_max)
+            ex = sources.excerpt(text, must, excerpt_max, terms)
             if not ex:
                 result["skipped"].append(f"{h.url}：与选题要点无关")
                 joblog.log(ctx.root, SCOPE, "调研：页面与选题要点无关，不入库")
@@ -87,10 +90,11 @@ def run(ctx, tid: str, *, llm: Any = None, max_rounds: Optional[int] = None,
             card = sources.make_card(sources.next_id(ctx, tid), tid, url=h.url,
                                      title=title or h.title or h.url, text=ex,
                                      credibility=sources.classify(h.url, _avoid(ctx)),
-                                     source_type="web", points=must)
+                                     source_type="web", points=must, terms=terms)
             sources.write(ctx, tid, card)
             result["added"] += 1
-            joblog.log(ctx.root, SCOPE, f"调研：已入库 {card['id']}（可信度 {card['credibility']}，"
+            via = "（浏览器渲染）" if page.get("via") == "browser" else ""
+            joblog.log(ctx.root, SCOPE, f"调研：已入库 {card['id']}{via}（可信度 {card['credibility']}，"
                                         f"摘录 {len(ex)} 字，覆盖要点 {len(card['covers'])}/{len(must)}）")
         result["pages"] = attempts
 

@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Optional
 from urllib.parse import urlsplit
 
 from .. import store
+from ..wiki import validate_util as vu
 
 A_HOSTS = ("arxiv.org", "doi.org", "openreview.net", "ieee.org", "acm.org", "nature.com", ".edu", ".gov")
 B_HOSTS = ("github.com", "gitlab.com", "huggingface.co", "stackoverflow.com", "readthedocs", "kaggle.com")
@@ -36,13 +37,28 @@ def classify(url: str, avoid: Iterable[str]) -> str:
     return "C"
 
 
-def excerpt(text: str, points: Iterable[str], max_chars: int) -> str:
-    """只保留包含任一要点的段落，拼接到 max_chars 字以内。"""
+def match_names(point: str, terms: Optional[Dict[str, List[str]]]) -> List[str]:
+    """要点的可接受写法：本身，以及章程术语中与它同义的别名（同一术语组内互通）。"""
+    names = [point]
+    for canon, aliases in (terms or {}).items():
+        group = [canon] + list(aliases or [])
+        if point in group:
+            names += group
+    return [n for i, n in enumerate(names) if n and n not in names[:i]]
+
+
+def covers_point(point: str, text: str, terms: Optional[Dict[str, List[str]]] = None) -> bool:
+    """文本是否覆盖该要点：忽略标点、引号、全半角与大小写；同义别名亦可。"""
+    return any(vu.appears(n, text or "") for n in match_names(point, terms))
+
+
+def excerpt(text: str, points: Iterable[str], max_chars: int, terms: Optional[Dict[str, List[str]]] = None) -> str:
+    """只保留覆盖任一要点的段落，拼接到 max_chars 字以内。"""
     pts = [p for p in points if p]
     keep = []
     for para in re.split(r"\n\s*\n", text or ""):
         p = para.strip()
-        if p and any(pt in p for pt in pts):
+        if p and any(covers_point(pt, p, terms) for pt in pts):
             keep.append(p)
     out = ""
     for p in keep:
@@ -54,8 +70,8 @@ def excerpt(text: str, points: Iterable[str], max_chars: int) -> str:
     return out.strip()
 
 
-def covers(text: str, points: Iterable[str]) -> List[str]:
-    return [p for p in points if p and p in (text or "")]
+def covers(text: str, points: Iterable[str], terms: Optional[Dict[str, List[str]]] = None) -> List[str]:
+    return [p for p in points if p and covers_point(p, text, terms)]
 
 
 # ------------------------------------------------------------------ 存储
@@ -91,11 +107,12 @@ def next_id(ctx, tid: str) -> str:
 
 
 def make_card(sid: str, tid: str, *, url: str, title: str, text: str, credibility: str,
-              source_type: str, points: Iterable[str], query: str = "") -> Dict[str, Any]:
+              source_type: str, points: Iterable[str], query: str = "",
+              terms: Optional[Dict[str, List[str]]] = None) -> Dict[str, Any]:
     pts = list(points)
     return {"id": sid, "topic_id": tid, "url": url, "title": title, "source_type": source_type,
             "credibility": credibility, "fetched_at": _now(), "excerpt": text,
-            "covers": covers(text, pts), "query": query}
+            "covers": covers(text, pts, terms), "query": query}
 
 
 def write(ctx, tid: str, card: Dict[str, Any]) -> None:

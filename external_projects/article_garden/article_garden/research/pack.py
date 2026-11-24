@@ -42,10 +42,11 @@ def evaluate(ctx, tid: str, topic: Dict[str, Any], min_credibility: str = "B") -
         cred = c.get("credibility")
         if cred in counts:
             counts[cred] += 1
+    terms = ctx.load_charter()[0].get("terms") or {}
     pts: List[Dict[str, Any]] = []
     covered = 0
     for p in points:
-        srcs = [c["id"] for c in cards if p in str(c.get("excerpt") or "")]
+        srcs = [c["id"] for c in cards if sources.covers_point(p, str(c.get("excerpt") or ""), terms)]
         covered += 1 if srcs else 0
         pts.append({"name": p, "sources": srcs})
     coverage = covered / len(points) if points else 1.0

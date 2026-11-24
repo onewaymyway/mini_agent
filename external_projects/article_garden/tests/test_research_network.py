@@ -101,3 +101,76 @@ def test_research_all_with_nothing_approved_says_so(data_home, capsys):
     import research as ep
     assert ep.main(["ai", "--all"]) == 0
     assert "没有已放行的选题" in capsys.readouterr().out
+
+
+# ------------------------------------------------------------------ 匹配与浏览器备用
+
+def test_matching_ignores_punctuation_and_accepts_charter_aliases():
+    from article_garden.research import sources
+    assert sources.covers_point("AI-Economic Protocol", "这是 AI Economic Protocol 的介绍")
+    assert sources.covers_point("假说生成", "文中讨论的是假设生成的方法", {"假说生成": ["假设生成"]})
+    assert not sources.covers_point("假说生成", "文中讨论的是别的内容", {"假说生成": ["假设生成"]})
+    para = "AI Economic Protocol 需要身份与结算。"
+    assert sources.excerpt(para, ["AI-Economic Protocol"], 200) == para
+
+
+def test_thin_detection_flags_script_shells_only():
+    from article_garden.research import fetch
+    assert fetch.thin("<html><script>var x=1;</script><body><div id=app></div></body></html>")
+    assert not fetch.thin("<html><body>" + "正文内容。" * 80 + "</body></html>")
+
+
+def test_browser_is_used_for_empty_shell_pages_only(data_home):
+    ctx = _world(data_home)
+    rendered = []
+    body = "<html><body>" + "这是通过脚本渲染后的完整正文内容。" * 20 + "</body></html>"
+
+    def render(url):
+        rendered.append(url)
+        return body, ""
+    shell = Net([(200, "text/html", "<html><script>x</script></html>")])
+    f = fetch.Fetcher(ctx, http_get=shell, min_interval=0, sleep=lambda s: None, render=render)
+    res = f.fetch("https://spa.example.org/article")
+    assert res["ok"] and res["via"] == "browser" and rendered == ["https://spa.example.org/article"]
+
+
+def test_browser_is_not_used_for_robots_denials_or_access_challenges(data_home):
+    ctx = _world(data_home)
+    rendered = []
+
+    def render(url):
+        rendered.append(url)
+        return "<html>" + "x" * 500 + "</html>", ""
+    denied = Net([(200, "text/plain", "User-agent: *\nDisallow: /")])
+    f = fetch.Fetcher(ctx, http_get=denied, min_interval=0, sleep=lambda s: None, render=render)
+    assert f.fetch("https://zhihu.example.org/p/1")["ok"] is False
+    challenge = Net([(404, "text/html", ""), (403, "text/html", "")])   # robots 允许；页面返回 403
+    f2 = fetch.Fetcher(ctx, http_get=challenge, min_interval=0, sleep=lambda s: None, render=render)
+    res = f2.fetch("https://guard.example.org/x")
+    assert res["ok"] is False and "不使用浏览器绕过" in res["error"]
+    assert rendered == []
+
+
+def test_server_error_falls_back_to_browser_when_enabled(data_home):
+    ctx = _world(data_home)
+    body = "<html><body>" + "渲染后可读的完整文章正文。" * 20 + "</body></html>"
+    def http(url, t):
+        return (521, "text/html", "") if not url.endswith("robots.txt") else (404, "text/html", "")
+    f = fetch.Fetcher(ctx, http_get=http, min_interval=0, sleep=lambda s: None,
+                      render=lambda url: (body, ""))
+    res = f.fetch("https://devpress.example.net/a")
+    assert res["ok"] and res["via"] == "browser"
+
+
+def test_render_without_playwright_reports_why(monkeypatch):
+    import builtins
+    from article_garden.research import browser
+    real = builtins.__import__
+
+    def fake(name, *a, **k):
+        if name.startswith("playwright"):
+            raise ImportError("no")
+        return real(name, *a, **k)
+    monkeypatch.setattr(builtins, "__import__", fake)
+    html, err = browser.render_fn(9222, timeout_sec=1)("https://x.example/")
+    assert html is None and "playwright" in err

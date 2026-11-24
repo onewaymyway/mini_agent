@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -49,20 +50,31 @@ def default_http_get(url: str, timeout: float, use_proxy: bool = False) -> Tuple
         return 0, "", f"{type(exc).__name__}: {str(exc)[:120]}"
 
 
+def thin(html: str, min_chars: int = 200) -> bool:
+    """去掉标签后可见文字很少（典型的脚本空壳页面）。"""
+    text = re.sub(r"<script.*?</script>|<style.*?</style>|<[^>]+>", " ", html or "", flags=re.S | re.I)
+    return len("".join(text.split())) < min_chars
+
+
 def _hash(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()[:24]
 
 
 class Fetcher:
     def __init__(self, ctx, http_get: Optional[HttpGet] = None, min_interval: float = 1.0,
-                 sleep: Callable[[float], Any] = time.sleep, timeout: float = TIMEOUT_SEC):
+                 sleep: Callable[[float], Any] = time.sleep, timeout: float = TIMEOUT_SEC,
+                 render: Optional[Callable[[str], Tuple[Optional[str], str]]] = None):
         self.ctx = ctx
+        eff, _ = settings.effective_settings(ctx)
         if http_get is None:
-            eff, _ = settings.effective_settings(ctx)
             use_proxy = bool(eff["research"]["use_system_proxy"])
             self.http = lambda url, t: default_http_get(url, t, use_proxy=use_proxy)
         else:
             self.http = http_get
+        if render is None and eff["research"]["use_browser"]:
+            from . import browser
+            render = browser.render_fn(int(eff["research"]["browser_port"]))
+        self.render = render
         self.min_interval = float(min_interval)
         self.sleep = sleep
         self.timeout = timeout
@@ -132,11 +144,30 @@ class Fetcher:
             return {"ok": True, "html": rec.get("html", ""), "error": "", "cached": True}
         self._throttle(parts.netloc)
         status, ctype, html = self.http(url, self.timeout)
+        if status == 200 and (not ctype or "html" in ctype.lower()):
+            if not thin(html) or self.render is None:
+                store.write_json_atomic(p, {"ts": time.time(), "url": url, "html": html})
+                return {"ok": True, "html": html, "error": "", "cached": False, "via": "http"}
+            # 页面几乎没有文字：多半由脚本加载，改用浏览器渲染（若已开启）
+            rhtml, rerr = self.render(url)
+            if rhtml and not thin(rhtml):
+                store.write_json_atomic(p, {"ts": time.time(), "url": url, "html": rhtml})
+                return {"ok": True, "html": rhtml, "error": "", "cached": False, "via": "browser"}
+            return {"ok": True, "html": html, "error": "", "cached": False, "via": "http",
+                    "note": f"页面内容很少（可能由脚本加载）；浏览器渲染未成功：{rerr or '内容仍然很少'}"}
         if status == 0:
-            return {"ok": False, "html": "", "error": f"网络错误或超时：{html}", "cached": False}
-        if status != 200:
-            return {"ok": False, "html": "", "error": f"HTTP {status}", "cached": False}
-        if ctype and "html" not in ctype.lower():
-            return {"ok": False, "html": "", "error": f"不是网页（{ctype.split(';')[0]}）", "cached": False}
-        store.write_json_atomic(p, {"ts": time.time(), "url": url, "html": html})
-        return {"ok": True, "html": html, "error": "", "cached": False}
+            reason = f"网络错误或超时：{html}"
+        elif status in (401, 403):
+            reason = (f"HTTP {status}（站点拒绝访问或需要人工验证，不使用浏览器绕过）")
+            return {"ok": False, "html": "", "error": reason, "cached": False}
+        elif status != 200:
+            reason = f"HTTP {status}"
+        else:
+            reason = f"不是网页（{ctype.split(';')[0]}）"
+        if self.render is not None:
+            rhtml, rerr = self.render(url)
+            if rhtml and not thin(rhtml):
+                store.write_json_atomic(p, {"ts": time.time(), "url": url, "html": rhtml})
+                return {"ok": True, "html": rhtml, "error": "", "cached": False, "via": "browser"}
+            reason += f"；浏览器渲染也未成功：{rerr or '页面内容很少'}"
+        return {"ok": False, "html": "", "error": reason, "cached": False}
