@@ -621,14 +621,14 @@ def _find_target(wid: str, tid: str) -> Optional[dict]:
 
 # ---------- 角色立绘
 
-def make_portrait(llm, provider, wid: str, cid: str, log=None) -> Dict[str, Any]:
-    log = _log_or_new(log, wid, "portrait")
+def _portrait_one(llm, provider, wid: str, cid: str, log) -> Dict[str, Any]:
+    """为单个角色生成人设图（核心逻辑，单个与批量共用）。旧图归档后覆盖。"""
     chars = repo.load_characters(wid)
     ch = repo.find_by_id(chars, cid)
     if ch is None:
         raise EngineError(f"角色不存在：{cid}")
     meta = repo.load_meta(wid)
-    draft = generate.portrait_draft(llm, context={
+    draft = generate.portrait_draft(LoggedLLM(llm, log), context={
         "name": ch["name"], "summary": ch.get("summary", ""), "role": ch.get("role"),
         "tone": meta.get("tone", ""), "genre": meta.get("genre", "")})
     path = repo.portrait_path(wid, cid)
@@ -642,7 +642,78 @@ def make_portrait(llm, provider, wid: str, cid: str, log=None) -> Dict[str, Any]
             ch["attrs"]["portrait"] = str(path.relative_to(repo.world_dir(wid)))
         repo.save_characters(wid, chars)
     return {"ok": res.ok, "error": res.error, "path": str(path) if res.ok else None,
-            "stub": bool(getattr(provider, "is_stub", False))}
+            "stub": bool(getattr(provider, "is_stub", False)), "name": ch["name"]}
+
+
+def make_portrait(llm, provider, wid: str, cid: str, log=None) -> Dict[str, Any]:
+    log = _log_or_new(log, wid, "portrait")
+    try:
+        log.log("start", f"生成人设图（角色 {cid}）")
+        cancel.checkpoint()
+        out = _portrait_one(llm, provider, wid, cid, log)
+        if out["ok"]:
+            log.log("done", f"完成：「{out['name']}」的人设图", level="ok")
+        else:
+            log.log("done", f"失败：{out['error']}", level="warn")
+        return out
+    except Exception as exc:
+        _fail(log, exc)
+        raise
+
+
+def portrait_targets(wid: str, *, overwrite: bool = False) -> List[dict]:
+    """需要生成人设图的角色：存活角色；默认只包含还没有人设图的。"""
+    out = []
+    for c in repo.load_characters(wid):
+        if c.get("status") != "alive":
+            continue
+        if overwrite or not repo.portrait_path(wid, c["id"]).is_file():
+            out.append(c)
+    return out
+
+
+def make_all_portraits(llm, provider, wid: str, *, overwrite: bool = False, log=None) -> Dict[str, Any]:
+    """一键生成所有人设图。逐个角色生成，每个角色之间检查停止信号；停止后已完成的保留。"""
+    log = _log_or_new(log, wid, "portrait")
+    cancelled = False
+    results: List[dict] = []
+    try:
+        alive = [c for c in repo.load_characters(wid) if c.get("status") == "alive"]
+        targets = portrait_targets(wid, overwrite=overwrite)
+        skipped = len(alive) - len(targets)
+        scope = "全部存活角色（覆盖已有）" if overwrite else "尚未有人设图的角色"
+        log.log("start", f"一键生成人设图：{scope}，共 {len(targets)} 个"
+                         + (f"，跳过 {skipped} 个已有人设图的角色" if skipped else ""),
+                targets=len(targets), skipped=skipped,
+                stub=bool(getattr(provider, "is_stub", False)))
+        if getattr(provider, "is_stub", False):
+            log.log("start", "注意：当前为占位图，不会调用图像模型", level="warn")
+        try:
+            for i, c in enumerate(targets, start=1):
+                cancel.checkpoint()
+                log.log("panel", f"[{i}/{len(targets)}] 「{c['name']}」（{c.get('role')}）：生成中……")
+                t = time.monotonic()
+                out = _portrait_one(llm, provider, wid, c["id"], log)
+                dur = time.monotonic() - t
+                results.append({"id": c["id"], "name": c["name"], "ok": out["ok"], "error": out["error"]})
+                if out["ok"]:
+                    log.log("panel", f"[{i}/{len(targets)}] 完成：「{c['name']}」，用时 {dur:.1f} 秒", level="ok")
+                else:
+                    log.log("panel", f"[{i}/{len(targets)}] 失败：「{c['name']}」：{out['error']}", level="warn")
+        except cancel.Cancelled:
+            cancelled = True
+            log.log("cancel", f"已停止：已处理 {len(results)}/{len(targets)} 个，已完成的人设图保留", level="warn")
+        ok = sum(1 for r in results if r["ok"])
+        failed = sum(1 for r in results if not r["ok"])
+        level = "warn" if (failed or cancelled) else "ok"
+        log.log("done", f"{'已停止' if cancelled else '完成'}：成功 {ok} 个，失败 {failed} 个，"
+                        f"跳过 {skipped} 个", level=level, ok=ok, failed=failed)
+        return {"ok": ok, "failed": failed, "skipped": skipped, "total": len(targets),
+                "results": results, "cancelled": cancelled,
+                "stub": bool(getattr(provider, "is_stub", False))}
+    except Exception as exc:
+        _fail(log, exc)
+        raise
 
 
 # ---------- 旧版本归档（重新生成前保留）

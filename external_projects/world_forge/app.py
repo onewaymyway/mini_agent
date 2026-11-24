@@ -443,6 +443,16 @@ with tabs[3]:
     st.markdown("#### 角色")
     if not characters:
         st.caption("暂无角色。推进历史或批准角色提案后会出现在这里。")
+    else:
+        pa1, pa2 = st.columns([3, 1])
+        overwrite_pt = pa1.checkbox("覆盖已有人设图（重新生成，旧图保存在 history/ 中）", key="portrait_overwrite")
+        n_pt = len(engine.portrait_targets(wid, overwrite=overwrite_pt))
+        if pa2.button(f"一键生成所有人设图（{n_pt}）", type="primary", disabled=n_pt == 0,
+                      key="portrait_all_btn"):
+            if _start_job(wid, "portrait", f"一键生成人设图（{n_pt} 个）", engine.make_all_portraits,
+                          LLM, IMG, wid, overwrite=overwrite_pt):
+                st.rerun()
+        st.caption("默认只为存活且还没有人设图的角色生成；人设图生成后，漫画各格会用它保持人物外观一致。")
     ent_name = {e["id"]: e["name"] for e in entities}
     for c in characters:
         with st.container(border=True):
