@@ -24,7 +24,7 @@ from world_forge.providers.factory import make_image_provider, make_text_llm  # 
 
 st.set_page_config(page_title="架空世界工坊", page_icon="🌍", layout="wide")
 st.markdown("""<style>
-.block-container {padding-top: 1.2rem;}
+.block-container {padding-top: 4.5rem;}
 .wf-card {border:1px solid #2a3350;border-radius:10px;padding:12px 14px;background:#141a2b;}
 .wf-tag {display:inline-block;padding:1px 8px;border-radius:999px;font-size:12px;margin-right:4px;}
 </style>""", unsafe_allow_html=True)
