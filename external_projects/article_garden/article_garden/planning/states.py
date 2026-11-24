@@ -21,6 +21,15 @@ RESEARCHING, RESEARCHED = "researching", "researched"
 DRAFTING, DRAFTED, FAILED, REVIEWED, PUBLISHED = "drafting", "drafted", "failed", "reviewed", "published"
 TERMINAL = {REJECTED, DROPPED, PUBLISHED}
 REJECT_REASONS = ("重复已有内容", "超出范围", "证据不足", "暂不需要", "其它")
+LABELS = {PROPOSED: "待放行", APPROVED: "已放行", REJECTED: "已拒绝", DROPPED: "已放弃",
+          RESEARCHING: "调研中", RESEARCHED: "已调研", DRAFTING: "成文中", FAILED: "成文失败",
+          DRAFTED: "已成稿", REVIEWED: "已审阅", PUBLISHED: "已发布"}
+# 手动修改状态时允许的目标（转换表的超集：允许“恢复待放行”“重新放行”，以便人工纠正）
+MANUAL_EXTRA = {
+    APPROVED: {PROPOSED, DROPPED},
+    REJECTED: {PROPOSED, APPROVED},
+    DROPPED: {PROPOSED, APPROVED},
+}
 TRANSITIONS = {
     PROPOSED: {APPROVED, REJECTED, DROPPED},
     APPROVED: {REJECTED, RESEARCHING},
@@ -96,6 +105,39 @@ def _move(r: Dict[str, Any], to: str, note: str = "") -> None:
         raise ValueError(f"不能从「{r['status']}」转为「{to}」")
     r.setdefault("history", []).append({"from": r["status"], "to": to, "at": _now(), "note": note})
     r["status"] = to
+
+
+TRANSIENT = {RESEARCHING, DRAFTING}
+
+
+def allowed_targets(status: str) -> List[str]:
+    """手动修改时可选的目标状态（不含进行中的状态）。"""
+    targets = (TRANSITIONS.get(status, set()) | MANUAL_EXTRA.get(status, set())) - TRANSIENT
+    targets.discard(status)
+    order = [PROPOSED, APPROVED, REJECTED, DROPPED, RESEARCHED, DRAFTED, REVIEWED, PUBLISHED, FAILED]
+    return sorted(targets, key=lambda x: order.index(x) if x in order else 99)
+
+
+def set_status(ctx, tid: str, to: str, note: str = "") -> Dict[str, Any]:
+    """人工修改选题状态。拒绝或放弃必须给出原因；恢复待放行或重新放行时，清除对应的拒绝记录，
+    以便该缺口能够重新参与判断。"""
+    note = (note or "").strip()
+    current = get(ctx, tid)["status"]
+    if to not in allowed_targets(current):
+        raise ValueError(f"「{LABELS.get(current, current)}」不能直接改为「{LABELS.get(to, to)}」")
+    if to == REJECTED:
+        return reject(ctx, tid, note or "人工拒绝")
+    if to == DROPPED and not note:
+        raise ValueError("改为「已放弃」必须填写原因")
+    def _manual(r):
+        # 人工修改只在本函数内允许 MANUAL_EXTRA 中的额外变化；自动流程的转换表保持不变（已拒绝仍是终态）
+        r.setdefault("history", []).append({"from": r["status"], "to": to, "at": _now(),
+                                            "note": note or f"人工改为{LABELS.get(to, to)}", "manual": True})
+        r["status"] = to
+    t = _replace(ctx, tid, _manual)
+    if current in (REJECTED, DROPPED) and to in (PROPOSED, APPROVED) and t.get("gap_key"):
+        save_rejected(ctx, [x for x in load_rejected(ctx) if x.get("gap_key") != t["gap_key"]])
+    return t
 
 
 def approve(ctx, tid: str) -> Dict[str, Any]:

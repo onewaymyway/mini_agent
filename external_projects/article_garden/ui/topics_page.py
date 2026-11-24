@@ -57,6 +57,26 @@ def render_topics_page() -> None:
         for r in buckets["已拒绝或放弃"]:
             st.caption(f"{r['id']} {r['title']}：{r.get('reason_rejected', r['status'])}")
 
+    st.divider()
+    st.markdown("**修改选题状态**")
+    st.caption("可在「待放行」「已放行」「已拒绝」「已放弃」之间手动调整。拒绝或放弃需要填写原因；"
+               "恢复或重新放行会清除对应的拒绝记录。调研中、成文中的选题不能手动修改。")
+    editable = [r for r in rows if r["status"] not in states.TRANSIENT]
+    if not editable:
+        st.info("当前没有可以修改状态的选题。")
+        return
+    labels = {r["id"]: f"{r['id']}  {r['title']}（{states.LABELS.get(r['status'], r['status'])}）" for r in editable}
+    tid = st.selectbox("选择选题", list(labels), format_func=lambda i: labels[i], key="st_sel")
+    cur = next(r for r in editable if r["id"] == tid)["status"]
+    targets = states.allowed_targets(cur)
+    if not targets:
+        st.info(f"「{states.LABELS.get(cur, cur)}」的选题没有可直接改为的状态（它已进入后续流程）。")
+        return
+    to = st.selectbox("改为", targets, format_func=lambda x: states.LABELS.get(x, x), key="st_to")
+    note = st.text_input("原因（改为「已拒绝」或「已放弃」时必填）", key="st_note")
+    if st.button("确认修改状态", key="st_go", type="primary"):
+        _try(lambda: states.set_status(ctx, tid, to, note))
+
 
 def _card(ctx, r, editable: bool) -> None:
     with st.container(border=True):

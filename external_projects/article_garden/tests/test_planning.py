@@ -232,3 +232,47 @@ def test_G4_contrast_without_comparison_article(data_home):
     build.build(ctx, Router(edge_pairs={frozenset(("向量数据库", "检索增强生成")): "contrasts"}), force=True)
     g4 = [g for g in gaps.detect(ctx) if g["type"] == "G4"]
     assert g4 and "向量数据库" in g4[0]["name"] and "检索增强生成" in g4[0]["name"]
+
+
+# ------------------------------------------------------------------ 手动修改选题状态
+
+def test_manual_status_changes_follow_the_rules(data_home):
+    from article_garden.planning import topics as tp
+    ctx = _world(data_home)
+    tp.run(ctx, MidLLM(duplicate=False))
+    rows = states.load_topics(ctx)
+    tid = rows[0]["id"]
+    assert states.LABELS[states.PROPOSED] == "待放行"
+    assert states.DRAFTED not in states.allowed_targets(states.PROPOSED)
+    states.set_status(ctx, tid, states.APPROVED)                       # 放行
+    assert states.get(ctx, tid)["status"] == states.APPROVED
+    states.set_status(ctx, tid, states.PROPOSED)                       # 取消放行，回到待放行
+    assert states.get(ctx, tid)["status"] == states.PROPOSED
+    with pytest.raises(ValueError):
+        states.set_status(ctx, tid, states.DRAFTED)                    # 不允许跳到成稿
+    with pytest.raises(ValueError):
+        states.set_status(ctx, tid, states.DROPPED, "")                # 放弃必须有原因
+    states.set_status(ctx, tid, states.DROPPED, "暂不需要")
+    assert states.get(ctx, tid)["status"] == states.DROPPED
+
+
+def test_reopening_a_rejected_topic_clears_its_rejection_record(data_home):
+    from article_garden.planning import topics as tp
+    ctx = _world(data_home)
+    tp.run(ctx, MidLLM(duplicate=False))
+    tid = states.load_topics(ctx)[0]["id"]
+    states.reject(ctx, tid, "暂不需要")
+    assert any(r.get("gap_key") for r in states.load_rejected(ctx))
+    states.set_status(ctx, tid, states.PROPOSED)
+    assert states.get(ctx, tid)["status"] == states.PROPOSED
+    assert not any(r.get("gap_key") == states.get(ctx, tid).get("gap_key") for r in states.load_rejected(ctx))
+
+
+def test_topics_page_offers_status_editor(data_home):
+    from tests.test_ui_smoke import run_app
+    ctx = _world(data_home)
+    from article_garden.planning import topics as tp
+    tp.run(ctx, MidLLM(duplicate=False))
+    at = run_app("topics", domain="ai")
+    assert not at.exception
+    assert any(b.label == "确认修改状态" for b in at.button)
