@@ -174,3 +174,50 @@ def test_render_without_playwright_reports_why(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", fake)
     html, err = browser.render_fn(9222, timeout_sec=1)("https://x.example/")
     assert html is None and "playwright" in err
+
+
+def test_any_plain_failure_falls_back_to_browser_when_enabled(data_home):
+    """开启浏览器后，普通抓取的任何失败（超时、网络错误、404、5xx、521、非网页）都改用浏览器。"""
+    ctx = _world(data_home)
+    body = "<html><body>" + "浏览器获取到的页面内容。" * 20 + "</body></html>"
+    cases = [(0, "", "TimeoutError: timed out"), (404, "text/html", ""), (500, "text/html", ""),
+             (521, "text/html", ""), (200, "application/pdf", "%PDF")]
+    for status, ctype, text in cases:
+        seen = []
+
+        def http(url, t, status=status, ctype=ctype, text=text):
+            return (404, "text/html", "") if url.endswith("robots.txt") else (status, ctype, text)
+
+        def render(url, seen=seen):
+            seen.append(url)
+            return body, ""
+        f = fetch.Fetcher(ctx, http_get=http, min_interval=0, sleep=lambda s: None, render=render)
+        res = f.fetch(f"https://site{status}.example.org/a")
+        assert res["ok"] and res["via"] == "browser", (status, res)
+        assert len(seen) == 1, status
+
+
+def test_browser_result_is_used_even_when_short_after_a_failure(data_home):
+    ctx = _world(data_home)
+    f = fetch.Fetcher(ctx, http_get=lambda u, t: (404, "text/html", "") if u.endswith("robots.txt") else (500, "", ""),
+                      min_interval=0, sleep=lambda s: None, render=lambda u: ("<html>短</html>", ""))
+    res = f.fetch("https://short.example.org/a")
+    assert res["ok"] and res["via"] == "browser"
+
+
+def test_robots_and_access_denials_never_reach_the_browser(data_home):
+    ctx = _world(data_home)
+    seen = []
+
+    def render(url):
+        seen.append(url)
+        return "<html>" + "x" * 300 + "</html>", ""
+    # robots 明确禁止
+    f = fetch.Fetcher(ctx, http_get=lambda u, t: (200, "text/plain", "User-agent: *\nDisallow: /"),
+                      min_interval=0, sleep=lambda s: None, render=render)
+    assert f.fetch("https://no.example.org/a")["ok"] is False
+    # 401 需要登录
+    f2 = fetch.Fetcher(ctx, http_get=lambda u, t: (404, "", "") if u.endswith("robots.txt") else (401, "", ""),
+                       min_interval=0, sleep=lambda s: None, render=render)
+    assert f2.fetch("https://login.example.org/a")["ok"] is False
+    assert seen == []

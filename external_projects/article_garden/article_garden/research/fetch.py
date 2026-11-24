@@ -165,9 +165,11 @@ class Fetcher:
         else:
             reason = f"不是网页（{ctype.split(';')[0]}）"
         if self.render is not None:
+            # 普通抓取失败：只要浏览器拿到了页面内容就使用（是否与选题相关，由摘录步骤判断）
             rhtml, rerr = self.render(url)
-            if rhtml and not thin(rhtml):
+            if rhtml:
                 store.write_json_atomic(p, {"ts": time.time(), "url": url, "html": rhtml})
-                return {"ok": True, "html": rhtml, "error": "", "cached": False, "via": "browser"}
-            reason += f"；浏览器渲染也未成功：{rerr or '页面内容很少'}"
+                return {"ok": True, "html": rhtml, "error": "", "cached": False, "via": "browser",
+                        "note": f"普通抓取失败（{reason}），已改用浏览器获取页面"}
+            reason += f"；浏览器渲染也未成功：{rerr or '没有返回内容'}"
         return {"ok": False, "html": "", "error": reason, "cached": False}
