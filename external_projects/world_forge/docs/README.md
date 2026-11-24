@@ -32,6 +32,7 @@ python entrypoints/cli.py arc --world <wid> --from 0 --to 30
 python entrypoints/cli.py short --world <wid> --arc <sid>
 python entrypoints/cli.py board --world <wid> --story <sid> --pages 6 --reading ltr --color color   # --pages 可为 1–20 或 auto
 python entrypoints/cli.py comic --world <wid> --story <sid> --reading rtl --color bw --candidates 2   # 输出 pages/*.png 与 comic_pages.zip
+python entrypoints/cli.py limits --world <wid> --budget 120 --candidate-max 4    # 上限设置（本世界）
 python entrypoints/cli.py style --world <wid>                                    # 风格指南（全世界一份）
 python entrypoints/cli.py sheets --world <wid> --story <sid> [--overwrite]       # 角色表：侧面 + 愤怒/悲伤/惊讶
 python entrypoints/cli.py scenes --world <wid> --story <sid> [--overwrite]       # 场景图：分镜中用到的地点
@@ -48,7 +49,7 @@ python entrypoints/cli.py export --world <wid> --story <sid>
 | `MINI_AGENT_ROOT` | mini_agent 仓库根，用于找到 LLMHelper 与 gen_image_with_text skill |
 | `WORLD_FORGE_SKILLS_DIR` | 手动指定 `.claude/skills` 目录 |
 | `AGNES_API_KEYS` / `AGNES_API_KEY` | 图像模型 key（与 skill 规则相同） |
-| `WORLD_FORGE_IMAGE_BUDGET` | 单次操作（漫画、角色表、场景图）的图像调用上限，默认 80 |
+| `WORLD_FORGE_IMAGE_BUDGET` | 单次操作图像调用上限的默认值（世界未单独设置时使用），默认 80 |
 | `WORLD_FORGE_FONT` | PNG 排字使用的中文字体路径（未设置时依次尝试 Noto CJK、文泉驿、微软雅黑、苹方等常见字体） |
 
 ## 测试
@@ -88,7 +89,10 @@ python -m pytest -q tests
 - **场景图**：分镜格可以指定「地点」（取自地理类设定）。生成时先由文本模型写英文场景描述，结果保存在该设定条目上，再生成场景图；出图时作为参考图。
 - **参考图优先级**：上一格 → 主角表情图（无则立绘）→ 地点场景图 → 其它出场角色立绘；最多 3 张（与原先一致）。
 - **候选**：「每格候选数」可选 1–3（默认 1）。候选会全部保存，默认采用第一张成功的；在「单格重新生成」中可查看候选图并选用其中一张，选用后只重新拼装成品，不调用图像模型。
-- **调用上限**：每次操作的图像调用总数默认不超过 80 次（`WORLD_FORGE_IMAGE_BUDGET` 可调）。超限时停止，已完成的保留，并在日志中提示。
+- **上限设置**：故事页「上限设置」或 CLI `limits` 可修改本世界的两个上限，保存在世界元数据中，对漫画、角色表、场景图生效：
+  - 单次操作的图像调用上限：1–500，默认 80（未设置时取环境变量 `WORLD_FORGE_IMAGE_BUDGET`）；
+  - 每格候选数上限：1–5，默认 3；候选数选择框只显示不超过该上限的选项。
+  超出范围会报错且不保存。调用达到上限时停止，已完成的保留，并在日志中提示。
 - **注意**：风格指南、角色表、场景图都只是参考，不做自动质检；生成结果需要人工查看。
 
 ## 停止与重新生成

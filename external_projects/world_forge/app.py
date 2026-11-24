@@ -703,10 +703,27 @@ with tabs[6]:
         color_pick = oc[2].radio("色彩", list(comic_layout.COLOR_OPTIONS),
                                  format_func=lambda k: comic_layout.COLOR_LABEL[k], horizontal=True,
                                  key="comic_color")
-        cand_pick = oc[0].selectbox("每格候选数（人工选用）", [1, 2, 3], key="comic_cands",
-                                    help="每格生成的候选张数，默认 1；最多 3。候选会增加图像调用次数。")
-        st.caption("页数在「生成分镜」时确定（节拍表据此规划）；阅读方向与色彩可在「生成漫画图」时调整，无需重新生成分镜。"
-                   "每次操作的图像调用上限默认 80 次（环境变量 WORLD_FORGE_IMAGE_BUDGET 可调）。")
+        limits_now = engine.comic_limits(wid)
+        cand_pick = oc[0].selectbox("每格候选数（人工选用）", list(range(1, limits_now["candidate_max"] + 1)),
+                                    key="comic_cands",
+                                    help=f"每格生成的候选张数，默认 1；上限见下方「上限设置」（当前 {limits_now['candidate_max']}）。"
+                                         "候选会增加图像调用次数。")
+        st.caption("页数在「生成分镜」时确定（节拍表据此规划）；阅读方向与色彩可在「生成漫画图」时调整，无需重新生成分镜。")
+        with st.expander(f"上限设置（全世界共用）：图像调用 {limits_now['image_budget']} 次/操作，候选 ≤ {limits_now['candidate_max']} 张"):
+            lo_b, hi_b = comic_layout.IMAGE_BUDGET_RANGE
+            lo_c, hi_c = comic_layout.CANDIDATE_RANGE
+            lim_cols = st.columns(2)
+            new_budget = lim_cols[0].number_input("单次操作的图像调用上限", min_value=lo_b, max_value=hi_b,
+                                                  value=int(limits_now["image_budget"]), step=1, key="lim_budget")
+            new_cand = lim_cols[1].number_input("每格候选数上限", min_value=lo_c, max_value=hi_c,
+                                                value=int(limits_now["candidate_max"]), step=1, key="lim_cand")
+            if st.button("保存上限设置", key="save_limits"):
+                try:
+                    engine.set_comic_limits(wid, image_budget=int(new_budget), candidate_max=int(new_cand))
+                    st.success("已保存。")
+                    st.rerun()
+                except engine.EngineError as exc:
+                    st.error(str(exc))
         st.markdown("**风格与设定图**")
         rs = st.columns(3)
         if rs[0].button("生成风格指南（全世界一份）", help="线条、主色、光照的英文描述，之后每次出图都会带上"):

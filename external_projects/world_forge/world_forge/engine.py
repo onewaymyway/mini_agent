@@ -1084,12 +1084,43 @@ def _panel_ratio(span: int) -> str:
     return "16:9" if span == 2 else "1:1"
 
 
-def _image_budget_limit() -> int:
-    """单次操作（漫画/角色表/场景图）允许的图像调用总数。默认 80，可用 WORLD_FORGE_IMAGE_BUDGET 调整。"""
+def _env_budget_default() -> int:
     try:
-        return max(1, int(os.environ.get("WORLD_FORGE_IMAGE_BUDGET", "80")))
+        return int(os.environ.get("WORLD_FORGE_IMAGE_BUDGET", str(comic_layout.IMAGE_BUDGET_DEFAULT)))
     except ValueError:
-        return 80
+        return comic_layout.IMAGE_BUDGET_DEFAULT
+
+
+def comic_limits(wid: str) -> Dict[str, int]:
+    """本世界的漫画上限：图像调用上限与候选数上限。世界设置 > 环境变量（仅图像调用上限）> 默认值。"""
+    stored = repo.load_meta(wid).get("comic_limits") or {}
+    budget = stored.get("image_budget")
+    cand = stored.get("candidate_max")
+    return {
+        "image_budget": int(budget) if budget is not None else _env_budget_default(),
+        "candidate_max": int(cand) if cand is not None else comic_layout.CANDIDATE_MAX,
+    }
+
+
+def set_comic_limits(wid: str, *, image_budget: Optional[int] = None,
+                     candidate_max: Optional[int] = None) -> Dict[str, int]:
+    """保存本世界的漫画上限。超出允许范围直接报错，不写入任何内容。None 表示不改该项。"""
+    lo, hi = comic_layout.IMAGE_BUDGET_RANGE
+    if image_budget is not None and not (lo <= int(image_budget) <= hi):
+        raise EngineError(f"图像调用上限须在 {lo}–{hi} 之间：{image_budget}")
+    clo, chi = comic_layout.CANDIDATE_RANGE
+    if candidate_max is not None and not (clo <= int(candidate_max) <= chi):
+        raise EngineError(f"候选数上限须在 {clo}–{chi} 之间：{candidate_max}")
+    with _with_lock(wid):
+        meta = repo.load_meta(wid)
+        stored = dict(meta.get("comic_limits") or {})
+        if image_budget is not None:
+            stored["image_budget"] = int(image_budget)
+        if candidate_max is not None:
+            stored["candidate_max"] = int(candidate_max)
+        meta["comic_limits"] = stored
+        repo.save_meta(meta)
+    return comic_limits(wid)
 
 
 class _Budget:
@@ -1180,7 +1211,7 @@ def render_comic(provider, wid: str, sid: str, log=None,
 
     连贯性：统一风格（含风格指南）；每页的配色；主角表情图/立绘、地点场景图与上一格作为参考。
     候选：candidates=N（1–3）时每格生成 N 张，默认采用第一张成功的，其余保存在 candidates 中供人工选用。
-    调用上限：单次操作的图像调用总数不超过 WORLD_FORGE_IMAGE_BUDGET（默认 80）；超限则停止，已完成的保留。
+    调用上限：单次操作的图像调用总数不超过本世界设置的上限（见 comic_limits）；超限则停止，已完成的保留。
     停止时：已完成的格子保存，并拼装部分漫画，返回 cancelled=True。
     """
     log = _log_or_new(log, wid, "comic")
@@ -1199,8 +1230,9 @@ def render_comic(provider, wid: str, sid: str, log=None,
         opts = comic_layout.normalize_opts(pages=stored.get("pages"), reading=reading or stored.get("reading"),
                                            color=color or stored.get("color"))
         board["opts"] = opts
-        n_cand = max(1, min(int(candidates or comic_layout.CANDIDATE_DEFAULT), comic_layout.CANDIDATE_MAX))
-        budget = _Budget(_image_budget_limit())
+        limits = comic_limits(wid)
+        n_cand = max(1, min(int(candidates or comic_layout.CANDIDATE_DEFAULT), limits["candidate_max"]))
+        budget = _Budget(limits["image_budget"])
         provider_name = getattr(provider, "name", "unknown")
         stub = bool(getattr(provider, "is_stub", False))
         total = sum(len(p["panels"]) for p in board["pages"])
@@ -1305,7 +1337,7 @@ def render_comic(provider, wid: str, sid: str, log=None,
             log.log("cancel", f"已停止：已处理 {done_now}/{n_todo} 格，已完成的格子保留", level="warn")
         if exhausted:
             log.log("cancel", f"已达本次图像调用上限（{budget.limit} 次），剩余格子未生成。"
-                              "可调大 WORLD_FORGE_IMAGE_BUDGET 或分次生成", level="warn")
+                              "可在「上限设置」中调大，或分次生成", level="warn")
         board["provider"], board["stub"] = provider_name, stub
         store.write_json(d / "storyboard.json", board)
         out = _assemble_outputs(wid, sid, d, board, opts, log)
@@ -1395,7 +1427,7 @@ def make_character_sheets(provider, wid: str, sid: str, log=None, *, overwrite: 
         _, names, _ = _board_names(d)
         meta = repo.load_meta(wid)
         chars = [c for c in repo.load_characters(wid) if c["name"] in names]
-        budget = _Budget(_image_budget_limit())
+        budget = _Budget(comic_limits(wid)["image_budget"])
         log.log("start", f"生成角色表：{len(chars)} 个出场角色，每人最多 {len(comic_layout.SHEET_KEYS)} 张"
                          f"（已有的跳过，调用上限 {budget.limit} 次）")
         try:
@@ -1453,7 +1485,7 @@ def make_scene_images(llm, provider, wid: str, sid: str, log=None, *, overwrite:
         _, _, loc_names = _board_names(d)
         meta = repo.load_meta(wid)
         ents = [e for e in repo.load_entities(wid) if e["name"] in loc_names]
-        budget = _Budget(_image_budget_limit())
+        budget = _Budget(comic_limits(wid)["image_budget"])
         log.log("start", f"生成场景图：{len(ents)} 个地点（调用上限 {budget.limit} 次）")
         try:
             for e in ents:

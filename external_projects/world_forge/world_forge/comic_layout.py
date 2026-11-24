@@ -34,8 +34,12 @@ POS_ZONE = {
     "左下": ("bottom", "left"), "右下": ("bottom", "right"),
     "中上": ("top", "center"), "中下": ("bottom", "center"),
 }
-CANDIDATE_MAX = 3          # 每格最多候选数（人工选用，不做自动质检）
-CANDIDATE_DEFAULT = 1
+CANDIDATE_MAX = 3          # 每格候选数上限的默认值（世界设置可改，见 engine.comic_limits）
+CANDIDATE_DEFAULT = 1      # 每次渲染默认生成的候选数
+CANDIDATE_HARD_MAX = 5     # 世界设置允许的候选数上限的硬顶
+CANDIDATE_RANGE = (1, CANDIDATE_HARD_MAX)
+IMAGE_BUDGET_DEFAULT = 80  # 单次操作图像调用上限的默认值
+IMAGE_BUDGET_RANGE = (1, 500)
 SHEET_KEYS = ("side", "angry", "sad", "surprised")   # 角色表：侧面 + 三种表情；平静即立绘本身
 SHEET_PROMPTS = {
     "side": "side view, full body, same character design",
