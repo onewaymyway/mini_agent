@@ -114,3 +114,36 @@ def test_delete_world_removes_everything(world, llm):
     assert world not in repo.list_world_ids()
     with _pt.raises(repo.WorldNotFound):
         engine.delete_world(world)
+
+
+def test_request_expansion_minor_auto_and_major_pending(world, llm):
+    res = engine.expand_world(llm, world, request="北方的冰原", count=1)
+    assert res["source"] == "request"
+    assert res["counts"].get("applied", 0) >= 1
+    assert any(e["name"].startswith("北方的冰原") for e in repo.load_entities(world))
+    res2 = engine.expand_world(llm, world, request="新增一个冰原王国势力", count=1)
+    assert res2["counts"].get("pending", 0) >= 1   # 势力属重大，需批准
+
+
+def test_auto_expand_uses_gaps_context_and_relates(world, llm):
+    res = engine.expand_world(llm, world, count=2)
+    assert res["source"] == "expand"
+    assert res["counts"].get("applied", 0) >= 1
+    rels = repo.load_relations(world)
+    assert rels, "自动扩展应为新实体建立关系"
+
+
+def test_enrich_runs_fill_and_expand(world, llm):
+    out = engine.enrich_world(llm, world)
+    assert "fill" in out and "expand" in out
+    assert out["expand"]["records"]
+
+
+def test_expansion_rejects_duplicate_names(world, llm):
+    class Dup:
+        def ask(self, prompt, system=""):
+            import json as _j
+            return _j.dumps({"entities": [{"kind": "地理", "name": "中心城邦", "summary": "x"}],
+                             "relations": [], "canon_updates": [], "new_characters": []})
+    res = engine.expand_world(Dup(), world, request="重复名", count=1)
+    assert res["records"][0]["status"] == "blocked"

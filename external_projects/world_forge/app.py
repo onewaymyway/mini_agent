@@ -154,6 +154,47 @@ with tabs[1]:
 # ---------- 设定与提案
 
 with tabs[2]:
+    st.markdown("#### 扩展世界观")
+    e1, e2 = st.columns(2)
+    with e1:
+        st.caption("自动完善：优先补全缺口，再主动新增少量实体与关系。")
+        if st.button("自动完善世界观", type="primary", disabled=not meta.get("charter"), key="enrich_btn"):
+            with st.spinner("正在完善世界观……"):
+                res = _safe(engine.enrich_world, LLM, wid)
+            if res:
+                st.session_state.expand_report = res
+                st.rerun()
+    with e2:
+        with st.form("request_expand", clear_on_submit=True):
+            req = st.text_area("按要求扩展", placeholder="例：北方增加一个以冰原为家的游牧部族，与帝国保持距离")
+            cnt = st.number_input("最多新增实体数", min_value=1, max_value=engine.MAX_EXPAND_COUNT, value=3)
+            if st.form_submit_button("按要求扩展", disabled=not meta.get("charter")) and req.strip():
+                with st.spinner("正在扩展……"):
+                    res = _safe(engine.expand_world, LLM, wid, request=req, count=int(cnt))
+                if res:
+                    st.session_state.expand_report = {"expand": res}
+                    st.rerun()
+    rep = st.session_state.get("expand_report")
+    if rep:
+        with st.container(border=True):
+            if "fill" in rep:
+                st.markdown(f"**补全缺口**：{len(rep['fill']['filled'])} 个，剩余 {rep['fill']['remaining']} 个")
+            ex = rep["expand"]
+            st.markdown("**扩展结果**：" + ("　".join(f"{STATUS_LABEL.get(k, k)} {v}" for k, v in ex["counts"].items())
+                                          or "没有新增内容"))
+            for r in ex["records"]:
+                head = r["payload"].get("name") or r["payload"].get("title") or r["op"]
+                st.markdown(f"{_tag(r['status'])} `{r['op']}` {head}", unsafe_allow_html=True)
+                if r.get("reasons"):
+                    st.caption("；".join(r["reasons"]))
+            for sk in ex["skipped"]:
+                st.caption(f"跳过：{sk}")
+            if st.button("收起结果", key="close_expand_report"):
+                del st.session_state["expand_report"]
+                st.rerun()
+    st.caption("新增内容遵循同一套规则：次要内容自动写入，重大内容进入下方待确认队列，冲突内容被拦截。")
+    st.divider()
+
     left, right = st.columns([3, 2])
     with left:
         st.markdown("#### 待确认提案")

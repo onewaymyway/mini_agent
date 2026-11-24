@@ -118,6 +118,18 @@ class RuleTextLLM(TextLLM):
         opts = ctx.get("options") or []
         return {"relations": [{"name": opts[0], "type": "关联", "note": "（规则占位）"}] if opts else []}
 
+    def _task_expand(self, ctx):
+        req = ctx.get("request") or ""
+        n = max(1, min(5, int(ctx.get("count") or 1)))
+        kind = "势力" if any(k in req for k in ("势力", "国", "会", "组织")) else "地理"
+        base = (ctx.get("entities") or [{"name": "中心城邦"}])[0]["name"]
+        prefix = req.strip()[:6] or "拓展地"
+        offset = len(ctx.get("entities") or [])
+        ents = [{"kind": kind, "name": f"{prefix}{offset + i + 1}",
+                 "summary": f"（规则占位）{req or '自动补充的' + kind}。", "attrs": {}} for i in range(n)]
+        rels = [{"src_name": e["name"], "dst_name": base, "type": "关联", "note": "（规则占位）"} for e in ents]
+        return {"entities": ents, "relations": rels, "canon_updates": [], "new_characters": []}
+
     def _task_overview(self, ctx):
         ch = ctx.get("charter") or {}
         names = [e.get("name") for e in ctx.get("entities", [])][:5]

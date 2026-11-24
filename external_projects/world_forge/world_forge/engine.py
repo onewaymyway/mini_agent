@@ -182,6 +182,36 @@ def advance(llm, wid: str, steps: int = 1) -> Dict[str, Any]:
     return {"steps": results, "clock": repo.load_meta(wid)["clock"]}
 
 
+# ---------- 扩展世界观
+
+MAX_EXPAND_COUNT = 5
+
+
+def expand_world(llm, wid: str, *, request: str = "", count: int = 3) -> Dict[str, Any]:
+    """扩展世界观。request 为空：自动完善；否则按用户要求扩展。
+
+    新内容经提案流程写入：次要内容自动写入，重大内容进入待确认，冲突则被拦截并给出原因。
+    返回 records（每条提案及状态）、skipped、source。
+    """
+    require_charter(wid)
+    count = max(1, min(MAX_EXPAND_COUNT, int(count)))
+    ctx = build_context(wid)
+    ctx["gaps"] = [g["label"] for g in gaps.find_gaps(wid)][:15]
+    draft = generate.expansion_draft(llm, context=ctx, request=request, count=count)   # 锁外调用模型
+    source = "request" if request.strip() else "expand"
+    with _with_lock(wid):
+        report = _submit_batch(wid, draft, source=source)
+    return {"source": source, "records": report["records"], "skipped": report["skipped"],
+            "counts": _status_counts(report["records"])}
+
+
+def enrich_world(llm, wid: str) -> Dict[str, Any]:
+    """一键完善：先补全可处理的缺口，再自动扩展少量内容。"""
+    filled = fill_gaps(llm, wid, limit=5)
+    expanded = expand_world(llm, wid, count=2)
+    return {"fill": filled, "expand": expanded}
+
+
 # ---------- 世界观简介
 
 def get_overview(wid: str) -> Optional[Dict[str, Any]]:

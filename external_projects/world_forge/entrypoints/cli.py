@@ -13,6 +13,8 @@
   python entrypoints/cli.py board --world <wid> --story <sid>
   python entrypoints/cli.py comic --world <wid> --story <sid>
   python entrypoints/cli.py export --world <wid> --story <sid>
+  python entrypoints/cli.py expand --world <wid> [--request "北方增加一个冰原部族"] [--count 3]
+  python entrypoints/cli.py enrich --world <wid>                 # 补全缺口 + 自动扩展
   python entrypoints/cli.py overview --world <wid>               # 生成世界观背景介绍
   python entrypoints/cli.py delete --world <wid> --confirm <wid>   # 永久删除，不可恢复
 """
@@ -58,6 +60,10 @@ def main(argv=None) -> int:
     p = sub.add_parser("board"); p.add_argument("--world", required=True); p.add_argument("--story", required=True)
     p = sub.add_parser("comic"); p.add_argument("--world", required=True); p.add_argument("--story", required=True)
     p = sub.add_parser("export"); p.add_argument("--world", required=True); p.add_argument("--story", required=True)
+    p = sub.add_parser("expand"); p.add_argument("--world", required=True)
+    p.add_argument("--request", default="", help="扩展要求；留空则自动完善")
+    p.add_argument("--count", type=int, default=3)
+    p = sub.add_parser("enrich"); p.add_argument("--world", required=True)
     p = sub.add_parser("overview"); p.add_argument("--world", required=True)
     p = sub.add_parser("delete"); p.add_argument("--world", required=True)
     p.add_argument("--confirm", required=True, help="必须与 --world 的值完全相同，用于防止误删")
@@ -101,6 +107,12 @@ def main(argv=None) -> int:
             prov, note = make_image_provider()
             res = engine.render_comic(prov, args.world, args.story)
             _dump({**res, "note": note})
+        elif args.cmd == "expand":
+            llm, _ = make_text_llm()
+            _dump(engine.expand_world(llm, args.world, request=args.request, count=args.count))
+        elif args.cmd == "enrich":
+            llm, _ = make_text_llm()
+            _dump(engine.enrich_world(llm, args.world))
         elif args.cmd == "overview":
             llm, _ = make_text_llm()
             _dump(engine.generate_overview(llm, args.world))

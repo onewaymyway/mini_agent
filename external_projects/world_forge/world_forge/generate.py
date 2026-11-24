@@ -203,3 +203,29 @@ def overview_draft(llm, *, context: Dict[str, Any]) -> str:
     if not text:
         raise GenerationError("世界观简介生成为空")
     return text
+
+
+def _validate_expansion(d: Dict[str, Any]) -> List[str]:
+    errs: List[str] = []
+    for k in ("entities", "relations", "canon_updates", "new_characters"):
+        _req_list(d, k, errs)
+    d.setdefault("events", [])
+    return errs
+
+
+def expansion_draft(llm, *, context: Dict[str, Any], request: str = "", count: int = 3) -> Dict[str, Any]:
+    """扩展世界观。request 为空时为自动完善（优先补缺口）；否则按用户要求扩展。"""
+    if request.strip():
+        goal = (f"用户要求：{request.strip()}。请据此扩展世界观，只写与要求直接相关的内容，"
+                f"新增实体不超过 {count} 个。")
+    else:
+        goal = (f"请自动完善世界观：优先处理 context.gaps 中列出的薄弱环节，新增约 {count} 个实体"
+                "（地理/势力/物种/技术魔法/组织/物品等），并为新实体建立与现有实体的关系；"
+                "必要时可用 canon_updates 补充已有实体的描述。")
+    instr = (goal + " 硬性要求：遵守宪章硬规则；不得与 context 中已有的名字重复；不要编写历史事件（events 留空）。"
+             "JSON 字段：entities（数组：kind(地理/势力/物种/技术/魔法/历史事件/物品/组织/其它), name, summary, attrs），"
+             "relations（数组：src_name, dst_name, type, note，名字可指向本次新增或已有实体），"
+             "canon_updates（数组：target_name, target_type(entity|character), payload 对象），"
+             "new_characters（数组：name, role, faction_name, motive, summary，可为空）。")
+    return call_json(llm, "expand", {**context, "request": request.strip(), "count": count},
+                     instr, _validate_expansion)
