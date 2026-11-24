@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 for _p in (PROJECT_ROOT, *PROJECT_ROOT.parents[:2]):
@@ -19,7 +20,7 @@ for _p in (PROJECT_ROOT, *PROJECT_ROOT.parents[:2]):
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from world_forge import engine, gaps, proposals, repo, store, timeline  # noqa: E402
+from world_forge import engine, gaps, graph as graph_mod, proposals, repo, store, timeline  # noqa: E402
 from world_forge.providers.factory import make_image_provider, make_text_llm  # noqa: E402
 
 st.set_page_config(page_title="架空世界工坊", page_icon="🌍", layout="wide")
@@ -222,6 +223,23 @@ with tabs[2]:
             if p.get("reasons"):
                 st.caption("；".join(p["reasons"]))
     with right:
+        st.markdown("#### 实体关系")
+        if st.button("自动补全实体关系", disabled=not meta.get("charter") or len(entities) < 2,
+                     key="complete_rel_btn"):
+            with st.spinner("正在为实体建立关系……"):
+                res = _safe(engine.complete_relations, LLM, wid, limit=5)
+            if res:
+                st.session_state.rel_report = res
+                st.rerun()
+        rr = st.session_state.get("rel_report")
+        if rr:
+            st.info(f"新增关系提案：" + ("　".join(f"{STATUS_LABEL.get(k, k)} {v}" for k, v in rr["counts"].items())
+                                     or "无") + f"（剩余未处理实体 {rr['pending_entities']} 个）")
+            for sk in rr["skipped"]:
+                st.caption(sk)
+            if st.button("收起结果", key="close_rel_report"):
+                del st.session_state["rel_report"]
+                st.rerun()
         st.markdown("#### 设定缺口")
         if st.button("自动补全前 5 个可处理的缺口", type="secondary", disabled=not gap_list):
             with st.spinner("正在补全……"):
@@ -257,10 +275,29 @@ with tabs[2]:
                     st.write(_tag(rec["status"]), unsafe_allow_html=True)
                     if rec["reasons"]:
                         st.warning("；".join(rec["reasons"]))
-        st.markdown("#### 实体一览")
-        if entities:
-            st.dataframe([{"类别": e["kind"], "名称": e["name"], "描述": e.get("summary", ""),
-                           "来源": e.get("source")} for e in entities], use_container_width=True, hide_index=True)
+
+# ---- 全宽：实体一览 + 关系图（放在“设定与提案”标签页底部，跨整个页面宽度）
+with tabs[2]:
+    st.divider()
+    st.markdown("#### 实体一览")
+    if entities:
+        st.dataframe([{"类别": e["kind"], "名称": e["name"], "描述": e.get("summary", ""),
+                       "来源": e.get("source")} for e in entities],
+                     use_container_width=True, hide_index=True, height=min(640, 60 + 35 * len(entities)))
+    else:
+        st.caption("还没有实体。")
+
+    st.markdown("#### 关系图")
+    st.caption("节点为设定实体与角色，连线为关系；角色与所属势力之间自动连线为「隶属」。")
+    graph_all = graph_mod.build_graph(wid)
+    focus_opts = {"": "全部"}
+    focus_opts.update({n["id"]: f"{n['label']}（{n['group']}）" for n in graph_all["nodes"]})
+    gc1, gc2 = st.columns([3, 1])
+    focus = gc1.selectbox("聚焦某个节点（显示它的邻居关系）", list(focus_opts), format_func=lambda k: focus_opts[k],
+                          key="graph_focus")
+    depth = gc2.number_input("邻居层数", min_value=1, max_value=3, value=1, key="graph_depth")
+    graph = graph_mod.build_graph(wid, focus=focus or None, depth=int(depth))
+    components.html(graph_mod.render_html(graph, height=640), height=660, scrolling=False)
 
 # ---------- 角色
 

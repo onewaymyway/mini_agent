@@ -209,7 +209,66 @@ def enrich_world(llm, wid: str) -> Dict[str, Any]:
     """一键完善：先补全可处理的缺口，再自动扩展少量内容。"""
     filled = fill_gaps(llm, wid, limit=5)
     expanded = expand_world(llm, wid, count=2)
-    return {"fill": filled, "expand": expanded}
+    related = complete_relations(llm, wid, limit=3)
+    return {"fill": filled, "expand": expanded, "relations": related}
+
+
+# ---------- 实体关系补全
+
+def _linked_pairs(relations: List[dict]) -> set:
+    return {frozenset((r["src"], r["dst"])) for r in relations}
+
+
+def complete_relations(llm, wid: str, *, limit: int = 5) -> Dict[str, Any]:
+    """为缺少关系的实体自动补全与其它实体的关系（最多处理 limit 个实体，关系最少的优先）。
+
+    每个实体让模型从其它实体中选择对象；已存在的关系不会重复建立。返回新增的提案与跳过原因。
+    """
+    require_charter(wid)
+    ents = repo.load_entities(wid)
+    linked = _linked_pairs(repo.load_relations(wid))
+    degree = {e["id"]: 0 for e in ents}
+    for pair in linked:
+        for eid in pair:
+            if eid in degree:
+                degree[eid] += 1
+    queue = sorted([e for e in ents if any(frozenset((e["id"], o["id"])) not in linked
+                                           for o in ents if o["id"] != e["id"])],
+                   key=lambda e: degree[e["id"]])
+    ctx = build_context(wid)
+    records: List[dict] = []
+    skipped: List[str] = []
+    for e in queue[: max(1, int(limit))]:
+        options = [o for o in ents if o["id"] != e["id"] and frozenset((e["id"], o["id"])) not in linked]
+        options = options[:40]
+        try:
+            draft = generate.relation_draft(llm, context=ctx, target_name=e["name"], target_kind=e["kind"],
+                                            options=[o["name"] for o in options])
+        except generate.GenerationError as exc:
+            skipped.append(f"「{e['name']}」：模型输出不合格（{exc}）")
+            continue
+        by_name = {o["name"]: o["id"] for o in options}
+        with _with_lock(wid):
+            current = _linked_pairs(repo.load_relations(wid))
+            got = 0
+            for r in draft.get("relations") or []:
+                oid = by_name.get(r.get("name"))
+                if not oid:
+                    continue
+                if frozenset((e["id"], oid)) in current:
+                    continue   # 上一轮已建立
+                rec = proposals.submit(wid, "create_relation", payload={
+                    "src": e["id"], "dst": oid, "type": r.get("type") or "关联",
+                    "note": r.get("note", "")}, source="relation_fill")
+                records.append(rec)
+                if rec["status"] == "applied":
+                    current.add(frozenset((e["id"], oid)))
+                    got += 1
+            if got == 0:
+                skipped.append(f"「{e['name']}」：模型没有给出可用的关系")
+        linked = _linked_pairs(repo.load_relations(wid))
+    return {"records": records, "skipped": skipped, "counts": _status_counts(records),
+            "pending_entities": len(queue) - min(len(queue), max(1, int(limit)))}
 
 
 # ---------- 世界观简介

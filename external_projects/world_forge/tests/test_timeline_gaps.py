@@ -78,3 +78,40 @@ def test_overview_generated_and_persisted(world, llm):
     assert repo.load_meta(world)["overview"]["year"] == 0
     engine.advance(llm, world, 1)
     assert engine.get_overview(world)["text"] == ov["text"]   # 推进不会自动改写
+
+
+def test_complete_relations_adds_links_without_duplicates(world, llm):
+    for name in ("北港", "南岬", "西原"):
+        proposals.submit(world, "create_entity", payload={"kind": "地理", "name": name, "summary": "x"})
+    before = len(repo.load_relations(world))
+    res = engine.complete_relations(llm, world, limit=5)
+    after = len(repo.load_relations(world))
+    assert after > before
+    pairs = [frozenset((r["src"], r["dst"])) for r in repo.load_relations(world)]
+    assert len(pairs) == len(set(pairs)), "同一对实体不应重复建立关系"
+    again = engine.complete_relations(llm, world, limit=5)
+    assert len(repo.load_relations(world)) >= after
+
+
+def test_graph_data_contains_entities_characters_and_faction_edges(world, llm):
+    from world_forge import graph
+    rec = proposals.submit(world, "create_entity", payload={"kind": "势力", "name": "赤潮会", "summary": "x"})
+    assert rec["status"] == "pending"
+    proposals.approve(world, rec["id"])
+    fac = next(e for e in repo.load_entities(world) if e["name"] == "赤潮会")
+    ch = proposals.submit(world, "create_character", payload={"name": "潮使", "role": "次要", "faction_id": fac["id"]})
+    g = graph.build_graph(world)
+    ids = {n["id"] for n in g["nodes"]}
+    assert ch["result"]["id"] in ids and fac["id"] in ids
+    assert any(e["label"] == "隶属" and e["target"] == fac["id"] for e in g["edges"])
+    focused = graph.build_graph(world, focus=fac["id"], depth=1)
+    assert ch["result"]["id"] in {n["id"] for n in focused["nodes"]}
+
+
+def test_graph_html_renders_and_escapes(world):
+    from world_forge import graph
+    proposals.submit(world, "create_entity", payload={"kind": "地理", "name": "</script>危险", "summary": "x"})
+    html_text = graph.render_html(graph.build_graph(world))
+    assert "</script>危险" not in html_text
+    assert "<svg" in html_text
+    assert graph.render_html({"nodes": [], "edges": []}).startswith("<div")

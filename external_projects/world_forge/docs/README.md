@@ -11,7 +11,7 @@ streamlit run app.py --server.port 8509
 
 0. **世界观简介**：在「总览」生成一篇背景介绍，快速了解当前世界观；世界推进后可重新生成。
 1. **新建**：输入一句概念，生成宪章草案与首批设定。
-2. **设定与提案**：批准宪章（`set_charter`）。可用「自动完善世界观」一键补全缺口并扩展；或在「按要求扩展」中用一句话提出需求（如「北方增加一个冰原部族」）。查看待确认提案。
+2. **设定与提案**：「自动补全实体关系」为缺少关系的实体建立连接；页面底部的「关系图」可拖动、缩放、聚焦查看；批准宪章（`set_charter`）。可用「自动完善世界观」一键补全缺口并扩展；或在「按要求扩展」中用一句话提出需求（如「北方增加一个冰原部族」）。查看待确认提案。
 3. **推进**：选择步数推进历史。每步生成事件、新角色与设定更新；被拦截的写入会注明原因。
 4. **时间线**：在任一事件之后开新分支（即回退），可在分支间切换与对比。
 5. **故事与漫画**：选择事件生成小故事线，成文短篇或直接创作；生成分镜、生成漫画图；导出给 novel_writer。
@@ -25,6 +25,7 @@ python entrypoints/cli.py approve --world <wid> --proposal <pid>
 python entrypoints/cli.py advance --world <wid> --steps 2
 python entrypoints/cli.py fill --world <wid>
 python entrypoints/cli.py expand --world <wid> --request "北方增加一个冰原部族"
+python entrypoints/cli.py relations --world <wid>
 python entrypoints/cli.py enrich --world <wid>
 python entrypoints/cli.py overview --world <wid>
 python entrypoints/cli.py arc --world <wid> --from 0 --to 30
