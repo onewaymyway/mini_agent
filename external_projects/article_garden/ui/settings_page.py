@@ -26,7 +26,7 @@ def render_settings_page() -> None:
     if ctx is None:
         return
     render_topbar(ctx, "⚙ 设置")
-    tabs = st.tabs(["章程", "自动化", "预算与限制", "模型与搜索", "校验阈值", "全局默认", "文章库管理"])
+    tabs = st.tabs(["章程", "自动化", "预算与限制", "模型、搜索与调研", "校验阈值", "全局默认", "文章库管理"])
     with tabs[0]:
         _charter_tab(ctx)
     with tabs[1]:
@@ -38,6 +38,7 @@ def render_settings_page() -> None:
     with tabs[3]:
         _group_editor("domain", "llm", ctx)
         _group_editor("domain", "search", ctx)
+        _group_editor("domain", "research", ctx)
         ok, detail = text_model_status()
         st.markdown(("✅ 文本模型已就绪：" if ok else "⚠️ 文本模型未就绪：") + detail)
         st.caption("模型与搜索使用 mini_agent 的 provider 配置；P1 起的摘要与成文需要它。")
@@ -158,7 +159,7 @@ def _group_editor(layer: str, group: str, ctx: domains.DomainContext | None) -> 
 def _global_tab() -> None:
     st.caption(f"全局默认保存在 `{paths.global_settings_path()}`，所有文章库继承；文章库里可逐项覆盖。"
                "自动化开关不在此处（只属于各文章库）。")
-    for group in ("budget", "llm", "search", "thresholds"):
+    for group in ("budget", "llm", "research", "search", "thresholds"):
         _group_editor("global", group, None)
 
 

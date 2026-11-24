@@ -63,3 +63,13 @@ def test_old_cached_network_error_is_ignored(data_home):
     f = fetch.Fetcher(ctx, http_get=net, min_interval=0, sleep=lambda s: None)
     ok, _ = f.allowed(f"https://{host}/a")
     assert ok is True and net.urls                              # 重新询问网站，而不是沿用旧记录
+
+
+def test_settings_page_shows_the_research_proxy_switch(data_home):
+    from tests.test_ui_smoke import run_app
+    _world(data_home)
+    at = run_app("settings", domain="ai")
+    assert not at.exception
+    labels = [c.label for c in at.checkbox] + [t.label for t in at.toggle] if hasattr(at, "toggle") else [c.label for c in at.checkbox]
+    # 应同时出现在「本库」的模型、搜索与调研页与「全局默认」页，两处都要能看到
+    assert sum("调研抓取使用系统代理" in l for l in labels) >= 2, labels
