@@ -456,3 +456,39 @@ def test_length_factor_settings_are_validated_and_shown_in_ui(data_home):
     at = run_app("settings", domain="ai")
     assert not at.exception, [e.value for e in at.exception]
     assert any("字数上限容忍倍数" in (n.label or "") for n in at.number_input)
+
+
+# ------------------------------------------------------------------ 评审严格度
+
+MINOR = "issues:\n  - section: 摘要\n    kind: 无证据支持\n    severity: 轻微\n    note: 表述略有拔高\n"
+SEVERE = "issues:\n  - section: 摘要\n    kind: 与证据矛盾\n    severity: 严重\n    note: 数字不一致\n"
+
+
+def test_default_level_ignores_minor_critic_issues_but_records_them(data_home):
+    ctx, tid = _setup(data_home)
+    res = runner.write(ctx, tid, WriterLLM(critic=lambda p: MINOR))
+    assert res["result"] == "drafted"
+    assert res["checks"]["critic_notes"][0]["severity"] == "轻微" and res["checks"]["critic_rounds"] == 1
+
+
+def test_default_level_still_fails_on_persistent_severe_issue(data_home):
+    ctx, tid = _setup(data_home)
+    assert runner.write(ctx, tid, WriterLLM(critic=lambda p: SEVERE))["result"] == "failed"
+
+
+def test_strict_level_fails_on_minor_and_loose_level_accepts_severe(data_home):
+    from article_garden import settings
+    ctx, tid = _setup(data_home)
+    settings.save_override("domain", "thresholds", "critic_level", "严格", ctx)
+    assert runner.write(ctx, tid, WriterLLM(critic=lambda p: MINOR))["result"] == "failed"
+    settings.save_override("domain", "thresholds", "critic_level", "宽松", ctx)
+    res = runner.write(ctx, tid, WriterLLM(critic=lambda p: SEVERE))
+    assert res["result"] == "drafted" and res["checks"]["critic_notes"]
+
+
+def test_critic_issue_without_severity_counts_as_severe(data_home):
+    from article_garden.writing import critic
+    obj = {"issues": [{"section": "a", "kind": "其它", "note": "x"}]}
+    assert critic.validator(obj) == []
+    assert critic.actionable([{"section": "a", "kind": "其它", "note": "x", "severity": "严重"}], "标准")
+    assert critic.validator({"issues": [{"section": "a", "kind": "其它", "note": "x", "severity": "中"}]})

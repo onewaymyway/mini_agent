@@ -134,15 +134,19 @@ def _write_article_inner(ctx, tid: str, topic: Dict[str, Any], llm, rounds: int,
             critic_log.append({"round": attempts, "issues": cr})
             joblog.log(ctx.root, SCOPE, f"成文：独立评审第 {len(critic_log)} 轮，"
                                         + (f"发现 {len(cr)} 个问题" if cr else "未发现问题"))
-            if not cr:
+            level = settings.effective_settings(ctx)[0]["thresholds"]["critic_level"]
+            todo = critic.actionable(cr, level)
+            if cr and not todo:
+                joblog.log(ctx.root, SCOPE, f"成文：评审严格度「{level}」，{len(cr)} 个问题仅记录、不阻止成稿", level="warn")
+            if not todo:
                 store.write_text_atomic(d / "draft.md", body)
                 note = checks.length_note(body, brief["style"]["length"])
                 if note:
                     joblog.log(ctx.root, SCOPE, "成文：" + note, level="warn")
-                return {"length_note": note, "body": body, "brief": brief, "by_id": by_id, "budget": budget,
+                return {"critic_notes": cr, "length_note": note, "body": body, "brief": brief, "by_id": by_id, "budget": budget,
                         "critic_rounds": len(critic_log), "outline": secs_all}
-            per_sec = _map_critic(cr, headings)
-            pending = [f"{it['section']}：{it['note']}" for it in cr]
+            per_sec = _map_critic(todo, headings)
+            pending = [f"{it['section']}：{it['note']}" for it in todo]
         attempts += 1
         if attempts > MAX_DRAFT_ATTEMPTS:
             raise WriteFailed(pending, body)
@@ -220,7 +224,8 @@ def write(ctx, tid: str, llm, *, max_rounds: Optional[int] = None, feedback: str
         states.link_article(ctx, tid, aid)
         ck = {"article_id": aid, "critic_rounds": res["critic_rounds"], "budget_used": res["budget"].used,
               "budget_max": rounds, "checked_at": _now(), "passed": True,
-              "length_note": res.get("length_note", "")}
+              "length_note": res.get("length_note", ""),
+              "critic_notes": res.get("critic_notes", [])}
         store.write_json_atomic(d / "checks.json", ck)
         (d / "failed.json").unlink(missing_ok=True)
         counts = drunner.run_digest(ctx, llm, only=[aid], force=True)
