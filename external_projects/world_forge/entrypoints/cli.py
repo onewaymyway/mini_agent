@@ -12,6 +12,8 @@
   python entrypoints/cli.py short --world <wid> [--arc <sid>] [--brief 文字] [--events a,b]
   python entrypoints/cli.py board --world <wid> --story <sid> [--pages 6|auto] [--reading ltr|rtl] [--color color|bw]
   python entrypoints/cli.py comic --world <wid> --story <sid> [--reading ltr|rtl] [--color color|bw] [--candidates 1-3]
+  python entrypoints/cli.py comicexport --world <wid> --story <sid>   # CBZ 与条漫长图（仅使用已生成成品页）
+  python entrypoints/cli.py text --world <wid> --story <sid> --page 1 --panel 1 [--narration 文字] [--sfx 轰] [--dialogue 第一句 --dialogue 第二句]
   python entrypoints/cli.py limits --world <wid> [--budget 80] [--candidate-max 3]   # 查看或设置漫画上限
   python entrypoints/cli.py style --world <wid>
   python entrypoints/cli.py sheets --world <wid> --story <sid> [--overwrite]
@@ -81,6 +83,11 @@ def main(argv=None) -> int:
     p.add_argument("--reading", default=None, choices=["ltr", "rtl"])
     p.add_argument("--color", default=None, choices=["color", "bw"])
     p.add_argument("--candidates", type=int, default=None, choices=[1, 2, 3], help="每格候选数，默认 1")
+    p = sub.add_parser("comicexport"); p.add_argument("--world", required=True); p.add_argument("--story", required=True)
+    p = sub.add_parser("text"); p.add_argument("--world", required=True); p.add_argument("--story", required=True)
+    p.add_argument("--page", type=int, required=True); p.add_argument("--panel", type=int, required=True)
+    p.add_argument("--narration", default=None); p.add_argument("--sfx", default=None)
+    p.add_argument("--dialogue", action="append", default=None, help="按顺序给出每句对白，可多次使用")
     p = sub.add_parser("limits"); p.add_argument("--world", required=True)
     p.add_argument("--budget", type=int, default=None, help="单次操作的图像调用上限（1–500）")
     p.add_argument("--candidate-max", type=int, default=None, help="每格候选数上限（1–5）")
@@ -145,6 +152,11 @@ def main(argv=None) -> int:
             llm, _ = make_text_llm()
             _dump(engine.make_storyboard(llm, args.world, args.story, pages=args.pages,
                                          reading=args.reading, color=args.color))
+        elif args.cmd == "comicexport":
+            _dump(engine.export_comic_files(args.world, args.story))
+        elif args.cmd == "text":
+            _dump(engine.edit_panel_text(args.world, args.story, args.page, args.panel, narration=args.narration,
+                                         sfx=args.sfx, dialogue=args.dialogue))
         elif args.cmd == "limits":
             if args.budget is not None or args.candidate_max is not None:
                 engine.set_comic_limits(args.world, image_budget=args.budget, candidate_max=args.candidate_max)

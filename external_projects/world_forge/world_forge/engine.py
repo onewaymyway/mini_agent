@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import time
+import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -1196,6 +1197,9 @@ def _assemble_outputs(wid: str, sid: str, d: Path, board: Dict[str, Any], opts: 
     comic = render_comic_html(board, title=load_story_meta_safe(wid, sid).get("title", "漫画"), base_dir=d,
                               reading=opts["reading"])
     (d / "comic.html").write_text(comic, encoding="utf-8")
+    page_rel = [p.relative_to(d).as_posix() for p in pngs]
+    (d / "reader.html").write_text(render_reader_html(
+        load_story_meta_safe(wid, sid).get("title", "漫画"), page_rel, opts["reading"]), encoding="utf-8")
     with _with_lock(wid):
         meta_s = repo.load_story_meta(wid, sid)
         meta_s["has_comic"] = True
@@ -1378,6 +1382,160 @@ def choose_candidate(wid: str, sid: str, page_no: int, panel_no: int, k: int, lo
         out = _assemble_outputs(wid, sid, d, board, opts, log)
         log.log("done", "完成", level="ok")
         return {"chosen": k, **out}
+    except Exception as exc:
+        _fail(log, exc)
+        raise
+
+
+def render_reader_html(title: str, page_paths: List[str], reading: str) -> str:
+    """网页阅读器：引用同目录 pages/ 下的 PNG 成品页（整个故事目录需一起移动）。翻页、方向键、连续滚动。"""
+    pages_js = json.dumps(page_paths, ensure_ascii=False)
+    rtl_js = "true" if reading == "rtl" else "false"
+    t = html.escape(title)
+    return f"""<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>{t}</title>
+<style>
+body{{margin:0;background:#1d1d1d;color:#eee;font-family:"Microsoft YaHei","PingFang SC",sans-serif}}
+header{{display:flex;justify-content:space-between;align-items:center;padding:8px 14px;background:#111}}
+main{{display:flex;flex-direction:column;align-items:center;padding:12px}}
+#stage img{{display:block;max-width:100%;max-height:calc(100vh - 110px);box-shadow:0 0 18px #000}}
+#strip img{{display:block;width:min(100%,900px);margin:0 auto 12px;box-shadow:0 0 12px #000}}
+#strip{{display:none}}
+nav{{display:flex;gap:8px;padding:10px}}
+button{{background:#333;color:#eee;border:1px solid #555;padding:6px 14px;cursor:pointer;border-radius:4px}}
+button:disabled{{opacity:.4;cursor:default}}
+</style></head><body>
+<header><strong>{t}</strong><span id="pos"></span>
+<label><input type="checkbox" id="scroll"> 连续滚动</label></header>
+<main>
+<div id="stage"><img id="pg" alt=""></div>
+<div id="strip"></div>
+<nav><button id="prev">上一页</button><button id="next">下一页</button></nav>
+</main>
+<script>
+const pages = {pages_js};
+const rtl = {rtl_js};
+let i = 0;
+const pg = document.getElementById('pg'), pos = document.getElementById('pos');
+const stage = document.getElementById('stage'), strip = document.getElementById('strip');
+const scroll = document.getElementById('scroll');
+function show() {{
+  i = Math.max(0, Math.min(pages.length - 1, i));
+  pg.src = pages[i];
+  pos.textContent = (i + 1) + ' / ' + pages.length + (rtl ? '（从右到左）' : '（从左到右）');
+  document.getElementById('prev').disabled = i === 0;
+  document.getElementById('next').disabled = i === pages.length - 1;
+}}
+function buildStrip() {{
+  strip.innerHTML = '';
+  pages.forEach(function (src) {{ const im = document.createElement('img'); im.src = src; strip.appendChild(im); }});
+}}
+function apply() {{
+  const on = scroll.checked;
+  stage.style.display = on ? 'none' : 'block';
+  strip.style.display = on ? 'block' : 'none';
+  document.querySelector('nav').style.display = on ? 'none' : 'flex';
+  if (on) buildStrip(); else show();
+}}
+document.getElementById('prev').onclick = function () {{ i--; show(); }};
+document.getElementById('next').onclick = function () {{ i++; show(); }};
+scroll.onchange = apply;
+document.addEventListener('keydown', function (e) {{
+  if (scroll.checked) return;
+  const forward = rtl ? e.key === 'ArrowLeft' : e.key === 'ArrowRight';
+  const back = rtl ? e.key === 'ArrowRight' : e.key === 'ArrowLeft';
+  if (forward) {{ i++; show(); }}
+  if (back) {{ i--; show(); }}
+}});
+show();
+</script></body></html>"""
+
+
+def _load_pages(d: Path) -> List[Path]:
+    pages_dir = d / "pages"
+    pngs = sorted(pages_dir.glob("page_*.png")) if pages_dir.is_dir() else []
+    if not pngs:
+        raise EngineError("还没有成品页，请先生成漫画图")
+    return pngs
+
+
+def export_comic_files(wid: str, sid: str, log=None) -> Dict[str, Any]:
+    """导出 CBZ（漫画压缩包，含 ComicInfo.xml）与条漫长图（PNG，成品页竖向拼接）。仅使用已生成的成品页，不调用模型。"""
+    log = _log_or_new(log, wid, "comic")
+    try:
+        d = repo.story_dir(wid, sid)
+        pngs = _load_pages(d)
+        board = store.read_json(d / "storyboard.json") or {}
+        reading = (board.get("opts") or {}).get("reading", "ltr")
+        title = load_story_meta_safe(wid, sid).get("title", "漫画")
+        log.log("start", f"导出 CBZ 与条漫长图（{len(pngs)} 页）")
+        cbz = d / "comic.cbz"
+        manga = "YesAndRightToLeft" if reading == "rtl" else "No"
+        info = (f"<?xml version='1.0' encoding='utf-8'?><ComicInfo><Title>{html.escape(title)}</Title>"
+                f"<Manga>{manga}</Manga></ComicInfo>")
+        with zipfile.ZipFile(cbz, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for p in pngs:
+                zf.write(p, arcname=p.name)
+            zf.writestr("ComicInfo.xml", info)
+        log.log("save", f"已写入 comic.cbz（阅读方向标记：{manga}）", level="ok")
+        from PIL import Image
+
+        imgs = []
+        for p in pngs:
+            with Image.open(p) as im:
+                imgs.append(im.convert("RGB").copy())
+        width = max(im.width for im in imgs)
+        height = sum(im.height for im in imgs)
+        strip = Image.new("RGB", (width, height), "white")
+        y = 0
+        for im in imgs:
+            strip.paste(im, (0, y))
+            y += im.height
+        strip_path = d / "comic_strip.png"
+        strip.save(strip_path, format="PNG", optimize=True)
+        log.log("save", f"已写入 comic_strip.png（{width}×{height} 像素）", level="ok")
+        log.log("done", "完成", level="ok")
+        return {"cbz": str(cbz), "strip": str(strip_path), "reader": str(d / "reader.html"),
+                "pages": len(pngs), "reading": reading}
+    except Exception as exc:
+        _fail(log, exc)
+        raise
+
+
+def edit_panel_text(wid: str, sid: str, page_no: int, panel_no: int, *, narration: Optional[str] = None,
+                    sfx: Optional[str] = None, dialogue: Optional[List[str]] = None, log=None) -> Dict[str, Any]:
+    """修改一格的旁白、音效与对白文字（不改说话人与位置），重新拼装成品。不调用图像模型。"""
+    log = _log_or_new(log, wid, "comic")
+    try:
+        d = repo.story_dir(wid, sid)
+        with _with_lock(wid):
+            board = store.read_json(d / "storyboard.json")
+            if not board:
+                raise EngineError("请先生成分镜")
+            pn = next((p for pg in board["pages"] if pg["no"] == page_no
+                       for j, p in enumerate(pg["panels"], start=1) if j == panel_no), None)
+            if pn is None:
+                raise EngineError(f"没有第 {page_no} 页第 {panel_no} 格")
+            if narration is not None:
+                pn["narration"] = str(narration).strip()
+            if sfx is not None:
+                pn["sfx"] = str(sfx).strip()
+            if dialogue is not None:
+                existing = pn.get("dialogue") or []
+                if len(dialogue) != len(existing):
+                    raise EngineError(f"对白数量须为 {len(existing)} 句（当前 {len(dialogue)} 句）")
+                for dl, text in zip(existing, dialogue):
+                    text = str(text).strip()
+                    if not text:
+                        raise EngineError("对白不能为空")
+                    if len(text) > generate.DIALOGUE_MAX_CHARS:
+                        raise EngineError(f"对白过长（{len(text)} 字，上限 {generate.DIALOGUE_MAX_CHARS} 字）")
+                    dl["text"] = text
+            pn["edited"] = True
+            store.write_json(d / "storyboard.json", board)
+        opts = board.get("opts") or comic_layout.normalize_opts()
+        log.log("save", f"已修改第 {page_no} 页第 {panel_no} 格的文字，重新拼装成品（不调用图像模型）", level="ok")
+        out = _assemble_outputs(wid, sid, d, board, opts, log)
+        return out
     except Exception as exc:
         _fail(log, exc)
         raise

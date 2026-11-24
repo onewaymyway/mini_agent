@@ -33,6 +33,8 @@ python entrypoints/cli.py short --world <wid> --arc <sid>
 python entrypoints/cli.py board --world <wid> --story <sid> --pages 6 --reading ltr --color color   # --pages 可为 1–20 或 auto
 python entrypoints/cli.py comic --world <wid> --story <sid> --reading rtl --color bw --candidates 2   # 输出 pages/*.png 与 comic_pages.zip
 python entrypoints/cli.py limits --world <wid> --budget 120 --candidate-max 4    # 上限设置（本世界）
+python entrypoints/cli.py text --world <wid> --story <sid> --page 1 --panel 2 --narration "雨停了"   # 修改文字，不调用图像模型
+python entrypoints/cli.py comicexport --world <wid> --story <sid>                # 导出 CBZ 与条漫长图
 python entrypoints/cli.py style --world <wid>                                    # 风格指南（全世界一份）
 python entrypoints/cli.py sheets --world <wid> --story <sid> [--overwrite]       # 角色表：侧面 + 愤怒/悲伤/惊讶
 python entrypoints/cli.py scenes --world <wid> --story <sid> [--overwrite]       # 场景图：分镜中用到的地点
@@ -94,6 +96,14 @@ python -m pytest -q tests
   - 每格候选数上限：1–5，默认 3；候选数选择框只显示不超过该上限的选项。
   超出范围会报错且不保存。调用达到上限时停止，已完成的保留，并在日志中提示。
 - **注意**：风格指南、角色表、场景图都只是参考，不做自动质检；生成结果需要人工查看。
+
+## 漫画阅读与导出（P4）
+
+- **网页阅读器**：每次拼装成品时生成 `reader.html`，引用同目录 `pages/` 中的 PNG 成品页。可翻页（按钮或方向键，从右到左时方向键反向）、连续滚动。整个故事目录需要一起移动。
+- **导出 CBZ**：`comic.cbz`，标准漫画压缩包，包含各页 PNG 与 `ComicInfo.xml`；从右到左的漫画会写入对应的阅读方向标记。
+- **条漫长图**：`comic_strip.png`，成品页按顺序竖向拼接（页与页之间没有间距，不重新排版）。
+- **编辑文字**：故事页「编辑文字」可修改某一格的旁白、音效与对白文字（说话人与气泡位置不变），保存后只重新排字拼装，不调用图像模型。对白仍受 40 字上限约束，对白数量不能增减。
+- **注意**：导出只使用已生成的成品页；需要先生成漫画图。
 
 ## 停止与重新生成
 

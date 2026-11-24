@@ -30,7 +30,7 @@
 | M6-P2 | 风格指南、每幕配色、角色表（侧面与三种表情）、场景设定图、每格候选与人工选用、图像调用上限 | 已完成（见 next_doc/comic_quality_p2_implementation_record.md） |
 | M6-P3 | 多模态质检与自动重试 | 不做（用户决定，漫画不做质检） |
 | M6-上限 | 图像调用上限、每格候选数上限改为世界级可配置（看板「上限设置」与 CLI `limits`） | 已完成（见 next_doc/comic_limits_configuration_record.md） |
-| M6-P4 | 网页阅读器、CBZ / 条漫长图导出、看板中剧本与版式编辑 | 规划中 |
+| M6-P4 | 网页阅读器（reader.html）、CBZ 与条漫长图导出、看板中修改文字（不调用图像模型） | 已完成（见 next_doc/comic_quality_p4_implementation_record.md；CBZ、条漫长图、文字编辑的范围待确认） |
 
 ## 关键设计
 
@@ -57,6 +57,7 @@
 - 表情图按分镜的情绪关键词匹配，无法识别的情绪一律沿用立绘。
 - 黑白模式只是转灰度加提示词约束，尚无真正的网点纹理。
 - 页数为 auto 时不设上限，但单次模型调用的输出长度有限，故事很长时节拍表或分镜可能生成失败（需要分段生成，待后续阶段）。
+- 阅读器引用 `pages/` 中的 PNG，故事目录需一起移动；看板中只能修改文字，不能拖动气泡或调整版式。
 - PNG 排字依赖中文字体；服务器上找不到字体时中文会显示为方框，可通过 `WORLD_FORGE_FONT` 指定。
 - 尚未注册到 daemon（需在 daemon 侧执行 `mini-agent projects register external_projects/world_forge`，注册后默认不开启定时任务）。
 - 测试环境下 Streamlit 只做 AppTest 冒烟，界面交互需要在浏览器中手动走一遍。

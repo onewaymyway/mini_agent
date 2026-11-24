@@ -812,6 +812,42 @@ with tabs[6]:
                         st.image(str(png), use_container_width=True)
                         st.download_button(f"下载 {png.name}", data=png.read_bytes(), file_name=png.name,
                                            mime="image/png", key=f"dl_{png.stem}")
+            if pngs:
+                ex = st.columns(2)
+                if ex[0].button("导出 CBZ 与条漫长图", key="export_comic_files"):
+                    try:
+                        out_e = engine.export_comic_files(wid, sid)
+                        st.success(f"已导出：{Path(out_e['cbz']).name}、{Path(out_e['strip']).name}")
+                    except engine.EngineError as exc:
+                        st.error(str(exc))
+                cbz_f, strip_f = d / "comic.cbz", d / "comic_strip.png"
+                if cbz_f.is_file():
+                    ex[1].download_button("下载 CBZ", data=cbz_f.read_bytes(), file_name=f"{smeta['title']}.cbz",
+                                          mime="application/vnd.comicbook+zip", key="dl_cbz")
+                if strip_f.is_file():
+                    st.download_button("下载条漫长图（PNG）", data=strip_f.read_bytes(),
+                                       file_name=f"{smeta['title']}_条漫.png", mime="image/png", key="dl_strip")
+                st.caption("网页阅读器 reader.html 与 pages/ 文件夹放在一起打开（整个故事目录需一起移动）。")
+            with st.expander("编辑文字（旁白、音效、对白；保存后重新拼装，不调用图像模型）"):
+                eo = [(pg["no"], i) for pg in board["pages"] for i in range(1, len(pg["panels"]) + 1)]
+                ed_pick = st.selectbox("选择一格", eo, format_func=lambda x: f"第 {x[0]} 页 第 {x[1]} 格",
+                                       key="edit_pick")
+                pn_e = board["pages"][ed_pick[0] - 1]["panels"][ed_pick[1] - 1]
+                key_base = f"ed_{ed_pick[0]}_{ed_pick[1]}"
+                nar_v = st.text_input("旁白", value=pn_e.get("narration", ""), key=f"{key_base}_nar")
+                sfx_v = st.text_input("音效", value=pn_e.get("sfx", ""), key=f"{key_base}_sfx")
+                dl_vals = []
+                for j, dl in enumerate(pn_e.get("dialogue") or []):
+                    tag = {"thought": "心声", "shout": "呼喊"}.get(dl.get("kind"), "说话")
+                    dl_vals.append(st.text_input(f"{dl.get('speaker', '')}（{tag}）", value=dl.get("text", ""),
+                                                 key=f"{key_base}_dl{j}"))
+                if st.button("保存文字并重新拼装", key=f"{key_base}_save"):
+                    try:
+                        engine.edit_panel_text(wid, sid, ed_pick[0], ed_pick[1], narration=nar_v, sfx=sfx_v,
+                                               dialogue=dl_vals or None)
+                        st.rerun()
+                    except engine.EngineError as exc:
+                        st.error(str(exc))
             comic_file = d / "comic.html"
             if comic_file.is_file():
                 st.caption("网页预览（图片已嵌入；尾巴与完整排字以上方 PNG 为准）")
