@@ -57,6 +57,8 @@ def render_topics_page() -> None:
         for r in buckets["已拒绝或放弃"]:
             st.caption(f"{r['id']} {r['title']}：{r.get('reason_rejected', r['status'])}")
 
+    _delete_section(ctx, rows)
+
     st.divider()
     st.markdown("**修改选题状态**")
     st.caption("可在「待放行」「已放行」「已拒绝」「已放弃」之间手动调整。拒绝或放弃需要填写原因；"
@@ -76,6 +78,24 @@ def render_topics_page() -> None:
     note = st.text_input("原因（改为「已拒绝」或「已放弃」时必填）", key="st_note")
     if st.button("确认修改状态", key="st_go", type="primary"):
         _try(lambda: states.set_status(ctx, tid, to, note))
+
+
+def _delete_section(ctx, rows) -> None:
+    st.divider()
+    st.markdown("**删除选题**")
+    st.caption("可删除：待放行、已放行、已拒绝、已放弃的选题（可多选）。已调研、成文失败、已成稿、已审阅、已发布和进行中的选题不能删除。"
+               "删除只移除选题记录，已生成的调研与草稿文件不会被改动；被删除的选题会留存在 plan/deleted.jsonl。")
+    deletable = [r for r in rows if r["status"] in states.DELETABLE]
+    if not deletable:
+        st.info("当前没有可以删除的选题。")
+        return
+    labels = {r["id"]: f"{r['id']}  {r['title']}（{states.LABELS.get(r['status'], r['status'])}）" for r in deletable}
+    picked = st.multiselect("选择要删除的选题", list(labels), format_func=lambda i: labels[i], key="del_sel")
+    again = st.checkbox("允许之后重新提出同一缺口的选题（默认不勾选：删除后同一缺口不会再被提出）", key="del_again")
+    note = st.text_input("备注（可选）", key="del_note")
+    sure = st.checkbox(f"确认删除所选的 {len(picked)} 个选题", key="del_sure")
+    if st.button("删除所选选题", key="del_go", disabled=not (picked and sure)):
+        _try(lambda: states.delete_topics(ctx, picked, allow_repropose=again, note=note))
 
 
 def _card(ctx, r, editable: bool) -> None:

@@ -276,3 +276,58 @@ def test_topics_page_offers_status_editor(data_home):
     at = run_app("topics", domain="ai")
     assert not at.exception
     assert any(b.label == "确认修改状态" for b in at.button)
+
+
+# ------------------------------------------------------------------ 删除选题
+
+def _two_topics(ctx):
+    from article_garden.planning import topics as tp
+    tp.run(ctx, MidLLM(duplicate=False))
+    return states.load_topics(ctx)
+
+
+def test_delete_removes_topic_and_blocks_reproposal_by_default(data_home):
+    ctx = _world(data_home)
+    rows = _two_topics(ctx)
+    tid, key = rows[0]["id"], rows[0]["gap_key"]
+    states.delete_topics(ctx, [tid], note="不要了")
+    assert tid not in [r["id"] for r in states.load_topics(ctx)]
+    assert any(r.get("gap_key") == key for r in states.load_rejected(ctx))
+    assert states.load_deleted(ctx)[0]["id"] == tid and states.load_deleted(ctx)[0]["delete_note"] == "不要了"
+    topics.run(ctx, MidLLM(duplicate=False))                       # 再检测：同一缺口不会回来
+    assert key not in [r.get("gap_key") for r in states.load_topics(ctx)]
+
+
+def test_delete_with_allow_repropose_clears_block(data_home):
+    ctx = _world(data_home)
+    rows = _two_topics(ctx)
+    tid, key = rows[0]["id"], rows[0]["gap_key"]
+    states.reject(ctx, tid, "暂不需要")
+    states.delete_topics(ctx, [tid], allow_repropose=True)
+    assert not any(r.get("gap_key") == key for r in states.load_rejected(ctx))
+    topics.run(ctx, MidLLM(duplicate=False))
+    assert key in [r.get("gap_key") for r in states.load_topics(ctx)]
+
+
+def test_delete_refuses_topics_with_products_and_is_all_or_nothing(data_home):
+    ctx = _world(data_home)
+    rows = _two_topics(ctx)
+    a, b = rows[0]["id"], rows[1]["id"] if len(rows) > 1 else rows[0]["id"]
+    states.revert_to(ctx, a, states.DRAFTED, "测试")
+    with pytest.raises(ValueError):
+        states.delete_topics(ctx, [a])
+    with pytest.raises(ValueError):
+        states.delete_topics(ctx, [b, "t-9999"])
+    with pytest.raises(ValueError):
+        states.delete_topics(ctx, [])
+    assert len(states.load_topics(ctx)) == len(rows)               # 一个都没删
+    assert states.load_deleted(ctx) == []
+
+
+def test_topics_page_offers_delete_section(data_home):
+    from tests.test_ui_smoke import run_app
+    ctx = _world(data_home)
+    _two_topics(ctx)
+    at = run_app("topics", domain="ai")
+    assert not at.exception, [e.value for e in at.exception]
+    assert any(b.label == "删除所选选题" for b in at.button)

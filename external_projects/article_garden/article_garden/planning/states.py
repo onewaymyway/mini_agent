@@ -140,6 +140,60 @@ def set_status(ctx, tid: str, to: str, note: str = "") -> Dict[str, Any]:
     return t
 
 
+# 可删除的状态：尚未产生调研/成文产物的选题，以及已被放弃、拒绝的选题。
+# 进行中与已有产物的选题（已调研、成文失败、已成稿、已审阅、已发布）不能删除，避免孤立产物。
+DELETABLE = {PROPOSED, APPROVED, REJECTED, DROPPED}
+
+
+def _deleted_path(ctx):
+    return ctx.path("plan", "deleted.jsonl")
+
+
+def load_deleted(ctx) -> List[Dict[str, Any]]:
+    return _read(_deleted_path(ctx))
+
+
+def delete_topics(ctx, tids: List[str], *, allow_repropose: bool = False, note: str = "") -> List[Dict[str, Any]]:
+    """人工删除选题（可批量）。全部校验通过才执行，否则一个都不删。
+
+    - 只能删除 DELETABLE 中的状态；
+    - 默认保守：被删除选题对应的缺口记入拒绝记录，之后「检测缺口」不会再次提出；
+      `allow_repropose=True` 时清除该缺口的拒绝记录，下一次检测可以重新提出；
+    - 被删除的选题整行追加到 plan/deleted.jsonl，便于追溯与手动找回；
+    - 只删除选题记录，已生成的调研、草稿文件不动。
+    """
+    tids = list(dict.fromkeys(tids or []))
+    if not tids:
+        raise ValueError("请至少选择一个选题")
+    rows = load_topics(ctx)
+    by_id = {r["id"]: r for r in rows}
+    for t in tids:
+        r = by_id.get(t)
+        if r is None:
+            raise ValueError(f"选题不存在：{t}")
+        if r["status"] not in DELETABLE:
+            raise ValueError(f"{t}「{r['title']}」处于「{LABELS.get(r['status'], r['status'])}」，不能删除")
+    gone = [by_id[t] for t in tids]
+    keys = {r.get("gap_key") for r in gone if r.get("gap_key")}
+    rej = load_rejected(ctx)
+    if allow_repropose:
+        rej = [x for x in rej if x.get("gap_key") not in keys]
+    else:
+        have = {x.get("gap_key") for x in rej}
+        for r in gone:
+            if r.get("gap_key") and r["gap_key"] not in have:
+                rej.append({"gap_key": r["gap_key"], "title": r["title"], "reason": "已删除选题", "at": _now()})
+                have.add(r["gap_key"])
+    stamp = _now()
+    log = load_deleted(ctx) + [{**r, "deleted_at": stamp, "delete_note": (note or "").strip(),
+                                "allow_repropose": allow_repropose} for r in gone]
+    # 先写追溯记录，再写拒绝记录，最后改队列：中途失败不会丢失选题
+    store.write_text_atomic(_deleted_path(ctx), "".join(_dump(r) for r in log))
+    save_rejected(ctx, rej)
+    save_topics(ctx, [r for r in rows if r["id"] not in set(tids)])
+    return gone
+
+
 def approve(ctx, tid: str) -> Dict[str, Any]:
     return _replace(ctx, tid, lambda r: _move(r, APPROVED))
 
