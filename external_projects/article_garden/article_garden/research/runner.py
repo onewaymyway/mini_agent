@@ -12,7 +12,7 @@ from typing import Any, Dict, Optional
 
 from .. import cancel, joblog, settings
 from ..planning import states
-from . import extract, fetch, pack, queries, search, sources
+from . import extract, fetch, pack, providers, queries, search, sources
 
 SCOPE = "research"
 
@@ -24,6 +24,30 @@ def _min_cred(ctx, eff) -> str:
 
 def _avoid(ctx):
     return (ctx.load_charter()[0].get("sources", {}) or {}).get("avoid") or []
+
+
+def _bname(b) -> str:
+    return getattr(b, "name", "web")
+
+
+def _blangs(b) -> tuple:
+    return tuple(getattr(b, "languages", ("zh", "en")))
+
+
+def used_queries(used: set) -> set:
+    return {q for _, q in used}
+
+
+def _add_card(ctx, tid, h, title, ex, must, terms, avoid, result, *, source_type, via=""):
+    card = sources.make_card(sources.next_id(ctx, tid), tid, url=h.url, title=title, text=ex,
+                             credibility=sources.classify(h.url, avoid), source_type=source_type,
+                             points=must, terms=terms)
+    sources.write(ctx, tid, card)
+    result["added"] += 1
+    joblog.log(ctx.root, SCOPE, f"调研：已入库 {card['id']}{via}（{'摘要' if source_type == 'abstract' else '网页'}，"
+                                f"可信度 {card['credibility']}，摘录 {len(ex)} 字，覆盖要点 "
+                                f"{len(card['covers'])}/{len(must)}）")
+    return card
 
 
 def run(ctx, tid: str, *, llm: Any = None, max_rounds: Optional[int] = None,
@@ -38,7 +62,7 @@ def run(ctx, tid: str, *, llm: Any = None, max_rounds: Optional[int] = None,
     terms = ctx.load_charter()[0].get("terms") or {}
     max_pages = int(eff["budget"]["max_fetch_pages_per_topic"])
     excerpt_max = int(eff["thresholds"]["excerpt_chars_max"])
-    backend = search_backend or search.MiniAgentSearch(eff["search"]["provider"])
+    backends = [search_backend] if search_backend is not None else providers.default_backends(eff)
     fetcher = fetcher or fetch.Fetcher(ctx)
     rounds = int(max_rounds or eff["budget"]["max_repair_rounds"])
     result: Dict[str, Any] = {"topic_id": tid, "result": None, "sufficient": False, "queries": [],
@@ -47,55 +71,107 @@ def run(ctx, tid: str, *, llm: Any = None, max_rounds: Optional[int] = None,
     run_id = joblog.run_start(ctx.root, SCOPE, f"调研 {tid}")
     states.begin_research(ctx, tid)
     try:
-        qs = queries.build(topic, ctx.info().get("name") or ctx.id, llm, rounds)
-        result["queries"] = qs
-        hits, seen = [], set()
-        for q in qs:
-            try:
-                got = search.cached_search(ctx, backend, q, int(eff["search"]["max_results"]))
-            except search.SearchError as exc:
-                result["search_errors"].append(str(exc))
-                joblog.log(ctx.root, SCOPE, f"搜索失败，仅使用已有资料：{exc}", level="warn")
-                break
-            for h in got:
-                if h.url and h.url not in seen:
-                    seen.add(h.url)
-                    hits.append(h)
-
-        joblog.log(ctx.root, SCOPE, f"调研：{len(qs)} 条查询，去重后共 {len(hits)} 个候选网址")
+        domain_name = ctx.info().get("name") or ctx.id
+        zh_pending = queries.build(topic, domain_name, llm, rounds)
+        en_seed = queries.english(topic, llm, rounds) if any("en" in _blangs(b) for b in backends) else []
+        result["queries"] = list(zh_pending)
+        result["english_queries"] = list(en_seed)
+        en_pending = list(en_seed)
+        used: set = set()
+        seen_urls: set = set()
         attempts = 0
-        for h in hits:
-            if sources.has_url(ctx, tid, h.url):
-                joblog.log(ctx.root, SCOPE, f"调研：{h.url} 已有来源，跳过")
-                continue
-            if attempts >= max_pages:
-                result["skipped"].append(f"已达每题抓取上限 {max_pages} 页")
-                joblog.log(ctx.root, SCOPE, f"调研：已达每题抓取上限 {max_pages} 页，停止抓取", level="warn")
+        round_no = 0
+        max_qrounds = int(eff["research"]["max_query_rounds"])
+        joblog.log(ctx.root, SCOPE, f"调研：中文查询 {len(zh_pending)} 条，英文查询 {len(en_seed)} 条，"
+                                    f"信息源 {'、'.join(_bname(b) for b in backends) or '无'}")
+        while zh_pending or en_pending:
+            round_no += 1
+            cancel.check()
+            new_hits = []
+            for b in backends:
+                langs = set(_blangs(b))
+                if langs == {"en"}:
+                    qs = en_pending
+                elif langs == {"zh"}:
+                    qs = zh_pending
+                else:
+                    qs = zh_pending + en_pending
+                for q in qs:
+                    key = (_bname(b), q)
+                    if key in used:
+                        continue
+                    used.add(key)
+                    try:
+                        got = search.cached_search(ctx, b, q, int(eff["search"]["max_results"]))
+                    except search.SearchError as exc:
+                        result["search_errors"].append(f"{_bname(b)}：{exc}")
+                        joblog.log(ctx.root, SCOPE, f"搜索 [{_bname(b)}] 「{q}」失败：{exc}", level="warn")
+                        break
+                    joblog.log(ctx.root, SCOPE, f"搜索 [{_bname(b)}] 「{q}」：{len(got)} 条结果")
+                    for h in got:
+                        if h.url and h.url not in seen_urls:
+                            seen_urls.add(h.url)
+                            new_hits.append(h)
+            zh_pending, en_pending = [], []
+            joblog.log(ctx.root, SCOPE, f"调研第 {round_no} 轮：新增候选网址 {len(new_hits)} 个")
+
+            for h in new_hits:
+                if sources.has_url(ctx, tid, h.url):
+                    continue
+                # 1) 官方接口已附带摘要且覆盖要点：直接使用摘要，不占抓取页数
+                if h.source in ("arxiv", "crossref") and len(h.snippet or "") >= 120:
+                    ex = sources.excerpt(h.snippet, must, excerpt_max, terms)
+                    if ex:
+                        _add_card(ctx, tid, h, h.title, ex, must, terms, _avoid(ctx), result,
+                                  source_type="abstract")
+                        joblog.log(ctx.root, SCOPE, f"调研：{h.source} 摘要直接入库（不占抓取页数）：{h.title[:40]}")
+                        continue
+                if attempts >= max_pages:
+                    result["skipped"].append(f"已达每题抓取上限 {max_pages} 页")
+                    joblog.log(ctx.root, SCOPE, f"调研：已达每题抓取上限 {max_pages} 页，停止抓取", level="warn")
+                    break
+                attempts += 1
+                joblog.log(ctx.root, SCOPE, f"调研：抓取 {attempts}/{max_pages}：{h.url}")
+                page = fetcher.fetch(h.url)
+                if not page["ok"]:
+                    joblog.log(ctx.root, SCOPE, f"调研：未抓取，{page['error']}", level="warn")
+                    ex = sources.excerpt(h.snippet, must, excerpt_max, terms) if len(h.snippet or "") >= 120 else ""
+                    if ex:
+                        _add_card(ctx, tid, h, h.title, ex, must, terms, _avoid(ctx), result,
+                                  source_type="abstract")
+                        joblog.log(ctx.root, SCOPE, "调研：页面不可用，改用搜索结果中的摘要入库")
+                    else:
+                        result["skipped"].append(f"{h.url}：{page['error']}")
+                    continue
+                if page.get("note"):
+                    joblog.log(ctx.root, SCOPE, f"调研：{h.url}：{page['note']}", level="warn")
+                title, text = extract.extract(page["html"])
+                ex = sources.excerpt(text, must, excerpt_max, terms)
+                if not ex:
+                    result["skipped"].append(f"{h.url}：与选题要点无关")
+                    joblog.log(ctx.root, SCOPE, "调研：页面与选题要点无关，不入库")
+                    continue
+                via = "（浏览器渲染）" if page.get("via") == "browser" else ""
+                _add_card(ctx, tid, h, title or h.title or h.url, ex, must, terms, _avoid(ctx), result,
+                          source_type="web", via=via)
+
+            ev = pack.evaluate(ctx, tid, topic, _min_cred(ctx, eff))
+            if ev["sufficient"]:
                 break
-            attempts += 1
-            joblog.log(ctx.root, SCOPE, f"调研：抓取 {attempts}/{max_pages}：{h.url}")
-            page = fetcher.fetch(h.url)
-            if not page["ok"]:
-                result["skipped"].append(f"{h.url}：{page['error']}")
-                joblog.log(ctx.root, SCOPE, f"调研：未抓取，{page['error']}", level="warn")
-                continue
-            if page.get("note"):
-                joblog.log(ctx.root, SCOPE, f"调研：{h.url}：{page['note']}", level="warn")
-            title, text = extract.extract(page["html"])
-            ex = sources.excerpt(text, must, excerpt_max, terms)
-            if not ex:
-                result["skipped"].append(f"{h.url}：与选题要点无关")
-                joblog.log(ctx.root, SCOPE, "调研：页面与选题要点无关，不入库")
-                continue
-            card = sources.make_card(sources.next_id(ctx, tid), tid, url=h.url,
-                                     title=title or h.title or h.url, text=ex,
-                                     credibility=sources.classify(h.url, _avoid(ctx)),
-                                     source_type="web", points=must, terms=terms)
-            sources.write(ctx, tid, card)
-            result["added"] += 1
-            via = "（浏览器渲染）" if page.get("via") == "browser" else ""
-            joblog.log(ctx.root, SCOPE, f"调研：已入库 {card['id']}{via}（可信度 {card['credibility']}，"
-                                        f"摘录 {len(ex)} 字，覆盖要点 {len(card['covers'])}/{len(must)}）")
+            if attempts >= max_pages:
+                break
+            if round_no >= max_qrounds:
+                joblog.log(ctx.root, SCOPE, f"调研：已达最多 {max_qrounds} 轮检索，证据仍不足", level="warn")
+                break
+            zh_pending, en_pending = queries.expand(topic, used_queries(used), en_seed)
+            result["queries"] += zh_pending
+            result["english_queries"] += en_pending
+            if not zh_pending and not en_pending:
+                joblog.log(ctx.root, SCOPE, "调研：已没有新的查询可以尝试", level="warn")
+                break
+            joblog.log(ctx.root, SCOPE, f"调研：证据不足，补充 {len(zh_pending)} 条中文、{len(en_pending)} 条英文查询，"
+                                        f"进入第 {round_no + 1} 轮")
+        result["rounds"] = round_no
         result["pages"] = attempts
 
         ev = pack.evaluate(ctx, tid, topic, _min_cred(ctx, eff))

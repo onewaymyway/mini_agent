@@ -16,7 +16,8 @@ from .. import store
 from ..wiki import validate_util as vu
 
 A_HOSTS = ("arxiv.org", "doi.org", "openreview.net", "ieee.org", "acm.org", "nature.com", ".edu", ".gov")
-B_HOSTS = ("github.com", "gitlab.com", "huggingface.co", "stackoverflow.com", "readthedocs", "kaggle.com")
+B_HOSTS = ("github.com", "gitlab.com", "huggingface.co", "stackoverflow.com", "readthedocs", "kaggle.com",
+           "wikipedia.org")
 
 
 def _now() -> str:

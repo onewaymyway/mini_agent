@@ -27,10 +27,13 @@ class Hit:
     title: str
     url: str
     snippet: str = ""
+    source: str = "web"     # web / arxiv / crossref / wikipedia：来源类型，决定能否直接用摘要
 
 
 class MiniAgentSearch:
     """复用 mini_agent.web_search 的 provider；惰性创建，失败统一转为 SearchError。"""
+    name = "web"
+    languages = ("zh", "en")
 
     def __init__(self, provider: str = "duckduckgo", project_root: Optional[Any] = None):
         self.provider_name = provider or "duckduckgo"
@@ -65,7 +68,8 @@ def _key(query: str, max_results: int) -> str:
 
 
 def cached_search(ctx, backend, query: str, max_results: int) -> List[Hit]:
-    p = ctx.path("research", "cache", "search", _key(query, max_results) + ".json")
+    name = getattr(backend, "name", "web")
+    p = ctx.path("research", "cache", "search", _key(f"{name}|{query}", max_results) + ".json")
     now = time.time()
     try:
         data = store.read_json(p, default=None)
