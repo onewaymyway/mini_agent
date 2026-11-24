@@ -598,19 +598,20 @@ with tabs[6]:
             st.markdown("#### 漫画")
             if board.get("stub"):
                 st.caption("当前为占位图，未调用真实图像模型。")
-            for pg in board["pages"]:
-                st.markdown(f"**第 {pg['no']} 页**")
-                cols = st.columns(min(3, len(pg["panels"])))
-                for i, pn in enumerate(pg["panels"]):
-                    with cols[i % len(cols)]:
-                        if pn.get("image") and (d / pn["image"]).is_file():
-                            st.image(str(d / pn["image"]))
-                        else:
-                            st.caption(f"（未生成画面：{pn.get('image_error') or '—'}）")
+            comic_file = d / "comic.html"
+            if comic_file.is_file():
+                st.caption("漫画页预览（图片已嵌入，可在浏览器中单独打开 comic.html）")
+                components.html(comic_file.read_text(encoding="utf-8"), height=960, scrolling=True)
+            with st.expander("分镜脚本（镜头、版式、对白）", expanded=not comic_file.is_file()):
+                for pg in board["pages"]:
+                    st.markdown(f"**第 {pg['no']} 页**")
+                    for pn in pg["panels"]:
+                        size = "整行" if int(pn.get("span") or 1) == 2 else "半行"
+                        st.markdown(f"- **{pn.get('shot', '中景')} · {size}**：{pn['visual_en']}")
                         if pn.get("narration"):
-                            st.caption(pn["narration"])
+                            st.caption(f"旁白：{pn['narration']}")
                         for dl in pn.get("dialogue") or []:
-                            st.markdown(f"**{dl.get('speaker', '')}**：{dl.get('text', '')}")
+                            st.caption(f"{dl.get('speaker', '')}（{dl.get('position', '')}）：{dl.get('text', '')}")
 
     st.markdown("#### 运行日志（故事与漫画）")
     s_runs = runlog_mod.list_runs(wid, kinds={"arc", "short", "board", "comic", "export"})

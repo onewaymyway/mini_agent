@@ -155,7 +155,7 @@ class StubImageProvider(ImageProvider):
         from PIL import Image, ImageDraw
 
         names = [Path(p).name for p in (reference_images or [])][:MAX_REFERENCE_IMAGES]
-        self.calls.append({"prompt": prompt, "refs": names})
+        self.calls.append({"prompt": prompt, "refs": names, "ratio": ratio})
         save_path = Path(save_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
         img = Image.new("RGB", (768, 1024), (38, 44, 56))

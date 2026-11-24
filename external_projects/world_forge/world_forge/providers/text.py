@@ -157,13 +157,19 @@ class RuleTextLLM(TextLLM):
 
     def _task_storyboard(self, ctx):
         acts = ctx.get("acts") or [{"title": "第一幕", "summary": ctx.get("text", "")[:60] or "（规则占位）"}]
+        names = [c.get("name") for c in ctx.get("characters") or [] if c.get("name")][:2]
+        shots = ["远景", "中景", "近景", "特写"]
         panels = []
         for n, act in enumerate(acts, start=1):
+            dialogue = [{"speaker": names[0], "text": "（规则占位）", "position": "右上"}] if names else []
             panels.append({
-                "narration": act.get("summary", ""), "dialogue": [],
-                "characters": [], "visual_en": f"wide shot, scene {n}, muted palette, no text",
+                "shot": shots[(n - 1) % len(shots)], "span": 2 if n == 1 else 1,
+                "narration": act.get("summary", ""), "dialogue": dialogue,
+                "characters": names[:1],
+                "visual_en": f"{shots[(n - 1) % len(shots)]} view, scene {n}, muted palette, no text",
             })
-        return {"pages": [{"no": 1, "panels": panels[:6]}]}
+        pages = [{"no": i + 1, "panels": panels[i:i + 4]} for i in range(0, len(panels), 4)]
+        return {"pages": pages or [{"no": 1, "panels": panels[:1]}]}
 
     def _task_short(self, ctx):
         return "（规则占位）" + (ctx.get("brief") or "这是一篇离线占位的短篇。") + "\n\n正文需要真实模型生成。"

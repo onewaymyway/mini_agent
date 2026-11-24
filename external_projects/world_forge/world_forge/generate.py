@@ -85,6 +85,39 @@ def _validate_arc(d: Dict[str, Any]) -> List[str]:
     return errs
 
 
+SHOTS = ("远景", "中景", "近景", "特写")
+BUBBLE_POSITIONS = ("左上", "右上", "左下", "右下", "中上", "中下")
+
+
+def normalize_panel(p: Dict[str, Any]) -> List[str]:
+    """补齐格子的缺省字段（原地修改），返回错误列表。"""
+    errs: List[str] = []
+    if not p.get("visual_en") or not isinstance(p.get("visual_en"), str):
+        errs.append("每格必须有 visual_en（英文画面描述）")
+    if p.get("shot") not in SHOTS:
+        p["shot"] = "中景"
+    try:
+        span = int(p.get("span") or 1)
+    except (TypeError, ValueError):
+        span = 1
+    p["span"] = 2 if span >= 2 else 1
+    dialogue = p.get("dialogue") or []
+    if not isinstance(dialogue, list):
+        dialogue = []
+    fixed = []
+    for i, dl in enumerate(dialogue):
+        if not isinstance(dl, dict) or not dl.get("text"):
+            continue
+        pos = dl.get("position")
+        if pos not in BUBBLE_POSITIONS:
+            pos = ("右上", "左上", "右下", "左下")[i % 4]   # 缺省时按序分散到四角
+        fixed.append({"speaker": str(dl.get("speaker") or ""), "text": str(dl["text"]), "position": pos})
+    p["dialogue"] = fixed
+    p["characters"] = [str(c) for c in (p.get("characters") or []) if c]
+    p["narration"] = str(p.get("narration") or "")
+    return errs
+
+
 def _validate_storyboard(d: Dict[str, Any]) -> List[str]:
     errs: List[str] = []
     pages = d.get("pages")
@@ -92,13 +125,18 @@ def _validate_storyboard(d: Dict[str, Any]) -> List[str]:
         return ["pages 必须是非空数组"]
     for pg in pages:
         panels = pg.get("panels") if isinstance(pg, dict) else None
-        if not isinstance(panels, list) or not (1 <= len(panels) <= 6):
-            errs.append("每页 panels 必须为 1–6 格")
+        if not isinstance(panels, list) or not (1 <= len(panels) <= 5):
+            errs.append("每页 panels 必须为 1–5 格")
             break
         for p in panels:
-            if not p.get("visual_en"):
-                errs.append("每格必须有 visual_en（英文画面描述）")
+            if not isinstance(p, dict):
+                errs.append("每格必须是对象")
                 break
+            errs.extend(normalize_panel(p))
+        if errs:
+            break
+        # 一页内的格子宽度：整行格（span=2）最多占一行，连续的半行格两两配对
+        pg["no"] = int(pg.get("no") or 1)
     return errs
 
 
@@ -181,9 +219,15 @@ def short_draft(llm, *, context: Dict[str, Any], form: str) -> str:
 
 def storyboard_draft(llm, *, context: Dict[str, Any], log=None) -> Dict[str, Any]:
     return call_json(llm, "storyboard", context,
-                     "请把故事改写为漫画分镜。JSON 字段：pages（数组，每页：no, panels）；panels 为 1–6 格，每格："
-                     "narration（旁白，可空）, dialogue（数组：speaker, text）, characters（出场角色名数组）, "
-                     "visual_en（英文画面描述，写清构图、人物动作与场景，不要要求图中出现文字）。", _validate_storyboard, log=log)
+                     "请把故事改写为漫画分镜，要求像真正的漫画页：1) 每页 2–5 格，按阅读顺序排列；"
+                     "2) 相邻格要承接：同一场景的连续动作、镜头在远景/中景/近景/特写之间有变化，不要每格都一样；"
+                     "3) 重要的转折或情绪高点用 span=2（整行）的大格，其余用 span=1；"
+                     "4) 出场角色必须用 context.characters 中的名字，并在 visual_en 中保持其外观描述一致；"
+                     "5) 对白要短（每句不超过 30 字），放在 dialogue 中，位置用 左上/右上/左下/右下/中上/中下 之一。"
+                     "JSON 字段：pages（数组，每页：no, panels）；panels（每格）：shot（远景/中景/近景/特写）, "
+                     "span（1 或 2）, narration（旁白，可空）, dialogue（数组：speaker, text, position）, "
+                     "characters（出场角色名数组）, visual_en（英文画面描述：构图、人物动作、表情与场景，"
+                     "不要要求图中出现文字或气泡）。", _validate_storyboard, log=log)
 
 
 def portrait_draft(llm, *, context: Dict[str, Any]) -> Dict[str, Any]:

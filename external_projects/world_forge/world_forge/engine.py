@@ -617,9 +617,10 @@ def make_portrait(llm, provider, wid: str, cid: str) -> Dict[str, Any]:
     with _with_lock(wid):
         chars = repo.load_characters(wid)
         ch = repo.find_by_id(chars, cid)
+        ch.setdefault("attrs", {})["visual_en"] = draft["visual_en"]   # 外观锚点，漫画各格保持一致
         if res.ok:
-            ch.setdefault("attrs", {})["portrait"] = str(path.relative_to(repo.world_dir(wid)))
-            repo.save_characters(wid, chars)
+            ch["attrs"]["portrait"] = str(path.relative_to(repo.world_dir(wid)))
+        repo.save_characters(wid, chars)
     return {"ok": res.ok, "error": res.error, "path": str(path) if res.ok else None,
             "stub": bool(getattr(provider, "is_stub", False))}
 
@@ -746,6 +747,28 @@ def load_story_meta_safe(wid: str, sid: str) -> Dict[str, Any]:
         return {}
 
 
+def _ensure_anchors(llm, wid: str, board: Dict[str, Any], log) -> None:
+    """为分镜中出场、但还没有外观描述的角色补全英文外观锚点（漫画各格依此保持人物一致）。"""
+    names = {n for pg in board["pages"] for pn in pg["panels"] for n in (pn.get("characters") or [])}
+    meta = repo.load_meta(wid)
+    for ch in repo.load_characters(wid):
+        if ch["name"] not in names or (ch.get("attrs") or {}).get("visual_en"):
+            continue
+        try:
+            draft = generate.portrait_draft(LoggedLLM(llm, log), context={
+                "name": ch["name"], "summary": ch.get("summary", ""), "role": ch.get("role"),
+                "tone": meta.get("tone", ""), "genre": meta.get("genre", "")})
+        except generate.GenerationError as exc:
+            log.log("parse", f"角色「{ch['name']}」外观描述生成失败：{exc}", level="warn")
+            continue
+        with _with_lock(wid):
+            cur = repo.load_characters(wid)
+            item = repo.find_by_id(cur, ch["id"])
+            item.setdefault("attrs", {})["visual_en"] = draft["visual_en"]
+            repo.save_characters(wid, cur)
+        log.log("parse", f"已为角色「{ch['name']}」固定外观描述，供各格保持一致", level="ok")
+
+
 def make_storyboard(llm, wid: str, sid: str, log=None) -> Dict[str, Any]:
     log = _log_or_new(log, wid, "board")
     try:
@@ -769,6 +792,7 @@ def make_storyboard(llm, wid: str, sid: str, log=None) -> Dict[str, Any]:
         board = generate.storyboard_draft(LoggedLLM(llm, log), context=ctx, log=log)
         n_panels = sum(len(p["panels"]) for p in board["pages"])
         log.log("parse", f"分镜结构通过：{len(board['pages'])} 页，共 {n_panels} 格", level="ok")
+        _ensure_anchors(llm, wid, board, log)
         for pg in board["pages"]:
             log.log("parse", f"第 {pg['no']} 页：{len(pg['panels'])} 格，"
                              f"出场角色 {sorted({c for p in pg['panels'] for c in (p.get('characters') or [])}) or '无'}")
@@ -785,60 +809,94 @@ def make_storyboard(llm, wid: str, sid: str, log=None) -> Dict[str, Any]:
         raise
 
 
+COMIC_STYLE = ("comic book illustration, clean ink linework, cel shading, consistent color palette, "
+               "same art style and character design across all panels")
+SHOT_EN = {"远景": "wide establishing shot", "中景": "medium shot", "近景": "close-up shot",
+           "特写": "extreme close-up"}
+MAX_REFS = 3
+
+
+def _panel_ratio(span: int) -> str:
+    return "16:9" if span == 2 else "1:1"
+
+
 def render_comic(provider, wid: str, sid: str, log=None) -> Dict[str, Any]:
+    """逐格生成分镜图并拼装漫画页。
+
+    连贯性做法：统一风格前缀；每格带上出场角色的外观锚点；参考图包含上一格的画面和出场角色立绘。
+    """
     log = _log_or_new(log, wid, "comic")
     try:
         d = repo.story_dir(wid, sid)
         board = store.read_json(d / "storyboard.json")
         if not board:
             raise EngineError("请先生成分镜")
+        meta = repo.load_meta(wid)
         chars = repo.load_characters(wid)
+        by_name = {c["name"]: c for c in chars}
         provider_name = getattr(provider, "name", "unknown")
         stub = bool(getattr(provider, "is_stub", False))
         total = sum(len(p["panels"]) for p in board["pages"])
+        style = COMIC_STYLE + (f", {meta['genre']} setting" if meta.get("genre") else "") \
+            + (f", {meta['tone']} mood" if meta.get("tone") else "")
         log.log("start", f"生成漫画图：{len(board['pages'])} 页，共 {total} 格，图像来源：{provider_name}"
                          + ("（占位图，未调用真实模型）" if stub else ""), provider=provider_name, stub=stub)
         if stub:
             log.log("start", "注意：当前为占位图，不会调用图像模型", level="warn")
+        log.log("start", f"统一风格：{style[:60]}…")
         ok = fail = 0
         idx = 0
+        prev_img = None
         for pg in board["pages"]:
             for i, pn in enumerate(pg["panels"], start=1):
                 idx += 1
-                refs = []
-                for nm in pn.get("characters") or []:
-                    ch = next((c for c in chars if c["name"] == nm), None)
-                    if ch:
-                        pth = repo.portrait_path(wid, ch["id"])
-                        if pth.is_file():
-                            refs.append(pth)
-                    else:
-                        log.log("panel", f"第 {pg['no']} 页第 {i} 格：角色「{nm}」不在世界中，不作为参考图",
-                                level="warn")
+                names = pn.get("characters") or []
+                present = [by_name[n] for n in names if n in by_name]
+                for n in names:
+                    if n not in by_name:
+                        log.log("panel", f"第 {pg['no']} 页第 {i} 格：角色「{n}」不在世界中，无外观锚点", level="warn")
+                refs: List[Path] = []
+                ref_names: List[str] = []
+                if prev_img is not None:
+                    refs.append(prev_img)
+                    ref_names.append("上一格")
+                for ch in present:
+                    pth = repo.portrait_path(wid, ch["id"])
+                    if pth.is_file() and len(refs) < MAX_REFS:
+                        refs.append(pth)
+                        ref_names.append(f"{ch['name']}立绘")
+                anchors = "; ".join(f"{ch['name']}: {ch['attrs']['visual_en']}"
+                                    for ch in present if (ch.get("attrs") or {}).get("visual_en"))
+                shot = pn.get("shot") or "中景"
+                span = int(pn.get("span") or 1)
+                prompt = (f"{style}. {SHOT_EN.get(shot, 'medium shot')}. {pn['visual_en']}."
+                          + (f" Characters: {anchors}." if anchors else "")
+                          + " No text, no speech bubbles, no lettering.")
                 rel = f"panels/p{pg['no']:02d}_{i:02d}.png"
-                prompt = f"{pn['visual_en']}, comic panel illustration, consistent character design, no text, no speech bubbles"
-                log.log("panel", f"[{idx}/{total}] 第 {pg['no']} 页第 {i} 格：参考立绘 {len(refs[:3])} 张，"
-                                 f"提示词 {len(prompt)} 字，生成中……")
+                log.log("panel", f"[{idx}/{total}] 第 {pg['no']} 页第 {i} 格（{shot}，"
+                                 f"{'整行' if span == 2 else '半行'}）：参考 {('、'.join(ref_names)) or '无'}，"
+                                 f"外观锚点 {len(anchors.split('; ')) if anchors else 0} 个，生成中……")
                 t = time.monotonic()
-                res = provider.generate(prompt, d / rel, ratio="3:4", reference_images=refs[:3])
+                res = provider.generate(prompt, d / rel, ratio=_panel_ratio(span), reference_images=refs[:MAX_REFS])
                 dur = time.monotonic() - t
                 pn["image"] = rel if res.ok else None
                 pn["image_error"] = None if res.ok else res.error
                 if res.ok:
                     ok += 1
+                    prev_img = d / rel
                     log.log("panel", f"[{idx}/{total}] 完成：{rel}，用时 {dur:.1f} 秒", level="ok")
                 else:
                     fail += 1
                     log.log("panel", f"[{idx}/{total}] 失败：{res.error}，用时 {dur:.1f} 秒", level="warn")
         board["provider"], board["stub"] = provider_name, stub
         store.write_json(d / "storyboard.json", board)
-        log.log("assemble", "拼装漫画页 comic.html")
-        comic = _render_html(board, title=load_story_meta_safe(wid, sid).get("title", "漫画"))
+        log.log("assemble", "拼装漫画页 comic.html（图片嵌入文件，可独立打开）")
+        comic = render_comic_html(board, title=load_story_meta_safe(wid, sid).get("title", "漫画"), base_dir=d)
         (d / "comic.html").write_text(comic, encoding="utf-8")
         with _with_lock(wid):
-            meta = repo.load_story_meta(wid, sid)
-            meta["has_comic"] = True
-            repo.save_story_meta(wid, sid, meta)
+            meta_s = repo.load_story_meta(wid, sid)
+            meta_s["has_comic"] = True
+            repo.save_story_meta(wid, sid, meta_s)
         level = "ok" if fail == 0 else "warn"
         log.log("done", f"完成：成功 {ok} 格，失败 {fail} 格", level=level, ok=ok, failed=fail)
         return {"ok": ok, "failed": fail, "stub": stub, "provider": provider_name,
@@ -848,30 +906,68 @@ def render_comic(provider, wid: str, sid: str, log=None) -> Dict[str, Any]:
         raise
 
 
-def _render_html(board: Dict[str, Any], title: str) -> str:
-    parts = [f"<!doctype html><html lang='zh'><meta charset='utf-8'><title>{html.escape(title)}</title>",
-             "<style>body{background:#111;color:#eee;font-family:sans-serif;max-width:720px;margin:auto}"
-             ".panel{position:relative;margin:12px 0}.panel img{width:100%;display:block}"
-             ".nar{background:#222c;padding:6px 10px;font-size:14px}"
-             ".bub{background:#fff;color:#111;border-radius:12px;padding:6px 10px;margin:6px 0;font-size:14px}"
-             ".missing{background:#333;padding:40px;text-align:center}</style>",
-             f"<h1>{html.escape(title)}</h1>"]
+_POS_CLASS = {"左上": "tl", "右上": "tr", "左下": "bl", "右下": "br", "中上": "tc", "中下": "bc"}
+
+
+def _data_uri(path: Path) -> str:
+    import base64
+    return "data:image/png;base64," + base64.b64encode(path.read_bytes()).decode("ascii")
+
+
+_COMIC_CSS = """
+body{margin:0;background:#2b2b2b;font-family:"Microsoft YaHei","PingFang SC",sans-serif;padding:24px 0}
+h1{color:#eee;text-align:center;font-size:20px;font-weight:600}
+.page{position:relative;background:#fdfbf5;border:6px solid #111;padding:12px;margin:18px auto 28px;max-width:780px;
+      box-shadow:0 4px 18px rgba(0,0,0,.5);box-sizing:border-box}
+.page-no{position:absolute;top:-22px;left:0;color:#ddd;font-size:12px}
+.grid{display:flex;flex-wrap:wrap;justify-content:space-between;background:#111;padding:8px}
+.panel{position:relative;width:calc(50% - 4px);height:0;padding-bottom:calc(50% - 4px);margin:2px 0;
+       background:#222;overflow:hidden;border:2px solid #111;box-sizing:content-box}
+.panel.wide{width:100%;padding-bottom:56.25%}
+.panel img{position:absolute;left:0;top:0;width:100%;height:100%;object-fit:cover;display:block}
+.missing{position:absolute;left:0;top:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;
+         color:#999;font-size:13px;text-align:center;padding:12px;box-sizing:border-box;background:#3a3a3a}
+.bz{position:absolute;display:flex;flex-direction:column;gap:6px;padding:8px;max-width:64%;box-sizing:border-box}
+.bz.top{top:0}.bz.bottom{bottom:0;justify-content:flex-end}
+.bz.l{left:0;align-items:flex-start}.bz.r{right:0;align-items:flex-end}.bz.c{left:50%;transform:translateX(-50%);align-items:center}
+.cap{background:#fff3a3;color:#111;border:2px solid #111;padding:4px 8px;font-size:13px;line-height:1.4;max-width:100%}
+.bubble{position:relative;background:#fff;color:#111;border:2px solid #111;border-radius:16px;padding:6px 10px;
+        font-size:14px;line-height:1.4;max-width:100%;box-shadow:2px 2px 0 #111;box-sizing:border-box}
+.bubble b{display:block;font-size:12px;color:#444;margin-bottom:2px}
+.note{color:#bbb;text-align:center;font-size:12px;margin-top:8px}
+"""
+
+
+def render_comic_html(board: Dict[str, Any], title: str, base_dir: Path) -> str:
+    """漫画页：按格子大小排版成网格，旁白与对白气泡叠在画面对应角落，图片嵌入文件。"""
+    parts = [f"<!doctype html><html lang='zh'><head><meta charset='utf-8'><title>{html.escape(title)}</title>",
+             f"<style>{_COMIC_CSS}</style></head><body>", f"<h1>{html.escape(title)}</h1>"]
     for pg in board["pages"]:
-        parts.append(f"<h2>第 {pg['no']} 页</h2>")
+        parts.append(f"<section class='page'><div class='page-no'>第 {pg['no']} 页</div><div class='grid'>")
         for pn in pg["panels"]:
-            if pn.get("image"):
-                parts.append(f"<div class='panel'><img src='{html.escape(pn['image'])}'>")
+            cls = "panel wide" if int(pn.get("span") or 1) == 2 else "panel"
+            img_path = base_dir / pn["image"] if pn.get("image") else None
+            if img_path and img_path.is_file():
+                parts.append(f"<figure class='{cls}'><img src='{_data_uri(img_path)}' alt=''>")
             else:
-                parts.append(f"<div class='panel missing'>（画面生成失败：{html.escape(pn.get('image_error') or '')}）")
+                err = html.escape(pn.get("image_error") or "未生成")
+                parts.append(f"<figure class='{cls}'><div class='missing'>（画面未生成：{err}）</div>")
+            zones: Dict[str, List[str]] = {}
             if pn.get("narration"):
-                parts.append(f"<div class='nar'>{html.escape(pn['narration'])}</div>")
+                zones.setdefault("tl", []).append(f"<div class='cap'>{html.escape(pn['narration'])}</div>")
             for dl in pn.get("dialogue") or []:
-                parts.append(f"<div class='bub'><b>{html.escape(dl.get('speaker', ''))}</b>："
-                             f"{html.escape(dl.get('text', ''))}</div>")
-            parts.append("</div>")
+                pos = _POS_CLASS.get(dl.get("position"), "tr")
+                who = f"<b>{html.escape(dl['speaker'])}</b>" if dl.get("speaker") else ""
+                zones.setdefault(pos, []).append(f"<div class='bubble'>{who}{html.escape(dl.get('text', ''))}</div>")
+            for pos, items in zones.items():
+                v = "top" if pos in ("tl", "tr", "tc") else "bottom"
+                h = "l" if pos in ("tl", "bl") else ("r" if pos in ("tr", "br") else "c")
+                parts.append(f"<div class='bz {v} {h}'>{''.join(items)}</div>")
+            parts.append("</figure>")
+        parts.append("</div></section>")
     if board.get("stub"):
-        parts.append("<p>注：本页使用占位图，未调用真实图像模型。</p>")
-    parts.append("</html>")
+        parts.append("<p class='note'>注：本页使用占位图，未调用真实图像模型。</p>")
+    parts.append("</body></html>")
     return "".join(parts)
 
 
