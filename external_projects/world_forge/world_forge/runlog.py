@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from . import repo, store
+from . import cancel, repo, store
 
 LEVEL_MARK = {"info": "·", "ok": "✓", "warn": "!", "error": "✗"}
 _TASK = re.compile(r"^TASK: (\w+)", re.M)
@@ -52,6 +52,7 @@ class LoggedLLM:
         self.n = 0
 
     def ask(self, prompt: str, system: str = "") -> str:
+        cancel.checkpoint()   # 停止信号在模型调用前生效（调用本身不可中途打断）
         self.n += 1
         m = _TASK.search(prompt or "")
         task = m.group(1) if m else "模型"

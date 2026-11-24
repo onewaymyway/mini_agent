@@ -20,7 +20,7 @@ for _p in (PROJECT_ROOT, *PROJECT_ROOT.parents[:2]):
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from world_forge import engine, gaps, graph as graph_mod, proposals, repo, runlog as runlog_mod, store, timeline  # noqa: E402
+from world_forge import engine, gaps, graph as graph_mod, jobs, proposals, repo, runlog as runlog_mod, store, timeline  # noqa: E402
 from world_forge.providers.factory import make_image_provider, make_text_llm  # noqa: E402
 from world_forge.calendar import (MINUTES_PER_UNIT, UNIT_LABELS, clock_minutes, format_time,  # noqa: E402
                                   step_label, validate_step)
@@ -54,19 +54,50 @@ KIND_LABEL = {"advance": "推进", "arc": "小故事线", "short": "短篇", "bo
               "export": "导出"}
 
 
-def _run_logged(wid: str, kind: str, label: str, fn, *args, **kwargs):
-    """执行一个带运行日志的操作：日志实时显示在状态框中，并保存到世界的运行日志。失败时返回 None。"""
-    box = st.status(f"{label}……", expanded=True)
-    sink = lambda e: box.text(runlog_mod.format_entry(e))  # noqa: E731
-    log = runlog_mod.RunLog(wid, kind, sink=sink)
+def _start_job(wid: str, kind: str, label: str, fn, *args, result_key=None, **kwargs) -> bool:
+    """提交后台任务（可停止、带实时日志）。同一世界已有任务在运行时给出提示。"""
     try:
-        res = fn(*args, log=log, **kwargs)
-        box.update(label=f"{label}完成", state="complete", expanded=False)
-        return res
-    except Exception as exc:  # noqa: BLE001
-        box.update(label=f"{label}失败", state="error", expanded=True)
-        st.error(f"{type(exc).__name__}：{exc}")
-        return None
+        jobs.start(wid, kind, label, fn, *args, result_key=result_key, **kwargs)
+        return True
+    except jobs.JobBusy as exc:
+        st.warning(str(exc))
+        return False
+
+
+def _job_bar_body():
+    """顶部任务条：显示当前世界最近任务的状态、实时日志与停止按钮；结束后把结果交给页面并刷新。"""
+    job = jobs.latest_for(st.session_state.get("current_wid"))
+    if job is None:
+        return
+    if not job.running and not job.delivered:
+        job.delivered = True
+        if job.result_key and job.result is not None and job.status in ("done", "stopped"):
+            st.session_state[job.result_key] = job.result
+        st.rerun(scope="app")   # 任务结束：刷新整个页面，显示新的数据与结果
+    if job.running:
+        with st.container(border=True):
+            c1, c2 = st.columns([5, 1])
+            c1.markdown(f"**⏳ 运行中：{job.label}**（已用时 {job.elapsed():.0f} 秒）")
+            c2.button("停止", key=f"stop_{job.id}", on_click=jobs.request_stop, args=(job.id,),
+                      type="secondary")
+            tail = job.entries[-14:]
+            st.code("\n".join(runlog_mod.format_entry(e) for e in tail) or "（等待开始……）", language=None)
+        return
+    if job.status == "error":
+        st.error(f"「{job.label}」失败：{job.error}")
+    elif job.status == "stopped":
+        st.warning(f"「{job.label}」已停止：已完成的部分保留在世界中。")
+    else:
+        st.caption(f"上次任务已完成：{job.label}（用时 {job.elapsed():.0f} 秒）")
+
+
+if hasattr(st, "fragment"):
+    try:
+        _job_bar = st.fragment(run_every=1)(_job_bar_body)   # 运行中每秒刷新任务条
+    except TypeError:
+        _job_bar = st.fragment(_job_bar_body)                  # 旧版 Streamlit：需手动刷新
+else:
+    _job_bar = _job_bar_body
 
 
 def _safe(fn, *args, **kwargs):
@@ -97,6 +128,8 @@ with st.sidebar:
     st.caption(f"图像：{IMG_NOTE}")
 
 wid = st.session_state.current_wid
+
+_job_bar()
 
 tabs = st.tabs(["🆕 新建", "📊 总览", "📚 设定与提案", "👤 角色", "🕰️ 时间线", "⏩ 推进", "🎞️ 故事与漫画", "⚙️ 设置"])
 
@@ -159,9 +192,7 @@ with tabs[1]:
     can_overview = bool(meta.get("charter"))
     if st.button("重新生成世界观简介" if ov else "生成世界观简介", type="primary", disabled=not can_overview,
                  key="gen_overview"):
-        with st.spinner("正在撰写世界观简介……"):
-            res = _safe(engine.generate_overview, LLM, wid)
-        if res:
+        if _start_job(wid, "overview", "生成世界观简介", engine.generate_overview, LLM, wid):
             st.rerun()
     if meta.get("charter"):
         ch = meta["charter"]
@@ -422,11 +453,10 @@ with tabs[3]:
             pth = repo.portrait_path(wid, c["id"])
             if pth.is_file():
                 c2.image(str(pth), width=140)
-            if c.get("status") == "alive" and c2.button("生成立绘", key=f"pt_{c['id']}"):
-                with st.spinner("生成立绘……"):
-                    res = _safe(engine.make_portrait, LLM, IMG, wid, c["id"])
-                if res and not res["ok"]:
-                    st.warning(f"立绘失败：{res['error']}")
+            has_portrait = repo.portrait_path(wid, c["id"]).is_file()
+            if c.get("status") == "alive" and c2.button("重新生成立绘" if has_portrait else "生成立绘",
+                                                       key=f"pt_{c['id']}"):
+                _start_job(wid, "portrait", "生成立绘", engine.make_portrait, LLM, IMG, wid, c["id"])
                 st.rerun()
 
 # ---------- 时间线
@@ -495,17 +525,9 @@ with tabs[5]:
                    f"当前时间：{format_time(clock_minutes(meta))}。"
                    "推进过程会实时显示在下方日志中，并保存到本世界的运行日志。")
         if st.button("推进", type="primary"):
-            box = st.status("正在推进……", expanded=True)
-            sink = lambda e: box.text(runlog_mod.format_entry(e))  # noqa: E731
-            try:
-                res = engine.advance(LLM, wid, int(steps), log=runlog_mod.RunLog(wid, "advance", sink=sink),
-                                     amount=int(amt), unit=unit)
-                box.update(label="推进完成", state="complete", expanded=False)
-                st.session_state.advance_report = res
-            except Exception as exc:  # noqa: BLE001
-                box.update(label="推进失败", state="error", expanded=True)
-                st.error(f"{type(exc).__name__}：{exc}")
-                st.session_state.pop("advance_report", None)
+            if _start_job(wid, "advance", f"推进 {int(steps)} 步", engine.advance, LLM, wid, int(steps),
+                          result_key="advance_report", amount=int(amt), unit=unit):
+                st.rerun()
         rep = st.session_state.get("advance_report")
         if rep:
             st.markdown("**本次推进结果**")
@@ -543,9 +565,7 @@ with tabs[6]:
     ev_labels = {e["id"]: f"{e['t']} · {e['title']}" for e in evs}
     chosen_ev = st.multiselect("选择事件", list(ev_labels), format_func=lambda k: ev_labels[k])
     if st.button("生成小故事线", disabled=not chosen_ev or not meta.get("charter")):
-        sid = _run_logged(wid, "arc", "生成小故事线", engine.make_arc, LLM, wid, event_ids=chosen_ev)
-        if sid:
-            st.session_state.story = sid
+        if _start_job(wid, "arc", "生成小故事线", engine.make_arc, LLM, wid, event_ids=chosen_ev, result_key="story"):
             st.rerun()
     st.markdown("#### 直接创作（不经过时间线）")
     with st.form("direct_story"):
@@ -553,9 +573,8 @@ with tabs[6]:
         form = st.radio("形式", ["novel", "notes"], horizontal=True,
                         format_func=lambda x: "短篇小说" if x == "novel" else "故事说明")
         if st.form_submit_button("创作短篇") and brief.strip():
-            sid = _run_logged(wid, "short", "创作短篇", engine.write_short, LLM, wid, brief=brief, form=form)
-            if sid:
-                st.session_state.story = sid
+            if _start_job(wid, "short", "创作短篇", engine.write_short, LLM, wid, brief=brief, form=form,
+                          result_key="story"):
                 st.rerun()
     stories = repo.list_story_ids(wid)
     st.markdown("#### 故事")
@@ -567,25 +586,41 @@ with tabs[6]:
                            format_func=lambda s: f"{repo.load_story_meta(wid, s)['title']}（{repo.load_story_meta(wid, s)['kind']}）")
         smeta = repo.load_story_meta(wid, sid)
         d = repo.story_dir(wid, sid)
-        a1, a2, a3, a4 = st.columns(4)
-        if smeta["kind"] == "arc" and a1.button("成文短篇"):
-            new = _run_logged(wid, "short", "成文短篇", engine.write_short, LLM, wid, arc_sid=sid)
-            if new:
-                st.session_state.story = new
+        has_arc = (d / "arc.json").is_file()
+        has_board = (d / "storyboard.json").is_file()
+        has_comic = (d / "comic.html").is_file()
+        st.markdown("**操作**")
+        r1 = st.columns(4)
+        if smeta["kind"] == "arc" and r1[0].button("成文短篇"):
+            if _start_job(wid, "short", "成文短篇", engine.write_short, LLM, wid, arc_sid=sid, result_key="story"):
                 st.rerun()
-        if a2.button("生成分镜", disabled=smeta["kind"] == "arc" and not (d / "arc.json").is_file()):
-            if _run_logged(wid, "board", "生成分镜", engine.make_storyboard, LLM, wid, sid) is not None:
+        if has_arc and r1[1].button("重新生成小故事线"):
+            if _start_job(wid, "arc", "重新生成小故事线", engine.regenerate_arc, LLM, wid, sid):
                 st.rerun()
-        if a3.button("生成漫画图", disabled=not (d / "storyboard.json").is_file()):
-            res = _run_logged(wid, "comic", "生成漫画图", engine.render_comic, IMG, wid, sid)
-            if res:
-                st.success(f"完成：成功 {res['ok']} 格，失败 {res['failed']} 格（{res['provider']}）")
+        if smeta.get("request") and r1[2].button("重新成文"):
+            if _start_job(wid, "short", "重新成文", engine.regenerate_short, LLM, wid, sid):
                 st.rerun()
-        if a4.button("导出给 novel_writer"):
-            out = _run_logged(wid, "export", "导出", engine.export_bundle, wid, sid)
-            if out:
-                st.success(f"已导出到 {out}")
-        if (d / "arc.json").is_file():
+        if r1[3].button("导出给 novel_writer"):
+            if _start_job(wid, "export", "导出", engine.export_bundle, wid, sid):
+                st.rerun()
+        r2 = st.columns(3)
+        if r2[0].button("重新生成分镜" if has_board else "生成分镜",
+                        disabled=smeta["kind"] == "arc" and not has_arc):
+            if _start_job(wid, "board", "生成分镜", engine.make_storyboard, LLM, wid, sid):
+                st.rerun()
+        if r2[1].button("重新生成漫画图" if has_comic else "生成漫画图", disabled=not has_board):
+            if _start_job(wid, "comic", "生成漫画图", engine.render_comic, IMG, wid, sid):
+                st.rerun()
+        if has_board:
+            board_now = store.read_json(d / "storyboard.json")
+            opts = [(pg["no"], i) for pg in board_now["pages"] for i in range(1, len(pg["panels"]) + 1)]
+            st.markdown("**单格重新生成**")
+            pick = st.selectbox("选择一格", opts, format_func=lambda x: f"第 {x[0]} 页 第 {x[1]} 格", key="panel_pick")
+            if st.button("重新生成这一格", key="regen_panel"):
+                if _start_job(wid, "comic", f"重新生成第{pick[0]}页第{pick[1]}格", engine.render_comic,
+                              IMG, wid, sid, only=[pick]):
+                    st.rerun()
+        if has_arc:
             arc = store.read_json(d / "arc.json")
             st.markdown(f"**{arc['title']}**　{arc.get('premise', '')}")
             for act in arc.get("acts") or []:
@@ -593,6 +628,11 @@ with tabs[6]:
         if (d / "story.md").is_file():
             with st.expander("正文", expanded=smeta["kind"] == "short"):
                 st.markdown((d / "story.md").read_text(encoding="utf-8"))
+        hist_dir = d / "history"
+        if hist_dir.is_dir() and any(hist_dir.iterdir()):
+            with st.expander(f"旧版本（{len(list(hist_dir.iterdir()))} 个，重新生成前保留）"):
+                for f in sorted(hist_dir.iterdir(), reverse=True):
+                    st.caption(f.name)
         board = store.read_json(d / "storyboard.json")
         if board:
             st.markdown("#### 漫画")
@@ -661,7 +701,11 @@ with tabs[7]:
     with st.expander("删除当前世界"):
         typed = st.text_input(f"输入世界 id「{wid}」以确认", key="delete_confirm_input")
         if st.button("永久删除该世界", type="primary", disabled=typed != wid, key="delete_world_btn"):
-            res = _safe(engine.delete_world, wid)
+            if jobs.is_busy(wid):
+                st.error("该世界有任务正在运行，请先停止或等待完成后再删除。")
+                res = None
+            else:
+                res = _safe(engine.delete_world, wid)
             if res:
                 remaining = repo.list_world_ids()
                 st.session_state.current_wid = remaining[0] if remaining else None

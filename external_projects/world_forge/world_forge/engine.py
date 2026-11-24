@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from . import generate, gaps, proposals, repo, store, timeline
+from . import cancel, generate, gaps, proposals, repo, store, timeline
 from .calendar import (clock_minutes, format_time, step_label, step_minutes, validate_step, year_of)
 from .paths import data_root
 
@@ -221,8 +221,10 @@ def advance(llm, wid: str, steps: int = 1, log=None, *, amount: Optional[int] = 
     log.log("start", f"起点：{format_time(clock_minutes(meta))}，活动分支「{branch_name}」，"
                      f"运行 ID {log.run_id}")
     results: List[dict] = []
+    cancelled = False
     try:
         for i in range(steps):
+            cancel.checkpoint()   # 安全点：每步开始前检查停止信号
             step_t = time.monotonic()
             log.log("step", f"第 {i + 1}/{steps} 步：收集世界状态")
             ctx = build_context(wid)
@@ -247,6 +249,9 @@ def advance(llm, wid: str, steps: int = 1, log=None, *, amount: Optional[int] = 
             log.log("step", f"第 {i + 1} 步完成：{summary}，用时 {time.monotonic() - step_t:.1f} 秒", level="ok")
             results.append({"time": format_time(before), "year": year_of(before), "counts": counts, "skipped": report["skipped"],
                             "records": report["records"]})
+    except cancel.Cancelled:
+        cancelled = True
+        log.log("cancel", f"已停止：完成 {len(results)}/{steps} 步，已写入的内容保留", level="warn")
     except Exception as exc:
         log.log("error", f"推进中断：{type(exc).__name__}：{exc}", level="error")
         raise
@@ -257,7 +262,7 @@ def advance(llm, wid: str, steps: int = 1, log=None, *, amount: Optional[int] = 
     log.log("done", f"推进结束：共 {steps} 步，用时 {time.monotonic() - started:.1f} 秒，"
                     f"当前 {format_time(clock_minutes(repo.load_meta(wid)))}", level="ok", counts=total)
     return {"steps": results, "clock": repo.load_meta(wid)["clock"], "run_id": log.run_id,
-            "log_path": str(log.path), "log": log.entries}
+            "log_path": str(log.path), "log": log.entries, "cancelled": cancelled}
 
 
 # ---------- 扩展世界观
@@ -336,6 +341,7 @@ def complete_relations(llm, wid: str, *, limit: int = 5, min_degree: int = 2) ->
         return out
 
     for _, e, _opts in targets(repo.load_relations(wid))[: max(1, int(limit))]:
+        cancel.checkpoint()
         rels_now = repo.load_relations(wid)
         options = [o for o in ents if o["id"] != e["id"]
                    and frozenset((e["id"], o["id"])) not in _linked_pairs(rels_now)][:40]
@@ -488,17 +494,28 @@ def get_overview(wid: str) -> Optional[Dict[str, Any]]:
     return {"text": path.read_text(encoding="utf-8"), **info}
 
 
-def generate_overview(llm, wid: str) -> Dict[str, Any]:
-    """基于当前宪章、设定、角色与近期事件生成世界观背景介绍，保存为 overview.md（覆盖旧版本）。"""
-    require_charter(wid)
-    text = generate.overview_draft(llm, context=build_context(wid))   # 锁外调用模型
-    with _with_lock(wid):
-        (repo.world_dir(wid) / "overview.md").write_text(text + "\n", encoding="utf-8")
-        meta = repo.load_meta(wid)
-        meta["overview"] = {"generated_at": store.now_iso(), "minutes": clock_minutes(meta),
-                            "time": format_time(clock_minutes(meta))}
-        repo.save_meta(meta)
-    return get_overview(wid)
+def generate_overview(llm, wid: str, log=None) -> Dict[str, Any]:
+    """基于当前宪章、设定、角色与近期事件生成世界观背景介绍。旧版本保留在 history/ 中。"""
+    log = _log_or_new(log, wid, "overview")
+    try:
+        log.log("start", "生成世界观简介")
+        require_charter(wid)
+        cancel.checkpoint()
+        text = generate.overview_draft(LoggedLLM(llm, log), context=build_context(wid))   # 锁外调用模型
+        with _with_lock(wid):
+            path = repo.world_dir(wid) / "overview.md"
+            _archive(path, log)
+            path.write_text(text + "\n", encoding="utf-8")
+            meta = repo.load_meta(wid)
+            meta["overview"] = {"generated_at": store.now_iso(), "minutes": clock_minutes(meta),
+                                "time": format_time(clock_minutes(meta))}
+            repo.save_meta(meta)
+        log.log("save", f"已保存世界观简介（{len(text)} 字）", level="ok")
+        log.log("done", "完成", level="ok")
+        return get_overview(wid)
+    except Exception as exc:
+        _fail(log, exc)
+        raise
 
 
 # ---------- 删除世界
@@ -534,6 +551,7 @@ def fill_gaps(llm, wid: str, *, gap_ids: Optional[List[str]] = None, limit: int 
     filled: List[dict] = []
     done = 0
     for g in fixable:
+        cancel.checkpoint()
         if done >= limit:
             break
         done += 1
@@ -603,7 +621,8 @@ def _find_target(wid: str, tid: str) -> Optional[dict]:
 
 # ---------- 角色立绘
 
-def make_portrait(llm, provider, wid: str, cid: str) -> Dict[str, Any]:
+def make_portrait(llm, provider, wid: str, cid: str, log=None) -> Dict[str, Any]:
+    log = _log_or_new(log, wid, "portrait")
     chars = repo.load_characters(wid)
     ch = repo.find_by_id(chars, cid)
     if ch is None:
@@ -613,6 +632,7 @@ def make_portrait(llm, provider, wid: str, cid: str) -> Dict[str, Any]:
         "name": ch["name"], "summary": ch.get("summary", ""), "role": ch.get("role"),
         "tone": meta.get("tone", ""), "genre": meta.get("genre", "")})
     path = repo.portrait_path(wid, cid)
+    _archive(path, log)
     res = provider.generate(f"{draft['visual_en']}, {meta.get('tone', '')} style", path, ratio="3:4")
     with _with_lock(wid):
         chars = repo.load_characters(wid)
@@ -623,6 +643,20 @@ def make_portrait(llm, provider, wid: str, cid: str) -> Dict[str, Any]:
         repo.save_characters(wid, chars)
     return {"ok": res.ok, "error": res.error, "path": str(path) if res.ok else None,
             "stub": bool(getattr(provider, "is_stub", False))}
+
+
+# ---------- 旧版本归档（重新生成前保留）
+
+def _archive(path: Path, log=None) -> None:
+    """把现有文件复制到同目录的 history/ 下（带时间戳），再允许覆盖。文件不存在则什么也不做。"""
+    if not path.is_file():
+        return
+    hist = path.parent / "history"
+    hist.mkdir(parents=True, exist_ok=True)
+    dst = hist / f"{path.stem}.{time.strftime('%Y%m%d-%H%M%S')}-{store.new_id('v')[2:]}{path.suffix}"
+    shutil.copy2(path, dst)
+    if log is not None:
+        log.log("save", f"已保留旧版本：{path.name} → history/{dst.name}")
 
 
 # ---------- 故事
@@ -667,6 +701,19 @@ def _event_context(wid: str, events: List[dict]) -> List[dict]:
              "involves": [ent.get(i, i) for i in e.get("involves", [])]} for e in events]
 
 
+def _generate_arc(llm, wid: str, events: List[dict], log) -> Dict[str, Any]:
+    ev_ctx = _event_context(wid, events)
+    involved = {n for e in ev_ctx for n in e["involves"]}
+    chars = [{"name": c["name"], "role": c.get("role"), "summary": c.get("summary", "")[:100]}
+             for c in repo.load_characters(wid) if c["name"] in involved][:6]
+    ctx = {"charter": require_charter(wid), "events": ev_ctx, "characters": chars}
+    log.log("context", f"上下文：宪章 1 份、事件 {len(ev_ctx)} 个、出场角色 {len(chars)} 名")
+    cancel.checkpoint()
+    arc = generate.arc_draft(LoggedLLM(llm, log), context=ctx, log=log)
+    log.log("parse", f"故事线结构通过：「{arc['title']}」，{len(arc.get('acts') or [])} 幕", level="ok")
+    return arc
+
+
 def make_arc(llm, wid: str, *, event_ids: Optional[List[str]] = None,
              year_from: Optional[int] = None, year_to: Optional[int] = None, log=None) -> str:
     log = _log_or_new(log, wid, "arc")
@@ -677,24 +724,74 @@ def make_arc(llm, wid: str, *, event_ids: Optional[List[str]] = None,
             raise EngineError("没有可用于成文的事件，请选择事件或调整年份范围")
         log.log("context", f"选中 {len(events)} 个事件：" + "；".join(e["title"] for e in events[:6])
                 + ("…" if len(events) > 6 else ""))
-        ev_ctx = _event_context(wid, events)
-        involved = {n for e in ev_ctx for n in e["involves"]}
-        chars = [{"name": c["name"], "role": c.get("role"), "summary": c.get("summary", "")[:100]}
-                 for c in repo.load_characters(wid) if c["name"] in involved][:6]
-        ctx = {"charter": require_charter(wid), "events": ev_ctx, "characters": chars}
-        log.log("context", f"上下文：宪章 1 份、事件 {len(ev_ctx)} 个、出场角色 {len(chars)} 名")
-        arc = generate.arc_draft(LoggedLLM(llm, log), context=ctx, log=log)
-        log.log("parse", f"故事线结构通过：「{arc['title']}」，{len(arc.get('acts') or [])} 幕", level="ok")
+        arc = _generate_arc(llm, wid, events, log)
         with _with_lock(wid):
             sid = _new_story(wid, "arc", arc["title"], {"source_event_ids": [e["id"] for e in events],
                                                         "status": "draft"})
             store.write_json(repo.story_dir(wid, sid) / "arc.json", arc)
-        log.log("save", f"已保存小故事线 {sid}（{repo.story_dir(wid, sid)}）", level="ok")
+        log.log("save", f"已保存小故事线 {sid}", level="ok")
         log.log("done", "完成", level="ok", story=sid)
         return sid
     except Exception as exc:
         _fail(log, exc)
         raise
+
+
+def regenerate_arc(llm, wid: str, sid: str, log=None) -> str:
+    """用同一批事件重新生成小故事线（同一个故事 id）。旧版本保留在 history/。"""
+    log = _log_or_new(log, wid, "arc")
+    try:
+        meta = repo.load_story_meta(wid, sid)
+        if meta.get("kind") != "arc":
+            raise EngineError("只有小故事线可以按此方式重新生成")
+        log.log("start", f"重新生成小故事线（故事 {sid}）")
+        events = select_events(wid, event_ids=meta.get("source_event_ids") or [])
+        if not events:
+            raise EngineError("原始事件已不存在，无法重新生成")
+        log.log("context", f"沿用原来的 {len(events)} 个事件")
+        arc = _generate_arc(llm, wid, events, log)
+        with _with_lock(wid):
+            path = repo.story_dir(wid, sid) / "arc.json"
+            _archive(path, log)
+            store.write_json(path, arc)
+            meta = repo.load_story_meta(wid, sid)
+            meta.update(title=arc["title"], regenerated_at=store.now_iso())
+            repo.save_story_meta(wid, sid, meta)
+        log.log("save", f"已更新小故事线「{arc['title']}」", level="ok")
+        log.log("done", "完成", level="ok", story=sid)
+        return sid
+    except Exception as exc:
+        _fail(log, exc)
+        raise
+
+
+def _generate_short(llm, wid: str, *, arc_sid: Optional[str], brief: str,
+                    event_ids: Optional[List[str]], form: str, log) -> Dict[str, Any]:
+    charter = require_charter(wid)
+    ctx: Dict[str, Any] = {"charter": charter, "brief": brief.strip()}
+    title = "短篇"
+    source_events: List[str] = []
+    if arc_sid:
+        arc = store.read_json(repo.story_dir(wid, arc_sid) / "arc.json")
+        if not arc:
+            raise EngineError(f"小故事线不存在或未生成：{arc_sid}")
+        ctx["arc"] = arc
+        title = arc["title"]
+        source_events = load_story_meta_safe(wid, arc_sid).get("source_event_ids", [])
+        log.log("context", f"读取小故事线「{arc['title']}」：{len(arc.get('acts') or [])} 幕")
+    if event_ids:
+        evs = select_events(wid, event_ids=event_ids)
+        ctx["events"] = _event_context(wid, evs)
+        source_events = list(dict.fromkeys(source_events + [e["id"] for e in evs]))
+        if not arc_sid and not ctx["brief"]:
+            title = evs[0]["title"]
+        log.log("context", f"附带 {len(evs)} 个事件作为素材")
+    if not ctx.get("arc") and not ctx.get("brief") and not ctx.get("events"):
+        raise EngineError("请提供小故事线、事件或一段创作描述")
+    cancel.checkpoint()
+    text = generate.short_draft(LoggedLLM(llm, log), context=ctx, form=form)
+    log.log("parse", f"正文生成完成：{len(text)} 字", level="ok")
+    return {"title": title, "source_events": source_events, "text": text}
 
 
 def write_short(llm, wid: str, *, arc_sid: Optional[str] = None, brief: str = "",
@@ -705,34 +802,40 @@ def write_short(llm, wid: str, *, arc_sid: Optional[str] = None, brief: str = ""
         mode = "基于小故事线" if arc_sid else ("直接创作" if brief.strip() else "基于事件")
         log.log("start", f"成文短篇（{mode}，形式：{'短篇小说' if form == 'novel' else '故事说明'}）",
                 mode=mode, brief_chars=len(brief.strip()), event_ids=len(event_ids or []))
-        charter = require_charter(wid)
-        ctx: Dict[str, Any] = {"charter": charter, "brief": brief.strip()}
-        title = "短篇"
-        source_events: List[str] = []
-        if arc_sid:
-            arc = store.read_json(repo.story_dir(wid, arc_sid) / "arc.json")
-            if not arc:
-                raise EngineError(f"小故事线不存在或未生成：{arc_sid}")
-            ctx["arc"] = arc
-            title = arc["title"]
-            source_events = load_story_meta_safe(wid, arc_sid).get("source_event_ids", [])
-            log.log("context", f"读取小故事线「{arc['title']}」：{len(arc.get('acts') or [])} 幕")
-        if event_ids:
-            evs = select_events(wid, event_ids=event_ids)
-            ctx["events"] = _event_context(wid, evs)
-            source_events = list(dict.fromkeys(source_events + [e["id"] for e in evs]))
-            if not arc_sid and not ctx["brief"]:
-                title = evs[0]["title"]
-            log.log("context", f"附带 {len(evs)} 个事件作为素材")
-        if not ctx.get("arc") and not ctx.get("brief") and not ctx.get("events"):
-            raise EngineError("请提供小故事线、事件或一段创作描述")
-        text = generate.short_draft(LoggedLLM(llm, log), context=ctx, form=form)
-        log.log("parse", f"正文生成完成：{len(text)} 字", level="ok")
+        out = _generate_short(llm, wid, arc_sid=arc_sid, brief=brief, event_ids=event_ids, form=form, log=log)
         with _with_lock(wid):
-            sid = _new_story(wid, "short", title, {"parent": arc_sid, "source_event_ids": source_events,
-                                                   "form": form, "status": "draft"})
-            (repo.story_dir(wid, sid) / "story.md").write_text(text, encoding="utf-8")
-        log.log("save", f"已保存短篇 {sid}「{title}」", level="ok")
+            sid = _new_story(wid, "short", out["title"], {
+                "parent": arc_sid, "source_event_ids": out["source_events"], "form": form, "status": "draft",
+                "request": {"arc_sid": arc_sid, "brief": brief.strip(), "event_ids": list(event_ids or []),
+                            "form": form}})
+            (repo.story_dir(wid, sid) / "story.md").write_text(out["text"], encoding="utf-8")
+        log.log("save", f"已保存短篇 {sid}「{out['title']}」", level="ok")
+        log.log("done", "完成", level="ok", story=sid)
+        return sid
+    except Exception as exc:
+        _fail(log, exc)
+        raise
+
+
+def regenerate_short(llm, wid: str, sid: str, log=None) -> str:
+    """用创建时的原始输入重新成文（同一个故事 id）。旧正文保留在 history/。"""
+    log = _log_or_new(log, wid, "short")
+    try:
+        meta = repo.load_story_meta(wid, sid)
+        req = meta.get("request")
+        if not req:
+            raise EngineError("这篇短篇创建于旧版本，缺少原始输入，无法重新生成（可删除后重新创作）")
+        log.log("start", f"重新成文（故事 {sid}，沿用原始输入）")
+        out = _generate_short(llm, wid, arc_sid=req.get("arc_sid"), brief=req.get("brief", ""),
+                              event_ids=req.get("event_ids"), form=req.get("form", "novel"), log=log)
+        with _with_lock(wid):
+            d = repo.story_dir(wid, sid)
+            _archive(d / "story.md", log)
+            (d / "story.md").write_text(out["text"], encoding="utf-8")
+            meta = repo.load_story_meta(wid, sid)
+            meta["regenerated_at"] = store.now_iso()
+            repo.save_story_meta(wid, sid, meta)
+        log.log("save", "已更新短篇正文", level="ok")
         log.log("done", "完成", level="ok", story=sid)
         return sid
     except Exception as exc:
@@ -754,6 +857,7 @@ def _ensure_anchors(llm, wid: str, board: Dict[str, Any], log) -> None:
     for ch in repo.load_characters(wid):
         if ch["name"] not in names or (ch.get("attrs") or {}).get("visual_en"):
             continue
+        cancel.checkpoint()
         try:
             draft = generate.portrait_draft(LoggedLLM(llm, log), context={
                 "name": ch["name"], "summary": ch.get("summary", ""), "role": ch.get("role"),
@@ -789,19 +893,21 @@ def make_storyboard(llm, wid: str, sid: str, log=None) -> Dict[str, Any]:
             raise EngineError("该故事没有可用于分镜的内容")
         ctx["characters"] = [{"name": c["name"], "summary": c.get("summary", "")[:80]}
                              for c in repo.load_characters(wid)][:12]
+        cancel.checkpoint()
         board = generate.storyboard_draft(LoggedLLM(llm, log), context=ctx, log=log)
         n_panels = sum(len(p["panels"]) for p in board["pages"])
         log.log("parse", f"分镜结构通过：{len(board['pages'])} 页，共 {n_panels} 格", level="ok")
-        _ensure_anchors(llm, wid, board, log)
         for pg in board["pages"]:
             log.log("parse", f"第 {pg['no']} 页：{len(pg['panels'])} 格，"
                              f"出场角色 {sorted({c for p in pg['panels'] for c in (p.get('characters') or [])}) or '无'}")
+        _ensure_anchors(llm, wid, board, log)
         with _with_lock(wid):
+            _archive(d / "storyboard.json", log)
             store.write_json(d / "storyboard.json", board)
             meta = repo.load_story_meta(wid, sid)
             meta["has_storyboard"] = True
             repo.save_story_meta(wid, sid, meta)
-        log.log("save", f"已保存分镜脚本 storyboard.json", level="ok")
+        log.log("save", "已保存分镜脚本 storyboard.json（漫画图需要重新生成）", level="ok")
         log.log("done", "完成", level="ok", panels=n_panels)
         return board
     except Exception as exc:
@@ -820,12 +926,15 @@ def _panel_ratio(span: int) -> str:
     return "16:9" if span == 2 else "1:1"
 
 
-def render_comic(provider, wid: str, sid: str, log=None) -> Dict[str, Any]:
-    """逐格生成分镜图并拼装漫画页。
+def render_comic(provider, wid: str, sid: str, log=None,
+                 only: Optional[List[tuple]] = None) -> Dict[str, Any]:
+    """逐格生成分镜图并拼装漫画页。only 为 [(页号, 格号), ...] 时只重做这些格，其余保留原图。
 
     连贯性做法：统一风格前缀；每格带上出场角色的外观锚点；参考图包含上一格的画面和出场角色立绘。
+    停止时：已完成的格子保存，并拼装部分漫画，返回 cancelled=True。
     """
     log = _log_or_new(log, wid, "comic")
+    cancelled = False
     try:
         d = repo.story_dir(wid, sid)
         board = store.read_json(d / "storyboard.json")
@@ -837,57 +946,78 @@ def render_comic(provider, wid: str, sid: str, log=None) -> Dict[str, Any]:
         provider_name = getattr(provider, "name", "unknown")
         stub = bool(getattr(provider, "is_stub", False))
         total = sum(len(p["panels"]) for p in board["pages"])
+        targets = {tuple(x) for x in only} if only else None
+        n_todo = total if targets is None else sum(
+            1 for pg in board["pages"] for i in range(1, len(pg["panels"]) + 1) if (pg["no"], i) in targets)
         style = COMIC_STYLE + (f", {meta['genre']} setting" if meta.get("genre") else "") \
             + (f", {meta['tone']} mood" if meta.get("tone") else "")
-        log.log("start", f"生成漫画图：{len(board['pages'])} 页，共 {total} 格，图像来源：{provider_name}"
+        scope = "全部格子" if targets is None else f"指定的 {n_todo} 格"
+        log.log("start", f"生成漫画图（{scope}）：{len(board['pages'])} 页，共 {total} 格，图像来源：{provider_name}"
                          + ("（占位图，未调用真实模型）" if stub else ""), provider=provider_name, stub=stub)
         if stub:
             log.log("start", "注意：当前为占位图，不会调用图像模型", level="warn")
         log.log("start", f"统一风格：{style[:60]}…")
-        ok = fail = 0
+        ok = fail = skipped = 0
         idx = 0
+        done_now = 0
         prev_img = None
-        for pg in board["pages"]:
-            for i, pn in enumerate(pg["panels"], start=1):
-                idx += 1
-                names = pn.get("characters") or []
-                present = [by_name[n] for n in names if n in by_name]
-                for n in names:
-                    if n not in by_name:
-                        log.log("panel", f"第 {pg['no']} 页第 {i} 格：角色「{n}」不在世界中，无外观锚点", level="warn")
-                refs: List[Path] = []
-                ref_names: List[str] = []
-                if prev_img is not None:
-                    refs.append(prev_img)
-                    ref_names.append("上一格")
-                for ch in present:
-                    pth = repo.portrait_path(wid, ch["id"])
-                    if pth.is_file() and len(refs) < MAX_REFS:
-                        refs.append(pth)
-                        ref_names.append(f"{ch['name']}立绘")
-                anchors = "; ".join(f"{ch['name']}: {ch['attrs']['visual_en']}"
-                                    for ch in present if (ch.get("attrs") or {}).get("visual_en"))
-                shot = pn.get("shot") or "中景"
-                span = int(pn.get("span") or 1)
-                prompt = (f"{style}. {SHOT_EN.get(shot, 'medium shot')}. {pn['visual_en']}."
-                          + (f" Characters: {anchors}." if anchors else "")
-                          + " No text, no speech bubbles, no lettering.")
-                rel = f"panels/p{pg['no']:02d}_{i:02d}.png"
-                log.log("panel", f"[{idx}/{total}] 第 {pg['no']} 页第 {i} 格（{shot}，"
-                                 f"{'整行' if span == 2 else '半行'}）：参考 {('、'.join(ref_names)) or '无'}，"
-                                 f"外观锚点 {len(anchors.split('; ')) if anchors else 0} 个，生成中……")
-                t = time.monotonic()
-                res = provider.generate(prompt, d / rel, ratio=_panel_ratio(span), reference_images=refs[:MAX_REFS])
-                dur = time.monotonic() - t
-                pn["image"] = rel if res.ok else None
-                pn["image_error"] = None if res.ok else res.error
-                if res.ok:
-                    ok += 1
-                    prev_img = d / rel
-                    log.log("panel", f"[{idx}/{total}] 完成：{rel}，用时 {dur:.1f} 秒", level="ok")
-                else:
-                    fail += 1
-                    log.log("panel", f"[{idx}/{total}] 失败：{res.error}，用时 {dur:.1f} 秒", level="warn")
+        try:
+            for pg in board["pages"]:
+                for i, pn in enumerate(pg["panels"], start=1):
+                    idx += 1
+                    rel = f"panels/p{pg['no']:02d}_{i:02d}.png"
+                    existing = d / rel
+                    if targets is not None and (pg["no"], i) not in targets:
+                        if existing.is_file():
+                            prev_img = existing
+                        skipped += 1
+                        continue
+                    cancel.checkpoint()   # 安全点：每格生成前检查停止信号
+                    names = pn.get("characters") or []
+                    present = [by_name[n] for n in names if n in by_name]
+                    for n in names:
+                        if n not in by_name:
+                            log.log("panel", f"第 {pg['no']} 页第 {i} 格：角色「{n}」不在世界中，无外观锚点",
+                                    level="warn")
+                    refs: List[Path] = []
+                    ref_names: List[str] = []
+                    if prev_img is not None:
+                        refs.append(prev_img)
+                        ref_names.append("上一格")
+                    for ch in present:
+                        pth = repo.portrait_path(wid, ch["id"])
+                        if pth.is_file() and len(refs) < MAX_REFS:
+                            refs.append(pth)
+                            ref_names.append(f"{ch['name']}立绘")
+                    anchors = "; ".join(f"{ch['name']}: {ch['attrs']['visual_en']}"
+                                        for ch in present if (ch.get("attrs") or {}).get("visual_en"))
+                    shot = pn.get("shot") or "中景"
+                    span = int(pn.get("span") or 1)
+                    prompt = (f"{style}. {SHOT_EN.get(shot, 'medium shot')}. {pn['visual_en']}."
+                              + (f" Characters: {anchors}." if anchors else "")
+                              + " No text, no speech bubbles, no lettering.")
+                    done_now += 1
+                    log.log("panel", f"[{done_now}/{n_todo}] 第 {pg['no']} 页第 {i} 格（{shot}，"
+                                     f"{'整行' if span == 2 else '半行'}）：参考 {('、'.join(ref_names)) or '无'}，"
+                                     f"外观锚点 {len(anchors.split('; ')) if anchors else 0} 个，生成中……")
+                    if existing.is_file():
+                        _archive(existing, log)
+                    t = time.monotonic()
+                    res = provider.generate(prompt, existing, ratio=_panel_ratio(span),
+                                            reference_images=refs[:MAX_REFS])
+                    dur = time.monotonic() - t
+                    pn["image"] = rel if res.ok else None
+                    pn["image_error"] = None if res.ok else res.error
+                    if res.ok:
+                        ok += 1
+                        prev_img = existing
+                        log.log("panel", f"[{done_now}/{n_todo}] 完成：{rel}，用时 {dur:.1f} 秒", level="ok")
+                    else:
+                        fail += 1
+                        log.log("panel", f"[{done_now}/{n_todo}] 失败：{res.error}，用时 {dur:.1f} 秒", level="warn")
+        except cancel.Cancelled:
+            cancelled = True
+            log.log("cancel", f"已停止：已处理 {done_now}/{n_todo} 格，已完成的格子保留", level="warn")
         board["provider"], board["stub"] = provider_name, stub
         store.write_json(d / "storyboard.json", board)
         log.log("assemble", "拼装漫画页 comic.html（图片嵌入文件，可独立打开）")
@@ -897,10 +1027,11 @@ def render_comic(provider, wid: str, sid: str, log=None) -> Dict[str, Any]:
             meta_s = repo.load_story_meta(wid, sid)
             meta_s["has_comic"] = True
             repo.save_story_meta(wid, sid, meta_s)
-        level = "ok" if fail == 0 else "warn"
-        log.log("done", f"完成：成功 {ok} 格，失败 {fail} 格", level=level, ok=ok, failed=fail)
-        return {"ok": ok, "failed": fail, "stub": stub, "provider": provider_name,
-                "comic": str(d / "comic.html")}
+        level = "warn" if (fail or cancelled) else "ok"
+        log.log("done", f"{'已停止' if cancelled else '完成'}：成功 {ok} 格，失败 {fail} 格"
+                        + (f"，保留 {skipped} 格原图" if skipped else ""), level=level, ok=ok, failed=fail)
+        return {"ok": ok, "failed": fail, "skipped": skipped, "stub": stub, "provider": provider_name,
+                "comic": str(d / "comic.html"), "cancelled": cancelled}
     except Exception as exc:
         _fail(log, exc)
         raise
