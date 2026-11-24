@@ -73,3 +73,31 @@ def test_settings_page_shows_the_research_proxy_switch(data_home):
     labels = [c.label for c in at.checkbox] + [t.label for t in at.toggle] if hasattr(at, "toggle") else [c.label for c in at.checkbox]
     # 应同时出现在「本库」的模型、搜索与调研页与「全局默认」页，两处都要能看到
     assert sum("调研抓取使用系统代理" in l for l in labels) >= 2, labels
+
+
+def test_research_all_runs_every_approved_topic_and_isolates_failures(data_home):
+    import sys
+    from pathlib import Path
+    from article_garden.planning import states
+    from tests.test_research import _approved
+    ctx = _world(data_home)
+    tid = _approved(ctx)                                  # 放行一个选题
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "entrypoints"))
+    import research as ep
+    import json, io, contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        assert ep.main(["ai", "--all"]) == 0
+    out = json.loads(buf.getvalue())
+    assert out["total"] >= 1 and any(r["topic"] == tid for r in out["results"])
+    assert states.get(ctx, tid)["status"] in (states.RESEARCHED, states.DROPPED)
+
+
+def test_research_all_with_nothing_approved_says_so(data_home, capsys):
+    import sys
+    from pathlib import Path
+    _world(data_home)
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "entrypoints"))
+    import research as ep
+    assert ep.main(["ai", "--all"]) == 0
+    assert "没有已放行的选题" in capsys.readouterr().out

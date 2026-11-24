@@ -1,6 +1,7 @@
 """entrypoints/research.py — 资料收集（P5）：对已放行的选题搜索、抓取并整理证据包。
 
 用法：
+  python entrypoints/research.py <domain_id> --all                      一键调研全部已放行的选题（逐个进行，一题失败不影响其它）
   python entrypoints/research.py <domain_id> <topic_id>                 调研（需要网络；搜索失败时仅用手动资料）
   python entrypoints/research.py <domain_id> <topic_id> --add-url URL    抓取一个网址，作为手动来源加入证据包
   python entrypoints/research.py <domain_id> <topic_id> --remove-source src-0003
@@ -30,17 +31,56 @@ def _opt(args, flag):
     return None
 
 
+def _llm_for(ctx):
+    ready, why = text_model_status()
+    if not ready:
+        joblog.log(ctx.root, "research", f"模型未就绪，查询使用模板：{why}", level="warn")
+        return None
+    eff, _ = settings.effective_settings(ctx)
+    return budget.guard(ctx, MiniAgentTextLLM(use_system_proxy=eff["llm"]["use_system_proxy"]),
+                        timeout_min=eff["budget"]["step_timeout_minutes"])
+
+
+def _run_all(ctx) -> int:
+    """一键调研：逐个调研全部已放行选题。单题失败只记录，预算用尽或用户停止则整批结束。"""
+    from article_garden.planning import states
+    approved = [t["id"] for t in states.load_topics(ctx) if t["status"] == states.APPROVED]
+    if not approved:
+        print(json.dumps({"ok": True, "message": "没有已放行的选题"}, ensure_ascii=False))
+        return 0
+    eff, _ = settings.effective_settings(ctx)
+    llm = _llm_for(ctx)
+    results = []
+    with joblog.run(ctx.root, "research", f"调研全部已放行选题（{len(approved)} 个）"):
+        for i, tid in enumerate(approved, 1):
+            joblog.log(ctx.root, "research", f"调研 {i}/{len(approved)}：{tid}「{states.get(ctx, tid)['title']}」")
+            try:
+                res = runner.run(ctx, tid, llm=llm, max_rounds=eff["budget"]["max_repair_rounds"])
+                results.append({"topic": tid, "result": res["result"], "added": res["added"]})
+            except ValueError as exc:
+                results.append({"topic": tid, "result": "error", "error": str(exc)})
+                joblog.log(ctx.root, "research", f"调研 {tid} 未执行：{exc}", level="warn")
+    ok = sum(1 for r in results if r["result"] == "researched")
+    print(json.dumps({"ok": True, "total": len(approved), "researched": ok, "results": results},
+                     ensure_ascii=False, indent=2))
+    return 0
+
+
 def main(argv=None) -> int:
     force_utf8_stdio()
     args = list(sys.argv[1:] if argv is None else argv)
     try:
         add_url = _opt(args, "--add-url")
         remove = _opt(args, "--remove-source")
-        if len(args) < 2:
+        run_all = "--all" in args
+        args = [a for a in args if a != "--all"]
+        if len(args) < (1 if run_all else 2):
             print(__doc__, file=sys.stderr)
             return 2
         ctx = domains.DomainContext(args[0])
-        tid = args[1]
+        tid = None if run_all else args[1]
+        if run_all:
+            return _run_all(ctx)
         if remove:
             runner.remove_source(ctx, tid, remove)
             print(json.dumps({"ok": True, "removed": remove}, ensure_ascii=False))

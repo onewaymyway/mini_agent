@@ -37,6 +37,11 @@ def render_research_page() -> None:
                  type="primary", key="res_go"):
         spawn("research.py", ctx.id, tid)
         st.success("已在后台开始调研，进度见「▶ 运行日志」。")
+    n_approved = sum(1 for r in topics if r["status"] == states.APPROVED)
+    if st.button(f"一键调研全部已放行选题（{n_approved} 个，后台）", disabled=busy or n_approved == 0,
+                 key="res_all", help="逐个调研，一题失败不影响其它；预算用尽或点击停止则整批结束"):
+        spawn("research.py", ctx.id, "--all")
+        st.success("已在后台开始一键调研，进度见「▶ 运行日志」。")
     st.caption(f"搜索后端 {eff['search']['provider']} ｜ 每题最多 {eff['budget']['max_fetch_pages_per_topic']} 页 ｜ "
                f"摘录上限 {eff['thresholds']['excerpt_chars_max']} 字")
 
