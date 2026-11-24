@@ -433,3 +433,26 @@ def test_write_succeeds_when_length_slightly_over_and_records_note(data_home):
 def test_write_fails_when_length_far_off(data_home):
     ctx, tid = _setup(data_home, length=(5, 30))                    # 334 字 > 30×3，严重偏离
     assert runner.write(ctx, tid, WriterLLM())["result"] == "failed"
+
+
+def test_length_tolerance_comes_from_settings(data_home):
+    from article_garden import settings
+    ctx, tid = _setup(data_home, length=(5, 30))                    # 假模型正文约 334 字，默认 3 倍容忍（90）下会失败
+    assert settings.effective_settings(ctx)[0]["thresholds"]["length_high_factor"] == 3.0
+    settings.save_override("domain", "thresholds", "length_high_factor", 20.0, ctx)   # 放宽到 600 字
+    res = runner.write(ctx, tid, WriterLLM())
+    assert res["result"] == "drafted" and "超出" in res["checks"]["length_note"]
+
+
+def test_length_factor_settings_are_validated_and_shown_in_ui(data_home):
+    import pytest as _pt
+    from article_garden import settings
+    from tests.test_ui_smoke import run_app
+    ctx = _world(data_home)                                         # 默认章程（设置页字数下限控件要求 ≥100）
+    with _pt.raises(ValueError):
+        settings.save_override("domain", "thresholds", "length_high_factor", 0.5, ctx)   # 不能小于 1
+    with _pt.raises(ValueError):
+        settings.save_override("domain", "thresholds", "length_low_factor", 1.5, ctx)    # 不能大于 1
+    at = run_app("settings", domain="ai")
+    assert not at.exception, [e.value for e in at.exception]
+    assert any("字数上限容忍倍数" in (n.label or "") for n in at.number_input)

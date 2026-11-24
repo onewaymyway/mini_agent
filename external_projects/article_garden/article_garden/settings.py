@@ -77,6 +77,8 @@ SPEC: Dict[str, Dict[str, Dict[str, Any]]] = {
         "overlap_max": _s(0.35, "float", "与库内文章的重复度上限", "段落级相似度高于此值视为同质化（首版默认，待用示例库校准）", min=0.0, max=1.0),
         "copy_chars_max": _s(60, "int", "与来源连续重合字数上限", "防止整段照抄来源", min=10, max=1000),
         "excerpt_chars_max": _s(300, "int", "每来源摘录字数上限", "来源卡中摘录的最大长度", min=50, max=3000),
+        "length_low_factor": _s(0.5, "float", "字数下限容忍倍数", "正文字数低于章程下限×此值才判为严重偏离（成文失败）；介于其间只提示", min=0.1, max=1.0),
+        "length_high_factor": _s(3.0, "float", "字数上限容忍倍数", "正文字数高于章程上限×此值才判为严重偏离（成文失败）；介于其间只提示", min=1.0, max=20.0),
         "min_credibility": _s("B", "enum", "来源最低可信度", "低于此等级的来源不用（章程里的同名项优先于此）", choices=CREDIBILITY),
     },
 }

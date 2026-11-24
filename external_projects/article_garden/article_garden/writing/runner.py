@@ -69,7 +69,8 @@ def _topic_dir(ctx, tid: str):
 def _doc_issues(body: str, brief: Dict[str, Any]) -> List[str]:
     return checks.check_document(body, length=brief["style"]["length"], must_have=brief["style"]["must_have"],
                                  kind=brief["kind"], disclaimer=brief["risk"]["disclaimer"],
-                                 library_titles=[x["title"] for x in brief["library_links"]])
+                                 library_titles=[x["title"] for x in brief["library_links"]],
+                                 length_factors=brief["style"].get("length_factors") or (checks.LENGTH_LOW, checks.LENGTH_HIGH))
 
 
 def _map_critic(issues: List[Dict[str, str]], headings: List[str]) -> Dict[int, List[str]]:

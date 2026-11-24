@@ -17,6 +17,11 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _th(ctx):
+    from .. import settings
+    return settings.effective_settings(ctx)[0]["thresholds"]
+
+
 def build(ctx, tid: str, feedback: Optional[List[str]] = None) -> Dict[str, Any]:
     topic = states.get(ctx, tid)
     pk = pack.read(ctx, tid) or {}
@@ -46,6 +51,7 @@ def build(ctx, tid: str, feedback: Optional[List[str]] = None) -> Dict[str, Any]
         "audience": (charter.get("audience") or {}).get("primary") or "",
         "style": {"tone": style.get("tone") or "平实克制",
                   "length": list(style.get("length") or [1500, 3500]),
+                  "length_factors": [float(_th(ctx)["length_low_factor"]), float(_th(ctx)["length_high_factor"])],
                   "must_have": list(style.get("must_have") or []),
                   "ai_disclosure": bool(style.get("ai_disclosure", True))},
         "terms": charter.get("terms") or {},
