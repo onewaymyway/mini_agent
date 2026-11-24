@@ -73,7 +73,9 @@ class Fetcher:
             self.http = http_get
         if render is None and eff["research"]["use_browser"]:
             from . import browser
-            render = browser.render_fn(int(eff["research"]["browser_port"]))
+            from .. import paths
+            render = browser.render_fn(int(eff["research"]["browser_port"]),
+                                       paths.data_root() / "browser_profile")
         self.render = render
         self.min_interval = float(min_interval)
         self.sleep = sleep

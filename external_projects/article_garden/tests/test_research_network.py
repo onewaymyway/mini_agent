@@ -172,7 +172,8 @@ def test_render_without_playwright_reports_why(monkeypatch):
             raise ImportError("no")
         return real(name, *a, **k)
     monkeypatch.setattr(builtins, "__import__", fake)
-    html, err = browser.render_fn(9222, timeout_sec=1)("https://x.example/")
+    from pathlib import Path
+    html, err = browser.render_fn(9222, Path("/tmp/none"), timeout_sec=1)("https://x.example/")
     assert html is None and "playwright" in err
 
 
@@ -221,3 +222,64 @@ def test_robots_and_access_denials_never_reach_the_browser(data_home):
                        min_interval=0, sleep=lambda s: None, render=render)
     assert f2.fetch("https://login.example.org/a")["ok"] is False
     assert seen == []
+
+
+# ------------------------------------------------------------------ 自动启动调试浏览器
+
+def test_debug_browser_is_not_launched_when_port_already_open(monkeypatch, tmp_path):
+    from article_garden.research import browser
+    launched = []
+    monkeypatch.setattr(browser, "port_open", lambda port, host="127.0.0.1": True)
+    monkeypatch.setattr(browser.subprocess, "Popen", lambda *a, **k: launched.append(a))
+    ok, note = browser.ensure_debug_browser(9222, tmp_path / "p")
+    assert ok and launched == []
+
+
+def test_debug_browser_reports_missing_chrome(monkeypatch, tmp_path):
+    from article_garden.research import browser
+    monkeypatch.setattr(browser, "port_open", lambda port, host="127.0.0.1": False)
+    monkeypatch.setattr(browser, "find_chrome", lambda: None)
+    ok, note = browser.ensure_debug_browser(9222, tmp_path / "p")
+    assert ok is False and "未找到 Chrome" in note
+
+
+def test_debug_browser_is_started_with_debug_port_and_separate_profile(monkeypatch, tmp_path):
+    from article_garden.research import browser
+    state = {"open": False}
+    calls = []
+    monkeypatch.setattr(browser, "port_open", lambda port, host="127.0.0.1": state["open"])
+    monkeypatch.setattr(browser, "find_chrome", lambda: "/usr/bin/chrome-test")
+
+    def fake_popen(args, **kwargs):
+        calls.append(args)
+        state["open"] = True                       # 启动后端口即就绪
+    monkeypatch.setattr(browser.subprocess, "Popen", fake_popen)
+    ok, note = browser.ensure_debug_browser(9333, tmp_path / "profile", wait_sec=2)
+    assert ok and "已自动启动" in note
+    args = calls[0]
+    assert args[0] == "/usr/bin/chrome-test"
+    assert "--remote-debugging-port=9333" in args
+    assert any(a.startswith("--user-data-dir=") and "profile" in a for a in args)
+    assert (tmp_path / "profile").is_dir()
+
+
+def test_browser_fallback_retries_after_auto_start_for_any_plain_failure(data_home, monkeypatch, tmp_path):
+    """调试浏览器未开启时，普通抓取失败也会自动启动浏览器再试一次。"""
+    from article_garden.research import browser
+    ctx = _world(data_home)
+    state = {"open": False, "rendered": []}
+    monkeypatch.setattr(browser, "port_open", lambda port, host="127.0.0.1": state["open"])
+    monkeypatch.setattr(browser, "find_chrome", lambda: "/usr/bin/chrome-test")
+
+    def fake_popen(args, **kwargs):
+        state["open"] = True
+    monkeypatch.setattr(browser.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(browser, "_LAUNCH_LOCK", __import__("threading").Lock())
+
+    def fake_render(url):
+        state["rendered"].append(url)
+        return "<html>" + "正文内容。" * 60 + "</html>", "已自动启动调试浏览器"
+    f = fetch.Fetcher(ctx, http_get=lambda u, t: (404, "text/html", "") if u.endswith("robots.txt") else (521, "", ""),
+                      min_interval=0, sleep=lambda s: None, render=fake_render)
+    res = f.fetch("https://down.example.org/a")
+    assert res["ok"] and res["via"] == "browser" and state["rendered"]
