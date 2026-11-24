@@ -25,6 +25,11 @@ from .writing import runner as wrunner
 SCOPE = "cycle"
 
 
+def _failure_summary(failed: list) -> str:
+    """把失败的步骤与原因写成一行，便于在日志中直接看出是哪一步、为什么失败。"""
+    return "；".join(f"{x['step']}：{x['detail']}" for x in failed)[:600]
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -164,7 +169,8 @@ def run_cycle(ctx, llm, *, scheduled: bool = False, manual: bool = False, search
     for name, fn in chosen:
         rec = {"step": name, "status": "ok", "detail": ""}
         try:
-            rec["detail"] = fn(ctx, llm, eff, rep, sr)
+            with joblog.step(ctx.root, SCOPE, name, heartbeat=True):   # 给本步骤的模型调用归属
+                rec["detail"] = fn(ctx, llm, eff, rep, sr)
         except budget.BudgetStop as exc:
             rec.update(status="stopped", detail=str(exc))
             rep["steps"].append(rec)
@@ -188,8 +194,9 @@ def run_cycle(ctx, llm, *, scheduled: bool = False, manual: bool = False, search
     rep["finished_at"] = _now()
     store.write_json_atomic(ctx.path("runs", "last_cycle.json"), rep)
     end = {"ok": "ok", "budget": "stopped", "stop": "stopped"}.get(rep["stopped"] or "", "ok")
-    if any(s["status"] == "failed" for s in rep["steps"]) and not rep["stopped"]:
+    failed = [x for x in rep["steps"] if x["status"] in ("failed", "timeout")]
+    if failed and not rep["stopped"]:
         end = "failed"
     joblog.run_end(ctx.root, SCOPE, run_id, "一轮闭环", status=end,
-                   error=(f"已停止：{rep['stopped']}" if rep["stopped"] else None))
+                   error=(f"已停止：{rep['stopped']}" if rep["stopped"] else _failure_summary(failed) or None))
     return rep

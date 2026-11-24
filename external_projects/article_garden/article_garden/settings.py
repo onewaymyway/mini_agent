@@ -52,6 +52,10 @@ SPEC: Dict[str, Dict[str, Dict[str, Any]]] = {
     "llm": {
         "use_system_proxy": _s(False, "bool", "大模型使用系统代理", "默认不使用（与其它外部项目一致）"),
     },
+    "research": {
+        "use_system_proxy": _s(False, "bool", "调研抓取使用系统代理",
+                               "默认不使用。若访问外网网站需要代理，请打开（与大模型的代理设置相互独立）"),
+    },
     "search": {
         "provider": _s("duckduckgo", "enum", "搜索后端", "duckduckgo 无需 key；其它需在 mini_agent 配置对应 key", choices=SEARCH_PROVIDERS),
         "max_results": _s(5, "int", "每次搜索结果数", "每条查询取前 N 条", min=1, max=20),

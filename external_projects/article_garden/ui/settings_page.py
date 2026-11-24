@@ -17,7 +17,8 @@ from article_garden.providers.text import text_model_status
 from ui import state
 from ui.topbar import render_topbar
 
-GROUP_TITLES = {"automation": "自动化", "budget": "预算与限制", "llm": "模型", "search": "搜索", "thresholds": "校验阈值"}
+GROUP_TITLES = {"automation": "自动化", "budget": "预算与限制", "llm": "模型", "research": "调研（网站抓取）",
+                "search": "搜索", "thresholds": "校验阈值"}
 
 
 def render_settings_page() -> None:
