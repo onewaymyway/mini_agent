@@ -69,9 +69,9 @@ def test_comic_html_is_a_page_grid_with_bubbles_and_embedded_images(world, llm, 
     engine.render_comic(img, world, sid)
     html_text = (repo.story_dir(world, sid) / "comic.html").read_text(encoding="utf-8")
     assert "class='page'" in html_text or 'class=\'page\'' in html_text
-    assert "flex-wrap" in html_text and "class='grid'" in html_text
+    assert "class='grid'" in html_text
+    assert "class='panel'" in html_text and "style='left:calc(" in html_text   # 格子位置由版式规划给出
     assert "data:image/png;base64," in html_text          # 图片嵌入，文件可独立打开
-    assert "panel wide" in html_text                       # 整行格
     assert re.search(r"class='bz (top|bottom) (l|r|c)'", html_text)   # 气泡区域叠在画面角落
     assert "class='bubble'" in html_text                   # 有对白就必须有气泡
 

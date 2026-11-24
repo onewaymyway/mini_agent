@@ -89,6 +89,11 @@ SHOTS = ("远景", "中景", "近景", "特写")
 BUBBLE_POSITIONS = ("左上", "右上", "左下", "右下", "中上", "中下")
 
 
+DIALOGUE_MAX_CHARS = 40          # 单句对白的硬上限（提示词要求 24 字，超过 40 字视为不合格）
+KINDS = ("speech", "thought", "shout")
+SIDES = ("左", "中", "右")
+
+
 def normalize_panel(p: Dict[str, Any]) -> List[str]:
     """补齐格子的缺省字段（原地修改），返回错误列表。"""
     errs: List[str] = []
@@ -108,21 +113,51 @@ def normalize_panel(p: Dict[str, Any]) -> List[str]:
     for i, dl in enumerate(dialogue):
         if not isinstance(dl, dict) or not dl.get("text"):
             continue
+        text = str(dl["text"]).strip()
+        if len(text) > DIALOGUE_MAX_CHARS:
+            errs.append(f"对白过长（{len(text)} 字，上限 {DIALOGUE_MAX_CHARS} 字）：{text[:12]}…")
         pos = dl.get("position")
         if pos not in BUBBLE_POSITIONS:
             pos = ("右上", "左上", "右下", "左下")[i % 4]   # 缺省时按序分散到四角
-        fixed.append({"speaker": str(dl.get("speaker") or ""), "text": str(dl["text"]), "position": pos})
+        side = dl.get("speaker_side")
+        if side not in SIDES:
+            side = {"左上": "左", "左下": "左", "右上": "右", "右下": "右"}.get(pos, "中")
+        kind = dl.get("kind") if dl.get("kind") in KINDS else "speech"
+        fixed.append({"speaker": str(dl.get("speaker") or ""), "text": text, "position": pos,
+                      "speaker_side": side, "kind": kind})
     p["dialogue"] = fixed
     p["characters"] = [str(c) for c in (p.get("characters") or []) if c]
     p["narration"] = str(p.get("narration") or "")
+    p["sfx"] = str(p.get("sfx") or "").strip()
+    p["emotion"] = str(p.get("emotion") or "").strip()
     return errs
 
 
-def _validate_storyboard(d: Dict[str, Any]) -> List[str]:
+def _validate_beats(d: Dict[str, Any], expect: Optional[int] = None) -> List[str]:
+    pages = d.get("pages")
+    if not isinstance(pages, list) or not pages:
+        return ["pages 必须是非空数组"]
+    if expect is not None and len(pages) != expect:
+        return [f"pages 必须正好 {expect} 页（当前 {len(pages)} 页）"]
+    for i, pg in enumerate(pages, start=1):
+        if not isinstance(pg, dict) or not str(pg.get("purpose") or "").strip():
+            return [f"第 {i} 页缺少 purpose（本页叙事作用）"]
+        if not str(pg.get("focus") or "").strip():
+            return [f"第 {i} 页缺少 focus（画面焦点）"]
+        pg["no"] = i
+        pg["purpose"] = str(pg["purpose"]).strip()
+        pg["focus"] = str(pg["focus"]).strip()
+        pg["hook"] = str(pg.get("hook") or "").strip()
+    return []
+
+
+def _validate_storyboard(d: Dict[str, Any], expect: Optional[int] = None) -> List[str]:
     errs: List[str] = []
     pages = d.get("pages")
     if not isinstance(pages, list) or not pages:
         return ["pages 必须是非空数组"]
+    if expect is not None and len(pages) != expect:
+        return [f"pages 必须正好 {expect} 页（节拍表为 {expect} 页，当前 {len(pages)} 页）"]
     for pg in pages:
         panels = pg.get("panels") if isinstance(pg, dict) else None
         if not isinstance(panels, list) or not (1 <= len(panels) <= 5):
@@ -221,18 +256,37 @@ def short_draft(llm, *, context: Dict[str, Any], form: str) -> str:
     return text
 
 
-def storyboard_draft(llm, *, context: Dict[str, Any], log=None) -> Dict[str, Any]:
+def beats_draft(llm, *, context: Dict[str, Any], pages: Optional[int] = None, log=None) -> Dict[str, Any]:
+    """节拍表：先规划每页的叙事作用、画面焦点与页末钩子，再据此生成分镜。pages=None 表示按故事长度自动决定。"""
+    count = (f"必须正好 {pages} 页" if pages is not None
+             else "页数由故事实际长度决定（通常每 3–5 个情节点一页），不设固定页数")
+    ctx = {**context, "pages_target": pages if pages is not None else "auto"}
+    return call_json(llm, "beats", ctx,
+                     "请为这个故事规划漫画节拍表：" + count + "。整体结构为：开头铺垫、中段升级、一个转折、"
+                     "一个高潮、结尾收束。每页说明：purpose（本页叙事作用，以 铺垫/升级/转折/高潮/收束 之一开头，"
+                     "并用一句话说明）、focus（本页画面焦点，一句话）、hook（页末钩子：让读者想翻到下一页的悬念或情绪，"
+                     "最后一页可为空）。JSON 字段：pages（数组：no, purpose, focus, hook）。",
+                     lambda d: _validate_beats(d, pages), log=log)
+
+
+def storyboard_draft(llm, *, context: Dict[str, Any], log=None, pages: Optional[int] = None) -> Dict[str, Any]:
     return call_json(llm, "storyboard", context,
-                     "请把故事改写为漫画分镜，要求像真正的漫画页：0) 若 context.focus 存在，镜头以该主体为中心，"
-                     "它应出现在多数格中；1) 每页 2–5 格，按阅读顺序排列；"
-                     "2) 相邻格要承接：同一场景的连续动作、镜头在远景/中景/近景/特写之间有变化，不要每格都一样；"
-                     "3) 重要的转折或情绪高点用 span=2（整行）的大格，其余用 span=1；"
+                     "请把故事改写为漫画分镜（分页脚本）。ctx.beats 是已确定的节拍表：pages 的页数与 beats 一一对应，"
+                     "每页服务于对应节拍的 purpose 与 focus，页末最后一格要承接该页的 hook。"
+                     "0) 若 context.focus 存在，镜头以该主体为中心，它应出现在多数格中；"
+                     "1) 每页 1–5 格，按阅读顺序排列；"
+                     "2) 相邻格要承接：同一场景的连续动作，镜头在远景/中景/近景/特写之间有变化，不要每格都一样；"
+                     "3) 高潮与转折用 span=2（整行）的大格，其余用 span=1；"
                      "4) 出场角色必须用 context.characters 中的名字，并在 visual_en 中保持其外观描述一致；"
-                     "5) 对白要短（每句不超过 30 字），放在 dialogue 中，位置用 左上/右上/左下/右下/中上/中下 之一。"
+                     "5) 对白每句不超过 24 字，短句为佳；kind 取 speech（说话，默认）/thought（心声）/shout（呼喊）；"
+                     "speaker_side 取 左/中/右（说话人在画面中的大致位置）；position 取 左上/右上/左下/右下/中上/中下 之一；"
+                     "6) 旁白 narration 只写画面无法表达的信息，不要复述画面；"
+                     "7) sfx 为画面中的音效字（如「轰」「咔嗒」，没有则为空）；8) emotion 为该格主角的情绪，一个词。"
                      "JSON 字段：pages（数组，每页：no, panels）；panels（每格）：shot（远景/中景/近景/特写）, "
-                     "span（1 或 2）, narration（旁白，可空）, dialogue（数组：speaker, text, position）, "
-                     "characters（出场角色名数组）, visual_en（英文画面描述：构图、人物动作、表情与场景，"
-                     "不要要求图中出现文字或气泡）。", _validate_storyboard, log=log)
+                     "span（1 或 2）, narration（可空）, dialogue（数组：speaker, text, kind, speaker_side, position）, "
+                     "sfx（可空）, emotion（可空）, characters（出场角色名数组）, visual_en（英文画面描述：构图、人物动作、"
+                     "表情与场景，不要要求图中出现文字或气泡）。",
+                     lambda d: _validate_storyboard(d, pages), log=log)
 
 
 def portrait_draft(llm, *, context: Dict[str, Any]) -> Dict[str, Any]:

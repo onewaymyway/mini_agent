@@ -10,8 +10,8 @@
   python entrypoints/cli.py fill --world <wid> [--limit 5]
   python entrypoints/cli.py arc --world <wid> [--events a,b] [--from 0] [--to 30]
   python entrypoints/cli.py short --world <wid> [--arc <sid>] [--brief 文字] [--events a,b]
-  python entrypoints/cli.py board --world <wid> --story <sid>
-  python entrypoints/cli.py comic --world <wid> --story <sid>
+  python entrypoints/cli.py board --world <wid> --story <sid> [--pages 6|auto] [--reading ltr|rtl] [--color color|bw]
+  python entrypoints/cli.py comic --world <wid> --story <sid> [--reading ltr|rtl] [--color color|bw]
   python entrypoints/cli.py export --world <wid> --story <sid>
   python entrypoints/cli.py expand --world <wid> [--request "北方增加一个冰原部族"] [--count 3]
   python entrypoints/cli.py relations --world <wid> [--limit 5]  # 自动补全实体之间的关系
@@ -69,7 +69,12 @@ def main(argv=None) -> int:
     p = sub.add_parser("short"); p.add_argument("--world", required=True); p.add_argument("--arc", default=None)
     p.add_argument("--brief", default=""); p.add_argument("--events", default=""); p.add_argument("--form", default="novel")
     p = sub.add_parser("board"); p.add_argument("--world", required=True); p.add_argument("--story", required=True)
+    p.add_argument("--pages", default=None, help="页数（整数 1–20）或 auto（按故事长度，不限制），默认 6")
+    p.add_argument("--reading", default=None, choices=["ltr", "rtl"], help="阅读方向，默认 ltr")
+    p.add_argument("--color", default=None, choices=["color", "bw"], help="色彩，默认 color")
     p = sub.add_parser("comic"); p.add_argument("--world", required=True); p.add_argument("--story", required=True)
+    p.add_argument("--reading", default=None, choices=["ltr", "rtl"])
+    p.add_argument("--color", default=None, choices=["color", "bw"])
     p = sub.add_parser("export"); p.add_argument("--world", required=True); p.add_argument("--story", required=True)
     p = sub.add_parser("expand"); p.add_argument("--world", required=True)
     p.add_argument("--request", default="", help="扩展要求；留空则自动完善")
@@ -121,10 +126,11 @@ def main(argv=None) -> int:
                                                event_ids=_ids(args.events), form=args.form)})
         elif args.cmd == "board":
             llm, _ = make_text_llm()
-            _dump(engine.make_storyboard(llm, args.world, args.story))
+            _dump(engine.make_storyboard(llm, args.world, args.story, pages=args.pages,
+                                         reading=args.reading, color=args.color))
         elif args.cmd == "comic":
             prov, note = make_image_provider()
-            res = engine.render_comic(prov, args.world, args.story)
+            res = engine.render_comic(prov, args.world, args.story, reading=args.reading, color=args.color)
             _dump({**res, "note": note})
         elif args.cmd == "expand":
             llm, _ = make_text_llm()

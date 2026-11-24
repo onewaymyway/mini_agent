@@ -156,21 +156,47 @@ class RuleTextLLM(TextLLM):
         return {"visual_en": f"{ctx.get('name', 'character')}, adult person, neutral expression, "
                              "half body portrait, plain background, no text"}
 
+    _BEAT_PURPOSES = ("铺垫", "升级", "转折", "高潮", "收束")
+
+    def _task_beats(self, ctx):
+        """规则版节拍表：目标页数固定时生成对应页数，auto 时按情节长度给 3 页。"""
+        target = ctx.get("pages_target")
+        n = target if isinstance(target, int) else 3
+        acts = ctx.get("acts") or []
+        pages = []
+        for i in range(n):
+            purpose = self._BEAT_PURPOSES[min(int(i * len(self._BEAT_PURPOSES) / max(n, 1)), 4)]
+            act = acts[i % len(acts)] if acts else {"title": f"第 {i + 1} 页", "summary": ""}
+            pages.append({"no": i + 1, "purpose": f"{purpose}：{act.get('title', '')}",
+                          "focus": (act.get("summary") or "（规则占位）")[:40],
+                          "hook": "" if i == n - 1 else "（规则占位）下一页的悬念"})
+        return {"pages": pages}
+
     def _task_storyboard(self, ctx):
-        acts = ctx.get("acts") or [{"title": "第一幕", "summary": ctx.get("text", "")[:60] or "（规则占位）"}]
+        """规则版分镜：每个节拍一页，页数与 beats 一致；高潮页用整行大格。"""
+        beats = ctx.get("beats") or [{"purpose": "铺垫", "focus": ""}]
         names = [c.get("name") for c in ctx.get("characters") or [] if c.get("name")][:2]
         shots = ["远景", "中景", "近景", "特写"]
-        panels = []
-        for n, act in enumerate(acts, start=1):
-            dialogue = [{"speaker": names[0], "text": "（规则占位）", "position": "右上"}] if names else []
-            panels.append({
-                "shot": shots[(n - 1) % len(shots)], "span": 2 if n == 1 else 1,
-                "narration": act.get("summary", ""), "dialogue": dialogue,
-                "characters": names[:1],
-                "visual_en": f"{shots[(n - 1) % len(shots)]} view, scene {n}, muted palette, no text",
-            })
-        pages = [{"no": i + 1, "panels": panels[i:i + 4]} for i in range(0, len(panels), 4)]
-        return {"pages": pages or [{"no": 1, "panels": panels[:1]}]}
+        pages = []
+        k = 0
+        for n, beat in enumerate(beats, start=1):
+            panels = []
+            for j in range(2):
+                shot = shots[k % len(shots)]
+                k += 1
+                dialogue = []
+                if names and j == 0:
+                    dialogue = [{"speaker": names[0], "text": "（规则占位）", "position": "右上",
+                                 "speaker_side": "右", "kind": "speech"}]
+                panels.append({
+                    "shot": shot, "span": 2 if (beat.get("purpose") or "").startswith("高潮") and j == 0 else 1,
+                    "narration": beat.get("focus", "") if j == 0 else "",
+                    "dialogue": dialogue, "sfx": "轰" if (j == 1 and n == len(beats)) else "",
+                    "emotion": "平静", "characters": names[:1],
+                    "visual_en": f"{shot} view, scene {n} panel {j + 1}, muted palette, no text",
+                })
+            pages.append({"no": n, "panels": panels})
+        return {"pages": pages}
 
     def _task_short(self, ctx):
         return "（规则占位）" + (ctx.get("brief") or "这是一篇离线占位的短篇。") + "\n\n正文需要真实模型生成。"

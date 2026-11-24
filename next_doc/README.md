@@ -297,3 +297,13 @@ Explorer 重构、原始结果与混合合并、三层改进、trace 回放。
   plan.md` §0 第 8 条记录的问题，实测比该条目最初记录的 14 篇多一篇（应为
   15 篇）。全项目所有反向引用（含 `README.md`"必读"链接、`CLAUDE.md`、
   `docs/wiki-knowledge-base-guide.md` 等）已同步更新为新文件名。
+
+---
+
+## world_forge 漫画质量升级（2 篇）
+
+`external_projects/world_forge` 的漫画从「能出图」升级为「像正式漫画」的分期方案。
+
+1. `comic_quality_upgrade_design.md` — 设计：现状短板、改进方向、分期与决策（重建版）
+2. `comic_quality_p1_implementation_record.md` — 实施记录：P1（节拍表、结构化分镜、版式、排字、PNG 导出）
+

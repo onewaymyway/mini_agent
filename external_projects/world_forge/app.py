@@ -20,7 +20,7 @@ for _p in (PROJECT_ROOT, *PROJECT_ROOT.parents[:2]):
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from world_forge import engine, gaps, graph as graph_mod, jobs, perspective, proposals, repo, runlog as runlog_mod, store, timeline  # noqa: E402
+from world_forge import comic_layout, engine, gaps, graph as graph_mod, jobs, perspective, proposals, repo, runlog as runlog_mod, store, timeline  # noqa: E402
 from world_forge.providers.factory import make_image_provider, make_text_llm  # noqa: E402
 from world_forge.calendar import (MINUTES_PER_UNIT, UNIT_LABELS, clock_minutes, format_time,  # noqa: E402
                                   step_label, validate_step)
@@ -55,6 +55,13 @@ def _tag(status: str) -> str:
 
 KIND_LABEL = {"advance": "推进", "arc": "小故事线", "short": "短篇", "board": "分镜", "comic": "漫画",
               "export": "导出"}
+
+
+COMIC_PAGE_CHOICES = [6, 3, 4, 5, 8, 10, 12, "auto"]
+
+
+def _page_label(v) -> str:
+    return "按故事长度自动（不限制）" if v == "auto" else f"{v} 页"
 
 
 def _start_job(wid: str, kind: str, label: str, fn, *args, result_key=None, **kwargs) -> bool:
@@ -686,13 +693,26 @@ with tabs[6]:
         if r1[3].button("导出给 novel_writer"):
             if _start_job(wid, "export", "导出", engine.export_bundle, wid, sid):
                 st.rerun()
+        st.markdown("**漫画设置**")
+        oc = st.columns(3)
+        pages_pick = oc[0].selectbox("页数（生成分镜时确定）", COMIC_PAGE_CHOICES, format_func=_page_label,
+                                     key="comic_pages")
+        reading_pick = oc[1].radio("阅读方向", list(comic_layout.READING_OPTIONS),
+                                   format_func=lambda k: comic_layout.READING_LABEL[k], horizontal=True,
+                                   key="comic_reading")
+        color_pick = oc[2].radio("色彩", list(comic_layout.COLOR_OPTIONS),
+                                 format_func=lambda k: comic_layout.COLOR_LABEL[k], horizontal=True,
+                                 key="comic_color")
+        st.caption("页数在「生成分镜」时确定（节拍表据此规划）；阅读方向与色彩可在「生成漫画图」时调整，无需重新生成分镜。")
         r2 = st.columns(3)
         if r2[0].button("重新生成分镜" if has_board else "生成分镜",
                         disabled=smeta["kind"] == "arc" and not has_arc):
-            if _start_job(wid, "board", "生成分镜", engine.make_storyboard, LLM, wid, sid):
+            if _start_job(wid, "board", "生成分镜", engine.make_storyboard, LLM, wid, sid,
+                          pages=pages_pick, reading=reading_pick, color=color_pick):
                 st.rerun()
         if r2[1].button("重新生成漫画图" if has_comic else "生成漫画图", disabled=not has_board):
-            if _start_job(wid, "comic", "生成漫画图", engine.render_comic, IMG, wid, sid):
+            if _start_job(wid, "comic", "生成漫画图", engine.render_comic, IMG, wid, sid,
+                          reading=reading_pick, color=color_pick):
                 st.rerun()
         if has_board:
             board_now = store.read_json(d / "storyboard.json")
@@ -701,7 +721,7 @@ with tabs[6]:
             pick = st.selectbox("选择一格", opts, format_func=lambda x: f"第 {x[0]} 页 第 {x[1]} 格", key="panel_pick")
             if st.button("重新生成这一格", key="regen_panel"):
                 if _start_job(wid, "comic", f"重新生成第{pick[0]}页第{pick[1]}格", engine.render_comic,
-                              IMG, wid, sid, only=[pick]):
+                              IMG, wid, sid, only=[pick], reading=reading_pick, color=color_pick):
                     st.rerun()
         if smeta.get("focus"):
             st.info(f"主体视角：以「{smeta['focus']['name']}」（{smeta['focus']['kind']}）为主角展开；"
@@ -724,20 +744,43 @@ with tabs[6]:
             st.markdown("#### 漫画")
             if board.get("stub"):
                 st.caption("当前为占位图，未调用真实图像模型。")
+            opts_now = board.get("opts") or {}
+            if opts_now:
+                st.caption(f"{len(board['pages'])} 页 · {comic_layout.READING_LABEL.get(opts_now.get('reading'), '')} · "
+                           f"{comic_layout.COLOR_LABEL.get(opts_now.get('color'), '')}")
+            zip_file = d / "comic_pages.zip"
+            if zip_file.is_file():
+                st.download_button("下载全部 PNG 页（zip）", data=zip_file.read_bytes(),
+                                   file_name=f"{smeta['title']}_漫画.zip", mime="application/zip", key="dl_comic_zip")
+            pngs = sorted((d / "pages").glob("page_*.png")) if (d / "pages").is_dir() else []
+            if pngs:
+                with st.expander(f"PNG 成品页（{len(pngs)} 页，服务端排字）", expanded=True):
+                    for png in pngs:
+                        st.image(str(png), use_container_width=True)
+                        st.download_button(f"下载 {png.name}", data=png.read_bytes(), file_name=png.name,
+                                           mime="image/png", key=f"dl_{png.stem}")
             comic_file = d / "comic.html"
             if comic_file.is_file():
-                st.caption("漫画页预览（图片已嵌入，可在浏览器中单独打开 comic.html）")
+                st.caption("网页预览（图片已嵌入；尾巴与完整排字以上方 PNG 为准）")
                 components.html(comic_file.read_text(encoding="utf-8"), height=960, scrolling=True)
-            with st.expander("分镜脚本（镜头、版式、对白）", expanded=not comic_file.is_file()):
+            with st.expander("分镜脚本（节拍、镜头、版式、对白）", expanded=not comic_file.is_file()):
                 for pg in board["pages"]:
-                    st.markdown(f"**第 {pg['no']} 页**")
+                    head = f"**第 {pg['no']} 页**"
+                    if pg.get("beat"):
+                        head += f"　{pg['beat']}"
+                    st.markdown(head)
+                    if pg.get("hook"):
+                        st.caption(f"页末钩子：{pg['hook']}")
                     for pn in pg["panels"]:
                         size = "整行" if int(pn.get("span") or 1) == 2 else "半行"
-                        st.markdown(f"- **{pn.get('shot', '中景')} · {size}**：{pn['visual_en']}")
+                        extra = f"｜音效「{pn['sfx']}」" if pn.get("sfx") else ""
+                        st.markdown(f"- **{pn.get('shot', '中景')} · {size}**{extra}：{pn['visual_en']}")
                         if pn.get("narration"):
                             st.caption(f"旁白：{pn['narration']}")
                         for dl in pn.get("dialogue") or []:
-                            st.caption(f"{dl.get('speaker', '')}（{dl.get('position', '')}）：{dl.get('text', '')}")
+                            kind_label = {"thought": "心声", "shout": "呼喊"}.get(dl.get("kind"), "")
+                            tag = f"［{kind_label}］" if kind_label else ""
+                            st.caption(f"{tag}{dl.get('speaker', '')}（{dl.get('position', '')}）：{dl.get('text', '')}")
 
     st.markdown("#### 运行日志（故事与漫画）")
     s_runs = runlog_mod.list_runs(wid, kinds={"arc", "short", "board", "comic", "export"})
