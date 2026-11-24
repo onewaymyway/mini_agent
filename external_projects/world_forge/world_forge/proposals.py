@@ -352,3 +352,28 @@ def reject(wid: str, pid: str, note: str = "") -> Dict[str, Any]:
     queue[idx] = rec
     repo.save_proposals(wid, queue)
     return rec
+
+
+# ---------- 批量处理
+
+def _batch(wid: str, pids: List[str], action) -> List[Dict[str, Any]]:
+    """逐条处理，单条失败不影响其它条目；每条返回 {id, op, status, reasons, error}。"""
+    out: List[Dict[str, Any]] = []
+    for pid in pids:
+        try:
+            rec = action(wid, pid)
+            out.append({"id": pid, "op": rec["op"], "payload": rec["payload"], "status": rec["status"],
+                        "reasons": rec.get("reasons") or [], "error": None})
+        except (KeyError, ValueError) as exc:
+            out.append({"id": pid, "op": None, "payload": {}, "status": "error", "reasons": [],
+                        "error": str(exc)})
+    return out
+
+
+def approve_many(wid: str, pids: List[str]) -> List[Dict[str, Any]]:
+    """批量批准。按传入顺序逐条检查与应用（前面的写入会影响后面的一致性检查）。"""
+    return _batch(wid, pids, approve)
+
+
+def reject_many(wid: str, pids: List[str], note: str = "") -> List[Dict[str, Any]]:
+    return _batch(wid, pids, lambda w, p: reject(w, p, note))

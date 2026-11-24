@@ -147,3 +147,35 @@ def normalize_payload_for_test():
 
     return normalize_payload("add_event", {"title": "t", "changes": [
         {"op": "update_entity", "target": "ent_1", "payload": {"attrs": ["x"]}}]})
+
+
+def test_approve_many_applies_and_reports_per_item():
+    wid = _blank_world()
+    a = proposals.submit(wid, "create_entity", payload={"kind": "势力", "name": "霜港会", "summary": "x"})
+    b = proposals.submit(wid, "create_entity", payload={"kind": "势力", "name": "霜港会", "summary": "y"})
+    c = proposals.submit(wid, "create_entity", payload={"kind": "势力", "name": "赤沙盟", "summary": "z"})
+    assert a["status"] == b["status"] == c["status"] == "pending"
+    res = proposals.approve_many(wid, [a["id"], b["id"], c["id"]])
+    statuses = [r["status"] for r in res]
+    assert statuses == ["applied", "blocked", "applied"]   # b 与 a 重名，批准时被拦截
+    assert any("同名" in r for r in res[1]["reasons"])
+    names = [e["name"] for e in repo.load_entities(wid)]
+    assert names.count("霜港会") == 1 and "赤沙盟" in names
+
+
+def test_batch_handles_unknown_and_already_processed():
+    wid = _blank_world()
+    a = proposals.submit(wid, "create_entity", payload={"kind": "势力", "name": "甲盟", "summary": "x"})
+    res = proposals.approve_many(wid, [a["id"], "prp_missing", a["id"]])
+    assert res[0]["status"] == "applied"
+    assert res[1]["status"] == "error" and res[1]["error"]
+    assert res[2]["status"] == "error"   # 已批准，不能再次批准
+
+
+def test_reject_many():
+    wid = _blank_world()
+    a = proposals.submit(wid, "create_entity", payload={"kind": "势力", "name": "乙盟", "summary": "x"})
+    b = proposals.submit(wid, "create_entity", payload={"kind": "势力", "name": "丙盟", "summary": "y"})
+    res = proposals.reject_many(wid, [a["id"], b["id"]])
+    assert [r["status"] for r in res] == ["rejected", "rejected"]
+    assert all(e["name"] not in ("乙盟", "丙盟") for e in repo.load_entities(wid))

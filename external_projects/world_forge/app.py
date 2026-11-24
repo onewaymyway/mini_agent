@@ -240,22 +240,65 @@ with tabs[2]:
     left, right = st.columns([3, 2])
     with left:
         st.markdown("#### 待确认提案")
+        brep = st.session_state.get("batch_report")
+        if brep:
+            with st.container(border=True):
+                counts = {}
+                for r in brep["results"]:
+                    counts[r["status"]] = counts.get(r["status"], 0) + 1
+                st.markdown(f"**{brep['action']}结果**：" + "　".join(
+                    f"{STATUS_LABEL.get(k, '失败' if k == 'error' else k)} {v}" for k, v in counts.items()))
+                for r in brep["results"]:
+                    if r["status"] == "applied":
+                        continue
+                    detail = r["error"] or "；".join(r["reasons"]) or "未处理"
+                    st.caption(f"{r['op'] or '提案'} {r['id']}：{detail}")
+                if st.button("收起结果", key="close_batch_report"):
+                    del st.session_state["batch_report"]
+                    st.rerun()
         if not pending:
             st.caption("没有待确认的提案。")
-        for p in pending:
-            with st.container(border=True):
-                head = p["payload"].get("name") or p["payload"].get("title") or p["payload"].get("summary", "")[:30]
-                st.markdown(f"**{p['op']}** · {head} {_tag(p['status'])}", unsafe_allow_html=True)
-                st.caption(f"来源：{p['source']} · 风险：{p.get('risk')}")
-                with st.expander("查看内容"):
-                    st.json(p["payload"])
-                b1, b2 = st.columns(2)
-                if b1.button("批准", key=f"ap_{p['id']}"):
-                    _safe(proposals.approve, wid, p["id"])
-                    st.rerun()
-                if b2.button("拒绝", key=f"rj_{p['id']}"):
-                    _safe(proposals.reject, wid, p["id"])
-                    st.rerun()
+        else:
+            chosen = [p["id"] for p in pending if st.session_state.get(f"sel_{p['id']}")]
+            confirm_all = st.checkbox(f"我已查看全部 {len(pending)} 条待确认提案，确认可以全部处理",
+                                      key="confirm_all_pending")
+            b1, b2, b3, b4 = st.columns(4)
+            if b1.button(f"批准所选（{len(chosen)}）", type="primary", disabled=not chosen, key="batch_ap_sel"):
+                with st.spinner("正在批准……"):
+                    res = proposals.approve_many(wid, chosen)
+                st.session_state.batch_report = {"action": "批准所选", "results": res}
+                st.rerun()
+            if b2.button(f"拒绝所选（{len(chosen)}）", disabled=not chosen, key="batch_rj_sel"):
+                res = proposals.reject_many(wid, chosen)
+                st.session_state.batch_report = {"action": "拒绝所选", "results": res}
+                st.rerun()
+            if b3.button(f"全部批准（{len(pending)}）", disabled=not confirm_all, key="batch_ap_all"):
+                with st.spinner("正在批准全部提案……"):
+                    res = proposals.approve_many(wid, [p["id"] for p in pending])
+                st.session_state.batch_report = {"action": "全部批准", "results": res}
+                st.rerun()
+            if b4.button(f"全部拒绝（{len(pending)}）", disabled=not confirm_all, key="batch_rj_all"):
+                res = proposals.reject_many(wid, [p["id"] for p in pending])
+                st.session_state.batch_report = {"action": "全部拒绝", "results": res}
+                st.rerun()
+            st.caption("批准会真正写入设定，请先勾选确认再使用「全部」按钮。批准按列表顺序逐条检查，"
+                       "后面的提案会基于前面已写入的结果进行一致性检查。")
+            for p in pending:
+                with st.container(border=True):
+                    head = p["payload"].get("name") or p["payload"].get("title") or p["payload"].get("summary", "")[:30]
+                    top = st.columns([1, 9])
+                    top[0].checkbox("选", key=f"sel_{p['id']}", label_visibility="collapsed")
+                    top[1].markdown(f"**{p['op']}** · {head} {_tag(p['status'])}", unsafe_allow_html=True)
+                    st.caption(f"来源：{p['source']} · 风险：{p.get('risk')}")
+                    with st.expander("查看内容"):
+                        st.json(p["payload"])
+                    ia, ir = st.columns(2)
+                    if ia.button("批准", key=f"ap_{p['id']}"):
+                        _safe(proposals.approve, wid, p["id"])
+                        st.rerun()
+                    if ir.button("拒绝", key=f"rj_{p['id']}"):
+                        _safe(proposals.reject, wid, p["id"])
+                        st.rerun()
         st.markdown("#### 最近被拦截或处理的提案")
         recent = [p for p in proposals_all if p["status"] in ("blocked", "applied", "rejected")][-12:][::-1]
         for p in recent:
