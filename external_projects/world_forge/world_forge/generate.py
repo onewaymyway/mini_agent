@@ -202,14 +202,18 @@ def advance_draft(llm, *, context: Dict[str, Any], log=None) -> Dict[str, Any]:
 
 def arc_draft(llm, *, context: Dict[str, Any], log=None) -> Dict[str, Any]:
     return call_json(llm, "arc", context,
-                     "请把给定事件整理为一条小故事线。JSON 字段：title, premise（一句话前提）, protagonist_names"
-                     "（字符串数组）, acts（数组：title, summary）, ending。acts 为 2–4 幕。", _validate_arc, log=log)
+                     "请把给定事件整理为一条小故事线。若 context.focus 存在，则以该主体的视角展开：它是主角，"
+                     "情节围绕它的经历、选择与变化。JSON 字段：title, premise（一句话前提）, protagonist_names"
+                     "（字符串数组，若有 focus 则第一个为 focus）, acts（数组：title, summary）, ending。acts 为 2–4 幕。",
+                     _validate_arc, log=log)
 
 
 def short_draft(llm, *, context: Dict[str, Any], form: str) -> str:
     instr = ("请创作一篇中文短篇小说，约 2000–4000 字，有明确的开头、冲突与结尾，直接输出正文（Markdown），"
              "不要输出解释。" if form == "novel" else
              "请写一篇中文故事说明与分镜素材，直接输出正文（Markdown）。")
+    if context.get("focus"):
+        instr += f"若 context.focus 存在，请以「{context['focus']}」的视角叙述。"
     raw = llm.ask(build_prompt("short", context, instr), system=SYSTEM)
     text = (raw or "").strip()
     if not text:
@@ -219,7 +223,8 @@ def short_draft(llm, *, context: Dict[str, Any], form: str) -> str:
 
 def storyboard_draft(llm, *, context: Dict[str, Any], log=None) -> Dict[str, Any]:
     return call_json(llm, "storyboard", context,
-                     "请把故事改写为漫画分镜，要求像真正的漫画页：1) 每页 2–5 格，按阅读顺序排列；"
+                     "请把故事改写为漫画分镜，要求像真正的漫画页：0) 若 context.focus 存在，镜头以该主体为中心，"
+                     "它应出现在多数格中；1) 每页 2–5 格，按阅读顺序排列；"
                      "2) 相邻格要承接：同一场景的连续动作、镜头在远景/中景/近景/特写之间有变化，不要每格都一样；"
                      "3) 重要的转折或情绪高点用 span=2（整行）的大格，其余用 span=1；"
                      "4) 出场角色必须用 context.characters 中的名字，并在 visual_en 中保持其外观描述一致；"

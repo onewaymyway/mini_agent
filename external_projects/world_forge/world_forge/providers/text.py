@@ -108,7 +108,8 @@ class RuleTextLLM(TextLLM):
         return {
             "title": "（规则占位）" + (titles[0] if titles else "故事线"),
             "premise": "（规则占位）围绕所选事件展开的小故事。",
-            "protagonist_names": [c.get("name") for c in ctx.get("characters", [])][:1],
+            "protagonist_names": [ctx["focus"]] if ctx.get("focus") else
+                                 [c.get("name") for c in ctx.get("characters", [])][:1],
             "acts": [{"title": f"第{i + 1}幕", "summary": f"（规则占位）{t}"}
                      for i, t in enumerate(titles or ["故事开端"])],
             "ending": "（规则占位）结局待定。",

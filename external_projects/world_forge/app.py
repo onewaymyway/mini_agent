@@ -617,20 +617,47 @@ with tabs[5]:
 
 with tabs[6]:
     evs = repo.load_events(wid, meta["active_branch"])
-    st.markdown("#### 从事件生成小故事线")
-    ev_labels = {e["id"]: f"{e['t']} · {e['title']}" for e in evs}
-    chosen_ev = st.multiselect("选择事件", list(ev_labels), format_func=lambda k: ev_labels[k])
-    if st.button("生成小故事线", disabled=not chosen_ev or not meta.get("charter")):
-        if _start_job(wid, "arc", "生成小故事线", engine.make_arc, LLM, wid, event_ids=chosen_ev, result_key="story"):
-            st.rerun()
+    st.markdown("#### 生成小故事线")
+    src = st.radio("素材来源", ["手动选择事件", "某个主体的时间线（以它为视角）"], horizontal=True, key="story_src")
+    if src.startswith("某个"):
+        lanes = perspective.subject_lanes(wid, meta["active_branch"])
+        if not lanes["subjects"]:
+            st.caption("还没有主体参与过事件，无法按主体生成。")
+        else:
+            subj_opts = {x["id"]: f"{x['name']}（{x['kind']} · {x['count']} 件）" for x in lanes["subjects"]}
+            subj_pick = st.selectbox("选择主体（它将成为故事的主角）", list(subj_opts),
+                                     format_func=lambda k: subj_opts[k], key="story_subject")
+            subj_evs = next(x for x in lanes["subjects"] if x["id"] == subj_pick)["events"]
+            subj_labels = {ev["id"]: f"{ev.get('t', '')} · {ev['title']}" for _, ev in subj_evs}
+            chosen_subj_ev = st.multiselect("该主体的事件（默认全选，可去掉不需要的）", list(subj_labels),
+                                            default=list(subj_labels), format_func=lambda k: subj_labels[k],
+                                            key=f"subj_ev_{subj_pick}")
+            if st.button("以该主体的时间线生成小故事线", disabled=not chosen_subj_ev or not meta.get("charter"),
+                         key="story_from_subject"):
+                if _start_job(wid, "arc", f"以「{lanes['names'].get(subj_pick)}」的视角生成小故事线",
+                              engine.make_arc, LLM, wid, event_ids=chosen_subj_ev, subject_id=subj_pick,
+                              result_key="story"):
+                    st.rerun()
+    else:
+        ev_labels = {e["id"]: f"{e['t']} · {e['title']}" for e in evs}
+        chosen_ev = st.multiselect("选择事件", list(ev_labels), format_func=lambda k: ev_labels[k])
+        if st.button("生成小故事线", disabled=not chosen_ev or not meta.get("charter")):
+            if _start_job(wid, "arc", "生成小故事线", engine.make_arc, LLM, wid, event_ids=chosen_ev,
+                          result_key="story"):
+                st.rerun()
     st.markdown("#### 直接创作（不经过时间线）")
+    lanes_all = perspective.subject_lanes(wid, meta["active_branch"])
+    view_opts = {"": "不指定（自由创作）"}
+    view_opts.update({x["id"]: f"{x['name']}（{x['kind']}）" for x in lanes_all["subjects"]})
     with st.form("direct_story"):
         brief = st.text_area("描述一个小事件或一段创作想法")
+        vp = st.selectbox("视角（可选）：以某个主体的时间线为素材，并以它叙述", list(view_opts),
+                          format_func=lambda k: view_opts[k])
         form = st.radio("形式", ["novel", "notes"], horizontal=True,
                         format_func=lambda x: "短篇小说" if x == "novel" else "故事说明")
-        if st.form_submit_button("创作短篇") and brief.strip():
+        if st.form_submit_button("创作短篇") and (brief.strip() or vp):
             if _start_job(wid, "short", "创作短篇", engine.write_short, LLM, wid, brief=brief, form=form,
-                          result_key="story"):
+                          subject_id=vp or None, result_key="story"):
                 st.rerun()
     stories = repo.list_story_ids(wid)
     st.markdown("#### 故事")
@@ -676,6 +703,9 @@ with tabs[6]:
                 if _start_job(wid, "comic", f"重新生成第{pick[0]}页第{pick[1]}格", engine.render_comic,
                               IMG, wid, sid, only=[pick]):
                     st.rerun()
+        if smeta.get("focus"):
+            st.info(f"主体视角：以「{smeta['focus']['name']}」（{smeta['focus']['kind']}）为主角展开；"
+                    "成文、分镜与漫画都沿用这一视角。")
         if has_arc:
             arc = store.read_json(d / "arc.json")
             st.markdown(f"**{arc['title']}**　{arc.get('premise', '')}")

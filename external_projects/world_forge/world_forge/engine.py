@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from . import cancel, generate, gaps, proposals, repo, store, timeline
+from . import cancel, generate, gaps, perspective, proposals, repo, store, timeline
 from .calendar import (clock_minutes, format_time, step_label, step_minutes, validate_step, year_of)
 from .paths import data_root
 
@@ -772,12 +772,35 @@ def _event_context(wid: str, events: List[dict]) -> List[dict]:
              "involves": [ent.get(i, i) for i in e.get("involves", [])]} for e in events]
 
 
-def _generate_arc(llm, wid: str, events: List[dict], log) -> Dict[str, Any]:
+def _focus_of(wid: str, subject_id: Optional[str]) -> Optional[Dict[str, str]]:
+    """主体视角：返回 {"id","name","kind"}；主体不存在则报错。"""
+    if not subject_id:
+        return None
+    names = {e["id"]: (e["name"], e["kind"]) for e in repo.load_entities(wid)}
+    names.update({c["id"]: (c["name"], "角色") for c in repo.load_characters(wid)})
+    if subject_id not in names:
+        raise EngineError(f"主体不存在：{subject_id}")
+    return {"id": subject_id, "name": names[subject_id][0], "kind": names[subject_id][1]}
+
+
+def _subject_event_ids(wid: str, subject_id: str) -> List[str]:
+    """某个主体参与（或被变更）的事件 id，按时间顺序。没有则报错。"""
+    lanes = perspective.subject_lanes(wid)
+    lane = next((x for x in lanes["subjects"] if x["id"] == subject_id), None)
+    if lane is None or not lane["events"]:
+        raise EngineError("该主体还没有参与任何事件，无法以它的时间线生成故事")
+    return [ev["id"] for _, ev in lane["events"]]
+
+
+def _generate_arc(llm, wid: str, events: List[dict], log, focus: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     ev_ctx = _event_context(wid, events)
     involved = {n for e in ev_ctx for n in e["involves"]}
     chars = [{"name": c["name"], "role": c.get("role"), "summary": c.get("summary", "")[:100]}
              for c in repo.load_characters(wid) if c["name"] in involved][:6]
     ctx = {"charter": require_charter(wid), "events": ev_ctx, "characters": chars}
+    if focus:
+        ctx["focus"] = focus["name"]
+        log.log("context", f"主体视角：以「{focus['name']}」（{focus['kind']}）的经历展开")
     log.log("context", f"上下文：宪章 1 份、事件 {len(ev_ctx)} 个、出场角色 {len(chars)} 名")
     cancel.checkpoint()
     arc = generate.arc_draft(LoggedLLM(llm, log), context=ctx, log=log)
@@ -786,19 +809,27 @@ def _generate_arc(llm, wid: str, events: List[dict], log) -> Dict[str, Any]:
 
 
 def make_arc(llm, wid: str, *, event_ids: Optional[List[str]] = None,
-             year_from: Optional[int] = None, year_to: Optional[int] = None, log=None) -> str:
+             year_from: Optional[int] = None, year_to: Optional[int] = None,
+             subject_id: Optional[str] = None, log=None) -> str:
+    """生成小故事线。subject_id 有值时，素材取该主体的时间线，并以它为视角（主角）。"""
     log = _log_or_new(log, wid, "arc")
     try:
-        log.log("start", "生成小故事线", event_ids=len(event_ids or []), year_from=year_from, year_to=year_to)
+        focus = _focus_of(wid, subject_id)
+        if focus and not event_ids:
+            event_ids = _subject_event_ids(wid, focus["id"])
+        log.log("start", "生成小故事线" + (f"（主体视角：{focus['name']}）" if focus else ""),
+                event_ids=len(event_ids or []), year_from=year_from, year_to=year_to)
         events = select_events(wid, event_ids=event_ids, year_from=year_from, year_to=year_to)
         if not events:
             raise EngineError("没有可用于成文的事件，请选择事件或调整年份范围")
         log.log("context", f"选中 {len(events)} 个事件：" + "；".join(e["title"] for e in events[:6])
                 + ("…" if len(events) > 6 else ""))
-        arc = _generate_arc(llm, wid, events, log)
+        arc = _generate_arc(llm, wid, events, log, focus=focus)
         with _with_lock(wid):
-            sid = _new_story(wid, "arc", arc["title"], {"source_event_ids": [e["id"] for e in events],
-                                                        "status": "draft"})
+            extra = {"source_event_ids": [e["id"] for e in events], "status": "draft"}
+            if focus:
+                extra["focus"] = focus
+            sid = _new_story(wid, "arc", arc["title"], extra)
             store.write_json(repo.story_dir(wid, sid) / "arc.json", arc)
         log.log("save", f"已保存小故事线 {sid}", level="ok")
         log.log("done", "完成", level="ok", story=sid)
@@ -820,7 +851,7 @@ def regenerate_arc(llm, wid: str, sid: str, log=None) -> str:
         if not events:
             raise EngineError("原始事件已不存在，无法重新生成")
         log.log("context", f"沿用原来的 {len(events)} 个事件")
-        arc = _generate_arc(llm, wid, events, log)
+        arc = _generate_arc(llm, wid, events, log, focus=meta.get("focus"))
         with _with_lock(wid):
             path = repo.story_dir(wid, sid) / "arc.json"
             _archive(path, log)
@@ -837,9 +868,13 @@ def regenerate_arc(llm, wid: str, sid: str, log=None) -> str:
 
 
 def _generate_short(llm, wid: str, *, arc_sid: Optional[str], brief: str,
-                    event_ids: Optional[List[str]], form: str, log) -> Dict[str, Any]:
+                    event_ids: Optional[List[str]], form: str, log,
+                    focus: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     charter = require_charter(wid)
     ctx: Dict[str, Any] = {"charter": charter, "brief": brief.strip()}
+    if focus:
+        ctx["focus"] = focus["name"]
+        log.log("context", f"主体视角：以「{focus['name']}」（{focus['kind']}）叙述")
     title = "短篇"
     source_events: List[str] = []
     if arc_sid:
@@ -866,19 +901,29 @@ def _generate_short(llm, wid: str, *, arc_sid: Optional[str], brief: str,
 
 
 def write_short(llm, wid: str, *, arc_sid: Optional[str] = None, brief: str = "",
-                event_ids: Optional[List[str]] = None, form: str = "novel", log=None) -> str:
-    """成文短篇。可基于小故事线（arc_sid），也可直接由一段事件描述（brief）+ 指定事件创作。"""
+                event_ids: Optional[List[str]] = None, form: str = "novel",
+                subject_id: Optional[str] = None, log=None) -> str:
+    """成文短篇。可基于小故事线（arc_sid），也可直接由一段描述（brief）+ 事件创作。
+    subject_id 有值时，素材取该主体的时间线并以它为视角；基于小故事线时自动沿用其视角。"""
     log = _log_or_new(log, wid, "short")
     try:
+        focus = _focus_of(wid, subject_id)
+        if focus is None and arc_sid:
+            focus = load_story_meta_safe(wid, arc_sid).get("focus")
+        if focus and subject_id and not event_ids:
+            event_ids = _subject_event_ids(wid, focus["id"])
         mode = "基于小故事线" if arc_sid else ("直接创作" if brief.strip() else "基于事件")
         log.log("start", f"成文短篇（{mode}，形式：{'短篇小说' if form == 'novel' else '故事说明'}）",
                 mode=mode, brief_chars=len(brief.strip()), event_ids=len(event_ids or []))
-        out = _generate_short(llm, wid, arc_sid=arc_sid, brief=brief, event_ids=event_ids, form=form, log=log)
+        out = _generate_short(llm, wid, arc_sid=arc_sid, brief=brief, event_ids=event_ids, form=form, log=log,
+                              focus=focus)
         with _with_lock(wid):
-            sid = _new_story(wid, "short", out["title"], {
-                "parent": arc_sid, "source_event_ids": out["source_events"], "form": form, "status": "draft",
-                "request": {"arc_sid": arc_sid, "brief": brief.strip(), "event_ids": list(event_ids or []),
-                            "form": form}})
+            extra = {"parent": arc_sid, "source_event_ids": out["source_events"], "form": form, "status": "draft",
+                     "request": {"arc_sid": arc_sid, "brief": brief.strip(), "event_ids": list(event_ids or []),
+                                 "form": form, "subject_id": subject_id}}
+            if focus:
+                extra["focus"] = focus
+            sid = _new_story(wid, "short", out["title"], extra)
             (repo.story_dir(wid, sid) / "story.md").write_text(out["text"], encoding="utf-8")
         log.log("save", f"已保存短篇 {sid}「{out['title']}」", level="ok")
         log.log("done", "完成", level="ok", story=sid)
@@ -897,8 +942,10 @@ def regenerate_short(llm, wid: str, sid: str, log=None) -> str:
         if not req:
             raise EngineError("这篇短篇创建于旧版本，缺少原始输入，无法重新生成（可删除后重新创作）")
         log.log("start", f"重新成文（故事 {sid}，沿用原始输入）")
+        focus = _focus_of(wid, req.get("subject_id")) if req.get("subject_id") else meta.get("focus")
         out = _generate_short(llm, wid, arc_sid=req.get("arc_sid"), brief=req.get("brief", ""),
-                              event_ids=req.get("event_ids"), form=req.get("form", "novel"), log=log)
+                              event_ids=req.get("event_ids"), form=req.get("form", "novel"), log=log,
+                              focus=focus)
         with _with_lock(wid):
             d = repo.story_dir(wid, sid)
             _archive(d / "story.md", log)
@@ -964,6 +1011,12 @@ def make_storyboard(llm, wid: str, sid: str, log=None) -> Dict[str, Any]:
             raise EngineError("该故事没有可用于分镜的内容")
         ctx["characters"] = [{"name": c["name"], "summary": c.get("summary", "")[:80]}
                              for c in repo.load_characters(wid)][:12]
+        own_focus = repo.load_story_meta(wid, sid).get("focus")
+        if own_focus is None and repo.load_story_meta(wid, sid).get("parent"):
+            own_focus = load_story_meta_safe(wid, repo.load_story_meta(wid, sid)["parent"]).get("focus")
+        if own_focus:
+            ctx["focus"] = own_focus["name"]
+            log.log("context", f"主体视角：分镜以「{own_focus['name']}」为中心")
         cancel.checkpoint()
         board = generate.storyboard_draft(LoggedLLM(llm, log), context=ctx, log=log)
         n_panels = sum(len(p["panels"]) for p in board["pages"])
