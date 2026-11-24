@@ -118,3 +118,32 @@ def _blank_world() -> str:
     repo.save_meta(meta)
     repo.save_branches(wid, repo.load_branches(wid))
     return wid
+
+
+def test_attrs_as_list_or_string_is_normalized_not_crashing():
+    from world_forge.proposals import coerce_attrs, normalize_payload
+
+    assert coerce_attrs(["沙漠", {"气候": "干旱"}]) == {"要点1": "沙漠", "气候": "干旱"}
+    assert coerce_attrs("未知") == {"说明": "未知"}
+    assert coerce_attrs(None) == {}
+    wid = _blank_world()
+    rec = proposals.submit(wid, "create_entity",
+                           payload={"kind": "地理", "name": "赤砂原", "summary": "x", "attrs": ["干旱", "无水源"]})
+    assert rec["status"] == "applied"
+    ent = next(e for e in repo.load_entities(wid) if e["name"] == "赤砂原")
+    assert ent["attrs"] == {"要点1": "干旱", "要点2": "无水源"}
+    # 列表形式的 attrs 不应被误判为“宪章级”权力字段，也不应崩溃
+    rec2 = proposals.submit(wid, "update_entity", ent["id"], {"attrs": ["另一要点"]})
+    assert rec2["status"] == "applied"
+
+
+def test_event_change_attrs_normalized():
+    p = normalize_payload_for_test()
+    assert p["changes"][0]["payload"]["attrs"] == {"要点1": "x"}
+
+
+def normalize_payload_for_test():
+    from world_forge.proposals import normalize_payload
+
+    return normalize_payload("add_event", {"title": "t", "changes": [
+        {"op": "update_entity", "target": "ent_1", "payload": {"attrs": ["x"]}}]})

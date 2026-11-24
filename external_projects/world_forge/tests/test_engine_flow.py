@@ -147,3 +147,14 @@ def test_expansion_rejects_duplicate_names(world, llm):
                              "relations": [], "canon_updates": [], "new_characters": []})
     res = engine.expand_world(Dup(), world, request="重复名", count=1)
     assert res["records"][0]["status"] == "blocked"
+
+
+def test_expansion_with_list_attrs_from_model_does_not_crash(world):
+    class ListAttrs:
+        def ask(self, prompt, system=""):
+            import json as _j
+            return _j.dumps({"entities": [{"kind": "地理", "name": "霜石谷", "summary": "冷",
+                                           "attrs": ["极寒", "无人定居"]}],
+                             "relations": [], "canon_updates": [], "new_characters": []})
+    res = engine.expand_world(ListAttrs(), world, request="北方山谷", count=1)
+    assert res["records"][0]["status"] == "applied"

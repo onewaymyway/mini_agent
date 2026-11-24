@@ -36,6 +36,41 @@ def _norm_name(name: Any) -> str:
     return str(name or "").strip().casefold()
 
 
+# ---------- 输入规范化
+# 模型输出不可控：attrs 可能是数组、字符串或对象。统一在提案入口转换为字典，
+# 之后的分级、检查与写入都只需处理字典。
+
+def coerce_attrs(value: Any) -> Dict[str, Any]:
+    if value is None or value == "":
+        return {}
+    if isinstance(value, dict):
+        return {str(k): v for k, v in value.items()}
+    if isinstance(value, list):
+        out: Dict[str, Any] = {}
+        for i, item in enumerate(value, start=1):
+            if isinstance(item, dict):
+                out.update({str(k): v for k, v in item.items()})
+            else:
+                out[f"要点{i}"] = str(item)
+        return out
+    return {"说明": str(value)}
+
+
+def normalize_payload(op: str, payload: Any) -> Dict[str, Any]:
+    """返回规范化后的 payload 副本：attrs 为字典；事件中的变更递归规范化。"""
+    if not isinstance(payload, dict):
+        payload = {}
+    out = dict(payload)
+    if "attrs" in out:
+        out["attrs"] = coerce_attrs(out["attrs"])
+    if op == "add_event" and isinstance(out.get("changes"), list):
+        out["changes"] = [
+            {**c, "payload": normalize_payload(c.get("op", ""), c.get("payload"))}
+            for c in out["changes"] if isinstance(c, dict)
+        ]
+    return out
+
+
 # ---------- 风险分级
 
 def classify(op: str, payload: Dict[str, Any]) -> str:
@@ -252,7 +287,7 @@ def apply_op(wid: str, op: str, target: Optional[str], payload: Dict[str, Any], 
 
 def submit(wid: str, op: str, target: Optional[str] = None, payload: Optional[Dict[str, Any]] = None, *,
            source: str = "user", note: str = "") -> Dict[str, Any]:
-    payload = payload or {}
+    payload = normalize_payload(op, payload)
     state = load_state(wid)
     auto_minor = bool(state["meta"].get("settings", {}).get("auto_minor", True))
     rec: Dict[str, Any] = {
