@@ -265,7 +265,7 @@ def apply_op(wid: str, op: str, target: Optional[str], payload: Dict[str, Any], 
         applied = []
         for ch in payload.get("changes") or []:
             apply_op(wid, ch["op"], ch.get("target"), ch.get("payload") or {}, source)
-            applied.append({"op": ch["op"], "target": ch.get("target")})
+            applied.append({"op": ch["op"], "target": ch.get("target"), "payload": ch.get("payload") or {}})
         repo.append_event(wid, meta["active_branch"], {
             "id": eid, "minute": minutes, "year": year_of(minutes), "t": format_time(minutes),
             "title": payload["title"].strip(),

@@ -20,7 +20,7 @@ for _p in (PROJECT_ROOT, *PROJECT_ROOT.parents[:2]):
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from world_forge import engine, gaps, graph as graph_mod, jobs, proposals, repo, runlog as runlog_mod, store, timeline  # noqa: E402
+from world_forge import engine, gaps, graph as graph_mod, jobs, perspective, proposals, repo, runlog as runlog_mod, store, timeline  # noqa: E402
 from world_forge.providers.factory import make_image_provider, make_text_llm  # noqa: E402
 from world_forge.calendar import (MINUTES_PER_UNIT, UNIT_LABELS, clock_minutes, format_time,  # noqa: E402
                                   step_label, validate_step)
@@ -516,11 +516,36 @@ with tabs[4]:
                 if bid:
                     st.rerun()
     st.markdown("#### 当前分支事件")
+    view_mode = st.radio("显示方式", ["混合时间线（所有事件）", "按主体视角（每个角色/实体各自的时间线）"],
+                         horizontal=True, key="timeline_view")
     if not events:
         st.caption("该分支还没有事件。")
-    for e in events:
-        st.markdown(f"**{e['t']} · {e['title']}**")
-        st.write(e.get("summary", ""))
+    elif view_mode.startswith("按主体"):
+        lanes = perspective.subject_lanes(wid, meta["active_branch"])
+        if not lanes["subjects"]:
+            st.caption("事件中还没有可以按主体展开的参与者。")
+        else:
+            st.caption(f"共 {len(lanes['subjects'])} 个主体参与了事件。泳道图中每行是一个主体，"
+                       "圆圈里的数字对应下方事件的编号。")
+            components.html(perspective.lanes_svg(lanes), height=min(760, 110 + 46 * min(30, len(lanes["subjects"]))),
+                            scrolling=True)
+            subj_opts = {x["id"]: f"{x['name']}（{x['kind']} · {x['count']} 件）" for x in lanes["subjects"]}
+            sid_pick = st.selectbox("查看某个主体的时间线", list(subj_opts), format_func=lambda k: subj_opts[k],
+                                    key="subject_pick")
+            for item in perspective.subject_detail(lanes, sid_pick):
+                with st.container(border=True):
+                    st.markdown(f"**#{item['index']} {item['t']} · {item['title']}**")
+                    if item["with"]:
+                        st.caption("同行：" + "、".join(item["with"]))
+                    if item["summary"]:
+                        st.write(item["summary"])
+                    for ch in item["changes"]:
+                        fields = ", ".join(f"{k}={v}" for k, v in (ch.get("payload") or {}).items()) or "（旧记录未保存变更内容）"
+                        st.caption(f"变更：{ch['op']}（{fields}）")
+    else:
+        for e in events:
+            st.markdown(f"**{e['t']} · {e['title']}**")
+            st.write(e.get("summary", ""))
     if len(branches) > 1:
         st.markdown("#### 分支对比")
         a, b = st.columns(2)
