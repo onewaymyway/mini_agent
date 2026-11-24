@@ -70,3 +70,26 @@ def test_cli_delete_requires_matching_confirm(tmp_path):
     ok = _run("delete", "--world", wid, "--confirm", wid, env_extra=env)
     assert ok.returncode == 0, ok.stderr
     assert not any(w["id"] == wid for w in json.loads(_run("list", env_extra=env).stdout))
+
+
+def test_character_tab_shows_portrait_and_regenerate_button(tmp_path, monkeypatch, world, llm):
+    """回归：有人设图的角色卡片要显示图片，并提供“重新生成人设图”按钮。"""
+    from streamlit.testing.v1 import AppTest
+    from world_forge import engine, proposals, repo
+    from world_forge.providers.image import StubImageProvider
+
+    cid = proposals.submit(world, "create_character", payload={"name": "守灯人", "role": "次要"})["result"]["id"]
+    engine.make_portrait(llm, StubImageProvider(), world, cid)
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120).run()
+    assert not at.exception, at.exception
+    def _find(node, typ):
+        out = [node] if getattr(node, "type", None) == typ else []
+        kids = getattr(node, "children", {})
+        for k in (kids.values() if isinstance(kids, dict) else []):
+            out += _find(k, typ)
+        return out
+
+    imgs = _find(at._tree, "image")
+    assert imgs, "有人设图的角色应显示图片"
+    labels = [b.label for b in at.button]
+    assert "重新生成人设图" in labels

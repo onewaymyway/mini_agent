@@ -95,6 +95,18 @@ def portrait_path(wid: str, cid: str) -> Path:
     return _p(wid, "cast", "portraits", f"{cid}.png")
 
 
+def resolve_portrait(wid: str, ch: dict) -> Optional[Path]:
+    """角色的人设图实际位置：固定路径、或记录在角色属性中的路径；空文件视为不存在。没有则 None。"""
+    candidates = [portrait_path(wid, ch["id"])]
+    rel = (ch.get("attrs") or {}).get("portrait")
+    if rel:
+        candidates.append(world_dir(wid) / rel)
+    for p in candidates:
+        if p.is_file() and p.stat().st_size > 0:
+            return p
+    return None
+
+
 # ---------- 时间线与分支
 
 def load_branches(wid: str) -> Dict[str, dict]:

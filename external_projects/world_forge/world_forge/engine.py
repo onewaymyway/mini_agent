@@ -665,9 +665,9 @@ def portrait_targets(wid: str, *, overwrite: bool = False) -> List[dict]:
     """需要生成人设图的角色：存活角色；默认只包含还没有人设图的。"""
     out = []
     for c in repo.load_characters(wid):
-        if c.get("status") != "alive":
+        if c.get("status") == "dead":
             continue
-        if overwrite or not repo.portrait_path(wid, c["id"]).is_file():
+        if overwrite or repo.resolve_portrait(wid, c) is None:
             out.append(c)
     return out
 
@@ -678,9 +678,9 @@ def make_all_portraits(llm, provider, wid: str, *, overwrite: bool = False, log=
     cancelled = False
     results: List[dict] = []
     try:
-        alive = [c for c in repo.load_characters(wid) if c.get("status") == "alive"]
+        candidates = [c for c in repo.load_characters(wid) if c.get("status") != "dead"]
         targets = portrait_targets(wid, overwrite=overwrite)
-        skipped = len(alive) - len(targets)
+        skipped = len(candidates) - len(targets)
         scope = "全部存活角色（覆盖已有）" if overwrite else "尚未有人设图的角色"
         log.log("start", f"一键生成人设图：{scope}，共 {len(targets)} 个"
                          + (f"，跳过 {skipped} 个已有人设图的角色" if skipped else ""),
@@ -1056,8 +1056,8 @@ def render_comic(provider, wid: str, sid: str, log=None,
                         refs.append(prev_img)
                         ref_names.append("上一格")
                     for ch in present:
-                        pth = repo.portrait_path(wid, ch["id"])
-                        if pth.is_file() and len(refs) < MAX_REFS:
+                        pth = repo.resolve_portrait(wid, ch)
+                        if pth is not None and len(refs) < MAX_REFS:
                             refs.append(pth)
                             ref_names.append(f"{ch['name']}立绘")
                     anchors = "; ".join(f"{ch['name']}: {ch['attrs']['visual_en']}"

@@ -456,18 +456,36 @@ with tabs[3]:
     ent_name = {e["id"]: e["name"] for e in entities}
     for c in characters:
         with st.container(border=True):
-            c1, c2 = st.columns([3, 1])
-            fac = ent_name.get(c.get("faction_id")) or c.get("attrs", {}).get("faction_hint") or "—"
-            c1.markdown(f"**{c['name']}** · {c.get('role')} · 势力：{fac} · 状态：{c.get('status')}")
-            c1.write(c.get("summary", ""))
-            pth = repo.portrait_path(wid, c["id"])
-            if pth.is_file():
-                c2.image(str(pth), width=140)
-            has_portrait = repo.portrait_path(wid, c["id"]).is_file()
-            if c.get("status") == "alive" and c2.button("重新生成立绘" if has_portrait else "生成立绘",
-                                                       key=f"pt_{c['id']}"):
-                _start_job(wid, "portrait", "生成立绘", engine.make_portrait, LLM, IMG, wid, c["id"])
-                st.rerun()
+            pth = repo.resolve_portrait(wid, c) or repo.portrait_path(wid, c["id"])
+            has_portrait = pth.is_file() and pth.stat().st_size > 0
+            img_col, info_col = st.columns([1, 3])
+            with img_col:
+                if has_portrait:
+                    # 直接读取图片内容显示：同一路径重新生成后，Streamlit 不会继续显示旧缓存
+                    st.image(pth.read_bytes(), caption=f"{c['name']} · 人设图", width=220)
+                else:
+                    st.caption("（还没有人设图）")
+            with info_col:
+                fac = ent_name.get(c.get("faction_id")) or c.get("attrs", {}).get("faction_hint") or "—"
+                st.markdown(f"**{c['name']}** · {c.get('role')} · 势力：{fac} · 状态：{c.get('status') or '未记录'}")
+                st.write(c.get("summary", ""))
+                visual = (c.get("attrs") or {}).get("visual_en")
+                if visual:
+                    st.caption(f"外观描述（英文，用于漫画保持一致）：{visual}")
+                label = "重新生成人设图" if has_portrait else "生成人设图"
+                if st.button(label, key=f"pt_{c['id']}"):
+                    if _start_job(wid, "portrait", f"生成「{c['name']}」的人设图", engine.make_portrait,
+                                  LLM, IMG, wid, c["id"]):
+                        st.rerun()
+                if not has_portrait:
+                    st.caption(f"人设图位置：{repo.portrait_path(wid, c['id'])}（未找到有效图片）")
+                hist = sorted((pth.parent / "history").glob(f"{c['id']}.*.png"), reverse=True) \
+                    if pth.parent.is_dir() else []
+                if hist:
+                    with st.expander(f"历史人设图（{len(hist)}，重新生成前的旧图）"):
+                        hcols = st.columns(min(4, len(hist)))
+                        for i, hp in enumerate(hist):
+                            hcols[i % len(hcols)].image(hp.read_bytes(), width=140, caption=hp.name.split(".")[1][:15])
 
 # ---------- 时间线
 
