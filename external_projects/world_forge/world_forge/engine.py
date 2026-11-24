@@ -294,6 +294,111 @@ def complete_relations(llm, wid: str, *, limit: int = 5, min_degree: int = 2) ->
             "processed": processed, "remaining": remaining, "min_degree": min_degree}
 
 
+# ---------- 按要求修改设定
+
+MAX_MODIFY_CHANGES = 10
+ENTITY_FIELDS = {"name", "kind", "summary", "attrs"}
+CHARACTER_FIELDS = {"name", "role", "motive", "summary", "attrs", "status", "faction_name"}
+
+
+def _details(wid: str, ids: List[str]) -> List[dict]:
+    """选中对象的完整信息（不截断），供模型修改时参考。"""
+    ents = {e["id"]: e for e in repo.load_entities(wid)}
+    chars = {c["id"]: c for c in repo.load_characters(wid)}
+    rels = repo.load_relations(wid)
+    names = {**{k: v["name"] for k, v in ents.items()}, **{k: v["name"] for k, v in chars.items()}}
+    out = []
+    for i in ids:
+        if i in ents:
+            e = ents[i]
+            related = [f"{names.get(r['dst'] if r['src'] == i else r['src'], '')}（{r['type']}）"
+                       for r in rels if i in (r["src"], r["dst"])]
+            out.append({"name": e["name"], "kind": e["kind"], "summary": e.get("summary", ""),
+                        "attrs": e.get("attrs") or {}, "relations": related})
+        elif i in chars:
+            c = chars[i]
+            out.append({"name": c["name"], "kind": "角色", "role": c.get("role"), "status": c.get("status"),
+                        "summary": c.get("summary", ""), "motive": c.get("motive", ""),
+                        "attrs": c.get("attrs") or {}})
+    return out
+
+
+def _current_values(wid: str, op: str, tid: str, keys: List[str]) -> Dict[str, Any]:
+    item = (repo.find_by_id(repo.load_entities(wid), tid) if op == "update_entity"
+            else repo.find_by_id(repo.load_characters(wid), tid)) or {}
+    out = {}
+    for k in keys:
+        if k == "faction_name":
+            fid = item.get("faction_id")
+            out[k] = next((e["name"] for e in repo.load_entities(wid) if e["id"] == fid), None)
+        else:
+            out[k] = item.get(k)
+    return out
+
+
+def _clean_payload(wid: str, ttype: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    allowed = ENTITY_FIELDS if ttype == "entity" else CHARACTER_FIELDS
+    out = {k: v for k, v in payload.items() if k in allowed and v not in (None, "")}
+    if "faction_name" in out:
+        fname = out.pop("faction_name")
+        fid = next((e["id"] for e in repo.load_entities(wid) if e["name"] == fname), None)
+        if fid:
+            out["faction_id"] = fid
+    if "attrs" in out:
+        out["attrs"] = proposals.coerce_attrs(out["attrs"])
+    return out
+
+
+def modify_world(llm, wid: str, request: str, target_ids: Optional[List[str]] = None) -> Dict[str, Any]:
+    """根据用户要求修改设定。target_ids 为空时由模型自动判断需要修改的对象。
+
+    修改经提案流程写入：次要字段自动写入，重大字段（名称、类别、角色状态、权力归属等）进入待确认。
+    返回每条修改的 before / after 与状态，便于核对。
+    """
+    require_charter(wid)
+    request = (request or "").strip()
+    if not request:
+        raise EngineError("请描述要修改的内容")
+    ctx = build_context(wid)
+    if target_ids:
+        ctx["targets"] = _details(wid, target_ids)
+    draft = generate.modification_draft(llm, context=ctx, request=request, scoped=bool(target_ids))  # 锁外
+
+    ents = repo.load_entities(wid)
+    chars = repo.load_characters(wid)
+    index: Dict[str, List[tuple]] = {}
+    for e in ents:
+        index.setdefault(e["name"], []).append(("entity", e["id"]))
+    for c in chars:
+        index.setdefault(c["name"], []).append(("character", c["id"]))
+    allowed_ids = set(target_ids) if target_ids else None
+
+    results: List[dict] = []
+    skipped: List[dict] = []
+    for ch in (draft.get("changes") or [])[:MAX_MODIFY_CHANGES]:
+        name = ch.get("target_name")
+        cands = index.get(name, [])
+        ref = next((c for c in cands if c[0] == ch.get("target_type")), cands[0] if cands else None)
+        if ref is None:
+            skipped.append({"target": name, "reason": "世界中找不到该对象"})
+            continue
+        ttype, tid = ref
+        if allowed_ids is not None and tid not in allowed_ids:
+            skipped.append({"target": name, "reason": "不在所选对象范围内，已忽略"})
+            continue
+        payload = _clean_payload(wid, ttype, ch.get("payload") or {})
+        if not payload:
+            skipped.append({"target": name, "reason": "没有可修改的有效字段"})
+            continue
+        op = "update_entity" if ttype == "entity" else "update_character"
+        with _with_lock(wid):
+            before = _current_values(wid, op, tid, list(payload.keys()))
+            rec = proposals.submit(wid, op, tid, payload, source="modify", note=ch.get("reason", ""))
+        results.append({"target": name, "reason": ch.get("reason", ""), "before": before,
+                        "after": payload, "proposal": rec})
+    return {"results": results, "skipped": skipped, "counts": _status_counts([r["proposal"] for r in results])}
+
+
 # ---------- 世界观简介
 
 def get_overview(wid: str) -> Optional[Dict[str, Any]]:

@@ -15,6 +15,7 @@
   python entrypoints/cli.py export --world <wid> --story <sid>
   python entrypoints/cli.py expand --world <wid> [--request "北方增加一个冰原部族"] [--count 3]
   python entrypoints/cli.py relations --world <wid> [--limit 5]  # 自动补全实体之间的关系
+  python entrypoints/cli.py modify --world <wid> --request "把北港改为冬季封冻" [--targets id1,id2]
   python entrypoints/cli.py enrich --world <wid>                 # 补全缺口 + 自动扩展
   python entrypoints/cli.py overview --world <wid>               # 生成世界观背景介绍
   python entrypoints/cli.py delete --world <wid> --confirm <wid>   # 永久删除，不可恢复
@@ -66,6 +67,8 @@ def main(argv=None) -> int:
     p.add_argument("--count", type=int, default=3)
     p = sub.add_parser("relations"); p.add_argument("--world", required=True)
     p.add_argument("--limit", type=int, default=5)
+    p = sub.add_parser("modify"); p.add_argument("--world", required=True)
+    p.add_argument("--request", required=True); p.add_argument("--targets", default="", help="逗号分隔的对象 id，留空则自动判断")
     p = sub.add_parser("enrich"); p.add_argument("--world", required=True)
     p = sub.add_parser("overview"); p.add_argument("--world", required=True)
     p = sub.add_parser("delete"); p.add_argument("--world", required=True)
@@ -116,6 +119,9 @@ def main(argv=None) -> int:
         elif args.cmd == "relations":
             llm, _ = make_text_llm()
             _dump(engine.complete_relations(llm, args.world, limit=args.limit))
+        elif args.cmd == "modify":
+            llm, _ = make_text_llm()
+            _dump(engine.modify_world(llm, args.world, args.request, _ids(args.targets)))
         elif args.cmd == "enrich":
             llm, _ = make_text_llm()
             _dump(engine.enrich_world(llm, args.world))

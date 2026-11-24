@@ -229,3 +229,34 @@ def expansion_draft(llm, *, context: Dict[str, Any], request: str = "", count: i
              "new_characters（数组：name, role, faction_name, motive, summary，可为空）。")
     return call_json(llm, "expand", {**context, "request": request.strip(), "count": count},
                      instr, _validate_expansion)
+
+
+def _validate_modification(d: Dict[str, Any]) -> List[str]:
+    errs: List[str] = []
+    changes = d.get("changes")
+    if not isinstance(changes, list):
+        return ["changes 必须是数组"]
+    for c in changes:
+        if not isinstance(c, dict) or not c.get("target_name"):
+            errs.append("每条修改必须有 target_name")
+            break
+        if c.get("target_type") not in ("entity", "character"):
+            errs.append("target_type 只能是 entity 或 character")
+            break
+        if not isinstance(c.get("payload"), dict):
+            errs.append("payload 必须是对象")
+            break
+    return errs
+
+
+def modification_draft(llm, *, context: Dict[str, Any], request: str, scoped: bool) -> Dict[str, Any]:
+    """根据用户要求给出设定修改。scoped=True 时只能修改 context.targets 中的对象。"""
+    scope = ("只能修改 context.targets 中列出的对象，不得涉及其它对象。" if scoped else
+             "自动判断需要修改哪些对象（可以是多个实体或角色），只做满足要求所必需的最小修改，其它内容保持不变。")
+    instr = (f"用户要求：{request.strip()}。{scope}"
+             "硬性要求：修改后必须遵守宪章硬规则，不得与其它已有名字重复，不得改动历史事件，不要编写新实体（新增请用扩展功能）。"
+             "JSON 字段：changes（数组，每项：target_name（名字）, target_type(entity|character), "
+             "payload（对象，只包含需要修改的字段）, reason（一句话说明修改原因））。"
+             "实体可修改字段：name, kind, summary, attrs；角色可修改字段：name, role, motive, summary, attrs, status, "
+             "faction_name（所属势力名字）。若无需修改，changes 为空数组。")
+    return call_json(llm, "modify", {**context, "request": request.strip()}, instr, _validate_modification)

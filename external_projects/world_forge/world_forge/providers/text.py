@@ -130,6 +130,20 @@ class RuleTextLLM(TextLLM):
         rels = [{"src_name": e["name"], "dst_name": base, "type": "关联", "note": "（规则占位）"} for e in ents]
         return {"entities": ents, "relations": rels, "canon_updates": [], "new_characters": []}
 
+    def _task_modify(self, ctx):
+        req = ctx.get("request") or ""
+        targets = ctx.get("targets") or []
+        if targets:
+            t = targets[0]
+            ttype = "character" if t.get("kind") == "角色" else "entity"
+        elif ctx.get("entities"):
+            t, ttype = ctx["entities"][0], "entity"
+        else:
+            return {"changes": []}
+        return {"changes": [{"target_name": t["name"], "target_type": ttype,
+                             "payload": {"summary": f"（规则占位）已按要求调整：{req}"},
+                             "reason": "离线占位修改"}]}
+
     def _task_overview(self, ctx):
         ch = ctx.get("charter") or {}
         names = [e.get("name") for e in ctx.get("entities", [])][:5]

@@ -196,6 +196,45 @@ with tabs[2]:
     st.caption("新增内容遵循同一套规则：次要内容自动写入，重大内容进入下方待确认队列，冲突内容被拦截。")
     st.divider()
 
+    st.markdown("#### 按要求修改设定")
+    obj_opts = {e["id"]: f"{e['name']}（{e['kind']}）" for e in entities}
+    obj_opts.update({c["id"]: f"{c['name']}（角色）" for c in characters})
+    sel_ids = st.multiselect("选择要修改的对象（不选则由系统自动判断涉及哪些对象）", list(obj_opts),
+                             format_func=lambda k: obj_opts[k], key="mod_targets")
+    with st.form("modify_form"):
+        req = st.text_area("修改要求", placeholder="例：把北港改为冬季封冻，只能靠破冰船通行；让老兵在第三年死亡")
+        if st.form_submit_button("提交修改", type="primary", disabled=not meta.get("charter")):
+            if not req.strip():
+                st.warning("请先填写修改要求。")
+            else:
+                with st.spinner("正在分析并修改……"):
+                    res = _safe(engine.modify_world, LLM, wid, req, list(sel_ids) or None)
+                if res:
+                    st.session_state.modify_report = res
+                    st.rerun()
+    mrep = st.session_state.get("modify_report")
+    if mrep:
+        with st.container(border=True):
+            if not mrep["results"]:
+                st.info("没有需要修改的内容。")
+            else:
+                st.markdown("**修改结果**：" + "　".join(f"{STATUS_LABEL.get(k, k)} {v}"
+                                                  for k, v in mrep["counts"].items()))
+            for r in mrep["results"]:
+                st.markdown(f"**{r['target']}** {_tag(r['proposal']['status'])}", unsafe_allow_html=True)
+                if r["reason"]:
+                    st.caption(f"原因：{r['reason']}")
+                for k in r["after"]:
+                    st.markdown(f"- `{k}`：{r['before'].get(k) or '（空）'} → {r['after'][k]}")
+                if r["proposal"].get("reasons"):
+                    st.caption("；".join(r["proposal"]["reasons"]))
+            for sk in mrep["skipped"]:
+                st.caption(f"跳过「{sk['target']}」：{sk['reason']}")
+            if st.button("收起结果", key="close_modify_report"):
+                del st.session_state["modify_report"]
+                st.rerun()
+    st.divider()
+
     left, right = st.columns([3, 2])
     with left:
         st.markdown("#### 待确认提案")
