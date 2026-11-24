@@ -9,6 +9,8 @@
 from __future__ import annotations
 
 import hashlib
+import re
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -55,6 +57,108 @@ def template(gap: Dict[str, Any], names: Dict[str, str], data) -> Dict[str, Any]
                 "angle": "汇总该主题已有的文章，给出全局视图并链接到各篇"}
     return {**base, "title": n, "kind": "概念讲解", "level": "入门", "must_cover": must, "angle": ""}
 
+
+# ------------------------------------------------------------------ 选题标题：参考文库风格，由模型撰写
+GENERIC_TITLE = re.compile(r"(是什么|入门概览|入门指南|入门|综述)$")
+TITLE_BATCH = 8
+
+
+def _node_name(data, nid: str) -> str:
+    for k, n in tree.nodes_at(data, tree.TOPIC):
+        if k == nid:
+            return n.get("name", nid)
+    return nid
+
+
+def style_profile(ctx) -> str:
+    """文库的写作风格：文体与层级分布，以及代表性标题（带文体、层级），供撰写选题时模仿。"""
+    rows = catalog.list_articles(ctx)
+    kinds, levels, samples = Counter(), Counter(), []
+    for r in rows:
+        rec = drunner.load_digest(ctx, r["id"]) or {}
+        if rec.get("status") != "ok":
+            continue
+        kinds[rec.get("kind") or "未知"] += 1
+        levels[rec.get("level") or "未知"] += 1
+        samples.append(f"- 「{rec.get('title') or r['title']}」（{rec.get('kind')}／{rec.get('level')}）")
+    if not samples:
+        return "文库暂无可参考的文章，请以章程的读者与范围为准。"
+    dist = "、".join(f"{k} {v}" for k, v in kinds.most_common())
+    lv = "、".join(f"{k} {v}" for k, v in levels.most_common())
+    return (f"文库共 {len(samples)} 篇。文体分布：{dist}。层级分布：{lv}。\n"
+            "代表性标题（学习其具体、有问题意识、点明角度的写法）：\n" + "\n".join(samples[:12]))
+
+
+def _title_prompt(profile: str, items: List[Dict[str, Any]], scope_in: List[str]) -> str:
+    lines = [f"tpid: {c['tpid']} ｜ 所属主题：{c['node_name']} ｜ 缺口：{c['gap_reason']} ｜ "
+             f"必须覆盖的概念：{'、'.join(c['must_cover'])}" for c in items]
+    return ("【阶段:选题标题】为下面每个选题写出有深度的标题，风格参照文库。只输出 YAML：\n"
+            "items:\n  - {tpid: g1, title: 标题, angle: 一句话写清要解决的问题或读者收获, "
+            "kind: 概念讲解|对比|教程|综述|FAQ|案例, level: 入门|进阶|专题}\n\n"
+            "要求：\n"
+            "1. 标题要具体，体现问题意识、比较、取舍、场景、误区或实践中的难点；\n"
+            "2. 不得只写「X是什么」「X入门」「X入门指南」「X综述」或「X入门概览」这类模板，除非它本身是进阶的问题；\n"
+            "3. 必须覆盖列出的概念，概念可以出现在标题中，但标题不能只是概念名；\n"
+            "4. 标题与文库已有标题不得雷同；每个标题 8 到 40 字；\n"
+            "5. kind 与 level 要与标题的写法相符（对比类写「…与…的区别」一类题目，进阶写机制与权衡）。\n\n"
+            f"文库风格参考：\n{profile}\n\n章程范围：{'、'.join(scope_in) or '未限定'}\n\n选题：\n" + "\n".join(lines))
+
+
+def _title_validator(expected: set, existing_titles: List[str]):
+    def _v(obj: Dict[str, Any]) -> List[str]:
+        items = obj.get("items")
+        if not isinstance(items, list):
+            return ["items 应为列表"]
+        issues: List[str] = []
+        seen = set()
+        for it in items:
+            if not isinstance(it, dict) or str(it.get("tpid")) not in expected:
+                issues.append("每项需含 tpid，且 tpid 必须来自给定的选题")
+                continue
+            t = str(it.get("title") or "").strip()
+            if not (8 <= len(t) <= 40):
+                issues.append(f"{it.get('tpid')} 的标题应为 8 到 40 字")
+            elif GENERIC_TITLE.search(t):
+                issues.append(f"{it.get('tpid')} 的标题「{t}」是模板式写法，请写出具体的问题或角度")
+            elif t in seen or t in existing_titles:
+                issues.append(f"{it.get('tpid')} 的标题与其它标题雷同")
+            if it.get("kind") not in KINDS or it.get("level") not in LEVELS:
+                issues.append(f"{it.get('tpid')} 的 kind 或 level 不合法")
+            if not str(it.get("angle") or "").strip():
+                issues.append(f"{it.get('tpid')} 需要 angle")
+            seen.add(t)
+        return issues
+    return _v
+
+
+def _write_titles(ctx, llm, cands: List[Dict[str, Any]], data, scope_in, existing_titles, max_rounds) -> None:
+    """用模型为缺口选题撰写标题与角度。失败的条目保留模板标题，不影响其它条目。"""
+    if llm is None or not cands:
+        return
+    profile = style_profile(ctx)
+    for i, c in enumerate(cands, 1):
+        c["tpid"] = f"g{i}"
+        c["node_name"] = _node_name(data, c.get("node") or "")
+    for start in range(0, len(cands), TITLE_BATCH):
+        batch = cands[start:start + TITLE_BATCH]
+        try:
+            obj = sm.ask_validated(llm, _title_prompt(profile, batch, scope_in),
+                                   _title_validator({c["tpid"] for c in batch}, existing_titles),
+                                   sm.RepairBudget(max_rounds))
+        except sm.DigestFailed as exc:
+            joblog.log(ctx.root, "plan", f"选题标题：本批（{len(batch)} 个）未通过，保留模板标题：{'；'.join(exc.issues[:2])}",
+                       level="warn")
+            continue
+        by_tpid = {str(it["tpid"]): it for it in obj["items"]}
+        for c in batch:
+            it = by_tpid.get(c["tpid"])
+            if it:
+                c["title"] = str(it["title"]).strip()
+                c["angle"] = str(it["angle"]).strip()
+                c["kind"] = it["kind"]
+                c["level"] = it["level"]
+                c["titled_by"] = "model"
+        joblog.log(ctx.root, "plan", f"选题标题：本批 {len(batch)} 个已由模型撰写")
 
 def _ok_existing(ctx):
     out = []
@@ -226,6 +330,9 @@ def _run(ctx, llm=None, *, open_topics: Optional[bool] = None) -> Dict[str, Any]
         c["score"] = value
         c["breakdown"] = {"severity": c["severity"], "importance": round(imp, 2), "evidence": round(evid, 2),
                           "overlap": round(overlap, 2)}
+    # 只为最终会被提出的缺口选题撰写标题：被去重淘汰的候选不消耗模型调用，无变化时保持零调用
+    to_title = [c for c in kept if c.get("gap_type") != "OPEN"]
+    _write_titles(ctx, llm, to_title, data, scope_in, [r["title"] for r in catalog.list_articles(ctx)], max_rounds)
     kept.sort(key=lambda c: (-c["score"], c["title"]))
     take = kept[:budget] if budget else []
     for c in kept[budget:]:

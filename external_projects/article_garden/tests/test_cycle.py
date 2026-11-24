@@ -37,7 +37,7 @@ class World:
             return self.writer.ask(prompt)
         if "【阶段:挂载】" in prompt:
             return self.place.ask(prompt)
-        if re.search(r"【阶段:(选题判重|开放命题)】", prompt):
+        if re.search(r"【阶段:(选题判重|开放命题|选题标题)】", prompt):
             return self.mid.ask(prompt)
         if "【阶段:查询】" in prompt:
             return "queries:\n  - 向量数据库 原理\n  - 向量索引 入门\n  - 向量数据库 官方文档\n"

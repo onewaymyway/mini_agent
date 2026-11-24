@@ -39,6 +39,15 @@ class MidLLM:
                                                "kind": "教程", "level": "进阶",
                                                "must_cover": ["向量索引"], "angle": "从工程角度讲"}]},
                                   allow_unicode=True)
+        if "【阶段:选题标题】" in prompt:
+            self.stages.append("标题")
+            items = []
+            for line in prompt.splitlines():
+                m = re.match(r"tpid: (g\d+) ｜.*必须覆盖的概念：(\S+)", line)
+                if m:
+                    items.append({"tpid": m.group(1), "title": f"{m.group(2)}的权衡与工程取舍",
+                                  "angle": "从取舍与工程实践讲清楚", "kind": "概念讲解", "level": "进阶"})
+            return yaml.safe_dump({"items": items}, allow_unicode=True)
         raise AssertionError("不应调用的阶段：" + prompt[:40])
 
 
