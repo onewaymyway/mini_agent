@@ -100,10 +100,14 @@ def _block(item: Dict[str, Any], fonts: Fonts, max_w: int) -> Dict[str, Any]:
     """测量一个排字条目的尺寸，返回 {w, h, lines, name, font, name_font}。"""
     kind = item["kind"]
     if kind == "sfx":
-        font = fonts.get(SIZE_SFX)
-        w = int(font.getlength(item["text"])) + 12
-        h = SIZE_SFX + 12
-        return {"w": w, "h": h, "lines": [item["text"]], "font": font, "name": "", "name_font": None}
+        size = int(item.get("_size") or SIZE_SFX)
+        font = fonts.get(size)
+        lines = _wrap(item["text"], font, max(size, max_w))     # 与网页版一样按宽度换行
+        lh = int(size * SFX_LINE)
+        w = max(int(font.getlength(line)) for line in lines) + 2 * SFX_PAD
+        h = (len(lines) - 1) * lh + int(size * 1.25) + 2 * SFX_PAD
+        return {"w": w, "h": h, "lines": lines, "font": font, "name": "", "name_font": None,
+                "size": size, "lh": lh}
     size = SIZE_CAPTION if kind == "caption" else SIZE_TEXT
     font = fonts.get(size)
     lines = _wrap(item["text"], font, max(40, max_w - 2 * PAD))
@@ -122,6 +126,9 @@ ALL_ZONES = [(v, h) for v in ("top", "bottom") for h in ("left", "right", "cente
 GAP = 8                   # 元素之间的最小间距
 SCAN_STEP = 6             # 垂直扫描步长（像素）
 WIDTH_SCALES = (1.0, 0.8, 0.65)   # 放不下时依次缩小的宽度比例
+SFX_SIZES = (84, 64, 52, 40)       # 音效放不下时依次缩小的字号
+SFX_LINE = 1.05                    # 音效换行时的行距（相对字号）
+SFX_PAD = 8                        # 音效占位框的留白（含描边）
 
 
 def _tail_reach(box: Tuple[int, int, int, int]) -> int:
@@ -191,11 +198,23 @@ def _layout_panel(items: List[Dict[str, Any]], fonts: Fonts, box: Tuple[int, int
     for item in sorted(items, key=lambda it: rank.get(it["kind"], 1)):
         spot = None
         blk = None
-        for scale in WIDTH_SCALES:
-            blk = _block(item, fonts, max(40, int(pw * BUBBLE_MAX_RATIO * scale)))
-            spot = _find_spot(item, blk, box, placed, close)
-            if spot is not None:
-                break
+        if item["kind"] == "sfx":
+            for size in SFX_SIZES:
+                blk = _block({**item, "_size": size}, fonts, int(pw * BUBBLE_MAX_RATIO))   # 与网页版 .bz 的 52% 宽度一致
+                spot = _find_spot(item, blk, box, placed, close)
+                if spot is not None:
+                    break
+            if spot is None:
+                # 音效宁可省略也不压住对白：记录警告，不绘制
+                if warnings is not None:
+                    warnings.append(f"音效「{item.get('text', '')}」放不下，已省略（可在「编辑文字」中删除或改短）")
+                continue
+        else:
+            for scale in WIDTH_SCALES:
+                blk = _block(item, fonts, max(40, int(pw * BUBBLE_MAX_RATIO * scale)))
+                spot = _find_spot(item, blk, box, placed, close)
+                if spot is not None:
+                    break
         if spot is None:
             # 放不下：退回原区域贴边放置，并记录警告（提示用户缩短对白）
             zone = item["zone"]
@@ -256,7 +275,9 @@ def _draw_bubble(draw: ImageDraw.ImageDraw, item: Dict[str, Any], blk: Dict[str,
 
 def _draw_sfx(draw: ImageDraw.ImageDraw, item: Dict[str, Any], blk: Dict[str, Any],
               x: int, y: int) -> None:
-    draw.text((x, y), item["text"], font=blk["font"], fill="black", stroke_width=4, stroke_fill="white")
+    for i, line in enumerate(blk["lines"]):
+        draw.text((x + SFX_PAD // 2, y + SFX_PAD // 2 + i * blk["lh"]), line, font=blk["font"], fill="black",
+                  stroke_width=4, stroke_fill="white")
 
 
 def _draw_panel_image(canvas: Image.Image, box: Tuple[int, int, int, int], src: Optional[Image.Image],
