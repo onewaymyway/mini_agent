@@ -378,8 +378,8 @@ def beats_draft(llm, *, context: Dict[str, Any], pages: Optional[int] = None, lo
     events = events or []
     essential = [e["id"] for e in events if e.get("essential")]
     all_ids = [e["id"] for e in events]
-    count = (f"必须正好 {pages} 页" if pages is not None
-             else "页数由情节数量决定（每页覆盖 2–4 个情节即可，不设固定页数）")
+    count = f"必须正好 {pages} 页（页数已由情节数量确定，不得增减）" if pages is not None else \
+        "页数由情节数量决定（每页覆盖 2–4 个情节即可）"
     ctx = {**context, "pages_target": pages if pages is not None else "auto", "events": events,
            "theme": theme or {}}
     instr = ("请为这个故事规划漫画节拍表：" + count + "。整体结构为：开头铺垫、中段升级、一个转折、一个高潮、结尾收束。"

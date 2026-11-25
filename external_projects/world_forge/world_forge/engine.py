@@ -1196,6 +1196,12 @@ def make_storyboard(llm, wid: str, sid: str, log=None, *, pages: Any = None, rea
         theme = cov.get("theme") or {}
         ctx["theme"] = theme
         ctx["events"] = [{"id": e["id"], "event": e["event"], "essential": e["essential"]} for e in events]
+        # 页数必须由代码决定，而不是交给模型：自动模式按关键情节数计算，再把确定的页数交给节拍表并强制校验
+        n_ess = sum(1 for e in events if e.get("essential")) or len(events)
+        if fixed is None:
+            fixed = comic_layout.auto_pages(n_ess)
+            log.log("context", f"自动页数：关键情节 {n_ess} 个，每页约 {comic_layout.AUTO_EVENTS_PER_PAGE} 个，"
+                               f"共 {fixed} 页（由情节数量决定）", level="ok")
         cancel.checkpoint()
         beats_res = generate.beats_draft(LoggedLLM(llm, log), context=ctx, pages=fixed, log=log,
                                          events=events, theme=theme, attempts=_retry_max(wid))
@@ -1224,7 +1230,7 @@ def make_storyboard(llm, wid: str, sid: str, log=None, *, pages: Any = None, rea
             log.log("parse", f"第 {pg['no']} 页：{len(pg['panels'])} 格，"
                              f"出场角色 {sorted({c for p in pg['panels'] for c in (p.get('characters') or [])}) or '无'}")
         board["version"] = 2
-        board["opts"] = opts
+        board["opts"] = {**opts, "pages_resolved": len(beats)}
         board["source"] = cov.get("source")
         _ensure_anchors(llm, wid, board, log)
         with _with_lock(wid):

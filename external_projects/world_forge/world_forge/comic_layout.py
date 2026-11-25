@@ -90,6 +90,15 @@ def normalize_opts(pages: Any = None, reading: Optional[str] = None, color: Opti
     return {"pages": pages, "reading": reading, "color": color}
 
 
+AUTO_EVENTS_PER_PAGE = 3   # 自动页数：每页约讲 3 个关键情节
+
+
+def auto_pages(n_essential: int) -> int:
+    """自动页数由关键情节数量决定：每页约 3 个，向上取整，不设上限。"""
+    import math
+    return max(1, math.ceil(max(0, n_essential) / AUTO_EVENTS_PER_PAGE))
+
+
 def expected_pages(opts: Dict[str, Any]) -> Optional[int]:
     """返回固定页数；auto 返回 None（由故事长度决定）。"""
     p = opts.get("pages")
