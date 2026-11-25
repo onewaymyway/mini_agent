@@ -160,7 +160,7 @@ def test_choose_candidate_rejects_out_of_range(world, llm, img):
 
 def test_candidate_count_is_capped_at_three(world, llm, img):
     sid = _story(world, llm)
-    engine.make_storyboard(llm, world, sid, pages=1)
+    engine.make_storyboard(llm, world, sid, pages=3)
     engine.render_comic(img, world, sid, candidates=9)
     pn = store.read_json(_board_path(world, sid))["pages"][0]["panels"][0]
     assert len(pn["candidates"]) == cl.CANDIDATE_MAX

@@ -12,7 +12,7 @@ from world_forge import comic_render, engine, generate, proposals, repo, store
 # ---------- 设置
 
 def test_normalize_opts_defaults_and_auto():
-    assert cl.normalize_opts() == {"pages": 6, "reading": "ltr", "color": "color"}
+    assert cl.normalize_opts() == {"pages": "auto", "reading": "ltr", "color": "color"}   # 默认按故事长度
     assert cl.normalize_opts(pages="auto")["pages"] == "auto"
     assert cl.normalize_opts(pages="8", reading="rtl", color="bw") == {"pages": 8, "reading": "rtl", "color": "bw"}
     assert cl.expected_pages({"pages": "auto"}) is None

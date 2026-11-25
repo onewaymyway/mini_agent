@@ -43,7 +43,7 @@ def test_out_of_range_limits_are_rejected_and_not_saved(world, kwargs):
 def test_lowering_candidate_max_caps_candidates(world, llm, img):
     engine.set_comic_limits(world, candidate_max=1)
     sid = _story(world, llm)
-    engine.make_storyboard(llm, world, sid, pages=1)
+    engine.make_storyboard(llm, world, sid, pages=3)
     engine.render_comic(img, world, sid, candidates=3)
     pn = store.read_json(repo.story_dir(world, sid) / "storyboard.json")["pages"][0]["panels"][0]
     assert pn.get("candidates") is None or len(pn["candidates"]) == 1
@@ -52,7 +52,7 @@ def test_lowering_candidate_max_caps_candidates(world, llm, img):
 def test_raising_candidate_max_allows_more_candidates(world, llm, img):
     engine.set_comic_limits(world, candidate_max=5)
     sid = _story(world, llm)
-    engine.make_storyboard(llm, world, sid, pages=1)
+    engine.make_storyboard(llm, world, sid, pages=3)
     engine.render_comic(img, world, sid, candidates=5)
     pn = store.read_json(repo.story_dir(world, sid) / "storyboard.json")["pages"][0]["panels"][0]
     assert len(pn["candidates"]) == 5

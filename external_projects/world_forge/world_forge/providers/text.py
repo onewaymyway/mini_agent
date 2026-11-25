@@ -160,32 +160,52 @@ class RuleTextLLM(TextLLM):
     _PALETTES = ("warm amber and cream, soft contrast", "teal and grey, medium contrast",
                  "deep red and black, high contrast", "pale blue, low saturation")
 
+    def _task_segments(self, ctx):
+        """规则版拆解：每个非空段落作为一个情节点（每段最多 8 个）。"""
+        paras = [x.strip() for x in (ctx.get("text") or "").split("\n") if x.strip()]
+        return {"events": [{"event": x[:60], "essential": True} for x in paras[:8]]
+                or [{"event": "（规则占位）情节", "essential": True}]}
+
+    def _task_theme(self, ctx):
+        evs = ctx.get("events") or []
+        return {"theme": "（规则占位）" + (evs[0]["event"][:20] if evs else "主题"),
+                "carriers": [e["id"] for e in evs[:2]], "closing_line": ""}
+
     def _task_beats(self, ctx):
-        """规则版节拍表：目标页数固定时生成对应页数，auto 时按情节长度给 3 页。"""
+        """规则版节拍表：按情节编号平均分配到各页（每页不超过 4 个）；auto 时每页约 3 个情节。"""
         target = ctx.get("pages_target")
-        n = target if isinstance(target, int) else 3
-        acts = ctx.get("acts") or []
+        evs = ctx.get("events") or []
+        ess = [e["id"] for e in evs if e.get("essential")] or [e["id"] for e in evs]
+        n = target if isinstance(target, int) else max(1, -(-len(ess) // 3))
+        groups = [[] for _ in range(n)]
+        for i, eid in enumerate(ess):
+            groups[min(i * n // max(len(ess), 1), n - 1)].append(eid)
         pages = []
         for i in range(n):
             purpose = self._BEAT_PURPOSES[min(int(i * len(self._BEAT_PURPOSES) / max(n, 1)), 4)]
-            act = acts[i % len(acts)] if acts else {"title": f"第 {i + 1} 页", "summary": ""}
+            act = (ctx.get("acts") or [{"title": f"第 {i + 1} 页", "summary": ""}])[i % max(len(ctx.get("acts") or [1]), 1)]
+            last = i == n - 1
             pages.append({"no": i + 1, "purpose": f"{purpose}：{act.get('title', '')}",
                           "focus": (act.get("summary") or "（规则占位）")[:40],
-                          "hook": "" if i == n - 1 else "（规则占位）下一页的悬念",
-                          "palette": self._PALETTES[i % len(self._PALETTES)]})
+                          "hook": "" if last else "（规则占位）下一页的悬念",
+                          "palette": self._PALETTES[i % len(self._PALETTES)],
+                          "covers": groups[i],
+                          "theme_note": "（规则占位）主题在结局画面中的体现" if last else ""})
         return {"pages": pages}
 
     def _task_storyboard(self, ctx):
-        """规则版分镜：每个节拍一页，页数与 beats 一致；高潮页用整行大格。"""
-        beats = ctx.get("beats") or [{"purpose": "铺垫", "focus": ""}]
+        """规则版分镜：每页的格子数由覆盖的情节数决定，每个情节至少一格（event 标注）。"""
+        beats = ctx.get("beats") or [{"purpose": "铺垫", "focus": "", "covers": []}]
         names = [c.get("name") for c in ctx.get("characters") or [] if c.get("name")][:2]
         locs = [c.get("name") for c in ctx.get("locations") or [] if c.get("name")]
         shots = ["远景", "中景", "近景", "特写"]
         pages = []
         k = 0
         for n, beat in enumerate(beats, start=1):
+            covers = beat.get("covers") or []
+            count = max(2, min(5, len(covers)))
             panels = []
-            for j in range(2):
+            for j in range(count):
                 shot = shots[k % len(shots)]
                 k += 1
                 dialogue = []
@@ -198,8 +218,9 @@ class RuleTextLLM(TextLLM):
                     "action": "（规则占位）静立", "composition": "主体居中，上方留白",
                     "screen_order": [], "gaze": {names[0]: "朝右"} if names else {},
                     "narration": (beat.get("focus", "") or "")[:30] if j == 0 else "",
-                    "dialogue": dialogue, "sfx": "轰" if (j == 1 and n == len(beats)) else "",
+                    "dialogue": dialogue, "sfx": "轰" if (j == count - 1 and n == len(beats)) else "",
                     "emotion": "平静", "characters": names[:1], "location": locs[0] if locs else "",
+                    "event": covers[j] if j < len(covers) else "",
                     "visual_en": f"{shot} view, scene {n} panel {j + 1}, muted palette, no text",
                 })
             pages.append({"no": n, "panels": panels})

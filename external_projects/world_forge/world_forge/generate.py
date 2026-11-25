@@ -142,28 +142,90 @@ def normalize_panel(p: Dict[str, Any]) -> List[str]:
     p["action"] = str(p.get("action") or "").strip()
     p["composition"] = str(p.get("composition") or "").strip()
     p["connects_prev"] = str(p.get("connects_prev") or "").strip()[:40]
+    p["event"] = str(p.get("event") or "").strip()
     if len(p["narration"]) > NARRATION_MAX:
         errs.append(f"旁白过长（{len(p['narration'])} 字，上限 {NARRATION_MAX} 字）：{p['narration'][:10]}…")
     p["emotion"] = str(p.get("emotion") or "").strip()
     return errs
 
 
-def _validate_beats(d: Dict[str, Any], expect: Optional[int] = None) -> List[str]:
+COVER_MAX_PER_PAGE = 4          # 一页最多覆盖的情节数（保证每个情节都能在 5 格以内讲清楚）
+
+
+def _validate_segments(d: Dict[str, Any]) -> List[str]:
+    evs = d.get("events")
+    if not isinstance(evs, list) or not evs:
+        return ["events 必须是非空数组"]
+    for i, e in enumerate(evs, start=1):
+        if not isinstance(e, dict) or not str(e.get("event") or "").strip():
+            return [f"第 {i} 个情节缺少 event（情节描述）"]
+        e["event"] = str(e["event"]).strip()[:120]
+        e["essential"] = bool(e.get("essential", True))
+    return []
+
+
+def segments_draft(llm, *, text: str, chunk_no: int = 1, log=None) -> Dict[str, Any]:
+    """把一段正文拆成情节点。只拆情节，不写画面，保证每个情节都有迹可循。"""
+    return call_json(llm, "segments", {"text": text, "chunk_no": chunk_no},
+                     "请把下面这段小说正文拆成按时间顺序排列的情节点，不要遗漏任何推动剧情的事件。"
+                     "每个情节点一句话（event，写清谁做了什么、结果如何），essential 标记是否为关键情节"
+                     "（推动剧情或揭示人物与主题的为 true，纯过渡或细节为 false）。"
+                     "JSON 字段：events（数组：event, essential）。",
+                     _validate_segments, log=log)
+
+
+def _validate_theme(d: Dict[str, Any]) -> List[str]:
+    if not str(d.get("theme") or "").strip():
+        return ["缺少 theme（一句话主题）"]
+    d["carriers"] = [str(x) for x in (d.get("carriers") or []) if x]
+    d["closing_line"] = str(d.get("closing_line") or "").strip()
+    return []
+
+
+def theme_draft(llm, *, events: List[Dict[str, Any]], log=None) -> Dict[str, Any]:
+    """从全部情节中提炼作品的主题，并指定由哪些情节体现；收束页据此表达主题。"""
+    lines = [f"{e['id']}｜{'关键' if e.get('essential') else '次要'}｜{e['event']}" for e in events]
+    return call_json(llm, "theme", {"events": events},
+                     "下面是作品的全部情节。请提炼作品想表达的核心主题（一句话，不是情节概括），"
+                     "并列出最能体现这一主题的情节 id（carriers）。closing_line 为读者读完最后一页应留下的一句感受，可为空。"
+                     "JSON 字段：theme, carriers（数组）, closing_line。\n" + "\n".join(lines),
+                     _validate_theme, log=log)
+
+
+def _validate_beats(d: Dict[str, Any], expect: Optional[int] = None, essential: Optional[List[str]] = None,
+                    all_ids: Optional[List[str]] = None, require_theme: bool = False) -> List[str]:
     pages = d.get("pages")
     if not isinstance(pages, list) or not pages:
         return ["pages 必须是非空数组"]
     if expect is not None and len(pages) != expect:
         return [f"pages 必须正好 {expect} 页（当前 {len(pages)} 页）"]
+    known = set(all_ids or [])
+    seen: set = set()
     for i, pg in enumerate(pages, start=1):
         if not isinstance(pg, dict) or not str(pg.get("purpose") or "").strip():
             return [f"第 {i} 页缺少 purpose（本页叙事作用）"]
         if not str(pg.get("focus") or "").strip():
             return [f"第 {i} 页缺少 focus（画面焦点）"]
+        covers = [str(c) for c in (pg.get("covers") or []) if c]
+        if known:
+            bad = [c for c in covers if c not in known]
+            if bad:
+                return [f"第 {i} 页的 covers 含未知情节编号：{', '.join(bad[:5])}"]
+        if len(covers) > COVER_MAX_PER_PAGE:
+            return [f"第 {i} 页覆盖 {len(covers)} 个情节，超过上限 {COVER_MAX_PER_PAGE}（请拆到相邻页）"]
+        seen.update(covers)
         pg["no"] = i
         pg["purpose"] = str(pg["purpose"]).strip()
         pg["focus"] = str(pg["focus"]).strip()
         pg["hook"] = str(pg.get("hook") or "").strip()
         pg["palette"] = str(pg.get("palette") or "").strip()
+        pg["covers"] = covers
+        pg["theme_note"] = str(pg.get("theme_note") or "").strip()
+    missing = [e for e in (essential or []) if e not in seen]
+    if missing:
+        return [f"关键情节未被任何一页的 covers 覆盖：{', '.join(missing[:8])}（请把它们分配到某一页）"]
+    if require_theme and not pages[-1].get("theme_note"):
+        return ["最后一页需要 theme_note：说明主题如何在收束画面中体现"]
     return []
 
 
@@ -187,7 +249,8 @@ def check_axis(pages: List[Dict[str, Any]]) -> List[str]:
     return errs
 
 
-def _validate_storyboard(d: Dict[str, Any], expect: Optional[int] = None) -> List[str]:
+def _validate_storyboard(d: Dict[str, Any], expect: Optional[int] = None,
+                         covers: Optional[List[List[str]]] = None) -> List[str]:
     errs: List[str] = []
     pages = d.get("pages")
     if not isinstance(pages, list) or not pages:
@@ -210,6 +273,14 @@ def _validate_storyboard(d: Dict[str, Any], expect: Optional[int] = None) -> Lis
         pg["no"] = int(pg.get("no") or 1)
     if not errs:
         errs.extend(check_axis(pages))
+    if not errs and covers is not None:
+        for idx, pg in enumerate(pages):
+            want = covers[idx] if idx < len(covers) else []
+            have = {str(p.get("event") or "") for p in pg["panels"]}
+            lost = [c for c in want if c not in have]
+            if lost:
+                errs.append(f"第 {pg.get('no')} 页的情节 {', '.join(lost)} 没有对应的格子（需要有一格的 event 标注它）")
+                break
     return errs
 
 
@@ -294,18 +365,29 @@ def short_draft(llm, *, context: Dict[str, Any], form: str) -> str:
     return text
 
 
-def beats_draft(llm, *, context: Dict[str, Any], pages: Optional[int] = None, log=None) -> Dict[str, Any]:
-    """节拍表：先规划每页的叙事作用、画面焦点与页末钩子，再据此生成分镜。pages=None 表示按故事长度自动决定。"""
+def beats_draft(llm, *, context: Dict[str, Any], pages: Optional[int] = None, log=None,
+                events: Optional[List[Dict[str, Any]]] = None, theme: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """节拍表：按情节覆盖规划每页。pages=None 表示按故事长度自动决定页数。"""
+    events = events or []
+    essential = [e["id"] for e in events if e.get("essential")]
+    all_ids = [e["id"] for e in events]
     count = (f"必须正好 {pages} 页" if pages is not None
-             else "页数由故事实际长度决定（通常每 3–5 个情节点一页），不设固定页数")
-    ctx = {**context, "pages_target": pages if pages is not None else "auto"}
-    return call_json(llm, "beats", ctx,
-                     "请为这个故事规划漫画节拍表：" + count + "。整体结构为：开头铺垫、中段升级、一个转折、"
-                     "一个高潮、结尾收束。每页说明：purpose（本页叙事作用，以 铺垫/升级/转折/高潮/收束 之一开头，"
-                     "并用一句话说明）、focus（本页画面焦点，一句话）、hook（页末钩子：让读者想翻到下一页的悬念或情绪，"
-                     "最后一页可为空）、palette（本幕配色，英文，写明具体颜色与明暗，如 cold blue and grey, low contrast；可空）。"
-                     "JSON 字段：pages（数组：no, purpose, focus, hook, palette）。",
-                     lambda d: _validate_beats(d, pages), log=log)
+             else "页数由情节数量决定（每页覆盖 2–4 个情节即可，不设固定页数）")
+    ctx = {**context, "pages_target": pages if pages is not None else "auto", "events": events,
+           "theme": theme or {}}
+    instr = ("请为这个故事规划漫画节拍表：" + count + "。整体结构为：开头铺垫、中段升级、一个转折、一个高潮、结尾收束。"
+             "每页说明：purpose（本页叙事作用，以 铺垫/升级/转折/高潮/收束 之一开头，并用一句话说明）、"
+             "focus（本页画面焦点，一句话）、hook（页末钩子，最后一页可为空）、palette（本幕配色，英文）、"
+             "covers（本页讲述的情节编号数组，每页最多 4 个；所有关键情节 essential=true 必须出现在某一页的 covers 中，"
+             "顺序按情节编号递增，不要跳着讲）、theme_note（只在最后一页填写：主题在收束画面中如何体现，一句话）。"
+             "JSON 字段：pages（数组：no, purpose, focus, hook, palette, covers, theme_note）。")
+    if pages is not None:
+        cap = pages * COVER_MAX_PER_PAGE
+        if len(essential) > cap:
+            raise GenerationError(f"关键情节 {len(essential)} 个，超过 {pages} 页的容量（每页最多 {COVER_MAX_PER_PAGE} 个，"
+                                  f"共 {cap} 个）。请增加页数或选择按故事长度自动。")
+    return call_json(llm, "beats", ctx, instr,
+                     lambda d: _validate_beats(d, pages, essential, all_ids, require_theme=True), log=log)
 
 
 STYLE_KEYS = ("summary", "line", "palette", "lighting")
@@ -334,7 +416,8 @@ def scene_draft(llm, *, context: Dict[str, Any], log=None) -> Dict[str, Any]:
                      "JSON 字段：visual_en（英文，描述建筑、地貌、光线与氛围）。", _validate_scene, log=log)
 
 
-def storyboard_draft(llm, *, context: Dict[str, Any], log=None, pages: Optional[int] = None) -> Dict[str, Any]:
+def storyboard_draft(llm, *, context: Dict[str, Any], log=None, pages: Optional[int] = None,
+                     covers: Optional[List[List[str]]] = None) -> Dict[str, Any]:
     return call_json(llm, "storyboard", context,
                      "请把故事改写为漫画分镜（分页脚本）。ctx.beats 是已确定的节拍表：pages 的页数与 beats 一一对应，"
                      "每页服务于对应节拍的 purpose 与 focus，页末最后一格要承接该页的 hook。"
@@ -354,13 +437,15 @@ def storyboard_draft(llm, *, context: Dict[str, Any], log=None, pages: Optional[
                      "对白语气要符合该角色的身份（见 context.characters 的 summary），口语化，可以有潜台词，不要说明性的长句；"
                      "10) narration 只写画面无法表达的信息（时间、地点、心理），不超过 30 字，不要复述画面；"
                      "11) sfx 为画面中的音效字（如「轰」「咔嗒」，没有则为空）；12) emotion 为该格主角的情绪，一个词；"
-                     "13) location 为该格所在地点的名字，必须取自 context.locations 中的名字，没有则为空。"
+                     "13) location 为该格所在地点的名字，必须取自 context.locations 中的名字，没有则为空；"
+                     "14) event 为该格讲述的情节编号（取自本页 beats 的 covers，过渡格可为空）。本页 covers 中的每个情节"
+                     "至少要有一格的 event 等于它；最后一页的最后一格要体现 theme_note。"
                      "JSON 字段：pages（数组，每页：no, panels）；panels（每格）：shot（远景/中景/近景/特写）, camera, "
                      "span（1 或 2）, connects_prev, action, composition, screen_order（数组）, gaze（对象）, "
                      "narration（可空）, dialogue（数组：speaker, text, kind, speaker_side, position）, sfx（可空）, "
-                     "emotion（可空）, location（可空）, characters（出场角色名数组）, "
+                     "emotion（可空）, location（可空）, event（可空）, characters（出场角色名数组）, "
                      "visual_en（英文背景与环境描述；人物姿态与视线由 action 与 gaze 表达，不要写在这里；不要要求图中出现文字或气泡）。",
-                     lambda d: _validate_storyboard(d, pages), log=log)
+                     lambda d: _validate_storyboard(d, pages, covers), log=log)
 
 
 def portrait_draft(llm, *, context: Dict[str, Any]) -> Dict[str, Any]:

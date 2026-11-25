@@ -61,13 +61,13 @@ def test_strip_is_pages_stacked_vertically(world, llm, img):
 
 def test_export_requires_rendered_pages(world, llm):
     sid = _story(world, llm)
-    engine.make_storyboard(llm, world, sid, pages=1)
+    engine.make_storyboard(llm, world, sid, pages=3)
     with pytest.raises(engine.EngineError):
         engine.export_comic_files(world, sid)
 
 
 def test_editing_text_rerenders_page_without_calling_image_model(world, llm, img):
-    sid, d = _rendered(world, llm, img, pages=1)
+    sid, d = _rendered(world, llm, img, pages=3)
     before = (d / "pages" / "page_01.png").read_bytes()
     calls_before = len(img.calls)
     board = store.read_json(d / "storyboard.json")
@@ -85,7 +85,7 @@ def test_editing_text_rerenders_page_without_calling_image_model(world, llm, img
 
 
 def test_edit_rejects_wrong_dialogue_count_and_overlong_text(world, llm, img):
-    sid, d = _rendered(world, llm, img, pages=1)
+    sid, d = _rendered(world, llm, img, pages=3)
     pn = store.read_json(d / "storyboard.json")["pages"][0]["panels"][0]
     with pytest.raises(engine.EngineError):
         engine.edit_panel_text(world, sid, 1, 1, dialogue=["a"] * (len(pn["dialogue"]) + 1))
@@ -95,6 +95,6 @@ def test_edit_rejects_wrong_dialogue_count_and_overlong_text(world, llm, img):
 
 
 def test_edit_unknown_panel_raises(world, llm, img):
-    sid, d = _rendered(world, llm, img, pages=1)
+    sid, d = _rendered(world, llm, img, pages=3)
     with pytest.raises(engine.EngineError):
         engine.edit_panel_text(world, sid, 9, 9, narration="x")

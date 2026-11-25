@@ -57,7 +57,7 @@ KIND_LABEL = {"advance": "推进", "arc": "小故事线", "short": "短篇", "bo
               "export": "导出"}
 
 
-COMIC_PAGE_CHOICES = [6, 3, 4, 5, 8, 10, 12, "auto"]
+COMIC_PAGE_CHOICES = ["auto", 3, 4, 5, 6, 8, 10, 12]   # 默认按故事长度（情节覆盖）决定页数
 
 
 def _page_label(v) -> str:
@@ -797,6 +797,19 @@ with tabs[6]:
             st.markdown("#### 漫画")
             if board.get("stub"):
                 st.caption("当前为占位图，未调用真实图像模型。")
+            cov_board = board.get("coverage") or {}
+            if cov_board:
+                st.markdown(f"**剧情覆盖**：关键情节 {cov_board.get('covered_essential', 0)}/{cov_board.get('essential', 0)} "
+                            f"已入漫画（全部 {cov_board.get('total', 0)} 个情节）")
+                if cov_board.get("theme"):
+                    st.caption(f"主题：{cov_board['theme']}")
+                if cov_board.get("missing"):
+                    st.warning(f"未入漫画的关键情节：{', '.join(cov_board['missing'])}")
+                with st.expander("情节覆盖明细"):
+                    for eid, info in (cov_board.get("events") or {}).items():
+                        pages_txt = "、".join(f"第 {n} 页" for n in info.get("pages") or []) or "未入漫画"
+                        flag = "关键" if info.get("essential") else "次要"
+                        st.caption(f"{eid}｜{flag}｜{info.get('event', '')}｜{pages_txt}")
             opts_now = board.get("opts") or {}
             if opts_now:
                 st.caption(f"{len(board['pages'])} 页 · {comic_layout.READING_LABEL.get(opts_now.get('reading'), '')} · "

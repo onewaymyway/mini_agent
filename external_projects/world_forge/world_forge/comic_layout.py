@@ -19,7 +19,7 @@ PAGE_W = 1200          # 页面像素宽度（PNG）
 PAGE_H = 1700          # 页面像素高度（约 1:1.414，接近 A 系列纸）
 PAGE_MARGIN = 0.02     # 页边距（占页面比例）
 GUTTER_PX = 16         # 格间距（像素）
-DEFAULT_PAGES = 6
+DEFAULT_PAGES = "auto"   # 默认按故事长度（情节数）决定页数；固定页数只用于明确指定时
 MAX_PAGES = 20         # 显式指定页数的上限；auto 不设上限
 READING_OPTIONS = ("ltr", "rtl")
 COLOR_OPTIONS = ("color", "bw")
@@ -62,7 +62,7 @@ TEMPLATE_LABEL = {"single": "整页单格", "stack": "上下排列", "grid": "�
 # ---------- 选项
 
 def normalize_opts(pages: Any = None, reading: Optional[str] = None, color: Optional[str] = None) -> Dict[str, Any]:
-    """规范化用户设置。pages：整数 1–20，或 "auto"（按故事长度，不设上限）；缺省为 6 页。"""
+    """规范化用户设置。pages：整数 1–20，或 "auto"（按故事长度，不设上限）；缺省为 auto。"""
     if pages is None or pages == "":
         pages = DEFAULT_PAGES
     if isinstance(pages, str):

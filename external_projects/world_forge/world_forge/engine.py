@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import html
 import json
 import os
@@ -993,6 +994,90 @@ def _ensure_anchors(llm, wid: str, board: Dict[str, Any], log) -> None:
         log.log("parse", f"已为角色「{ch['name']}」固定外观描述，供各格保持一致", level="ok")
 
 
+def _coverage_source(wid: str, sid: str) -> Tuple[str, str]:
+    """覆盖拆解的素材：有短篇正文则用全文；否则用小故事线的幕、结局与原始事件（不再只用概要）。"""
+    d = repo.story_dir(wid, sid)
+    if (d / "story.md").is_file():
+        return "story", (d / "story.md").read_text(encoding="utf-8")
+    arc = store.read_json(d / "arc.json") or {}
+    lines = [arc.get("title", ""), arc.get("premise", "")]
+    lines += [f"{a.get('title', '')}：{a.get('summary', '')}" for a in arc.get("acts") or []]
+    lines.append(f"结局：{arc.get('ending', '')}")
+    src_ids = load_story_meta_safe(wid, sid).get("source_event_ids") or []
+    if src_ids:
+        for ev in select_events(wid, event_ids=src_ids):
+            lines.append(" ".join(str(ev.get(k) or "") for k in ("title", "summary", "text", "note")).strip())
+    return "arc", "\n".join(x for x in lines if x and x.strip())
+
+
+def _chunks(text: str, size: int = 2500) -> List[str]:
+    """按段落切块，每块约 size 字；不截断正文。单段超长时整段保留。"""
+    out: List[str] = []
+    cur = ""
+    for para in text.split("\n"):
+        if not para.strip():
+            continue
+        if cur and len(cur) + len(para) > size:
+            out.append(cur)
+            cur = ""
+        cur += para + "\n"
+    if cur:
+        out.append(cur)
+    return out or [text]
+
+
+def _ensure_coverage(llm, wid: str, sid: str, log, *, refresh: bool = False) -> Dict[str, Any]:
+    """全文拆解为编号情节，并提炼主题。结果缓存在 coverage.json；正文未变化时直接复用。"""
+    d = repo.story_dir(wid, sid)
+    kind, text = _coverage_source(wid, sid)
+    if not text.strip():
+        raise EngineError("该故事没有可拆解的正文")
+    digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+    path = d / "coverage.json"
+    cur = store.read_json(path)
+    if cur and not refresh and cur.get("source_hash") == digest and cur.get("events"):
+        log.log("context", f"剧情覆盖：沿用已拆解的 {len(cur['events'])} 个情节（正文未变化）")
+        return cur
+    chunks = _chunks(text) if kind == "story" else [text]
+    events: List[Dict[str, Any]] = []
+    for k, ch in enumerate(chunks, start=1):
+        cancel.checkpoint()
+        log.log("coverage", f"全文拆解：第 {k}/{len(chunks)} 段（{len(ch)} 字）")
+        res = generate.segments_draft(LoggedLLM(llm, log), text=ch, chunk_no=k, log=log)
+        for e in res["events"]:
+            events.append({"id": "", "event": e["event"], "essential": e["essential"], "chunk": k})
+    if not events:
+        raise EngineError("没有拆出任何情节")
+    for i, e in enumerate(events, start=1):
+        e["id"] = f"E{i:02d}"
+    cancel.checkpoint()
+    theme = generate.theme_draft(LoggedLLM(llm, log), events=events, log=log)
+    cov = {"source": kind, "source_hash": digest, "chunks": len(chunks), "events": events, "theme": theme}
+    with _with_lock(wid):
+        _archive(path, log)
+        store.write_json(path, cov)
+    n_ess = sum(1 for e in events if e["essential"])
+    log.log("coverage", f"剧情覆盖：{len(events)} 个情节，其中关键 {n_ess} 个；主题：{theme['theme']}", level="ok")
+    return cov
+
+
+def _coverage_report(board: Dict[str, Any], events: List[Dict[str, Any]], theme: Dict[str, Any]) -> Dict[str, Any]:
+    used: Dict[str, List[int]] = {}
+    for pg in board["pages"]:
+        for pn in pg["panels"]:
+            if pn.get("event"):
+                used.setdefault(pn["event"], []).append(pg["no"])
+    essential = [e["id"] for e in events if e.get("essential")]
+    return {
+        "total": len(events), "essential": len(essential),
+        "covered_essential": sum(1 for e in essential if e in used),
+        "missing": [e["id"] for e in events if e.get("essential") and e["id"] not in used],
+        "events": {e["id"]: {"event": e["event"], "essential": e["essential"], "pages": used.get(e["id"], [])}
+                   for e in events},
+        "theme": theme.get("theme", ""), "closing_line": theme.get("closing_line", ""),
+    }
+
+
 def make_storyboard(llm, wid: str, sid: str, log=None, *, pages: Any = None, reading: Optional[str] = None,
                     color: Optional[str] = None) -> Dict[str, Any]:
     """两步生成：先节拍表（每页的叙事作用、画面焦点、页末钩子），再按节拍生成分镜格子。
@@ -1021,9 +1106,8 @@ def make_storyboard(llm, wid: str, sid: str, log=None, *, pages: Any = None, rea
             ctx.update(title=arc["title"], acts=arc.get("acts", []), ending=arc.get("ending", ""))
             log.log("context", f"素材：小故事线「{arc['title']}」，{len(arc.get('acts') or [])} 幕")
         if (d / "story.md").is_file():
-            ctx["text"] = (d / "story.md").read_text(encoding="utf-8")[:6000]
-            log.log("context", f"素材：短篇正文 {len(ctx['text'])} 字（最多取前 6000 字）")
-        if not arc and "text" not in ctx:
+            log.log("context", f"素材：短篇正文 {len((d / 'story.md').read_text(encoding='utf-8'))} 字（全文拆解，不截断）")
+        if not arc and not (d / "story.md").is_file():
             raise EngineError("该故事没有可用于分镜的内容")
         ctx["characters"] = [{"name": c["name"], "summary": c.get("summary", "")[:80]}
                              for c in repo.load_characters(wid)][:12]
@@ -1036,17 +1120,34 @@ def make_storyboard(llm, wid: str, sid: str, log=None, *, pages: Any = None, rea
             ctx["focus"] = own_focus["name"]
             log.log("context", f"主体视角：分镜以「{own_focus['name']}」为中心")
         cancel.checkpoint()
-        beats_res = generate.beats_draft(LoggedLLM(llm, log), context=ctx, pages=fixed, log=log)
+        cov = _ensure_coverage(llm, wid, sid, log)
+        events = cov["events"]
+        theme = cov.get("theme") or {}
+        ctx["theme"] = theme
+        ctx["events"] = [{"id": e["id"], "event": e["event"], "essential": e["essential"]} for e in events]
+        cancel.checkpoint()
+        beats_res = generate.beats_draft(LoggedLLM(llm, log), context=ctx, pages=fixed, log=log,
+                                         events=events, theme=theme)
         beats = beats_res["pages"]
         log.log("parse", f"节拍表通过：{len(beats)} 页", level="ok")
         for b in beats:
-            log.log("parse", f"第 {b['no']} 页｜{b['purpose']}｜焦点：{b['focus']}｜钩子：{b['hook'] or '（结尾）'}")
+            log.log("parse", f"第 {b['no']} 页｜{b['purpose']}｜覆盖情节：{'、'.join(b['covers']) or '无'}｜"
+                             f"钩子：{b['hook'] or '（结尾）'}")
         ctx["beats"] = [{"no": b["no"], "purpose": b["purpose"], "focus": b["focus"], "hook": b["hook"],
-                         "palette": b.get("palette", "")} for b in beats]
+                         "palette": b.get("palette", ""), "covers": b["covers"],
+                         "theme_note": b.get("theme_note", "")} for b in beats]
         cancel.checkpoint()
-        board = generate.storyboard_draft(LoggedLLM(llm, log), context=ctx, log=log, pages=len(beats))
+        board = generate.storyboard_draft(LoggedLLM(llm, log), context=ctx, log=log, pages=len(beats),
+                                          covers=[b["covers"] for b in beats])
         for pg, b in zip(board["pages"], beats):
             pg["beat"], pg["hook"], pg["palette"] = b["purpose"], b["hook"], b.get("palette", "")
+            pg["covers"] = b["covers"]
+        board["coverage"] = _coverage_report(board, events, theme)
+        cov_r = board["coverage"]
+        if cov_r["missing"]:
+            log.log("parse", f"注意：关键情节未进入漫画：{', '.join(cov_r['missing'])}", level="warn")
+        log.log("parse", f"覆盖检查：关键情节 {cov_r['covered_essential']}/{cov_r['essential']} 已入漫画；"
+                         f"全部情节 {cov_r['total']} 个", level="ok")
         n_panels = sum(len(p["panels"]) for p in board["pages"])
         log.log("parse", f"分镜结构通过：{len(board['pages'])} 页，共 {n_panels} 格", level="ok")
         for pg in board["pages"]:
