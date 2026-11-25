@@ -636,7 +636,8 @@ def _portrait_one(llm, provider, wid: str, cid: str, log) -> Dict[str, Any]:
         "tone": meta.get("tone", ""), "genre": meta.get("genre", "")})
     path = repo.portrait_path(wid, cid)
     _archive(path, log)
-    res = provider.generate(f"{draft['visual_en']}, {meta.get('tone', '')} style", path, ratio="3:4")
+    res = _gen_image(provider, log, f"立绘「{ch['name']}」", f"{draft['visual_en']}, {meta.get('tone', '')} style",
+                     path, ratio="3:4")
     with _with_lock(wid):
         chars = repo.load_characters(wid)
         ch = repo.find_by_id(chars, cid)
@@ -735,6 +736,7 @@ def _archive(path: Path, log=None) -> None:
 
 # ---------- 故事
 
+from . import runlog  # noqa: E402
 from .runlog import LoggedLLM, RunLog, format_entry  # noqa: E402  (运行日志，见 runlog.py)
 
 
@@ -1278,6 +1280,38 @@ def set_comic_limits(wid: str, *, image_budget: Optional[int] = None,
     return comic_limits(wid)
 
 
+def _image_timeout() -> float:
+    """单次图像调用的最长等待秒数，超过即放弃该格并继续。默认 180，可用 WORLD_FORGE_IMAGE_TIMEOUT 调整。"""
+    try:
+        return max(10.0, float(os.environ.get("WORLD_FORGE_IMAGE_TIMEOUT", "180")))
+    except ValueError:
+        return 180.0
+
+
+def _gen_image(provider, log, label: str, prompt: str, path: Path, *, ratio: Optional[str] = None,
+               reference_images: Optional[List[Path]] = None):
+    """统一的图像调用入口：记录提交与完成的时钟时间与用时，等待期间定时心跳，超时则记为失败。"""
+    from .providers.image import ImageResult
+    timeout = _image_timeout()
+    t0 = time.monotonic()
+    log.log("image", f"{label}：提交图像请求（{runlog.clock_now()}）")
+    val, exc, timed_out = runlog.call_with_heartbeat(
+        lambda: provider.generate(prompt, path, ratio=ratio, reference_images=reference_images),
+        log, label, timeout=timeout)
+    dur = time.monotonic() - t0
+    if timed_out:
+        res = ImageResult(False, error=f"图像模型 {timeout:.0f} 秒内未返回，已跳过（可用 WORLD_FORGE_IMAGE_TIMEOUT 调大）")
+    elif exc is not None:
+        res = ImageResult(False, error=f"{type(exc).__name__}: {exc}")
+    else:
+        res = val
+    if res.ok:
+        log.log("image", f"{label}：完成（{runlog.clock_now()}），用时 {dur:.1f} 秒", level="ok")
+    else:
+        log.log("image", f"{label}：失败（{runlog.clock_now()}），用时 {dur:.1f} 秒：{res.error}", level="warn")
+    return res
+
+
 class _Budget:
     def __init__(self, limit: int) -> None:
         self.limit = limit
@@ -1479,7 +1513,8 @@ def render_comic(provider, wid: str, sid: str, log=None,
                         path = existing if n_cand == 1 else d / f"panels/p{pg['no']:02d}_{i:02d}_c{k}.png"
                         if n_cand > 1 and path.is_file():
                             _archive(path, log)
-                        res = provider.generate(prompt, path, ratio=_panel_ratio(span),
+                        res = _gen_image(provider, log, f"第 {pg['no']} 页第 {i} 格" + (f" 候选 {k}" if n_cand > 1 else ""),
+                                prompt, path, ratio=_panel_ratio(span),
                                                 reference_images=refs[:MAX_REFS])
                         results.append((k, path, res))
                     dur = time.monotonic() - t
@@ -1790,7 +1825,8 @@ def make_character_sheets(provider, wid: str, sid: str, log=None, *, overwrite: 
                     prompt = (f"{base}, {comic_layout.SHEET_PROMPTS[key]}, {meta.get('tone', '')} style, "
                               "plain neutral background")
                     log.log("sheet", f"「{ch['name']}」{key}：生成中……")
-                    res = provider.generate(prompt, path, ratio="3:4", reference_images=[portrait])
+                    res = _gen_image(provider, log, f"角色表「{ch['name']}」{key}", prompt, path, ratio="3:4",
+                               reference_images=[portrait])
                     if res.ok:
                         made += 1
                         log.log("sheet", f"「{ch['name']}」{key}：完成", level="ok")
@@ -1854,7 +1890,8 @@ def make_scene_images(llm, provider, wid: str, sid: str, log=None, *, overwrite:
                             repo.save_entities(wid, cur)
                 if path.is_file():
                     _archive(path, log)
-                res = provider.generate(f"{visual}, {meta.get('tone', '')} style, wide establishing shot, "
+                res = _gen_image(provider, log, f"场景「{e['name']}」",
+                                f"{visual}, {meta.get('tone', '')} style, wide establishing shot, "
                                         "no people, no text", path, ratio="16:9")
                 if res.ok:
                     made += 1
