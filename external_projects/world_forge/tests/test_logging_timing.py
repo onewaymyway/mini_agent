@@ -72,3 +72,16 @@ def test_image_call_logs_submit_and_finish_with_clock(tmp_path, img):
     assert res.ok
     msgs = [e["msg"] for e in log.entries if e["stage"] == "image"]
     assert any("提交图像请求" in m for m in msgs) and any("完成" in m and "用时" in m for m in msgs)
+
+
+def test_run_log_is_readable_while_the_run_is_still_going(tmp_path, monkeypatch):
+    """实时刷新依赖：每条日志写入时就落盘，运行中读取文件即可看到已有记录。"""
+    from world_forge import repo
+    monkeypatch.setattr(repo, "world_dir", lambda wid: tmp_path)
+    log = runlog.RunLog("wld_live", "comic")
+    log.log("start", "第一条")
+    seen_first = runlog.read_run(str(log.path))
+    log.log("image", "第二条")
+    seen_second = runlog.read_run(str(log.path))
+    assert [e["msg"] for e in seen_first] == ["第一条"]
+    assert [e["msg"] for e in seen_second] == ["第一条", "第二条"]

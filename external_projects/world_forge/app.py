@@ -74,6 +74,39 @@ def _start_job(wid: str, kind: str, label: str, fn, *args, result_key=None, **kw
         return False
 
 
+def _story_run_log_body(wid: str) -> None:
+    """运行日志：运行中自动跟随最新一次运行，并随文件增长实时刷新。"""
+    s_runs = runlog_mod.list_runs(wid, kinds={"arc", "short", "board", "comic", "export", "sheet", "style"})
+    if not s_runs:
+        st.caption("还没有故事或漫画相关的运行记录。")
+        return
+    job = jobs.latest_for(wid)
+    following = bool(job and job.running)
+    s_labels = {r["path"]: f"{r['stamp']} · {KIND_LABEL.get(r['kind'], r['kind'])}" for r in s_runs}
+    if following:
+        s_chosen = s_runs[0]["path"]                      # 运行中：始终显示最新一次运行
+        st.caption("⏳ 运行中，日志实时刷新（每秒）")
+    else:
+        s_chosen = st.selectbox("选择一次运行", list(s_labels), format_func=lambda k: s_labels[k],
+                                key="story_run_pick")
+    s_entries = runlog_mod.read_run(s_chosen)
+    lv = {}
+    for e in s_entries:
+        lv[e.get("level", "info")] = lv.get(e.get("level", "info"), 0) + 1
+    st.caption(f"{s_labels.get(s_chosen, '')}　共 {len(s_entries)} 条记录：" + "　".join(f"{k} {v}" for k, v in lv.items()))
+    st.code("\n".join(runlog_mod.format_entry(e) for e in s_entries[-400:]) or "（暂无记录）", language=None)
+
+
+def _story_run_log(wid: str) -> None:
+    job = jobs.latest_for(wid)
+    running = bool(job and job.running)
+    if hasattr(st, "fragment"):
+        # 运行中每秒刷新该区域；空闲时不自动刷新，避免无谓的重绘
+        st.fragment(run_every=1 if running else None)(_story_run_log_body)(wid)
+    else:
+        _story_run_log_body(wid)
+
+
 def _job_bar_body():
     """顶部任务条：显示当前世界最近任务的状态、实时日志与停止按钮；结束后把结果交给页面并刷新。"""
     job = jobs.latest_for(st.session_state.get("current_wid"))
@@ -90,7 +123,7 @@ def _job_bar_body():
             c1.markdown(f"**⏳ 运行中：{job.label}**（已用时 {job.elapsed():.0f} 秒）")
             c2.button("停止", key=f"stop_{job.id}", on_click=jobs.request_stop, args=(job.id,),
                       type="secondary")
-            tail = job.entries[-14:]
+            tail = job.entries[-30:]
             st.code("\n".join(runlog_mod.format_entry(e) for e in tail) or "（等待开始……）", language=None)
         return
     if job.status == "error":
@@ -902,18 +935,7 @@ with tabs[6]:
                             st.caption(f"{tag}{dl.get('speaker', '')}（{dl.get('position', '')}）：{dl.get('text', '')}")
 
     st.markdown("#### 运行日志（故事与漫画）")
-    s_runs = runlog_mod.list_runs(wid, kinds={"arc", "short", "board", "comic", "export", "sheet", "style"})
-    if not s_runs:
-        st.caption("还没有故事或漫画相关的运行记录。")
-    else:
-        s_labels = {r["path"]: f"{r['stamp']} · {KIND_LABEL.get(r['kind'], r['kind'])}" for r in s_runs}
-        s_chosen = st.selectbox("选择一次运行", list(s_labels), format_func=lambda k: s_labels[k], key="story_run_pick")
-        s_entries = runlog_mod.read_run(s_chosen)
-        lv = {}
-        for e in s_entries:
-            lv[e.get("level", "info")] = lv.get(e.get("level", "info"), 0) + 1
-        st.caption(f"共 {len(s_entries)} 条记录：" + "　".join(f"{k} {v}" for k, v in lv.items()))
-        st.code("\n".join(runlog_mod.format_entry(e) for e in s_entries), language=None)
+    _story_run_log(wid)
 
 # ---------- 设置
 
