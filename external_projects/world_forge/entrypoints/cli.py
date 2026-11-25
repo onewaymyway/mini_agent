@@ -14,7 +14,7 @@
   python entrypoints/cli.py comic --world <wid> --story <sid> [--reading ltr|rtl] [--color color|bw] [--candidates 1-3]
   python entrypoints/cli.py comicexport --world <wid> --story <sid>   # CBZ 与条漫长图（仅使用已生成成品页）
   python entrypoints/cli.py text --world <wid> --story <sid> --page 1 --panel 1 [--narration 文字] [--sfx 轰] [--dialogue 第一句 --dialogue 第二句]
-  python entrypoints/cli.py limits --world <wid> [--budget 80] [--candidate-max 3]   # 查看或设置漫画上限
+  python entrypoints/cli.py limits --world <wid> [--budget 80] [--candidate-max 3] [--retry 8]   # 查看或设置漫画上限
   python entrypoints/cli.py style --world <wid>
   python entrypoints/cli.py sheets --world <wid> --story <sid> [--overwrite]
   python entrypoints/cli.py scenes --world <wid> --story <sid> [--overwrite]
@@ -91,6 +91,7 @@ def main(argv=None) -> int:
     p = sub.add_parser("limits"); p.add_argument("--world", required=True)
     p.add_argument("--budget", type=int, default=None, help="单次操作的图像调用上限（1–500）")
     p.add_argument("--candidate-max", type=int, default=None, help="每格候选数上限（1–5）")
+    p.add_argument("--retry", type=int, default=None, help="每次模型任务的失败重试上限（1–30）")
     p = sub.add_parser("style"); p.add_argument("--world", required=True)
     p = sub.add_parser("sheets"); p.add_argument("--world", required=True); p.add_argument("--story", required=True)
     p.add_argument("--overwrite", action="store_true")
@@ -158,8 +159,9 @@ def main(argv=None) -> int:
             _dump(engine.edit_panel_text(args.world, args.story, args.page, args.panel, narration=args.narration,
                                          sfx=args.sfx, dialogue=args.dialogue))
         elif args.cmd == "limits":
-            if args.budget is not None or args.candidate_max is not None:
-                engine.set_comic_limits(args.world, image_budget=args.budget, candidate_max=args.candidate_max)
+            if any(v is not None for v in (args.budget, args.candidate_max, args.retry)):
+                engine.set_comic_limits(args.world, image_budget=args.budget, candidate_max=args.candidate_max,
+                                        retry_max=args.retry)
             _dump(engine.comic_limits(args.world))
         elif args.cmd == "style":
             llm, _ = make_text_llm()

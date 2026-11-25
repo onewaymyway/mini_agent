@@ -40,6 +40,7 @@ CANDIDATE_HARD_MAX = 5     # 世界设置允许的候选数上限的硬顶
 CANDIDATE_RANGE = (1, CANDIDATE_HARD_MAX)
 IMAGE_BUDGET_DEFAULT = 80  # 单次操作图像调用上限的默认值
 IMAGE_BUDGET_RANGE = (1, 500)
+RETRY_RANGE = (1, 30)      # 单次模型任务的失败重试次数（每次都把错误反馈给模型）
 SHEET_KEYS = ("side", "angry", "sad", "surprised")   # 角色表：侧面 + 三种表情；平静即立绘本身
 SHEET_PROMPTS = {
     "side": "side view, full body, same character design",

@@ -15,7 +15,7 @@ def _story(world, llm):
 
 def test_defaults_when_nothing_is_configured(world, monkeypatch):
     monkeypatch.delenv("WORLD_FORGE_IMAGE_BUDGET", raising=False)
-    assert engine.comic_limits(world) == {"image_budget": 80, "candidate_max": 3}
+    assert engine.comic_limits(world) == {"image_budget": 80, "candidate_max": 3, "retry_max": 8}
 
 
 def test_environment_sets_default_budget_only_when_world_has_no_setting(world, monkeypatch):
@@ -28,12 +28,13 @@ def test_environment_sets_default_budget_only_when_world_has_no_setting(world, m
 def test_set_limits_persists_and_keeps_untouched_field(world):
     engine.set_comic_limits(world, image_budget=120)
     engine.set_comic_limits(world, candidate_max=4)
-    assert engine.comic_limits(world) == {"image_budget": 120, "candidate_max": 4}
+    assert engine.comic_limits(world) == {"image_budget": 120, "candidate_max": 4, "retry_max": 8}
     assert repo.load_meta(world)["comic_limits"] == {"image_budget": 120, "candidate_max": 4}
 
 
 @pytest.mark.parametrize("kwargs", [{"image_budget": 0}, {"image_budget": 501},
-                                    {"candidate_max": 0}, {"candidate_max": 6}])
+                                    {"candidate_max": 0}, {"candidate_max": 6},
+                                    {"retry_max": 0}, {"retry_max": 31}])
 def test_out_of_range_limits_are_rejected_and_not_saved(world, kwargs):
     with pytest.raises(engine.EngineError):
         engine.set_comic_limits(world, **kwargs)

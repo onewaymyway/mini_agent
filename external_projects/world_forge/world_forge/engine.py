@@ -1043,7 +1043,8 @@ def _ensure_coverage(llm, wid: str, sid: str, log, *, refresh: bool = False) -> 
     for k, ch in enumerate(chunks, start=1):
         cancel.checkpoint()
         log.log("coverage", f"全文拆解：第 {k}/{len(chunks)} 段（{len(ch)} 字）")
-        res = generate.segments_draft(LoggedLLM(llm, log), text=ch, chunk_no=k, log=log)
+        res = generate.segments_draft(LoggedLLM(llm, log), text=ch, chunk_no=k, log=log,
+                                      attempts=_retry_max(wid))
         for e in res["events"]:
             events.append({"id": "", "event": e["event"], "essential": e["essential"], "chunk": k})
     if not events:
@@ -1051,7 +1052,7 @@ def _ensure_coverage(llm, wid: str, sid: str, log, *, refresh: bool = False) -> 
     for i, e in enumerate(events, start=1):
         e["id"] = f"E{i:02d}"
     cancel.checkpoint()
-    theme = generate.theme_draft(LoggedLLM(llm, log), events=events, log=log)
+    theme = generate.theme_draft(LoggedLLM(llm, log), events=events, log=log, attempts=_retry_max(wid))
     cov = {"source": kind, "source_hash": digest, "chunks": len(chunks), "events": events, "theme": theme}
     with _with_lock(wid):
         _archive(path, log)
@@ -1076,6 +1077,49 @@ def _coverage_report(board: Dict[str, Any], events: List[Dict[str, Any]], theme:
                    for e in events},
         "theme": theme.get("theme", ""), "closing_line": theme.get("closing_line", ""),
     }
+
+
+def _beat_sig(b: Dict[str, Any]) -> str:
+    return hashlib.sha1(json.dumps(b, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+
+def _storyboard_by_page(llm, wid: str, sid: str, d: Path, ctx: Dict[str, Any], beats: List[Dict[str, Any]],
+                        events: List[Dict[str, Any]], theme: Dict[str, Any], log) -> Dict[str, Any]:
+    """逐页生成分镜。已完成且节拍未变的页从 storyboard_partial.json 复用，失败只重做那一页。"""
+    partial_path = d / "storyboard_partial.json"
+    partial = store.read_json(partial_path) or {}
+    done: Dict[str, Any] = {}
+    attempts = _retry_max(wid)
+    prev_tail: Optional[List[str]] = None
+    pages_out: List[Dict[str, Any]] = []
+    for b in beats:
+        sig = _beat_sig(b)
+        key = str(b["no"])
+        cached = partial.get(key)
+        if cached and cached.get("sig") == sig:
+            page = cached["page"]
+            log.log("parse", f"第 {b['no']} 页：沿用上次已通过的分镜（节拍未变）", level="ok")
+        else:
+            cancel.checkpoint()
+            log.log("parse", f"第 {b['no']} 页：生成分镜（最多尝试 {attempts} 次）")
+            page = generate.storyboard_page_draft(LoggedLLM(llm, log), context=ctx, page_no=b["no"], beat=b,
+                                                  events=events, prev_tail=prev_tail, log=log, attempts=attempts)
+            page["no"] = b["no"]
+            partial[key] = {"sig": sig, "page": page}
+            store.write_json(partial_path, partial)
+        done[key] = page
+        pages_out.append(page)
+        prev_tail = (page["panels"][-1].get("screen_order") or None) if page["panels"] else None
+        for pn in page["panels"]:
+            if not pn.get("screen_order"):
+                pn["screen_order"] = []
+    board = {"pages": pages_out}
+    errs = generate._validate_storyboard({"pages": pages_out}, len(beats), [b["covers"] for b in beats])
+    if errs:
+        raise generate.GenerationError(f"分镜整体检查未通过：{errs[0]}")
+    if partial_path.is_file():
+        partial_path.unlink()
+    return board
 
 
 def make_storyboard(llm, wid: str, sid: str, log=None, *, pages: Any = None, reading: Optional[str] = None,
@@ -1127,7 +1171,7 @@ def make_storyboard(llm, wid: str, sid: str, log=None, *, pages: Any = None, rea
         ctx["events"] = [{"id": e["id"], "event": e["event"], "essential": e["essential"]} for e in events]
         cancel.checkpoint()
         beats_res = generate.beats_draft(LoggedLLM(llm, log), context=ctx, pages=fixed, log=log,
-                                         events=events, theme=theme)
+                                         events=events, theme=theme, attempts=_retry_max(wid))
         beats = beats_res["pages"]
         log.log("parse", f"节拍表通过：{len(beats)} 页", level="ok")
         for b in beats:
@@ -1137,8 +1181,7 @@ def make_storyboard(llm, wid: str, sid: str, log=None, *, pages: Any = None, rea
                          "palette": b.get("palette", ""), "covers": b["covers"],
                          "theme_note": b.get("theme_note", "")} for b in beats]
         cancel.checkpoint()
-        board = generate.storyboard_draft(LoggedLLM(llm, log), context=ctx, log=log, pages=len(beats),
-                                          covers=[b["covers"] for b in beats])
+        board = _storyboard_by_page(llm, wid, sid, d, ctx, beats, events, theme, log)
         for pg, b in zip(board["pages"], beats):
             pg["beat"], pg["hook"], pg["palette"] = b["purpose"], b["hook"], b.get("palette", "")
             pg["covers"] = b["covers"]
@@ -1193,6 +1236,10 @@ def _env_budget_default() -> int:
         return comic_layout.IMAGE_BUDGET_DEFAULT
 
 
+def _retry_max(wid: str) -> int:
+    return comic_limits(wid)["retry_max"]
+
+
 def comic_limits(wid: str) -> Dict[str, int]:
     """本世界的漫画上限：图像调用上限与候选数上限。世界设置 > 环境变量（仅图像调用上限）> 默认值。"""
     stored = repo.load_meta(wid).get("comic_limits") or {}
@@ -1201,11 +1248,12 @@ def comic_limits(wid: str) -> Dict[str, int]:
     return {
         "image_budget": int(budget) if budget is not None else _env_budget_default(),
         "candidate_max": int(cand) if cand is not None else comic_layout.CANDIDATE_MAX,
+        "retry_max": int(stored["retry_max"]) if stored.get("retry_max") is not None else 8,
     }
 
 
 def set_comic_limits(wid: str, *, image_budget: Optional[int] = None,
-                     candidate_max: Optional[int] = None) -> Dict[str, int]:
+                     candidate_max: Optional[int] = None, retry_max: Optional[int] = None) -> Dict[str, int]:
     """保存本世界的漫画上限。超出允许范围直接报错，不写入任何内容。None 表示不改该项。"""
     lo, hi = comic_layout.IMAGE_BUDGET_RANGE
     if image_budget is not None and not (lo <= int(image_budget) <= hi):
@@ -1213,6 +1261,9 @@ def set_comic_limits(wid: str, *, image_budget: Optional[int] = None,
     clo, chi = comic_layout.CANDIDATE_RANGE
     if candidate_max is not None and not (clo <= int(candidate_max) <= chi):
         raise EngineError(f"候选数上限须在 {clo}–{chi} 之间：{candidate_max}")
+    rlo, rhi = comic_layout.RETRY_RANGE
+    if retry_max is not None and not (rlo <= int(retry_max) <= rhi):
+        raise EngineError(f"失败重试次数须在 {rlo}–{rhi} 之间：{retry_max}")
     with _with_lock(wid):
         meta = repo.load_meta(wid)
         stored = dict(meta.get("comic_limits") or {})
@@ -1220,6 +1271,8 @@ def set_comic_limits(wid: str, *, image_budget: Optional[int] = None,
             stored["image_budget"] = int(image_budget)
         if candidate_max is not None:
             stored["candidate_max"] = int(candidate_max)
+        if retry_max is not None:
+            stored["retry_max"] = int(retry_max)
         meta["comic_limits"] = stored
         repo.save_meta(meta)
     return comic_limits(wid)

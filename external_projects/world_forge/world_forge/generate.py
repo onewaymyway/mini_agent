@@ -18,6 +18,9 @@ SYSTEM = (
 )
 
 
+DEFAULT_ATTEMPTS = 8   # 单次任务的最多尝试次数（世界设置可改，范围 1–30）
+
+
 class GenerationError(RuntimeError):
     pass
 
@@ -164,14 +167,14 @@ def _validate_segments(d: Dict[str, Any]) -> List[str]:
     return []
 
 
-def segments_draft(llm, *, text: str, chunk_no: int = 1, log=None) -> Dict[str, Any]:
+def segments_draft(llm, *, text: str, chunk_no: int = 1, log=None, attempts: int = DEFAULT_ATTEMPTS) -> Dict[str, Any]:
     """把一段正文拆成情节点。只拆情节，不写画面，保证每个情节都有迹可循。"""
     return call_json(llm, "segments", {"text": text, "chunk_no": chunk_no},
                      "请把下面这段小说正文拆成按时间顺序排列的情节点，不要遗漏任何推动剧情的事件。"
                      "每个情节点一句话（event，写清谁做了什么、结果如何），essential 标记是否为关键情节"
                      "（推动剧情或揭示人物与主题的为 true，纯过渡或细节为 false）。"
                      "JSON 字段：events（数组：event, essential）。",
-                     _validate_segments, log=log)
+                     _validate_segments, log=log, attempts=attempts)
 
 
 def _validate_theme(d: Dict[str, Any]) -> List[str]:
@@ -182,14 +185,14 @@ def _validate_theme(d: Dict[str, Any]) -> List[str]:
     return []
 
 
-def theme_draft(llm, *, events: List[Dict[str, Any]], log=None) -> Dict[str, Any]:
+def theme_draft(llm, *, events: List[Dict[str, Any]], log=None, attempts: int = DEFAULT_ATTEMPTS) -> Dict[str, Any]:
     """从全部情节中提炼作品的主题，并指定由哪些情节体现；收束页据此表达主题。"""
     lines = [f"{e['id']}｜{'关键' if e.get('essential') else '次要'}｜{e['event']}" for e in events]
     return call_json(llm, "theme", {"events": events},
                      "下面是作品的全部情节。请提炼作品想表达的核心主题（一句话，不是情节概括），"
                      "并列出最能体现这一主题的情节 id（carriers）。closing_line 为读者读完最后一页应留下的一句感受，可为空。"
                      "JSON 字段：theme, carriers（数组）, closing_line。\n" + "\n".join(lines),
-                     _validate_theme, log=log)
+                     _validate_theme, log=log, attempts=attempts)
 
 
 def _validate_beats(d: Dict[str, Any], expect: Optional[int] = None, essential: Optional[List[str]] = None,
@@ -290,30 +293,33 @@ def _note(log, msg: str) -> None:
 
 
 def call_json(llm, task: str, context: Dict[str, Any], instruction: str,
-              validate: Callable[[Dict[str, Any]], List[str]], log=None) -> Dict[str, Any]:
+              validate: Callable[[Dict[str, Any]], List[str]], log=None,
+              attempts: int = DEFAULT_ATTEMPTS) -> Dict[str, Any]:
+    """调用模型并校验 JSON。不合格时把具体错误反馈给模型，最多尝试 attempts 次。"""
+    attempts = max(1, int(attempts))
     prompt = build_prompt(task, context, instruction)
     last_err = ""
-    for attempt in range(2):
-        p = prompt if attempt == 0 else prompt + f"\n\n上一次输出不合格：{last_err}。请只输出修正后的 JSON。"
+    for attempt in range(1, attempts + 1):
+        p = prompt if attempt == 1 else (
+            prompt + f"\n\n上一次输出不合格，错误如下：{last_err}。请逐条修正这些错误，只输出修正后的 JSON。")
         raw = llm.ask(p, system=SYSTEM)
+        more = f"，将重试（第 {attempt + 1}/{attempts} 次）" if attempt < attempts else ""
         try:
             data = parse_json(raw)
         except ValueError as exc:
             last_err = str(exc)
-            _note(log, f"{task} 第 {attempt + 1} 次输出无法解析：{last_err}" +
-                  ("，将重试一次" if attempt == 0 else ""))
+            _note(log, f"{task} 第 {attempt}/{attempts} 次输出无法解析：{last_err}{more}")
             continue
         if not isinstance(data, dict):
             last_err = "顶层必须是对象"
-            _note(log, f"{task} 第 {attempt + 1} 次输出顶层不是对象" + ("，将重试一次" if attempt == 0 else ""))
+            _note(log, f"{task} 第 {attempt}/{attempts} 次输出顶层不是对象{more}")
             continue
         errs = validate(data)
         if not errs:
             return data
         last_err = "；".join(errs)
-        _note(log, f"{task} 第 {attempt + 1} 次输出结构不合格：{last_err}" +
-              ("，将重试一次" if attempt == 0 else ""))
-    raise GenerationError(f"{task} 生成失败：{last_err}")
+        _note(log, f"{task} 第 {attempt}/{attempts} 次输出结构不合格：{last_err}{more}")
+    raise GenerationError(f"{task} 生成失败（已尝试 {attempts} 次）：{last_err}")
 
 
 def charter_draft(llm, *, concept: str, title: str = "", genre: str = "", tone: str = "") -> Dict[str, Any]:
@@ -366,7 +372,8 @@ def short_draft(llm, *, context: Dict[str, Any], form: str) -> str:
 
 
 def beats_draft(llm, *, context: Dict[str, Any], pages: Optional[int] = None, log=None,
-                events: Optional[List[Dict[str, Any]]] = None, theme: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                events: Optional[List[Dict[str, Any]]] = None, theme: Optional[Dict[str, Any]] = None,
+                attempts: int = DEFAULT_ATTEMPTS) -> Dict[str, Any]:
     """节拍表：按情节覆盖规划每页。pages=None 表示按故事长度自动决定页数。"""
     events = events or []
     essential = [e["id"] for e in events if e.get("essential")]
@@ -387,7 +394,8 @@ def beats_draft(llm, *, context: Dict[str, Any], pages: Optional[int] = None, lo
             raise GenerationError(f"关键情节 {len(essential)} 个，超过 {pages} 页的容量（每页最多 {COVER_MAX_PER_PAGE} 个，"
                                   f"共 {cap} 个）。请增加页数或选择按故事长度自动。")
     return call_json(llm, "beats", ctx, instr,
-                     lambda d: _validate_beats(d, pages, essential, all_ids, require_theme=True), log=log)
+                     lambda d: _validate_beats(d, pages, essential, all_ids, require_theme=True), log=log,
+                     attempts=attempts)
 
 
 STYLE_KEYS = ("summary", "line", "palette", "lighting")
@@ -446,6 +454,51 @@ def storyboard_draft(llm, *, context: Dict[str, Any], log=None, pages: Optional[
                      "emotion（可空）, location（可空）, event（可空）, characters（出场角色名数组）, "
                      "visual_en（英文背景与环境描述；人物姿态与视线由 action 与 gaze 表达，不要写在这里；不要要求图中出现文字或气泡）。",
                      lambda d: _validate_storyboard(d, pages, covers), log=log)
+
+
+def _validate_page(d: Dict[str, Any], covers: List[str], prev_tail: Optional[List[str]], page_no: int) -> List[str]:
+    panels = d.get("panels")
+    if not isinstance(panels, list) or not (1 <= len(panels) <= 5):
+        return ["panels 必须为 1–5 格的数组"]
+    for p in panels:
+        if not isinstance(p, dict):
+            return ["每格必须是对象"]
+        errs = normalize_panel(p)
+        if errs:
+            return errs
+    have = {p.get("event") for p in panels}
+    lost = [c for c in covers if c not in have]
+    if lost:
+        return [f"本页的情节 {', '.join(lost)} 没有对应的格子（需要有一格的 event 标注它）"]
+    axis = check_axis([{"no": page_no, "panels": ([{"screen_order": prev_tail}] if prev_tail else []) + panels}])
+    return axis
+
+
+def storyboard_page_draft(llm, *, context: Dict[str, Any], page_no: int, beat: Dict[str, Any],
+                          events: List[Dict[str, Any]], prev_tail: Optional[List[str]] = None, log=None,
+                          attempts: int = DEFAULT_ATTEMPTS) -> Dict[str, Any]:
+    """只生成一页的分镜。输入仅含本页节拍、本页覆盖的情节与上一页收尾状态，因此提示词短、出错可局部重做。"""
+    covers = list(beat.get("covers") or [])
+    own = [e for e in events if e["id"] in covers]
+    ctx = {**context, "page_no": page_no, "beat": beat, "page_events": own,
+           "prev_tail": {"screen_order": prev_tail or []}}
+    instr = ("请为本页生成分镜（只输出这一页）。beat 为本页节拍，page_events 为本页必须讲清的情节，"
+             "prev_tail 为上一页最后一格的画面左右顺序（本页开头承接它，除非是反打，否则不要无故翻转）。"
+             "1) 本页 1–5 格，按阅读顺序排列；每个 page_events 中的情节至少有一格的 event 等于它；"
+             "2) connects_prev 用不超过 20 字说明本格如何承接上一格；相邻格景别与机位要有变化；"
+             "3) 高潮格用 span=2，其余 span=1；"
+             "4) camera 取 平视/俯视/仰视/过肩/特写镜头/推近/拉远/反打；只有反打才允许画面中两人左右位置翻转；"
+             "5) screen_order 按画面从左到右列出本格出场的角色名（至少两人时才填）；gaze 为 {名字: 朝左/朝右/朝画外/朝观众/向下/向上/看向对方/低头}；"
+             "6) action 一句话写动作姿态；composition 写构图与留白区；"
+             "7) 出场角色用 context.characters 中的名字；location 取自 context.locations；"
+             "8) dialogue 每句不超过 24 字，kind 取 speech/thought/shout，speaker_side 取 左/中/右，position 取 左上/右上/左下/右下/中上/中下；"
+             "对白语气符合角色身份，口语化；9) narration 不超过 30 字，不复述画面；"
+             "10) sfx、emotion 可空；11) visual_en 为英文背景描述，不含人物动作与文字；"
+             "12) 若 beat.theme_note 非空（最后一页），最后一格要体现它。"
+             "JSON 字段：panels（数组，每格字段：shot, camera, span, connects_prev, action, composition, screen_order, "
+             "gaze, narration, dialogue, sfx, emotion, location, event, characters, visual_en）。")
+    return call_json(llm, "storyboard_page", ctx, instr,
+                     lambda d: _validate_page(d, covers, prev_tail, page_no), log=log, attempts=attempts)
 
 
 def portrait_draft(llm, *, context: Dict[str, Any]) -> Dict[str, Any]:

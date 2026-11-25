@@ -226,6 +226,35 @@ class RuleTextLLM(TextLLM):
             pages.append({"no": n, "panels": panels})
         return {"pages": pages}
 
+    def _task_storyboard_page(self, ctx):
+        """规则版单页分镜：格子数由本页覆盖的情节数决定，每个情节一格并标注 event。"""
+        beat = ctx.get("beat") or {}
+        covers = beat.get("covers") or []
+        n = ctx.get("page_no") or 1
+        names = [c.get("name") for c in ctx.get("characters") or [] if c.get("name")][:2]
+        locs = [c.get("name") for c in ctx.get("locations") or [] if c.get("name")]
+        shots = ["远景", "中景", "近景", "特写"]
+        count = max(2, min(5, len(covers)))
+        panels = []
+        for j in range(count):
+            shot = shots[(n + j) % len(shots)]
+            dialogue = []
+            if names and j == 0:
+                dialogue = [{"speaker": names[0], "text": "（规则占位）", "position": "右上",
+                             "speaker_side": "右", "kind": "speech"}]
+            panels.append({
+                "shot": shot, "span": 2 if (beat.get("purpose") or "").startswith("高潮") and j == 0 else 1,
+                "camera": "平视", "connects_prev": "" if (n == 1 and j == 0) else f"承接上一页第{j}格",
+                "action": "（规则占位）静立", "composition": "主体居中，上方留白",
+                "screen_order": [], "gaze": {names[0]: "朝右"} if names else {},
+                "narration": (beat.get("focus", "") or "")[:30] if j == 0 else "",
+                "dialogue": dialogue, "sfx": "轰" if (j == count - 1 and beat.get("theme_note")) else "",
+                "emotion": "平静", "characters": names[:1], "location": locs[0] if locs else "",
+                "event": covers[j] if j < len(covers) else "",
+                "visual_en": f"{shot} view, page {n} panel {j + 1}, muted palette, no text",
+            })
+        return {"panels": panels}
+
     def _task_style(self, ctx):
         return {"summary": "（规则占位）线条干净、色彩统一的漫画风格",
                 "line": "clean ink linework, cel shading", "palette": "muted teal and amber palette",

@@ -709,7 +709,7 @@ with tabs[6]:
                                     help=f"每格生成的候选张数，默认 1；上限见下方「上限设置」（当前 {limits_now['candidate_max']}）。"
                                          "候选会增加图像调用次数。")
         st.caption("页数在「生成分镜」时确定（节拍表据此规划）；阅读方向与色彩可在「生成漫画图」时调整，无需重新生成分镜。")
-        with st.expander(f"上限设置（全世界共用）：图像调用 {limits_now['image_budget']} 次/操作，候选 ≤ {limits_now['candidate_max']} 张"):
+        with st.expander(f"上限设置（全世界共用）：图像调用 {limits_now['image_budget']} 次/操作，候选 ≤ {limits_now['candidate_max']} 张，失败重试 ≤ {limits_now['retry_max']} 次"):
             lo_b, hi_b = comic_layout.IMAGE_BUDGET_RANGE
             lo_c, hi_c = comic_layout.CANDIDATE_RANGE
             lim_cols = st.columns(2)
@@ -717,9 +717,14 @@ with tabs[6]:
                                                   value=int(limits_now["image_budget"]), step=1, key="lim_budget")
             new_cand = lim_cols[1].number_input("每格候选数上限", min_value=lo_c, max_value=hi_c,
                                                 value=int(limits_now["candidate_max"]), step=1, key="lim_cand")
+            lo_r, hi_r = comic_layout.RETRY_RANGE
+            new_retry = lim_cols[0].number_input("每次模型任务的失败重试上限（错误会反馈给模型）", min_value=lo_r,
+                                                 max_value=hi_r, value=int(limits_now["retry_max"]), step=1,
+                                                 key="lim_retry")
             if st.button("保存上限设置", key="save_limits"):
                 try:
-                    engine.set_comic_limits(wid, image_budget=int(new_budget), candidate_max=int(new_cand))
+                    engine.set_comic_limits(wid, image_budget=int(new_budget), candidate_max=int(new_cand),
+                                            retry_max=int(new_retry))
                     st.success("已保存。")
                     st.rerun()
                 except engine.EngineError as exc:
