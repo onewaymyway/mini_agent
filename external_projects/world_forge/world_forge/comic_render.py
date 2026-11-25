@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
-from .comic_layout import GUTTER_PX, PAGE_H, PAGE_W
+from .comic_layout import CLOSE_SHOTS, GUTTER_PX, PAGE_H, PAGE_W
 
 FONT_CANDIDATES = (
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
@@ -118,25 +118,98 @@ def _block(item: Dict[str, Any], fonts: Fonts, max_w: int) -> Dict[str, Any]:
     return {"w": w, "h": h, "lines": lines, "font": font, "name": name, "name_font": name_font, "size": size}
 
 
-def _place(zone: Tuple[str, str], w: int, h: int, box: Tuple[int, int, int, int], cursor: Dict[str, int]) -> Tuple[int, int]:
-    """按区域与已占用高度计算左上角坐标。上区域自上而下堆叠，下区域自下而上堆叠。"""
+ALL_ZONES = [(v, h) for v in ("top", "bottom") for h in ("left", "right", "center")]
+GAP = 8                   # 元素之间的最小间距
+SCAN_STEP = 6             # 垂直扫描步长（像素）
+WIDTH_SCALES = (1.0, 0.8, 0.65)   # 放不下时依次缩小的宽度比例
+
+
+def _tail_reach(box: Tuple[int, int, int, int]) -> int:
+    return min(72, int((box[3] - box[1]) * 0.22))
+
+
+def _rect_of(item: Dict[str, Any], blk: Dict[str, Any], zone: Tuple[str, str], box, *, x: int, y: int) -> Tuple[int, int, int, int]:
+    """元素占用的矩形（含尾巴/心声小圆的延伸），用于碰撞检测。"""
+    x1, y1 = x + blk["w"], y + blk["h"]
+    reach = _tail_reach(box) if item["kind"] in ("speech", "shout", "thought") else 0
+    if zone[0] == "top":
+        y1 += reach
+    else:
+        y -= reach
+    return (x, y, x1, y1)
+
+
+def _overlaps(a: Tuple[int, int, int, int], b: Tuple[int, int, int, int]) -> bool:
+    return a[0] < b[2] + GAP and b[0] < a[2] + GAP and a[1] < b[3] + GAP and b[1] < a[3] + GAP
+
+
+def _zone_order(preferred: Tuple[str, str], close: bool) -> List[Tuple[str, str]]:
+    """候选区域：先原区域，再同一垂直位置的其它区域，最后其余区域。近景/特写不使用正中（人脸所在）。"""
+    rest = [z for z in ALL_ZONES if z != preferred]
+    same_row = [z for z in rest if z[0] == preferred[0]]
+    others = [z for z in rest if z[0] != preferred[0]]
+    order = [preferred] + same_row + others
+    if close:
+        order = [z for z in order if z[1] != "center"] or order
+    return order
+
+
+def _find_spot(item, blk, box, placed, close: bool):
     x0, y0, x1, y1 = box
-    vert, horiz = zone
-    if horiz == "left":
-        x = x0 + EDGE
-    elif horiz == "right":
-        x = x1 - EDGE - w
-    else:
-        x = x0 + (x1 - x0 - w) // 2
-    key = f"{vert}:{horiz}"
-    used = cursor.get(key, 0)
-    if vert == "top":
-        y = y0 + EDGE + used
-        cursor[key] = used + h + 10
-    else:
-        y = y1 - EDGE - used - h
-        cursor[key] = used + h + 10
-    return x, y
+    for zone in _zone_order(item["zone"], close):
+        vert, horiz = zone
+        if horiz == "left":
+            x = x0 + EDGE
+        elif horiz == "right":
+            x = x1 - EDGE - blk["w"]
+        else:
+            x = x0 + (x1 - x0 - blk["w"]) // 2
+        if blk["w"] > (x1 - x0) - 2 * EDGE:
+            continue
+        if vert == "top":
+            ys = range(y0 + EDGE, y1 - EDGE - blk["h"] + 1, SCAN_STEP)
+        else:
+            ys = range(y1 - EDGE - blk["h"], y0 + EDGE - 1, -SCAN_STEP)
+        for y in ys:
+            rect = _rect_of(item, blk, zone, box, x=x, y=y)
+            if rect[0] < x0 or rect[1] < y0 or rect[2] > x1 or rect[3] > y1:
+                continue
+            if any(_overlaps(rect, other) for other in placed):
+                continue
+            return zone, x, y, rect
+    return None
+
+
+def _layout_panel(items: List[Dict[str, Any]], fonts: Fonts, box: Tuple[int, int, int, int],
+                  close: bool, warnings: Optional[List[str]] = None) -> List[Tuple[Dict[str, Any], Dict[str, Any], Tuple[str, str], int, int]]:
+    """避让式排版：按优先级（旁白、对白、音效）逐个放置，检查与已放置元素及格子边界的碰撞。"""
+    x0, y0, x1, y1 = box
+    pw = x1 - x0
+    rank = {"caption": 0, "speech": 1, "thought": 1, "shout": 1, "sfx": 2}
+    placed: List[Tuple[int, int, int, int]] = []
+    out = []
+    for item in sorted(items, key=lambda it: rank.get(it["kind"], 1)):
+        spot = None
+        blk = None
+        for scale in WIDTH_SCALES:
+            blk = _block(item, fonts, max(40, int(pw * BUBBLE_MAX_RATIO * scale)))
+            spot = _find_spot(item, blk, box, placed, close)
+            if spot is not None:
+                break
+        if spot is None:
+            # 放不下：退回原区域贴边放置，并记录警告（提示用户缩短对白）
+            zone = item["zone"]
+            x = x0 + EDGE if zone[1] == "left" else (x1 - EDGE - blk["w"] if zone[1] == "right"
+                                                    else x0 + (pw - blk["w"]) // 2)
+            y = y0 + EDGE if zone[0] == "top" else y1 - EDGE - blk["h"]
+            rect = _rect_of(item, blk, zone, box, x=x, y=y)
+            if warnings is not None:
+                warnings.append(f"「{item.get('text', '')[:12]}」无法在格内完全避让，已重叠（可缩短对白后重绘）")
+            spot = (zone, x, y, rect)
+        zone, x, y, rect = spot
+        placed.append(rect)
+        out.append((item, blk, zone, x, y))
+    return out
 
 
 def _draw_bubble(draw: ImageDraw.ImageDraw, item: Dict[str, Any], blk: Dict[str, Any],
@@ -208,7 +281,8 @@ def _draw_panel_image(canvas: Image.Image, box: Tuple[int, int, int, int], src: 
         ty += _line_h(SIZE_PLACEHOLDER)
 
 
-def render_page(plan: Dict[str, Any], base_dir: Path, fonts: Fonts, color: str = "color") -> Image.Image:
+def render_page(plan: Dict[str, Any], base_dir: Path, fonts: Fonts, color: str = "color",
+                warnings: Optional[List[str]] = None) -> Image.Image:
     """把一页规划画成 PIL 图像。"""
     page = Image.new("RGB", (PAGE_W, PAGE_H), "white")
     draw = ImageDraw.Draw(page)
@@ -233,29 +307,28 @@ def render_page(plan: Dict[str, Any], base_dir: Path, fonts: Fonts, color: str =
         _draw_panel_image(page, box, src, pan.get("image_error"), fonts, color)
         draw = ImageDraw.Draw(page)
         draw.rectangle((x0, y0, x1 - 1, y1 - 1), outline="black", width=4)
-        cursor: Dict[str, int] = {}
-        max_w = int((x1 - x0) * BUBBLE_MAX_RATIO)
-        for item in pan["items"]:
+        close = (pan.get("shot") or "中景") in CLOSE_SHOTS
+        for item, blk, zone, x, y in _layout_panel(pan["items"], fonts, box, close, warnings):
             if item["kind"] == "sfx":
-                blk = _block(item, fonts, max_w)
-                x, y = _place(item["zone"], blk["w"], blk["h"], box, cursor)
                 _draw_sfx(draw, item, blk, x, y)
-                continue
-            blk = _block(item, fonts, max_w)
-            x, y = _place(item["zone"], blk["w"], blk["h"], box, cursor)
-            _draw_bubble(draw, item, blk, x, y, box)
+            else:
+                _draw_bubble(draw, {**item, "zone": zone}, blk, x, y, box)
     draw.rectangle((2, 2, PAGE_W - 3, PAGE_H - 3), outline="black", width=6)
     return page
 
 
 def write_pages(plans: List[Dict[str, Any]], base_dir: Path, out_dir: Path, *, color: str = "color",
-                fonts: Optional[Fonts] = None) -> List[Path]:
+                fonts: Optional[Fonts] = None, warnings: Optional[List[str]] = None) -> List[Path]:
     """把所有页写为 page_01.png … 并打包为 comic_pages.zip（与 out_dir 同级）。返回 PNG 路径列表。"""
     fonts = fonts or Fonts()
     out_dir.mkdir(parents=True, exist_ok=True)
     paths: List[Path] = []
     for plan in plans:
-        img = render_page(plan, base_dir, fonts, color)
+        page_warn: List[str] = []
+        img = render_page(plan, base_dir, fonts, color, page_warn)
+        for w in page_warn:
+            if warnings is not None:
+                warnings.append(f"第 {plan.get('no')} 页：{w}")
         p = out_dir / f"page_{int(plan.get('no') or len(paths) + 1):02d}.png"
         img.save(p, format="PNG", optimize=True)
         paths.append(p)

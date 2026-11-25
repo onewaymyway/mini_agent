@@ -1408,8 +1408,15 @@ def _assemble_outputs(wid: str, sid: str, d: Path, board: Dict[str, Any], opts: 
     pages_dir = d / "pages"
     if pages_dir.exists():
         shutil.rmtree(pages_dir)
-    pngs = comic_render.write_pages(plans, base_dir=d, out_dir=pages_dir, color=opts["color"], fonts=fonts)
-    log.log("assemble", f"已导出 {len(pngs)} 页 PNG", level="ok")
+    layout_warn: List[str] = []
+    pngs = comic_render.write_pages(plans, base_dir=d, out_dir=pages_dir, color=opts["color"], fonts=fonts,
+                                    warnings=layout_warn)
+    for w in layout_warn[:20]:
+        log.log("assemble", w, level="warn")
+    if len(layout_warn) > 20:
+        log.log("assemble", f"另有 {len(layout_warn) - 20} 处排字重叠警告未列出", level="warn")
+    log.log("assemble", f"已导出 {len(pngs)} 页 PNG" + (f"，{len(layout_warn)} 处需要人工调整" if layout_warn else ""),
+            level="warn" if layout_warn else "ok")
     log.log("assemble", "拼装网页预览 comic.html（图片嵌入文件，可独立打开）")
     comic = render_comic_html(board, title=load_story_meta_safe(wid, sid).get("title", "漫画"), base_dir=d,
                               reading=opts["reading"])
