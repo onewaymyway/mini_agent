@@ -708,6 +708,8 @@ with tabs[6]:
                                     key="comic_cands",
                                     help=f"每格生成的候选张数，默认 1；上限见下方「上限设置」（当前 {limits_now['candidate_max']}）。"
                                          "候选会增加图像调用次数。")
+        source_pick = st.selectbox("分镜素材（生成分镜时确定）", list(comic_layout.SOURCE_OPTIONS),
+                                   format_func=lambda k: comic_layout.SOURCE_LABEL[k], key="comic_source")
         st.caption("页数在「生成分镜」时确定（节拍表据此规划）；阅读方向与色彩可在「生成漫画图」时调整，无需重新生成分镜。")
         with st.expander(f"上限设置（全世界共用）：图像调用 {limits_now['image_budget']} 次/操作，候选 ≤ {limits_now['candidate_max']} 张，失败重试 ≤ {limits_now['retry_max']} 次"):
             lo_b, hi_b = comic_layout.IMAGE_BUDGET_RANGE
@@ -749,7 +751,7 @@ with tabs[6]:
         if r2[0].button("重新生成分镜" if has_board else "生成分镜",
                         disabled=smeta["kind"] == "arc" and not has_arc):
             if _start_job(wid, "board", "生成分镜", engine.make_storyboard, LLM, wid, sid,
-                          pages=pages_pick, reading=reading_pick, color=color_pick):
+                          pages=pages_pick, reading=reading_pick, color=color_pick, source=source_pick):
                 st.rerun()
         if r2[2].button("仅重新渲染（不重新生成图片）", disabled=not has_board,
                         help="沿用已生成的格子图，只重新排字、拼装 PNG 与网页阅读器；不调用图像模型"):

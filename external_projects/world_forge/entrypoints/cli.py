@@ -80,6 +80,8 @@ def main(argv=None) -> int:
     p.add_argument("--pages", default=None, help="页数（整数 1–20）或 auto（按故事长度，不限制），默认 6")
     p.add_argument("--reading", default=None, choices=["ltr", "rtl"], help="阅读方向，默认 ltr")
     p.add_argument("--color", default=None, choices=["color", "bw"], help="色彩，默认 color")
+    p.add_argument("--source", default=None, choices=["auto", "short", "arc", "events"],
+                   help="分镜素材：auto 自动（默认）/ short 短篇正文 / arc 小故事线 / events 原始事件")
     p = sub.add_parser("comic"); p.add_argument("--world", required=True); p.add_argument("--story", required=True)
     p.add_argument("--reading", default=None, choices=["ltr", "rtl"])
     p.add_argument("--color", default=None, choices=["color", "bw"])
@@ -155,7 +157,7 @@ def main(argv=None) -> int:
         elif args.cmd == "board":
             llm, _ = make_text_llm()
             _dump(engine.make_storyboard(llm, args.world, args.story, pages=args.pages,
-                                         reading=args.reading, color=args.color))
+                                         reading=args.reading, color=args.color, source=args.source))
         elif args.cmd == "rerender":
             _dump(engine.rerender_comic(args.world, args.story, reading=args.reading, color=args.color))
         elif args.cmd == "comicexport":

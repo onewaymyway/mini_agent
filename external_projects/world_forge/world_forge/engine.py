@@ -996,19 +996,42 @@ def _ensure_anchors(llm, wid: str, board: Dict[str, Any], log) -> None:
         log.log("parse", f"已为角色「{ch['name']}」固定外观描述，供各格保持一致", level="ok")
 
 
-def _coverage_source(wid: str, sid: str) -> Tuple[str, str]:
-    """覆盖拆解的素材：有短篇正文则用全文；否则用小故事线的幕、结局与原始事件（不再只用概要）。"""
+def _source_event_lines(wid: str, sid: str) -> List[str]:
+    src_ids = load_story_meta_safe(wid, sid).get("source_event_ids") or []
+    lines = []
+    if src_ids:
+        for ev in select_events(wid, event_ids=src_ids):
+            lines.append(" ".join(str(ev.get(k) or "") for k in ("title", "summary", "text", "note")).strip())
+    return [x for x in lines if x]
+
+
+def _coverage_source(wid: str, sid: str, source: str = "auto") -> Tuple[str, str]:
+    """分镜素材来源（可选）：
+    auto   有短篇正文用正文全文，否则用小故事线（幕、结局与其来源事件）；
+    short  只用短篇正文全文；
+    arc    只用小故事线的幕与结局，加上它的来源事件（忽略正文）；
+    events 只用原始事件全文（故事来源的世界事件，不经过概要）。
+    返回 (实际使用的来源, 文本)。"""
+    if source not in comic_layout.SOURCE_OPTIONS:
+        raise EngineError(f"分镜素材选项无效：{source}")
     d = repo.story_dir(wid, sid)
-    if (d / "story.md").is_file():
-        return "story", (d / "story.md").read_text(encoding="utf-8")
+    has_story = (d / "story.md").is_file()
+    if source == "auto":
+        source = "short" if has_story else "arc"
+    if source == "short":
+        if not has_story:
+            raise EngineError("该故事没有短篇正文，请选择「小故事线」或「原始事件」作为分镜素材")
+        return "short", (d / "story.md").read_text(encoding="utf-8")
+    if source == "events":
+        lines = _source_event_lines(wid, sid)
+        if not lines:
+            raise EngineError("该故事没有来源的原始事件，请选择其它分镜素材")
+        return "events", "\n".join(lines)
     arc = store.read_json(d / "arc.json") or {}
     lines = [arc.get("title", ""), arc.get("premise", "")]
     lines += [f"{a.get('title', '')}：{a.get('summary', '')}" for a in arc.get("acts") or []]
     lines.append(f"结局：{arc.get('ending', '')}")
-    src_ids = load_story_meta_safe(wid, sid).get("source_event_ids") or []
-    if src_ids:
-        for ev in select_events(wid, event_ids=src_ids):
-            lines.append(" ".join(str(ev.get(k) or "") for k in ("title", "summary", "text", "note")).strip())
+    lines += _source_event_lines(wid, sid)
     return "arc", "\n".join(x for x in lines if x and x.strip())
 
 
@@ -1028,19 +1051,19 @@ def _chunks(text: str, size: int = 2500) -> List[str]:
     return out or [text]
 
 
-def _ensure_coverage(llm, wid: str, sid: str, log, *, refresh: bool = False) -> Dict[str, Any]:
-    """全文拆解为编号情节，并提炼主题。结果缓存在 coverage.json；正文未变化时直接复用。"""
+def _ensure_coverage(llm, wid: str, sid: str, log, *, refresh: bool = False, source: str = "auto") -> Dict[str, Any]:
+    """全文拆解为编号情节，并提炼主题。结果缓存在 coverage.json；素材（来源与文本）未变化时直接复用。"""
     d = repo.story_dir(wid, sid)
-    kind, text = _coverage_source(wid, sid)
+    kind, text = _coverage_source(wid, sid, source)
     if not text.strip():
-        raise EngineError("该故事没有可拆解的正文")
-    digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+        raise EngineError("该分镜素材没有可拆解的内容")
+    digest = hashlib.sha1(f"{kind}|{text}".encode("utf-8")).hexdigest()[:16]
     path = d / "coverage.json"
     cur = store.read_json(path)
     if cur and not refresh and cur.get("source_hash") == digest and cur.get("events"):
         log.log("context", f"剧情覆盖：沿用已拆解的 {len(cur['events'])} 个情节（正文未变化）")
         return cur
-    chunks = _chunks(text) if kind == "story" else [text]
+    chunks = _chunks(text)     # 所有来源统一分块，长文本不截断
     events: List[Dict[str, Any]] = []
     for k, ch in enumerate(chunks, start=1):
         cancel.checkpoint()
@@ -1125,7 +1148,7 @@ def _storyboard_by_page(llm, wid: str, sid: str, d: Path, ctx: Dict[str, Any], b
 
 
 def make_storyboard(llm, wid: str, sid: str, log=None, *, pages: Any = None, reading: Optional[str] = None,
-                    color: Optional[str] = None) -> Dict[str, Any]:
+                    color: Optional[str] = None, source: Optional[str] = None) -> Dict[str, Any]:
     """两步生成：先节拍表（每页的叙事作用、画面焦点、页末钩子），再按节拍生成分镜格子。
 
     pages：固定页数（整数）或 "auto"；缺省沿用故事上次的设置，再缺省为 6 页。
@@ -1166,7 +1189,9 @@ def make_storyboard(llm, wid: str, sid: str, log=None, *, pages: Any = None, rea
             ctx["focus"] = own_focus["name"]
             log.log("context", f"主体视角：分镜以「{own_focus['name']}」为中心")
         cancel.checkpoint()
-        cov = _ensure_coverage(llm, wid, sid, log)
+        source_pick = source or stored.get("source") or "auto"
+        cov = _ensure_coverage(llm, wid, sid, log, source=source_pick)
+        log.log("context", f"分镜素材：{comic_layout.SOURCE_LABEL.get(cov.get('source'), cov.get('source'))}")
         events = cov["events"]
         theme = cov.get("theme") or {}
         ctx["theme"] = theme
@@ -1200,6 +1225,7 @@ def make_storyboard(llm, wid: str, sid: str, log=None, *, pages: Any = None, rea
                              f"出场角色 {sorted({c for p in pg['panels'] for c in (p.get('characters') or [])}) or '无'}")
         board["version"] = 2
         board["opts"] = opts
+        board["source"] = cov.get("source")
         _ensure_anchors(llm, wid, board, log)
         with _with_lock(wid):
             _archive(d / "beats.json", log)
@@ -1208,7 +1234,7 @@ def make_storyboard(llm, wid: str, sid: str, log=None, *, pages: Any = None, rea
             store.write_json(d / "storyboard.json", board)
             meta = repo.load_story_meta(wid, sid)
             meta["has_storyboard"] = True
-            meta["comic_opts"] = opts
+            meta["comic_opts"] = {**opts, "source": source_pick}
             repo.save_story_meta(wid, sid, meta)
         log.log("save", "已保存节拍表 beats.json 与分镜脚本 storyboard.json（漫画图需要重新生成）", level="ok")
         log.log("done", "完成", level="ok", panels=n_panels)

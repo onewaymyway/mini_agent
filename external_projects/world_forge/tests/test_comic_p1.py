@@ -148,7 +148,8 @@ def test_storyboard_follows_fixed_page_count_and_writes_beats(world, llm):
     assert all(pg.get("beat") and "hook" in pg for pg in board["pages"])
     d = repo.story_dir(world, sid)
     assert (d / "beats.json").is_file()
-    assert repo.load_story_meta(world, sid)["comic_opts"] == {"pages": 3, "reading": "rtl", "color": "bw"}
+    assert repo.load_story_meta(world, sid)["comic_opts"] == {"pages": 3, "reading": "rtl", "color": "bw",
+                                                             "source": "auto"}
 
 
 def test_storyboard_auto_pages_follows_story_length(world, llm):

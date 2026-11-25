@@ -21,6 +21,9 @@ PAGE_MARGIN = 0.02     # 页边距（占页面比例）
 GUTTER_PX = 16         # 格间距（像素）
 DEFAULT_PAGES = "auto"   # 默认按故事长度（情节数）决定页数；固定页数只用于明确指定时
 MAX_PAGES = 20         # 显式指定页数的上限；auto 不设上限
+SOURCE_OPTIONS = ("auto", "short", "arc", "events")   # 分镜素材：自动 / 短篇正文 / 小故事线 / 原始事件
+SOURCE_LABEL = {"auto": "自动（有短篇正文用正文，否则用小故事线）", "short": "短篇正文（全文）",
+                "arc": "小故事线（幕、结局与其来源事件）", "events": "原始事件（故事来源的世界事件全文）"}
 READING_OPTIONS = ("ltr", "rtl")
 COLOR_OPTIONS = ("color", "bw")
 READING_LABEL = {"ltr": "从左到右", "rtl": "从右到左"}
