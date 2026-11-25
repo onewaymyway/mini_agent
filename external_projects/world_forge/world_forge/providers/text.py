@@ -194,7 +194,10 @@ class RuleTextLLM(TextLLM):
                                  "speaker_side": "右", "kind": "speech"}]
                 panels.append({
                     "shot": shot, "span": 2 if (beat.get("purpose") or "").startswith("高潮") and j == 0 else 1,
-                    "narration": beat.get("focus", "") if j == 0 else "",
+                    "camera": "平视", "connects_prev": "" if (n == 1 and j == 0) else f"承接第{n}页第{j}格",
+                    "action": "（规则占位）静立", "composition": "主体居中，上方留白",
+                    "screen_order": [], "gaze": {names[0]: "朝右"} if names else {},
+                    "narration": (beat.get("focus", "") or "")[:30] if j == 0 else "",
                     "dialogue": dialogue, "sfx": "轰" if (j == 1 and n == len(beats)) else "",
                     "emotion": "平静", "characters": names[:1], "location": locs[0] if locs else "",
                     "visual_en": f"{shot} view, scene {n} panel {j + 1}, muted palette, no text",

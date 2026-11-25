@@ -47,6 +47,15 @@ SHEET_PROMPTS = {
     "sad": "sad expression, tearful, same character design",
     "surprised": "surprised expression, wide eyes, same character design",
 }
+NARRATION_MAX = 30         # 旁白字数上限（超过视为复述或啰嗦）
+CAMERAS = ("平视", "俯视", "仰视", "过肩", "特写镜头", "推近", "拉远", "反打")
+CAMERA_EN = {"平视": "eye-level shot", "俯视": "high-angle shot", "仰视": "low-angle shot",
+             "过肩": "over-the-shoulder shot", "特写镜头": "close-up insert", "推近": "dolly-in shot",
+             "拉远": "wide pull-back shot", "反打": "reverse shot"}
+GAZES = ("朝左", "朝右", "朝画外", "朝观众", "向下", "向上", "看向对方", "低头")
+GAZE_EN = {"朝左": "looking left", "朝右": "looking right", "朝画外": "looking out of frame",
+           "朝观众": "looking at the viewer", "向下": "looking down", "向上": "looking up",
+           "看向对方": "looking at the other character", "低头": "head bowed"}
 TEMPLATE_LABEL = {"single": "整页单格", "stack": "上下排列", "grid": "标准两列", "mixed": "大小混排"}
 
 

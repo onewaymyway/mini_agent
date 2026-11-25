@@ -863,7 +863,12 @@ with tabs[6]:
                     for pn in pg["panels"]:
                         size = "整行" if int(pn.get("span") or 1) == 2 else "半行"
                         extra = f"｜音效「{pn['sfx']}」" if pn.get("sfx") else ""
-                        st.markdown(f"- **{pn.get('shot', '中景')} · {size}**{extra}：{pn['visual_en']}")
+                        cam = f"·{pn['camera']}" if pn.get("camera") and pn.get("camera") != "平视" else ""
+                        st.markdown(f"- **{pn.get('shot', '中景')}{cam} · {size}**{extra}：{pn.get('action') or pn['visual_en']}")
+                        if pn.get("connects_prev"):
+                            st.caption(f"承接：{pn['connects_prev']}")
+                        if pn.get("composition"):
+                            st.caption(f"构图：{pn['composition']}")
                         if pn.get("narration"):
                             st.caption(f"旁白：{pn['narration']}")
                         for dl in pn.get("dialogue") or []:

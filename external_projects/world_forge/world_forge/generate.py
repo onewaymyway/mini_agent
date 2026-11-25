@@ -10,6 +10,8 @@ import json
 import re
 from typing import Any, Callable, Dict, List, Optional
 
+from .comic_layout import CAMERAS, GAZES, NARRATION_MAX
+
 SYSTEM = (
     "你是一位架空世界的设定编辑与故事作者。默认使用中文。"
     "凡要求输出 JSON 时，只输出一个合法 JSON 对象，不要任何解释、不要 Markdown 代码块。"
@@ -130,6 +132,18 @@ def normalize_panel(p: Dict[str, Any]) -> List[str]:
     p["narration"] = str(p.get("narration") or "")
     p["sfx"] = str(p.get("sfx") or "").strip()
     p["location"] = str(p.get("location") or "").strip()
+    # P5：镜头表字段
+    p["camera"] = p.get("camera") if p.get("camera") in CAMERAS else "平视"
+    gaze = p.get("gaze") if isinstance(p.get("gaze"), dict) else {}
+    p["gaze"] = {str(k): v for k, v in gaze.items() if v in GAZES}
+    names = set(p["characters"])
+    order = [str(n) for n in (p.get("screen_order") or []) if str(n) in names]
+    p["screen_order"] = order if len(order) >= 2 else []
+    p["action"] = str(p.get("action") or "").strip()
+    p["composition"] = str(p.get("composition") or "").strip()
+    p["connects_prev"] = str(p.get("connects_prev") or "").strip()[:40]
+    if len(p["narration"]) > NARRATION_MAX:
+        errs.append(f"旁白过长（{len(p['narration'])} 字，上限 {NARRATION_MAX} 字）：{p['narration'][:10]}…")
     p["emotion"] = str(p.get("emotion") or "").strip()
     return errs
 
@@ -153,6 +167,26 @@ def _validate_beats(d: Dict[str, Any], expect: Optional[int] = None) -> List[str
     return []
 
 
+def check_axis(pages: List[Dict[str, Any]]) -> List[str]:
+    """越轴检查：相邻出现的两个以上角色，左右顺序翻转而未标注反打，即判为越轴。"""
+    errs: List[str] = []
+    prev_order: List[str] = []
+    for pg in pages:
+        for p in pg.get("panels") or []:
+            order = p.get("screen_order") or []
+            if order and prev_order:
+                common = [n for n in order if n in prev_order]
+                if len(common) >= 2:
+                    cur = [n for n in order if n in common]
+                    before = [n for n in prev_order if n in common]
+                    if cur != before and p.get("camera") != "反打":
+                        errs.append(f"越轴：第 {pg.get('no')} 页的 {'、'.join(common)} 左右位置与上一格相反，"
+                                    "但未标注 camera=反打（对话双方交替时才允许翻转）")
+            if order:
+                prev_order = order
+    return errs
+
+
 def _validate_storyboard(d: Dict[str, Any], expect: Optional[int] = None) -> List[str]:
     errs: List[str] = []
     pages = d.get("pages")
@@ -174,6 +208,8 @@ def _validate_storyboard(d: Dict[str, Any], expect: Optional[int] = None) -> Lis
             break
         # 一页内的格子宽度：整行格（span=2）最多占一行，连续的半行格两两配对
         pg["no"] = int(pg.get("no") or 1)
+    if not errs:
+        errs.extend(check_axis(pages))
     return errs
 
 
@@ -304,18 +340,26 @@ def storyboard_draft(llm, *, context: Dict[str, Any], log=None, pages: Optional[
                      "每页服务于对应节拍的 purpose 与 focus，页末最后一格要承接该页的 hook。"
                      "0) 若 context.focus 存在，镜头以该主体为中心，它应出现在多数格中；"
                      "1) 每页 1–5 格，按阅读顺序排列；"
-                     "2) 相邻格要承接：同一场景的连续动作，镜头在远景/中景/近景/特写之间有变化，不要每格都一样；"
+                     "2) 相邻格必须承接：connects_prev 用不超过 20 字说明本格如何承接上一格（动作的前后、视线的指向、场景的变化）；"
+                     "同一场景的连续动作用相近的镜头，不要每格都是同一景别；"
                      "3) 高潮与转折用 span=2（整行）的大格，其余用 span=1；"
                      "4) 出场角色必须用 context.characters 中的名字，并在 visual_en 中保持其外观描述一致；"
-                     "5) 对白每句不超过 24 字，短句为佳；kind 取 speech（说话，默认）/thought（心声）/shout（呼喊）；"
+                     "5) camera 取 平视/俯视/仰视/过肩/特写镜头/推近/拉远/反打 之一。反打=与上一格相反的机位，用于两人对话时交替拍摄，"
+                     "只有反打才允许画面中两人的左右位置翻转；其余情况同一场景内左右位置保持不变；"
+                     "6) screen_order 按画面从左到右列出本格出场的角色名（至少两人时才填，否则为空数组）；"
+                     "7) gaze 为每个出场角色的视线，对象为 {名字: 朝左/朝右/朝画外/朝观众/向下/向上/看向对方/低头}；"
+                     "8) action 用一句话写主体的具体动作与姿态；composition 写构图与留白区，如「主体居左，右上留白」，留白用于放气泡；"
+                     "9) 对白每句不超过 24 字，短句为佳；kind 取 speech（说话，默认）/thought（心声）/shout（呼喊）；"
                      "speaker_side 取 左/中/右（说话人在画面中的大致位置）；position 取 左上/右上/左下/右下/中上/中下 之一；"
-                     "6) 旁白 narration 只写画面无法表达的信息，不要复述画面；"
-                     "7) sfx 为画面中的音效字（如「轰」「咔嗒」，没有则为空）；8) emotion 为该格主角的情绪，一个词；"
-                     "9) location 为该格所在地点的名字，必须取自 context.locations 中的名字，没有则为空。"
-                     "JSON 字段：pages（数组，每页：no, panels）；panels（每格）：shot（远景/中景/近景/特写）, "
-                     "span（1 或 2）, narration（可空）, dialogue（数组：speaker, text, kind, speaker_side, position）, "
-                     "sfx（可空）, emotion（可空）, location（可空）, characters（出场角色名数组）, visual_en（英文画面描述：构图、人物动作、"
-                     "表情与场景，不要要求图中出现文字或气泡）。",
+                     "对白语气要符合该角色的身份（见 context.characters 的 summary），口语化，可以有潜台词，不要说明性的长句；"
+                     "10) narration 只写画面无法表达的信息（时间、地点、心理），不超过 30 字，不要复述画面；"
+                     "11) sfx 为画面中的音效字（如「轰」「咔嗒」，没有则为空）；12) emotion 为该格主角的情绪，一个词；"
+                     "13) location 为该格所在地点的名字，必须取自 context.locations 中的名字，没有则为空。"
+                     "JSON 字段：pages（数组，每页：no, panels）；panels（每格）：shot（远景/中景/近景/特写）, camera, "
+                     "span（1 或 2）, connects_prev, action, composition, screen_order（数组）, gaze（对象）, "
+                     "narration（可空）, dialogue（数组：speaker, text, kind, speaker_side, position）, sfx（可空）, "
+                     "emotion（可空）, location（可空）, characters（出场角色名数组）, "
+                     "visual_en（英文背景与环境描述；人物姿态与视线由 action 与 gaze 表达，不要写在这里；不要要求图中出现文字或气泡）。",
                      lambda d: _validate_storyboard(d, pages), log=log)
 
 

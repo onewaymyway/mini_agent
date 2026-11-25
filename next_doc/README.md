@@ -300,7 +300,7 @@ Explorer 重构、原始结果与混合合并、三层改进、trace 回放。
 
 ---
 
-## world_forge 漫画质量升级（5 篇）
+## world_forge 漫画质量升级（7 篇）
 
 `external_projects/world_forge` 的漫画从「能出图」升级为「像正式漫画」的分期方案。
 
@@ -309,3 +309,5 @@ Explorer 重构、原始结果与混合合并、三层改进、trace 回放。
 3. `comic_quality_p2_implementation_record.md` — 实施记录：P2（风格指南、每幕配色、角色表、场景图、候选与人工选用、调用上限）
 4. `comic_limits_configuration_record.md` — 实施记录：图像调用上限与候选数上限可配置（P3 质检已取消）
 5. `comic_quality_p4_implementation_record.md` — 实施记录：P4（网页阅读器、CBZ 与条漫长图、看板文字编辑）
+6. `comic_improvement_plan_v2.md` — 改进方案 v2：从插图拼接到会读的漫画（P5–P7 分期与验收标准）
+7. `comic_quality_p5_implementation_record.md` — 实施记录：P5（衔接、机位、视线、越轴检查、旁白约束、结构化提示词）

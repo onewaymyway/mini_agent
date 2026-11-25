@@ -1180,6 +1180,35 @@ def _panel_refs(wid: str, pn: Dict[str, Any], prev_img: Optional[Path], present:
     return refs, names
 
 
+def _panel_prompt(style: str, pn: Dict[str, Any], anchors: str, palette: str) -> str:
+    """P5 结构化提示词：镜头（景别+机位）、构图与留白、人物动作与视线、画面左右顺序、人物外观、背景与配色。
+    视线与动作由结构字段给出，背景由 visual_en 给出；留白区用于气泡，提示词要求保持留白。"""
+    shot = pn.get("shot") or "中景"
+    parts = [style, f"{SHOT_EN.get(shot, 'medium shot')}"]
+    camera = comic_layout.CAMERA_EN.get(pn.get("camera") or "")
+    if camera:
+        parts.append(camera)
+    if pn.get("composition"):
+        parts.append(f"Composition: {pn['composition']}")
+    if pn.get("action"):
+        parts.append(f"Action: {pn['action']}")
+    gaze = [f"{n} {comic_layout.GAZE_EN[g]}" for n, g in (pn.get("gaze") or {}).items()
+            if g in comic_layout.GAZE_EN]
+    if gaze:
+        parts.append("Gaze: " + "; ".join(gaze))
+    order = pn.get("screen_order") or []
+    if len(order) >= 2:
+        parts.append("Screen layout from left to right: " + ", ".join(order))
+    if anchors:
+        parts.append(f"Characters: {anchors}")
+    if pn.get("visual_en"):
+        parts.append(f"Background: {pn['visual_en']}")
+    if palette:
+        parts.append(f"Color palette: {palette}")
+    parts.append("Keep a clear area for speech bubbles as described; no text, no speech bubbles, no lettering.")
+    return ". ".join(p.rstrip(".") for p in parts if p) + "."
+
+
 def _assemble_outputs(wid: str, sid: str, d: Path, board: Dict[str, Any], opts: Dict[str, Any], log) -> Dict[str, Any]:
     """拼装成品：服务端排字导出 PNG 页与 zip，并生成网页预览 comic.html。"""
     fonts = comic_render.Fonts()
@@ -1280,10 +1309,7 @@ def render_comic(provider, wid: str, sid: str, log=None,
                                         for ch in present if (ch.get("attrs") or {}).get("visual_en"))
                     shot = pn.get("shot") or "中景"
                     span = int(pn.get("span") or 1)
-                    prompt = (f"{style}. {SHOT_EN.get(shot, 'medium shot')}. {pn['visual_en']}."
-                              + (f" Characters: {anchors}." if anchors else "")
-                              + (f" Color palette: {palette}." if palette and opts["color"] == "color" else "")
-                              + " No text, no speech bubbles, no lettering.")
+                    prompt = _panel_prompt(style, pn, anchors, palette if opts["color"] == "color" else "")
                     done_now += 1
                     log.log("panel", f"[{done_now}/{n_todo}] 第 {pg['no']} 页第 {i} 格（{shot}，"
                                      f"{'整行' if span == 2 else '半行'}）：参考 {('、'.join(ref_names)) or '无'}，"
