@@ -1579,6 +1579,36 @@ def render_comic(provider, wid: str, sid: str, log=None,
         raise
 
 
+def rerender_comic(wid: str, sid: str, *, reading: Optional[str] = None, color: Optional[str] = None,
+                    log=None) -> Dict[str, Any]:
+    """仅重新渲染：沿用已生成的格子图与当前分镜文字，重新排字、拼装 PNG 页、阅读器与网页预览。
+    不调用图像模型，也不改变分镜内容。若已有 CBZ 或条漫长图，一并更新。"""
+    log = _log_or_new(log, wid, "comic")
+    try:
+        d = repo.story_dir(wid, sid)
+        board = store.read_json(d / "storyboard.json")
+        if not board:
+            raise EngineError("请先生成分镜")
+        stored = board.get("opts") or {}
+        opts = comic_layout.normalize_opts(pages=stored.get("pages"), reading=reading or stored.get("reading"),
+                                           color=color or stored.get("color"))
+        board["opts"] = opts
+        n_img = sum(1 for pg in board["pages"] for pn in pg["panels"] if pn.get("image") and (d / pn["image"]).is_file())
+        total = sum(len(pg["panels"]) for pg in board["pages"])
+        log.log("start", f"仅重新渲染（不调用图像模型）：已有图片 {n_img}/{total} 格，"
+                         f"{comic_layout.READING_LABEL[opts['reading']]}，{comic_layout.COLOR_LABEL[opts['color']]}")
+        store.write_json(d / "storyboard.json", board)
+        out = _assemble_outputs(wid, sid, d, board, opts, log)
+        if (d / "comic.cbz").is_file() or (d / "comic_strip.png").is_file():
+            log.log("assemble", "同时更新已有的 CBZ 与条漫长图")
+            export_comic_files(wid, sid, log)
+        log.log("done", "完成（未调用图像模型）", level="ok")
+        return {**out, "reading": opts["reading"], "color": opts["color"], "image_calls": 0}
+    except Exception as exc:
+        _fail(log, exc)
+        raise
+
+
 def choose_candidate(wid: str, sid: str, page_no: int, panel_no: int, k: int, log=None) -> Dict[str, Any]:
     """人工选用第 k 张候选：复制为该格的正式图，并重新拼装成品（不调用图像模型）。"""
     log = _log_or_new(log, wid, "comic")

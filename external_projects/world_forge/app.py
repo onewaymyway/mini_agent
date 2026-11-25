@@ -751,6 +751,11 @@ with tabs[6]:
             if _start_job(wid, "board", "生成分镜", engine.make_storyboard, LLM, wid, sid,
                           pages=pages_pick, reading=reading_pick, color=color_pick):
                 st.rerun()
+        if r2[2].button("仅重新渲染（不重新生成图片）", disabled=not has_board,
+                        help="沿用已生成的格子图，只重新排字、拼装 PNG 与网页阅读器；不调用图像模型"):
+            if _start_job(wid, "comic", "仅重新渲染", engine.rerender_comic, wid, sid,
+                          reading=reading_pick, color=color_pick):
+                st.rerun()
         if r2[1].button("重新生成漫画图" if has_comic else "生成漫画图", disabled=not has_board):
             if _start_job(wid, "comic", "生成漫画图", engine.render_comic, IMG, wid, sid,
                           reading=reading_pick, color=color_pick, candidates=cand_pick):

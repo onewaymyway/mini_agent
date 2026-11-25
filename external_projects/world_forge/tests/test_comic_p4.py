@@ -98,3 +98,31 @@ def test_edit_unknown_panel_raises(world, llm, img):
     sid, d = _rendered(world, llm, img, pages=3)
     with pytest.raises(engine.EngineError):
         engine.edit_panel_text(world, sid, 9, 9, narration="x")
+
+
+def test_rerender_does_not_call_image_model_and_applies_new_direction(world, llm, img):
+    sid, d = _rendered(world, llm, img, pages=3)
+    calls_before = len(img.calls)
+    before = (d / "pages" / "page_01.png").read_bytes()
+    res = engine.rerender_comic(world, sid, reading="rtl", color="bw")
+    assert len(img.calls) == calls_before, "仅重新渲染不得调用图像模型"
+    assert res["image_calls"] == 0
+    assert res["reading"] == "rtl" and res["color"] == "bw"
+    assert (d / "pages" / "page_01.png").read_bytes() != before
+    assert len(list((d / "pages").glob("page_*.png"))) == 3
+
+
+def test_rerender_keeps_storyboard_text_and_updates_existing_exports(world, llm, img):
+    sid, d = _rendered(world, llm, img, pages=2)
+    engine.export_comic_files(world, sid)
+    board_before = store.read_json(d / "storyboard.json")
+    engine.rerender_comic(world, sid)
+    board_after = store.read_json(d / "storyboard.json")
+    assert board_after["pages"] == board_before["pages"]
+    assert (d / "comic.cbz").is_file() and (d / "comic_strip.png").is_file()
+
+
+def test_rerender_without_storyboard_raises(world, llm):
+    sid = _story(world, llm)
+    with pytest.raises(engine.EngineError):
+        engine.rerender_comic(world, sid)
