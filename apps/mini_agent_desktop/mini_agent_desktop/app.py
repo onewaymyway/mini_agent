@@ -19,6 +19,7 @@ import httpx
 from mini_agent_desktop import __version__
 from mini_agent_desktop.api import DaemonApi
 from mini_agent_desktop import autostart, logsetup, security
+from mini_agent_desktop import project_locator as locator
 from mini_agent_desktop.config import DesktopConfig, load_config, save_config
 from mini_agent_desktop.controller import DesktopController
 from mini_agent_desktop.discovery import count_unacked_crash_alerts, resolve_endpoint, spawn_daemon
@@ -39,14 +40,24 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def resolve_project_root(args: argparse.Namespace, cfg: DesktopConfig) -> Path:
-    raw = args.project_root or cfg.project_root
-    return Path(raw).expanduser().resolve() if raw else Path.cwd()
+def resolve_project_root(args: argparse.Namespace, cfg: DesktopConfig) -> Optional[Path]:
+    """按 project_locator 的优先级解析项目根；找不到返回 None（不再静默用当前目录）。"""
+    resolved = resolve_project_root_info(args, cfg)
+    return resolved.path if resolved else None
 
 
-def run_check(project_root: Path, port: int) -> int:
+def resolve_project_root_info(args: argparse.Namespace, cfg: DesktopConfig) -> Optional[Resolved]:
+    return locator.resolve_project_root(cli_value=args.project_root or "",
+                                        config_value=cfg.project_root or "")
+
+
+NOT_FOUND_HINT = ("未找到 mini_agent 项目目录。请使用 --project-root 指定，或在 desktop.json 中设置 "
+                  "project_root，或设置环境变量 MINI_AGENT_PROJECT_ROOT。")
+
+
+def run_check(project_root: Path, port: int, source: str = "") -> int:
     ep = resolve_endpoint(project_root, port)
-    print(f"project_root : {project_root}")
+    print(f"project_root : {project_root}" + (f"  （来源：{source}）" if source else ""))
     print(f"endpoint     : {ep.base_url}")
     print(f"token        : {'已找到' if ep.token else '未找到（.agent/agent_api.key）'}")
     print(f"离线崩溃告警 : {count_unacked_crash_alerts(project_root)} 条未确认")
@@ -71,14 +82,33 @@ def run_check(project_root: Path, port: int) -> int:
         api.close()
 
 
+def _show_fatal(text: str) -> None:
+    """pythonw 没有控制台，致命错误必须用弹窗告知，否则用户只会看到\"没反应\"。"""
+    try:
+        from PySide6.QtWidgets import QApplication, QMessageBox
+    except ImportError:
+        print(text, file=sys.stderr)
+        return
+    app = QApplication.instance() or QApplication(sys.argv[:1])
+    QMessageBox.critical(None, "mini_agent", text)
+    del app
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
     cfg = load_config()
-    project_root = resolve_project_root(args, cfg)
+    resolved = resolve_project_root_info(args, cfg)
+    if resolved is None:
+        if args.check:
+            print(NOT_FOUND_HINT, file=sys.stderr)
+            return 4
+        _show_fatal(NOT_FOUND_HINT)
+        return 1
+    project_root = resolved.path
     port = args.port or cfg.http_port
 
     if args.check:
-        return run_check(project_root, port)
+        return run_check(project_root, port, resolved.source)
 
     # Qt 延迟导入：--check / 单测不需要装 PySide6
     try:
@@ -97,7 +127,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     log_path = logsetup.default_log_path()
     logsetup.setup_logging(log_path)
     log = logging.getLogger("mini_agent_desktop.app")
-    log.info("桌面端启动 v%s，project_root=%s", __version__, project_root)
+    log.info("桌面端启动 v%s，project_root=%s（%s）", __version__, project_root, resolved.source)
 
     app = QApplication(sys.argv[:1])
     app.setQuitOnLastWindowClosed(False)    # 没有窗口也要常驻

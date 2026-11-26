@@ -4,9 +4,11 @@ Windows 系统托盘常驻客户端（纯 HTTP/SSE，不依赖 mini_agent 核心
 
 ```powershell
 pip install -r requirements.txt
-python -m mini_agent_desktop --project-root D:\path\to\mini_agent --check   # 无界面自检
-pythonw -m mini_agent_desktop --project-root D:\path\to\mini_agent          # 托盘常驻
+python -m mini_agent_desktop --check      # 无界面自检（项目目录自动查找，可省略 --project-root）
+pythonw -m mini_agent_desktop             # 托盘常驻
 ```
+
+项目目录查找顺序：`--project-root` → `desktop.json` → 环境变量 `MINI_AGENT_PROJECT_ROOT` → 当前目录向上 → 桌面端所在位置向上。
 
 完整说明、配置、图标含义与 Windows 验证清单见 [docs/desktop-client-guide.md](../../docs/desktop-client-guide.md)；
 设计与分阶段计划见 [next_doc/windows_desktop_resident_plan.md](../../next_doc/windows_desktop_resident_plan.md)。

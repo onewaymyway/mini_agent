@@ -534,7 +534,9 @@ def test_project_root_resolution_order(tmp_path):
     assert resolve_project_root(parse_args([]), cfg) == (tmp_path / "from_cfg").resolve()
     args = parse_args(["--project-root", str(tmp_path / "cli")])
     assert resolve_project_root(args, cfg) == (tmp_path / "cli").resolve()
-    assert resolve_project_root(parse_args([]), DesktopConfig()) == Path.cwd()
+    # 未配置时不再静默使用当前目录：返回自动查找结果（找不到则 None），见 test_desktop_locator.py
+    found = resolve_project_root(parse_args([]), DesktopConfig())
+    assert found is None or (found / "src" / "mini_agent" / "__init__.py").is_file()
 
 
 def test_run_check_reports_not_running(tmp_path, capsys):

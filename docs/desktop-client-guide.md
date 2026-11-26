@@ -22,7 +22,7 @@ cd <mini_agent 项目根目录>
 python -m pip install -e .                                   # 如果 daemon 还没装好
 # 在 apps/mini_agent_desktop 目录下，或把它加入 PYTHONPATH：
 cd apps\mini_agent_desktop
-pythonw -m mini_agent_desktop --project-root D:\path\to\mini_agent     # 无控制台窗口
+pythonw -m mini_agent_desktop     # 无控制台窗口；项目目录自动查找，也可加 --project-root D:\path\to\mini_agent 显式指定
 python  -m mini_agent_desktop --project-root D:\path\to\mini_agent     # 调试时带控制台
 ```
 
@@ -44,6 +44,22 @@ python  -m mini_agent_desktop --project-root D:\path\to\mini_agent     # 调试�
 | `--check` | **无界面自检**后退出（不需要 PySide6），排障首选 |
 
 `--check` 退出码：`0` 正常，`2` daemon 未运行，`3` 认证失败（token 无效/缺失），`4` 其它错误。
+
+### 项目目录自动查找
+
+`--project-root` 可以省略。桌面端按以下顺序确定 mini_agent 项目根目录，找到即停：
+
+1. 命令行 `--project-root`（显式，原样采用）
+2. `desktop.json` 的 `project_root`（显式，原样采用）
+3. 环境变量 `MINI_AGENT_PROJECT_ROOT`（显式，原样采用）
+4. 从当前工作目录向上查找
+5. 从桌面端自身所在位置向上查找（在仓库内 `apps\mini_agent_desktop\` 下运行时总能找到项目）
+
+自动查找（4、5）只认带有 `src\mini_agent\__init__.py` 的目录，避免误判。找不到时不会静默使用当前目录：`--check` 以退出码 4 给出提示，托盘版弹窗提示并退出。
+
+`--check` 的输出会注明目录来源，例如 `（来源：桌面端安装位置向上查找）`，便于确认找的是哪个项目。
+
+> 注意：`python -m mini_agent_desktop` 要求能导入该包，因此需要在 `apps\mini_agent_desktop` 目录下运行，或设置 `PYTHONPATH`。在其它目录运行会报 `No module named mini_agent_desktop`，这与项目目录查找无关。登录自启使用的 `launch_desktop.pyw` 不受此限制。
 
 ## 3. 配置文件（可选）
 
@@ -169,7 +185,7 @@ python  -m mini_agent_desktop --project-root D:\path\to\mini_agent     # 调试�
 ## 6. 排障
 
 ```powershell
-python -m mini_agent_desktop --project-root D:\path\to\mini_agent --check
+python -m mini_agent_desktop --check
 ```
 
 输出端点、token 是否找到、离线崩溃告警数、health/status/summary 结果。常见情形：
