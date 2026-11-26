@@ -82,12 +82,24 @@ class Toast:
     blocking: bool
 
 
+# 判定原因（last_reason）。阶段A 起记录，供日志与 --check 排障：为什么没有弹窗？
+REASON_OK = "ok"
+REASON_DISABLED = "toast_disabled"        # desktop.json 的 toast_enabled=false（默认值）
+REASON_SILENT_KIND = "silent_kind"        # report / autonomous_tick / digest 等，设计上静默
+REASON_QUICK_SESSION = "quick_session"    # 快速面板自己的任务，结果已在面板里
+REASON_NO_REF = "no_ref"                  # 事件缺少 ref_id，无法去重，保守不弹
+REASON_DUPLICATE = "duplicate"            # 同一事件已提醒过
+REASON_QUIET = "quiet_hours"              # 非阻塞类在免打扰时段内
+
+
 @dataclass
 class ToastPolicy:
     enabled: bool = False
     quiet: Optional[QuietHours] = None
     clock: Callable[[], datetime] = datetime.now
     _seen: dict = field(default_factory=dict)
+    last_reason: str = ""
+    _last_toast: Optional["Toast"] = None
 
     def _remember(self, key: str) -> bool:
         """返回 True 表示首次出现。"""
@@ -99,8 +111,17 @@ class ToastPolicy:
         return True
 
     def decide(self, event: dict) -> Optional[Toast]:
-        if not self.enabled or not isinstance(event, dict):
+        self.last_reason = self._decide(event)
+        if self.last_reason != REASON_OK:
             return None
+        return self._last_toast
+
+    def _decide(self, event: dict) -> str:
+        self._last_toast = None
+        if not self.enabled:
+            return REASON_DISABLED
+        if not isinstance(event, dict):
+            return REASON_SILENT_KIND
         kind = str(event.get("kind", ""))
         ref = str(event.get("ref_id", ""))
         title = str(event.get("title", "") or "")
@@ -118,24 +139,27 @@ class ToastPolicy:
             head, body = "后台任务有问题", title
         elif kind == KIND_TURN_DONE:
             if str(extra.get("session_id", "")) == QUICK_SESSION_ID:
-                return None
+                return REASON_QUICK_SESSION
             head, body = "任务完成", title
         elif kind == KIND_TURN_FAILED:
             if str(extra.get("session_id", "")) == QUICK_SESSION_ID:
-                return None
+                return REASON_QUICK_SESSION
             head, body = "任务失败", title
         elif kind == KIND_DAEMON_CRASH:
             head, body = "daemon 异常退出", title
             blocking = True
         else:
-            return None     # report 等一律静默
+            return REASON_SILENT_KIND     # report 等一律静默
 
         key = f"{kind}:{ref}"
-        if not ref or not self._remember(key):
-            return None
+        if not ref:
+            return REASON_NO_REF
+        if not self._remember(key):
+            return REASON_DUPLICATE
         if not blocking and self.quiet is not None and self.quiet.contains(self.clock()):
-            return None
-        return Toast(title=head, body=body[:200], key=key, blocking=blocking)
+            return REASON_QUIET
+        self._last_toast = Toast(title=head, body=body[:200], key=key, blocking=blocking)
+        return REASON_OK
 
 
 # ════════════════════════════════════════════════════════════════════

@@ -28,6 +28,8 @@ Windows 常驻桌面客户端（托盘/Toast，后续阶段实现）需要在**�
 - 修改后需重启 daemon 生效。
 - `/v1/desktop/summary` **不受该开关影响**，始终可用；开关只决定 SSE 是否推送 `attention`。
 
+> 注意：本开关只控制 daemon 是否推送事件。桌面端是否真的弹出气泡，还取决于托盘里的“桌面弹窗提醒”（默认关闭）。两者的判定规则与日志原因见 [桌面端指南 §4.2](desktop-client-guide.md)。
+
 ## 3. SSE `attention` 事件
 
 订阅 `GET /v1/stream`（可带 `since_id`/`Last-Event-ID` 重连），收到：

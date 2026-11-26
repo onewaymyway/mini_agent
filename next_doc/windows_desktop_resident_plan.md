@@ -43,6 +43,8 @@
 | S2 热键与快速面板 | `RegisterHotKey`、输入面板、专属 session、最近任务、中断 | 2 天 | ✅ 已完成（待 Windows 手动验证） |
 | S3 Toast 与审批 | 审批和异步提问可在 Toast/面板回答，点击跳转，去重与免打扰 | 2 天 | ✅ 已完成（待 Windows 手动验证） |
 | S4 自启动与加固 | 登录自启（默认关）、token ACL（`icacls`）、日志、退出时是否停 daemon 的明确选项 | 1 天 | ✅ 已完成（待 Windows 手动验证） |
+| A 弹窗可见性（后续修订） | 托盘可直接开关桌面弹窗、测试弹窗、判定原因写入日志、`--check` 显示两道开关 | 0.5 天 | ✅ 已完成（待 Windows 手动验证） |
+| B 快速面板完整显示（后续修订） | 面板按鼠标所在屏幕可用区域夹紧尺寸与位置，整窗可见；右下角缩放把手 | 0.5 天 | ✅ 已完成（待 Windows 手动验证） |
 
 新增桌面代码放 `apps/mini_agent_desktop/`（与 Kanban 同级，纯 HTTP/SSE 客户端），不改 `src/mini_agent` 核心。
 
@@ -298,3 +300,76 @@ S4（自启动与加固）：登录自启（默认关闭）、token 文件的 Wi
 ### 9.6 全部阶段结束
 
 S0–S4 已全部按计划实施。后续若需要真正的安装包、自动更新或 Windows Service，应另起计划评估，不属于本计划范围。
+
+## 10. 阶段A实施记录：弹窗为什么不出现（后续修订）
+
+### 10.1 现象与根因
+
+用户反馈桌面端一直没有弹窗。逐层排查后，链路本身是通的（daemon 发布 → SSE `attention` → `ToastPolicy` → 托盘气泡），问题在于**两道开关的可见性不足**：
+
+1. **桌面端 `toast_enabled` 默认关闭，且托盘菜单里没有开关**。用户只能手动编辑 `desktop.json`，很容易以为功能不存在。
+2. **没有任何反馈**：不弹窗的原因（未开启、静默类型、快速面板、去重、免打扰）都不落日志，`--check` 也不显示，无法判断是哪一环。
+3. daemon 侧 `desktop_attention_events_enabled` 在项目 `agent_config.json` 中已是 `true`，不是原因；但这一点此前不直观，`--check` 现在会直接显示。
+
+### 10.2 改动
+
+| 文件 | 改动 |
+|---|---|
+| `apps/mini_agent_desktop/mini_agent_desktop/attention.py` | `ToastPolicy.decide()` 拆出 `_decide()`，每次判定写入 `last_reason`（`toast_disabled` / `silent_kind` / `quick_session` / `no_ref` / `duplicate` / `quiet_hours` / `ok`）；判定结果不变 |
+| `apps/mini_agent_desktop/mini_agent_desktop/tray.py` | 新增可勾选的“桌面弹窗提醒”（回调 `on_toggle_toast`，初始状态 `toast_checked`）与“发送测试弹窗”（绕过规则，直接发气泡） |
+| `apps/mini_agent_desktop/mini_agent_desktop/app.py` | 每条 attention 事件打日志 `attention kind=… ref=… → 弹窗/原因`；勾选即时生效并写回 `desktop.json`；`--check` 增加“桌面弹窗”与“daemon 推送”两行状态 |
+| `tests/test_desktop_popup_stage_a.py` | 新增 7 个用例：各原因分支、运行时开关、托盘勾选回调、`--check` 状态行 |
+| `docs/desktop-client-guide.md` | §4.2 增加“两道开关”与“什么时候会弹（判定顺序表）”；§6 排障增加“没有弹窗”条目；§7.2 清单更新 |
+| `docs/desktop-attention-events-guide.md` | §2 后增加说明：daemon 开关与桌面端开关的关系 |
+
+### 10.3 什么情况会弹窗（结论）
+
+弹窗需同时满足：桌面端“桌面弹窗提醒”已勾选；daemon 推送已开启；事件属于下列类型之一，且不是重复事件：
+
+- 工具审批、交互提问（阻塞，免打扰不影响）；
+- cron 异步提问（非阻塞受免打扰影响；阻塞类不受影响）；
+- 用户自己发起的任务完成/失败（快速面板与 cron/autonomous 发起的不弹）；
+- daemon 异常退出（仅当未确认告警增加时，启动前的旧告警不弹）。
+
+汇报、autonomous tick、digest、巩固循环始终静默。
+
+### 10.4 测试
+
+`tests/test_desktop_popup_stage_a.py` 7 个用例通过；桌面端全部测试（含阶段 S0–S4 与本阶段）合计 165 个用例通过。
+
+### 10.5 未验证项（需 Windows 手动）
+
+Windows 通知中心对 Python 应用的通知开关、勿扰模式/专注助手对气泡的拦截、“发送测试弹窗”是否可见。清单见 `docs/desktop-client-guide.md` §7.2。
+
+## 11. 阶段B实施记录：快速面板完整显示（后续修订）
+
+### 11.1 现象与根因
+
+快速面板每次打开只做 `move(鼠标位置)`，既不设置尺寸，也不检查屏幕边界。靠近屏幕底部或右侧时窗口伸出屏幕外；窗口尺寸依赖布局 sizeHint，回复区可能只剩很小一块，因此只能看到一部分。
+
+### 11.2 改动
+
+| 文件 | 改动 |
+|---|---|
+| `apps/mini_agent_desktop/mini_agent_desktop/panel_geometry.py` | 新增（纯逻辑，不依赖 Qt）：`fit_panel(cursor, avail, want_w, want_h)`，尺寸不超过可用区域，位置以鼠标为锚点并夹紧到所在屏幕可用区域（扣任务栏，留 8px） |
+| `apps/mini_agent_desktop/mini_agent_desktop/quick_panel.py` | `open_panel()` 改为 `_place_on_screen()`：取鼠标所在屏幕的 `availableGeometry()`，调用 `fit_panel` 后 `setGeometry`；屏幕信息缺失时退回默认尺寸；最小高度 360；回复区最小高度 120、最近任务列表最小高度 60；右下角增加 `QSizeGrip` 缩放把手 |
+| `tests/test_desktop_quick_panel_geometry.py` | 新增 12 个用例：居中、四角与中部、小屏缩小、负坐标副屏、参数化边角、Qt 离屏下 `open_panel` 后窗口确实被夹紧且回复区有高度 |
+| `docs/desktop-client-guide.md` | §4.1 增加“尺寸与位置”说明；§7.1 清单增加 4 条阶段B 手动验证项 |
+
+### 11.3 设计要点
+
+- **几何计算独立成纯函数**：沙盒是 Linux，无法看到真实屏幕；把夹紧逻辑抽出后可以在任意屏幕尺寸与光标位置下单测，不依赖 Qt。
+- **夹紧而非缩放位置**：优先保持目标尺寸；只有可用区域确实放不下时才缩小尺寸，避免“整窗超出屏幕”。
+- **每次打开都重新放置**：光标位置变化后，旧位置不再有意义；尺寸也按当前屏幕重算，手动拉大的尺寸在下次打开时会被重新夹紧。
+
+### 11.4 测试
+
+`tests/test_desktop_quick_panel_geometry.py` 12 个用例与既有 `test_desktop_s2.py` 36 个用例通过。桌面端全部测试合计 165 个用例通过（含阶段 A）。
+
+### 11.5 未验证项（需 Windows 手动）
+
+真实多显示器与缩放比例（DPI 125%/150%）下 `availableGeometry()` 与鼠标坐标的一致性；`QSizeGrip` 在无边框窗口上的实际缩放手感。清单见 `docs/desktop-client-guide.md` §7.1。
+
+### 11.6 下一步
+
+两个阶段均已完成离屏验证，等待 Windows 实机确认。若实机仍不弹窗，优先看桌面端日志中的 `attention … → 原因` 行，它会直接指出卡在哪一环。

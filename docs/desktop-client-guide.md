@@ -105,6 +105,7 @@ python  -m mini_agent_desktop --project-root D:\path\to\mini_agent     # 调试�
 
 - 打开方式：左键点托盘图标、菜单"快速面板…"，或（需开启）全局热键。
 - 移动：窗口顶部的"⠿ 拖动此处移动窗口"把手按住拖动即可。（输入框、结果区会吞掉鼠标事件，所以只有把手可拖。）
+- 尺寸与位置（阶段B）：每次打开都会按目标尺寸（560×640）放置，并**整窗夹在鼠标所在屏幕的可用区域内**（扣掉任务栏，留 8px 边距）。靠近屏幕底部或右侧时会自动上移/左移，不会再伸出屏幕外。屏幕太小时面板会缩小以放下，而不是超出屏幕。右下角有缩放把手，可手动拉大；关闭后下次打开会重新按上述规则放置。
 - 操作：`Enter` 发送，`Shift+Enter` 换行，`Esc` 关闭窗口。发送期间"发送"按钮禁用，"中断"按钮可用。
 - 结果以 Markdown 渲染显示；窗口下方列出**最近任务**，双击某条可把原文填回输入框再改一改重发。
 - 面板使用**专属 session**（`desktop-quick`）：daemon 为它单独建一个 Agent，所以主会话正在跑长任务时，快速提问**不会排在后面**。代价是多一个 Agent 实例；这个 session 会和其它 session 一样出现在 `/sessions` 列表中。
@@ -130,6 +131,13 @@ python  -m mini_agent_desktop --project-root D:\path\to\mini_agent     # 调试�
 
 不开启时桌面端仍可用，只是收不到 Toast，托盘与面板照常工作。崩溃提醒不依赖这个开关。
 
+**弹窗需要两道开关都打开**（阶段A 起在托盘里可直接勾选，不必手改 JSON）：
+
+1. **桌面端**：托盘菜单 → **桌面弹窗提醒**（对应 `desktop.json` 的 `toast_enabled`，默认关闭）。
+2. **daemon**：`agent_config.json` 的 `http.desktop_attention_events_enabled`（项目默认已开启）。
+
+两者任一关闭，都不会弹出 Toast（崩溃提醒除外）。`--check` 会分别打印这两项的状态。托盘菜单的 **发送测试弹窗** 不经过任何提醒规则，用于确认系统通知本身是否可见（例如是否被勿扰模式拦截）。
+
 **会弹 Toast 的事件**（范围刻意收窄，遵循"主动性晚于可靠性"）：
 
 | 事件 | Toast 标题 | 说明 |
@@ -141,6 +149,20 @@ python  -m mini_agent_desktop --project-root D:\path\to\mini_agent     # 调试�
 | daemon 异常退出 | daemon 异常退出 | 仅当未确认崩溃告警**增加**时提醒；启动时已存在的旧告警不提醒 |
 
 **静默的**：汇报（watchlist）、autonomous tick、digest、巩固循环。它们仍在托盘计数里，只是不弹气泡。
+
+**什么时候会弹（判定顺序）**——每条事件都会按下面顺序判定，第一条命中即决定结果。桌面端日志里每条 `attention kind=… → …` 都会写明原因：
+
+| 日志原因 | 含义 | 怎么办 |
+|---|---|---|
+| `toast_disabled` | 桌面弹窗提醒未开启（默认） | 托盘勾选“桌面弹窗提醒” |
+| `silent_kind` | 汇报、autonomous tick 等设计上静默的类型 | 正常，这类事件只在托盘计数里 |
+| `quick_session` | 快速面板自己发起的任务 | 正常，结果已在面板显示 |
+| `no_ref` | 事件缺少引用 ID，无法去重 | 异常情况，保守不弹 |
+| `duplicate` | 同一事件已提醒过 | 正常，去重 |
+| `quiet_hours` | 处于免打扰时段，且不是阻塞类 | 审批/提问/崩溃仍会弹 |
+| `ok` / `弹窗` | 已弹出气泡 | — |
+
+如果日志里**完全没有** `attention` 行，通常是 daemon 没有推送（检查 `desktop_attention_events_enabled`，或桌面端 SSE 未连上）。
 
 **去重**：同一事件只提醒一次。被抑制的事件依然留在待处理面板里，不会丢失。
 
@@ -194,6 +216,7 @@ python -m mini_agent_desktop --check
 - `health: 失败` → daemon 没运行或端口不对（看 `.agent/daemon_info.json`）；
 - `HTTP 401/403` → token 与 daemon 不一致（daemon 是否用了别的项目根目录/配置了 `api_token`）；
 - 托盘图标不见 → Windows 可能把它折叠进了"隐藏的图标"区，拖出来即可。
+- 任务明明完成了却没有弹窗 → 按顺序检查：`--check` 输出的两项开关；桌面端日志里的 `attention` 行原因；托盘“发送测试弹窗”能否看到。若测试弹窗也看不到，问题在系统通知（勿扰模式/专注助手、通知中心对 Python 的通知开关），与桌面端逻辑无关。
 - `pythonw` 运行后没有托盘图标、也没有任何提示 → 先看桌面端日志 `%LOCALAPPDATA%\mini_agent\logs\desktop.log`。启动期的致命错误（例如当前 Python 环境未安装 PySide6）会写入日志并弹出消息框。最常见原因是 PowerShell 里的 `python`/`pythonw` 与安装依赖时不是同一个环境（例如 conda base 与其它环境）：在同一个终端里执行 `python -m mini_agent_desktop --check`，它会打印 Python 路径与 PySide6 是否已安装；未安装则执行 `pip install -r requirements.txt`。
 - 托盘图标在 Windows 11 中默认可能被收进任务栏右下角的"^"溢出区，点开即可看到。
 
@@ -222,10 +245,14 @@ python -m mini_agent_desktop --check
 - [ ] 把 `hotkey` 改为已被占用的组合键，启动后托盘出现"全局热键未注册"气泡，其它功能正常
 - [ ] 把 `hotkey` 改成 `Space`（无修饰键）启动，弹出配置错误提示，程序不崩溃
 - [ ] 停止 daemon 后打开快速面板发送，显示"无法连接 daemon"而不是卡死
+- [ ] （阶段B）把任务栏放在屏幕底部，鼠标移到屏幕最底边点托盘左键：面板完整出现在屏幕内，输入框、按钮、最近任务列表都可见，没有被任务栏或屏幕边缘截断
+- [ ] （阶段B）鼠标放在屏幕右上角、左上角各测一次，面板都完整可见
+- [ ] （阶段B）多显示器：在副屏唤起，面板出现在副屏且不跨屏
+- [ ] （阶段B）拖动右下角缩放把手可改变面板大小，回复区随之变化
 
 ## 7.2 Windows 手动验证清单（S3）
 
-先在 daemon 配置里开启 `desktop_attention_events_enabled`，并把桌面端 `toast_enabled` 设为 `true`，然后：
+先确认 daemon 配置里 `desktop_attention_events_enabled` 为 `true`，再在托盘菜单勾选 **桌面弹窗提醒**（阶段A 起无需手改 JSON）。先点一次 **发送测试弹窗**，确认系统气泡可见，然后：
 
 - [ ] 在 CLI 触发一次工具审批（需要确认的 bash），系统弹出"需要审批"气泡；点击后待处理面板出现该项
 - [ ] 在面板点"批准"，agent 继续执行，托盘黄色角标消失
@@ -236,6 +263,8 @@ python -m mini_agent_desktop --check
 - [ ] 在 CLI 先回答同一审批，再在面板点击，面板提示"已被处理"并刷新
 - [ ] 强杀 daemon 后，托盘变红并弹"daemon 异常退出"；重启桌面端后不会为旧告警再弹
 - [ ] `toast_enabled=false` 时全部气泡消失，但托盘角标与面板照常工作
+- [ ] 托盘取消勾选“桌面弹窗提醒”后立即生效，重新勾选后无需重启即可再次弹窗（阶段A）
+- [ ] 点“发送测试弹窗”能看到气泡；若看不到，检查 Windows 勿扰模式与通知设置（阶段A）
 
 ## 7.3 Windows 手动验证清单（S4）
 

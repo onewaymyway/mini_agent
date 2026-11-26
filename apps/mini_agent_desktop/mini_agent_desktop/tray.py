@@ -67,6 +67,8 @@ class TrayUi(QObject):
         autostart_checked: bool = False,
         on_harden_token: Optional[Callable[[], None]] = None,
         on_open_logs: Optional[Callable[[], None]] = None,
+        on_toggle_toast: Optional[Callable[[bool], None]] = None,
+        toast_checked: bool = False,
     ) -> None:
         super().__init__()
         self._model = model
@@ -75,6 +77,7 @@ class TrayUi(QObject):
         self._on_open_pending = on_open_pending
         self._on_quit_stop = on_quit_stop
         self._on_toggle_autostart = on_toggle_autostart
+        self._on_toggle_toast = on_toggle_toast
 
         self.tray = QSystemTrayIcon()
         self.menu = QMenu()
@@ -106,6 +109,20 @@ class TrayUi(QObject):
         self.reconnect_action = QAction("重新连接", self.menu)
         self.reconnect_action.triggered.connect(on_reconnect)
         self.menu.addAction(self.reconnect_action)
+
+        self.menu.addSeparator()
+        # 阶段A：弹窗提醒开关。默认关闭，必须用户主动勾选（desktop.json 的 toast_enabled 同步保存）
+        self.toast_action = QAction("桌面弹窗提醒", self.menu)
+        self.toast_action.setCheckable(True)
+        self.toast_action.setChecked(toast_checked)
+        self.toast_action.setToolTip("审批、提问、任务完成/失败时弹出系统气泡")
+        self.toast_action.toggled.connect(self._on_toast_toggled)
+        self.menu.addAction(self.toast_action)
+
+        self.test_toast_action = QAction("发送测试弹窗", self.menu)
+        self.test_toast_action.setToolTip("不经过提醒规则，直接发一条系统气泡，用于检查通知是否可见")
+        self.test_toast_action.triggered.connect(self._send_test_toast)
+        self.menu.addAction(self.test_toast_action)
 
         self.menu.addSeparator()
         # S4：系统维护类操作
@@ -154,6 +171,13 @@ class TrayUi(QObject):
         仅 UI 线程调用；策略判断在 attention.ToastPolicy 中完成。"""
         icon = QSystemTrayIcon.MessageIcon.Warning if blocking else QSystemTrayIcon.MessageIcon.Information
         self.tray.showMessage(title, body, icon, 8000)
+
+    def _on_toast_toggled(self, checked: bool) -> None:
+        if self._on_toggle_toast is not None:
+            self._on_toggle_toast(checked)
+
+    def _send_test_toast(self) -> None:
+        self.toast("mini_agent 测试提醒", "如果你能看到这条气泡，说明系统通知可用。", False)
 
     def _on_autostart_toggled(self, checked: bool) -> None:
         if self._on_toggle_autostart is not None:

@@ -55,6 +55,19 @@ NOT_FOUND_HINT = ("未找到 mini_agent 项目目录。请使用 --project-root 
                   "project_root，或设置环境变量 MINI_AGENT_PROJECT_ROOT。")
 
 
+def _popup_status_line(summary: dict) -> str:
+    """阶段A：说明弹窗为什么可能不出现（两道开关都要开）。"""
+    cfg = load_config()
+    daemon_on = bool(summary.get("attention_events_enabled"))
+    parts = [
+        f"桌面弹窗     : {'开启' if cfg.toast_enabled else '关闭（托盘菜单 → 桌面弹窗提醒）'}",
+        f"daemon 推送  : {'开启' if daemon_on else '关闭（agent_config.json → http.desktop_attention_events_enabled）'}",
+    ]
+    if cfg.quiet_hours:
+        parts.append(f"免打扰       : {cfg.quiet_hours}（仅影响非阻塞提醒）")
+    return "\n".join(parts)
+
+
 def run_check(project_root: Path, port: int, source: str = "") -> int:
     ep = resolve_endpoint(project_root, port)
     print(f"project_root : {project_root}" + (f"  （来源：{source}）" if source else ""))
@@ -75,7 +88,9 @@ def run_check(project_root: Path, port: int, source: str = "") -> int:
         print("health       : ok")
         status = api.status()
         print(f"agent state  : {status.get('state')}  queue_depth={status.get('queue_depth')}")
-        print("summary      : " + json.dumps(api.summary(), ensure_ascii=False))
+        summary = api.summary()
+        print("summary      : " + json.dumps(summary, ensure_ascii=False))
+        print(_popup_status_line(summary))
         return 0
     except httpx.HTTPStatusError as exc:
         code = exc.response.status_code
@@ -188,9 +203,23 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     def on_attention_main(event: dict) -> None:
         toast = policy.decide(event)
+        # 阶段A：每条事件都记录判定结果，排查“为什么没弹窗”只需看日志
+        log.info("attention kind=%s ref=%s → %s",
+                 event.get("kind") if isinstance(event, dict) else "?",
+                 event.get("ref_id") if isinstance(event, dict) else "?",
+                 "弹窗" if toast is not None else policy.last_reason)
         if toast is not None and "ui" in holder:
             log.info("Toast：%s — %s", toast.title, toast.body)
             holder["ui"].toast(toast.title, toast.body, toast.blocking)
+
+    def toggle_toast(enabled: bool) -> None:
+        policy.enabled = enabled
+        cfg.toast_enabled = enabled
+        try:
+            save_config(cfg)
+        except OSError as exc:
+            log.warning("保存 desktop.json 失败：%s", exc)
+        log.info("桌面弹窗提醒切换为 %s", enabled)
 
     attention_bridge.received.connect(on_attention_main)
 
@@ -283,8 +312,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         autostart_checked=cfg.autostart,
         on_harden_token=harden_tokens,
         on_open_logs=open_logs,
+        on_toggle_toast=toggle_toast,
+        toast_checked=cfg.toast_enabled,
     )
     holder["ui"].show()
+    if not cfg.toast_enabled:
+        log.info("桌面弹窗提醒未开启（托盘菜单 → 桌面弹窗提醒 可开启）")
     if quiet_err:
         holder["ui"].notify_text("mini_agent", f"免打扰设置无效，已忽略：{quiet_err}")
     controller.start()
