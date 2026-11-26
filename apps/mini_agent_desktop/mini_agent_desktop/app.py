@@ -20,6 +20,7 @@ from mini_agent_desktop import __version__
 from mini_agent_desktop.api import DaemonApi
 from mini_agent_desktop import autostart, logsetup, security
 from mini_agent_desktop import project_locator as locator
+from mini_agent_desktop.project_locator import Resolved
 from mini_agent_desktop.config import DesktopConfig, load_config, save_config
 from mini_agent_desktop.controller import DesktopController
 from mini_agent_desktop.discovery import count_unacked_crash_alerts, resolve_endpoint, spawn_daemon
@@ -72,10 +73,10 @@ def run_check(project_root: Path, port: int, source: str = "") -> int:
     ep = resolve_endpoint(project_root, port)
     print(f"project_root : {project_root}" + (f"  （来源：{source}）" if source else ""))
     print(f"Python       : {sys.executable}")
-    try:
-        import PySide6  # noqa: F401
+    import importlib.util
+    if importlib.util.find_spec("PySide6") is not None:
         print("PySide6      : 已安装")
-    except ImportError:
+    else:
         print("PySide6      : 未安装（托盘版无法启动：pip install -r requirements.txt）")
     print(f"endpoint     : {ep.base_url}")
     print(f"token        : {'已找到' if ep.token else '未找到（.agent/agent_api.key）'}")
@@ -148,6 +149,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     from PySide6.QtGui import QDesktopServices
 
     from mini_agent_desktop.pending_dialog import AttentionBridge, PendingDialog
+    from mini_agent_desktop.settings_dialog import SettingsDialog
+    from mini_agent_desktop.health_window import HealthWindow
+    from mini_agent_desktop.workboard_window import WorkboardWindow
     from mini_agent_desktop.quick_panel import QuickHotkeyBridge, QuickPanel
     from mini_agent_desktop.tray import TrayUi
 
@@ -233,20 +237,43 @@ def main(argv: Optional[list[str]] = None) -> int:
         poll_interval=cfg.poll_interval_seconds,
     )
 
-    hotkey = None   # 下方注册成功后才赋值；quit_app 可能早于此被调用
+    # E1：热键句柄放进 holder，设置窗口保存后可替换（quit_app 也可能早于首次注册）
+    hotkey_state: dict = {"hk": None}
 
     def quit_app() -> None:
-        if hotkey is not None:
-            hotkey.stop()
+        if hotkey_state["hk"] is not None:
+            hotkey_state["hk"].stop()
         controller.stop()      # 只停桌面端自己；不碰 daemon
         holder["ui"].hide()
         app.quit()
+
+    # E4：启动时清理超过 24 小时的拖入副本（只动 mini_agent_drop 下的子目录）
+    try:
+        from mini_agent_desktop.drop_stage import cleanup_old, default_drop_root
+        removed = cleanup_old(default_drop_root())
+        if removed:
+            log.info("已清理过期拖入副本 %d 个", removed)
+    except OSError as exc:
+        log.warning("清理拖入副本失败：%s", exc)
 
     panel = QuickPanel(quick_session_factory)
     hotkey_bridge = QuickHotkeyBridge()
     hotkey_bridge.requested.connect(panel.toggle)   # 热键线程 emit → 主线程执行
 
     pending_dialog = PendingDialog(quick_session_factory)
+
+    # E6：上下文感知默认关闭；开启后面板在打开瞬间读取前台窗口（仅程序名与标题）
+    from mini_agent_desktop.context import read_foreground_window
+    panel.set_context_reader(read_foreground_window if cfg.context_awareness_enabled else None)
+
+    def toggle_context(enabled: bool) -> None:
+        cfg.context_awareness_enabled = enabled
+        try:
+            save_config(cfg)
+        except OSError as exc:
+            log.warning("保存 desktop.json 失败：%s", exc)
+        panel.set_context_reader(read_foreground_window if enabled else None)
+        log.info("快速面板上下文感知切换为 %s（仅记录开关，不记录窗口内容）", enabled)
 
     def notify(title: str, text: str) -> None:
         if "ui" in holder:
@@ -300,6 +327,90 @@ def main(argv: Optional[list[str]] = None) -> int:
             api.close()
         quit_app()
 
+    def apply_hotkey(enabled: bool, combo: str) -> tuple[bool, str]:
+        """E1：停止旧热键 → 按新配置注册。返回 (是否成功, 说明)，供设置窗口与托盘气泡使用。"""
+        old = hotkey_state["hk"]
+        if old is not None:
+            old.stop()
+            hotkey_state["hk"] = None
+        if not enabled:
+            log.info("全局热键已关闭")
+            return True, "已关闭全局热键"
+        try:
+            hk = GlobalHotkey(combo)
+        except ValueError as exc:
+            log.warning("热键配置无效：%s", exc)
+            return False, f"热键配置无效：{exc}"
+        ok, reason = hk.start(hotkey_bridge.requested.emit)
+        log.info("全局热键 %s：%s", combo, "已注册" if ok else reason)
+        if not ok:
+            return False, f"热键未注册：{reason}"
+        hotkey_state["hk"] = hk
+        return True, f"已注册热键 {combo}"
+
+    def save_hotkey(enabled: bool, combo: str) -> tuple[bool, str]:
+        ok, message = apply_hotkey(enabled, combo)   # 注册失败也保存用户意图，结果原样告知
+        cfg.hotkey_enabled = enabled
+        if combo:
+            cfg.hotkey = combo
+        try:
+            save_config(cfg)
+        except OSError as exc:
+            return False, f"保存 desktop.json 失败：{exc}"
+        notify("mini_agent", message)
+        return ok, message
+
+    def health_snapshot() -> dict:
+        ep = resolve_endpoint(project_root, port)
+        return {
+            "stats": controller.health,
+            "crashes": count_unacked_crash_alerts(project_root),
+            "toast_enabled": policy.enabled,
+            "quiet_hours": cfg.quiet_hours,
+            "hotkey_active": hotkey_state["hk"] is not None,
+            "hotkey": cfg.hotkey,
+            "endpoint": ep.base_url,
+            "project_root": str(project_root),
+        }
+
+    health_win = {"w": None}
+
+    def open_health() -> None:
+        if health_win["w"] is None:
+            health_win["w"] = HealthWindow(health_snapshot)
+        health_win["w"].show()
+        health_win["w"].raise_()
+        health_win["w"].activateWindow()
+
+    workboard_win = {"w": None}
+
+    def workboard_fetch():
+        api = api_factory()
+        try:
+            goals = api.goals()
+            return goals.get("objectives", []), api.cron_jobs()
+        finally:
+            api.close()
+
+    def workboard_toggle(job_id: str, enabled: bool) -> None:
+        api = api_factory()
+        try:
+            api.set_cron_enabled(job_id, enabled)
+            log.info("定时任务 %s 已%s", job_id, "恢复" if enabled else "暂停")
+        finally:
+            api.close()
+
+    def open_workboard() -> None:
+        if workboard_win["w"] is None:
+            workboard_win["w"] = WorkboardWindow(workboard_fetch, workboard_toggle)
+        workboard_win["w"].show()
+        workboard_win["w"].raise_()
+        workboard_win["w"].activateWindow()
+
+    def open_settings() -> None:
+        dlg = SettingsDialog(cfg.hotkey_enabled, cfg.hotkey, save_hotkey)
+        dlg.exec()
+
     holder["ui"] = TrayUi(
         model, cfg.console_url,
         on_start_daemon=controller.manual_start_daemon,
@@ -313,6 +424,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         on_harden_token=harden_tokens,
         on_open_logs=open_logs,
         on_toggle_toast=toggle_toast,
+        on_open_settings=open_settings,
+        on_open_health=open_health,
+        on_open_workboard=open_workboard,
+        on_toggle_context=toggle_context,
+        context_checked=cfg.context_awareness_enabled,
         toast_checked=cfg.toast_enabled,
     )
     holder["ui"].show()
@@ -323,21 +439,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     controller.start()
 
     if cfg.hotkey_enabled:
-        try:
-            hotkey = GlobalHotkey(cfg.hotkey)
-        except ValueError as exc:
-            QMessageBox.warning(None, "mini_agent", f"热键配置无效，已跳过注册：{exc}")
-            hotkey = None
-        if hotkey is not None:
-            ok, reason = hotkey.start(hotkey_bridge.requested.emit)
-            log.info("全局热键 %s：%s", cfg.hotkey, "已注册" if ok else reason)
-            if not ok:
-                holder["ui"].notify_text("mini_agent", f"全局热键未注册：{reason}")
-                hotkey = None
+        apply_hotkey(True, cfg.hotkey)
 
     code = app.exec()
-    if hotkey is not None:
-        hotkey.stop()
+    if hotkey_state["hk"] is not None:
+        hotkey_state["hk"].stop()
     controller.stop()
     lock.unlock()
     return code

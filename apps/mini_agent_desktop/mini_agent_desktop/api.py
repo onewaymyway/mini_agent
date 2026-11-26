@@ -147,3 +147,36 @@ class DaemonApi:
                 if stop.is_set():
                     return
                 yield ev
+
+    # ── E3：按 turn 订阅流式 token ─────────────────────────────────────────
+
+    def stream_turn(self, turn_id: str, stop: threading.Event) -> Iterator[SseEvent]:
+        """订阅 /v1/stream/{turn_id}，回放已产生的 token 并继续接收。
+
+        该端点通过 turn 反查所属 session，因此不需要 session_id 参数。
+        流不会自行结束：调用方在 turn_done 或 stop 时停止迭代。
+        """
+        with self._client.stream("GET", f"{self._base}/v1/stream/{turn_id}",
+                                 params={"replay": "true"}) as resp:
+            resp.raise_for_status()
+            for ev in parse_sse(resp.iter_lines()):
+                if stop.is_set():
+                    return
+                yield ev
+
+    # ── E5：目标与定时任务视图 ─────────────────────────────────────────────
+
+    def goals(self) -> dict:
+        """GET /v1/goals：返回 {"goals": [...], "objectives": [...], "directions": [...]}。"""
+        return self._get("/v1/goals")
+
+    def cron_jobs(self) -> list[dict]:
+        return list(self._get("/v1/cron/jobs").get("jobs", []))
+
+    def set_cron_enabled(self, job_id: str, enabled: bool) -> dict:
+        """PUT /v1/cron/jobs/{id}，只改 enabled 字段。"""
+        r = self._client.put(f"{self._base}/v1/cron/jobs/{job_id}", json={"enabled": bool(enabled)},
+                             timeout=self._timeout)
+        r.raise_for_status()
+        return r.json()
+

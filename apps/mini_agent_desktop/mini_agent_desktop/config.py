@@ -40,6 +40,8 @@ class DesktopConfig:
     quiet_hours: str = ""
     # S4：登录自启（HKCU\...\Run）。默认关闭；启动时据此同步注册表项
     autostart: bool = False
+    # E6：快速面板可附带前台窗口的程序名与标题（仅标题，不读页面内容）。默认关闭
+    context_awareness_enabled: bool = False
 
 
 def config_path() -> Path:

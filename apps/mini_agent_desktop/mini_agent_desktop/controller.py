@@ -22,6 +22,7 @@ from typing import Callable, Optional
 import httpx
 
 from mini_agent_desktop.api import DaemonApi
+from mini_agent_desktop.health import HealthStats
 from mini_agent_desktop.state import REASON_AUTH, REASON_LOST, REASON_NOT_RUNNING, TrayModel
 
 DEFAULT_BACKOFF = (1.0, 2.0, 4.0, 8.0, 15.0, 30.0)
@@ -41,8 +42,12 @@ class DesktopController:
         poll_interval: float = 30.0,
         backoff: tuple = DEFAULT_BACKOFF,
         clock: Callable[[], float] = time.monotonic,
+        wall: Callable[[], float] = time.time,
     ) -> None:
         self._model = model
+        # E2：只做计数，供托盘健康面板展示；墙上时钟用于显示时间
+        self.health = HealthStats()
+        self._wall = wall
         self._api_factory = api_factory
         self._offline_crashes = offline_crashes
         self._on_change = on_change
@@ -114,6 +119,7 @@ class DesktopController:
     def _go_offline(self, reason: str) -> None:
         crashes = self._read_crashes()
         log.info("离线：%s（未确认崩溃告警 %d 条）", reason, crashes)
+        self.health.on_offline(reason, self._wall())
         self._model.set_offline(reason, crashes)
         if (self._on_attention is not None and self._crash_baseline is not None
                 and crashes > self._crash_baseline):
@@ -134,7 +140,9 @@ class DesktopController:
         if status:
             self._model.apply_status(api.status())
         if summary:
-            self._model.apply_summary(api.summary())
+            snap = api.summary()
+            self._model.apply_summary(snap)
+            self.health.attention_events_enabled = bool(snap.get("attention_events_enabled"))
             self._last_summary_at = self._clock()
 
     def _session(self, api: DaemonApi) -> bool:
@@ -160,6 +168,7 @@ class DesktopController:
 
         self._auto_start_tried = False
         log.info("已连接 daemon")
+        self.health.on_connected(self._wall())
         self._model.set_connected()
         self._on_change()
         try:
@@ -179,6 +188,7 @@ class DesktopController:
                 self._refresh(api, status=True, summary=True)
                 self._on_change()
             return
+        self.health.on_event()
         need = self._model.apply_event(ev.event, ev.data)
         if ev.event == "attention" and self._on_attention is not None:
             try:

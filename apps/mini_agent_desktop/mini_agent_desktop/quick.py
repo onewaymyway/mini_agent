@@ -106,11 +106,41 @@ class QuickSession:
         return rows
 
 
+class TokenAccumulator:
+    """E3：从 /v1/stream/{turn_id} 的 SSE 事件中收集 token 文本。
+
+    只认 event == "token" 且 data.text 为非空字符串的事件；其它事件忽略。
+    feed() 返回本次新增的文本片段（没有则为空串），便于界面增量追加。
+    """
+
+    def __init__(self) -> None:
+        self._parts: list[str] = []
+
+    def feed(self, ev) -> str:
+        if getattr(ev, "event", "") != "token":
+            return ""
+        data = getattr(ev, "data", None)
+        text = data.get("text") if isinstance(data, dict) else None
+        if not isinstance(text, str) or not text:
+            return ""
+        self._parts.append(text)
+        return text
+
+    @property
+    def text(self) -> str:
+        return "".join(self._parts)
+
+
+# 收到这些事件即表示该 turn 的流已结束，流线程可以退出
+STREAM_END_EVENTS = frozenset({"turn_done", "interrupt"})
+
+
 def run_task(
     session: QuickSession,
     text: str,
     *,
     on_status: Callable[[str], None] = lambda _s: None,
+    on_turn: Callable[[str], None] = lambda _t: None,
     poll_interval: float = 1.5,
     timeout: float = 1800.0,
     clock: Callable[[], float] = time.monotonic,
@@ -122,6 +152,7 @@ def run_task(
     超时只是放弃等待，不会中断 daemon 上的 turn。
     """
     turn_id = session.submit(text)
+    on_turn(turn_id)          # E3：让界面可以立刻开始订阅该 turn 的流
     on_status("submitted")
     deadline = clock() + timeout
     state = PENDING

@@ -69,6 +69,11 @@ class TrayUi(QObject):
         on_open_logs: Optional[Callable[[], None]] = None,
         on_toggle_toast: Optional[Callable[[bool], None]] = None,
         toast_checked: bool = False,
+        on_open_settings: Optional[Callable[[], None]] = None,
+        on_open_health: Optional[Callable[[], None]] = None,
+        on_open_workboard: Optional[Callable[[], None]] = None,
+        on_toggle_context: Optional[Callable[[bool], None]] = None,
+        context_checked: bool = False,
     ) -> None:
         super().__init__()
         self._model = model
@@ -97,6 +102,25 @@ class TrayUi(QObject):
         self.pending_action = QAction("待处理事项…", self.menu)
         self.pending_action.triggered.connect(self._open_pending)
         self.menu.addAction(self.pending_action)
+
+        self.settings_action = QAction("设置…", self.menu)
+        self.settings_action.triggered.connect(lambda: on_open_settings and on_open_settings())
+        self.menu.addAction(self.settings_action)
+
+        self.health_action = QAction("健康状态…", self.menu)
+        self.health_action.triggered.connect(lambda: on_open_health and on_open_health())
+        self.menu.addAction(self.health_action)
+
+        self.context_action = QAction("快速面板附带当前窗口（隐私）", self.menu)
+        self.context_action.setCheckable(True)
+        self.context_action.setChecked(context_checked)
+        self.context_action.setToolTip("开启后，打开快速面板时读取前台窗口的程序名与标题；不读取页面或文件内容")
+        self.context_action.toggled.connect(lambda v: on_toggle_context and on_toggle_context(v))
+        self.menu.addAction(self.context_action)
+
+        self.workboard_action = QAction("目标与定时任务…", self.menu)
+        self.workboard_action.triggered.connect(lambda: on_open_workboard and on_open_workboard())
+        self.menu.addAction(self.workboard_action)
 
         self.console_action = QAction("打开管理控制台", self.menu)
         self.console_action.triggered.connect(self._open_console)

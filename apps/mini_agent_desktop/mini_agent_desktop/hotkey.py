@@ -85,6 +85,15 @@ def parse_hotkey(spec: str) -> HotkeySpec:
     return HotkeySpec(modifiers=modifiers, vk=vk)
 
 
+def validate_hotkey_text(spec: str) -> str:
+    """E1：校验组合键文本，返回空字符串表示合法，否则返回可直接显示给用户的原因。"""
+    try:
+        parse_hotkey(spec)
+    except ValueError as exc:
+        return str(exc)
+    return ""
+
+
 class GlobalHotkey:
     """注册一个全局热键。非 Windows 下 start() 返回 (False, 原因)，不抛异常。"""
 
