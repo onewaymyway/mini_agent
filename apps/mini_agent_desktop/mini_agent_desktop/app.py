@@ -58,6 +58,12 @@ NOT_FOUND_HINT = ("未找到 mini_agent 项目目录。请使用 --project-root 
 def run_check(project_root: Path, port: int, source: str = "") -> int:
     ep = resolve_endpoint(project_root, port)
     print(f"project_root : {project_root}" + (f"  （来源：{source}）" if source else ""))
+    print(f"Python       : {sys.executable}")
+    try:
+        import PySide6  # noqa: F401
+        print("PySide6      : 已安装")
+    except ImportError:
+        print("PySide6      : 未安装（托盘版无法启动：pip install -r requirements.txt）")
     print(f"endpoint     : {ep.base_url}")
     print(f"token        : {'已找到' if ep.token else '未找到（.agent/agent_api.key）'}")
     print(f"离线崩溃告警 : {count_unacked_crash_alerts(project_root)} 条未确认")
@@ -87,7 +93,8 @@ def _show_fatal(text: str) -> None:
     try:
         from PySide6.QtWidgets import QApplication, QMessageBox
     except ImportError:
-        print(text, file=sys.stderr)
+        from mini_agent_desktop.bootstrap import native_error
+        native_error("mini_agent", text)
         return
     app = QApplication.instance() or QApplication(sys.argv[:1])
     QMessageBox.critical(None, "mini_agent", text)
@@ -114,8 +121,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     try:
         from PySide6.QtCore import QDir, QLockFile
         from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
-    except ImportError:
-        print("缺少 PySide6，请先安装：pip install -r apps/mini_agent_desktop/requirements.txt", file=sys.stderr)
+    except ImportError as exc:
+        # pythonw 下 stderr 不可见，必须写日志并弹窗
+        msg = ("缺少 PySide6（当前 Python：{}）。请在同一个 Python 环境中执行：\n"
+               "pip install -r apps\\mini_agent_desktop\\requirements.txt").format(sys.executable)
+        logging.getLogger("mini_agent_desktop.app").error("%s；导入错误：%s", msg, exc)
+        from mini_agent_desktop.bootstrap import native_error
+        native_error("mini_agent", msg)
         return 1
     from PySide6.QtCore import QUrl
     from PySide6.QtGui import QDesktopServices

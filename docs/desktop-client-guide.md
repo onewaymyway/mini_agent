@@ -193,6 +193,8 @@ python -m mini_agent_desktop --check
 - `health: 失败` → daemon 没运行或端口不对（看 `.agent/daemon_info.json`）；
 - `HTTP 401/403` → token 与 daemon 不一致（daemon 是否用了别的项目根目录/配置了 `api_token`）；
 - 托盘图标不见 → Windows 可能把它折叠进了"隐藏的图标"区，拖出来即可。
+- `pythonw` 运行后没有托盘图标、也没有任何提示 → 先看桌面端日志 `%LOCALAPPDATA%\mini_agent\logs\desktop.log`。启动期的致命错误（例如当前 Python 环境未安装 PySide6）会写入日志并弹出消息框。最常见原因是 PowerShell 里的 `python`/`pythonw` 与安装依赖时不是同一个环境（例如 conda base 与其它环境）：在同一个终端里执行 `python -m mini_agent_desktop --check`，它会打印 Python 路径与 PySide6 是否已安装；未安装则执行 `pip install -r requirements.txt`。
+- 托盘图标在 Windows 11 中默认可能被收进任务栏右下角的"^"溢出区，点开即可看到。
 
 ## 7. Windows 手动验证清单（S1）
 
