@@ -41,7 +41,7 @@
 | S0 后端补丁 | `attention` SSE 事件、`/v1/desktop/summary`、单测、文档 | 1～1.5 天 | ✅ 已完成 |
 | S1 托盘 | PySide6 骨架、daemon 发现与拉起、托盘状态图标/菜单/角标、SSE 断线重连 | 1.5 天 | ✅ 已完成（待 Windows 手动验证） |
 | S2 热键与快速面板 | `RegisterHotKey`、输入面板、专属 session、最近任务、中断 | 2 天 | ✅ 已完成（待 Windows 手动验证） |
-| S3 Toast 与审批 | 审批和异步提问可在 Toast/面板回答，点击跳转，去重与免打扰 | 2 天 | ⬜ |
+| S3 Toast 与审批 | 审批和异步提问可在 Toast/面板回答，点击跳转，去重与免打扰 | 2 天 | ✅ 已完成（待 Windows 手动验证） |
 | S4 自启动与加固 | 登录自启（默认关）、token ACL（`icacls`）、日志、退出时是否停 daemon 的明确选项 | 1 天 | ⬜ |
 
 新增桌面代码放 `apps/mini_agent_desktop/`（与 Kanban 同级，纯 HTTP/SSE 客户端），不改 `src/mini_agent` 核心。
@@ -130,7 +130,7 @@
 | `quick_panel.py` | `QuickPanel` 无边框置顶输入窗口；`QuickHotkeyBridge` 把热键线程的回调切回主线程 | 是 |
 | `api.py`（改） | 新增 `chat` / `interrupt` / `turns` / `turn` / `history`，均支持 `session_id` 参数 | 否 |
 | `config.py`（改） | 新增 `hotkey_enabled`（默认 `false`）与 `hotkey`（默认 `Ctrl+Alt+Space`） | 否 |
-| `tray.py`（改） | 左键唤起快速面板；菜单新增\"快速面板…\"；`notify_text()` 托盘气泡 | 是 |
+| `tray.py`（改） | 左键唤起快速面板；菜单新增"快速面板…"；`notify_text()` 托盘气泡 | 是 |
 | `app.py`（改） | 装配面板与热键；热键注册失败只气泡提示，不影响其它功能 | — |
 
 ### 7.2 设计要点
@@ -162,7 +162,7 @@ PYTHONPATH=src python3 -m pytest tests/test_desktop_s1.py tests/test_desktop_att
 
 ### 7.4 未验证项（需 Windows 手动）
 
-真实热键触发与被占用时的报错、面板在全屏/多显示器下的定位、长任务期间快速提问的实际响应速度（验证\"专属 session 不排队\"这一设计假设）、托盘左键与右键的分工。清单见 [docs/desktop-client-guide.md](../docs/desktop-client-guide.md) 第 7.1 节。
+真实热键触发与被占用时的报错、面板在全屏/多显示器下的定位、长任务期间快速提问的实际响应速度（验证"专属 session 不排队"这一设计假设）、托盘左键与右键的分工。清单见 [docs/desktop-client-guide.md](../docs/desktop-client-guide.md) 第 7.1 节。
 
 ### 7.5 已知限制
 
@@ -174,3 +174,81 @@ PYTHONPATH=src python3 -m pytest tests/test_desktop_s1.py tests/test_desktop_att
 ### 7.6 下一步
 
 S3（Toast 与审批）：权限审批和 `ask_user_async` 问题可在 Toast / 面板中直接回答，点击 Toast 跳转到面板；按设计文档的 Toast 范围收窄原则，autonomous tick、digest、巩固循环一律静默。
+
+## 8. S3 实施记录
+
+### 8.1 相对原方案的两处调整
+
+1. **Toast 用 `QSystemTrayIcon.showMessage` 而非 winotify / win11toast**。原方案想用第三方库做点击回调。实际上托盘气泡在 Windows 上经通知中心显示，且 Qt 自带 `messageClicked` 信号可直接回调，无需新增依赖。代价是样式不能自定义，这在当前范围内可以接受。
+2. **后端补了两个发布点**。原方案假定 `permission` / `interaction` 已经会发 attention，实际上只有汇报与 cron 提问发。S3 在 `api/bridge.py` 的权限与交互登记处补发布，并为用户发起的 turn 完成/失败补发布（cron、autonomous 发起的不发）。
+
+### 8.2 后端改动（`src/mini_agent`）
+
+| 文件 | 改动 |
+|---|---|
+| `notification/attention_hub.py` | 新增 kind：`permission` / `interaction` / `turn_done` / `turn_failed` |
+| `api/bridge.py` | `HttpPermissionGate.request()` 与 `register_pending()`、`HttpInteractionGate.register_pending()` 登记后发布（`level=blocking`）；`AgentBridge.emit_turn_done()` / `emit_error()` 调用 `_publish_user_turn_outcome()`，仅 `initiator=user` 发布，`session_id` 放进 `extra` 供客户端过滤 |
+
+所有发布都经 `_publish_attention_safely()`，异常吞掉；无监听者时是空操作。`desktop_attention_events_enabled` 默认关闭，因此未开启的部署行为完全不变。
+
+### 8.3 桌面端改动（`apps/mini_agent_desktop`）
+
+| 模块 | 职责 | 依赖 Qt |
+|---|---|---|
+| `attention.py` | `QuietHours`（跨午夜、格式校验）；`ToastPolicy`（范围、去重、免打扰，阻塞类不受免打扰影响）；`collect_pending()` 汇总三类待回答项（单个接口失败不影响其它）；`answer_item()` 按类型构造回答体 | 否 |
+| `pending_dialog.py` | `PendingDialog` 待处理面板；`AttentionBridge` 控制器线程→主线程桥 | 是 |
+| `controller.py`（改） | 启动时记录崩溃告警基线；离线时若未确认告警数增长则发出 `daemon_crash` 事件（只提醒增量） | 否 |
+| `tray.py`（改） | `toast()` 气泡；`messageClicked` 打开待处理面板；菜单新增"待处理事项…" | 是 |
+| `api.py`（改） | 新增 `permissions_pending` / `respond_permission` / `interactions_pending` / `respond_interaction` / `cron_questions_pending` / `answer_cron_question` | 否 |
+| `config.py`（改） | 新增 `toast_enabled`（默认 `false`）与 `quiet_hours`（默认空） | 否 |
+| `app.py`（改） | attention 事件经 `AttentionBridge` 切回主线程，再过 `ToastPolicy` 决定是否弹气泡 | — |
+
+### 8.4 Toast 范围与依据
+
+| 事件 | 弹出 | 依据 |
+|---|---|---|
+| 审批 / 交互提问 / 阻塞 cron 提问 | 是（阻塞） | 任务停在那里等回答 |
+| 普通 cron 提问 | 是（非阻塞，受免打扰） | 可以等 |
+| 用户任务完成 / 失败 | 是（非阻塞，受免打扰） | 用户可能已离开 |
+| 快速面板的任务完成 | 否 | 结果已在面板里显示 |
+| cron / autonomous 发起的 turn | 否 | 主动性晚于可靠性 |
+| 汇报 / autonomous tick / digest / 巩固 | 否 | 同上，仍在托盘计数中 |
+| daemon 异常退出（增量） | 是（阻塞） | 启动时的旧告警不提醒 |
+
+### 8.5 测试
+
+`tests/test_desktop_s3.py`（36 个用例）：
+
+- 后端：权限登记发布阻塞类事件、交互登记以问题文本为标题、无监听者是空操作、监听器异常不影响登记、用户 turn 完成/失败发布、cron/autonomous 静默、未知 turn 静默；
+- 免打扰：跨午夜与同日时段、格式错误、阻塞类不受影响、被抑制的事件不会延后重复弹出；
+- 策略：默认关闭、范围、去重、快速面板 session 静默、垃圾事件容错；
+- 待处理：三类收集、单接口失败隔离、各类回答体（批准/拒绝、是/否、选项索引、文字、cron 文字）、空回答不发请求、404 向上抛出；
+- 控制器：启动时已有告警不提醒，增长后提醒一次，再次离线不重复；
+- Qt 离屏：面板渲染各类按钮、空列表提示。
+
+桌面端全部测试（S0–S3）及与 bridge / permission / notification 相关的后端回归测试应一并运行。
+
+### 8.6 未验证项（需 Windows 手动）
+
+气泡在通知中心中的实际样式与点击行为、Windows 专注助手（勿扰模式）对气泡的拦截、`messageClicked` 在 Windows 11 上是否可靠触发、多显示器下面板定位。清单见 [docs/desktop-client-guide.md](../docs/desktop-client-guide.md) 第 7.2 节。
+
+### 8.7 已知限制
+
+- Toast 依赖 daemon 开启 `desktop_attention_events_enabled`；关闭时只有崩溃提醒可用（它由控制器本地发出）。
+- 去重记忆只在桌面端进程内，重启后同一未处理事项可能再弹一次。这是有意的：重启后仍未处理的阻塞事项值得再次提醒。
+- 面板里的审批只提供"仅本次"，"总是允许"仍需在看板中设置，避免误点造成长期授权。
+- 交互提问的选择题若选项过多（超过约 10 个），按钮会换行显示，体验一般；可考虑改为下拉框。
+
+### 8.9 回归验证与修复记录
+
+对与 bridge / permission / notification 相关的后端测试做了整体回归（2533 通过，43 失败），并把全部失败项拿到**未修改的原始代码**上对比：
+
+- 39 个失败在原始代码上同样失败，属于既有问题（例如 MCP 连接、goal execution spec 路由、`tests/test_system_tool_call_and_debug.py` 中两条 XML 工具结果格式用例等），与本次改动无关，未在本阶段处理；
+- 4 个 `TestLLMDebugLogger` 用例只在整体运行时失败、单独运行通过，定位为**既有隐患**：`llm/debug_logger.py::_build_file_logger()` 用 `id(path)` 命名 logger，对象回收后 id 会被复用，新 logger 会拿到指向已删除临时文件的旧 handler，日志静默丢失。已改为用路径字符串命名。修复后相关组合只剩上述两条既有 XML 失败；
+- `tests/test_desktop_s1.py` 在原始代码上也会污染后续用例（同一根因），修复后一并消失。
+
+修复后桌面端测试（S0–S3）合计 115 个用例一次性全部通过。
+
+### 8.8 下一步
+
+S4（自启动与加固）：登录自启（默认关闭）、token 文件的 Windows ACL 收紧（`icacls`）、桌面端日志、退出时是否停止 daemon 的明确选项。

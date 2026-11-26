@@ -65,6 +65,11 @@ class QuickSession:
         self._api = api
         self.session_id = session_id
 
+    @property
+    def api(self) -> DaemonApi:
+        """底层 HTTP 客户端（S3 的待处理面板直接复用）。"""
+        return self._api
+
     def close(self) -> None:
         self._api.close()
 

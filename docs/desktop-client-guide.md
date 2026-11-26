@@ -1,7 +1,7 @@
 # Windows 桌面常驻客户端指南（Desktop Client）
 
 > 设计与分阶段计划见 [`next_doc/windows_desktop_resident_plan.md`](../next_doc/windows_desktop_resident_plan.md)。
-> 当前已实现：**S1 系统托盘**、**S2 快速面板与全局热键**。Toast 与审批（S3）、自启动与加固（S4）尚未实现。
+> 当前已实现：**S1 系统托盘**、**S2 快速面板与全局热键**、**S3 Toast 与待处理事项**。自启动与加固（S4）尚未实现。
 > 代码位置：`apps/mini_agent_desktop/`。
 
 ## 1. 它是什么
@@ -57,7 +57,9 @@ python  -m mini_agent_desktop --project-root D:\path\to\mini_agent     # 调试�
   "poll_interval_seconds": 30,
   "auto_start_daemon": false,
   "hotkey_enabled": false,
-  "hotkey": "Ctrl+Alt+Space"
+  "hotkey": "Ctrl+Alt+Space",
+  "toast_enabled": false,
+  "quiet_hours": ""
 }
 ```
 
@@ -84,19 +86,54 @@ python  -m mini_agent_desktop --project-root D:\path\to\mini_agent     # 调试�
 
 **快速面板**是一个无边框、置顶的小窗口：输入一句话，结果直接显示在窗口里，不用切回控制台。
 
-- 打开方式：左键点托盘图标、菜单\"快速面板…\"，或（需开启）全局热键。
-- 操作：`Enter` 发送，`Shift+Enter` 换行，`Esc` 关闭窗口。发送期间\"发送\"按钮禁用，\"中断\"按钮可用。
+- 打开方式：左键点托盘图标、菜单"快速面板…"，或（需开启）全局热键。
+- 操作：`Enter` 发送，`Shift+Enter` 换行，`Esc` 关闭窗口。发送期间"发送"按钮禁用，"中断"按钮可用。
 - 结果以 Markdown 渲染显示；窗口下方列出**最近任务**，双击某条可把原文填回输入框再改一改重发。
 - 面板使用**专属 session**（`desktop-quick`）：daemon 为它单独建一个 Agent，所以主会话正在跑长任务时，快速提问**不会排在后面**。代价是多一个 Agent 实例；这个 session 会和其它 session 一样出现在 `/sessions` 列表中。
 - 面板没有新增任何服务端接口：只组合已有的 `POST /v1/chat`、`GET /v1/turns/{id}`、`GET /v1/history`、`POST /v1/interrupt`，并都带上 `session_id` 参数。结果通过轮询 turn 状态获取（不走 SSE）。
 - 超过 30 分钟仍未结束时面板会停止等待并提示，**不会**中断 daemon 上的任务；之后可在主控制台查看。
 
-**全局热键**默认**关闭**（保守 opt-in，避免抢占其它程序的快捷键）。开启方式：在 `desktop.json` 中设置 `\"hotkey_enabled\": true`，重启桌面端。
+**全局热键**默认**关闭**（保守 opt-in，避免抢占其它程序的快捷键）。开启方式：在 `desktop.json` 中设置 `"hotkey_enabled": true`，重启桌面端。
 
 - 格式：修饰键（`Ctrl`/`Alt`/`Shift`/`Win`）+ 且只能一个普通键（字母、数字、`F1`–`F24`、`Space`、`Enter`、`Tab`、`Esc`），例如 `Ctrl+Alt+Space`、`Win+Shift+K`。必须至少有一个修饰键。
 - 配置写错（格式不对）时启动会弹窗提示并跳过注册，桌面端其它功能正常。
-- 被其它程序占用时（`RegisterHotKey` 失败），托盘气泡提示\"全局热键未注册\"及原因，同样不影响其它功能。
+- 被其它程序占用时（`RegisterHotKey` 失败），托盘气泡提示"全局热键未注册"及原因，同样不影响其它功能。
 - 仅 Windows 有效；其它系统上热键自动降级为不可用。
+
+## 4.2 Toast 与待处理事项（S3）
+
+**Toast** 用 Windows 原生气泡（经通知中心显示）提醒你需要处理的事情。**待处理事项面板**列出所有等你回答的事项，可直接在窗口里处理。
+
+**前置条件**：Toast 依赖 daemon 推送 `attention` 事件，需要在 daemon 配置中开启（默认关闭，见 [桌面关注事件指南](desktop-attention-events-guide.md) §2）：
+
+```json
+{ "http": { "desktop_attention_events_enabled": true } }
+```
+
+不开启时桌面端仍可用，只是收不到 Toast，托盘与面板照常工作。崩溃提醒不依赖这个开关。
+
+**会弹 Toast 的事件**（范围刻意收窄，遵循"主动性晚于可靠性"）：
+
+| 事件 | Toast 标题 | 说明 |
+|---|---|---|
+| 工具审批等待你 | 需要审批 | 阻塞类：有任务停在那里等你 |
+| 交互式提问（ask_user 系列） | 需要你回答 | 阻塞类 |
+| cron 异步提问 | 后台任务有问题 | 阻塞类仅限 `urgency=blocking` 的问题 |
+| 你自己发起的任务完成 / 失败 | 任务完成 / 任务失败 | cron、autonomous 发起的静默；快速面板的任务静默（结果已在面板里） |
+| daemon 异常退出 | daemon 异常退出 | 仅当未确认崩溃告警**增加**时提醒；启动时已存在的旧告警不提醒 |
+
+**静默的**：汇报（watchlist）、autonomous tick、digest、巩固循环。它们仍在托盘计数里，只是不弹气泡。
+
+**去重**：同一事件只提醒一次。被抑制的事件依然留在待处理面板里，不会丢失。
+
+**免打扰**：`quiet_hours` 设为如 `"23:00-08:00"` 时，时段内非阻塞类 Toast 被抑制；**阻塞类（审批、提问、崩溃）不受影响**，因为没有答案任务就停在那里。跨午夜写法支持；格式错误时启动会弹窗提示并忽略该设置。
+
+**点击 Toast**或托盘菜单"待处理事项…"打开面板。面板每项的操作：
+
+- 工具审批：**批准 / 拒绝**（仅本次，mode=once；"总是允许"请在看板里设置）；
+- 交互提问：是否题给 **是 / 否**，选择题给选项按钮，其它给文字框；
+- cron 提问：有选项给按钮，否则文字框；
+- 点击后若返回 404，说明已被 CLI 或看板先处理，面板会提示并自动刷新。
 
 ## 5. 连接行为
 
@@ -135,14 +172,28 @@ python -m mini_agent_desktop --project-root D:\path\to\mini_agent --check
 ## 7.1 Windows 手动验证清单（S2）
 
 - [ ] 左键单击托盘图标弹出快速面板，窗口置顶、出现在鼠标附近，输入框自动获得焦点
-- [ ] 输入\"你好\"回车，状态依次显示\"已提交\"→\"运行中…\"→\"完成\"，结果区显示回复
+- [ ] 输入"你好"回车，状态依次显示"已提交"→"运行中…"→"完成"，结果区显示回复
 - [ ] 主会话正在跑长任务时，快速面板提问仍能较快得到响应（确认走的是 `desktop-quick` 专属 Agent）
-- [ ] 按 `Esc` 关闭；再次唤起时\"最近任务\"列表包含刚才的提问，双击可回填输入框
-- [ ] 发送期间点\"中断\"，状态变为\"已中断\"或\"完成\"，且面板恢复可发送
+- [ ] 按 `Esc` 关闭；再次唤起时"最近任务"列表包含刚才的提问，双击可回填输入框
+- [ ] 发送期间点"中断"，状态变为"已中断"或"完成"，且面板恢复可发送
 - [ ] 把 `desktop.json` 的 `hotkey_enabled` 设为 `true`，`Ctrl+Alt+Space` 能在任意窗口唤起/隐藏面板
-- [ ] 把 `hotkey` 改为已被占用的组合键，启动后托盘出现\"全局热键未注册\"气泡，其它功能正常
+- [ ] 把 `hotkey` 改为已被占用的组合键，启动后托盘出现"全局热键未注册"气泡，其它功能正常
 - [ ] 把 `hotkey` 改成 `Space`（无修饰键）启动，弹出配置错误提示，程序不崩溃
-- [ ] 停止 daemon 后打开快速面板发送，显示\"无法连接 daemon\"而不是卡死
+- [ ] 停止 daemon 后打开快速面板发送，显示"无法连接 daemon"而不是卡死
+
+## 7.2 Windows 手动验证清单（S3）
+
+先在 daemon 配置里开启 `desktop_attention_events_enabled`，并把桌面端 `toast_enabled` 设为 `true`，然后：
+
+- [ ] 在 CLI 触发一次工具审批（需要确认的 bash），系统弹出"需要审批"气泡；点击后待处理面板出现该项
+- [ ] 在面板点"批准"，agent 继续执行，托盘黄色角标消失
+- [ ] 让 agent 调用 `ask_user_choice`，气泡标题为"需要你回答"，面板里能点选项回答
+- [ ] 同一审批不会弹两次（去重）
+- [ ] 主会话一条普通任务完成后弹"任务完成"；快速面板里的提问完成后**不**弹
+- [ ] 设置 `quiet_hours` 为包含当前时刻的时段，普通任务完成不弹，但审批仍弹
+- [ ] 在 CLI 先回答同一审批，再在面板点击，面板提示"已被处理"并刷新
+- [ ] 强杀 daemon 后，托盘变红并弹"daemon 异常退出"；重启桌面端后不会为旧告警再弹
+- [ ] `toast_enabled=false` 时全部气泡消失，但托盘角标与面板照常工作
 
 ## 8. 代码位置
 
@@ -156,4 +207,6 @@ python -m mini_agent_desktop --project-root D:\path\to\mini_agent --check
 - `hotkey.py`：组合键解析（纯函数）+ Windows `RegisterHotKey` 专用消息循环线程（S2）
 - `quick.py`：快速面板的纯逻辑——专属 session 客户端、reply 提取、turn 轮询状态机（S2，不依赖 Qt）
 - `quick_panel.py`：PySide6 快速面板与热键→主线程桥（S2）；网络调用全部在工作线程
-- 测试：`tests/test_desktop_s1.py`（含起真实路由 + 真实 `AgentBridge` 的端到端集成测试与离屏 Qt 冒烟）、`tests/test_desktop_s2.py`（热键解析、quick 客户端请求形态、状态机、路由契约、离屏 Qt 发送冒烟）
+- `attention.py`：Toast 策略（范围/去重/免打扰，纯逻辑）与待处理事项的收集、回答体构造（S3，不依赖 Qt）
+- `pending_dialog.py`：待处理事项面板与 attention 事件→主线程桥（S3）
+- 测试：`tests/test_desktop_s1.py`（含起真实路由 + 真实 `AgentBridge` 的端到端集成测试与离屏 Qt 冒烟）、`tests/test_desktop_s2.py`（热键解析、quick 客户端请求形态、状态机、路由契约、离屏 Qt 发送冒烟）、`tests/test_desktop_s3.py`（后端 attention 发布、Toast 策略与免打扰、待处理收集与回答、崩溃提醒、离屏面板）

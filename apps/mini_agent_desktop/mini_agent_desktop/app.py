@@ -20,6 +20,7 @@ from mini_agent_desktop.api import DaemonApi
 from mini_agent_desktop.config import DesktopConfig, load_config
 from mini_agent_desktop.controller import DesktopController
 from mini_agent_desktop.discovery import count_unacked_crash_alerts, resolve_endpoint, spawn_daemon
+from mini_agent_desktop.attention import QuietHours, ToastPolicy
 from mini_agent_desktop.hotkey import GlobalHotkey
 from mini_agent_desktop.quick import QuickSession
 from mini_agent_desktop.state import TrayModel
@@ -84,6 +85,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     except ImportError:
         print("缺少 PySide6，请先安装：pip install -r apps/mini_agent_desktop/requirements.txt", file=sys.stderr)
         return 1
+    from mini_agent_desktop.pending_dialog import AttentionBridge, PendingDialog
+    from mini_agent_desktop.quick_panel import QuickHotkeyBridge, QuickPanel
     from mini_agent_desktop.tray import TrayUi
 
     app = QApplication(sys.argv[:1])
@@ -112,14 +115,34 @@ def main(argv: Optional[list[str]] = None) -> int:
         return QuickSession(api_factory())
 
     holder: dict = {}
+
+    # S3：attention 事件可能来自控制器线程，统一经信号切回主线程做 Toast 判断
+    attention_bridge = AttentionBridge()
+    try:
+        quiet = QuietHours.parse(cfg.quiet_hours)
+        quiet_err = ""
+    except ValueError as exc:
+        quiet, quiet_err = None, str(exc)
+    policy = ToastPolicy(enabled=cfg.toast_enabled, quiet=quiet)
+
+    def on_attention_main(event: dict) -> None:
+        toast = policy.decide(event)
+        if toast is not None and "ui" in holder:
+            holder["ui"].toast(toast.title, toast.body, toast.blocking)
+
+    attention_bridge.received.connect(on_attention_main)
+
     controller = DesktopController(
         model, api_factory,
         offline_crashes=lambda: count_unacked_crash_alerts(project_root),
         on_change=lambda: holder["ui"].notify_changed(),
+        on_attention=attention_bridge.received.emit,
         start_daemon=start_daemon,
         auto_start_daemon=args.auto_start_daemon or cfg.auto_start_daemon,
         poll_interval=cfg.poll_interval_seconds,
     )
+
+    hotkey = None   # 下方注册成功后才赋值；quit_app 可能早于此被调用
 
     def quit_app() -> None:
         if hotkey is not None:
@@ -128,11 +151,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         holder["ui"].hide()
         app.quit()
 
-    from mini_agent_desktop.quick_panel import QuickHotkeyBridge, QuickPanel
-
     panel = QuickPanel(quick_session_factory)
     hotkey_bridge = QuickHotkeyBridge()
     hotkey_bridge.requested.connect(panel.toggle)   # 热键线程 emit → 主线程执行
+
+    pending_dialog = PendingDialog(quick_session_factory)
 
     holder["ui"] = TrayUi(
         model, cfg.console_url,
@@ -140,11 +163,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         on_reconnect=controller.reconnect_now,
         on_quit=quit_app,
         on_open_quick=panel.toggle,
+        on_open_pending=pending_dialog.open_dialog,
     )
     holder["ui"].show()
+    if quiet_err:
+        holder["ui"].notify_text("mini_agent", f"免打扰设置无效，已忽略：{quiet_err}")
     controller.start()
 
-    hotkey = None
     if cfg.hotkey_enabled:
         try:
             hotkey = GlobalHotkey(cfg.hotkey)

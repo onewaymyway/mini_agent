@@ -414,7 +414,9 @@ class LLMDebugLogger:
 
     @staticmethod
     def _build_file_logger(path: Path) -> logging.Logger:
-        name = f"llm_debug_{id(path)}"
+        # 用路径字符串作为 logger 名。id(path) 会在对象回收后被复用，导致新 logger
+        # 误拿到指向旧（可能已删除）文件的 handler，日志静默丢失。
+        name = f"llm_debug_{path}"
         logger = logging.getLogger(name)
         logger.setLevel(logging.INFO)
         logger.propagate = False

@@ -11,4 +11,4 @@ pythonw -m mini_agent_desktop --project-root D:\path\to\mini_agent          # �
 完整说明、配置、图标含义与 Windows 验证清单见 [docs/desktop-client-guide.md](../../docs/desktop-client-guide.md)；
 设计与分阶段计划见 [next_doc/windows_desktop_resident_plan.md](../../next_doc/windows_desktop_resident_plan.md)。
 
-当前阶段：S2 快速面板与全局热键（托盘左键唤起面板；热键需在 `desktop.json` 中设置 `hotkey_enabled: true`，默认关闭）。Toast 与审批（S3）、自启动（S4）尚未实现。
+当前阶段：S3 Toast 与待处理事项（需 daemon 开启 `desktop_attention_events_enabled`，桌面端 `toast_enabled` 默认关闭）。快速面板与热键见 S2；自启动（S4）尚未实现。

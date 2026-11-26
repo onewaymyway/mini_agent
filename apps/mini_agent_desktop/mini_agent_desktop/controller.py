@@ -55,11 +55,15 @@ class DesktopController:
         self._thread: Optional[threading.Thread] = None
         self._last_summary_at = 0.0
         self._auto_start_tried = False
+        # S3：崩溃提醒的基线。启动时记下已有的未确认告警数，之后只在数量增长时提醒，
+        # 避免每次启动都为旧告警弹一次 Toast。
+        self._crash_baseline: Optional[int] = None
 
     # ── 生命周期 ──────────────────────────────────────────────────────────
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return
+        self._crash_baseline = self._read_crashes()
         self._stop.clear()
         self._thread = threading.Thread(target=self.run, name="desktop-controller", daemon=True)
         self._thread.start()
@@ -99,12 +103,28 @@ class DesktopController:
         self._wake.wait(seconds)
         self._wake.clear()
 
-    def _go_offline(self, reason: str) -> None:
+    def _read_crashes(self) -> int:
         try:
-            crashes = int(self._offline_crashes())
+            return int(self._offline_crashes())
         except Exception:  # noqa: BLE001
-            crashes = 0
+            return 0
+
+    def _go_offline(self, reason: str) -> None:
+        crashes = self._read_crashes()
         self._model.set_offline(reason, crashes)
+        if (self._on_attention is not None and self._crash_baseline is not None
+                and crashes > self._crash_baseline):
+            self._crash_baseline = crashes
+            try:
+                self._on_attention({
+                    "kind": "daemon_crash",
+                    "title": f"daemon 异常退出，未确认告警 {crashes} 条",
+                    "ref_id": f"crash-{crashes}",
+                    "level": "blocking",
+                    "extra": {},
+                })
+            except Exception:  # noqa: BLE001
+                pass
         self._on_change()
 
     def _refresh(self, api: DaemonApi, *, status: bool, summary: bool) -> None:

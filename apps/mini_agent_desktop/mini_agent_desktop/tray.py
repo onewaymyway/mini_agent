@@ -61,11 +61,13 @@ class TrayUi(QObject):
         on_reconnect: Callable[[], None],
         on_quit: Callable[[], None],
         on_open_quick: Optional[Callable[[], None]] = None,
+        on_open_pending: Optional[Callable[[], None]] = None,
     ) -> None:
         super().__init__()
         self._model = model
         self._console_url = console_url
         self._on_open_quick = on_open_quick
+        self._on_open_pending = on_open_pending
 
         self.tray = QSystemTrayIcon()
         self.menu = QMenu()
@@ -81,6 +83,10 @@ class TrayUi(QObject):
         self.quick_action = QAction("快速面板…", self.menu)
         self.quick_action.triggered.connect(self._open_quick)
         self.menu.addAction(self.quick_action)
+
+        self.pending_action = QAction("待处理事项…", self.menu)
+        self.pending_action.triggered.connect(self._open_pending)
+        self.menu.addAction(self.pending_action)
 
         self.console_action = QAction("打开管理控制台", self.menu)
         self.console_action.triggered.connect(self._open_console)
@@ -102,6 +108,7 @@ class TrayUi(QObject):
 
         self.tray.setContextMenu(self.menu)
         self.tray.activated.connect(self._on_activated)
+        self.tray.messageClicked.connect(self._open_pending)   # S3：点击气泡 → 待处理面板
         self.changed.connect(self.refresh)
         self.refresh()
 
@@ -112,8 +119,18 @@ class TrayUi(QObject):
         self.tray.hide()
 
     def notify_text(self, title: str, text: str) -> None:
-        """托盘气泡提示（仅 UI 线程调用）。S3 的 Toast 会替换这里的实现。"""
+        """托盘气泡提示（仅 UI 线程调用）：热键未注册等配置类提示。"""
         self.tray.showMessage(title, text, QSystemTrayIcon.MessageIcon.Warning, 6000)
+
+    def toast(self, title: str, body: str, blocking: bool = False) -> None:
+        """S3 Toast：走 Windows 原生气泡（经通知中心显示），点击即打开待处理面板。
+        仅 UI 线程调用；策略判断在 attention.ToastPolicy 中完成。"""
+        icon = QSystemTrayIcon.MessageIcon.Warning if blocking else QSystemTrayIcon.MessageIcon.Information
+        self.tray.showMessage(title, body, icon, 8000)
+
+    def _open_pending(self) -> None:
+        if self._on_open_pending is not None:
+            self._on_open_pending()
 
     def notify_changed(self) -> None:
         """可在任意线程调用。"""

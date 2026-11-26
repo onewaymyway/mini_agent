@@ -23,6 +23,10 @@ from typing import Callable, Optional
 # kind：事件来源，客户端据此决定点击后跳到哪里
 KIND_REPORT = "report"              # reports.jsonl 汇报（/v1/notifications/pending）
 KIND_CRON_QUESTION = "cron_question"  # cron 异步提问（/v1/cron_questions/pending）
+KIND_PERMISSION = "permission"        # 工具审批等待用户（/v1/permissions/pending）【S3 新增】
+KIND_INTERACTION = "interaction"      # 通用交互式提问 ask_user 系列（/v1/interactions/pending）【S3 新增】
+KIND_TURN_DONE = "turn_done"          # 用户发起的 turn 完成【S3 新增】
+KIND_TURN_FAILED = "turn_failed"      # 用户发起的 turn 失败【S3 新增】
 
 # 注意：daemon 崩溃告警【不】经过本发布点——它由 supervisor 进程写入，
 # 而崩溃的 daemon 进程里的监听者早已不在；客户端应在 SSE 断线后通过

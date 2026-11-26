@@ -349,6 +349,16 @@ class InputQueue:
 
 # ── PermissionGate ────────────────────────────────────────────────────────────
 
+def _publish_attention_safely(**kwargs) -> None:
+    """S3：发布\"需要关注\"事件的薄包装。无监听者时是空操作；任何异常都吞掉，
+    绝不能因为通知失败而影响审批/回答本身的登记。"""
+    try:
+        from mini_agent.notification import attention_hub
+        attention_hub.publish_attention(**kwargs)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 class _PendingPermission:
     """一次待审批的工具调用。"""
     __slots__ = ("req_id", "tool_name", "tool_input", "turn_id",
@@ -363,6 +373,29 @@ class _PendingPermission:
         self.event       = threading.Event()
         self.approved    = False
         self.edited_input: Optional[dict] = None
+
+
+def _publish_permission_attention(req_id: str, tool_name: str, turn_id: str) -> None:
+    from mini_agent.notification import attention_hub
+    _publish_attention_safely(
+        kind=attention_hub.KIND_PERMISSION,
+        title=f"需要审批：{tool_name}",
+        ref_id=req_id,
+        level=attention_hub.LEVEL_BLOCKING,
+        extra={"tool_name": tool_name, "turn_id": turn_id},
+    )
+
+
+def _publish_interaction_attention(req_id: str, kind: str, data: dict, turn_id: str) -> None:
+    from mini_agent.notification import attention_hub
+    question = str((data or {}).get("question") or (data or {}).get("prompt_text") or "需要你回答")
+    _publish_attention_safely(
+        kind=attention_hub.KIND_INTERACTION,
+        title=question,
+        ref_id=req_id,
+        level=attention_hub.LEVEL_BLOCKING,
+        extra={"interaction_kind": kind, "turn_id": turn_id},
+    )
 
 
 class HttpPermissionGate:
@@ -405,6 +438,7 @@ class HttpPermissionGate:
 
         with self._lock:
             self._pending[req_id] = pending
+        _publish_permission_attention(req_id, tool_name, turn_id)
 
         # 广播权限请求事件
         self._broadcaster.push(AgentEvent(
@@ -459,6 +493,7 @@ class HttpPermissionGate:
         pending = _PendingPermission(req_id, tool_name, tool_input, turn_id)
         with self._lock:
             self._pending[req_id] = pending
+        _publish_permission_attention(req_id, tool_name, turn_id)
 
         self._broadcaster.push(AgentEvent(
             type=EventType.PERMISSION_REQ,
@@ -599,6 +634,7 @@ class HttpInteractionGate:
         pending = _PendingInteraction(req_id, kind, data, turn_id)
         with self._lock:
             self._pending[req_id] = pending
+        _publish_interaction_attention(req_id, kind, data, turn_id)
 
         self._broadcaster.push(AgentEvent(
             type=EventType.INTERACTION_REQ,
@@ -869,6 +905,28 @@ class AgentBridge:
             session_id=self._current_session_id(),
             data=data,
         ))
+        self._publish_user_turn_outcome(turn_id, failed=False)
+
+    def _publish_user_turn_outcome(self, turn_id: str, failed: bool) -> None:
+        """S3：仅对用户自己发起的 turn 发布 turn_done/turn_failed（cron/autonomous 静默）。
+        session_id 放进 extra，由客户端决定是否忽略（桌面端忽略快速面板自己的 session）。"""
+        if not turn_id:
+            return
+        try:
+            info = self.input_queue.get_turn(turn_id)
+        except Exception:  # noqa: BLE001
+            return
+        if info is None or getattr(info, "initiator", "user") != "user":
+            return
+        from mini_agent.notification import attention_hub
+        title = ("任务失败：" if failed else "任务完成：") + str(getattr(info, "input", ""))
+        _publish_attention_safely(
+            kind=attention_hub.KIND_TURN_FAILED if failed else attention_hub.KIND_TURN_DONE,
+            title=title,
+            ref_id=turn_id,
+            level=attention_hub.LEVEL_NORMAL,
+            extra={"session_id": self._current_session_id() or ""},
+        )
 
     def emit_error(self, msg: str, turn_id: str = "", user_id: str = "") -> None:
         self.broadcaster.push(AgentEvent(
@@ -878,6 +936,7 @@ class AgentBridge:
             session_id=self._current_session_id(),
             data={"message": msg},
         ))
+        self._publish_user_turn_outcome(turn_id, failed=True)
 
     def emit_command_output(self, line: str, turn_id: str = "") -> None:
         """推送 slash 命令（/evolve /skills /stats 等）执行期间产生的一行输出。

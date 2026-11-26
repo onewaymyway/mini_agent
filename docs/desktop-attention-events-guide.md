@@ -42,11 +42,13 @@ data: {"turn_id": "", "session_id": "", "ts": 1764125000.1, "kind": "cron_questi
 
 | 字段 | 含义 |
 |---|---|
-| `kind` | `report`（汇报）或 `cron_question`（cron 异步提问） |
+| `kind` | `report`（汇报）、`cron_question`（cron 异步提问）、`permission`（工具审批等待你）、`interaction`（ask_user 系列提问）、`turn_done` / `turn_failed`（你自己发起的任务完成/失败）。桌面端只对其中一部分弹 Toast，见 [桌面客户端指南 §4.2](desktop-client-guide.md#42-toast-与待处理事项s3) |
 | `title` | 一行摘要，最长 200 字；**不含正文** |
 | `ref_id` | 对应记录 id（`report_id` / `question_id`），用于回查 |
 | `level` | `normal` 或 `blocking`（`ask_user_async` 的 `urgency=blocking`：没有答案无法继续） |
-| `extra` | 附加信息，目前 `cron_question` 带 `job_id` |
+| `extra` | 附加信息：`cron_question` 带 `job_id`；`permission` 带 `tool_name`/`turn_id`；`interaction` 带 `interaction_kind`/`turn_id`；`turn_done`/`turn_failed` 带 `session_id`（桌面端据此忽略快速面板自己的任务） |
+
+> S3 起，`permission` / `interaction` 在登记待回答时即发布，`turn_done` / `turn_failed` 只对**用户自己发起**的 turn 发布（cron、autonomous 发起的静默）。无监听者时发布是空操作，对未开启本功能的部署没有任何影响。
 
 回查详情：
 

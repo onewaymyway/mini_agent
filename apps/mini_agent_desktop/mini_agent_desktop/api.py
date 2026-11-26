@@ -113,6 +113,26 @@ class DaemonApi:
             params["session_id"] = session_id
         return list(self._get("/v1/history", params=params).get("messages", []))
 
+    # ── S3：审批 / 交互回答 / cron 提问 ───────────────────────────────────
+
+    def permissions_pending(self) -> list[dict]:
+        return list(self._get("/v1/permissions/pending").get("permissions", []))
+
+    def respond_permission(self, req_id: str, approve: bool, mode: str = "once") -> None:
+        self._post(f"/v1/permissions/{req_id}", {"approve": approve, "mode": mode})
+
+    def interactions_pending(self) -> list[dict]:
+        return list(self._get("/v1/interactions/pending").get("interactions", []))
+
+    def respond_interaction(self, req_id: str, body: dict) -> None:
+        self._post(f"/v1/interactions/{req_id}", body)
+
+    def cron_questions_pending(self, limit: int = 20) -> list[dict]:
+        return list(self._get("/v1/cron_questions/pending", params={"limit": limit}).get("questions", []))
+
+    def answer_cron_question(self, question_id: str, answer: str) -> None:
+        self._post(f"/v1/cron_questions/{question_id}/answer", {"answer": answer})
+
     def stream_events(self, stop: threading.Event) -> Iterator[SseEvent]:
         """订阅 /v1/stream（不回放历史：调用方应先取快照再订阅）。
         连接断开/读超时会抛 httpx.HTTPError，由调用方决定重连。"""
