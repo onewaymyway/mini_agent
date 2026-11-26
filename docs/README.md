@@ -57,6 +57,7 @@ Lesson → Skill 提案安全网、巩固循环、效果回填、各阶段（Sta
 | [daemon-execution-model-guide.md](daemon-execution-model-guide.md) | 执行模型 |
 | [daemon-multi-client-guide.md](daemon-multi-client-guide.md) | 多客户端/多用户 |
 | [desktop-attention-events-guide.md](desktop-attention-events-guide.md) | Windows 桌面客户端用的 `attention` SSE 事件与 `/v1/desktop/summary`（默认关闭） |
+| [desktop-client-guide.md](desktop-client-guide.md) | Windows 桌面常驻客户端（系统托盘，S1）：安装、配置、图标含义、排障、Windows 验证清单 |
 | [daemon-autonomous-state-recovery-guide.md](daemon-autonomous-state-recovery-guide.md) | 自主状态恢复 |
 
 ## wiki / 记忆相关（4 篇，注意入口关系）

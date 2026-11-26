@@ -39,7 +39,7 @@
 | 阶段 | 内容 | 估时 | 状态 |
 |---|---|---|---|
 | S0 后端补丁 | `attention` SSE 事件、`/v1/desktop/summary`、单测、文档 | 1～1.5 天 | ✅ 已完成 |
-| S1 托盘 | PySide6 骨架、daemon 发现与拉起、托盘状态图标/菜单/角标、SSE 断线重连 | 1.5 天 | ⬜ |
+| S1 托盘 | PySide6 骨架、daemon 发现与拉起、托盘状态图标/菜单/角标、SSE 断线重连 | 1.5 天 | ✅ 已完成（待 Windows 手动验证） |
 | S2 热键与快速面板 | `RegisterHotKey`、输入面板、专属 session、最近任务、中断 | 2 天 | ⬜ |
 | S3 Toast 与审批 | 审批和异步提问可在 Toast/面板回答，点击跳转，去重与免打扰 | 2 天 | ⬜ |
 | S4 自启动与加固 | 登录自启（默认关）、token ACL（`icacls`）、日志、退出时是否停 daemon 的明确选项 | 1 天 | ⬜ |
@@ -78,3 +78,41 @@
 - **默认关闭**：关闭时不注册监听，现有行为完全不变；开启后老客户端会收到未知事件类型 `attention`，按 SSE 惯例应忽略。
 - **环形缓冲不持久**：daemon 重启后 `attention` 事件丢失，所以客户端重连后必须先拉 `/v1/desktop/summary` 做快照，再订阅新事件（与原计划"先快照再订阅"一致）。
 - 已知遗留（非本次引入）：`tests/test_notification_dispatcher.py::test_kanban_writes_alert_record` 在原始代码包上即失败（汇报已改写 `reports.jsonl`，测试仍断言 `alerts.jsonl`）。
+
+## 6. S1 实施记录
+
+### 6.1 结构
+
+`apps/mini_agent_desktop/`（纯 HTTP/SSE 客户端，不 import mini_agent 核心包，**未改动 `src/` 下任何文件**）：
+
+| 模块 | 职责 | 依赖 Qt |
+|---|---|---|
+| `state.py` | `TrayModel`：图标优先级、菜单文案、事件→刷新集合 | 否 |
+| `controller.py` | 后台线程：health → 快照 → 订阅 SSE → 断线退避重连；心跳兜底刷新；离线时读崩溃告警文件 | 否 |
+| `api.py` | httpx 客户端 + SSE 解析器 | 否 |
+| `discovery.py` | 端点（`daemon_info.json`）、token、离线崩溃告警统计、拉起 daemon | 否 |
+| `config.py` | `%LOCALAPPDATA%\mini_agent\desktop.json`，字段类型容错 | 否 |
+| `tray.py` | `QSystemTrayIcon`：程序绘制图标、菜单、跨线程信号刷新 | 是 |
+| `app.py` | 入口、`--check` 无界面自检、单实例锁 | 延迟导入 |
+
+### 6.2 设计要点
+
+- **分层的原因**：沙盒是 Linux，无法验证真实 Windows 托盘。把状态/连接/发现全部做成不依赖 Qt 的纯逻辑并单测；Qt 层只做展示，另有离屏冒烟测试。
+- **图标优先级**：未连接（有离线崩溃告警→红，否则灰）> 崩溃告警（红）> 有待处理事项（黄）> 工作中（蓝）> 空闲（绿）。"需要处理"优先于"工作中"。
+- **离线崩溃发现**：崩溃告警由 supervisor 写入且不走 SSE，daemon 已死时 HTTP 不可用，所以离线时直接读 `.agent/notification/daemon_crash_alerts.jsonl`（S0 已约定的做法）。
+- **认证失败与 daemon 未运行区分对待**：前者菜单不提供"启动 Agent"（拉起 daemon 解决不了 token 问题）。
+- **保守 opt-in**：`auto_start_daemon` 默认关闭，且即使开启也只在每次离线周期尝试一次，避免反复拉起。
+- **退出桌面端不停 daemon**，菜单文案明确注明。
+- **不回放历史订阅**（`replay=false`）：先快照再订阅，重连后重新快照，不依赖环形缓冲。
+- `objective_progress` 事件不触发摘要刷新（可能很频繁），失败目标靠心跳兜底轮询发现。
+
+### 6.3 测试
+
+`tests/test_desktop_s1.py`（31 个用例）：配置容错、发现逻辑、SSE 解析、状态模型、控制器（快照后订阅、事件刷新、退避增长与重置、认证失败、自动拉起一次、工厂异常存活），以及：
+
+- **集成**：用真实 `routes.router` + 真实 `AgentBridge` 起 uvicorn，验证客户端与服务端的真实接口契约——`new report → attention_hub → SSE attention → 客户端 → 托盘角标/黄色图标`；
+- **Qt 离屏冒烟**：图标绘制、菜单文案、"启动 Agent"显隐、跨线程信号。
+
+### 6.4 未验证项（需 Windows 手动）
+
+真实系统托盘显示、`pythonw` 无窗口启动、`CREATE_NO_WINDOW` 拉起 daemon、单实例锁行为。清单见 [docs/desktop-client-guide.md](../docs/desktop-client-guide.md) 第 7 节。
