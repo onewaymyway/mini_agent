@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import functools
 import sys
 from pathlib import Path
 
@@ -714,8 +715,10 @@ with tabs[6]:
             cp_brief = st.text_input("创作提示（可选）", key="piece_brief",
                                      placeholder="例如：他被小孩问到灯塔为什么不亮")
             if st.button("创作", key="piece_create"):
-                if _start_job(wid, "short", "创作角色作品", engine.write_character_piece, LLM, wid,
-                              subject_id=cp_subject, kind=cp_kind, brief=cp_brief, result_key="story"):
+                # 业务参数用 partial 先绑定，避免与 _start_job 自身的 kind 参数重名
+                piece_fn = functools.partial(engine.write_character_piece, subject_id=cp_subject,
+                                             kind=cp_kind, brief=cp_brief)
+                if _start_job(wid, "short", "创作角色作品", piece_fn, LLM, wid, result_key="story"):
                     st.rerun()
     stories = repo.list_story_ids(wid)
     st.markdown("#### 故事")
