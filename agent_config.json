@@ -292,7 +292,8 @@
     "daemon_hang_stack_dump_enabled": true,
     "daemon_hang_stack_dump_wait_seconds": 30,
     "daemon_crash_alert_escalation_hours": 1,
-    "daemon_crash_history_max_entries": 1000
+    "daemon_crash_history_max_entries": 1000,
+    "desktop_attention_events_enabled": true
   },
   "capability_learning": {
     "retriever_mode": "agent",
