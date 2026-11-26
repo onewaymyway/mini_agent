@@ -16,13 +16,16 @@ from typing import Callable
 
 import httpx
 from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtGui import QCursor, QKeyEvent, QMouseEvent
+from PySide6.QtGui import QCursor, QGuiApplication, QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import (
     QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPlainTextEdit,
-    QPushButton, QTextBrowser, QVBoxLayout, QWidget,
+    QPushButton, QSizeGrip, QTextBrowser, QVBoxLayout, QWidget,
 )
 
+from mini_agent_desktop.panel_geometry import PANEL_HEIGHT, PANEL_WIDTH, Rect, fit_panel
 from mini_agent_desktop.quick import QuickSession, TaskOutcome, run_task, state_label
+
+PANEL_MIN_HEIGHT = 360     # 低于此高度时布局会挤压输入区，不再继续缩小
 
 
 class QuickHotkeyBridge(QObject):
@@ -123,6 +126,7 @@ class QuickPanel(QWidget):
 
         self.setWindowTitle("mini_agent 快速面板")
         self.setMinimumWidth(520)
+        self.setMinimumHeight(PANEL_MIN_HEIGHT)
 
         self.input = _SubmitEdit(self._submit)
         self.send_btn = QPushButton("发送")
@@ -137,8 +141,9 @@ class QuickPanel(QWidget):
         self.status.setWordWrap(True)
         self.reply = QTextBrowser()
         self.reply.setOpenExternalLinks(True)
-        self.reply.setMinimumHeight(160)
+        self.reply.setMinimumHeight(120)
         self.recent = QListWidget()
+        self.recent.setMinimumHeight(60)
         self.recent.setMaximumHeight(120)
         self.recent.itemDoubleClicked.connect(self._fill_from_recent)
         self.recent_title = QLabel("最近任务（双击填回输入框）")
@@ -158,6 +163,9 @@ class QuickPanel(QWidget):
         root.addWidget(self.reply, 1)
         root.addWidget(self.recent_title)
         root.addWidget(self.recent)
+        # 无边框窗口没有系统缩放边框，用右下角的 SizeGrip 代替
+        self.size_grip = QSizeGrip(self)
+        root.addWidget(self.size_grip, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom)
 
     # ── 显示/隐藏 ─────────────────────────────────────────────────────────
     def toggle(self) -> None:
@@ -167,13 +175,25 @@ class QuickPanel(QWidget):
             self.open_panel()
 
     def open_panel(self) -> None:
-        pos = QCursor.pos()
-        self.move(pos.x() - self.width() // 2, pos.y() - 60)
+        self._place_on_screen()
         self.show()
         self.raise_()
         self.activateWindow()
         self.input.setFocus()
         self._start_worker(self._load_recent)
+
+    def _place_on_screen(self) -> None:
+        """尺寸与位置都限制在鼠标所在屏幕的可用区域（扣掉任务栏）以内，保证整窗可见。"""
+        pos = QCursor.pos()
+        screen = QGuiApplication.screenAt(pos) or QGuiApplication.primaryScreen()
+        if screen is None:          # 无屏幕信息（极少见）：退回默认尺寸，不做夹紧
+            self.resize(PANEL_WIDTH, PANEL_HEIGHT)
+            self.move(pos.x() - PANEL_WIDTH // 2, pos.y() - 60)
+            return
+        avail = screen.availableGeometry()
+        r = fit_panel((pos.x(), pos.y()),
+                      Rect(avail.x(), avail.y(), avail.width(), avail.height()))
+        self.setGeometry(r.x, r.y, r.w, r.h)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
         if event.key() == Qt.Key.Key_Escape:
