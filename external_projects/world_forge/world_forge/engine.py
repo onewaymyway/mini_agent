@@ -938,11 +938,102 @@ def write_short(llm, wid: str, *, arc_sid: Optional[str] = None, brief: str = ""
         raise
 
 
+def _piece_context(wid: str, subject_id: str, brief: str) -> Dict[str, Any]:
+    char = next((c for c in repo.load_characters(wid) if c["id"] == subject_id), None)
+    if char is None:
+        raise EngineError("请选择一个角色作为主角")
+    meta = repo.load_meta(wid)
+    attrs = char.get("attrs") or {}
+    ctx: Dict[str, Any] = {
+        "charter": meta.get("charter") or {}, "tone": meta.get("tone", ""), "genre": meta.get("genre", ""),
+        "character": {"name": char["name"], "summary": char.get("summary", ""),
+                      "appearance": attrs.get("visual_en", ""), "traits": attrs.get("traits") or []},
+        "brief": brief.strip(),
+    }
+    return ctx
+
+
+def _split_title(text: str, default: str) -> Tuple[str, str]:
+    lines = text.splitlines()
+    if lines and lines[0].lstrip().startswith("#"):
+        title = lines[0].lstrip("# ").strip() or default
+        return title, "\n".join(lines[1:]).lstrip("\n")
+    return default, text
+
+
+def _run_piece(llm, wid: str, subject_id: str, kind: str, brief: str, log) -> Dict[str, Any]:
+    focus = _focus_of(wid, subject_id)
+    if focus is None:
+        raise EngineError("请先选择一个角色")
+    if focus["kind"] != "角色":
+        raise EngineError("小故事与小笑话只能以角色为主角")
+    ctx = _piece_context(wid, subject_id, brief)
+    try:
+        ids = _subject_event_ids(wid, subject_id)
+    except EngineError:
+        ids = []
+    if ids:
+        ctx["events"] = _event_context(wid, select_events(wid, event_ids=ids[-6:]))
+        log.log("context", f"素材：「{focus['name']}」经历的 {len(ids)} 件事（取最近 6 件）")
+    else:
+        log.log("context", f"「{focus['name']}」还没有参与事件，仅根据角色设定创作")
+    label = "小笑话" if kind == "joke" else "小故事"
+    log.log("start", f"创作{label}（主角：{focus['name']}）")
+    cancel.checkpoint()
+    text = generate.piece_draft(LoggedLLM(llm, log), context=ctx, kind=kind, log=log, attempts=_retry_max(wid))
+    default = f"{focus['name']}的{label}"
+    title, body = _split_title(text, default)
+    log.log("parse", f"{label}生成完成：「{title}」，{len(body)} 字", level="ok")
+    return {"title": title, "text": body, "focus": focus, "event_ids": ids}
+
+
+def write_character_piece(llm, wid: str, *, subject_id: str, kind: str = "story", brief: str = "",
+                          log=None) -> str:
+    """以某个角色为主角创作小故事或小笑话（视角为该角色）。保存为短篇，之后可直接生成分镜与漫画。"""
+    log = _log_or_new(log, wid, "short")
+    try:
+        if kind not in generate.PIECE_KINDS:
+            raise EngineError(f"形式无效：{kind}（可选 story / joke）")
+        out = _run_piece(llm, wid, subject_id, kind, brief, log)
+        with _with_lock(wid):
+            extra = {"form": f"piece_{kind}", "piece": {"kind": kind, "subject_id": subject_id},
+                     "focus": out["focus"], "source_event_ids": out["event_ids"], "status": "draft",
+                     "request": {"subject_id": subject_id, "kind": kind, "brief": brief.strip()}}
+            sid = _new_story(wid, "short", out["title"], extra)
+            (repo.story_dir(wid, sid) / "story.md").write_text(out["text"], encoding="utf-8")
+        log.log("save", f"已保存「{out['title']}」（{sid}），可继续生成分镜与漫画", level="ok")
+        log.log("done", "完成", level="ok", story=sid)
+        return sid
+    except Exception as exc:
+        _fail(log, exc)
+        raise
+
+
+def _regenerate_piece(llm, wid: str, sid: str, log) -> str:
+    meta = repo.load_story_meta(wid, sid)
+    req = meta.get("request") or {}
+    log.log("start", f"重新创作（故事 {sid}，沿用原始输入）")
+    out = _run_piece(llm, wid, req.get("subject_id", ""), req.get("kind", "story"), req.get("brief", ""), log)
+    with _with_lock(wid):
+        d = repo.story_dir(wid, sid)
+        _archive(d / "story.md", log)
+        (d / "story.md").write_text(out["text"], encoding="utf-8")
+        meta = repo.load_story_meta(wid, sid)
+        meta["title"] = out["title"]
+        meta["regenerated_at"] = store.now_iso()
+        repo.save_story_meta(wid, sid, meta)
+    log.log("save", "已更新正文（旧正文保留在 history/）", level="ok")
+    log.log("done", "完成", level="ok", story=sid)
+    return sid
+
+
 def regenerate_short(llm, wid: str, sid: str, log=None) -> str:
     """用创建时的原始输入重新成文（同一个故事 id）。旧正文保留在 history/。"""
     log = _log_or_new(log, wid, "short")
     try:
         meta = repo.load_story_meta(wid, sid)
+        if meta.get("piece"):
+            return _regenerate_piece(llm, wid, sid, log)
         req = meta.get("request")
         if not req:
             raise EngineError("这篇短篇创建于旧版本，缺少原始输入，无法重新生成（可删除后重新创作）")

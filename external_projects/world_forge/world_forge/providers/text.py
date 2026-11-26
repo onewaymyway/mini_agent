@@ -263,5 +263,9 @@ class RuleTextLLM(TextLLM):
     def _task_scene(self, ctx):
         return {"visual_en": f"wide view of {ctx.get('name', 'a place')}, no people, muted palette"}
 
+    def _task_piece(self, ctx):
+        name = (ctx.get("character") or {}).get("name", "主角")
+        return f"# {name}的离线占位故事\n\n（规则占位）{name}在港口等待，故事需要真实模型生成。"
+
     def _task_short(self, ctx):
         return "（规则占位）" + (ctx.get("brief") or "这是一篇离线占位的短篇。") + "\n\n正文需要真实模型生成。"

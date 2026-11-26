@@ -12,6 +12,7 @@
   python entrypoints/cli.py short --world <wid> [--arc <sid>] [--brief 文字] [--events a,b]
   python entrypoints/cli.py board --world <wid> --story <sid> [--pages 6|auto] [--reading ltr|rtl] [--color color|bw]
   python entrypoints/cli.py comic --world <wid> --story <sid> [--reading ltr|rtl] [--color color|bw] [--candidates 1-3]
+  python entrypoints/cli.py piece --world <wid> --subject <角色id> --kind joke|story [--brief "提示"]   # 以角色为主角创作小笑话/小故事
   python entrypoints/cli.py rerender --world <wid> --story <sid> [--reading ltr|rtl] [--color color|bw]   # 仅重新渲染，不调用图像模型
   python entrypoints/cli.py comicexport --world <wid> --story <sid>   # CBZ 与条漫长图（仅使用已生成成品页）
   python entrypoints/cli.py text --world <wid> --story <sid> --page 1 --panel 1 [--narration 文字] [--sfx 轰] [--dialogue 第一句 --dialogue 第二句]
@@ -86,6 +87,8 @@ def main(argv=None) -> int:
     p.add_argument("--reading", default=None, choices=["ltr", "rtl"])
     p.add_argument("--color", default=None, choices=["color", "bw"])
     p.add_argument("--candidates", type=int, default=None, choices=[1, 2, 3], help="每格候选数，默认 1")
+    p = sub.add_parser("piece"); p.add_argument("--world", required=True); p.add_argument("--subject", required=True)
+    p.add_argument("--kind", default="story", choices=["story", "joke"]); p.add_argument("--brief", default="")
     p = sub.add_parser("rerender"); p.add_argument("--world", required=True); p.add_argument("--story", required=True)
     p.add_argument("--reading", default=None, choices=["ltr", "rtl"]); p.add_argument("--color", default=None, choices=["color", "bw"])
     p = sub.add_parser("comicexport"); p.add_argument("--world", required=True); p.add_argument("--story", required=True)
@@ -158,6 +161,11 @@ def main(argv=None) -> int:
             llm, _ = make_text_llm()
             _dump(engine.make_storyboard(llm, args.world, args.story, pages=args.pages,
                                          reading=args.reading, color=args.color, source=args.source))
+        elif args.cmd == "piece":
+            llm, _ = make_text_llm()
+            sid_new = engine.write_character_piece(llm, args.world, subject_id=args.subject, kind=args.kind,
+                                                   brief=args.brief)
+            _dump({"story": sid_new})
         elif args.cmd == "rerender":
             _dump(engine.rerender_comic(args.world, args.story, reading=args.reading, color=args.color))
         elif args.cmd == "comicexport":

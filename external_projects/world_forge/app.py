@@ -699,6 +699,24 @@ with tabs[6]:
             if _start_job(wid, "short", "创作短篇", engine.write_short, LLM, wid, brief=brief, form=form,
                           subject_id=vp or None, result_key="story"):
                 st.rerun()
+    with st.expander("为角色创作小故事或小笑话（以该角色为视角，之后可直接生成分镜与漫画）"):
+        chars_p = repo.load_characters(wid)
+        if not chars_p:
+            st.caption("还没有角色。请先在「角色」中创建角色。")
+        else:
+            cp_ids = [c["id"] for c in chars_p]
+            cp_names = {c["id"]: c["name"] for c in chars_p}
+            cp_cols = st.columns([2, 2])
+            cp_subject = cp_cols[0].selectbox("主角", cp_ids, format_func=lambda k: cp_names[k], key="piece_subject")
+            cp_kind = cp_cols[1].radio("形式", ["joke", "story"], horizontal=True,
+                                       format_func=lambda k: "小笑话（约 150 字，有包袱）" if k == "joke"
+                                       else "小故事（约 800–1500 字）", key="piece_kind")
+            cp_brief = st.text_input("创作提示（可选）", key="piece_brief",
+                                     placeholder="例如：他被小孩问到灯塔为什么不亮")
+            if st.button("创作", key="piece_create"):
+                if _start_job(wid, "short", "创作角色作品", engine.write_character_piece, LLM, wid,
+                              subject_id=cp_subject, kind=cp_kind, brief=cp_brief, result_key="story"):
+                    st.rerun()
     stories = repo.list_story_ids(wid)
     st.markdown("#### 故事")
     if not stories:

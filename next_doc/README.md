@@ -300,7 +300,7 @@ Explorer 重构、原始结果与混合合并、三层改进、trace 回放。
 
 ---
 
-## world_forge 漫画质量升级（16 篇）
+## world_forge 漫画质量升级（17 篇）
 
 `external_projects/world_forge` 的漫画从「能出图」升级为「像正式漫画」的分期方案。
 
@@ -320,3 +320,4 @@ Explorer 重构、原始结果与混合合并、三层改进、trace 回放。
 14. `comic_live_log_record.md` — 实施记录：运行日志实时刷新（运行中跟随最新记录）
 15. `comic_sfx_wrap_record.md` — 实施记录：音效重叠与换行修复（按 52% 宽度换行，放不下缩小或省略）
 16. `comic_auto_pages_record.md` — 实施记录：自动页数由代码按关键情节数计算（不再由模型决定）
+17. `comic_character_piece_record.md` — 实施记录：以角色为主角的小故事与小笑话（视角、字数限制、接续漫画）

@@ -371,6 +371,39 @@ def short_draft(llm, *, context: Dict[str, Any], form: str) -> str:
     return text
 
 
+PIECE_KINDS = ("story", "joke")
+PIECE_LIMIT_CHARS = {"joke": 200, "story": 2500}   # 小笑话约 150 字，留出余量；小故事上限 2500 字
+
+
+def piece_draft(llm, *, context: Dict[str, Any], kind: str, log=None, attempts: int = DEFAULT_ATTEMPTS) -> str:
+    """以某个角色为主角的小故事或小笑话。不合格（为空、超长）时把原因反馈给模型重试。"""
+    if kind not in PIECE_KINDS:
+        raise GenerationError(f"未知形式：{kind}")
+    name = (context.get("character") or {}).get("name", "主角")
+    if kind == "joke":
+        instr = (f"请以「{name}」为主角写一个中文小笑话：篇幅不超过 150 字；有铺垫、转折与结尾的包袱；"
+                 "笑点来自人物性格、口头禅或误会造成的反差，不要人身攻击、低俗或暴力内容。"
+                 "标题一行（以 # 开头），然后是正文（可以是几句对白）。直接输出正文（Markdown），不要解释。")
+    else:
+        instr = (f"请以「{name}」为主角写一个中文小故事：约 800–1500 字，以该角色的视角叙述；"
+                 "只有一个场景和一个小冲突，有开头、转折与结尾；人物说话符合其性格与身份。"
+                 "标题一行（以 # 开头），然后是正文。直接输出正文（Markdown），不要解释。")
+    limit = PIECE_LIMIT_CHARS[kind]
+    base = build_prompt("piece", context, instr)
+    last = ""
+    for attempt in range(1, max(1, attempts) + 1):
+        prompt = base if attempt == 1 else base + f"\n\n上一次输出不合格：{last}。请修正后只输出正文。"
+        text = (llm.ask(prompt, system=SYSTEM) or "").strip()
+        if not text:
+            last = "输出为空"
+        elif len(text) > limit:
+            last = f"超过 {limit} 字（当前 {len(text)} 字）"
+        else:
+            return text
+        _note(log, f"piece 第 {attempt}/{attempts} 次输出不合格：{last}" + ("" if attempt == attempts else "，将重试"))
+    raise GenerationError(f"piece 生成失败（已尝试 {attempts} 次）：{last}")
+
+
 def beats_draft(llm, *, context: Dict[str, Any], pages: Optional[int] = None, log=None,
                 events: Optional[List[Dict[str, Any]]] = None, theme: Optional[Dict[str, Any]] = None,
                 attempts: int = DEFAULT_ATTEMPTS) -> Dict[str, Any]:
