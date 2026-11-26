@@ -62,12 +62,19 @@ class TrayUi(QObject):
         on_quit: Callable[[], None],
         on_open_quick: Optional[Callable[[], None]] = None,
         on_open_pending: Optional[Callable[[], None]] = None,
+        on_quit_stop: Optional[Callable[[], None]] = None,
+        on_toggle_autostart: Optional[Callable[[bool], None]] = None,
+        autostart_checked: bool = False,
+        on_harden_token: Optional[Callable[[], None]] = None,
+        on_open_logs: Optional[Callable[[], None]] = None,
     ) -> None:
         super().__init__()
         self._model = model
         self._console_url = console_url
         self._on_open_quick = on_open_quick
         self._on_open_pending = on_open_pending
+        self._on_quit_stop = on_quit_stop
+        self._on_toggle_autostart = on_toggle_autostart
 
         self.tray = QSystemTrayIcon()
         self.menu = QMenu()
@@ -101,10 +108,30 @@ class TrayUi(QObject):
         self.menu.addAction(self.reconnect_action)
 
         self.menu.addSeparator()
+        # S4：系统维护类操作
+        self.autostart_action = QAction("开机自动启动", self.menu)
+        self.autostart_action.setCheckable(True)
+        self.autostart_action.setChecked(autostart_checked)
+        self.autostart_action.toggled.connect(self._on_autostart_toggled)
+        self.menu.addAction(self.autostart_action)
+
+        self.harden_action = QAction("加固 token 文件权限（仅当前用户）", self.menu)
+        self.harden_action.triggered.connect(lambda: on_harden_token and on_harden_token())
+        self.menu.addAction(self.harden_action)
+
+        self.logs_action = QAction("打开日志文件夹", self.menu)
+        self.logs_action.triggered.connect(lambda: on_open_logs and on_open_logs())
+        self.menu.addAction(self.logs_action)
+
+        self.menu.addSeparator()
         # 退出只关桌面端；后台 daemon 保持运行（"关闭桌面端 ≠ 关闭 Runtime"）
         self.quit_action = QAction("退出桌面端（Agent 继续在后台运行）", self.menu)
         self.quit_action.triggered.connect(on_quit)
         self.menu.addAction(self.quit_action)
+        # S4：退出并停止 daemon 是独立的显式选项，需要用户确认（由 app.py 弹窗）
+        self.quit_stop_action = QAction("退出并停止 Agent…", self.menu)
+        self.quit_stop_action.triggered.connect(lambda: on_quit_stop and on_quit_stop())
+        self.menu.addAction(self.quit_stop_action)
 
         self.tray.setContextMenu(self.menu)
         self.tray.activated.connect(self._on_activated)
@@ -127,6 +154,10 @@ class TrayUi(QObject):
         仅 UI 线程调用；策略判断在 attention.ToastPolicy 中完成。"""
         icon = QSystemTrayIcon.MessageIcon.Warning if blocking else QSystemTrayIcon.MessageIcon.Information
         self.tray.showMessage(title, body, icon, 8000)
+
+    def _on_autostart_toggled(self, checked: bool) -> None:
+        if self._on_toggle_autostart is not None:
+            self._on_toggle_autostart(checked)
 
     def _open_pending(self) -> None:
         if self._on_open_pending is not None:

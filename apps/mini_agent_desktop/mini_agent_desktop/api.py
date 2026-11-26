@@ -127,6 +127,10 @@ class DaemonApi:
     def respond_interaction(self, req_id: str, body: dict) -> None:
         self._post(f"/v1/interactions/{req_id}", body)
 
+    def shutdown(self) -> dict:
+        """请求 daemon 优雅关停（与 `mini-agent daemon stop` 的第一步相同）。"""
+        return self._post("/v1/shutdown")
+
     def cron_questions_pending(self, limit: int = 20) -> list[dict]:
         return list(self._get("/v1/cron_questions/pending", params={"limit": limit}).get("questions", []))
 

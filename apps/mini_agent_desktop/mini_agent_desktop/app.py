@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 from typing import Optional
@@ -17,7 +18,8 @@ import httpx
 
 from mini_agent_desktop import __version__
 from mini_agent_desktop.api import DaemonApi
-from mini_agent_desktop.config import DesktopConfig, load_config
+from mini_agent_desktop import autostart, logsetup, security
+from mini_agent_desktop.config import DesktopConfig, load_config, save_config
 from mini_agent_desktop.controller import DesktopController
 from mini_agent_desktop.discovery import count_unacked_crash_alerts, resolve_endpoint, spawn_daemon
 from mini_agent_desktop.attention import QuietHours, ToastPolicy
@@ -85,9 +87,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     except ImportError:
         print("缺少 PySide6，请先安装：pip install -r apps/mini_agent_desktop/requirements.txt", file=sys.stderr)
         return 1
+    from PySide6.QtCore import QUrl
+    from PySide6.QtGui import QDesktopServices
+
     from mini_agent_desktop.pending_dialog import AttentionBridge, PendingDialog
     from mini_agent_desktop.quick_panel import QuickHotkeyBridge, QuickPanel
     from mini_agent_desktop.tray import TrayUi
+
+    log_path = logsetup.default_log_path()
+    logsetup.setup_logging(log_path)
+    log = logging.getLogger("mini_agent_desktop.app")
+    log.info("桌面端启动 v%s，project_root=%s", __version__, project_root)
 
     app = QApplication(sys.argv[:1])
     app.setQuitOnLastWindowClosed(False)    # 没有窗口也要常驻
@@ -103,6 +113,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 1
 
     model = TrayModel()
+
+    # S4：登录自启以 desktop.json 为准同步注册表项（只动自己的值）
+    launcher = autostart.launcher_path()
+    auto_cmd = autostart.build_command(sys.executable, launcher, project_root)
+    auto_store = autostart.default_store()
+    try:
+        log.info("开机自启同步：%s", autostart.sync(auto_store, cfg.autostart, auto_cmd))
+    except OSError as exc:
+        log.warning("开机自启同步失败：%s", exc)
 
     def api_factory() -> DaemonApi:
         ep = resolve_endpoint(project_root, port)
@@ -128,6 +147,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     def on_attention_main(event: dict) -> None:
         toast = policy.decide(event)
         if toast is not None and "ui" in holder:
+            log.info("Toast：%s — %s", toast.title, toast.body)
             holder["ui"].toast(toast.title, toast.body, toast.blocking)
 
     attention_bridge.received.connect(on_attention_main)
@@ -157,6 +177,58 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     pending_dialog = PendingDialog(quick_session_factory)
 
+    def notify(title: str, text: str) -> None:
+        if "ui" in holder:
+            holder["ui"].notify_text(title, text)
+
+    def toggle_autostart(enabled: bool) -> None:
+        cfg.autostart = enabled
+        try:
+            save_config(cfg)
+        except OSError as exc:
+            log.warning("保存 desktop.json 失败：%s", exc)
+        try:
+            result = autostart.sync(auto_store, enabled, auto_cmd)
+        except OSError as exc:
+            result = f"failed: {exc}"
+            notify("mini_agent", f"开机自启设置失败：{exc}")
+        log.info("开机自启切换为 %s → %s", enabled, result)
+        if result == "unsupported":
+            notify("mini_agent", "开机自启仅支持 Windows")
+
+    def harden_tokens() -> None:
+        results = security.harden_project_tokens(project_root)
+        for r in results:
+            log.info("token ACL %s: %s %s", r.status, r.path, r.message)
+        hardened = [r for r in results if r.status == "hardened"]
+        failed = [r for r in results if r.status == "failed"]
+        if failed:
+            notify("mini_agent", f"token 权限加固失败：{failed[0].message}")
+        elif hardened:
+            notify("mini_agent", f"已加固 {len(hardened)} 个 token 文件")
+        else:
+            notify("mini_agent", "没有找到需要加固的 token 文件")
+
+    def open_logs() -> None:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(log_path.parent)))
+
+    def quit_and_stop() -> None:
+        answer = QMessageBox.question(
+            None, "mini_agent",
+            "确定停止 Agent 后台进程并退出桌面端？正在执行的任务会被中断。",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        api = api_factory()
+        try:
+            api.shutdown()
+            log.info("已请求 daemon 关停")
+        except Exception as exc:  # noqa: BLE001 - daemon 可能已不在运行
+            log.info("关停请求未成功（daemon 可能已停止）：%s", exc)
+        finally:
+            api.close()
+        quit_app()
+
     holder["ui"] = TrayUi(
         model, cfg.console_url,
         on_start_daemon=controller.manual_start_daemon,
@@ -164,6 +236,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         on_quit=quit_app,
         on_open_quick=panel.toggle,
         on_open_pending=pending_dialog.open_dialog,
+        on_quit_stop=quit_and_stop,
+        on_toggle_autostart=toggle_autostart,
+        autostart_checked=cfg.autostart,
+        on_harden_token=harden_tokens,
+        on_open_logs=open_logs,
     )
     holder["ui"].show()
     if quiet_err:
@@ -178,6 +255,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             hotkey = None
         if hotkey is not None:
             ok, reason = hotkey.start(hotkey_bridge.requested.emit)
+            log.info("全局热键 %s：%s", cfg.hotkey, "已注册" if ok else reason)
             if not ok:
                 holder["ui"].notify_text("mini_agent", f"全局热键未注册：{reason}")
                 hotkey = None

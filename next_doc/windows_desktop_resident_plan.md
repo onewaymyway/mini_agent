@@ -42,7 +42,7 @@
 | S1 托盘 | PySide6 骨架、daemon 发现与拉起、托盘状态图标/菜单/角标、SSE 断线重连 | 1.5 天 | ✅ 已完成（待 Windows 手动验证） |
 | S2 热键与快速面板 | `RegisterHotKey`、输入面板、专属 session、最近任务、中断 | 2 天 | ✅ 已完成（待 Windows 手动验证） |
 | S3 Toast 与审批 | 审批和异步提问可在 Toast/面板回答，点击跳转，去重与免打扰 | 2 天 | ✅ 已完成（待 Windows 手动验证） |
-| S4 自启动与加固 | 登录自启（默认关）、token ACL（`icacls`）、日志、退出时是否停 daemon 的明确选项 | 1 天 | ⬜ |
+| S4 自启动与加固 | 登录自启（默认关）、token ACL（`icacls`）、日志、退出时是否停 daemon 的明确选项 | 1 天 | ✅ 已完成（待 Windows 手动验证） |
 
 新增桌面代码放 `apps/mini_agent_desktop/`（与 Kanban 同级，纯 HTTP/SSE 客户端），不改 `src/mini_agent` 核心。
 
@@ -252,3 +252,49 @@ S3（Toast 与审批）：权限审批和 `ask_user_async` 问题可在 Toast / 
 ### 8.8 下一步
 
 S4（自启动与加固）：登录自启（默认关闭）、token 文件的 Windows ACL 收紧（`icacls`）、桌面端日志、退出时是否停止 daemon 的明确选项。
+
+## 9. S4 实施记录
+
+### 9.1 结构
+
+| 模块 | 职责 | 依赖 Qt |
+|---|---|---|
+| `autostart.py` | 启动命令构造（pythonw 替换、引号、可选 `--project-root`）；`WinRegRunStore`（`winreg` 读写 HKCU\Run，仅 Windows）；`sync()` 幂等同步 | 否 |
+| `security.py` | `icacls_argv()`；`harden_file()` 返回 hardened / missing / failed / unsupported；runner 可注入 | 否 |
+| `logsetup.py` | `RotatingFileHandler`（1 MB × 3）；幂等；目录不可写时退化为 NullHandler | 否 |
+| `launch_desktop.pyw`（新增） | 登录自启的启动器：把自身目录加入 sys.path 后调用 `app.main()` | — |
+| `api.py`（改） | `shutdown()` → `POST /v1/shutdown` | 否 |
+| `config.py`（改） | `autostart`（默认 `false`） | 否 |
+| `controller.py`（改） | 连接成功与离线切换写入日志 | 否 |
+| `tray.py`（改） | 新增"开机自动启动"（可勾选）、"加固 token 文件权限"、"打开日志文件夹"、"退出并停止 Agent…" | 是 |
+| `app.py`（改） | 启动时同步自启项；各菜单动作的实现；退出并停止前弹窗确认；热键与 Toast 结果写日志 | — |
+
+### 9.2 设计要点
+
+- **启动器而非 `-m`**：Run 项的工作目录不可控，`python -m mini_agent_desktop` 在别的目录下找不到包。`launch_desktop.pyw` 把自身目录加入 sys.path，然后调用 `main()`，参数原样透传。
+- **只动自己的值**：`HKCU\...\Run` 下只读写 `mini_agent_desktop`；关闭自启时只删这一个值。
+- **启动时同步**：以 `desktop.json` 为准写入或删除。路径变化（例如项目搬家）会自动更新命令。
+- **ACL 加固只在点击时执行**：`icacls /inheritance:r /grant:r <用户>:F`。不做后台自动改动，因为错误的权限可能让 daemon 读不到 token。
+- **两种退出语义分开**："退出桌面端"保留 daemon；"退出并停止 Agent"需要确认，并经 `POST /v1/shutdown` 走与 `daemon stop` 相同的优雅关停通道。
+- **日志只用自己的 logger**：名为 `mini_agent_desktop`，`propagate=False`，不影响宿主进程的其它日志。
+
+### 9.3 测试
+
+`tests/test_desktop_s4.py`（26 个用例）：启动器文件存在且可编译、pythonw 替换、引号与可选参数；sync 的写入/幂等/重写/删除/不支持；icacls 参数（仅当前用户 F、无继承）；非 Windows、文件缺失、成功、失败（含 stderr）、icacls 不存在五种分支；两个 token 位置的加固；日志写文件、幂等、目录不可写降级；`/v1/shutdown` 在真实路由中存在且客户端请求形态正确；autostart 配置默认关闭；托盘 S4 菜单项与回调（离屏 Qt）。
+
+全部桌面端测试 S0–S4 合计 141 个用例通过。
+
+### 9.4 未验证项（需 Windows 手动）
+
+注册表项的实际写入与注销后的状态、pythonw 无窗口启动、`icacls` 的真实输出与加固后 CLI/桌面端连接是否正常、Windows 启动时托盘出现的时机、"退出并停止 Agent"在 daemon 忙碌时的关停耗时。清单见 [docs/desktop-client-guide.md](../docs/desktop-client-guide.md) 第 7.3 节。
+
+### 9.5 已知限制
+
+- 自启动依赖当前用户登录；不适用于无人登录的服务器场景（设计上明确不做 Windows Service）。
+- ACL 加固只授予当前用户；daemon 若以其它账户运行会读不到 token，需要先手动调整。
+- 日志只记录桌面端自身行为，daemon 的日志见 `docs/logging-mechanisms-guide.md`。
+- 打包（PyInstaller）仍未做，与计划 §2 一致：第一阶段依赖 venv + pythonw。
+
+### 9.6 全部阶段结束
+
+S0–S4 已全部按计划实施。后续若需要真正的安装包、自动更新或 Windows Service，应另起计划评估，不属于本计划范围。

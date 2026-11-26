@@ -1,7 +1,7 @@
 # Windows 桌面常驻客户端指南（Desktop Client）
 
 > 设计与分阶段计划见 [`next_doc/windows_desktop_resident_plan.md`](../next_doc/windows_desktop_resident_plan.md)。
-> 当前已实现：**S1 系统托盘**、**S2 快速面板与全局热键**、**S3 Toast 与待处理事项**。自启动与加固（S4）尚未实现。
+> 当前已实现：**S1 系统托盘**、**S2 快速面板与全局热键**、**S3 Toast 与待处理事项**、**S4 自启动、token 加固与日志**。至此 `windows_desktop_resident_plan.md` 的 S0–S4 全部完成（待 Windows 手动验证）。
 > 代码位置：`apps/mini_agent_desktop/`。
 
 ## 1. 它是什么
@@ -59,7 +59,8 @@ python  -m mini_agent_desktop --project-root D:\path\to\mini_agent     # 调试�
   "hotkey_enabled": false,
   "hotkey": "Ctrl+Alt+Space",
   "toast_enabled": false,
-  "quiet_hours": ""
+  "quiet_hours": "",
+  "autostart": false
 }
 ```
 
@@ -135,6 +136,27 @@ python  -m mini_agent_desktop --project-root D:\path\to\mini_agent     # 调试�
 - cron 提问：有选项给按钮，否则文字框；
 - 点击后若返回 404，说明已被 CLI 或看板先处理，面板会提示并自动刷新。
 
+## 4.3 自启动、token 加固、日志与退出选项（S4）
+
+**开机自动启动**：托盘菜单"开机自动启动"（可勾选），或 `desktop.json` 中 `autostart: true`。原理是在 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 下写入一个名为 `mini_agent_desktop` 的值，启动命令为 `pythonw launch_desktop.pyw --project-root <路径>`。
+
+- 只读写自己的值，不碰其它启动项；无需管理员权限。
+- 每次启动时以 `autostart` 为准同步注册表项：路径变了会重写，设为关闭会删除自己的值。
+- 启动器 `launch_desktop.pyw` 位于 `apps/mini_agent_desktop/`，用 pythonw 运行，没有控制台窗口。
+
+**加固 token 文件权限**：菜单"加固 token 文件权限（仅当前用户）"会对 `.agent/agent_api.key` 与 `.agent/users/tokens/owner.key`（存在时）执行 `icacls <文件> /inheritance:r /grant:r <当前用户>:F`，即去掉继承的权限、只保留当前用户的完全控制。
+
+- 只在你点击时执行，不做后台自动改动；结果以气泡与日志反馈。
+- `/grant:r` 会替换文件上已有的显式授权。若 daemon 以其它账户运行，请先调整再加固。
+- 仅 Windows；其它系统返回"不支持"。
+
+**日志**：`%LOCALAPPDATA%\mini_agent\logs\desktop.log`（单文件 1 MB，保留 3 份）。记录启动、连接/离线切换与原因、全局热键注册结果、Toast 发出内容、开机自启与 ACL 加固的结果、关停请求。菜单"打开日志文件夹"直接打开目录。日志目录不可写时静默降级，不影响运行。
+
+**退出选项**：菜单里有两个明确选择，互不混淆：
+
+- **退出桌面端（Agent 继续在后台运行）**：默认的退出方式，只关托盘，daemon 不受影响；
+- **退出并停止 Agent…**：先弹窗确认，然后请求 daemon 优雅关停（`POST /v1/shutdown`，与 `mini-agent daemon stop` 的第一步相同），正在执行的任务会被中断。daemon 本来已停止时也会正常退出桌面端。
+
 ## 5. 连接行为
 
 1. 先 `health` 检查 → 取 `/v1/status` 与 `/v1/desktop/summary` **快照** → 再订阅 `/v1/stream`（不回放历史）。
@@ -195,6 +217,17 @@ python -m mini_agent_desktop --project-root D:\path\to\mini_agent --check
 - [ ] 强杀 daemon 后，托盘变红并弹"daemon 异常退出"；重启桌面端后不会为旧告警再弹
 - [ ] `toast_enabled=false` 时全部气泡消失，但托盘角标与面板照常工作
 
+## 7.3 Windows 手动验证清单（S4）
+
+- [ ] 勾选"开机自动启动"，用 `regedit` 在 `HKCU\...\Run` 下看到 `mini_agent_desktop` 值，内容指向 `pythonw.exe` 与 `launch_desktop.pyw`
+- [ ] 注销或重启 Windows，托盘图标自动出现且无控制台窗口
+- [ ] 取消勾选后，注册表中的 `mini_agent_desktop` 值被删除，其它启动项保持不变
+- [ ] 点"加固 token 文件权限"，`icacls .agent\agent_api.key` 只列出当前用户的 `(F)` 且没有继承项；加固后 CLI 与桌面端仍能正常连接 daemon
+- [ ] 点"打开日志文件夹"打开的目录中有 `desktop.log`，内容包含启动、连接与离线记录
+- [ ] "退出桌面端"后 `mini-agent daemon status` 仍显示运行中
+- [ ] "退出并停止 Agent…"弹出确认，确认后 daemon 停止、桌面端退出；点取消则什么都不发生
+- [ ] daemon 已停止时点"退出并停止 Agent…"，桌面端仍能正常退出
+
 ## 8. 代码位置
 
 - `apps/mini_agent_desktop/mini_agent_desktop/config.py`：桌面端配置
@@ -206,7 +239,11 @@ python -m mini_agent_desktop --project-root D:\path\to\mini_agent --check
 - `app.py`：入口、`--check`、单实例锁、热键注册与快速面板装配
 - `hotkey.py`：组合键解析（纯函数）+ Windows `RegisterHotKey` 专用消息循环线程（S2）
 - `quick.py`：快速面板的纯逻辑——专属 session 客户端、reply 提取、turn 轮询状态机（S2，不依赖 Qt）
+- `autostart.py`：登录自启命令构造、HKCU\Run 读写（`winreg`，仅 Windows）与同步逻辑（S4）
+- `security.py`：token 文件 ACL 加固（`icacls` 参数构造 + 可注入 runner，S4）
+- `logsetup.py`：桌面端滚动日志（S4）
+- `../launch_desktop.pyw`：登录自启的启动器（S4）
 - `quick_panel.py`：PySide6 快速面板与热键→主线程桥（S2）；网络调用全部在工作线程
 - `attention.py`：Toast 策略（范围/去重/免打扰，纯逻辑）与待处理事项的收集、回答体构造（S3，不依赖 Qt）
 - `pending_dialog.py`：待处理事项面板与 attention 事件→主线程桥（S3）
-- 测试：`tests/test_desktop_s1.py`（含起真实路由 + 真实 `AgentBridge` 的端到端集成测试与离屏 Qt 冒烟）、`tests/test_desktop_s2.py`（热键解析、quick 客户端请求形态、状态机、路由契约、离屏 Qt 发送冒烟）、`tests/test_desktop_s3.py`（后端 attention 发布、Toast 策略与免打扰、待处理收集与回答、崩溃提醒、离屏面板）
+- 测试：`tests/test_desktop_s1.py`（含起真实路由 + 真实 `AgentBridge` 的端到端集成测试与离屏 Qt 冒烟）、`tests/test_desktop_s2.py`（热键解析、quick 客户端请求形态、状态机、路由契约、离屏 Qt 发送冒烟）、`tests/test_desktop_s3.py`（后端 attention 发布、Toast 策略与免打扰、待处理收集与回答、崩溃提醒、离屏面板）、`tests/test_desktop_s4.py`（自启命令与同步、icacls 参数与结果分支、日志降级、shutdown 契约、托盘菜单）

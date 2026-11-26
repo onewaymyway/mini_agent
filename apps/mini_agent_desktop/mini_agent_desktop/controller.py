@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from typing import Callable, Optional
@@ -24,6 +25,7 @@ from mini_agent_desktop.api import DaemonApi
 from mini_agent_desktop.state import REASON_AUTH, REASON_LOST, REASON_NOT_RUNNING, TrayModel
 
 DEFAULT_BACKOFF = (1.0, 2.0, 4.0, 8.0, 15.0, 30.0)
+log = logging.getLogger("mini_agent_desktop.controller")
 
 
 class DesktopController:
@@ -111,6 +113,7 @@ class DesktopController:
 
     def _go_offline(self, reason: str) -> None:
         crashes = self._read_crashes()
+        log.info("离线：%s（未确认崩溃告警 %d 条）", reason, crashes)
         self._model.set_offline(reason, crashes)
         if (self._on_attention is not None and self._crash_baseline is not None
                 and crashes > self._crash_baseline):
@@ -156,6 +159,7 @@ class DesktopController:
             return False
 
         self._auto_start_tried = False
+        log.info("已连接 daemon")
         self._model.set_connected()
         self._on_change()
         try:

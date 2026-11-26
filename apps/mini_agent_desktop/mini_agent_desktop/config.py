@@ -38,6 +38,8 @@ class DesktopConfig:
     toast_enabled: bool = False
     # S3：免打扰时段，如 "23:00-08:00"；空 = 不设。阻塞类提醒不受影响
     quiet_hours: str = ""
+    # S4：登录自启（HKCU\...\Run）。默认关闭；启动时据此同步注册表项
+    autostart: bool = False
 
 
 def config_path() -> Path:

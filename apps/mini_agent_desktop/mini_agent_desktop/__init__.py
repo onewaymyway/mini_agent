@@ -4,4 +4,4 @@
 不 import mini_agent 核心包。设计见 next_doc/windows_desktop_resident_plan.md。
 """
 
-__version__ = "0.2.0"
+__version__ = "0.4.0"
