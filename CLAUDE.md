@@ -759,6 +759,7 @@ mini-agent user token u_a1b2c3d4                       # 重新生成 token
 - `channels/email.py`、`channels/kanban.py`：内置通知通道，可扩展
 - `reports_store.py`：分级汇报独立存储（`reports.jsonl`），不复用网关的 `alerts.jsonl`
 - `config.py::NotificationConfig`：`.agent/notification/config.yaml` 加载，密钥字段支持 `${ENV:VAR_NAME}` 占位符
+- `attention_hub.py`：进程内"需要用户关注"发布点（`reports_store.append_report`/`questions_store.append_question` 落盘后发布；`http.desktop_attention_events_enabled=true` 时由 `HttpServer` 转成 SSE `attention` 事件，默认关闭）；配套 `GET /v1/desktop/summary` 待处理计数快照，详见 [桌面关注事件指南](docs/desktop-attention-events-guide.md) 与 `next_doc/windows_desktop_resident_plan.md`
 - 看板"🔔 关注与通知"tab（关注对象/分级汇报 tier/待处理汇报/通知发送记录，已分页）+ Goal 卡片"🔗 相关外部信息"面板
 - 详见 [关注对象·通知系统指南](docs/watchlist-notification-guide.md)
 

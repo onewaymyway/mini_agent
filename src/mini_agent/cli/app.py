@@ -562,6 +562,7 @@ def _main_inner() -> None:
                 multi_user_enabled = multi_user_enabled,
                 access_log_enabled = cfg.http.access_log_enabled,
                 access_log_path    = cfg.http.access_log_path,
+                desktop_attention_events_enabled = cfg.http.desktop_attention_events_enabled,
             )
             http_server.start()
 

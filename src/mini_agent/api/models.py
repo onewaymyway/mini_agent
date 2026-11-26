@@ -66,6 +66,10 @@ class EventType(str, Enum):
     # cron 任务专用执行通道（evolution/cron_job_runner.py）完成一次后台执行
     # 后推送，供实时打开着看板的客户端不需要轮询/刷新即可看到最新状态。
     CRON_JOB_FINISHED  = "cron_job_finished"
+    # [windows_desktop_resident_plan.md S0] 新增一条"需要用户关注"的持久化记录
+    # （汇报 / cron 异步提问 / daemon 崩溃告警）。默认不发送，需
+    # `http.desktop_attention_events_enabled=true`；老客户端忽略未知事件类型。
+    ATTENTION          = "attention"
 
 
 # ── 事件数据结构 ──────────────────────────────────────────────────────────────

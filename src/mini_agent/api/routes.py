@@ -12764,3 +12764,57 @@ async def cleanup_run_endpoint(request: Request, body: CleanupRunRequest):
     )
     return CleanupRunResponse(dry_run=body.dry_run, project=project, summary=summary, results=out)
 
+
+
+# ── Windows 桌面常驻客户端汇总端点（windows_desktop_resident_plan.md S0）──────
+#
+#   GET /v1/desktop/summary   托盘角标/菜单所需的"待处理事项"计数快照
+#
+# 纯只读聚合，不新增任何存储：把已有的几处"待用户处理"来源合并成一次请求，
+# 避免桌面客户端为了一个托盘角标轮询 5 个端点。语义约定：
+#   - 权限审批/交互请求/失败 Objective 来自 /v1/inbox（跨 session 聚合）；
+#   - 汇报、cron 异步提问、崩溃告警来自各自独立的 notification 存储；
+#   - attention_total = 以上"需要用户做点什么"的合计，供托盘角标直接显示；
+#   - attention_events_enabled 告诉客户端：SSE 是否会推送 `attention` 事件
+#     （false 时客户端应退回低频轮询本端点）。
+
+@router.get("/desktop/summary")
+async def get_desktop_summary(request: Request):
+    """GET /v1/desktop/summary — 桌面托盘用的待处理事项计数快照。"""
+    http_server = getattr(request.app.state, "http_server", None)
+    if http_server is None:
+        raise HTTPException(status_code=503, detail="HttpServer not available")
+    _require_owner(request)
+
+    proj_root = getattr(http_server.bridge.agent.cfg, "project_root", None) if http_server.bridge.agent else None
+    if proj_root is None:
+        raise HTTPException(status_code=503, detail="project_root not available")
+
+    # 复用 /v1/inbox 的聚合逻辑（权限/交互/失败 Objective），不重复实现
+    inbox = await get_inbox(request)
+    by_type: dict[str, int] = {}
+    for it in inbox.get("items", []):
+        by_type[it.get("type", "")] = by_type.get(it.get("type", ""), 0) + 1
+
+    from mini_agent.notification import questions_store
+    from mini_agent.notification.daemon_crash_store import count_unacknowledged_crash_alerts
+    from mini_agent.notification.reports_store import count_pending_reports
+    from mini_agent.storage.paths import AgentPaths
+    paths = AgentPaths(proj_root)
+
+    counts = {
+        "pending_permissions": by_type.get("permission", 0),
+        "pending_interactions": by_type.get("interaction", 0),
+        "failed_objectives": by_type.get("objective_failed", 0),
+        "pending_reports": count_pending_reports(paths),
+        "cron_questions_pending": questions_store.count_questions(
+            paths, status=questions_store.STATUS_PENDING),
+        "crash_alerts_unacked": count_unacknowledged_crash_alerts(paths),
+    }
+    return {
+        "counts": counts,
+        "attention_total": sum(counts.values()),
+        "attention_events_enabled": bool(
+            getattr(http_server, "desktop_attention_events_enabled", False)),
+        "server_time": time.time(),
+    }

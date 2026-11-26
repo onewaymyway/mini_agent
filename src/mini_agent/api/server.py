@@ -1058,8 +1058,13 @@ class HttpServer:
         multi_user_enabled: bool = False,
         access_log_enabled: bool = True,
         access_log_path:  str  = "",
+        desktop_attention_events_enabled: bool = False,
     ) -> None:
         self._host = host
+        # [windows_desktop_resident_plan.md S0] 默认 False（保守 opt-in），
+        # 见 start()/stop() 里对 attention_hub 监听的注册/注销。
+        self.desktop_attention_events_enabled = bool(desktop_attention_events_enabled)
+        self._attention_listener = None
         self._port = port
         self._project_root = project_root
 
@@ -2147,6 +2152,20 @@ class HttpServer:
         # 安装输出钩子（把 agent 的 Renderer 输出接入 bridge）
         _install_output_hook(self._bridge)
 
+        # [windows_desktop_resident_plan.md S0] opt-in：把 attention_hub 事件
+        # 转成 SSE `attention` 事件。未开启时不注册任何监听，publish 为空操作。
+        if self.desktop_attention_events_enabled and self._attention_listener is None:
+            from mini_agent.notification import attention_hub
+
+            def _on_attention(ev: dict, _bridge=self._bridge) -> None:
+                _bridge.emit_attention(
+                    ev.get("kind", ""), ev.get("title", ""), ev.get("ref_id", ""),
+                    ev.get("level", "normal"), ev.get("extra"),
+                )
+
+            self._attention_listener = _on_attention
+            attention_hub.register_listener(_on_attention)
+
         # 启动 AgentRunner
         self._runner.start()
 
@@ -2207,6 +2226,14 @@ class HttpServer:
 
     def stop(self) -> None:
         """优雅关闭。"""
+        if self._attention_listener is not None:
+            try:
+                from mini_agent.notification import attention_hub
+                attention_hub.unregister_listener(self._attention_listener)
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer.stop.attention')
+            self._attention_listener = None
         self._runner.stop()
         # External Input Gateway：停止 GatewayPoller 的各来源轮询线程，
         # 与下面 uvicorn/session_pool 的关闭顺序一致，避免 daemon 退出时

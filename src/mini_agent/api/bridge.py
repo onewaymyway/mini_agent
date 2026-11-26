@@ -945,6 +945,32 @@ class AgentBridge:
             },
         ))
 
+    def emit_attention(
+        self,
+        kind: str,
+        title: str,
+        ref_id: str = "",
+        level: str = "normal",
+        extra: Optional[dict] = None,
+    ) -> None:
+        """推送"需要用户关注"事件（桌面常驻客户端的 Toast/托盘角标来源）。
+
+        刻意不带 session_id：它是跨 session 的系统级事件，/v1/stream 的
+        session 过滤会对无 session_id 的事件放行，所有客户端都能收到。
+        data 里只放摘要，详情由客户端按 kind+ref_id 回查对应 REST 端点。
+        """
+        self.broadcaster.push(AgentEvent(
+            type=EventType.ATTENTION,
+            session_id="",
+            data={
+                "kind": kind,
+                "title": title,
+                "ref_id": ref_id,
+                "level": level,
+                "extra": extra or {},
+            },
+        ))
+
     def emit_objective_progress(
         self,
         execution_id: str,

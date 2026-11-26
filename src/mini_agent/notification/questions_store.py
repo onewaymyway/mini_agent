@@ -141,6 +141,18 @@ def append_question(
     except Exception as exc:
         from mini_agent.errors import log_exception
         log_exception(exc, where="mini_agent.notification.questions_store.append_question")
+        return record
+    # [windows_desktop_resident_plan.md S0] 落盘成功后尽力发布；无监听者时为空操作。
+    # urgency=blocking（子任务没有答案无法继续）映射为 blocking 级别。
+    from mini_agent.notification import attention_hub
+    attention_hub.publish_attention(
+        attention_hub.KIND_CRON_QUESTION, question,
+        ref_id=record["question_id"],
+        level=(attention_hub.LEVEL_BLOCKING
+               if record.get("urgency") == URGENCY_BLOCKING
+               else attention_hub.LEVEL_NORMAL),
+        extra={"job_id": job_id},
+    )
     return record
 
 

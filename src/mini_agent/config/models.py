@@ -660,6 +660,12 @@ class HttpConfig:
     daemon_crash_alert_escalation_hours: float = 1.0
     daemon_crash_history_max_entries: int = 1000
 
+    # [windows_desktop_resident_plan.md S0] 是否把"新增待处理汇报/cron 异步
+    # 提问/daemon 崩溃告警"以 SSE `attention` 事件推给客户端（供 Windows
+    # 桌面托盘/Toast 即时唤醒，免轮询）。保守 opt-in：默认关闭，关闭时
+    # 不注册任何监听，现有行为完全不变。
+    desktop_attention_events_enabled: bool = False
+
 
 @dataclass
 class WebSearchConfig:

@@ -37,6 +37,13 @@ def append_report(paths: "AgentPaths", record: dict) -> None:
     except Exception as exc:
         from mini_agent.errors import log_exception
         log_exception(exc, where="mini_agent.notification.reports_store.append_report")
+        return
+    # [windows_desktop_resident_plan.md S0] 落盘成功后尽力发布；无监听者时为空操作
+    from mini_agent.notification import attention_hub
+    attention_hub.publish_attention(
+        attention_hub.KIND_REPORT, record.get("title") or "新汇报",
+        ref_id=record.get("report_id") or "",
+    )
 
 
 def _load_pending_sorted(paths: "AgentPaths") -> list[dict]:
