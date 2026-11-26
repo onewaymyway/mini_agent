@@ -18,6 +18,7 @@ perception/behavior/collectors/active_window.py — 跨平台前台窗口/程序
 
 from __future__ import annotations
 
+import os
 import platform
 import subprocess
 import time
@@ -27,7 +28,20 @@ from ..events import ActivityEvent
 from .base import BaseCollector
 
 
-def _detect_windows() -> Optional[tuple[str, str]]:
+_WIN_BACKEND_LOGGED = False
+
+
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
+def _pywin32_importable() -> bool:
+    import importlib.util
+    return all(importlib.util.find_spec(m) is not None for m in ("win32gui", "win32process"))
+
+
+def _detect_windows_pywin32() -> Optional[tuple[str, str]]:
+    """原有实现：依赖 pywin32 + psutil。"""
     try:
         import win32gui  # type: ignore
         import win32process  # type: ignore
@@ -50,6 +64,115 @@ def _detect_windows() -> Optional[tuple[str, str]]:
         from mini_agent.errors import log_exception
         log_exception(_mini_agent_exc, where='mini_agent.perception.behavior.collectors.active_window._detect_windows')
         return None
+
+
+class _Win32Api:
+    """ctypes 直接调用 user32 / kernel32，不依赖 pywin32。只在 Windows 上实例化。"""
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+    def __init__(self) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        self._ctypes = ctypes
+        self._wintypes = wintypes
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        user32.GetForegroundWindow.restype = wintypes.HWND
+        user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+        user32.GetWindowTextLengthW.restype = ctypes.c_int
+        user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+        user32.GetWindowTextW.restype = ctypes.c_int
+        user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+        user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.QueryFullProcessImageNameW.argtypes = [
+            wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+        kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        self._user32, self._kernel32 = user32, kernel32
+
+    def foreground(self) -> Optional[int]:
+        return self._user32.GetForegroundWindow() or None
+
+    def title(self, hwnd: int) -> str:
+        n = self._user32.GetWindowTextLengthW(hwnd)
+        buf = self._ctypes.create_unicode_buffer(n + 1)
+        self._user32.GetWindowTextW(hwnd, buf, n + 1)
+        return buf.value
+
+    def pid(self, hwnd: int) -> int:
+        pid = self._wintypes.DWORD()
+        self._user32.GetWindowThreadProcessId(hwnd, self._ctypes.byref(pid))
+        return pid.value
+
+    def image_path(self, pid: int) -> str:
+        """进程映像完整路径。无权限（如提权进程）时返回空串，不抛异常。"""
+        if not pid:
+            return ""
+        handle = self._kernel32.OpenProcess(self.PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return ""
+        try:
+            size = self._wintypes.DWORD(32768)
+            buf = self._ctypes.create_unicode_buffer(size.value)
+            ok = self._kernel32.QueryFullProcessImageNameW(handle, 0, buf, self._ctypes.byref(size))
+            return buf.value if ok else ""
+        finally:
+            self._kernel32.CloseHandle(handle)
+
+
+def _foreground_from_api(api) -> Optional[tuple[str, str]]:
+    """纯逻辑：由 api 提供的四个原语组合出 (程序名, 窗口标题)。可用假 api 单测。"""
+    from pathlib import PureWindowsPath
+
+    hwnd = api.foreground()
+    if not hwnd:
+        return None
+    title = api.title(hwnd) or ""
+    pid = api.pid(hwnd)
+    path = api.image_path(pid) if pid else ""
+    name = PureWindowsPath(path).name if path else ""
+    return (name or "unknown", title)
+
+
+_WIN32_API = None
+
+
+def _detect_windows_ctypes() -> Optional[tuple[str, str]]:
+    global _WIN32_API
+    if not _is_windows():
+        return None
+    try:
+        if _WIN32_API is None:
+            _WIN32_API = _Win32Api()
+        return _foreground_from_api(_WIN32_API)
+    except Exception as _mini_agent_exc:
+        from mini_agent.errors import log_exception
+        log_exception(_mini_agent_exc, where='mini_agent.perception.behavior.collectors.active_window._detect_windows_ctypes')
+        return None
+
+
+def windows_backend() -> Optional[str]:
+    """当前 Windows 前台窗口采集使用的后端：'pywin32' / 'ctypes'；非 Windows 返回 None。"""
+    if not _is_windows():
+        return None
+    return "pywin32" if _pywin32_importable() else "ctypes"
+
+
+def _detect_windows() -> Optional[tuple[str, str]]:
+    """优先 pywin32（保持原行为）；未安装时回退到 ctypes。首次成功时记录一次所用后端。"""
+    global _WIN_BACKEND_LOGGED
+    backend = windows_backend()
+    result = _detect_windows_pywin32() if backend == "pywin32" else _detect_windows_ctypes()
+    if result is not None and not _WIN_BACKEND_LOGGED:
+        _WIN_BACKEND_LOGGED = True
+        import logging
+        logging.getLogger(__name__).info("前台窗口采集后端：%s", backend)
+    return result
 
 
 def _detect_macos() -> Optional[tuple[str, str]]:

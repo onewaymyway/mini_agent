@@ -95,7 +95,7 @@
 
 | 采集器 | 文件 | 说明 |
 |---|---|---|
-| `active_window` | `collectors/active_window.py` | 跨平台前台窗口/程序，Windows(pywin32)/macOS(AppKit 或 osascript)/Linux(xdotool，Wayland 下大多不可用) |
+| `active_window` | `collectors/active_window.py` | 跨平台前台窗口/程序，Windows(pywin32，缺失时回退 ctypes)/macOS(AppKit 或 osascript)/Linux(xdotool，Wayland 下大多不可用) |
 | `idle` | `collectors/idle.py` | 空闲/在场检测（`GetLastInputInfo` / `CGEventSourceSecondsSinceLastEventType` / `xprintidle`） |
 | `now_playing` | `collectors/now_playing.py` | 媒体"正在播放"标题/艺术家（Windows winsdk / macOS osascript / Linux playerctl） |
 | `app_lifecycle` | `collectors/app_lifecycle.py` | 应用启动/退出（psutil 差分快照，只记进程名） |
@@ -222,3 +222,27 @@ tuple 即可。
 - [命令与工具参考](commands-and-tools-reference.md) — `/behavior` 全部子命令
 - `browser_extension_example/` — 浏览器插件源码
 - `android_companion_app/README.md` — Android 伴侣 App 构建与隐私说明
+
+## Windows 前台窗口采集的后端
+
+Windows 上 `active_window` 有两种后端，按下面顺序选择：
+
+1. **pywin32（优先）**：需要 `pywin32` 与 `psutil`，行为与之前一致。
+2. **ctypes（回退）**：pywin32 未安装时自动启用，直接调用 `user32` / `kernel32`，不需要额外依赖。通过 `GetForegroundWindow` 取窗口、`GetWindowTextW` 取标题、`QueryFullProcessImageNameW` 取程序的完整路径，程序名取路径的文件名部分。
+
+之前的问题是：只要缺少 pywin32，采集器在 Windows 上会静默不可用。现在回退到 ctypes，普通安装环境下前台窗口采集即可工作。
+
+边界说明：
+
+- 提权进程（如以管理员身份运行的程序）无法查询映像路径，程序名会显示为 `unknown`，窗口标题仍然保留。
+- 标题的脱敏规则（`redact_window_title`）不变：默认只记录程序名。
+- 第一次成功采集时，日志会记录一行 `前台窗口采集后端：pywin32` 或 `ctypes`，便于排查。
+
+### Windows 实机验证清单
+
+- [ ] 在未安装 pywin32 的环境中开启 `active_window_enabled`，切换几个程序后 `/v1/perception/events` 能看到 `app_focus` 事件
+- [ ] 日志中出现 `前台窗口采集后端：ctypes`
+- [ ] 切换到管理员权限运行的程序，程序名显示为 `unknown`，标题仍存在，daemon 不报错
+- [ ] 锁屏时采集器不产生错误事件，解锁后恢复正常
+- [ ] 安装 pywin32 后，日志变为 `前台窗口采集后端：pywin32`，行为与之前一致
+
