@@ -16,7 +16,7 @@ from typing import Callable
 
 import httpx
 from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtGui import QCursor, QKeyEvent
+from PySide6.QtGui import QCursor, QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import (
     QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPlainTextEdit,
     QPushButton, QTextBrowser, QVBoxLayout, QWidget,
@@ -37,6 +37,40 @@ class _Signals(QObject):
     failed = Signal(str)
     recent = Signal(object)      # list[dict]
     info = Signal(str)
+
+
+class DragBar(QLabel):
+    """无边框窗口没有标题栏，这里用一条把手替代：按住拖动即可移动整个面板。
+
+    不把整个窗口做成拖动区，是因为输入框、结果区等子控件会吞掉鼠标事件，
+    整窗拖动会与文本选择、滚动冲突。
+    """
+
+    def __init__(self, parent=None) -> None:
+        super().__init__("⠿  拖动此处移动窗口", parent)
+        self.setCursor(Qt.CursorShape.SizeAllCursor)
+        self.setToolTip("按住拖动移动快速面板")
+        self.setStyleSheet("color: #888; padding: 2px 0;")
+        self._grab_offset = None   # 按下时鼠标相对窗口左上角的偏移（全局坐标系）
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            win = self.window()
+            self._grab_offset = event.globalPosition().toPoint() - win.frameGeometry().topLeft()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if self._grab_offset is not None and (event.buttons() & Qt.MouseButton.LeftButton):
+            self.window().move(event.globalPosition().toPoint() - self._grab_offset)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        self._grab_offset = None
+        super().mouseReleaseEvent(event)
 
 
 class _SubmitEdit(QPlainTextEdit):
@@ -115,7 +149,9 @@ class QuickPanel(QWidget):
         buttons.addWidget(self.send_btn)
         buttons.addWidget(self.close_btn)
 
+        self.drag_bar = DragBar()
         root = QVBoxLayout(self)
+        root.addWidget(self.drag_bar)
         root.addWidget(self.input)
         root.addLayout(buttons)
         root.addWidget(self.status)

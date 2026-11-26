@@ -384,3 +384,37 @@ def test_quick_panel_sends_and_shows_reply_offscreen():
     assert panel.recent.count() >= 1
     assert panel.recent.item(0).data(0x0100) == "以前的问题"   # Qt.UserRole
     panel.hide()
+
+
+def test_quick_panel_drag_handle_moves_window_offscreen():
+    pytest.importorskip("PySide6")
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication
+
+    from mini_agent_desktop.quick_panel import QuickPanel
+
+    app = QApplication.instance() or QApplication([])
+    panel = QuickPanel(lambda: None)
+    panel.move(100, 100)
+    panel.show()
+    app.processEvents()
+    start = panel.frameGeometry().topLeft()
+
+    bar = panel.drag_bar
+    press_global = bar.mapToGlobal(bar.rect().center())
+    press = QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(bar.rect().center()),
+                        QPointF(press_global), Qt.MouseButton.LeftButton,
+                        Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+    move_global = QPointF(press_global.x() + 60, press_global.y() + 40)
+    move = QMouseEvent(QEvent.Type.MouseMove, QPointF(bar.rect().center()), move_global,
+                       Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton,
+                       Qt.KeyboardModifier.NoModifier)
+    QApplication.sendEvent(bar, press)
+    QApplication.sendEvent(bar, move)
+    app.processEvents()
+
+    end = panel.frameGeometry().topLeft()
+    assert end.x() - start.x() == 60
+    assert end.y() - start.y() == 40
+    panel.hide()
