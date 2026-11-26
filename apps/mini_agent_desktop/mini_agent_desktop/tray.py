@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import Callable, Optional
 
 from PySide6.QtCore import QObject, Qt, QUrl, Signal
 from PySide6.QtGui import QAction, QColor, QCursor, QDesktopServices, QFont, QIcon, QPainter, QPixmap
@@ -60,10 +60,12 @@ class TrayUi(QObject):
         on_start_daemon: Callable[[], None],
         on_reconnect: Callable[[], None],
         on_quit: Callable[[], None],
+        on_open_quick: Optional[Callable[[], None]] = None,
     ) -> None:
         super().__init__()
         self._model = model
         self._console_url = console_url
+        self._on_open_quick = on_open_quick
 
         self.tray = QSystemTrayIcon()
         self.menu = QMenu()
@@ -75,6 +77,10 @@ class TrayUi(QObject):
             a.setEnabled(False)       # 纯信息行
             self.menu.addAction(a)
         self.menu.addSeparator()
+
+        self.quick_action = QAction("快速面板…", self.menu)
+        self.quick_action.triggered.connect(self._open_quick)
+        self.menu.addAction(self.quick_action)
 
         self.console_action = QAction("打开管理控制台", self.menu)
         self.console_action.triggered.connect(self._open_console)
@@ -105,6 +111,10 @@ class TrayUi(QObject):
     def hide(self) -> None:
         self.tray.hide()
 
+    def notify_text(self, title: str, text: str) -> None:
+        """托盘气泡提示（仅 UI 线程调用）。S3 的 Toast 会替换这里的实现。"""
+        self.tray.showMessage(title, text, QSystemTrayIcon.MessageIcon.Warning, 6000)
+
     def notify_changed(self) -> None:
         """可在任意线程调用。"""
         self.changed.emit()
@@ -122,7 +132,14 @@ class TrayUi(QObject):
     def _open_console(self) -> None:
         QDesktopServices.openUrl(QUrl(self._console_url))
 
+    def _open_quick(self) -> None:
+        if self._on_open_quick is not None:
+            self._on_open_quick()
+
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
-        # S1：左键单击弹出菜单；S2 起改为唤起快速面板
+        # S2：左键单击唤起快速面板；右键仍由系统弹出菜单（setContextMenu）
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            self.menu.popup(QCursor.pos())
+            if self._on_open_quick is not None:
+                self._on_open_quick()
+            else:
+                self.menu.popup(QCursor.pos())

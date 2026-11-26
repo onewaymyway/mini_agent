@@ -40,7 +40,7 @@
 |---|---|---|---|
 | S0 后端补丁 | `attention` SSE 事件、`/v1/desktop/summary`、单测、文档 | 1～1.5 天 | ✅ 已完成 |
 | S1 托盘 | PySide6 骨架、daemon 发现与拉起、托盘状态图标/菜单/角标、SSE 断线重连 | 1.5 天 | ✅ 已完成（待 Windows 手动验证） |
-| S2 热键与快速面板 | `RegisterHotKey`、输入面板、专属 session、最近任务、中断 | 2 天 | ⬜ |
+| S2 热键与快速面板 | `RegisterHotKey`、输入面板、专属 session、最近任务、中断 | 2 天 | ✅ 已完成（待 Windows 手动验证） |
 | S3 Toast 与审批 | 审批和异步提问可在 Toast/面板回答，点击跳转，去重与免打扰 | 2 天 | ⬜ |
 | S4 自启动与加固 | 登录自启（默认关）、token ACL（`icacls`）、日志、退出时是否停 daemon 的明确选项 | 1 天 | ⬜ |
 
@@ -116,3 +116,61 @@
 ### 6.4 未验证项（需 Windows 手动）
 
 真实系统托盘显示、`pythonw` 无窗口启动、`CREATE_NO_WINDOW` 拉起 daemon、单实例锁行为。清单见 [docs/desktop-client-guide.md](../docs/desktop-client-guide.md) 第 7 节。
+
+## 7. S2 实施记录
+
+### 7.1 结构
+
+在 `apps/mini_agent_desktop/mini_agent_desktop/` 下新增三个模块，修改 `api.py` / `config.py` / `tray.py` / `app.py`；仍然**未改动 `src/` 下任何文件**，也没有新增服务端接口。
+
+| 模块 | 职责 | 依赖 Qt |
+|---|---|---|
+| `quick.py` | 专属 session 客户端 `QuickSession`、`extract_reply()`、`run_task()` 轮询状态机（排队→运行→终态/超时） | 否 |
+| `hotkey.py` | `parse_hotkey()` 组合键解析；`GlobalHotkey` 在专用线程里 `RegisterHotKey` + `GetMessageW` 循环 | 否 |
+| `quick_panel.py` | `QuickPanel` 无边框置顶输入窗口；`QuickHotkeyBridge` 把热键线程的回调切回主线程 | 是 |
+| `api.py`（改） | 新增 `chat` / `interrupt` / `turns` / `turn` / `history`，均支持 `session_id` 参数 | 否 |
+| `config.py`（改） | 新增 `hotkey_enabled`（默认 `false`）与 `hotkey`（默认 `Ctrl+Alt+Space`） | 否 |
+| `tray.py`（改） | 左键唤起快速面板；菜单新增\"快速面板…\"；`notify_text()` 托盘气泡 | 是 |
+| `app.py`（改） | 装配面板与热键；热键注册失败只气泡提示，不影响其它功能 | — |
+
+### 7.2 设计要点
+
+- **专属 session 而非复用主会话**：`/v1/chat` 带 `session_id="desktop-quick"` 时，`SessionAgentPool` 会为它单独建 Agent，主会话的长任务不会挡住快速提问。代价是多一个 Agent 实例与一条 runner 线程（与设计文档 §3 的取舍一致）。
+- **不新增接口**：只组合已有 `POST /v1/chat`、`GET /v1/turns/{id}`、`GET /v1/history`、`POST /v1/interrupt`。中断与历史读取都通过 query 参数 `session_id` 路由到专属 Agent（`routes.py::_bridge()` 已支持该路径）。
+- **结果获取用轮询而非 SSE**：一次提问维持长连接不划算，且 SSE 事件是全局的，要按 turn 过滤。轮询间隔 1.5 秒，超时 30 分钟，超时只停止等待、不中断 daemon 上的任务。
+- **线程模型**：面板所有网络调用都在 `threading.Thread` 里做，结果通过 Qt 信号回主线程；热键回调只 `emit` 一个信号，不直接碰界面。
+- **热键保守 opt-in**：默认关闭；格式错误在构造时抛 `ValueError` 并弹窗跳过；`RegisterHotKey` 失败（被占用）只气泡提示。非 Windows 下 `start()` 返回 `(False, 原因)`，不抛异常。
+- **退出时注销热键**：`quit_app()` 与 `app.exec()` 返回后都会 `stop()`，通过 `PostThreadMessageW(WM_QUIT)` 让消息循环退出并 `UnregisterHotKey`。
+
+### 7.3 测试
+
+`tests/test_desktop_s2.py`（35 个用例）：
+
+- 热键：合法组合（大小写、`win` 别名、F 键、数字键）、非法组合（无修饰键、两个普通键、空记号、不支持的键、超出 F24）、非 Windows 降级；
+- 配置：默认关闭、往返保存、错误类型回落默认值；
+- reply 提取：字符串内容、文本块列表、跳过纯工具调用消息；
+- `QuickSession` 请求形态（`httpx.MockTransport`）：`session_id` 路由、空内容不发请求、中断走 query、404 视为排队中、最近任务截断与顺序、401 向上抛出；
+- `run_task` 状态机（注入假时钟）：排队→运行→完成取回复、出错不取回复、中断为终态、超时不中断；
+- **契约**：客户端用到的 5 个路径/方法必须存在于真实 `routes.router`；
+- Qt 离屏冒烟：面板发送、结果回填为 Markdown、最近任务列表与双击所需的 `UserRole` 数据。
+
+全部桌面测试（S0 + S1 + S2）共 79 个用例通过：
+
+```
+PYTHONPATH=src python3 -m pytest tests/test_desktop_s1.py tests/test_desktop_attention_s0.py tests/test_desktop_s2.py -q
+```
+
+### 7.4 未验证项（需 Windows 手动）
+
+真实热键触发与被占用时的报错、面板在全屏/多显示器下的定位、长任务期间快速提问的实际响应速度（验证\"专属 session 不排队\"这一设计假设）、托盘左键与右键的分工。清单见 [docs/desktop-client-guide.md](../docs/desktop-client-guide.md) 第 7.1 节。
+
+### 7.5 已知限制
+
+- 快速面板的专属 session 会出现在 `/sessions` 列表中，且与其它 session 一样占用历史存储；需要时可在看板中清理。
+- 最近任务列表只显示专属 session 的 turn，不包含主会话；主会话的任务请看管理控制台。
+- 面板不做流式输出，回复在 turn 结束后一次性显示。
+- 热键只支持单个组合，不支持多组合或按键序列。
+
+### 7.6 下一步
+
+S3（Toast 与审批）：权限审批和 `ask_user_async` 问题可在 Toast / 面板中直接回答，点击 Toast 跳转到面板；按设计文档的 Toast 范围收窄原则，autonomous tick、digest、巩固循环一律静默。

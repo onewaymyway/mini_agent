@@ -20,6 +20,8 @@ from mini_agent_desktop.api import DaemonApi
 from mini_agent_desktop.config import DesktopConfig, load_config
 from mini_agent_desktop.controller import DesktopController
 from mini_agent_desktop.discovery import count_unacked_crash_alerts, resolve_endpoint, spawn_daemon
+from mini_agent_desktop.hotkey import GlobalHotkey
+from mini_agent_desktop.quick import QuickSession
 from mini_agent_desktop.state import TrayModel
 
 
@@ -106,6 +108,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     def start_daemon() -> None:
         spawn_daemon(project_root, resolve_endpoint(project_root, port).port)
 
+    def quick_session_factory() -> QuickSession:
+        return QuickSession(api_factory())
+
     holder: dict = {}
     controller = DesktopController(
         model, api_factory,
@@ -117,19 +122,44 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
 
     def quit_app() -> None:
+        if hotkey is not None:
+            hotkey.stop()
         controller.stop()      # 只停桌面端自己；不碰 daemon
         holder["ui"].hide()
         app.quit()
+
+    from mini_agent_desktop.quick_panel import QuickHotkeyBridge, QuickPanel
+
+    panel = QuickPanel(quick_session_factory)
+    hotkey_bridge = QuickHotkeyBridge()
+    hotkey_bridge.requested.connect(panel.toggle)   # 热键线程 emit → 主线程执行
 
     holder["ui"] = TrayUi(
         model, cfg.console_url,
         on_start_daemon=controller.manual_start_daemon,
         on_reconnect=controller.reconnect_now,
         on_quit=quit_app,
+        on_open_quick=panel.toggle,
     )
     holder["ui"].show()
     controller.start()
+
+    hotkey = None
+    if cfg.hotkey_enabled:
+        try:
+            hotkey = GlobalHotkey(cfg.hotkey)
+        except ValueError as exc:
+            QMessageBox.warning(None, "mini_agent", f"热键配置无效，已跳过注册：{exc}")
+            hotkey = None
+        if hotkey is not None:
+            ok, reason = hotkey.start(hotkey_bridge.requested.emit)
+            if not ok:
+                holder["ui"].notify_text("mini_agent", f"全局热键未注册：{reason}")
+                hotkey = None
+
     code = app.exec()
+    if hotkey is not None:
+        hotkey.stop()
     controller.stop()
     lock.unlock()
     return code

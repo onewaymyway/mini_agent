@@ -30,6 +30,10 @@ class DesktopConfig:
     # 保守 opt-in：daemon 没运行时，是否由桌面端自动拉起。默认关闭，
     # 关闭时托盘菜单提供手动"启动 Agent"。
     auto_start_daemon: bool = False
+    # S2：全局热键唤起快速面板。默认关闭（保守 opt-in，避免抢占其它程序的快捷键）。
+    hotkey_enabled: bool = False
+    # 热键组合，格式见 hotkey.parse_hotkey，例如 "Ctrl+Alt+Space" / "Win+Shift+K"
+    hotkey: str = "Ctrl+Alt+Space"
 
 
 def config_path() -> Path:

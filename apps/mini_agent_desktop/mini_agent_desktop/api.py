@@ -65,8 +65,13 @@ class DaemonApi:
     def close(self) -> None:
         self._client.close()
 
-    def _get(self, path: str) -> dict:
-        r = self._client.get(f"{self._base}{path}", timeout=self._timeout)
+    def _get(self, path: str, params: Optional[dict] = None) -> dict:
+        r = self._client.get(f"{self._base}{path}", params=params, timeout=self._timeout)
+        r.raise_for_status()
+        return r.json()
+
+    def _post(self, path: str, body: Optional[dict] = None, params: Optional[dict] = None) -> dict:
+        r = self._client.post(f"{self._base}{path}", json=body, params=params, timeout=self._timeout)
         r.raise_for_status()
         return r.json()
 
@@ -82,6 +87,31 @@ class DaemonApi:
 
     def summary(self) -> dict:
         return self._get("/v1/desktop/summary")
+
+    # ── S2：快速面板用到的接口 ─────────────────────────────────────────────
+    # 所有接口都支持 session_id 参数：带上后 daemon 会路由到该 session 专属的
+    # Agent（见 routes.py::_bridge），快速面板借此与主会话互不排队。
+
+    def chat(self, message: str, session_id: str) -> str:
+        """提交一条消息，返回 turn_id。"""
+        return str(self._post("/v1/chat", {"message": message, "session_id": session_id})["turn_id"])
+
+    def interrupt(self, session_id: str) -> None:
+        self._post("/v1/interrupt", params={"session_id": session_id})
+
+    def turns(self, session_id: Optional[str] = None) -> list[dict]:
+        params = {"session_id": session_id} if session_id else None
+        return list(self._get("/v1/turns", params=params).get("turns", []))
+
+    def turn(self, turn_id: str, session_id: Optional[str] = None) -> dict:
+        params = {"session_id": session_id} if session_id else None
+        return self._get(f"/v1/turns/{turn_id}", params=params)
+
+    def history(self, session_id: Optional[str] = None, limit: int = 20) -> list[dict]:
+        params: dict = {"limit": limit}
+        if session_id:
+            params["session_id"] = session_id
+        return list(self._get("/v1/history", params=params).get("messages", []))
 
     def stream_events(self, stop: threading.Event) -> Iterator[SseEvent]:
         """订阅 /v1/stream（不回放历史：调用方应先取快照再订阅）。
