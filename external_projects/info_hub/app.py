@@ -33,6 +33,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from core import feed as feed_prefs  # noqa: E402
 from core.feedback import item_key  # noqa: E402
 from core.settings import load_settings  # noqa: E402
+from dashboard.explore_params_form import changed_values, widget_spec  # noqa: E402
 from dashboard.speech import speech_player_html  # noqa: E402
 from server import api  # noqa: E402
 from server.api import ApiError  # noqa: E402
@@ -1181,10 +1182,75 @@ def _explore_tab() -> None:
         else:
             st.caption("暂无记录。")
 
-    with st.expander("当前参数（只读，修改请编辑 config/discovery.yaml）", expanded=False):
-        st.json({**cfg, "denylist": ov["denylist"]})
-
+    _explore_params_panel()
     _review_panel()
+
+
+# ---------- 探索参数设置（P19-2） ----------
+def _param_widget(spec: dict, key: str) -> Any:
+    """按控件描述生成 streamlit 控件，返回用户当前输入的值。"""
+    kind = spec["kind"]
+    if kind == "bool":
+        return st.checkbox(spec["label"], value=bool(spec["value"]), help=spec["help"], key=key)
+    if kind == "int":
+        return st.number_input(spec["label"], min_value=spec["min"], max_value=spec["max"],
+                               value=int(spec["value"]), step=1, help=spec["help"], key=key)
+    if kind == "float":
+        return st.number_input(spec["label"], min_value=spec["min"], max_value=spec["max"],
+                               value=float(spec["value"]), step=spec["step"], format="%g",
+                               help=spec["help"], key=key)
+    if kind == "choice":
+        opts = spec["options"]
+        return st.selectbox(spec["label"], opts, index=opts.index(spec["value"]), help=spec["help"], key=key)
+    return st.text_input(spec["label"], value=str(spec["value"]), help=spec["help"], key=key)
+
+
+def _forget_param_widgets(section: str) -> None:
+    """保存或清除后丢弃该组控件的会话输入，让表单显示生效的新值。"""
+    prefix = f"ep_{section}_"
+    for k in [k for k in st.session_state.keys() if isinstance(k, str) and k.startswith(prefix)]:
+        del st.session_state[k]
+
+
+@st.fragment
+def _explore_params_panel() -> None:
+    # 上一轮保存/清除后留下的待处理标记：必须在控件实例化之前清理（Streamlit 不允许同轮改写已用的控件值）
+    pending = st.session_state.pop("_ep_forget", None)
+    if pending:
+        _forget_param_widgets(pending)
+    data = call(api.explore_params_overview, settings)
+    if not data:
+        return
+    with st.expander("⚙ 探索参数设置（在看板修改，保存后下一轮探索生效）", expanded=False):
+        st.caption("只提交被改动的项：没动过的参数仍跟随 config/discovery.yaml。"
+                   "“清除看板设置”会删除该组的看板值，回到 yaml 或默认值。")
+        for sec in data["sections"]:
+            rows = sec["rows"]
+            section = sec["section"]
+            st.markdown(f"#### {sec['title']}")
+            with st.form(f"explore_params_form_{section}"):
+                values: dict[str, Any] = {}
+                last_group = None
+                for row in rows:
+                    if row.get("group") != last_group:
+                        last_group = row.get("group")
+                        st.caption(f"· {last_group}")
+                    spec = widget_spec(row)
+                    values[row["key"]] = _param_widget(spec, key=f"ep_{section}_{row['key']}")
+                saved = st.form_submit_button("💾 保存修改")
+            if saved:
+                diff = changed_values(rows, values)
+                if not diff:
+                    st.info("没有需要保存的改动。")
+                elif call(api.explore_params_save, settings, {"section": section, "values": diff}) is not None:
+                    st.session_state["_ep_forget"] = section
+                    st.success(f"已保存 {len(diff)} 项。")
+                    st.rerun()
+            if st.button("🧹 清除看板设置（回到 yaml / 默认值）", key=f"ep_reset_{section}"):
+                if call(api.explore_params_reset, settings, {"section": section}) is not None:
+                    st.session_state["_ep_forget"] = section
+                    st.success("已清除该组的看板设置。")
+                    st.rerun()
 
 
 # ---------- 复查与退役（P18） ----------
@@ -1202,7 +1268,7 @@ def _review_panel() -> None:
     with st.expander(f"🩺 信息源复查与退役（{len(rows)} 个自动探索源，需关注 {len(bad)} 个）", expanded=bool(bad)):
         last = data.get("last") or {}
         st.caption(
-            f"周期复查：{'已开启' if data['enabled'] else '未开启（config/discovery.yaml 的 review.enabled）'}；"
+            f"周期复查：{'已开启' if data['enabled'] else '未开启（在下方“探索参数设置”中开启）'}；"
             f"间隔 {data['every_days']} 天；连续失败 {data['retire_after']} 次后"
             f"{'自动停用' if data['auto_retire'] else '仅建议退役，不自动停用'}。"
             + (f" 最近一轮 {fmt_time(last.get('time'))}：复查 {last.get('reviewed', 0)} 个，"

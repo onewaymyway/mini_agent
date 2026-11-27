@@ -179,5 +179,5 @@ categories:
 - 看板保存过的参数，之后修改 yaml 不会生效；需要回到 yaml 或默认值时，在看板对该参数“恢复默认”。
 - 运行时覆盖文件损坏或某一项不合法时，该项回退到 yaml / 默认值，不影响其他参数。
 - 覆盖文件与 tick 间隔、报告计划、服务端口等其他运行时设置共存，互不覆盖。
-- 看板的参数面板已在 P19-2 接入；在此之前可通过 `server/api.py` 的 `explore_params_overview / explore_params_save / explore_params_reset` 调用。
+- 看板“自动探索”页签的“探索参数设置”即为此入口（P19-2）；也可通过 `server/api.py` 的 `explore_params_overview / explore_params_save / explore_params_reset` 调用。
 
