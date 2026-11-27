@@ -1184,6 +1184,62 @@ def autoexplore_pause_api(settings: Settings, body: dict[str, Any]) -> dict[str,
     return autoexplore_status_api(settings)
 
 
+def autoexplore_overview_api(settings: Settings, log_limit: int = 60, runs_limit: int = 10) -> dict[str, Any]:
+    """自动探索总览（只读，供“自动探索”页签）：今日用量、最近几轮、站点产出、队列、候选统计、审计日志、当前参数。"""
+    from core import autoexplore, discovery
+    from core.frontier import Frontier, is_denied, load_denylist
+    from core.store import read_jsonl
+    root, data_dir = settings.paths.root, settings.paths.data_dir
+    now = datetime.now().astimezone()
+    cfg = autoexplore.load_config(root)
+    state = autoexplore._load_state(data_dir)
+    day = now.date().isoformat()
+    cands = discovery.list_candidates(data_dir)
+    auto = [c for c in cands if c.get("origin") in ("auto_explore", "auto_review")]
+    by_status: dict[str, int] = {}
+    for c in auto:
+        by_status[c.get("status", "?")] = by_status.get(c.get("status", "?"), 0) + 1
+    accepted_by_host: dict[str, int] = {}
+    for c in auto:
+        if c.get("origin") == "auto_explore" and c.get("status") == "accepted":
+            h = autoexplore.host_of(str(c.get("url") or ""))
+            accepted_by_host[h] = accepted_by_host.get(h, 0) + 1
+    deny = load_denylist(root)
+    sites = []
+    for host, y in (state.get("yield") or {}).items():
+        merged = dict(y, accepted=accepted_by_host.get(host, 0))
+        sites.append({"host": host, "checks": int(y.get("checks", 0)), "found": int(y.get("found", 0)),
+                      "accepted": merged["accepted"], "productivity": round(autoexplore.productivity(merged), 3),
+                      "last": y.get("last"), "low_yield": autoexplore._is_low_yield(merged, now, cfg),
+                      "denylisted": is_denied(host, deny)})
+    sites.sort(key=lambda r: -r["productivity"])
+    frontier = Frontier(data_dir)
+    frows = frontier.rows()
+    f_counts: dict[str, int] = {}
+    for r in frows:
+        f_counts[r.get("status", "?")] = f_counts.get(r.get("status", "?"), 0) + 1
+    queued = sorted((r for r in frows if r.get("status") == "queued"),
+                    key=lambda r: (-float(r.get("priority", 0)), int(r.get("depth", 0))))[:10]
+    runs = [r for r in read_jsonl(Path(data_dir) / "discovery" / "yield.jsonl") if isinstance(r, dict)]
+    log = [r for r in read_jsonl(autoexplore.log_path(data_dir)) if isinstance(r, dict)]
+    return {
+        "status": autoexplore_status_api(settings),
+        "today": {"day": day, "sites_checked": int((state.get("days") or {}).get(day, 0)), "sites_cap": cfg["daily"],
+                  "renders": int((state.get("renders") or {}).get(day, 0)), "renders_cap": cfg["render_daily"],
+                  "host_pages": dict((state.get("host_pages") or {}).get(day, {})),
+                  "host_pages_cap": cfg["host_daily_pages"]},
+        "candidates": {"by_status": by_status, "total": len(auto)},
+        "runs": list(reversed(runs[-runs_limit:])),
+        "sites": sites,
+        "frontier": {"counts": f_counts, "top_queued": queued},
+        "log": list(reversed(log[-log_limit:])),
+        "config": {k: cfg[k] for k in ("daily", "min_interval_hours", "min_items", "min_completeness", "render",
+                                       "render_daily", "cross_site", "background", "background_every_hours",
+                                       "background_window", "host_daily_pages", "frontier_max_queued")},
+        "denylist": sorted(deny),
+    }
+
+
 def review_status_api(settings: Settings) -> dict[str, Any]:
     """P18：复查状态：是否开启、最近一轮摘要、每个被复查源的状态。"""
     from core import review

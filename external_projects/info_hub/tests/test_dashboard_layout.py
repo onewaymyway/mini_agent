@@ -10,7 +10,7 @@ from tests.helpers import make_project
 APP = str(Path(__file__).resolve().parents[1] / "app.py")
 SRC = {"id": "news_a", "name": "新闻源A", "category": "news", "kind": "feed", "adapter": "rss",
        "request": {"url": "https://n/feed"}}
-ORDER = ["推荐", "我的画像", "抓取结果", "报告", "反馈记录", "信息源", "订阅", "添加信息源", "运行与调度", "设置与管理"]
+ORDER = ["推荐", "我的画像", "抓取结果", "报告", "反馈记录", "信息源", "订阅", "自动探索", "添加信息源", "运行与调度", "设置与管理"]
 
 
 class DashboardLayoutTests(unittest.TestCase):

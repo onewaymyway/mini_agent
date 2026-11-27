@@ -170,9 +170,10 @@ with st.sidebar:
             st.rerun()
 
 st.title("信息看板")
-(tab_feed, tab_profile, tab_results, tab_reports, tab_feedback, tab_sources, tab_subs, tab_add, tab_ops,
- tab_settings) = st.tabs(
-    ["推荐", "我的画像", "抓取结果", "报告", "反馈记录", "信息源", "订阅", "添加信息源", "运行与调度", "设置与管理"])
+(tab_feed, tab_profile, tab_results, tab_reports, tab_feedback, tab_sources, tab_subs, tab_explore, tab_add,
+ tab_ops, tab_settings) = st.tabs(
+    ["推荐", "我的画像", "抓取结果", "报告", "反馈记录", "信息源", "订阅", "自动探索", "添加信息源", "运行与调度",
+     "设置与管理"])
 
 
 # ---------- 报告 ----------
@@ -650,7 +651,6 @@ def _merged_view(srcs: list[dict], cat_label: str) -> None:
 
 def _results_tab():
     _candidates_panel()
-    _review_panel()
     _evaluation_panel()
     _srcs = [x for x in (call(api.list_sources, settings) or {"sources": []})["sources"]
              if not x.get("config_errors")]
@@ -1106,6 +1106,87 @@ def _candidates_panel() -> None:
                     if call(api.reject_candidate, settings, c["id"]) is not None:
                         st.rerun()
 
+# ---------- 自动探索总览页签 ----------
+@st.fragment(run_every=30)
+def _explore_tab() -> None:
+    """自动探索相关状态集中展示：运行状态与控制、今日用量、最近几轮、站点产出、队列、审计日志、复查与退役。"""
+    ov = call(api.autoexplore_overview_api, settings)
+    if not ov:
+        st.info("无法读取自动探索状态。")
+        return
+    stt, today, cfg = ov["status"], ov["today"], ov["config"]
+    if stt["paused"]:
+        st.warning("自动探索已暂停：不会发出任何新请求。")
+    elif stt["background"]:
+        st.success(f"后台运行中：每 {cfg['background_every_hours']} 小时一轮，运行窗口 {cfg['background_window']}。")
+    else:
+        st.info("后台自动探索未开启（仅手动触发）。开启请在 config/discovery.yaml 设置 autoexplore.background: true。")
+    b1, b2, _ = st.columns([1, 1, 3])
+    if b1.button("恢复自动探索" if stt["paused"] else "暂停自动探索", key="ex_pause"):
+        if call(api.autoexplore_pause_api, settings, {"paused": not stt["paused"]}) is not None:
+            st.rerun(scope="fragment")
+    if b2.button("🔎 立即探索一轮", key="ex_run", disabled=stt["paused"]):
+        with st.spinner("正在探索公开站点…"):
+            out = call(api.autoexplore_run_api, settings)
+        if out is not None:
+            st.success(f"检查 {out['sites']} 个站点，新增候选 {out['added']} 条。")
+            st.rerun(scope="fragment")
+
+    st.subheader("今日用量")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("已探索站点", f"{today['sites_checked']} / {today['sites_cap']}")
+    m2.metric("渲染次数", f"{today['renders']} / {today['renders_cap']}",
+              help="渲染默认关闭（autoexplore.render: off）")
+    m3.metric("队列待访问", stt["queued"])
+    cs = ov["candidates"]["by_status"]
+    m4.metric("待确认候选", cs.get("pending", 0), help=f"已加入 {cs.get('accepted', 0)}，已忽略 {cs.get('rejected', 0)}")
+    if today["host_pages"]:
+        st.caption(f"各站点今日访问页数（每站上限 {today['host_pages_cap']}）：" +
+                   "、".join(f"{h} {n}" for h, n in sorted(today["host_pages"].items(), key=lambda kv: -kv[1])[:8]))
+
+    st.subheader("最近几轮")
+    if ov["runs"]:
+        st.dataframe(pd.DataFrame([{
+            "时间": fmt_time(r.get("time")), "检查站点": r.get("sites", 0), "新增候选": r.get("added", 0),
+            "队列": r.get("queued", 0), "未入箱原因": "、".join(f"{k} {v}" for k, v in (r.get("skipped") or {}).items())
+            or "—"} for r in ov["runs"]]), hide_index=True)
+    else:
+        st.caption("还没有运行记录。")
+
+    st.subheader("站点产出")
+    if ov["sites"]:
+        st.dataframe(pd.DataFrame([{
+            "站点": r["host"], "探索次数": r["checks"], "新增候选": r["found"], "已采纳": r["accepted"],
+            "产出分": r["productivity"], "最近探索": fmt_time(r["last"]),
+            "状态": "🚫 禁止名单" if r["denylisted"] else ("💤 低产出降频" if r["low_yield"] else "正常")}
+            for r in ov["sites"]]), hide_index=True)
+        st.caption("产出分 =（新增 + 2×采纳 + 1）/（探索次数 + 2）；产出高的站点先处理、队列中获得更高权重。")
+    else:
+        st.caption("还没有站点被探索过。")
+
+    with st.expander(f"待访问队列（{ov['frontier']['counts'].get('queued', 0)} 条待访问）", expanded=False):
+        fc = ov["frontier"]["counts"]
+        st.caption("队列状态：" + ("、".join(f"{k} {v}" for k, v in fc.items()) or "空"))
+        if ov["frontier"]["top_queued"]:
+            st.dataframe(pd.DataFrame([{"地址": r["url"], "站点": r.get("host", ""), "深度": r.get("depth"),
+                                        "优先级": r.get("priority")} for r in ov["frontier"]["top_queued"]]),
+                         hide_index=True)
+
+    with st.expander("请求与决策审计（最近 60 条）", expanded=False):
+        if ov["log"]:
+            st.dataframe(pd.DataFrame([{
+                "时间": fmt_time(r.get("time")), "站点": r.get("host", ""), "步骤": r.get("step", ""),
+                "结果": r.get("result", ""), "说明": r.get("reason") or r.get("candidate") or r.get("source") or ""}
+                for r in ov["log"]]), hide_index=True)
+        else:
+            st.caption("暂无记录。")
+
+    with st.expander("当前参数（只读，修改请编辑 config/discovery.yaml）", expanded=False):
+        st.json({**cfg, "denylist": ov["denylist"]})
+
+    _review_panel()
+
+
 # ---------- 复查与退役（P18） ----------
 _REVIEW_STATUS = {"ok": "🟢 正常", "failing": "🟠 复查失败", "retire_suggested": "🔴 建议退役",
                   "retired": "⚫ 已退役", "unreviewed": "⚪ 未复查"}
@@ -1147,7 +1228,7 @@ def _review_panel() -> None:
                 if r["last_error"]:
                     detail.append(f"原因：{r['last_error'][:80]}")
                 if r["pending_alternatives"]:
-                    detail.append(f"待确认替代候选 {len(r['pending_alternatives'])} 条（见上方候选收件箱）")
+                    detail.append(f"待确认替代候选 {len(r['pending_alternatives'])} 条（在“抓取结果”页的候选收件箱确认）")
                 if r["retired_reason"]:
                     detail.append(f"退役原因：{r['retired_reason']}")
                 if detail:
@@ -1620,6 +1701,9 @@ with tab_profile:
 
 with tab_results:
     _results_tab()
+
+with tab_explore:
+    _explore_tab()
 
 
 # ---------- 反馈记录 ----------
