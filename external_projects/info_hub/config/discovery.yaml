@@ -49,3 +49,7 @@ autoexplore:
   min_items: 3
   min_completeness: 0.8
   harvest_limit: 30
+  max_listing_pages: 4     # P14：每站点最多探索的栏目页（sitemap 栏目 + 站内分类）
+  max_feeds_per_site: 3    # P14：每站点最多登记的订阅入口
+  render: off              # P14：off | headed。headed 时，页面无列表结构则用有头浏览器（一次性 profile）渲染后再判断
+  render_daily: 40         # P14：每天最多渲染次数

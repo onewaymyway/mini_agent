@@ -20,15 +20,20 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
+import re
+
 import yaml
 
 from core import discovery
+from core.explore_forms import (category_links, feed_links, parse_sitemap_urls, rss_source,
+                                 section_listings, sitemap_locations)
 from core.store import append_jsonl, atomic_write_json, file_lock, read_json, read_jsonl
 
 SEED_FILE = "config/seed_sites.yaml"
 AUTO_ADAPTERS = ("rss", "json_api", "html_list")   # script 草稿不会被自动探索生成后运行
 DEFAULTS = {"daily": 20, "min_interval_hours": 1, "min_items": 3, "min_completeness": 0.8,
-            "harvest_limit": 30}
+            "harvest_limit": 30, "max_listing_pages": 4, "max_feeds_per_site": 3,
+            "render": "off", "render_daily": 40}
 PREFIX = "auto:"
 
 
@@ -117,21 +122,24 @@ def _save_state(data_dir: Path, state: dict[str, Any]) -> None:
         atomic_write_json(path, state)
 
 
-def robots_allows(url: str, ctx: Any) -> tuple[bool, str]:
-    """robots.txt 不存在（404/410）视为允许；其它错误保守地视为不允许。"""
+def robots_allows(url: str, ctx: Any) -> tuple[bool, str, str]:
+    """返回 (是否允许, 原因, robots.txt 正文)。404/410 视为允许；其它错误保守地不允许。"""
     parts = urllib.parse.urlsplit(url)
     robots_url = f"{parts.scheme}://{parts.netloc}/robots.txt"
     try:
         body = ctx.http_get(robots_url)
     except urllib.error.HTTPError as exc:
-        return (exc.code in (404, 410)), ("no_robots" if exc.code in (404, 410) else "robots_unavailable")
+        if exc.code in (404, 410):
+            return True, "no_robots", ""
+        return False, "robots_unavailable", ""
     except Exception:  # noqa: BLE001 - 网络错误一律保守处理
-        return False, "robots_unavailable"
+        return False, "robots_unavailable", ""
+    text = body.decode("utf-8", errors="replace")
     rp = urllib.robotparser.RobotFileParser()
-    rp.parse(body.decode("utf-8", errors="replace").splitlines())
+    rp.parse(text.splitlines())
     if not rp.can_fetch("info_hub", url) or not rp.can_fetch("*", url):
-        return False, "robots_disallow"
-    return True, "ok"
+        return False, "robots_disallow", text
+    return True, "ok", text
 
 
 def _within_interval(state: dict[str, Any], host: str, now: datetime, min_hours: float) -> bool:
@@ -152,10 +160,57 @@ def _quality(preview: dict[str, Any]) -> tuple[int, float]:
     return int(preview.get("total") or len(items)), complete / len(items)
 
 
+class _RenderBrowser:
+    """把有头渲染器包装成 BrowserSession 的 fetch_html 接口，供 html_list 预览与草稿生成使用。每次渲染计入预算。"""
+
+    def __init__(self, renderer: Any, budget: dict[str, int]) -> None:
+        self.renderer = renderer
+        self.budget = budget
+        self.cache: dict[str, str] = {}   # 同一页面在一次探索中只渲染一次（检测、草稿、预览共用）
+
+    def fetch_html(self, url: str, site: Optional[str] = None, headless: bool = True,
+                   wait_selector: Optional[str] = None, expired_pattern: Optional[str] = None,
+                   timeout_ms: int = 30000) -> str:
+        if url in self.cache:
+            return self.cache[url]
+        if self.budget["used"] >= self.budget["cap"]:
+            raise RuntimeError("render_budget")
+        self.budget["used"] += 1
+        html = self.renderer.html(url)
+        self.cache[url] = html
+        return html
+
+
+def _slug(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:40] or "root"
+
+
+def _sitemap_listings(root_url: str, robots_txt: str, ctx: Any) -> list[str]:
+    """sitemap 栏目页地址：robots.txt 声明的 sitemap；未声明时尝试 /sitemap.xml。读取失败只跳过。"""
+    parts = urllib.parse.urlsplit(root_url)
+    locs = sitemap_locations(robots_txt) or [f"{parts.scheme}://{parts.netloc}/sitemap.xml"]
+    urls: list[str] = []
+    for loc in locs[:2]:
+        try:
+            xml = ctx.http_get(loc).decode("utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            continue
+        urls += parse_sitemap_urls(xml)
+    return [s["url"] for s in section_listings(urls)]
+
+
 def run(settings: Any, llm: Any, *, ctx: Any, now: Optional[datetime] = None,
-        provider_label: str = "") -> dict[str, Any]:
-    """执行一轮自动探索。返回 {added: [...], skipped: {原因: 数量}, sites: 本轮检查的站点数}。"""
+        provider_label: str = "", renderer: Any = None) -> dict[str, Any]:
+    """一轮自动探索（P14）。
+
+    每个站点：首页 → 订阅入口（确定性生成 rss，不需要模型）→ 栏目页（sitemap 与站内分类，各自独立成候选）。
+    页面没有列表结构时，若提供了渲染器（有头、隔离 profile）且当日未超限，则渲染后再判断。
+    有列表结构且有模型时，才调用模型生成草稿。
+    返回 {added: [...], skipped: {原因: 数量}, sites: 本轮检查的站点数}。
+    """
+    from adapters.base import FetchContext, detect_block
     from core import source_generator
+    from core.explore import explore_html, explore_response
     from core.fingerprint import find_similar
     from core.source_store import SourceError, preview_spec, validate_candidate
     from core.sources import load_sources
@@ -169,34 +224,59 @@ def run(settings: Any, llm: Any, *, ctx: Any, now: Optional[datetime] = None,
     def skip(reason: str) -> None:
         skipped[reason] = skipped.get(reason, 0) + 1
 
-    if llm is None:
-        return {"added": [], "skipped": {"no_llm": 1}, "sites": 0}
-
     state = _load_state(data_dir)
     day = now.date().isoformat()
     today_count = int(state.get("days", {}).get(day, 0))
+    renders = state.setdefault("renders", {})
+    renders_today = int(renders.get(day, 0))
     dconf = discovery.load_config(root)
     cands = discovery.list_candidates(data_dir)
     pending = [c for c in cands if c.get("status") == "pending"]
-
     specs = load_sources(settings).specs
     known_hosts = {host_of(str((s.request or {}).get("url") or "")) for s in specs.values()}
     known_hosts.discard("")
     known_hosts |= {host_of(s["url"]) for s in load_seeds(root)}
     sites = load_seeds(root) + harvest_hosts(data_dir, known_hosts, int(cfg["harvest_limit"]), now)
+    render_on = renderer is not None and cfg["render"] == "headed"
+    budget = {"used": renders_today, "cap": int(cfg["render_daily"])}
+
+    def gate_and_add(source: dict[str, Any], cid: str, template_id: str, template_name: str,
+                     url: str, reason_text: str, preview_ctx: Any = None) -> Optional[str]:
+        """通过校验、相似度与预览质量后入箱。返回 None 表示入箱，否则返回跳过原因。"""
+        spec, errors, _ = validate_candidate(settings, source)
+        if spec is None or errors:
+            return "invalid"
+        if find_similar(specs, source):
+            return "duplicate"
+        preview = preview_spec(spec, preview_ctx or ctx)
+        total, complete = _quality(preview)
+        if not preview.get("ok") or total < cfg["min_items"] or complete < cfg["min_completeness"]:
+            return "low_quality"
+        cand = {"id": cid, "template_id": template_id, "template_name": template_name, "query": host_of(url),
+                "reason": f"{reason_text}：{host_of(url)}，预览 {total} 条，字段完整度 {round(complete * 100)}%",
+                "url": url, "status": "pending", "created_at": now.isoformat(timespec="seconds"),
+                "decided_at": None, "source": dict(source, enabled=False), "origin": "auto_explore"}
+        discovery.add_candidate(data_dir, cand)
+        cands.append(cand)
+        pending.append(cand)
+        added.append(cand)
+        _log(data_dir, {"time": now.isoformat(timespec="seconds"), "host": host_of(url), "step": "candidate",
+                        "result": "added", "candidate": cid, "total": total,
+                        "completeness": round(complete, 3)})
+        return None
 
     checked = 0
     for site in sites:
         url = site["url"]
         host = host_of(url)
-        cid = f"{PREFIX}{host}"
+        base_id = f"{PREFIX}{host}"
         if today_count >= cfg["daily"]:
             skip("daily_cap")
             break
         if len(pending) >= dconf["pending_cap"]:
             skip("pending_cap")
             break
-        if cid in {c["id"] for c in cands}:          # 已入箱、已采纳或已忽略的站点不再探索
+        if any(c["id"] == base_id or c["id"].startswith(base_id + "#") for c in cands):
             skip("already_known")
             continue
         if _within_interval(state, host, now, cfg["min_interval_hours"]):
@@ -207,66 +287,104 @@ def run(settings: Any, llm: Any, *, ctx: Any, now: Optional[datetime] = None,
         state.setdefault("hosts", {})[host] = now.isoformat(timespec="seconds")
         today_count += 1
         state.setdefault("days", {})[day] = today_count
+        stamp = now.isoformat(timespec="seconds")
 
         def fail(step: str, reason: str) -> None:
             skip(reason)
-            _log(data_dir, {"time": now.isoformat(timespec="seconds"), "host": host, "step": step,
-                            "result": "skip", "reason": reason})
+            _log(data_dir, {"time": stamp, "host": host, "step": step, "result": "skip", "reason": reason})
 
-        ok, why = robots_allows(url, ctx)
+        ok, why, robots_txt = robots_allows(url, ctx)
         if not ok:
             fail("robots", why)
             continue
         try:
             body = ctx.http_get(url)
-        except Exception:  # noqa: BLE001 - 任何网络错误都只记录，不中断本轮
+        except Exception:  # noqa: BLE001
             fail("fetch", "fetch_error")
             continue
-        from adapters.base import detect_block
-        from core.explore import explore_response
         if detect_block(body):
             fail("fetch", "blocked_or_login")          # 验证/登录页：放弃，不尝试绕过
             continue
-        summary = explore_response(body, "")
-        if not (summary.get("candidates") or summary.get("page_type") == "json"):
-            fail("structure", "no_structure")
-            continue
+        text = body.decode("utf-8", errors="replace")
 
-        try:
-            draft = source_generator.generate_draft(settings, llm, url, name=site.get("name", ""),
-                                                    hint="自动探索：" + host, provider_label=provider_label,
-                                                    ctx=ctx)
-        except SourceError:
-            fail("generate", "generate_error")
-            continue
-        source = draft["source"]
-        if source.get("adapter") not in AUTO_ADAPTERS:
-            fail("generate", "script_not_auto")
-            continue
-        spec, errors, _ = validate_candidate(settings, source)
-        if spec is None or errors:
-            fail("validate", "invalid")
-            continue
-        similar = find_similar(specs, source)
-        if similar:
-            fail("dedupe", "duplicate")
-            continue
-        preview = preview_spec(spec, ctx)
-        total, complete = _quality(preview)
-        if not preview.get("ok") or total < cfg["min_items"] or complete < cfg["min_completeness"]:
-            fail("preview", "low_quality")
-            continue
+        # 1) 订阅入口：确定性生成 rss 候选，不需要模型
+        for n, feed_url in enumerate(feed_links(text, url)[:cfg["max_feeds_per_site"]], start=1):
+            fid = f"{base_id}#feed-{n}"
+            if fid in {c["id"] for c in cands}:
+                continue
+            src = rss_source(f"auto_{_slug(host).replace('-', '_')}_feed{n}", f"{host} 订阅 {n}", feed_url)
+            reason = gate_and_add(src, fid, "auto_feed", "自动探索·订阅", feed_url, "发现订阅入口")
+            if reason:
+                skip(reason)
 
-        cand = {"id": cid, "template_id": "auto_explore", "template_name": "自动探索", "query": host,
-                "reason": f"自动探索发现：{host}，预览 {total} 条，字段完整度 {round(complete * 100)}%",
-                "url": url, "status": "pending", "created_at": now.isoformat(timespec="seconds"),
-                "decided_at": None, "source": dict(source, enabled=False), "origin": "auto_explore"}
-        discovery.add_candidate(data_dir, cand)
-        cands.append(cand)
-        pending.append(cand)
-        added.append(cand)
-        _log(data_dir, {"time": now.isoformat(timespec="seconds"), "host": host, "step": "candidate",
-                        "result": "added", "total": total, "completeness": round(complete, 3)})
+        # 2) 首页与栏目页：sitemap 栏目 + 站内分类，各自独立判断
+        listings = _sitemap_listings(url, robots_txt, ctx) + category_links(text, url, cfg["max_listing_pages"])
+        listings = list(dict.fromkeys(listings))[:cfg["max_listing_pages"]]
+        pages: list[tuple[str, bytes, bool]] = [(url, body, True)]
+        pages += [(lu, b"", False) for lu in listings]
+        for page_url, page_body, is_home in pages:
+            if not page_body:
+                try:
+                    page_body = ctx.http_get(page_url)
+                except Exception:  # noqa: BLE001
+                    skip("listing_fetch_error")
+                    continue
+                if detect_block(page_body):
+                    skip("listing_blocked")
+                    continue
+            summary = explore_response(page_body, "")
+            has = bool(summary.get("candidates") or summary.get("page_type") == "json")
+            rendered_here = False
+            rbrowser = _RenderBrowser(renderer, budget) if render_on else None
+            if not has and rbrowser is not None and budget["used"] < budget["cap"]:
+                try:
+                    rendered = rbrowser.fetch_html(page_url)
+                    if explore_html(rendered).get("candidates"):
+                        has, rendered_here = True, True
+                        _log(data_dir, {"time": stamp, "host": host, "step": "render", "result": "ok",
+                                        "page": page_url})
+                except Exception:  # noqa: BLE001
+                    skip("render_error")
+                    continue
+                finally:
+                    renders_today = budget["used"]
+                    renders[day] = renders_today
+            if not has:
+                if is_home:
+                    fail("structure", "no_structure")
+                else:
+                    skip("listing_no_structure")
+                continue
+            if llm is None:
+                skip("no_llm")
+                continue
+            cid = base_id if is_home else f"{base_id}#{_slug(urllib.parse.urlsplit(page_url).path)}"
+            if cid in {c["id"] for c in cands}:
+                skip("already_known")
+                continue
+            gen_ctx = FetchContext(http_get=ctx.http_get, browser=rbrowser) if rendered_here else ctx
+            try:
+                draft = source_generator.generate_draft(settings, llm, page_url, name=host,
+                                                        hint="自动探索：" + host, provider_label=provider_label,
+                                                        use_browser=rendered_here, ctx=gen_ctx)
+            except SourceError:
+                skip("generate_error")
+                continue
+            finally:
+                renders_today = budget["used"]
+                renders[day] = renders_today
+            source = draft["source"]
+            if source.get("adapter") not in AUTO_ADAPTERS:
+                skip("script_not_auto")                 # script 草稿不会被自动探索生成后运行
+                continue
+            if rendered_here:
+                # 需要浏览器渲染才有内容的源：标注 browser 配置（有头，site 仅用于登录失效判断）
+                source["browser"] = {"required": True, "site": _slug(host).replace("-", "_"), "headless": False}
+            reason = gate_and_add(source, cid, "auto_explore", "自动探索", page_url, "发现信息源",
+                                  preview_ctx=gen_ctx if rendered_here else None)
+            if reason:
+                skip(reason)
 
+    state["renders"] = renders
     _save_state(data_dir, state)
     return {"added": added, "skipped": skipped, "sites": checked}

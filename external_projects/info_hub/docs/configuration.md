@@ -118,6 +118,12 @@ categories:
 | min_items | 3 | 预览至少要有的条目数 |
 | min_completeness | 0.8 | 预览条目中标题与链接都有的比例 |
 | harvest_limit | 30 | 每轮从抓取条目中提取的外链站点上限 |
+| max_listing_pages | 4 | P14：每站点最多探索的栏目页（sitemap 栏目 + 站内分类） |
+| max_feeds_per_site | 3 | P14：每站点最多登记的订阅入口（RSS/Atom，不需要模型） |
+| render | off | P14：`off` 或 `headed`。`headed` 时，页面没有列表结构则用有头浏览器渲染后再判断 |
+| render_daily | 40 | P14：每天最多渲染次数（同一页面在一次探索中只计一次） |
+
+说明：有头渲染使用一次性 profile，结束即删除，不携带任何登录态。渲染得到的候选会标注 `browser.required`；它们在正式运行时仍使用现有的共享浏览器会话（只用于公开页面），这一点与探索过程不同。
 
 种子目录 `config/seed_sites.yaml` 由项目维护，用户不需要编辑。目录内容是草案，尚未在真实环境中逐个核对。
 

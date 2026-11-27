@@ -832,3 +832,18 @@ P0–P9 均已完成。仍未在真实环境验证：有头登录、语音输出
 - 全量结果：588 项，3 项失败，均为既有问题。
 - 至此，设计文档 P10–P13 全部完成。
 
+## 自动探索 P14：形态扩展（已完成，有头渲染未在真实站点验证）
+
+- 依据 `info_hub_auto_explore_crawler_design.md` v0.2：已确认探索可使用有头浏览器；P14 只实施形态扩展。
+- 改动：
+  - `core/explore_forms.py`（新增，纯函数）：订阅入口识别（rss/atom，仅 https）、robots 中的 sitemap、sitemap 解析、按第一层路径段推断栏目（至少 3 篇）、站内单层分类链接。
+  - `core/explore_render.py`（新增）：`HeadedRenderer`，每次渲染使用临时 profile，强制 `headless=False`，结束即删除；不复用共享登录态目录。
+  - `core/autoexplore.py`：`run` 重写为按站点执行：订阅入口 → 首页与栏目页（sitemap 栏目 + 站内分类，各自独立候选）→ 无列表结构时可选有头渲染 → 有模型时生成草稿。`_RenderBrowser` 对同一页面缓存渲染结果，检测、草稿、预览共用，只计一次预算；渲染得到的候选标注 `browser.required`，有头，site 仅用于登录失效判断。新增配置：`max_listing_pages`、`max_feeds_per_site`、`render`（默认 off）、`render_daily`。
+  - `server/api.py`：`autoexplore_run_api` 在 `render: headed` 时构造 `HeadedRenderer`。
+  - `config/discovery.yaml`：新增对应参数。
+- 行为变化：没有模型时，仍会读取站点首页以发现订阅入口（之前直接返回）。测试 `test_no_llm_does_nothing` 已改为验证“不生成模型候选”。
+- 测试：`tests/test_autoexplore_p14.py`（13 项）：订阅入口不需要模型、sitemap 栏目、站内分类页、渲染回退、渲染关闭、渲染每日上限、渲染日志、有头与一次性 profile 的清理；既有 `test_autoexplore.py` 与 `test_feed_p13.py` 同步通过。
+- 全量结果：601 项，3 项失败，均为既有问题。
+- 未验证（需在本机确认）：`HeadedRenderer` 在真实 Playwright 下的行为（测试使用替身会话）；渲染候选在正式运行时使用共享浏览器会话，其效果需确认。
+- 未做：P15 网络接口观察、P16 Frontier、P17 产出驱动与后台运行、P18 复查与退役。
+

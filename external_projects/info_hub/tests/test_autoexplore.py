@@ -89,11 +89,11 @@ class AutoExploreTests(unittest.TestCase):
         self.assertEqual(out["skipped"].get("blocked_or_login"), 1)
         self.assertEqual(out["added"], [])
 
-    def test_no_llm_does_nothing(self):
+    def test_no_llm_adds_no_model_candidates(self):
         ctx = FakeCtx({SITE: PAGE.encode()})
         out = autoexplore.run(self.settings, None, ctx=ctx, now=NOW)
-        self.assertEqual(out["skipped"], {"no_llm": 1})
-        self.assertEqual(ctx.fetched, [])
+        self.assertEqual(out["added"], [])
+        self.assertIn("no_llm", out["skipped"])
 
     def test_site_not_explored_twice(self):
         out1, _ = self._run({SITE: PAGE.encode()})

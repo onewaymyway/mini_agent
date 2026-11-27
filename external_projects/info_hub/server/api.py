@@ -1156,8 +1156,12 @@ def autoexplore_run_api(settings: Settings) -> dict[str, Any]:
         llm, label = build_llm(settings), resolve_provider(settings).label
     except LLMUnavailable:
         llm, label = None, ""
-    # 只使用普通 HTTP 读取公开页面，不携带共享浏览器 profile（不使用任何登录态）
-    result = autoexplore.run(settings, llm, ctx=FetchContext(), provider_label=label)
+    # 普通 HTTP 读取公开页面，不携带共享浏览器 profile（不使用任何登录态）
+    renderer = None
+    if autoexplore.load_config(settings.paths.root)["render"] == "headed":
+        from core.explore_render import HeadedRenderer  # P14：有头 + 一次性 profile，默认关闭
+        renderer = HeadedRenderer(settings.paths.data_dir / "discovery" / "scratch")
+    result = autoexplore.run(settings, llm, ctx=FetchContext(), provider_label=label, renderer=renderer)
     return {"added": len(result["added"]), "skipped": result["skipped"], "sites": result["sites"]}
 
 
