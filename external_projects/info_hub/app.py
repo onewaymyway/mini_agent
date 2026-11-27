@@ -170,9 +170,9 @@ with st.sidebar:
             st.rerun()
 
 st.title("信息看板")
-(tab_feed, tab_results, tab_reports, tab_feedback, tab_sources, tab_subs, tab_add, tab_ops,
+(tab_feed, tab_profile, tab_results, tab_reports, tab_feedback, tab_sources, tab_subs, tab_add, tab_ops,
  tab_settings) = st.tabs(
-    ["推荐", "抓取结果", "报告", "反馈记录", "信息源", "订阅", "添加信息源", "运行与调度", "设置与管理"])
+    ["推荐", "我的画像", "抓取结果", "报告", "反馈记录", "信息源", "订阅", "添加信息源", "运行与调度", "设置与管理"])
 
 
 # ---------- 报告 ----------
@@ -649,7 +649,6 @@ def _merged_view(srcs: list[dict], cat_label: str) -> None:
 
 
 def _results_tab():
-    _profile_panel()
     _candidates_panel()
     _evaluation_panel()
     _srcs = [x for x in (call(api.list_sources, settings) or {"sources": []})["sources"]
@@ -738,54 +737,99 @@ def _results_tab():
                 _reading_panel(sid, snap["items"], view)
 
 
-# ---------- 兴趣画像（第二阶段） ----------
-def _profile_panel() -> None:
+# ---------- 我的画像（独立页面，阶段 Pa） ----------
+def _keyword_rows(table: dict, positive: bool, limit: int = 20) -> list[dict]:
+    items = [(k, v) for k, v in table.items() if (v["score"] > 0 if positive else v["score"] < 0)]
+    items.sort(key=lambda kv: -abs(kv[1]["score"]))
+    return [{"关键词": k, "权重": round(v["score"], 2), "证据条数": v.get("evidence", 0)}
+            for k, v in items[:limit]]
+
+
+def _profile_tab() -> None:
     data = call(api.get_profile, settings)
     if not data:
         return
     prof_data = data["profile"]
     explicit = prof_data.get("explicit", {})
-    with st.expander("🎯 我的兴趣画像", expanded=False):
-        st.caption(f"基于 {data['event_count']} 条反馈；画像更新于 {fmt_time(prof_data.get('updated_at'))}。"
-                   "反馈变化后会自动重算，也可手动重算。")
-        with st.form("profile_explicit_form"):
-            topics = st.text_input("关注主题（逗号分隔，明确想看的）",
-                                   value="、".join(explicit.get("topics", [])))
-            exclude = st.text_input("屏蔽词（逗号分隔，出现即大幅降权）",
-                                    value="、".join(explicit.get("exclude", [])))
-            if st.form_submit_button("保存显式偏好"):
-                if call(api.save_explicit_profile, settings, {"topics": topics, "exclude": exclude}) is not None:
-                    st.toast("已保存显式偏好")
-                    st.rerun()
+    learned = prof_data.get("learned", {})
+    kw = learned.get("keywords", {})
+    srcs = learned.get("sources", {})
+    llm = prof_data.get("llm") or {}
+    llm_ok = data.get("llm_enabled", False)
 
-        learned = prof_data.get("learned", {}).get("keywords", {})
-        pos = sorted([(k, v) for k, v in learned.items() if v["score"] > 0], key=lambda kv: -kv[1]["score"])[:12]
-        neg = sorted([(k, v) for k, v in learned.items() if v["score"] < 0], key=lambda kv: kv[1]["score"])[:12]
-        c1, c2 = st.columns(2)
-        c1.markdown("**学到的偏好**")
-        c1.write("、".join(k for k, _ in pos) or "（暂无）")
-        c2.markdown("**学到的排斥**")
-        c2.write("、".join(k for k, _ in neg) or "（暂无）")
+    st.caption(f"画像更新于 {fmt_time(prof_data.get('updated_at'))}。反馈变化后会自动重算，也可以在下方手动重算。")
 
-        llm = prof_data.get("llm") or {}
-        if llm.get("summary"):
-            st.info(f"LLM 归纳：{llm['summary']}（{fmt_time(llm.get('generated_at'))}，{llm.get('provider', '')}）")
-            st.caption("关键词：" + "、".join(llm.get("keywords", [])) + "｜避开：" + "、".join(llm.get("avoid", [])))
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("反馈条数", data["event_count"])
+    m2.metric("学到的关键词", len(kw))
+    m3.metric("手写关注主题", len(explicit.get("topics", [])))
+    m4.metric("手写屏蔽词", len(explicit.get("exclude", [])))
 
-        b1, b2, b3 = st.columns(3)
-        if b1.button("重新计算（统计）", key="prof_rebuild"):
-            if call(api.rebuild_profile, settings) is not None:
+    st.subheader("画像概要")
+    if llm.get("summary"):
+        st.info(f"LLM 归纳：{llm['summary']}")
+        st.caption(f"生成于 {fmt_time(llm.get('generated_at'))}，模型：{llm.get('provider', '')}")
+        st.write("**兴趣关键词（LLM）**：" + ("、".join(llm.get("keywords", [])) or "（无）"))
+        st.write("**避开关键词（LLM）**：" + ("、".join(llm.get("avoid", [])) or "（无）"))
+    else:
+        st.caption("尚未用 LLM 归纳。点击下方“用 LLM 归纳兴趣”可生成一段概要（需已配置模型）。")
+
+    st.subheader("显式偏好（你直接写的，优先级最高）")
+    with st.form("profile_explicit_form"):
+        topics = st.text_input("关注主题（逗号分隔，明确想看的）", value="、".join(explicit.get("topics", [])))
+        exclude = st.text_input("屏蔽词（逗号分隔，出现即大幅降权）", value="、".join(explicit.get("exclude", [])))
+        if st.form_submit_button("保存显式偏好"):
+            if call(api.save_explicit_profile, settings, {"topics": topics, "exclude": exclude}) is not None:
+                st.toast("已保存显式偏好")
                 st.rerun()
-        llm_ok = data.get("llm_enabled", False)
-        if b2.button("用 LLM 归纳兴趣", key="prof_llm", disabled=not llm_ok,
-                     help="" if llm_ok else "已在配置中关闭"):
-            with st.spinner("正在请模型归纳…"):
-                out = call(api.summarize_profile_with_llm, settings)
-            if out is not None:
-                st.rerun()
-        if b3.button("清空学到的画像", key="prof_clear"):
-            if call(api.clear_learned_profile, settings) is not None:
-                st.rerun()
+
+    st.subheader("从反馈中学到的偏好")
+    c1, c2 = st.columns(2)
+    pos_rows, neg_rows = _keyword_rows(kw, True), _keyword_rows(kw, False)
+    c1.markdown("**偏好关键词**")
+    if pos_rows:
+        c1.dataframe(pos_rows, hide_index=True)
+    else:
+        c1.caption("暂无。多给几条“感兴趣”反馈后会出现。")
+    c2.markdown("**排斥关键词**")
+    if neg_rows:
+        c2.dataframe(neg_rows, hide_index=True)
+    else:
+        c2.caption("暂无。对“不感兴趣”的条目反馈后会出现。")
+
+    st.subheader("信息源偏好")
+    src_rows = sorted(
+        [{"信息源": sid, "权重": round(v["score"], 2), "证据条数": v.get("evidence", 0)} for sid, v in srcs.items()],
+        key=lambda r: -r["权重"])
+    if src_rows:
+        st.dataframe(src_rows, hide_index=True)
+    else:
+        st.caption("暂无来源偏好。")
+
+    with st.expander("画像是怎么生成的？", expanded=False):
+        st.markdown(
+            "- **显式偏好**：你手写的关注主题与屏蔽词，优先级最高，统计重算时不会被覆盖。\n"
+            "- **统计学习**：每次“感兴趣 / 稍后看 / 不感兴趣”都会被计入关键词与来源权重；"
+            "越新的反馈影响越大，半衰期约 30 天。停留较久的条目作为较弱的正向信号。\n"
+            "- **LLM 归纳（可选）**：把最近反馈交给模型，归纳兴趣关键词、避开词与一句话概要；"
+            "默认可在 `config/settings.yaml` 的 `profile.llm_enabled` 关闭。\n"
+            "- **用途**：只影响看板的排序（推荐、按兴趣排序、报告排序），不改变抓取结果与原始数据。"
+        )
+
+    st.subheader("维护")
+    b1, b2, b3 = st.columns(3)
+    if b1.button("重新计算（统计）", key="prof_rebuild"):
+        if call(api.rebuild_profile, settings) is not None:
+            st.rerun()
+    if b2.button("用 LLM 归纳兴趣", key="prof_llm", disabled=not llm_ok,
+                 help="" if llm_ok else "已在配置中关闭"):
+        with st.spinner("正在请模型归纳…"):
+            out = call(api.summarize_profile_with_llm, settings)
+        if out is not None:
+            st.rerun()
+    if b3.button("清空学到的画像", key="prof_clear"):
+        if call(api.clear_learned_profile, settings) is not None:
+            st.rerun()
 
 
 # ---------- 服务管理：接收服务与专用浏览器（看板内启动/停止） ----------
@@ -1433,6 +1477,10 @@ def _feed_tab() -> None:
 
 with tab_feed:
     _feed_tab()
+
+
+with tab_profile:
+    _profile_tab()
 
 
 with tab_results:

@@ -66,7 +66,7 @@ class StreamlitAppTests(unittest.TestCase):
         at = run_app(root)
         self.assertEqual(len(at.exception), 0, [e.value for e in at.exception])
         labels = [t.label for t in at.tabs]  # 含嵌套子页签，只校验顶层九个按顺序存在
-        top = ["推荐", "抓取结果", "报告", "反馈记录", "信息源", "订阅", "添加信息源", "运行与调度", "设置与管理"]
+        top = ["推荐", "我的画像", "抓取结果", "报告", "反馈记录", "信息源", "订阅", "添加信息源", "运行与调度", "设置与管理"]
         positions = [labels.index(t) for t in top]
         self.assertEqual(positions, sorted(positions))
         self.assertTrue(any("还没有报告" in i.value for i in at.info))

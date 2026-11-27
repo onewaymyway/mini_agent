@@ -112,7 +112,8 @@ class DashboardFeedbackTests(unittest.TestCase):
 
     def test_profile_panel_and_ranking_toggle(self):
         at = self._app()
-        self.assertTrue(any("我的兴趣画像" in e.label for e in at.expander))
+        # 画像已迁移为独立页签“我的画像”（见 tests/test_profile_page.py），抓取结果页不再有折叠面板
+        self.assertFalse(any("我的兴趣画像" in e.label for e in at.expander))
         toggles = [t for t in at.toggle if "按我的兴趣排序" in t.label]
         self.assertTrue(toggles, "应存在排序开关")
         toggles[0].set_value(True).run()
