@@ -847,3 +847,18 @@ P0–P9 均已完成。仍未在真实环境验证：有头登录、语音输出
 - 未验证（需在本机确认）：`HeadedRenderer` 在真实 Playwright 下的行为（测试使用替身会话）；渲染候选在正式运行时使用共享浏览器会话，其效果需确认。
 - 未做：P15 网络接口观察、P16 Frontier、P17 产出驱动与后台运行、P18 复查与退役。
 
+## 自动探索 P15：网络接口观察（已完成，真实浏览器未验证）
+
+- 依据设计文档 v0.3：渲染时记录 JSON 响应，只保留分析结论，识别列表型接口并生成 `json_api` 候选。
+- 改动：
+  - `core/explore_json_api.py`（新增，纯函数）：`observe_json` 在 JSON 中找对象数组（深度 ≤ 3，至少 3 条），选标题字段与绝对 https 链接字段（需覆盖至少 80% 的样本）；`clean_endpoint` 剔除 token/sign/auth/session/uid 等参数；`api_source` 生成 json_api 源声明（默认停用）。
+  - `core/browser_session.py`：`fetch_html` 新增可选 `on_response` 回调（默认 None，已有调用不受影响；仅 launch 模式生效）。
+  - `core/explore_render.py`：`HeadedRenderer` 注册响应回调，只分析 200 响应中的 JSON，结论存入 `last_observations`（最多 40 条），正文不保存。
+  - `core/autoexplore.py`：`_RenderBrowser` 缓存每个页面的观察结果；渲染过的页面，按观察结果生成 `json_api` 候选（不需要模型，单站点上限 `max_apis_per_site`，默认 3）。
+  - `config/discovery.yaml`：新增 `max_apis_per_site`。
+- 验证要点：根级数组的 `items_path` 为空字符串，已用 json_api 适配器确认可解析；匿名不可访问的接口在预览阶段被判为低质量，不入箱（测试 `test_unreachable_endpoint_is_low_quality`）。
+- 测试：`tests/test_autoexplore_p15.py`（8 项）：响应过滤（状态码、内容类型）、正文不落地、非列表 JSON 不生成候选、字段要求、无模型生成候选、渲染只一次、单站上限、无观察结果不生成候选、不可访问接口被拦截。
+- 全量结果：609 项，3 项失败，均为既有问题。
+- 未验证（需在本机确认）：真实站点的 `response.json()` 在 Playwright 同步 API 中的行为（测试使用替身响应）；接口在无登录态的隔离 profile 下是否可匿名访问，这决定候选能否通过预览。
+- 未做：P16 Frontier、P17 产出驱动与后台运行、P18 复查与退役。
+

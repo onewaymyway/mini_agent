@@ -222,6 +222,7 @@ health:
 | 不开看板也要调度 | 系统计划任务每 5 分钟 `python cli.py tick` |
 
 ## 变更记录
+- 2026-11-27（P15）：网络接口观察。有头渲染时，`BrowserSession.fetch_html` 可挂接响应回调；`HeadedRenderer` 对 JSON 响应当场分析，识别“对象数组（≥3 条）+ 标题字段 + 绝对 https 链接字段”的列表型接口。只保留结论（接口地址、列表路径、字段映射），不保存响应正文；接口地址中疑似令牌、签名、用户标识类参数被剔除。识别结果生成 `json_api` 候选（不需要模型，默认停用）。模块：`core/explore_json_api.py`。测试：`tests/test_autoexplore_p15.py`。
 - 2026-11-27（P14）：自动探索形态扩展。订阅入口（`<link rel=alternate>` 的 RSS/Atom）直接生成 rss 候选，不需要模型；sitemap 与站内分类页作为独立栏目候选逐个判断；页面没有列表结构时，若 `render: headed`，用有头浏览器（一次性 profile，强制有头）渲染后再判断，渲染结果在本轮内复用。没有模型时仍会发现订阅入口和渲染候选，只是不生成 HTML 草稿。模块：`core/explore_forms.py`、`core/explore_render.py`。测试：`tests/test_autoexplore_p14.py`。
 - 2026-11-27（P13）：探索位升级。由自动探索发现、且用户已确认启用的来源（候选 `origin: auto_explore` 且已采纳），其内容优先占用探索名额的前 `explore_discovered_size` 条（默认 2，不超过 `explore_size`）；卡片理由标注“新发现来源”。只从探索池中挑选，不命中关注主题、不属于多源热点，因此不挤占热点资格。测试：`tests/test_feed_p13.py`。
 - 2026-11-27（P12）：自动站点探索（`core/autoexplore.py`）。站点由系统自动探索，用户不配置站点。来源：项目维护的种子目录 `config/seed_sites.yaml`，以及最近三天抓取条目中的外部站点首页（只作线索，不额外访问）。每站点依次检查 robots.txt（无法获取则保守不访问）、拦截/验证页（放弃，不绕过）、页面结构、草稿生成（只接受 rss / json_api / html_list，script 草稿不自动运行）、预览质量（条目数与字段完整度）、与已有源的相似度。通过的站点进入候选收件箱，默认停用，需用户确认。参数在 `config/discovery.yaml` 的 `autoexplore` 段；每步写入 `data/discovery/explore_log.jsonl`。看板：候选收件箱上方“自动探索新站点”按钮。测试：`tests/test_autoexplore.py`。

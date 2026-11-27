@@ -199,16 +199,22 @@ class BrowserSession:
         wait_selector: Optional[str] = None,
         expired_pattern: Optional[str] = None,
         timeout_ms: int = 30000,
+        on_response: Optional[Callable[[Any], None]] = None,
     ) -> str:
+        # on_response：P15 用于观察页面加载时的网络响应（仅 launch 模式生效；回调拿到 Playwright Response）
         if self.mode == "cdp":
             return self._fetch_cdp(url, site, wait_selector, expired_pattern, timeout_ms)
         with file_lock(self._lock_target):
-            return self._fetch_unlocked(url, site, headless, wait_selector, expired_pattern, timeout_ms)
+            return self._fetch_unlocked(url, site, headless, wait_selector, expired_pattern, timeout_ms,
+                                        on_response=on_response)
 
-    def _fetch_unlocked(self, url, site, headless, wait_selector, expired_pattern, timeout_ms) -> str:
+    def _fetch_unlocked(self, url, site, headless, wait_selector, expired_pattern, timeout_ms,
+                        on_response: Optional[Callable[[Any], None]] = None) -> str:
         pw, ctx = self._open(headless)
         try:
             page = ctx.new_page()
+            if on_response is not None:
+                page.on("response", on_response)
             page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
             if wait_selector:
                 try:

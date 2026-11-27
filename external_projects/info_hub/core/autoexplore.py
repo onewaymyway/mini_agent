@@ -27,12 +27,13 @@ import yaml
 from core import discovery
 from core.explore_forms import (category_links, feed_links, parse_sitemap_urls, rss_source,
                                  section_listings, sitemap_locations)
+from core.explore_json_api import api_source
 from core.store import append_jsonl, atomic_write_json, file_lock, read_json, read_jsonl
 
 SEED_FILE = "config/seed_sites.yaml"
 AUTO_ADAPTERS = ("rss", "json_api", "html_list")   # script 草稿不会被自动探索生成后运行
 DEFAULTS = {"daily": 20, "min_interval_hours": 1, "min_items": 3, "min_completeness": 0.8,
-            "harvest_limit": 30, "max_listing_pages": 4, "max_feeds_per_site": 3,
+            "harvest_limit": 30, "max_listing_pages": 4, "max_feeds_per_site": 3, "max_apis_per_site": 3,
             "render": "off", "render_daily": 40}
 PREFIX = "auto:"
 
@@ -167,6 +168,7 @@ class _RenderBrowser:
         self.renderer = renderer
         self.budget = budget
         self.cache: dict[str, str] = {}   # 同一页面在一次探索中只渲染一次（检测、草稿、预览共用）
+        self.obs: dict[str, list[dict[str, Any]]] = {}   # P15：渲染时观察到的列表型接口
 
     def fetch_html(self, url: str, site: Optional[str] = None, headless: bool = True,
                    wait_selector: Optional[str] = None, expired_pattern: Optional[str] = None,
@@ -178,7 +180,11 @@ class _RenderBrowser:
         self.budget["used"] += 1
         html = self.renderer.html(url)
         self.cache[url] = html
+        self.obs[url] = list(getattr(self.renderer, "last_observations", None) or [])
         return html
+
+    def observations(self, url: str) -> list[dict[str, Any]]:
+        return self.obs.get(url, [])
 
 
 def _slug(text: str) -> str:
@@ -320,6 +326,7 @@ def run(settings: Any, llm: Any, *, ctx: Any, now: Optional[datetime] = None,
         # 2) 首页与栏目页：sitemap 栏目 + 站内分类，各自独立判断
         listings = _sitemap_listings(url, robots_txt, ctx) + category_links(text, url, cfg["max_listing_pages"])
         listings = list(dict.fromkeys(listings))[:cfg["max_listing_pages"]]
+        api_added = 0
         pages: list[tuple[str, bytes, bool]] = [(url, body, True)]
         pages += [(lu, b"", False) for lu in listings]
         for page_url, page_body, is_home in pages:
@@ -349,6 +356,23 @@ def run(settings: Any, llm: Any, *, ctx: Any, now: Optional[datetime] = None,
                 finally:
                     renders_today = budget["used"]
                     renders[day] = renders_today
+            # 3) P15：渲染时观察到的列表型接口，确定性生成 json_api 候选（不需要模型）
+            if rbrowser is not None and page_url in rbrowser.cache:
+                for desc in rbrowser.observations(page_url):
+                    if api_added >= cfg["max_apis_per_site"]:
+                        break
+                    slug = _slug(urllib.parse.urlsplit(desc["endpoint"]).path)
+                    aid = f"{base_id}#api-{slug}"
+                    if aid in {c["id"] for c in cands}:
+                        continue
+                    src = api_source(f"auto_{_slug(host).replace('-', '_')}_api_{slug.replace('-', '_')}",
+                                     f"{host} 接口 {slug}", desc)
+                    outcome = gate_and_add(src, aid, "auto_api", "自动探索·接口", desc["endpoint"], "发现站内接口")
+                    if outcome:
+                        skip(outcome)
+                    else:
+                        api_added += 1
+
             if not has:
                 if is_home:
                     fail("structure", "no_structure")
