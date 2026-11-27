@@ -771,7 +771,31 @@ def get_profile(settings: Settings) -> dict[str, Any]:
     from core.feedback import read_feedback
     data = prof.ensure_fresh(settings.paths.data_dir)
     return {"profile": data, "event_count": len(read_feedback(settings.paths.data_dir)),
-            "llm_enabled": prof.llm_enabled(settings.paths.root)}
+            "llm_enabled": prof.llm_enabled(settings.paths.root),
+            "changes": prof.recent_changes(settings.paths.data_dir)}
+
+
+def profile_term_detail(settings: Settings, term: str) -> dict[str, Any]:
+    """P10：某个关键词的依据（最近反馈）与当前显式状态。"""
+    from core import profile as prof
+    data_dir = settings.paths.data_dir
+    profile = prof.ensure_fresh(data_dir)
+    t = (term or "").strip()
+    if not t:
+        raise ApiError(400, "关键词不能为空")
+    explicit = profile.get("explicit", {})
+    state = "topic" if t in explicit.get("topics", []) else "exclude" if t in explicit.get("exclude", []) else "none"
+    return {"term": t, "evidence": prof.keyword_evidence(data_dir, t), "explicit_state": state}
+
+
+def set_profile_term(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
+    """P10：“这是我的兴趣 / 不是我的兴趣 / 撤销”。"""
+    from core import profile as prof
+    try:
+        prof.set_explicit_term(settings.paths.data_dir, body.get("term", ""), body.get("mode", ""))
+    except prof.ProfileError as exc:
+        raise ApiError(400, str(exc))
+    return get_profile(settings)
 
 
 def save_explicit_profile(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:

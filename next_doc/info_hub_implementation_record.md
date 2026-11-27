@@ -779,3 +779,15 @@ P0–P9 均已完成。仍未在真实环境验证：有头登录、语音输出
   - `test_new_sources.test_github_trending_html`：在改动前的原始压缩包上同样失败（报“未配置浏览器会话”），与本次无关，记录在此，待单独处理。
 - 未做：画像的主动发现与深化（见设计文档，待确认）。
 
+## 画像深化 P10：变化日志、关键词依据、纠错（已完成）
+
+- 依据设计文档 v0.3 第 9 节的决定实施：纠错入口采纳；只实施 P10，P11–P13 待后续。
+- 改动：
+  - `core/profile.py`：`diff_keywords`（新出现 / 消失 / 明显变化，阈值 0.5，最多 50 条）、`log_changes` 与 `recent_changes`（`data/profile/changes.jsonl`）、`keyword_evidence`（最近依据）、`set_explicit_term`（topic / exclude / none，互斥）。`rebuild_learned` 在重算时记录变化。
+  - `server/api.py`：`get_profile` 返回 `changes`；新增 `profile_term_detail`、`set_profile_term`。
+  - `app.py`：“我的画像”页新增“关键词依据与纠错”与“最近变化”两个分区。
+- 测试：`tests/test_profile_p10.py`（差异计算、变化日志、无变化不记录、依据、纠错互斥与撤销、API 校验、页面分区），共 16 项通过。
+- 修复：`tests/test_feed_snapshot.py` 的加粗标题统计原本覆盖全页面，画像页新增的加粗文字导致误报；已改为只统计“推荐”页签。
+- 全量结果：560 项，3 项失败，均为既有问题（2 项账本测试、1 项 github_trending 解析）。
+- 未做：P11 长短期分层与隐式信号（快速跳过仅统计，尚未纳入打分）。
+

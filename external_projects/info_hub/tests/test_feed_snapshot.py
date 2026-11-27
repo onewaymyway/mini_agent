@@ -29,7 +29,9 @@ class FeedSnapshotTests(unittest.TestCase):
         cache_data.clear()
 
     def _bold(self, at):
-        return [m.value for m in at.markdown if re.fullmatch(r"\*\*[^*]+\*\*", m.value or "")]
+        # 只统计“推荐”页签内的加粗标题：其它页签（如“我的画像”）的加粗文字不属于信息流列表
+        feed = next(t for t in at.tabs if t.label == "推荐")
+        return [m.value for m in feed.markdown if re.fullmatch(r"\*\*[^*]+\*\*", m.value or "")]
 
     def test_feedback_keeps_list_until_refresh(self):
         at = AppTest.from_file(APP, default_timeout=60)

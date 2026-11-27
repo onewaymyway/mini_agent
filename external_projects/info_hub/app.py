@@ -797,6 +797,42 @@ def _profile_tab() -> None:
     else:
         c2.caption("暂无。对“不感兴趣”的条目反馈后会出现。")
 
+    st.subheader("关键词依据与纠错（阶段 P10）")
+    kw_options = [k for k, _ in sorted(kw.items(), key=lambda kv: -abs(kv[1]["score"]))[:30]]
+    if not kw_options:
+        st.caption("暂无关键词。反馈后会出现在这里。")
+    else:
+        term = st.selectbox("选择一个关键词", kw_options, key="prof_term")
+        detail = call(api.profile_term_detail, settings, term)
+        if detail:
+            state_text = {"topic": "当前：你标记为兴趣", "exclude": "当前：你标记为不感兴趣", "none": "当前：未手动标记"}
+            st.caption(state_text.get(detail["explicit_state"], ""))
+            if detail["evidence"]:
+                st.markdown("**最近依据**")
+                for ev in detail["evidence"]:
+                    st.write(f"- {ev['title']}（{ev['action']}，{fmt_time(ev['time'])}）")
+            else:
+                st.caption("没有找到直接依据（可能来自停留时长或标题分词）。")
+            e1, e2, e3 = st.columns(3)
+            if e1.button("这是我的兴趣", key="prof_term_topic"):
+                if call(api.set_profile_term, settings, {"term": term, "mode": "topic"}) is not None:
+                    st.rerun()
+            if e2.button("不是我的兴趣", key="prof_term_exclude"):
+                if call(api.set_profile_term, settings, {"term": term, "mode": "exclude"}) is not None:
+                    st.rerun()
+            if e3.button("撤销手动标记", key="prof_term_none"):
+                if call(api.set_profile_term, settings, {"term": term, "mode": "none"}) is not None:
+                    st.rerun()
+
+    st.subheader("最近变化")
+    changes = data.get("changes") or []
+    if changes:
+        kind_name = {"appeared": "新出现", "gone": "消失", "changed": "明显变化"}
+        st.dataframe([{"时间": fmt_time(c["time"]), "关键词": c["term"], "变化": kind_name.get(c["kind"], c["kind"]),
+                       "之前": c["before"], "之后": c["after"]} for c in changes], hide_index=True)
+    else:
+        st.caption("暂无变化记录。画像重算时如果关键词有明显变化，会记录在这里。")
+
     st.subheader("信息源偏好")
     src_rows = sorted(
         [{"信息源": sid, "权重": round(v["score"], 2), "证据条数": v.get("evidence", 0)} for sid, v in srcs.items()],

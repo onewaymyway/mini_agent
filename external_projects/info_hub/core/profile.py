@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from core.feedback import ACTIONS, read_feedback
-from core.store import atomic_write_json, file_lock, read_json, read_jsonl
+from core.store import append_jsonl, atomic_write_json, file_lock, read_json, read_jsonl
 
 PROFILE_VERSION = 1
 HALF_LIFE_DAYS = 30.0
@@ -170,8 +170,13 @@ def rebuild_learned(data_dir: Path, events: Optional[list[dict[str, Any]]] = Non
         events = read_feedback(data_dir)
     profile = load_profile(data_dir)
     totals, titles = dwell_totals(data_dir)
+    old_kw = (profile.get("learned") or {}).get("keywords", {})
     profile["learned"] = learn_from_events(events, now, totals, titles)
-    profile["updated_at"] = (now or datetime.now().astimezone()).isoformat(timespec="seconds")
+    stamp = (now or datetime.now().astimezone()).isoformat(timespec="seconds")
+    profile["updated_at"] = stamp
+    changes = diff_keywords(old_kw, profile["learned"]["keywords"])
+    if changes:
+        log_changes(data_dir, changes, stamp, len(events))
     save_profile(data_dir, profile)
     return profile
 
@@ -375,3 +380,85 @@ def llm_enabled(root: Path) -> bool:
         cfg = {}
     value = (cfg.get("profile") or {}).get("llm_enabled", True)
     return bool(value)
+
+
+# ---------- P10：画像变化日志、关键词依据、是/不是我的兴趣 ----------
+CHANGE_THRESHOLD = 0.5      # 权重变化达到该值才记为“变化”
+CHANGE_CAP = 50             # 一次重算最多记录的变化条数
+CHANGES_RECENT = 20         # 页面展示的最近变化条数
+
+
+def changes_path(data_dir: Path) -> Path:
+    return Path(data_dir) / "profile" / "changes.jsonl"
+
+
+def diff_keywords(old: dict[str, Any], new: dict[str, Any]) -> list[dict[str, Any]]:
+    """比较两版关键词表，返回 appeared / gone / changed 三类变化（按影响大小排序，截断到 CHANGE_CAP）。"""
+    out: list[dict[str, Any]] = []
+    for term in set(old) | set(new):
+        before = float((old.get(term) or {}).get("score", 0.0))
+        after = float((new.get(term) or {}).get("score", 0.0))
+        if before == 0 and after == 0:
+            continue
+        if before == 0:
+            kind = "appeared"
+        elif after == 0:
+            kind = "gone"
+        elif abs(after - before) >= CHANGE_THRESHOLD:
+            kind = "changed"
+        else:
+            continue
+        out.append({"term": term, "kind": kind, "before": round(before, 3), "after": round(after, 3)})
+    out.sort(key=lambda c: -abs(c["after"] - c["before"]))
+    return out[:CHANGE_CAP]
+
+
+def log_changes(data_dir: Path, changes: list[dict[str, Any]], stamp: str, event_count: int) -> None:
+    path = changes_path(data_dir)
+    with file_lock(path):
+        for c in changes:
+            append_jsonl(path, {"time": stamp, "events": event_count, **c})
+
+
+def recent_changes(data_dir: Path, limit: int = CHANGES_RECENT) -> list[dict[str, Any]]:
+    rows = list(read_jsonl(changes_path(data_dir)))
+    return list(reversed(rows[-limit:]))
+
+
+def keyword_evidence(data_dir: Path, term: str, limit: int = 3) -> list[dict[str, Any]]:
+    """列出贡献某关键词的最近反馈（标题、动作、时间）。匹配规则与分词一致。"""
+    term = (term or "").strip().lower()
+    if not term:
+        return []
+    hits = []
+    for e in read_feedback(data_dir):
+        if term in tokenize(e.get("title", "")) or term in (e.get("title") or "").lower():
+            hits.append({"title": e.get("title", ""), "action": e.get("action", ""),
+                         "time": e.get("time", ""), "source_id": e.get("source_id", "")})
+    hits.sort(key=lambda h: str(h["time"]), reverse=True)
+    return hits[:limit]
+
+
+EXPLICIT_MODES = {"topic", "exclude", "none"}
+
+
+def set_explicit_term(data_dir: Path, term: str, mode: str) -> dict[str, Any]:
+    """“这是我的兴趣”(topic) / “不是我的兴趣”(exclude) / “撤销”(none)。同一词只保留一种显式状态。"""
+    if mode not in EXPLICIT_MODES:
+        raise ProfileError("未知的纠错方式")
+    term = str(term or "").strip()[:MAX_TERM_CHARS]
+    if not term:
+        raise ProfileError("关键词不能为空")
+    profile = load_profile(data_dir)
+    explicit = profile["explicit"]
+    topics = [t for t in explicit.get("topics", []) if t != term]
+    exclude = [t for t in explicit.get("exclude", []) if t != term]
+    if mode == "topic":
+        topics.append(term)
+    elif mode == "exclude":
+        exclude.append(term)
+    profile["explicit"] = {"topics": topics[:MAX_TOPICS], "exclude": exclude[:MAX_TOPICS]}
+    profile["updated_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+    save_profile(data_dir, profile)
+    return profile
+
