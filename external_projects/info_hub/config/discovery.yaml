@@ -41,6 +41,7 @@ adoption:
 templates: []
 
 # 自动探索（P12）：站点由系统自动探索，用户不需要配置站点。
+# P19：本段与 review 段的参数可在看板修改；看板保存的值优先于此文件（见 docs/configuration.md）。
 # daily：每天最多探索的站点数；min_interval_hours：同一站点两次探索的最小间隔；
 # min_items：预览至少要有的条目数；min_completeness：预览条目中标题与链接都有的比例。
 autoexplore:

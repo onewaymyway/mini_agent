@@ -1178,6 +1178,42 @@ def autoexplore_status_api(settings: Settings) -> dict[str, Any]:
             "top": autoexplore.top_yield(data_dir)}
 
 
+# ---------- P19：探索参数的看板设置 ----------
+EXPLORE_PARAM_SECTIONS = ("autoexplore", "review")
+
+
+def _explore_section(section: str) -> str:
+    if section not in EXPLORE_PARAM_SECTIONS:
+        raise ApiError(400, f"未知参数分组：{section}")
+    return section
+
+
+def explore_params_overview(settings: Settings) -> dict[str, Any]:
+    from core import explore_params
+    return {"sections": [explore_params.describe(settings.paths.root, s) for s in EXPLORE_PARAM_SECTIONS]}
+
+
+def explore_params_save(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
+    from core import explore_params
+    section = _explore_section(str(body.get("section") or ""))
+    try:
+        result = explore_params.save(settings.paths.root, section, body.get("values") or {},
+                                     now_iso=datetime.now().astimezone().isoformat(timespec="seconds"))
+    except ValueError as exc:
+        raise ApiError(400, str(exc))
+    return result
+
+
+def explore_params_reset(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
+    from core import explore_params
+    section = _explore_section(str(body.get("section") or ""))
+    key = body.get("key") or None
+    try:
+        return explore_params.reset(settings.paths.root, section, key)
+    except ValueError as exc:
+        raise ApiError(400, str(exc))
+
+
 def autoexplore_pause_api(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
     from core import autoexplore
     autoexplore.set_paused(settings.paths.data_dir, bool(body.get("paused")))

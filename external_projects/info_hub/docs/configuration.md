@@ -165,3 +165,19 @@ categories:
 
 种子目录 `config/seed_sites.yaml` 由项目维护，用户不需要编辑。目录内容是草案，尚未在真实环境中逐个核对。
 
+## 探索参数的看板覆盖（P19）
+
+`config/discovery.yaml` 中 `autoexplore` 与 `review` 两段的所有参数，都可以在看板设置并保存。优先级从高到低：
+
+1. **看板保存的值**：写入 `data/state/runtime_config.json` 的 `explore_params.<分组>` 下，不改动 yaml 文件；
+2. **config/discovery.yaml** 中的同名字段；
+3. **默认值**：登记在 `core/explore_params.py` 的 `SCHEMA` 中（每个参数的类型、取值范围与中文说明只在这里维护）。
+
+规则：
+
+- 保存时逐项校验（类型、范围、可选值、时间格式）；任何一项不合法则整体拒绝，已保存的内容不变。
+- 看板保存过的参数，之后修改 yaml 不会生效；需要回到 yaml 或默认值时，在看板对该参数“恢复默认”。
+- 运行时覆盖文件损坏或某一项不合法时，该项回退到 yaml / 默认值，不影响其他参数。
+- 覆盖文件与 tick 间隔、报告计划、服务端口等其他运行时设置共存，互不覆盖。
+- 看板的参数面板已在 P19-2 接入；在此之前可通过 `server/api.py` 的 `explore_params_overview / explore_params_save / explore_params_reset` 调用。
+

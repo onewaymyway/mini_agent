@@ -30,7 +30,7 @@ from typing import Any, Optional
 
 import yaml
 
-from core import autoexplore, discovery
+from core import autoexplore, discovery, explore_params
 from core.store import append_jsonl, atomic_write_json, file_lock, read_json, read_jsonl
 
 DEFAULTS = {"enabled": False, "every_days": 30, "failing_recheck_days": 7, "retire_after": 3,
@@ -53,13 +53,8 @@ def summary_path(data_dir: Path) -> Path:
 
 
 def load_config(root: Path) -> dict[str, Any]:
-    try:
-        cfg = yaml.safe_load((Path(root) / "config" / "discovery.yaml").read_text(encoding="utf-8")) or {}
-    except (OSError, yaml.YAMLError):
-        cfg = {}
-    raw = cfg.get("review") or {}
-    if not isinstance(raw, dict):
-        raw = {}
+    # P19：yaml 为基线，看板保存的覆盖值优先（见 core/explore_params.py）
+    raw = explore_params.raw_section(Path(root), "review")
     out: dict[str, Any] = {}
     for key, default in DEFAULTS.items():
         if key in BOOL_KEYS:

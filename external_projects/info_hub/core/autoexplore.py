@@ -24,7 +24,7 @@ import re
 
 import yaml
 
-from core import discovery
+from core import discovery, explore_params
 from core.explore_forms import (category_links, feed_links, parse_sitemap_urls, rss_source,
                                  section_listings, sitemap_locations)
 from core.explore_json_api import api_source
@@ -55,11 +55,8 @@ def log_path(data_dir: Path) -> Path:
 
 
 def load_config(root: Path) -> dict[str, float]:
-    try:
-        cfg = yaml.safe_load((Path(root) / "config" / "discovery.yaml").read_text(encoding="utf-8")) or {}
-    except (OSError, yaml.YAMLError):
-        cfg = {}
-    raw = cfg.get("autoexplore") or {}
+    # P19：yaml 为基线，看板保存的覆盖值优先（见 core/explore_params.py）
+    raw = explore_params.raw_section(Path(root), "autoexplore")
     out: dict[str, float] = {}
     for k, default in DEFAULTS.items():
         if k in BOOL_KEYS:
