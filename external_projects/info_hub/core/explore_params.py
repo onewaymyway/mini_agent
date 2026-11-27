@@ -65,6 +65,25 @@ SCHEMA: dict[str, list[dict[str, Any]]] = {
         _spec("low_yield_checks", "判定低产出所需的探索次数", "int", 5, lo=1, hi=100, group="产出"),
         _spec("low_yield_threshold", "低产出产出分阈值", "float", 0.1, lo=0, hi=1, group="产出"),
         _spec("recheck_days", "低产出站点复查间隔（天）", "int", 30, lo=1, hi=365, group="产出"),
+        _spec("max_depth", "站内最大探索深度", "int", 2, lo=0, hi=5, group="队列",
+              hint="种子页深度为 0；超过该深度的链接不入队"),
+        _spec("json_min_items", "接口识别：最少条目数", "int", 3, lo=1, hi=50, group="接口",
+              hint="渲染时观察到的 JSON 列表至少含这么多条目才会被当作候选接口"),
+        _spec("json_max_depth", "接口识别：JSON 最大嵌套深度", "int", 3, lo=1, hi=10, group="接口"),
+        _spec("render_max_responses", "渲染：单次最多分析的 JSON 响应数", "int", 40, lo=1, hi=500, group="渲染"),
+        _spec("render_timeout_s", "渲染：单页超时（秒）", "float", 30, lo=5, hi=300, group="渲染"),
+    ],
+    "discovery_limits": [
+        _spec("daily", "每天最多生成的候选数", "int", 3, lo=0, hi=50, group="额度",
+              hint="搜索模板每天新生成候选的上限（limits.daily）"),
+        _spec("pending", "同时待确认候选上限", "int", 10, lo=1, hi=200, group="额度",
+              hint="待确认的候选达到上限后暂停生成（limits.pending）"),
+    ],
+    "discovery_adoption": [
+        _spec("min_decisions", "判定采纳率所需的决定数", "int", 5, lo=1, hi=1000, group="门槛",
+              hint="某模板已做决定的候选达到该数，才会参与采纳率判断（adoption.min_decisions）"),
+        _spec("min_rate", "采纳率下限（低于则暂停该模板）", "float", 0.2, lo=0, hi=1, group="门槛",
+              hint="设为 0 即关闭自动暂停（adoption.min_rate）"),
     ],
     "review": [
         _spec("enabled", "开启周期复查", "bool", False, group="总开关",
@@ -79,7 +98,10 @@ SCHEMA: dict[str, list[dict[str, Any]]] = {
     ],
 }
 
-SECTION_TITLES = {"autoexplore": "自动探索", "review": "复查与退役"}
+SECTION_TITLES = {"autoexplore": "自动探索", "review": "复查与退役",
+                  "discovery_limits": "发现额度（搜索模板）", "discovery_adoption": "采纳率自动暂停"}
+# 注册表分组 → discovery.yaml 中的顶层段（分组名与段名不同的两处）
+YAML_KEY = {"discovery_limits": "limits", "discovery_adoption": "adoption"}
 
 
 def _specs(section: str) -> dict[str, dict[str, Any]]:
@@ -161,7 +183,7 @@ def _yaml_section(root: Path, section: str) -> dict[str, Any]:
         cfg = yaml.safe_load((Path(root) / "config" / DISCOVERY_FILE).read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError):
         return {}
-    raw = cfg.get(section) or {}
+    raw = cfg.get(YAML_KEY.get(section, section)) or {}
     return raw if isinstance(raw, dict) else {}
 
 

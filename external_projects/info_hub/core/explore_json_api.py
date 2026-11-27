@@ -18,21 +18,22 @@ SENSITIVE = re.compile(r"(token|sign|sig|auth|session|secret|key|nonce|ts|timest
 PAGE_PARAMS = {"page", "offset", "cursor", "since", "before", "after", "limit", "size", "pn", "start"}
 
 
-def _find_lists(obj: Any, path: str = "", depth: int = 0, out: Optional[list] = None) -> list[tuple[str, list]]:
+def _find_lists(obj: Any, path: str = "", depth: int = 0, out: Optional[list] = None,
+                max_depth: int = MAX_DEPTH) -> list[tuple[str, list]]:
     """找出所有“对象数组”及其路径（点号路径，根为数组时路径为空字符串）。"""
     out = [] if out is None else out
-    if depth > MAX_DEPTH:
+    if depth > max_depth:
         return out
     if isinstance(obj, list):
         if obj and all(isinstance(x, dict) for x in obj[:5]):
             out.append((path, obj))
     elif isinstance(obj, dict):
         for k, v in list(obj.items())[:40]:
-            _find_lists(v, f"{path}.{k}" if path else str(k), depth + 1, out)
+            _find_lists(v, f"{path}.{k}" if path else str(k), depth + 1, out, max_depth)
     return out
 
 
-def _pick_fields(items: list) -> Optional[dict[str, str]]:
+def _pick_fields(items: list, min_items: int = MIN_ITEMS) -> Optional[dict[str, str]]:
     """在前若干条中找到稳定存在的标题字段与链接字段。"""
     sample = [it for it in items[:8] if isinstance(it, dict)]
     if not sample:
@@ -41,7 +42,7 @@ def _pick_fields(items: list) -> Optional[dict[str, str]]:
     def best(keys: tuple[str, ...], valid) -> Optional[str]:
         for key in keys:
             hits = sum(1 for it in sample if valid(it.get(key)))
-            if hits >= max(MIN_ITEMS, int(len(sample) * 0.8)):
+            if hits >= max(min_items, int(len(sample) * 0.8)):
                 return key
         return None
 
@@ -60,15 +61,16 @@ def clean_endpoint(url: str) -> str:
     return urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path, urllib.parse.urlencode(kept), ""))
 
 
-def observe_json(endpoint: str, payload: Any) -> Optional[dict[str, Any]]:
+def observe_json(endpoint: str, payload: Any, *, min_items: int = MIN_ITEMS,
+                 max_depth: int = MAX_DEPTH) -> Optional[dict[str, Any]]:
     """判断一个 JSON 响应是否为列表型接口。返回描述（不含响应正文），否则返回 None。"""
     if not endpoint.startswith("https://"):
         return None
     best: Optional[dict[str, Any]] = None
-    for path, items in _find_lists(payload):
-        if len(items) < MIN_ITEMS:
+    for path, items in _find_lists(payload, max_depth=max_depth):
+        if len(items) < min_items:
             continue
-        fields = _pick_fields(items)
+        fields = _pick_fields(items, min_items)
         if not fields:
             continue
         if best is None or len(items) > best["count"]:

@@ -81,6 +81,7 @@ class Frontier:
     def __init__(self, data_dir: Path, max_queued: int = 500) -> None:
         self.path = Path(data_dir) / "discovery" / "frontier.jsonl"
         self.max_queued = max_queued
+        self.max_depth = MAX_DEPTH          # P19-3：可由自动探索按看板参数覆盖
 
     def _latest(self) -> dict[str, dict[str, Any]]:
         out: dict[str, dict[str, Any]] = {}
@@ -100,7 +101,7 @@ class Frontier:
         return sum(1 for r in self._latest().values() if r.get("status") == "queued")
 
     def enqueue(self, url: str, depth: int, parent: str, priority: float, now_iso: str) -> bool:
-        if depth > MAX_DEPTH:
+        if depth > self.max_depth:
             return False
         latest = self._latest()
         if url in latest:               # 已入队、已处理或已跳过的，不重复入队
@@ -131,7 +132,7 @@ def enqueue_links(frontier: Frontier, links: list[tuple[str, str]], *, parent: s
                   per_page_cap: int = 20) -> int:
     """把页面中的链接 [(url, 链接文字)] 入队。返回实际入队数量。"""
     depth = parent_depth + 1
-    if depth > MAX_DEPTH:
+    if depth > frontier.max_depth:
         return 0
     parent_host = host_key(parent)
     added = 0

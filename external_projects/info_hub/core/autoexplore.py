@@ -37,7 +37,9 @@ DEFAULTS = {"daily": 20, "min_interval_hours": 1, "min_items": 3, "min_completen
             "render": "off", "render_daily": 40, "frontier_batch": 10, "host_daily_pages": 30,
             "frontier_max_queued": 500, "page_links_cap": 20, "cross_site": False,
             "background": False, "background_every_hours": 6, "background_window": "00:00-24:00",
-            "low_yield_checks": 5, "low_yield_threshold": 0.1, "recheck_days": 30}
+            "low_yield_checks": 5, "low_yield_threshold": 0.1, "recheck_days": 30,
+            "max_depth": 2, "json_min_items": 3, "json_max_depth": 3,
+            "render_max_responses": 40, "render_timeout_s": 30.0}
 BOOL_KEYS = ("cross_site", "background")
 PREFIX = "auto:"
 
@@ -286,9 +288,17 @@ def maybe_run_background(settings: Any, now: Optional[datetime] = None) -> Optio
     llm, label = _default_llm(settings)
     renderer = None
     if cfg["render"] == "headed":
-        from core.explore_render import HeadedRenderer
-        renderer = HeadedRenderer(data_dir / "discovery" / "scratch")
+        renderer = make_renderer(data_dir, cfg)
     return run(settings, llm, ctx=FetchContext(), now=now, provider_label=label, renderer=renderer)
+
+
+def make_renderer(data_dir: Path, cfg: dict[str, Any]):
+    """P19-3：按看板参数创建有头渲染器（超时、响应数上限、接口识别阈值）。"""
+    from core.explore_render import HeadedRenderer
+    return HeadedRenderer(Path(data_dir) / "discovery" / "scratch",
+                          timeout_ms=int(float(cfg["render_timeout_s"]) * 1000),
+                          max_responses=int(cfg["render_max_responses"]),
+                          min_items=int(cfg["json_min_items"]), max_depth=int(cfg["json_max_depth"]))
 
 
 def _slug(text: str) -> str:
@@ -376,6 +386,7 @@ def run(settings: Any, llm: Any, *, ctx: Any, now: Optional[datetime] = None,
     sites = sorted(sites, key=lambda st: -prod_of(host_of(st["url"])))   # 产出高的站点先处理（稳定排序）
     denylist = load_denylist(root)
     frontier = Frontier(data_dir, int(cfg["frontier_max_queued"]))
+    frontier.max_depth = int(cfg["max_depth"])                        # P19-3：站内深度上限来自看板参数
     render_on = renderer is not None and cfg["render"] == "headed"
     budget = {"used": int(renders.get(day, 0)), "cap": int(cfg["render_daily"])}
     robots_cache: dict[str, tuple[bool, str, str]] = {}

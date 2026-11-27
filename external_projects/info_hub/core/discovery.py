@@ -49,8 +49,9 @@ def load_config(root: Path) -> dict[str, Any]:
         cfg = {}
     if not isinstance(cfg, dict):
         cfg = {}
-    limits = cfg.get("limits") or {}
-    adoption = cfg.get("adoption") or {}
+    from core import explore_params  # P19-3：limits / adoption 由看板参数覆盖（yaml 为基线）
+    limits = explore_params.raw_section(Path(root), "discovery_limits")
+    adoption = explore_params.raw_section(Path(root), "discovery_adoption")
     return {
         "templates": cfg.get("templates") or [],
         "daily_cap": int(limits.get("daily", DEFAULT_DAILY_CAP)),

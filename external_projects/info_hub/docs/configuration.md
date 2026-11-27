@@ -181,3 +181,16 @@ categories:
 - 覆盖文件与 tick 间隔、报告计划、服务端口等其他运行时设置共存，互不覆盖。
 - 看板“自动探索”页签的“探索参数设置”即为此入口（P19-2）；也可通过 `server/api.py` 的 `explore_params_overview / explore_params_save / explore_params_reset` 调用。
 
+### P19-3 新增可在看板修改的参数
+
+| 分组 | 参数 | 默认 | 说明 |
+|---|---|---|---|
+| 自动探索 · 队列 | `max_depth` | 2 | 站内最大探索深度（种子页为 0） |
+| 自动探索 · 接口 | `json_min_items` | 3 | 渲染时 JSON 列表至少含的条目数，低于则不识别为候选接口 |
+| 自动探索 · 接口 | `json_max_depth` | 3 | 识别接口时搜索 JSON 的最大嵌套深度 |
+| 自动探索 · 渲染 | `render_max_responses` | 40 | 单次渲染最多分析的 JSON 响应数 |
+| 自动探索 · 渲染 | `render_timeout_s` | 30 | 单页渲染超时（秒） |
+| 发现额度（搜索模板） | `daily` / `pending` | 3 / 10 | 对应 yaml 的 `limits.daily` / `limits.pending` |
+| 采纳率自动暂停 | `min_decisions` / `min_rate` | 5 / 0.2 | 对应 yaml 的 `adoption.*`；`min_rate` 设为 0 即关闭自动暂停 |
+
+看板中这两组分别显示为“发现额度（搜索模板）”“采纳率自动暂停”，与自动探索、复查两组并列。

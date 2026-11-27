@@ -1159,9 +1159,9 @@ def autoexplore_run_api(settings: Settings) -> dict[str, Any]:
         llm, label = None, ""
     # 普通 HTTP 读取公开页面，不携带共享浏览器 profile（不使用任何登录态）
     renderer = None
-    if autoexplore.load_config(settings.paths.root)["render"] == "headed":
-        from core.explore_render import HeadedRenderer  # P14：有头 + 一次性 profile，默认关闭
-        renderer = HeadedRenderer(settings.paths.data_dir / "discovery" / "scratch")
+    cfg = autoexplore.load_config(settings.paths.root)
+    if cfg["render"] == "headed":                      # P14：有头 + 一次性 profile，默认关闭；参数见 P19-3
+        renderer = autoexplore.make_renderer(settings.paths.data_dir, cfg)
     result = autoexplore.run(settings, llm, ctx=FetchContext(), provider_label=label, renderer=renderer)
     return {"added": len(result["added"]), "skipped": result["skipped"], "sites": result["sites"]}
 
@@ -1179,7 +1179,7 @@ def autoexplore_status_api(settings: Settings) -> dict[str, Any]:
 
 
 # ---------- P19：探索参数的看板设置 ----------
-EXPLORE_PARAM_SECTIONS = ("autoexplore", "review")
+EXPLORE_PARAM_SECTIONS = ("autoexplore", "review", "discovery_limits", "discovery_adoption")
 
 
 def _explore_section(section: str) -> str:

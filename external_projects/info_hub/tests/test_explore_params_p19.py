@@ -131,7 +131,8 @@ class CoexistenceTests(Base):
 class ApiTests(Base):
     def test_overview_and_save_roundtrip(self):
         ov = api.explore_params_overview(self.settings)
-        self.assertEqual({s["section"] for s in ov["sections"]}, {"autoexplore", "review"})
+        self.assertEqual({s["section"] for s in ov["sections"]},
+                         {"autoexplore", "review", "discovery_limits", "discovery_adoption"})  # P19-3 新增两组
         api.explore_params_save(self.settings, {"section": "autoexplore", "values": {"render": "headed"}})
         self.assertEqual(autoexplore.load_config(self.root)["render"], "headed")
         api.explore_params_reset(self.settings, {"section": "autoexplore", "key": "render"})
