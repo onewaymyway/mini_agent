@@ -833,6 +833,25 @@ def _profile_tab() -> None:
     else:
         st.caption("暂无变化记录。画像重算时如果关键词有明显变化，会记录在这里。")
 
+    st.subheader("兴趣的时间层次（阶段 P11）")
+    short_rows = _keyword_rows(learned.get("keywords_short", {}), True, 10)
+    long_rows = _keyword_rows(learned.get("keywords_long", {}), True, 10)
+    t1, t2 = st.columns(2)
+    t1.markdown("**近期兴趣（约一周）**")
+    t1.write("、".join(r["关键词"] for r in short_rows) or "（暂无）")
+    t2.markdown("**长期兴趣（跨越多周）**")
+    t2.write("、".join(r["关键词"] for r in long_rows) or "（暂无，需要在多个自然周内持续出现）")
+    params = learned.get("params") or {}
+    if params:
+        st.caption(f"短期半衰期 {params.get('half_life_short_days')} 天，长期半衰期 {params.get('half_life_long_days')} 天，"
+                   f"长期权重 {params.get('long_weight')}，需跨 {params.get('long_min_weeks')} 个自然周。")
+    skip_tokens = learned.get("skip_tokens") or {}
+    with st.expander("快速跳过统计（只统计，不影响排序）", expanded=False):
+        if skip_tokens:
+            st.write("、".join(f"{k}（{v}）" for k, v in list(skip_tokens.items())[:20]))
+        else:
+            st.caption("暂无。在快速分诊中点“跳过”后会记录在这里。")
+
     st.subheader("信息源偏好")
     src_rows = sorted(
         [{"信息源": sid, "权重": round(v["score"], 2), "证据条数": v.get("evidence", 0)} for sid, v in srcs.items()],
@@ -1254,6 +1273,8 @@ def _triage_block(queue: list, tag: str) -> None:
                 st.session_state[key] = i + 1  # 进入下一条；队列本身不变
                 st.rerun()
     if c4.button("跳过", key=f"triage_skip_{tag}_{i}", use_container_width=True):
+        call(api.record_skip_api, settings, {"source_id": card.get("source_id", ""), "url": card.get("url", ""),
+                                             "title": card.get("title", ""), "view": "feed_v1"})
         st.session_state[key] = i + 1
         st.rerun()
     with c5:

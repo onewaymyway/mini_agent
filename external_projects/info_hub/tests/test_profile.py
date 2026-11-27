@@ -52,7 +52,9 @@ class LearnTests(unittest.TestCase):
     def test_time_decay_makes_old_feedback_weaker(self):
         recent = prof.learn_from_events([ev("interested", "量子计算", days_ago=0)], NOW)
         old = prof.learn_from_events([ev("interested", "量子计算", days_ago=30)], NOW)
-        self.assertGreater(recent["keywords"]["量子"]["score"], old["keywords"]["量子"]["score"] * 1.8)
+        # P11 起：单次反馈只计入 7 天半衰期的短期表，30 天后应衰减到剪枝阈值以下（一次性点击不再长期保留）
+        self.assertGreater(recent["keywords"]["量子"]["score"], 0)
+        self.assertNotIn("量子", old["keywords"])
 
     def test_later_is_weaker_than_interested(self):
         a = prof.learn_from_events([ev("interested", "电动汽车")], NOW)["keywords"]["电动"]["score"]

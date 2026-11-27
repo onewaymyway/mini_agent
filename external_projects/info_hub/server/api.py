@@ -1399,6 +1399,23 @@ def autostart_set(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
     return autostart_overview(settings)
 
 
+def record_skip_api(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
+    """P11：快速分诊“跳过”。只做统计，不改变画像排序。"""
+    from core import evaluation
+    from core.feedback import item_key
+    sid = str(body.get("source_id") or "")
+    if not sid or sid != Path(sid).name:
+        raise ApiError(400, "信息源 id 不合法")
+    title = str(body.get("title") or "").strip()
+    key = item_key(str(body.get("url") or ""), title)
+    try:
+        evaluation.record_skip(settings.paths.data_dir, source_id=sid, item_key=key, title=title,
+                               view=str(body.get("view") or ""))
+    except ValueError as exc:
+        raise ApiError(400, str(exc))
+    return {"ok": True}
+
+
 def record_dwell_api(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
     from core import evaluation
     sid = str(body.get("source_id") or "")

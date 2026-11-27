@@ -99,17 +99,62 @@ DWELL_CAP_SECONDS = 300
 DWELL_WEIGHT = 0.5  # 满封顶时权重；需高于剪枝阈值 MIN_ABS_SCORE，否则停留信号会被丢弃
 
 
+# ---------- P11：长短期分层、跳过统计 ----------
+SHORT_HALF_LIFE_DAYS = 7.0
+LONG_HALF_LIFE_DAYS = 90.0
+LONG_WEIGHT = 0.6          # 长期部分合并进 keywords 时的权重
+LONG_MIN_WEEKS = 2         # 关键词至少跨越几个自然周，才计入长期部分
+SKIP_TOP_N = 50
+
+
+def profile_params(data_dir: Path) -> dict[str, float]:
+    """P11 参数：config/settings.yaml 的 profile 段，缺省为模块常量；越界值被限制到合理范围。"""
+    import yaml
+    try:
+        cfg = yaml.safe_load((Path(data_dir).parent / "config" / "settings.yaml").read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        cfg = {}
+    raw = cfg.get("profile") or {}
+
+    def num(name: str, default: float, lo: float, hi: float) -> float:
+        try:
+            return min(hi, max(lo, float(raw.get(name, default))))
+        except (TypeError, ValueError):
+            return default
+
+    return {
+        "half_life_short_days": num("half_life_short_days", SHORT_HALF_LIFE_DAYS, 1, 60),
+        "half_life_long_days": num("half_life_long_days", LONG_HALF_LIFE_DAYS, 14, 365),
+        "long_weight": num("long_weight", LONG_WEIGHT, 0, 2),
+        "long_min_weeks": int(num("long_min_weeks", LONG_MIN_WEEKS, 1, 12)),
+    }
+
+
+def _iso_week(when: Optional[datetime]) -> str:
+    if not when:
+        return ""
+    y, w, _ = when.isocalendar()
+    return f"{y}-W{w:02d}"
+
+
 def learn_from_events(events: list[dict[str, Any]], now: Optional[datetime] = None,
                       dwell: Optional[dict[str, int]] = None,
-                      dwell_titles: Optional[dict[str, str]] = None) -> dict[str, Any]:
-    """从反馈事件计算关键词与来源权重。越新的事件影响越大（半衰期 HALF_LIFE_DAYS 天）。
+                      dwell_titles: Optional[dict[str, str]] = None,
+                      params: Optional[dict[str, float]] = None) -> dict[str, Any]:
+    """从反馈事件计算关键词与来源权重（P11 分层）。
 
-    dwell：{item_key: 停留秒数合计}。停留满 DWELL_MIN_SECONDS 秒的条目，作为较弱的正向信号
-    （权重随停留时长增加，封顶于 DWELL_CAP_SECONDS），只影响关键词，不影响来源。
+    - 短期表：半衰期 half_life_short_days，反映近期兴趣。
+    - 长期表：半衰期 half_life_long_days，只对跨越至少 long_min_weeks 个自然周的关键词计入。
+    - keywords = 短期 + long_weight × 长期（未跨周的关键词只有短期部分），供排序与页面使用。
+    dwell 与 P2 相同：停留作为较弱的正向信号，只计入短期表。
     """
+    p = {**{"half_life_short_days": SHORT_HALF_LIFE_DAYS, "half_life_long_days": LONG_HALF_LIFE_DAYS,
+            "long_weight": LONG_WEIGHT, "long_min_weeks": LONG_MIN_WEEKS}, **(params or {})}
     now = now or datetime.now().astimezone()
-    kw: dict[str, dict[str, float]] = {}
+    short: dict[str, dict[str, float]] = {}
+    long_: dict[str, dict[str, float]] = {}
     src: dict[str, dict[str, float]] = {}
+    weeks: dict[str, set[str]] = {}
 
     def bump(table: dict, key: str, delta: float) -> None:
         cell = table.setdefault(key, {"score": 0.0, "evidence": 0})
@@ -122,7 +167,7 @@ def learn_from_events(events: list[dict[str, Any]], now: Optional[datetime] = No
         title = (dwell_titles or {}).get(key, "")
         w = DWELL_WEIGHT * min(seconds, DWELL_CAP_SECONDS) / DWELL_CAP_SECONDS
         for token in tokenize(title):
-            bump(kw, token, w)
+            bump(short, token, w)
 
     for e in events:
         action = e.get("action")
@@ -130,26 +175,56 @@ def learn_from_events(events: list[dict[str, Any]], now: Optional[datetime] = No
             continue
         when = _event_time(e)
         age_days = max(0.0, (now - when).total_seconds() / 86400) if when and when.tzinfo else 0.0
-        decay = 0.5 ** (age_days / HALF_LIFE_DAYS)
+        decay_s = 0.5 ** (age_days / p["half_life_short_days"])
+        decay_l = 0.5 ** (age_days / p["half_life_long_days"])
         reasons = set(e.get("reasons") or [])
-        w = ACTION_WEIGHT[action] * decay
-        if action == "not_interested" and "off_topic" in reasons:
-            w *= 1.5  # 明确“话题不符”时，关键词的负向信号加强
+        mult = 1.5 if (action == "not_interested" and "off_topic" in reasons) else 1.0
+        base = ACTION_WEIGHT[action] * mult
+        week = _iso_week(when)
         for token in tokenize(e.get("title", "")):
-            bump(kw, token, w)
+            bump(short, token, base * decay_s)
+            bump(long_, token, base * decay_l)
+            if week:
+                weeks.setdefault(token, set()).add(week)
         sid = e.get("source_id") or ""
         if sid:
-            bump(src, sid, w)
+            bump(src, sid, base * decay_s)
             if action == "not_interested" and "source_dislike" in reasons:
-                bump(src, sid, -1.0 * decay)
+                bump(src, sid, -1.0 * decay_s)
+
+    blended: dict[str, dict[str, float]] = {}
+    for token in set(short) | set(long_):
+        s_score = short.get(token, {}).get("score", 0.0)
+        l_score = long_.get(token, {}).get("score", 0.0)
+        sustained = len(weeks.get(token, ())) >= int(p["long_min_weeks"])
+        total = s_score + (p["long_weight"] * l_score if sustained else 0.0)
+        ev = max(short.get(token, {}).get("evidence", 0), long_.get(token, {}).get("evidence", 0))
+        blended[token] = {"score": total, "evidence": ev}
 
     def prune(table: dict) -> dict:
         kept = {k: v for k, v in table.items() if abs(v["score"]) >= MIN_ABS_SCORE}
         top = sorted(kept.items(), key=lambda kv: abs(kv[1]["score"]), reverse=True)[:TOP_N]
         return {k: {"score": round(v["score"], 3), "evidence": v["evidence"]} for k, v in top}
 
-    return {"keywords": prune(kw), "sources": prune(src), "computed_from_events": len(events),
-            "computed_from_dwell": len(dwell or {})}
+    return {"keywords": prune(blended), "keywords_short": prune(short), "keywords_long": prune(long_),
+            "sources": prune(src), "computed_from_events": len(events),
+            "computed_from_dwell": len(dwell or {}), "computed_from_skips": 0,
+            "params": p}
+
+
+def skip_tokens(skips: list[dict[str, Any]]) -> dict[str, int]:
+    """快速跳过的统计：每个分词出现的次数。只用于展示与分析，不进入打分。"""
+    counts: dict[str, int] = {}
+    for row in skips:
+        for token in tokenize(row.get("title", "")):
+            counts[token] = counts.get(token, 0) + 1
+    top = sorted(counts.items(), key=lambda kv: -kv[1])[:SKIP_TOP_N]
+    return dict(top)
+
+
+def skip_records(data_dir: Path) -> list[dict[str, Any]]:
+    from core.evaluation import exposure_path
+    return [r for r in read_jsonl(exposure_path(data_dir)) if r.get("kind") == "skip"]
 
 
 def dwell_totals(data_dir: Path) -> tuple[dict[str, int], dict[str, str]]:
@@ -171,7 +246,10 @@ def rebuild_learned(data_dir: Path, events: Optional[list[dict[str, Any]]] = Non
     profile = load_profile(data_dir)
     totals, titles = dwell_totals(data_dir)
     old_kw = (profile.get("learned") or {}).get("keywords", {})
-    profile["learned"] = learn_from_events(events, now, totals, titles)
+    skips = skip_records(data_dir)
+    profile["learned"] = learn_from_events(events, now, totals, titles, profile_params(data_dir))
+    profile["learned"]["skip_tokens"] = skip_tokens(skips)
+    profile["learned"]["computed_from_skips"] = len(skips)
     stamp = (now or datetime.now().astimezone()).isoformat(timespec="seconds")
     profile["updated_at"] = stamp
     changes = diff_keywords(old_kw, profile["learned"]["keywords"])
@@ -187,15 +265,17 @@ def ensure_fresh(data_dir: Path) -> dict[str, Any]:
     profile = load_profile(data_dir)
     totals, _ = dwell_totals(data_dir)
     learned = profile["learned"]
+    skips = len(skip_records(data_dir))
     if (learned.get("computed_from_events") != len(events)
-            or learned.get("computed_from_dwell") != len(totals)):
+            or learned.get("computed_from_dwell") != len(totals)
+            or learned.get("computed_from_skips", 0) != skips):
         profile = rebuild_learned(data_dir, events)
     return profile
 
 
 def clear_learned(data_dir: Path) -> dict[str, Any]:
     profile = load_profile(data_dir)
-    profile["learned"] = {"keywords": {}, "sources": {}, "computed_from_events": 0, "computed_from_dwell": 0}
+    profile["learned"] = {"keywords": {}, "keywords_short": {}, "keywords_long": {}, "sources": {}, "computed_from_events": 0, "computed_from_dwell": 0, "computed_from_skips": 0, "skip_tokens": {}}
     profile["llm"] = {}
     profile["updated_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
     save_profile(data_dir, profile)

@@ -791,3 +791,18 @@ P0–P9 均已完成。仍未在真实环境验证：有头登录、语音输出
 - 全量结果：560 项，3 项失败，均为既有问题（2 项账本测试、1 项 github_trending 解析）。
 - 未做：P11 长短期分层与隐式信号（快速跳过仅统计，尚未纳入打分）。
 
+## 画像深化 P11：长短期分层与跳过统计（已完成）
+
+- 依据设计文档 v0.4：短期半衰期 7 天，长期 90 天，长期需跨 2 个自然周，长期权重 0.6；跳过只统计。
+- 改动：
+  - `core/profile.py`：`learn_from_events` 改为分层计算（`keywords_short`、`keywords_long`，合并结果为 `keywords`）；`profile_params` 读取 `profile` 段参数并限制范围；`skip_tokens`、`skip_records` 统计跳过；`rebuild_learned` 写入跳过统计；`ensure_fresh` 在跳过数量变化时重算。
+  - `core/evaluation.py`：`record_skip` 写入 `kind: skip` 曝光记录（含标题，供统计）。
+  - `server/api.py`：`record_skip_api`（校验信息源 id，计算条目 key）。
+  - `app.py`：快速分诊“跳过”调用 `record_skip_api`；画像页新增“兴趣的时间层次”与“快速跳过统计”。
+  - `config/settings.yaml`：`profile` 段新增 4 个参数。
+- 测试：
+  - 新增 `tests/test_profile_p11.py`（分层、衰减、参数、跳过只统计、API 校验、页面）。
+  - 更新 `tests/test_profile.py::test_time_decay_makes_old_feedback_weaker`：旧断言描述的是 P11 之前的单一半衰期语义。新断言是：单次 30 天前的反馈不再保留在排序中，这是 P11 的有意变化。
+- 全量结果：568 项，3 项失败，均为既有问题。
+- 未做：P12 自动站点探索、P13 探索位升级。
+

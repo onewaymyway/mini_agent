@@ -197,3 +197,14 @@ def recommendations(metrics: dict[str, Any]) -> list[str]:
     if not metrics["candidates"]["by_template"]:
         out.append("还没有生成过候选，暂无采纳率数据。")
     return out
+
+
+def record_skip(data_dir: Path, *, source_id: str, item_key: str, title: str, view: str,
+                now: Optional[datetime] = None) -> None:
+    """P11：快速分诊中点击“跳过”。只用于统计，不进入打分。"""
+    path = exposure_path(data_dir)
+    with file_lock(path):
+        append_jsonl(path, {"kind": "skip", "time": _now_iso(now), "source_id": source_id,
+                            "item_key": item_key, "title": (title or "")[:200],
+                            "view": view if view in EVENT_VIEWS else ""})
+
