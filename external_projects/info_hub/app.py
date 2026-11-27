@@ -1051,6 +1051,19 @@ def _candidates_panel() -> None:
         return
     pending = [c for c in data["candidates"] if c["status"] == "pending"]
     with st.expander(f"📥 候选信息源（待确认 {len(pending)} 条）", expanded=bool(pending)):
+        st_status = call(api.autoexplore_status_api, settings)
+        if st_status:
+            state_text = "已暂停" if st_status["paused"] else ("后台运行中" if st_status["background"] else "仅手动")
+            last = st_status.get("last") or {}
+            st.caption(f"自动探索：{state_text}；队列 {st_status['queued']} 条"
+                       + (f"；最近一轮 {fmt_time(last.get('time'))}：检查 {last.get('sites', 0)} 站点，"
+                          f"新增候选 {last.get('added', 0)} 条" if last else "；尚未运行过"))
+            if st_status.get("top"):
+                st.caption("产出较高的站点：" + "、".join(f"{t['host']}（{t['found']} 条新增，{t['accepted']} 条采纳）"
+                                                  for t in st_status["top"]))
+            if st.button("恢复自动探索" if st_status["paused"] else "暂停自动探索", key="auto_explore_pause"):
+                if call(api.autoexplore_pause_api, settings, {"paused": not st_status["paused"]}) is not None:
+                    st.rerun()
         if st.button("🔎 自动探索新站点", key="auto_explore_btn",
                      help="按画像在公开站点中探索新信息源，结果进入下方候选收件箱（默认停用，需确认）。"):
             with st.spinner("正在探索公开站点（每站点需通过 robots 检查与质量评估）…"):

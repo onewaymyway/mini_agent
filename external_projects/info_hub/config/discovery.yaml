@@ -53,3 +53,9 @@ autoexplore:
   max_feeds_per_site: 3    # P14：每站点最多登记的订阅入口
   render: off              # P14：off | headed。headed 时，页面无列表结构则用有头浏览器（一次性 profile）渲染后再判断
   render_daily: 40         # P14：每天最多渲染次数
+  background: false        # P17：后台自动探索（由 tick 调用），默认关闭；开启后仍可在看板随时暂停
+  background_every_hours: 6  # P17：后台两次运行的最小间隔
+  background_window: "00:00-24:00"  # P17：运行窗口，如 "22:00-06:00"（支持跨午夜）
+  low_yield_checks: 5      # P17：探索达到该次数仍无产出，才视为低产出
+  low_yield_threshold: 0.1 # P17：产出分低于该值视为低产出
+  recheck_days: 30         # P17：低产出站点的复查间隔

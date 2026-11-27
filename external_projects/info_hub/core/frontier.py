@@ -116,10 +116,13 @@ class Frontier:
                                        "priority": 0.0})
         self._write(dict(row, status=status, time=now_iso))
 
-    def next_batch(self, n: int, allow_host) -> list[dict[str, Any]]:
-        """取出最应该先访问的 n 条：优先级高、深度浅、先入队。allow_host(host) 为 False 的跳过（不改状态）。"""
+    def next_batch(self, n: int, allow_host, weight=None) -> list[dict[str, Any]]:
+        """取出最应该先访问的 n 条：优先级 × 站点产出权重高、深度浅、先入队。allow_host(host) 为 False 的跳过。
+        weight(host) 返回站点产出权重（P17），缺省为 1。"""
+        weight = weight or (lambda _h: 1.0)
         queued = [r for r in self._latest().values() if r.get("status") == "queued" and allow_host(r.get("host", ""))]
-        queued.sort(key=lambda r: (-float(r.get("priority", 0)), int(r.get("depth", 0)), str(r.get("time", ""))))
+        queued.sort(key=lambda r: (-float(r.get("priority", 0)) * float(weight(r.get("host", ""))),
+                                   int(r.get("depth", 0)), str(r.get("time", ""))))
         return queued[:max(0, n)]
 
 

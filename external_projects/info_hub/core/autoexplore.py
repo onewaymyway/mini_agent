@@ -35,7 +35,10 @@ AUTO_ADAPTERS = ("rss", "json_api", "html_list")   # script 草稿不会被自�
 DEFAULTS = {"daily": 20, "min_interval_hours": 1, "min_items": 3, "min_completeness": 0.8,
             "harvest_limit": 30, "max_listing_pages": 4, "max_feeds_per_site": 3, "max_apis_per_site": 3,
             "render": "off", "render_daily": 40, "frontier_batch": 10, "host_daily_pages": 30,
-            "frontier_max_queued": 500, "page_links_cap": 20, "cross_site": False}
+            "frontier_max_queued": 500, "page_links_cap": 20, "cross_site": False,
+            "background": False, "background_every_hours": 6, "background_window": "00:00-24:00",
+            "low_yield_checks": 5, "low_yield_threshold": 0.1, "recheck_days": 30}
+BOOL_KEYS = ("cross_site", "background")
 PREFIX = "auto:"
 
 
@@ -59,13 +62,14 @@ def load_config(root: Path) -> dict[str, float]:
     raw = cfg.get("autoexplore") or {}
     out: dict[str, float] = {}
     for k, default in DEFAULTS.items():
-        if k == "cross_site":
+        if k in BOOL_KEYS:
             continue
         try:
             out[k] = type(default)(raw.get(k, default))
         except (TypeError, ValueError):
             out[k] = default
-    out["cross_site"] = str(raw.get("cross_site", False)).strip().lower() in ("1", "true", "yes", "on")
+    for key in BOOL_KEYS:
+        out[key] = str(raw.get(key, False)).strip().lower() in ("1", "true", "yes", "on")
     out["daily"] = max(0, min(200, int(out["daily"])))
     out["min_interval_hours"] = max(0.0, float(out["min_interval_hours"]))
     out["min_completeness"] = min(1.0, max(0.0, float(out["min_completeness"])))
@@ -191,6 +195,105 @@ class _RenderBrowser:
         return self.obs.get(url, [])
 
 
+# ---------- P17：控制、产出统计、后台运行 ----------
+def control_path(data_dir: Path) -> Path:
+    return Path(data_dir) / "discovery" / "control.json"
+
+
+def is_paused(data_dir: Path) -> bool:
+    data = read_json(control_path(data_dir), default=None)
+    return bool(isinstance(data, dict) and data.get("paused"))
+
+
+def set_paused(data_dir: Path, paused: bool, now: Optional[datetime] = None) -> dict[str, Any]:
+    """暂停/恢复自动探索。暂停后，正在进行的一轮会在下一个站点或页面前停止。"""
+    data = {"paused": bool(paused), "changed_at": (now or datetime.now().astimezone()).isoformat(timespec="seconds")}
+    path = control_path(data_dir)
+    with file_lock(path):
+        atomic_write_json(path, data)
+    return data
+
+
+def productivity(entry: Optional[dict[str, Any]]) -> float:
+    """站点产出分：(新增候选 + 2×采纳 + 1) / (探索次数 + 2)。没有记录时为先验 0.5。"""
+    entry = entry or {}
+    return (float(entry.get("found", 0)) + 2.0 * float(entry.get("accepted", 0)) + 1.0) / (
+        float(entry.get("checks", 0)) + 2.0)
+
+
+def _is_low_yield(entry: Optional[dict[str, Any]], now: datetime, cfg: dict[str, float]) -> bool:
+    entry = entry or {}
+    if float(entry.get("checks", 0)) < cfg["low_yield_checks"]:
+        return False
+    if productivity(entry) >= cfg["low_yield_threshold"]:
+        return False
+    last = entry.get("last")
+    try:
+        return now - datetime.fromisoformat(str(last)) < timedelta(days=cfg["recheck_days"])
+    except (TypeError, ValueError):
+        return False
+
+
+def top_yield(data_dir: Path, limit: int = 5) -> list[dict[str, Any]]:
+    yields = _load_state(data_dir).get("yield", {})
+    rows = [{"host": h, "found": int(v.get("found", 0)), "accepted": int(v.get("accepted", 0)),
+             "checks": int(v.get("checks", 0)), "productivity": round(productivity(v), 3)}
+            for h, v in yields.items()]
+    return sorted(rows, key=lambda r: -r["productivity"])[:limit]
+
+
+def last_summary(data_dir: Path) -> Optional[dict[str, Any]]:
+    rows = list(read_jsonl(Path(data_dir) / "discovery" / "yield.jsonl"))
+    return rows[-1] if rows else None
+
+
+def _window_open(window: str, now: datetime) -> bool:
+    """HH:MM-HH:MM 的运行窗口；支持跨午夜（如 22:00-06:00）。格式不对时视为全天。"""
+    m = re.fullmatch(r"\s*(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})\s*", window or "")
+    if not m:
+        return True
+    start = int(m.group(1)) * 60 + int(m.group(2))
+    end = int(m.group(3)) * 60 + int(m.group(4))
+    cur = now.hour * 60 + now.minute
+    if start == end:
+        return True
+    return start <= cur < end if start < end else (cur >= start or cur < end)
+
+
+def _default_llm(settings: Any) -> tuple[Any, str]:
+    from core.llm import LLMUnavailable, build_llm, resolve_provider
+    try:
+        return build_llm(settings), resolve_provider(settings).label
+    except LLMUnavailable:
+        return None, ""
+
+
+def maybe_run_background(settings: Any, now: Optional[datetime] = None) -> Optional[dict[str, Any]]:
+    """由调度（tick）调用。默认关闭；开启后按间隔与运行窗口执行一轮，暂停时不执行。"""
+    from adapters.base import FetchContext
+    now = now or datetime.now().astimezone()
+    root, data_dir = settings.paths.root, settings.paths.data_dir
+    cfg = load_config(root)
+    if not cfg["background"] or is_paused(data_dir) or not _window_open(str(cfg["background_window"]), now):
+        return None
+    state = _load_state(data_dir)
+    last = state.get("background_last")
+    if last:
+        try:
+            if now - datetime.fromisoformat(str(last)) < timedelta(hours=float(cfg["background_every_hours"])):
+                return None
+        except ValueError:
+            pass
+    state["background_last"] = now.isoformat(timespec="seconds")
+    _save_state(data_dir, state)                     # 先记录时间：失败也不会在同一间隔内反复尝试
+    llm, label = _default_llm(settings)
+    renderer = None
+    if cfg["render"] == "headed":
+        from core.explore_render import HeadedRenderer
+        renderer = HeadedRenderer(data_dir / "discovery" / "scratch")
+    return run(settings, llm, ctx=FetchContext(), now=now, provider_label=label, renderer=renderer)
+
+
 def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:40] or "root"
 
@@ -236,6 +339,9 @@ def run(settings: Any, llm: Any, *, ctx: Any, now: Optional[datetime] = None,
     day = now.date().isoformat()
     skipped: dict[str, int] = {}
     added: list[dict[str, Any]] = []
+    if is_paused(data_dir):
+        return {"added": [], "skipped": {"paused": 1}, "sites": 0, "queued": Frontier(data_dir).queued_count(),
+                "paused": True}
 
     def skip(reason: str) -> None:
         skipped[reason] = skipped.get(reason, 0) + 1
@@ -260,6 +366,17 @@ def run(settings: Any, llm: Any, *, ctx: Any, now: Optional[datetime] = None,
     sites = seeds + harvest_hosts(data_dir, known_hosts, int(cfg["harvest_limit"]), now)
     trusted = {host_of(s["url"]) for s in seeds}
     trusted |= {host_of(str(c.get("url") or "")) for c in cands if c.get("status") == "accepted"}
+    yields: dict[str, dict[str, Any]] = state.setdefault("yield", {})
+    accepted_by_host: dict[str, int] = {}
+    for c in cands:
+        if c.get("origin") == "auto_explore" and c.get("status") == "accepted":
+            h = host_of(str(c.get("url") or ""))
+            accepted_by_host[h] = accepted_by_host.get(h, 0) + 1
+
+    def prod_of(host: str) -> float:
+        return productivity(dict(yields.get(host, {}), accepted=accepted_by_host.get(host, 0)))
+
+    sites = sorted(sites, key=lambda st: -prod_of(host_of(st["url"])))   # 产出高的站点先处理（稳定排序）
     denylist = load_denylist(root)
     frontier = Frontier(data_dir, int(cfg["frontier_max_queued"]))
     render_on = renderer is not None and cfg["render"] == "headed"
@@ -304,6 +421,8 @@ def run(settings: Any, llm: Any, *, ctx: Any, now: Optional[datetime] = None,
         cands.append(cand)
         pending.append(cand)
         added.append(cand)
+        yields.setdefault(host_of(url), {}).update(
+            found=int(yields.get(host_of(url), {}).get("found", 0)) + 1)
         _log(data_dir, {"time": stamp, "host": host_of(url), "step": "candidate", "result": "added",
                         "candidate": cid, "total": total, "completeness": round(complete, 3)})
         return None
@@ -391,7 +510,11 @@ def run(settings: Any, llm: Any, *, ctx: Any, now: Optional[datetime] = None,
         return text
 
     # ---- 1) 队列中上次留下的页面 ----
-    for row in frontier.next_batch(int(cfg["frontier_batch"]), host_ok):
+    for row in frontier.next_batch(int(cfg["frontier_batch"]), host_ok,
+                                   weight=lambda h: 0.5 + prod_of(h)):
+        if is_paused(data_dir):
+            skip("paused")
+            break
         url, h, depth = row["url"], row.get("host", ""), int(row.get("depth", 1))
         ok, why, _ = robots_for(url)
         if not ok:
@@ -416,6 +539,12 @@ def run(settings: Any, llm: Any, *, ctx: Any, now: Optional[datetime] = None,
         url = site["url"]
         host = host_of(url)
         base_id = f"{PREFIX}{host}"
+        if is_paused(data_dir):
+            skip("paused")
+            break
+        if _is_low_yield(dict(yields.get(host, {}), accepted=accepted_by_host.get(host, 0)), now, cfg):
+            skip("low_yield")
+            continue
         if today_count >= int(cfg["daily"]):
             skip("daily_cap")
             break
@@ -432,6 +561,8 @@ def run(settings: Any, llm: Any, *, ctx: Any, now: Optional[datetime] = None,
             skip("denylisted")
             continue
         checked += 1
+        entry = yields.setdefault(host, {})
+        entry.update(checks=int(entry.get("checks", 0)) + 1, last=stamp)
         state.setdefault("hosts", {})[host] = stamp
         today_count += 1
         state.setdefault("days", {})[day] = today_count
@@ -477,4 +608,9 @@ def run(settings: Any, llm: Any, *, ctx: Any, now: Optional[datetime] = None,
     state["renders"] = renders
     state.setdefault("host_pages", {})[day] = host_pages
     _save_state(data_dir, state)
-    return {"added": added, "skipped": skipped, "sites": checked, "queued": frontier.queued_count()}
+    queued = frontier.queued_count()
+    summary = {"time": stamp, "sites": checked, "added": len(added), "skipped": skipped,
+               "queued": queued, "top": top_yield(data_dir, 3), "paused": False}
+    with file_lock(Path(data_dir) / "discovery" / "yield.jsonl"):
+        append_jsonl(Path(data_dir) / "discovery" / "yield.jsonl", summary)
+    return {"added": added, "skipped": skipped, "sites": checked, "queued": queued, "paused": False}

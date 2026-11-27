@@ -222,6 +222,7 @@ health:
 | 不开看板也要调度 | 系统计划任务每 5 分钟 `python cli.py tick` |
 
 ## 变更记录
+- 2026-11-27（P17）：产出驱动与后台运行。站点产出分 =（新增 + 2×采纳 + 1）/（探索次数 + 2），产出高的站点先处理，队列中的页面按站点产出加权；连续探索达到阈值仍无产出的站点降频，到期（默认 30 天）复查一次。后台运行由 `tick` 调用，默认关闭（`discovery.yaml` 的 `autoexplore.background`），按间隔与运行窗口执行；暂停（`data/discovery/control.json`）后立即停止新请求。每轮结束写入 `data/discovery/yield.jsonl` 摘要，看板候选区显示状态、最近一轮与产出最高的站点。测试：`tests/test_autoexplore_p17.py`（13 项）。
 - 2026-11-27（P16）：Frontier（待访问队列）。`core/frontier.py`：队列持久化在 `data/discovery/frontier.jsonl`（只追加，同一 URL 以最后一行为准），重启后可续跑。入队规则：只接受 https，去掉追踪参数；深度不超过 2；默认只入同站，跨站需 `cross_site: true` 且来源可信；登录、注册、购物、下载、广告与文件类路径直接丢弃；禁止名单（`config/denylist.yaml`）命中不入队；每页入队上限与队列全局上限。运行时：先处理队列中的页面（按优先级与深度），再处理站点；站点的栏目页在本轮内最多处理 `max_listing_pages` 个，其余入队留给后续运行。每站点每天访问页数有上限（`host_daily_pages`）。`run()` 的页面处理统一抽成 `explore_page`。测试：`tests/test_frontier.py`（18 项）。
 - 2026-11-27（P15）：网络接口观察。有头渲染时，`BrowserSession.fetch_html` 可挂接响应回调；`HeadedRenderer` 对 JSON 响应当场分析，识别“对象数组（≥3 条）+ 标题字段 + 绝对 https 链接字段”的列表型接口。只保留结论（接口地址、列表路径、字段映射），不保存响应正文；接口地址中疑似令牌、签名、用户标识类参数被剔除。识别结果生成 `json_api` 候选（不需要模型，默认停用）。模块：`core/explore_json_api.py`。测试：`tests/test_autoexplore_p15.py`。
 - 2026-11-27（P14）：自动探索形态扩展。订阅入口（`<link rel=alternate>` 的 RSS/Atom）直接生成 rss 候选，不需要模型；sitemap 与站内分类页作为独立栏目候选逐个判断；页面没有列表结构时，若 `render: headed`，用有头浏览器（一次性 profile，强制有头）渲染后再判断，渲染结果在本轮内复用。没有模型时仍会发现订阅入口和渲染候选，只是不生成 HTML 草稿。模块：`core/explore_forms.py`、`core/explore_render.py`。测试：`tests/test_autoexplore_p14.py`。

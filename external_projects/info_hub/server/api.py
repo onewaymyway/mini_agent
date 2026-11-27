@@ -1165,6 +1165,24 @@ def autoexplore_run_api(settings: Settings) -> dict[str, Any]:
     return {"added": len(result["added"]), "skipped": result["skipped"], "sites": result["sites"]}
 
 
+def autoexplore_status_api(settings: Settings) -> dict[str, Any]:
+    """P17：自动探索的状态：是否暂停、后台是否开启、最近一轮摘要、产出最高的站点。"""
+    from core import autoexplore
+    from core.frontier import Frontier
+    data_dir = settings.paths.data_dir
+    cfg = autoexplore.load_config(settings.paths.root)
+    return {"paused": autoexplore.is_paused(data_dir), "background": cfg["background"],
+            "background_every_hours": cfg["background_every_hours"], "background_window": cfg["background_window"],
+            "queued": Frontier(data_dir).queued_count(), "last": autoexplore.last_summary(data_dir),
+            "top": autoexplore.top_yield(data_dir)}
+
+
+def autoexplore_pause_api(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
+    from core import autoexplore
+    autoexplore.set_paused(settings.paths.data_dir, bool(body.get("paused")))
+    return autoexplore_status_api(settings)
+
+
 def accept_candidate(settings: Settings, cid: str) -> dict[str, Any]:
     from core import discovery
     from core.source_store import SourceError, write_source

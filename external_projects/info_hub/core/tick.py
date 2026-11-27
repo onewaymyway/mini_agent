@@ -52,6 +52,11 @@ def _run_tick(settings: Settings, now: Optional[datetime], ctx) -> TickReport:
         maybe_run_retention(settings, now)
     except Exception as exc:  # noqa: BLE001
         print(f"[retention] 跳过自动清理: {type(exc).__name__}: {exc}")
+    try:  # P17：后台自动探索，默认关闭；失败不影响本次调度
+        from core.autoexplore import maybe_run_background
+        maybe_run_background(settings, now)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[autoexplore] 跳过后台探索: {type(exc).__name__}: {exc}")
     state_path = settings.paths.state_dir / "_scheduler.json"
     default_every = settings.defaults.get("schedule_every", "60m")
     ctx = ctx or default_context(settings)
