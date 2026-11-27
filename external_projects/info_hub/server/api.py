@@ -1205,13 +1205,31 @@ def explore_params_save(settings: Settings, body: dict[str, Any]) -> dict[str, A
 
 
 def explore_params_reset(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
+    """恢复默认。section=\"all\" 清除全部分组的看板设置（P19-4）；否则清除该分组（可指定 key）。"""
     from core import explore_params
-    section = _explore_section(str(body.get("section") or ""))
-    key = body.get("key") or None
+    raw_section = str(body.get("section") or "")
     try:
-        return explore_params.reset(settings.paths.root, section, key)
+        if raw_section == "all":
+            if body.get("key"):
+                raise ValueError("恢复全部时不能指定单个参数")
+            out = explore_params.reset_all(settings.paths.root)
+            return {"sections": [explore_params.describe(settings.paths.root, s) for s in out]}
+        section = _explore_section(raw_section)
+        return explore_params.reset(settings.paths.root, section, body.get("key") or None)
     except ValueError as exc:
         raise ApiError(400, str(exc))
+
+
+def explore_params_history(settings: Settings, section: str | None = None, limit: int = 50) -> dict[str, Any]:
+    """P19-4：参数变更记录，最新在前。"""
+    from core import explore_params
+    if section not in (None, "") and section not in EXPLORE_PARAM_SECTIONS:
+        raise ApiError(400, f"未知参数分组：{section}")
+    try:
+        rows = explore_params.history(settings.paths.root, section or None, limit)
+    except ValueError as exc:
+        raise ApiError(400, str(exc))
+    return {"rows": rows}
 
 
 def autoexplore_pause_api(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:

@@ -19,8 +19,10 @@ from typing import Any
 
 import yaml
 
+from datetime import datetime
+
 from core.settings import load_settings, read_runtime_config
-from core.store import atomic_write_json, file_lock
+from core.store import append_jsonl, atomic_write_json, file_lock, read_jsonl
 
 KEY = "explore_params"
 DISCOVERY_FILE = "discovery.yaml"
@@ -171,11 +173,52 @@ def coerce(spec: dict[str, Any], value: Any) -> Any:
     return result
 
 
-def _runtime_path(root: Path) -> Path:
+def _data_dir(root: Path) -> Path:
     try:
-        return load_settings(root).paths.state_dir / "runtime_config.json"
+        return load_settings(root).paths.data_dir
     except (OSError, ValueError):
-        return Path(root) / "data" / "state" / "runtime_config.json"
+        return Path(root) / "data"
+
+
+def _runtime_path(root: Path) -> Path:
+    return _data_dir(root) / "state" / "runtime_config.json"
+
+
+def changes_path(root: Path) -> Path:
+    """P19-4：参数变更记录（只追加，纯文本 jsonl）。"""
+    return _data_dir(root) / "discovery" / "param_changes.jsonl"
+
+
+def _effective(root: Path, section: str) -> dict[str, Any]:
+    return {r["key"]: r["value"] for r in describe(root, section)["rows"]}
+
+
+def _record(root: Path, section: str, before: dict[str, Any], after: dict[str, Any],
+            action: str, keys: list[str] | None = None) -> None:
+    """记录生效值发生变化的参数（原值 → 新值）。没有变化则不记录。"""
+    stamp = datetime.now().astimezone().isoformat(timespec="seconds")
+    rows = []
+    for key in (keys if keys is not None else list(after)):
+        if key in before and before[key] != after.get(key):
+            rows.append({"time": stamp, "section": section, "key": key, "action": action,
+                         "old": before[key], "new": after.get(key)})
+    if not rows:
+        return
+    path = changes_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with file_lock(path):
+        for row in rows:
+            append_jsonl(path, row)
+
+
+def history(root: Path, section: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+    """最近的变更记录，最新在前；可按分组过滤。"""
+    if section is not None and section not in SCHEMA:
+        raise ValueError(f"未知参数分组：{section}")
+    rows = [r for r in read_jsonl(changes_path(root)) if isinstance(r, dict)]
+    if section is not None:
+        rows = [r for r in rows if r.get("section") == section]
+    return list(reversed(rows))[:max(0, int(limit))]
 
 
 def _yaml_section(root: Path, section: str) -> dict[str, Any]:
@@ -249,6 +292,7 @@ def save(root: Path, section: str, values: dict[str, Any], *, now_iso: str = "")
         if key not in specs:
             raise ValueError(f"未知参数：{key}")
         clean[key] = coerce(specs[key], value)
+    before = _effective(root, section)
     path = _runtime_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
     with file_lock(path):
@@ -261,7 +305,9 @@ def save(root: Path, section: str, values: dict[str, Any], *, now_iso: str = "")
         if now_iso:
             data["updated_at"] = now_iso
         atomic_write_json(path, data)
-    return describe(root, section)
+    result = describe(root, section)
+    _record(root, section, before, {r["key"]: r["value"] for r in result["rows"]}, "save", list(clean))
+    return result
 
 
 def reset(root: Path, section: str, key: str | None = None) -> dict[str, Any]:
@@ -269,6 +315,7 @@ def reset(root: Path, section: str, key: str | None = None) -> dict[str, Any]:
     specs = _specs(section)
     if key is not None and key not in specs:
         raise ValueError(f"未知参数：{key}")
+    before = _effective(root, section)
     path = _runtime_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
     with file_lock(path):
@@ -283,4 +330,12 @@ def reset(root: Path, section: str, key: str | None = None) -> dict[str, Any]:
                     stored.pop(section, None)
         data[KEY] = stored
         atomic_write_json(path, data)
-    return describe(root, section)
+    result = describe(root, section)
+    _record(root, section, before, {r["key"]: r["value"] for r in result["rows"]}, "reset",
+            None if key is None else [key])
+    return result
+
+
+def reset_all(root: Path) -> dict[str, Any]:
+    """P19-4：一键恢复全部默认（清除所有分组的看板设置；不改动 config/discovery.yaml）。"""
+    return {sec: reset(root, sec) for sec in SCHEMA}

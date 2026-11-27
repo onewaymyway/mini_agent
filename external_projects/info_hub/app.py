@@ -1217,7 +1217,10 @@ def _explore_params_panel() -> None:
     # 上一轮保存/清除后留下的待处理标记：必须在控件实例化之前清理（Streamlit 不允许同轮改写已用的控件值）
     pending = st.session_state.pop("_ep_forget", None)
     if pending:
-        _forget_param_widgets(pending)
+        for sec in (api.EXPLORE_PARAM_SECTIONS if pending == "all" else [pending]):
+            _forget_param_widgets(sec)
+        if pending == "all":
+            st.session_state.pop("ep_reset_all_confirm", None)
     data = call(api.explore_params_overview, settings)
     if not data:
         return
@@ -1251,6 +1254,29 @@ def _explore_params_panel() -> None:
                     st.session_state["_ep_forget"] = section
                     st.success("已清除该组的看板设置。")
                     st.rerun()
+
+        st.divider()
+        confirm = st.checkbox("我确认：清除全部探索参数的看板设置（不改动 config/discovery.yaml）",
+                              key="ep_reset_all_confirm")
+        if st.button("↩ 恢复全部默认", key="ep_reset_all", disabled=not confirm):
+            if call(api.explore_params_reset, settings, {"section": "all"}) is not None:
+                st.session_state["_ep_forget"] = "all"
+                st.success("已恢复全部探索参数。")
+                st.rerun()
+
+        # P19-4：变更记录（不能再嵌套 expander，直接展示）
+        hist = call(api.explore_params_history, settings, None, 30)
+        st.markdown("**📜 参数变更记录（最近 30 条，最新在前）**")
+        if hist and hist["rows"]:
+            titles = {sec["section"]: sec["title"] for sec in data["sections"]}
+            labels = {(sec["section"], r["key"]): r["label"] for sec in data["sections"] for r in sec["rows"]}
+            st.dataframe(pd.DataFrame([{
+                "时间": fmt_time(r.get("time")), "分组": titles.get(r.get("section"), r.get("section")),
+                "参数": labels.get((r.get("section"), r.get("key")), r.get("key")),
+                "动作": "恢复默认" if r.get("action") == "reset" else "保存",
+                "原值": str(r.get("old")), "新值": str(r.get("new"))} for r in hist["rows"]]), hide_index=True)
+        else:
+            st.caption("还没有变更记录。")
 
 
 # ---------- 复查与退役（P18） ----------

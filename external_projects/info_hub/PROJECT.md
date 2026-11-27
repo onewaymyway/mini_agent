@@ -224,6 +224,7 @@ health:
 | 不开看板也要调度 | 系统计划任务每 5 分钟 `python cli.py tick` |
 
 ## 变更记录
+- 2026-11-27（P19）：探索参数看板化（设计：`next_doc/info_hub_auto_explore_crawler_design.md` 第 13 节）。P19-1：参数注册表 `core/explore_params.py`，看板覆盖值存于 `data/state/runtime_config.json`，优先于 `config/discovery.yaml`。P19-2：“自动探索”页签的“探索参数设置”可编辑（只提交改动项，清除回到 yaml/默认）。P19-3：队列深度、接口识别阈值、渲染上限与超时、发现额度与采纳门槛迁入注册表（默认值不变）。P19-4：参数变更记录 `data/discovery/param_changes.jsonl`、一键恢复全部默认。测试：`tests/test_explore_params_p19*.py`、`tests/test_explore_params_form_p19.py`（共 45 项）。
 - 2026-11-27（自动探索页签）：看板新增“自动探索”页签（位于“订阅”之后），集中展示运行状态与暂停/立即探索、今日用量、最近几轮、站点产出、待访问队列、请求审计、当前参数，并把 P18 的“复查与退役”面板移入该页签。只读聚合接口：`server/api.py::autoexplore_overview_api`。测试：`tests/test_explore_overview.py`（6 项）；`tests/test_dashboard_layout.py` 的页签顺序已更新。
 - 2026-11-27（P18）：复查与退役。对「自动探索发现且已确认启用」的源做周期复查（默认关闭，`discovery.yaml` 的 `review.enabled`；开启后由 `tick` 每天最多一轮）：小样本预览不达标即失败；失败时在同站找替代入口（首页订阅入口 / 常见订阅路径 / 可选模型重建同页草稿）入候选收件箱（默认停用，带 `replaces`，确认后原源退役）；连续失败 `retire_after` 次默认只建议退役，`auto_retire` 开启才自动停用。需要浏览器的源不复查；遵守 robots、禁止名单、暂停开关。退役只停用并记录（`data/discovery/retired.jsonl`）。看板新增“🩺 信息源复查与退役”，CLI 新增 `review` / `retire`。顺带修复：候选 id 校验只认 `disc_`，导致自动探索候选在看板无法加入/忽略。模块：`core/review.py`。测试：`tests/test_review_p18.py`（25 项）。
 - 2026-11-27（P17）：产出驱动与后台运行。站点产出分 =（新增 + 2×采纳 + 1）/（探索次数 + 2），产出高的站点先处理，队列中的页面按站点产出加权；连续探索达到阈值仍无产出的站点降频，到期（默认 30 天）复查一次。后台运行由 `tick` 调用，默认关闭（`discovery.yaml` 的 `autoexplore.background`），按间隔与运行窗口执行；暂停（`data/discovery/control.json`）后立即停止新请求。每轮结束写入 `data/discovery/yield.jsonl` 摘要，看板候选区显示状态、最近一轮与产出最高的站点。测试：`tests/test_autoexplore_p17.py`（13 项）。

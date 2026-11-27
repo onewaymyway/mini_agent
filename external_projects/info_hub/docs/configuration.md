@@ -109,7 +109,7 @@ categories:
 - 推荐页的参数修改在“刷新推荐”或重新加载后生效。
 - 信息源配置修改后建议执行 `python cli.py validate`。
 
-## 自动探索（config/discovery.yaml 的 autoexplore 段，P12）
+## 自动探索（config/discovery.yaml 的 autoexplore 段，P12；参数可在看板修改，见下文 P19）
 
 | 参数 | 默认 | 含义 |
 |---|---|---|
@@ -146,7 +146,7 @@ categories:
 
 说明：有头渲染使用一次性 profile，结束即删除，不携带任何登录态。渲染得到的候选会标注 `browser.required`；它们在正式运行时仍使用现有的共享浏览器会话（只用于公开页面），这一点与探索过程不同。
 
-### 复查与退役（P18，config/discovery.yaml 的 review 段）
+### 复查与退役（P18，config/discovery.yaml 的 review 段；参数可在看板修改，见下文 P19）
 
 默认关闭。只复查「自动探索发现、且已确认启用」的信息源；手工配置的源、已停用的源、需要浏览器的源不复查。
 
@@ -194,3 +194,9 @@ categories:
 | 采纳率自动暂停 | `min_decisions` / `min_rate` | 5 / 0.2 | 对应 yaml 的 `adoption.*`；`min_rate` 设为 0 即关闭自动暂停 |
 
 看板中这两组分别显示为“发现额度（搜索模板）”“采纳率自动暂停”，与自动探索、复查两组并列。
+
+### P19-4 变更记录与恢复
+
+- 每次保存或清除看板设置时，生效值发生变化的参数会追加一条记录到 `data/discovery/param_changes.jsonl`（字段：`time`、`section`、`key`、`action`（save / reset）、`old`、`new`）。
+- 看板“恢复全部默认”清除四组的看板设置；yaml 中的值保持不变，因此恢复后的生效值是 yaml 中的值（没有 yaml 设置的参数才回到默认值）。
+- 接口：`explore_params_history(settings, section, limit)`；`explore_params_reset(settings, {"section": "all"})`。
