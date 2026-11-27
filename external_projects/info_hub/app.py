@@ -650,6 +650,7 @@ def _merged_view(srcs: list[dict], cat_label: str) -> None:
 
 def _results_tab():
     _candidates_panel()
+    _review_panel()
     _evaluation_panel()
     _srcs = [x for x in (call(api.list_sources, settings) or {"sources": []})["sources"]
              if not x.get("config_errors")]
@@ -1091,6 +1092,8 @@ def _candidates_panel() -> None:
         for c in pending:
             with st.container(border=True):
                 st.markdown(f"**{c['template_name']}** · 查询词：`{c['query']}`")
+                if c.get("replaces"):
+                    st.warning(f"🔁 替代方案：加入后，原信息源 `{c['replaces']}` 将被停用并记录为退役。")
                 st.caption(f"原因：{c['reason']} · 生成于 {fmt_time(c['created_at'])}")
                 st.code(c["url"], language=None)
                 open_button(c["url"], f"op_cand_{c['id']}", label="🖥 打开")
@@ -1102,6 +1105,59 @@ def _candidates_panel() -> None:
                 if b2.button("忽略", key=f"cand_no_{c['id']}"):
                     if call(api.reject_candidate, settings, c["id"]) is not None:
                         st.rerun()
+
+# ---------- 复查与退役（P18） ----------
+_REVIEW_STATUS = {"ok": "🟢 正常", "failing": "🟠 复查失败", "retire_suggested": "🔴 建议退役",
+                  "retired": "⚫ 已退役", "unreviewed": "⚪ 未复查"}
+
+
+@st.fragment
+def _review_panel() -> None:
+    data = call(api.review_status_api, settings)
+    if not data:
+        return
+    rows = data["rows"]
+    bad = [r for r in rows if r["status"] in ("failing", "retire_suggested")]
+    with st.expander(f"🩺 信息源复查与退役（{len(rows)} 个自动探索源，需关注 {len(bad)} 个）", expanded=bool(bad)):
+        last = data.get("last") or {}
+        st.caption(
+            f"周期复查：{'已开启' if data['enabled'] else '未开启（config/discovery.yaml 的 review.enabled）'}；"
+            f"间隔 {data['every_days']} 天；连续失败 {data['retire_after']} 次后"
+            f"{'自动停用' if data['auto_retire'] else '仅建议退役，不自动停用'}。"
+            + (f" 最近一轮 {fmt_time(last.get('time'))}：复查 {last.get('reviewed', 0)} 个，"
+               f"失效 {last.get('failing', 0)} 个，新增替代候选 {last.get('alternatives', 0)} 条。" if last else ""))
+        if st.button("🔍 立即复查", key="review_run_btn",
+                     help="只复查已确认启用的自动探索源，做一次小样本预览；失效时在候选收件箱生成替代方案。"):
+            with st.spinner("正在复查…"):
+                out = call(api.review_run_api, settings)
+            if out is not None:
+                st.success(f"复查 {out['reviewed']} 个：正常 {out['ok']}，失效 {out['failing']}，"
+                           f"新增替代候选 {out['alternatives']} 条。")
+                st.rerun(scope="fragment")
+        if not rows:
+            st.caption("还没有由自动探索发现并启用的信息源。")
+        for r in rows:
+            with st.container(border=True):
+                st.markdown(f"**{r['name']}** `{r['source_id']}` · {_REVIEW_STATUS.get(r['status'], r['status'])}")
+                detail = []
+                if r["last_review"]:
+                    detail.append(f"最近复查 {fmt_time(r['last_review'])}")
+                if r["failures"]:
+                    detail.append(f"连续失败 {r['failures']} 次")
+                if r["last_error"]:
+                    detail.append(f"原因：{r['last_error'][:80]}")
+                if r["pending_alternatives"]:
+                    detail.append(f"待确认替代候选 {len(r['pending_alternatives'])} 条（见上方候选收件箱）")
+                if r["retired_reason"]:
+                    detail.append(f"退役原因：{r['retired_reason']}")
+                if detail:
+                    st.caption("；".join(detail))
+                if r["status"] in ("failing", "retire_suggested"):
+                    if st.button("退役（停用并记录）", key=f"retire_{r['source_id']}"):
+                        if call(api.retire_source_api, settings, {"source_id": r["source_id"],
+                                                                 "reason": "用户在看板退役"}) is not None:
+                            st.rerun(scope="fragment")
+
 
 # ---------- 阅读与反馈（第一阶段） ----------
 def _reading_panel(sid: str, items: list[dict], view: str = "plain") -> None:

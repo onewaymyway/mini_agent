@@ -15,6 +15,8 @@
 | `python cli.py tick` | 执行一次调度：运行到期的信息源，生成到期的报告 |
 | `python cli.py health` | 查看各信息源的健康状态 |
 | `python cli.py resume <id>` | 恢复被暂停或连续失败的信息源 |
+| `python cli.py review` | 立即复查已接受的自动探索源（P18，忽略到期时间），失效时生成替代候选 |
+| `python cli.py retire <id>` | 退役一个信息源（停用并记录，不删除文件） |
 
 `INFO_HUB_ROOT` 环境变量可指定项目根目录（测试与多实例时使用）。
 

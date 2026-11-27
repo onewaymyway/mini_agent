@@ -10,6 +10,8 @@
   python cli.py tick                 执行一次调度：运行到期的信息源并生成到期的报告
   python cli.py health               查看各信息源健康状态（连续失败、降频、暂停）
   python cli.py resume <source_id>   手动恢复被暂停/连续失败的信息源
+  python cli.py review               立即复查已接受的自动探索源（P18，忽略到期时间）
+  python cli.py retire <source_id>   退役一个信息源（停用并记录，不删除文件）
 """
 from __future__ import annotations
 
@@ -195,6 +197,34 @@ def cmd_tick(settings) -> int:
     return 0
 
 
+def cmd_review(settings) -> int:
+    from server import api
+
+    out = api.review_run_api(settings)
+    if out.get("paused"):
+        print("自动探索已暂停，未复查。")
+        return 0
+    print(f"复查 {out['reviewed']} 个源：正常 {out['ok']}，失效 {out['failing']}，"
+          f"新增替代候选 {out['alternatives']}，建议退役 {out['retire_suggested']}，已退役 {out['retired']}")
+    if out["skipped"]:
+        print("跳过原因：" + "、".join(f"{k} {v}" for k, v in out["skipped"].items()))
+    for r in api.review_status_api(settings)["rows"]:
+        print(f"  {r['source_id']}  {r['status']}  连续失败 {r['failures']}  {r['last_error'][:60]}")
+    return 0
+
+
+def cmd_retire(settings, source_id: str) -> int:
+    from server import api
+
+    try:
+        out = api.retire_source_api(settings, {"source_id": source_id})
+    except api.ApiError as exc:
+        print(str(exc))
+        return 1
+    print("已退役并停用：" + source_id if not out.get("already") else "此前已退役：" + source_id)
+    return 0
+
+
 def main(argv: list[str] | None = None, root: Path | None = None) -> int:
     parser = argparse.ArgumentParser(prog="info_hub")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -211,6 +241,9 @@ def main(argv: list[str] | None = None, root: Path | None = None) -> int:
     sub.add_parser("health", help="查看信息源健康状态")
     p_resume = sub.add_parser("resume", help="手动恢复被暂停的信息源")
     p_resume.add_argument("source_id")
+    sub.add_parser("review", help="立即复查已接受的自动探索源（P18）")
+    p_retire = sub.add_parser("retire", help="退役一个信息源（停用并记录）")
+    p_retire.add_argument("source_id")
     args = parser.parse_args(argv)
 
     settings = load_settings(root)
@@ -232,6 +265,10 @@ def main(argv: list[str] | None = None, root: Path | None = None) -> int:
         return cmd_health(settings)
     if args.command == "resume":
         return cmd_resume(settings, args.source_id)
+    if args.command == "review":
+        return cmd_review(settings)
+    if args.command == "retire":
+        return cmd_retire(settings, args.source_id)
     return 2
 
 

@@ -146,5 +146,22 @@ categories:
 
 说明：有头渲染使用一次性 profile，结束即删除，不携带任何登录态。渲染得到的候选会标注 `browser.required`；它们在正式运行时仍使用现有的共享浏览器会话（只用于公开页面），这一点与探索过程不同。
 
+### 复查与退役（P18，config/discovery.yaml 的 review 段）
+
+默认关闭。只复查「自动探索发现、且已确认启用」的信息源；手工配置的源、已停用的源、需要浏览器的源不复查。
+
+| 参数 | 默认 | 含义 |
+|---|---|---|
+| enabled | false | 是否由调度（tick）每天最多运行一轮复查 |
+| every_days | 30 | 正常源的复查间隔 |
+| failing_recheck_days | 7 | 上次复查失败的源的复查间隔 |
+| retire_after | 3 | 连续复查失败多少次后建议退役 |
+| auto_retire | false | 是否自动停用；默认只建议，不自动改动 |
+| max_alternatives | 3 | 每个失效源每次最多生成的替代候选 |
+| daily | 10 | 每轮最多复查的源数 |
+| redraft | true | 失效源是 html_list 且有可用模型时，让模型重建同页面草稿 |
+
+状态文件：`data/discovery/review_state.json`（每源复查状态）、`retired.jsonl`（退役记录）、`review.jsonl`（每轮摘要）。退役只停用并记录，不删除文件；暂停自动探索后复查也会停止。
+
 种子目录 `config/seed_sites.yaml` 由项目维护，用户不需要编辑。目录内容是草案，尚未在真实环境中逐个核对。
 

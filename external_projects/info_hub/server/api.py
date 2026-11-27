@@ -1106,7 +1106,8 @@ def feed_replay_api(settings: Settings, days: float = 30) -> dict[str, Any]:
 
 
 # ---------- 信息源发现（第三阶段） ----------
-_CAND_RE = re.compile(r"^disc_[a-z][a-z0-9_]{1,15}_[0-9a-f]{6}$")
+# 画像模板候选 disc_…；自动探索候选 auto:<host>[#…]；复查替代候选 review:<source_id>#<hash>
+_CAND_RE = re.compile(r"^(disc_[a-z][a-z0-9_]{1,15}_[0-9a-f]{6}|(auto|review):[a-z0-9._-]{1,80}(#[a-z0-9_-]{1,60})?)$")
 
 
 def _candidate_validator(settings: Settings):
@@ -1183,6 +1184,37 @@ def autoexplore_pause_api(settings: Settings, body: dict[str, Any]) -> dict[str,
     return autoexplore_status_api(settings)
 
 
+def review_status_api(settings: Settings) -> dict[str, Any]:
+    """P18：复查状态：是否开启、最近一轮摘要、每个被复查源的状态。"""
+    from core import review
+    cfg = review.load_config(settings.paths.root)
+    return {"enabled": cfg["enabled"], "auto_retire": cfg["auto_retire"], "every_days": cfg["every_days"],
+            "retire_after": cfg["retire_after"], "last": review.last_summary(settings.paths.data_dir),
+            "rows": review.status_rows(settings), "retired": review.retired_rows(settings.paths.data_dir)[-20:]}
+
+
+def review_run_api(settings: Settings) -> dict[str, Any]:
+    """P18：手动复查（忽略到期时间与 review.enabled，只处理已接受的自动探索源）。"""
+    from adapters.base import FetchContext
+    from core import autoexplore, review
+    llm, label = autoexplore._default_llm(settings)
+    return review.run(settings, llm, ctx=FetchContext(), provider_label=label, force=True)
+
+
+def retire_source_api(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
+    """P18：手动退役一个信息源（停用并记录原因）。"""
+    from core import review
+    from core.source_store import SourceError
+    sid = str(body.get("source_id") or "")
+    if not sid or sid != Path(sid).name:
+        raise ApiError(400, "信息源 id 不合法")
+    reason = str(body.get("reason") or "用户手动退役")[:200]
+    try:
+        return review.retire(settings, sid, reason, by="user")
+    except SourceError as exc:
+        raise ApiError(404, str(exc))
+
+
 def accept_candidate(settings: Settings, cid: str) -> dict[str, Any]:
     from core import discovery
     from core.source_store import SourceError, write_source
@@ -1203,7 +1235,16 @@ def accept_candidate(settings: Settings, cid: str) -> dict[str, Any]:
     except SourceError as exc:
         raise ApiError(400, str(exc))
     discovery.decide(settings.paths.data_dir, cid, "accepted")
-    return {"id": cid, "path": str(target.relative_to(settings.paths.root))}
+    out = {"id": cid, "path": str(target.relative_to(settings.paths.root))}
+    old = cand.get("replaces")
+    if old:  # P18：用户确认了替代方案，原信息源随之退役（停用并记录，不删除文件）
+        from core import review
+        try:
+            review.retire(settings, str(old), f"replaced_by:{source['id']}", by="replace")
+            out["retired"] = str(old)
+        except SourceError:
+            out["retired"] = None   # 原源已不存在，无需退役
+    return out
 
 
 def reject_candidate(settings: Settings, cid: str) -> dict[str, Any]:

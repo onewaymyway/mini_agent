@@ -59,3 +59,16 @@ autoexplore:
   low_yield_checks: 5      # P17：探索达到该次数仍无产出，才视为低产出
   low_yield_threshold: 0.1 # P17：产出分低于该值视为低产出
   recheck_days: 30         # P17：低产出站点的复查间隔
+
+# 复查与退役（P18）：对「自动探索发现、且已确认启用」的信息源做周期复查（小样本预览）。
+# 默认关闭；开启后由 tick 每天最多运行一轮。失败时尝试同站替代入口（进候选收件箱，需确认）；
+# 连续失败达到 retire_after 次只标记「建议退役」，auto_retire 开启后才自动停用。需要浏览器的源不复查。
+review:
+  enabled: false
+  every_days: 30            # 正常源的复查间隔
+  failing_recheck_days: 7   # 上次复查失败的源的复查间隔
+  retire_after: 3           # 连续复查失败多少次后建议退役
+  auto_retire: false        # 是否自动停用（默认只建议，不自动改动）
+  max_alternatives: 3       # 每个失效源每次最多生成的替代候选
+  daily: 10                 # 每轮最多复查的源数
+  redraft: true             # 失效源是 html_list 且有可用模型时，让模型重建同页面草稿
