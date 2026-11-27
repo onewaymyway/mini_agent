@@ -108,3 +108,16 @@ categories:
 - `settings.yaml` 与 `sources/` 的修改在下次读取时生效；看板中的修改立即保存。
 - 推荐页的参数修改在“刷新推荐”或重新加载后生效。
 - 信息源配置修改后建议执行 `python cli.py validate`。
+
+## 自动探索（config/discovery.yaml 的 autoexplore 段，P12）
+
+| 参数 | 默认 | 含义 |
+|---|---|---|
+| daily | 20 | 每天最多探索的站点数（0 即关闭） |
+| min_interval_hours | 1 | 同一站点两次探索的最小间隔 |
+| min_items | 3 | 预览至少要有的条目数 |
+| min_completeness | 0.8 | 预览条目中标题与链接都有的比例 |
+| harvest_limit | 30 | 每轮从抓取条目中提取的外链站点上限 |
+
+种子目录 `config/seed_sites.yaml` 由项目维护，用户不需要编辑。目录内容是草案，尚未在真实环境中逐个核对。
+

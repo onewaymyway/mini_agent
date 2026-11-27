@@ -1051,6 +1051,15 @@ def _candidates_panel() -> None:
         return
     pending = [c for c in data["candidates"] if c["status"] == "pending"]
     with st.expander(f"📥 候选信息源（待确认 {len(pending)} 条）", expanded=bool(pending)):
+        if st.button("🔎 自动探索新站点", key="auto_explore_btn",
+                     help="按画像在公开站点中探索新信息源，结果进入下方候选收件箱（默认停用，需确认）。"):
+            with st.spinner("正在探索公开站点（每站点需通过 robots 检查与质量评估）…"):
+                out = call(api.autoexplore_run_api, settings)
+            if out is not None:
+                st.success(f"本轮检查 {out['sites']} 个站点，新增候选 {out['added']} 条。")
+                if out.get("skipped"):
+                    st.caption("未入箱的原因统计：" + "、".join(f"{k} {v}" for k, v in out["skipped"].items()))
+                st.rerun()
         if data.get("config_error"):
             st.error(data["config_error"])
             return

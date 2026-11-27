@@ -1143,6 +1143,20 @@ def generate_candidates(settings: Settings) -> dict[str, Any]:
     return {"added": len(result["added"]), "skipped": result["skipped"]}
 
 
+def autoexplore_run_api(settings: Settings) -> dict[str, Any]:
+    """P12：自动探索新站点。没有可用模型时直接返回原因（生成源配置需要模型）。"""
+    from adapters.base import FetchContext
+    from core import autoexplore
+    from core.llm import LLMUnavailable, build_llm, resolve_provider
+    try:
+        llm, label = build_llm(settings), resolve_provider(settings).label
+    except LLMUnavailable:
+        llm, label = None, ""
+    # 只使用普通 HTTP 读取公开页面，不携带共享浏览器 profile（不使用任何登录态）
+    result = autoexplore.run(settings, llm, ctx=FetchContext(), provider_label=label)
+    return {"added": len(result["added"]), "skipped": result["skipped"], "sites": result["sites"]}
+
+
 def accept_candidate(settings: Settings, cid: str) -> dict[str, Any]:
     from core import discovery
     from core.source_store import SourceError, write_source

@@ -1,0 +1,25 @@
+# 自动探索的种子站点目录（P12）。由项目维护，用户不需要编辑。
+# 只列公开、无需登录的站点首页。每个站点在探索前会自动检查 robots.txt、
+# 是否为验证/登录页、页面结构与预览质量，不通过的站点不会进入候选。
+# 注意：本目录是草案，尚未在真实环境中逐个核对；探索时会按上述规则自动过滤。
+sites:
+  - url: https://news.ycombinator.com/
+    name: Hacker News
+  - url: https://github.com/trending
+    name: GitHub Trending
+  - url: https://www.v2ex.com/
+    name: V2EX
+  - url: https://sspai.com/
+    name: 少数派
+  - url: https://36kr.com/
+    name: 36氪
+  - url: https://www.ruanyifeng.com/blog/
+    name: 阮一峰的网络日志
+  - url: https://lobste.rs/
+    name: Lobsters
+  - url: https://dev.to/
+    name: DEV Community
+  - url: https://www.producthunt.com/
+    name: Product Hunt
+  - url: https://techmeme.com/
+    name: Techmeme

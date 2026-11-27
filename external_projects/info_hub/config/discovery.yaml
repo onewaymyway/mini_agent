@@ -39,3 +39,13 @@ adoption:
   min_rate: 0.2
 
 templates: []
+
+# 自动探索（P12）：站点由系统自动探索，用户不需要配置站点。
+# daily：每天最多探索的站点数；min_interval_hours：同一站点两次探索的最小间隔；
+# min_items：预览至少要有的条目数；min_completeness：预览条目中标题与链接都有的比例。
+autoexplore:
+  daily: 20
+  min_interval_hours: 1
+  min_items: 3
+  min_completeness: 0.8
+  harvest_limit: 30

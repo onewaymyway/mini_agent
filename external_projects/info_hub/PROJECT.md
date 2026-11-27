@@ -222,6 +222,7 @@ health:
 | 不开看板也要调度 | 系统计划任务每 5 分钟 `python cli.py tick` |
 
 ## 变更记录
+- 2026-11-27（P12）：自动站点探索（`core/autoexplore.py`）。站点由系统自动探索，用户不配置站点。来源：项目维护的种子目录 `config/seed_sites.yaml`，以及最近三天抓取条目中的外部站点首页（只作线索，不额外访问）。每站点依次检查 robots.txt（无法获取则保守不访问）、拦截/验证页（放弃，不绕过）、页面结构、草稿生成（只接受 rss / json_api / html_list，script 草稿不自动运行）、预览质量（条目数与字段完整度）、与已有源的相似度。通过的站点进入候选收件箱，默认停用，需用户确认。参数在 `config/discovery.yaml` 的 `autoexplore` 段；每步写入 `data/discovery/explore_log.jsonl`。看板：候选收件箱上方“自动探索新站点”按钮。测试：`tests/test_autoexplore.py`。
 - 2026-11-27（P11）：兴趣的长短期分层。短期表（半衰期 7 天）与长期表（半衰期 90 天）分开计算；长期部分只对跨越至少 2 个自然周的关键词计入，合并进 `keywords`（长期权重 0.6）。参数在 `config/settings.yaml` 的 `profile` 段。快速分诊“跳过”记为 `skip` 曝光事件，只统计（`learned.skip_tokens`），不进入打分。单次反馈在 30 天后不再保留在排序中，这是 P11 的有意变化。测试：`tests/test_profile_p11.py`。
 - 2026-11-27（P10）：画像变化日志（`data/profile/changes.jsonl`，重算时记录新出现、消失、明显变化的关键词）；关键词依据（列出贡献该词的最近反馈）；“这是我的兴趣 / 不是我的兴趣 / 撤销手动标记”纠错（互斥、可撤销，写入 explicit）。API：`profile_term_detail`、`set_profile_term`。测试：`tests/test_profile_p10.py`。设计见 `next_doc/info_hub_user_profile_and_proactive_discovery_design.md`。
 - 2026-11-27：新增独立页签“我的画像”（位于“推荐”之后）。原先位于“抓取结果”页的“我的兴趣画像”折叠面板迁入该页签，并补充指标概览、学到的关键词与信息源偏好表格、画像生成说明。后端接口不变（`api.get_profile` 等）。测试：`tests/test_profile_page.py`，并更新页签顺序与旧面板相关断言。后续“主动发现”与画像深化见 `next_doc/info_hub_user_profile_and_proactive_discovery_design.md`（待确认，未实施）。

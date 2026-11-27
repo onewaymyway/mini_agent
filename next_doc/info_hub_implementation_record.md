@@ -806,3 +806,17 @@ P0–P9 均已完成。仍未在真实环境验证：有头登录、语音输出
 - 全量结果：568 项，3 项失败，均为既有问题。
 - 未做：P12 自动站点探索、P13 探索位升级。
 
+## 自动站点探索 P12（已完成，未在真实站点上验证）
+
+- 依据设计文档 v0.5：站点由系统自动探索；种子目录只列公开站点；script 草稿不自动运行；默认停用。
+- 改动：
+  - `core/autoexplore.py`：种子加载（仅 https）、外链线索（最近三天条目，不额外访问）、robots 检查（404 视为允许，其它错误保守不允许）、拦截/验证页放弃、结构检查、草稿生成（复用 `source_generator`）、适配器限制、预览质量、相似度去重、候选入箱、每站点最小间隔与每日上限、审计日志。
+  - `core/discovery.py`：`add_candidate`（已存在的 id 不覆盖）。
+  - `server/api.py`：`autoexplore_run_api`，只用普通 HTTP，不携带共享 profile；无模型时直接返回原因。
+  - `app.py`：候选收件箱上方“自动探索新站点”按钮。
+  - `config/seed_sites.yaml`（新增，草案）、`config/discovery.yaml` 新增 `autoexplore` 段。
+- 测试：`tests/test_autoexplore.py`，13 项，使用伪造站点、robots 与 LLM，不访问网络。覆盖：正常入箱且默认停用、robots 拒绝、robots 不可用、拦截页放弃、无模型、重复探索、拒绝后不再生成、每日上限、最小间隔、script 草稿不自动、种子必须 https、外链线索。
+- 全量结果：581 项，3 项失败，均为既有问题。
+- 未验证（需在本机确认）：种子目录中各站点的真实可访问性与 robots.txt 内容；真实站点上 `explore_html` 的结构识别效果；LLM 生成草稿的质量。
+- 未做：P13 探索位升级。
+

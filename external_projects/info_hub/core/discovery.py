@@ -204,6 +204,15 @@ def generate(data_dir: Path, profile: dict[str, Any], templates: list[dict[str, 
     return {"added": added, "skipped": skipped}
 
 
+def add_candidate(data_dir: Path, cand: dict[str, Any]) -> None:
+    """P12：写入一条由自动探索产生的候选（默认停用，需用户确认）。已存在的 id 不覆盖。"""
+    state = load_state(data_dir)
+    if cand["id"] in state["candidates"]:
+        raise DiscoveryError("候选已存在")
+    state["candidates"][cand["id"]] = cand
+    _save(data_dir, state)
+
+
 def decide(data_dir: Path, cid: str, status: str, now: Optional[datetime] = None) -> dict[str, Any]:
     """标记候选为 accepted / rejected。accepted 的写入由调用方完成。"""
     if status not in ("accepted", "rejected"):
