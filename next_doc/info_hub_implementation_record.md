@@ -820,3 +820,15 @@ P0–P9 均已完成。仍未在真实环境验证：有头登录、语音输出
 - 未验证（需在本机确认）：种子目录中各站点的真实可访问性与 robots.txt 内容；真实站点上 `explore_html` 的结构识别效果；LLM 生成草稿的质量。
 - 未做：P13 探索位升级。
 
+## 探索位升级 P13（已完成）
+
+- 依据设计文档 v1.0：新发现且已启用的来源，可占用探索名额的前几条；不挤占多源热点资格。
+- 改动：
+  - `core/discovery.py`：`accepted_auto_sources`，返回由自动探索发现且已采纳的来源 id。
+  - `core/feed.py`：`_assign_sections` 接收 `new_sources`，先为新来源预留 `explore_discovered_size` 条（只从探索池中选），其余名额照常；卡片标记 `discovered`；`build_reason` 增加“新发现来源”。`build_feed` 新增 `new_sources` 参数。DEFAULT_CONFIG 新增 `explore_discovered_size: 2`。
+  - `server/api.py`：`feed_view` 计算“新发现且已启用”的来源并传入。
+  - `config/settings.yaml`、`docs/recommendation.md` 同步。
+- 测试：`tests/test_feed_p13.py`，7 项（预留名额、无新来源行为不变、不占热点资格、命中主题不进探索、配额为 0 时关闭、理由标注、只统计已采纳的自动候选）。
+- 全量结果：588 项，3 项失败，均为既有问题。
+- 至此，设计文档 P10–P13 全部完成。
+

@@ -222,6 +222,7 @@ health:
 | 不开看板也要调度 | 系统计划任务每 5 分钟 `python cli.py tick` |
 
 ## 变更记录
+- 2026-11-27（P13）：探索位升级。由自动探索发现、且用户已确认启用的来源（候选 `origin: auto_explore` 且已采纳），其内容优先占用探索名额的前 `explore_discovered_size` 条（默认 2，不超过 `explore_size`）；卡片理由标注“新发现来源”。只从探索池中挑选，不命中关注主题、不属于多源热点，因此不挤占热点资格。测试：`tests/test_feed_p13.py`。
 - 2026-11-27（P12）：自动站点探索（`core/autoexplore.py`）。站点由系统自动探索，用户不配置站点。来源：项目维护的种子目录 `config/seed_sites.yaml`，以及最近三天抓取条目中的外部站点首页（只作线索，不额外访问）。每站点依次检查 robots.txt（无法获取则保守不访问）、拦截/验证页（放弃，不绕过）、页面结构、草稿生成（只接受 rss / json_api / html_list，script 草稿不自动运行）、预览质量（条目数与字段完整度）、与已有源的相似度。通过的站点进入候选收件箱，默认停用，需用户确认。参数在 `config/discovery.yaml` 的 `autoexplore` 段；每步写入 `data/discovery/explore_log.jsonl`。看板：候选收件箱上方“自动探索新站点”按钮。测试：`tests/test_autoexplore.py`。
 - 2026-11-27（P11）：兴趣的长短期分层。短期表（半衰期 7 天）与长期表（半衰期 90 天）分开计算；长期部分只对跨越至少 2 个自然周的关键词计入，合并进 `keywords`（长期权重 0.6）。参数在 `config/settings.yaml` 的 `profile` 段。快速分诊“跳过”记为 `skip` 曝光事件，只统计（`learned.skip_tokens`），不进入打分。单次反馈在 30 天后不再保留在排序中，这是 P11 的有意变化。测试：`tests/test_profile_p11.py`。
 - 2026-11-27（P10）：画像变化日志（`data/profile/changes.jsonl`，重算时记录新出现、消失、明显变化的关键词）；关键词依据（列出贡献该词的最近反馈）；“这是我的兴趣 / 不是我的兴趣 / 撤销手动标记”纠错（互斥、可撤销，写入 explicit）。API：`profile_term_detail`、`set_profile_term`。测试：`tests/test_profile_p10.py`。设计见 `next_doc/info_hub_user_profile_and_proactive_discovery_design.md`。

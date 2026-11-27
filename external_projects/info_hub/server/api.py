@@ -870,10 +870,14 @@ def feed_view(settings: Settings, *, hours: float = 24, category: str = "", kind
     learned = feed_learn.active_weights(data_dir, prefs["learning_enabled"])
     llm_on = prefs["llm_enabled"]
     merge = feed_llm.cached_merge_judge(data_dir) if llm_on else None
+    from core import discovery
+    enabled_ids = {x["id"] for x in srcs if loaded.specs[x["id"]].enabled}
+    new_sources = discovery.accepted_auto_sources(data_dir) & enabled_ids  # P13：新发现且已启用的来源
     res = feedmod.build_feed(data_dir=data_dir, raw_dir=settings.paths.raw_dir, sources=srcs, hours=hours,
                              cfg=cfg, profile=profile, now=now, include_processed=include_processed,
                              hidden_sources=set(prefs["hidden_sources"]), learned_weights=learned,
-                             exclude={str(k) for k in (exclude or [])}, merge_judge=merge)
+                             exclude={str(k) for k in (exclude or [])}, merge_judge=merge,
+                             new_sources=new_sources)
     if llm_on:
         feed_llm.attach_labels(res["sections"], data_dir)  # P4：只挂缓存里已有的主题与摘要
     res["config"] = feedmod.public_config_summary(cfg)

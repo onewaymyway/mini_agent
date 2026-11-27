@@ -204,6 +204,12 @@ def generate(data_dir: Path, profile: dict[str, Any], templates: list[dict[str, 
     return {"added": added, "skipped": skipped}
 
 
+def accepted_auto_sources(data_dir: Path) -> set[str]:
+    """P13：由自动探索发现、且用户已确认启用的信息源 id。"""
+    return {str(c["source"]["id"]) for c in list_candidates(data_dir)
+            if c.get("origin") == "auto_explore" and c.get("status") == "accepted" and c.get("source", {}).get("id")}
+
+
 def add_candidate(data_dir: Path, cand: dict[str, Any]) -> None:
     """P12：写入一条由自动探索产生的候选（默认停用，需用户确认）。已存在的 id 不覆盖。"""
     state = load_state(data_dir)

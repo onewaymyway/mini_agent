@@ -22,6 +22,7 @@
 |---|---|---|
 | 今日精选 | 综合得分最高的事件，带理由 | `featured_size` |
 | 探索 | 画像之外、但重要性与新鲜度较高的事件 | `explore_size` |
+| 探索（新发现来源） | 由自动探索发现、且已确认启用的来源的内容，优先占用探索名额的前几条（P13）；卡片理由标注“新发现来源” | `explore_discovered_size` |
 | 多源热点 | 被至少 `hot_min_sources` 个不同信息源报道的事件 | `hot_size` |
 | 关注主题 | 按兴趣主题分组，每组需要至少 `topic_min_group` 个事件 | `topic_groups`、`topic_group_size` |
 | 稍后看 | ⏰ 标记的条目，按加入时间倒序 | `later_size` |

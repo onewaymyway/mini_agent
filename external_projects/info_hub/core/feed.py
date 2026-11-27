@@ -57,6 +57,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "fatigue_penalty": 0.2,    # P2：展示很多次却从未点击的条目降权；设为 0 即关闭
     },
     "explore_size": 5,             # 探索分区的条数（画像之外的内容）；设为 0 即关闭
+    "explore_discovered_size": 2,  # P13：探索分区中预留给“新发现且已启用”来源的条数（不超过 explore_size）
     "diversity": {                 # P2：精选中的多样性控制
         "source_cap": 3,           # 同一信息源在精选中最多出现的条数
         "topic_repeat_penalty": 0.1,  # 同一主题每多一条，后续候选扣掉的分数
@@ -396,6 +397,7 @@ def build_feed(*, data_dir: Path, raw_dir: Path, sources: list[dict[str, Any]], 
                shown: Optional[dict[str, int]] = None,
                learned_weights: Optional[dict[str, float]] = None,
                exclude: Optional[set[str]] = None,
+               new_sources: Optional[set[str]] = None,
                merge_judge: Optional[Callable[[list[dict[str, Any]], list[list[int]]], list[list[int]]]] = None,
                ) -> dict[str, Any]:
     """构造推荐信息流。只读（不写 feed 目录，曝光记录由调用方显式 record_impressions）。
@@ -546,7 +548,7 @@ def build_feed(*, data_dir: Path, raw_dir: Path, sources: list[dict[str, Any]], 
         rep = _representative(members)
         cards.append(_cluster_card(rep, members, names, p, comps, round(score, 4), best_rank, max_rise, now))
 
-    sections = _assign_sections(cards, cfg)
+    sections = _assign_sections(cards, cfg, new_sources=frozenset(new_sources or ()))
     sections["later"] = later_list
     impressions = _impression_order(sections, cfg["others_limit"])
     return {
@@ -623,6 +625,8 @@ def _cluster_card(rep: dict[str, Any], members: list[dict[str, Any]], names: dic
 def build_reason(card: dict[str, Any]) -> str:
     """一句话理由：命中关注主题 · 多源报道 · 出现时间 · 排名上升 · 一直在榜。缺省时给出保底说法。"""
     parts: list[str] = []
+    if card.get("discovered"):
+        parts.append("新发现来源")
     if card.get("matches"):
         parts.append("命中关注主题『" + "、".join(card["matches"][:2]) + "』")
     if card.get("n_sources", 1) >= 2:
@@ -663,6 +667,14 @@ def _pick_featured(ranked: list[dict[str, Any]], n: int, source_cap: int, topic_
     return chosen
 
 
+def _discovered_size(cfg: dict[str, Any]) -> int:
+    """P13：探索分区中预留给新发现来源的条数（0 即关闭）。"""
+    try:
+        return max(0, int(cfg.get("explore_discovered_size", 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _explore_size(cfg: dict[str, Any]) -> int:
     """探索分区的条数：直接取配置的 explore_size（0 即关闭）。实际条数还受候选数量限制。"""
     try:
@@ -671,7 +683,8 @@ def _explore_size(cfg: dict[str, Any]) -> int:
         return 0
 
 
-def _assign_sections(cards: list[dict[str, Any]], cfg: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+def _assign_sections(cards: list[dict[str, Any]], cfg: dict[str, Any],
+                     new_sources: frozenset[str] = frozenset()) -> dict[str, list[dict[str, Any]]]:
     """每个簇只归入一个分区。挑选顺序：精选（带多样性）→ 探索 → 多源热点 → 关注主题 → 其余。"""
     ranked = sorted(cards, key=lambda c: c["score"], reverse=True)
     used: set[str] = set()
@@ -686,9 +699,21 @@ def _assign_sections(cards: list[dict[str, Any]], cfg: dict[str, Any]) -> dict[s
     # 探索位：画像之外（没有命中关注主题）但重要且新鲜的簇；标注为“探索”，防止回音室
     rest = [c for c in ranked if c["key"] not in used]
     # 探索不抢占“多源热点”的条目：多源事件留给热点分区
-    explore = sorted((c for c in rest if not c["matches"] and c["n_sources"] < cfg["hot_min_sources"]),
-                     key=lambda c: c["components"].get("importance", 0) * c["components"].get("freshness", 0),
-                     reverse=True)[:_explore_size(cfg)]
+    explore_pool = [c for c in rest if not c["matches"] and c["n_sources"] < cfg["hot_min_sources"]]
+    freshness_rank = lambda c: c["components"].get("importance", 0) * c["components"].get("freshness", 0)  # noqa: E731
+    total = _explore_size(cfg)
+    # P13：先为“新发现且已启用”的来源预留名额（只来自探索池，不占热点资格），其余名额照常挑选
+    discovered = []
+    if new_sources:
+        from_new = [c for c in explore_pool
+                    if any(m.get("source_id") in new_sources for m in c.get("sources", []))]
+        quota = min(_discovered_size(cfg), total)
+        discovered = sorted(from_new, key=freshness_rank, reverse=True)[:quota]
+        for c in discovered:
+            c["discovered"] = True
+    taken = {c["key"] for c in discovered}
+    explore = discovered + sorted((c for c in explore_pool if c["key"] not in taken),
+                                  key=freshness_rank, reverse=True)[:max(0, total - len(discovered))]
     for c in explore:
         c["section"] = "explore"
         used.add(c["key"])
