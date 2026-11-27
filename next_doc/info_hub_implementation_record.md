@@ -862,3 +862,17 @@ P0–P9 均已完成。仍未在真实环境验证：有头登录、语音输出
 - 未验证（需在本机确认）：真实站点的 `response.json()` 在 Playwright 同步 API 中的行为（测试使用替身响应）；接口在无登录态的隔离 profile 下是否可匿名访问，这决定候选能否通过预览。
 - 未做：P16 Frontier、P17 产出驱动与后台运行、P18 复查与退役。
 
+## 自动探索 P16：Frontier（已完成）
+
+- 依据设计文档 v0.4：队列持久化、深度限制、链接打分与过滤、禁止名单、断点续跑。
+- 改动：
+  - `core/frontier.py`（新增）：`normalize`（https、去追踪参数与片段）、`score_link`（过滤登录/注册/购物/下载/广告/文件类，单层路径加分）、`load_denylist` / `is_denied`（域名及子域名）、`Frontier`（jsonl 队列，最后一行为准；入队拒绝已存在、超深度、超容量的 URL）、`enqueue_links`（同站/跨站规则、每页上限）。
+  - `core/explore_forms.py`：`all_links`（页面全部链接，用于入队）。
+  - `core/autoexplore.py`：`run` 重写。页面处理统一为 `explore_page`（订阅入口、渲染回退、接口观察、模型草稿）。流程：先消费队列（按优先级与深度，受每站点日页数限制），再处理站点：首页 → 栏目页（本轮最多 `max_listing_pages` 个，其余入队）→ 首页与栏目页的深层链接入队。站点被禁止或在禁止名单中时直接跳过（`denylisted`）。robots 结果按站点缓存。新增配置：`frontier_batch`、`host_daily_pages`、`frontier_max_queued`、`page_links_cap`、`cross_site`（布尔，单独解析）。
+  - `config/denylist.yaml`（新增，初始为空）。
+- 行为变化：栏目页超出本轮上限时，不再直接丢弃，而是入队保留。既有的 41 项探索测试全部保持通过。
+- 测试：`tests/test_frontier.py`（18 项）：规范化与过滤、禁止名单匹配、持久化与重启续跑、状态变更、深度与容量上限、优先级排序、同站与跨站规则、禁止名单入队、每页上限、跨运行消费队列、深度 2 上限、每站点日页数、禁止站点不访问、robots 拒绝时更新队列状态。
+- 全量结果：627 项，3 项失败，均为既有问题。
+- 未验证：长期运行后 `frontier.jsonl` 的体积（当前只追加、无压缩，需要后续做整理）。
+- 未做：P17 产出驱动与后台持续运行、P18 复查与退役。
+

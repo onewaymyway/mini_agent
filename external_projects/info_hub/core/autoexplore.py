@@ -34,7 +34,8 @@ SEED_FILE = "config/seed_sites.yaml"
 AUTO_ADAPTERS = ("rss", "json_api", "html_list")   # script 草稿不会被自动探索生成后运行
 DEFAULTS = {"daily": 20, "min_interval_hours": 1, "min_items": 3, "min_completeness": 0.8,
             "harvest_limit": 30, "max_listing_pages": 4, "max_feeds_per_site": 3, "max_apis_per_site": 3,
-            "render": "off", "render_daily": 40}
+            "render": "off", "render_daily": 40, "frontier_batch": 10, "host_daily_pages": 30,
+            "frontier_max_queued": 500, "page_links_cap": 20, "cross_site": False}
 PREFIX = "auto:"
 
 
@@ -58,10 +59,13 @@ def load_config(root: Path) -> dict[str, float]:
     raw = cfg.get("autoexplore") or {}
     out: dict[str, float] = {}
     for k, default in DEFAULTS.items():
+        if k == "cross_site":
+            continue
         try:
             out[k] = type(default)(raw.get(k, default))
         except (TypeError, ValueError):
             out[k] = default
+    out["cross_site"] = str(raw.get("cross_site", False)).strip().lower() in ("1", "true", "yes", "on")
     out["daily"] = max(0, min(200, int(out["daily"])))
     out["min_interval_hours"] = max(0.0, float(out["min_interval_hours"]))
     out["min_completeness"] = min(1.0, max(0.0, float(out["min_completeness"])))
@@ -207,44 +211,78 @@ def _sitemap_listings(root_url: str, robots_txt: str, ctx: Any) -> list[str]:
 
 def run(settings: Any, llm: Any, *, ctx: Any, now: Optional[datetime] = None,
         provider_label: str = "", renderer: Any = None) -> dict[str, Any]:
-    """一轮自动探索（P14）。
+    """一轮自动探索（P16）。
 
-    每个站点：首页 → 订阅入口（确定性生成 rss，不需要模型）→ 栏目页（sitemap 与站内分类，各自独立成候选）。
-    页面没有列表结构时，若提供了渲染器（有头、隔离 profile）且当日未超限，则渲染后再判断。
-    有列表结构且有模型时，才调用模型生成草稿。
-    返回 {added: [...], skipped: {原因: 数量}, sites: 本轮检查的站点数}。
+    1) 先处理队列（Frontier）中上次留下的页面，按优先级与深度取出；
+    2) 再处理站点：首页 → 订阅入口 → 栏目页（本轮内最多 max_listing_pages 个，其余入队）→ 首页深层链接入队；
+    3) 每个页面的处理逻辑相同：候选（订阅 / 列表 / 接口）、渲染回退、模型草稿。
+    入队与深度、禁止名单、每站点日请求预算见 core/frontier.py 与配置。
+    返回 {added: [...], skipped: {原因: 数量}, sites: 本轮检查的站点数, queued: 队列中待访问数}。
     """
     from adapters.base import FetchContext, detect_block
     from core import source_generator
     from core.explore import explore_html, explore_response
+    from core.explore_json_api import api_source
     from core.fingerprint import find_similar
+    from core.frontier import Frontier, enqueue_links, host_key, is_denied, load_denylist, normalize
+    from core.explore_forms import all_links, category_links, feed_links
     from core.source_store import SourceError, preview_spec, validate_candidate
     from core.sources import load_sources
 
     now = now or datetime.now().astimezone()
     root, data_dir = settings.paths.root, settings.paths.data_dir
     cfg = load_config(root)
+    stamp = now.isoformat(timespec="seconds")
+    day = now.date().isoformat()
     skipped: dict[str, int] = {}
     added: list[dict[str, Any]] = []
 
     def skip(reason: str) -> None:
         skipped[reason] = skipped.get(reason, 0) + 1
 
+    if llm is None:
+        llm_note = True   # 没有模型时仍可发现订阅入口与接口，只是不生成 HTML 草稿
+    else:
+        llm_note = False
+
     state = _load_state(data_dir)
-    day = now.date().isoformat()
     today_count = int(state.get("days", {}).get(day, 0))
     renders = state.setdefault("renders", {})
-    renders_today = int(renders.get(day, 0))
+    host_pages = state.setdefault("host_pages", {}).setdefault(day, {})
     dconf = discovery.load_config(root)
     cands = discovery.list_candidates(data_dir)
     pending = [c for c in cands if c.get("status") == "pending"]
     specs = load_sources(settings).specs
     known_hosts = {host_of(str((s.request or {}).get("url") or "")) for s in specs.values()}
     known_hosts.discard("")
-    known_hosts |= {host_of(s["url"]) for s in load_seeds(root)}
-    sites = load_seeds(root) + harvest_hosts(data_dir, known_hosts, int(cfg["harvest_limit"]), now)
+    seeds = load_seeds(root)
+    known_hosts |= {host_of(s["url"]) for s in seeds}
+    sites = seeds + harvest_hosts(data_dir, known_hosts, int(cfg["harvest_limit"]), now)
+    trusted = {host_of(s["url"]) for s in seeds}
+    trusted |= {host_of(str(c.get("url") or "")) for c in cands if c.get("status") == "accepted"}
+    denylist = load_denylist(root)
+    frontier = Frontier(data_dir, int(cfg["frontier_max_queued"]))
     render_on = renderer is not None and cfg["render"] == "headed"
-    budget = {"used": renders_today, "cap": int(cfg["render_daily"])}
+    budget = {"used": int(renders.get(day, 0)), "cap": int(cfg["render_daily"])}
+    robots_cache: dict[str, tuple[bool, str, str]] = {}
+
+    def robots_for(url: str) -> tuple[bool, str, str]:
+        h = host_of(url)
+        if h not in robots_cache:
+            robots_cache[h] = robots_allows(url, ctx)
+        return robots_cache[h]
+
+    def host_ok(host: str) -> bool:
+        return int(host_pages.get(host, 0)) < int(cfg["host_daily_pages"]) and not is_denied(host, denylist)
+
+    def fetch_page(url: str) -> tuple[Optional[bytes], str]:
+        try:
+            body = ctx.http_get(url)
+        except Exception:  # noqa: BLE001
+            return None, "fetch_error"
+        if detect_block(body):
+            return None, "blocked_or_login"    # 验证/登录页：放弃，不尝试绕过
+        return body, "ok"
 
     def gate_and_add(source: dict[str, Any], cid: str, template_id: str, template_name: str,
                      url: str, reason_text: str, preview_ctx: Any = None) -> Optional[str]:
@@ -260,23 +298,125 @@ def run(settings: Any, llm: Any, *, ctx: Any, now: Optional[datetime] = None,
             return "low_quality"
         cand = {"id": cid, "template_id": template_id, "template_name": template_name, "query": host_of(url),
                 "reason": f"{reason_text}：{host_of(url)}，预览 {total} 条，字段完整度 {round(complete * 100)}%",
-                "url": url, "status": "pending", "created_at": now.isoformat(timespec="seconds"),
-                "decided_at": None, "source": dict(source, enabled=False), "origin": "auto_explore"}
+                "url": url, "status": "pending", "created_at": stamp, "decided_at": None,
+                "source": dict(source, enabled=False), "origin": "auto_explore"}
         discovery.add_candidate(data_dir, cand)
         cands.append(cand)
         pending.append(cand)
         added.append(cand)
-        _log(data_dir, {"time": now.isoformat(timespec="seconds"), "host": host_of(url), "step": "candidate",
-                        "result": "added", "candidate": cid, "total": total,
-                        "completeness": round(complete, 3)})
+        _log(data_dir, {"time": stamp, "host": host_of(url), "step": "candidate", "result": "added",
+                        "candidate": cid, "total": total, "completeness": round(complete, 3)})
         return None
 
+    def explore_page(page_url: str, body: bytes, is_home: bool) -> str:
+        """处理一个已取得的页面：订阅入口、列表结构（可选渲染）、接口观察、模型草稿。返回页面文本。"""
+        host = host_of(page_url)
+        base_id = f"{PREFIX}{host}"
+        text = body.decode("utf-8", errors="replace")
+        for n, feed_url in enumerate(feed_links(text, page_url), start=1):
+            if n > int(cfg["max_feeds_per_site"]):
+                break
+            if host_of(feed_url) != host:
+                continue
+            fid = f"{base_id}#feed-{n}"
+            if fid in {c["id"] for c in cands}:
+                continue
+            src = rss_source(f"auto_{_slug(host).replace('-', '_')}_feed{n}", f"{host} 订阅 {n}", feed_url)
+            outcome = gate_and_add(src, fid, "auto_feed", "自动探索·订阅", feed_url, "发现订阅入口")
+            if outcome:
+                skip(outcome)
+
+        summary = explore_response(body, "")
+        has = bool(summary.get("candidates") or summary.get("page_type") == "json")
+        rbrowser = _RenderBrowser(renderer, budget) if render_on else None
+        rendered_here = False
+        if not has and rbrowser is not None and budget["used"] < budget["cap"]:
+            try:
+                rendered = rbrowser.fetch_html(page_url)
+                if explore_html(rendered).get("candidates"):
+                    has, rendered_here = True, True
+                    body = rendered.encode("utf-8")
+                    text = rendered
+                    _log(data_dir, {"time": stamp, "host": host, "step": "render", "result": "ok", "page": page_url})
+            except Exception:  # noqa: BLE001
+                skip("render_error")
+            finally:
+                renders[day] = budget["used"]
+
+        api_added = 0
+        if rbrowser is not None and page_url in rbrowser.cache:
+            for desc in rbrowser.observations(page_url):
+                if api_added >= int(cfg["max_apis_per_site"]):
+                    break
+                slug = _slug(urllib.parse.urlsplit(desc["endpoint"]).path)
+                aid = f"{base_id}#api-{slug}"
+                if aid in {c["id"] for c in cands}:
+                    continue
+                src = api_source(f"auto_{_slug(host).replace('-', '_')}_api_{slug.replace('-', '_')}",
+                                 f"{host} 接口 {slug}", desc)
+                outcome = gate_and_add(src, aid, "auto_api", "自动探索·接口", desc["endpoint"], "发现站内接口")
+                if outcome:
+                    skip(outcome)
+                else:
+                    api_added += 1
+
+        if not has:
+            skip("no_structure" if is_home else "listing_no_structure")
+            return text
+        if llm_note:
+            skip("no_llm")
+            return text
+        cid = base_id if is_home else f"{base_id}#{_slug(urllib.parse.urlsplit(page_url).path)}"
+        if cid in {c["id"] for c in cands}:
+            skip("already_known")
+            return text
+        gen_ctx = FetchContext(http_get=ctx.http_get, browser=rbrowser) if rendered_here else ctx
+        try:
+            draft = source_generator.generate_draft(settings, llm, page_url, name=host,
+                                                    hint="自动探索：" + host, provider_label=provider_label,
+                                                    use_browser=rendered_here, ctx=gen_ctx)
+        except SourceError:
+            skip("generate_error")
+            return text
+        source = draft["source"]
+        if source.get("adapter") not in AUTO_ADAPTERS:
+            skip("script_not_auto")                     # script 草稿不会被自动探索生成后运行
+            return text
+        if rendered_here:
+            source["browser"] = {"required": True, "site": _slug(host).replace("-", "_"), "headless": False}
+        outcome = gate_and_add(source, cid, "auto_explore", "自动探索", page_url, "发现信息源",
+                               preview_ctx=gen_ctx if rendered_here else None)
+        if outcome:
+            skip(outcome)
+        return text
+
+    # ---- 1) 队列中上次留下的页面 ----
+    for row in frontier.next_batch(int(cfg["frontier_batch"]), host_ok):
+        url, h, depth = row["url"], row.get("host", ""), int(row.get("depth", 1))
+        ok, why, _ = robots_for(url)
+        if not ok:
+            frontier.set_status(url, why, stamp)
+            skip(why)
+            continue
+        body, reason = fetch_page(url)
+        host_pages[h] = int(host_pages.get(h, 0)) + 1
+        if body is None:
+            frontier.set_status(url, reason, stamp)
+            skip(reason)
+            continue
+        text = explore_page(url, body, is_home=False)
+        frontier.set_status(url, "done", stamp)
+        enqueue_links(frontier, all_links(text, url), parent=url, parent_depth=depth, denylist=denylist,
+                      cross_site=bool(cfg["cross_site"]), trusted=h in trusted, now_iso=stamp,
+                      per_page_cap=int(cfg["page_links_cap"]))
+
+    # ---- 2) 站点：首页 → 栏目页（本轮内有限处理）→ 其余入队 ----
     checked = 0
     for site in sites:
         url = site["url"]
         host = host_of(url)
         base_id = f"{PREFIX}{host}"
-        if today_count >= cfg["daily"]:
+        if today_count >= int(cfg["daily"]):
             skip("daily_cap")
             break
         if len(pending) >= dconf["pending_cap"]:
@@ -288,127 +428,53 @@ def run(settings: Any, llm: Any, *, ctx: Any, now: Optional[datetime] = None,
         if _within_interval(state, host, now, cfg["min_interval_hours"]):
             skip("min_interval")
             continue
-
+        if is_denied(host, denylist):
+            skip("denylisted")
+            continue
         checked += 1
-        state.setdefault("hosts", {})[host] = now.isoformat(timespec="seconds")
+        state.setdefault("hosts", {})[host] = stamp
         today_count += 1
         state.setdefault("days", {})[day] = today_count
-        stamp = now.isoformat(timespec="seconds")
 
-        def fail(step: str, reason: str) -> None:
-            skip(reason)
-            _log(data_dir, {"time": stamp, "host": host, "step": step, "result": "skip", "reason": reason})
-
-        ok, why, robots_txt = robots_allows(url, ctx)
+        ok, why, robots_txt = robots_for(url)
         if not ok:
-            fail("robots", why)
+            skip(why)
+            _log(data_dir, {"time": stamp, "host": host, "step": "robots", "result": "skip", "reason": why})
             continue
-        try:
-            body = ctx.http_get(url)
-        except Exception:  # noqa: BLE001
-            fail("fetch", "fetch_error")
+        body, reason = fetch_page(url)
+        if body is None:
+            skip(reason)
+            _log(data_dir, {"time": stamp, "host": host, "step": "fetch", "result": "skip", "reason": reason})
             continue
-        if detect_block(body):
-            fail("fetch", "blocked_or_login")          # 验证/登录页：放弃，不尝试绕过
-            continue
-        text = body.decode("utf-8", errors="replace")
+        host_pages[host] = int(host_pages.get(host, 0)) + 1
+        text = explore_page(url, body, is_home=True)
 
-        # 1) 订阅入口：确定性生成 rss 候选，不需要模型
-        for n, feed_url in enumerate(feed_links(text, url)[:cfg["max_feeds_per_site"]], start=1):
-            fid = f"{base_id}#feed-{n}"
-            if fid in {c["id"] for c in cands}:
+        listings = _sitemap_listings(url, robots_txt, ctx) + category_links(text, url,
+                                                                            int(cfg["max_listing_pages"]) * 2)
+        listings = [n for n in dict.fromkeys(normalize(u) or "" for u in listings) if n and host_of(n) == host]
+        inline, rest = listings[:int(cfg["max_listing_pages"])], listings[int(cfg["max_listing_pages"]):]
+        for lu in inline:
+            frontier.set_status(lu, "done", stamp)           # 本轮内处理，不再进入队列
+        for lu in rest:
+            frontier.enqueue(lu, 1, url, 2.0, stamp)
+        enqueue_links(frontier, all_links(text, url), parent=url, parent_depth=0, denylist=denylist,
+                      cross_site=bool(cfg["cross_site"]), trusted=host in trusted, now_iso=stamp,
+                      per_page_cap=int(cfg["page_links_cap"]))
+        for lu in inline:
+            if not host_ok(host):
+                skip("host_budget")
+                break
+            lbody, lreason = fetch_page(lu)
+            if lbody is None:
+                skip("listing_" + lreason)
                 continue
-            src = rss_source(f"auto_{_slug(host).replace('-', '_')}_feed{n}", f"{host} 订阅 {n}", feed_url)
-            reason = gate_and_add(src, fid, "auto_feed", "自动探索·订阅", feed_url, "发现订阅入口")
-            if reason:
-                skip(reason)
-
-        # 2) 首页与栏目页：sitemap 栏目 + 站内分类，各自独立判断
-        listings = _sitemap_listings(url, robots_txt, ctx) + category_links(text, url, cfg["max_listing_pages"])
-        listings = list(dict.fromkeys(listings))[:cfg["max_listing_pages"]]
-        api_added = 0
-        pages: list[tuple[str, bytes, bool]] = [(url, body, True)]
-        pages += [(lu, b"", False) for lu in listings]
-        for page_url, page_body, is_home in pages:
-            if not page_body:
-                try:
-                    page_body = ctx.http_get(page_url)
-                except Exception:  # noqa: BLE001
-                    skip("listing_fetch_error")
-                    continue
-                if detect_block(page_body):
-                    skip("listing_blocked")
-                    continue
-            summary = explore_response(page_body, "")
-            has = bool(summary.get("candidates") or summary.get("page_type") == "json")
-            rendered_here = False
-            rbrowser = _RenderBrowser(renderer, budget) if render_on else None
-            if not has and rbrowser is not None and budget["used"] < budget["cap"]:
-                try:
-                    rendered = rbrowser.fetch_html(page_url)
-                    if explore_html(rendered).get("candidates"):
-                        has, rendered_here = True, True
-                        _log(data_dir, {"time": stamp, "host": host, "step": "render", "result": "ok",
-                                        "page": page_url})
-                except Exception:  # noqa: BLE001
-                    skip("render_error")
-                    continue
-                finally:
-                    renders_today = budget["used"]
-                    renders[day] = renders_today
-            # 3) P15：渲染时观察到的列表型接口，确定性生成 json_api 候选（不需要模型）
-            if rbrowser is not None and page_url in rbrowser.cache:
-                for desc in rbrowser.observations(page_url):
-                    if api_added >= cfg["max_apis_per_site"]:
-                        break
-                    slug = _slug(urllib.parse.urlsplit(desc["endpoint"]).path)
-                    aid = f"{base_id}#api-{slug}"
-                    if aid in {c["id"] for c in cands}:
-                        continue
-                    src = api_source(f"auto_{_slug(host).replace('-', '_')}_api_{slug.replace('-', '_')}",
-                                     f"{host} 接口 {slug}", desc)
-                    outcome = gate_and_add(src, aid, "auto_api", "自动探索·接口", desc["endpoint"], "发现站内接口")
-                    if outcome:
-                        skip(outcome)
-                    else:
-                        api_added += 1
-
-            if not has:
-                if is_home:
-                    fail("structure", "no_structure")
-                else:
-                    skip("listing_no_structure")
-                continue
-            if llm is None:
-                skip("no_llm")
-                continue
-            cid = base_id if is_home else f"{base_id}#{_slug(urllib.parse.urlsplit(page_url).path)}"
-            if cid in {c["id"] for c in cands}:
-                skip("already_known")
-                continue
-            gen_ctx = FetchContext(http_get=ctx.http_get, browser=rbrowser) if rendered_here else ctx
-            try:
-                draft = source_generator.generate_draft(settings, llm, page_url, name=host,
-                                                        hint="自动探索：" + host, provider_label=provider_label,
-                                                        use_browser=rendered_here, ctx=gen_ctx)
-            except SourceError:
-                skip("generate_error")
-                continue
-            finally:
-                renders_today = budget["used"]
-                renders[day] = renders_today
-            source = draft["source"]
-            if source.get("adapter") not in AUTO_ADAPTERS:
-                skip("script_not_auto")                 # script 草稿不会被自动探索生成后运行
-                continue
-            if rendered_here:
-                # 需要浏览器渲染才有内容的源：标注 browser 配置（有头，site 仅用于登录失效判断）
-                source["browser"] = {"required": True, "site": _slug(host).replace("-", "_"), "headless": False}
-            reason = gate_and_add(source, cid, "auto_explore", "自动探索", page_url, "发现信息源",
-                                  preview_ctx=gen_ctx if rendered_here else None)
-            if reason:
-                skip(reason)
+            host_pages[host] = int(host_pages.get(host, 0)) + 1
+            ltext = explore_page(lu, lbody, is_home=False)
+            enqueue_links(frontier, all_links(ltext, lu), parent=lu, parent_depth=1, denylist=denylist,
+                          cross_site=bool(cfg["cross_site"]), trusted=host in trusted, now_iso=stamp,
+                          per_page_cap=int(cfg["page_links_cap"]))
 
     state["renders"] = renders
+    state.setdefault("host_pages", {})[day] = host_pages
     _save_state(data_dir, state)
-    return {"added": added, "skipped": skipped, "sites": checked}
+    return {"added": added, "skipped": skipped, "sites": checked, "queued": frontier.queued_count()}

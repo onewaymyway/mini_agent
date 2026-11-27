@@ -95,3 +95,16 @@ def rss_source(source_id: str, name: str, url: str) -> dict[str, Any]:
     return {"id": source_id, "name": name, "category": "news", "kind": "feed", "adapter": "rss",
             "tags": ["自动探索", "订阅"], "enabled": False, "request": {"url": url},
             "schedule": {"every": "60m"}, "policy": {"max_items": 30, "dedup_by": "url"}}
+
+
+def all_links(html: str, base_url: str) -> list[tuple[str, str]]:
+    """页面中全部 <a href> 的绝对地址与链接文字（P16 入队用）。"""
+    soup = BeautifulSoup(html, "html.parser")
+    out: list[tuple[str, str]] = []
+    for a in soup.find_all("a", href=True):
+        href = a["href"].strip()
+        if href.startswith(("#", "javascript:", "mailto:")):
+            continue
+        out.append((_abs(base_url, href), a.get_text(strip=True)))
+    return out
+

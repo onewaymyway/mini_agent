@@ -123,6 +123,13 @@ categories:
 | render | off | P14：`off` 或 `headed`。`headed` 时，页面没有列表结构则用有头浏览器渲染后再判断 |
 | render_daily | 40 | P14：每天最多渲染次数（同一页面在一次探索中只计一次） |
 | max_apis_per_site | 3 | P15：每站点最多登记的列表型接口（渲染时观察到的 JSON，不需要模型） |
+| frontier_batch | 10 | P16：每轮从队列中取出处理的页面数 |
+| host_daily_pages | 30 | P16：每站点每天最多访问的页面数（含渲染前的普通请求） |
+| frontier_max_queued | 500 | P16：队列中待访问条目的全局上限 |
+| page_links_cap | 20 | P16：每个页面最多入队的链接数 |
+| cross_site | false | P16：是否允许跨站入队（只来自种子或已接受来源的页面） |
+
+禁止名单 `config/denylist.yaml`（项目维护）：列出的站点（含子域名）不访问、不入队。
 
 说明：有头渲染使用一次性 profile，结束即删除，不携带任何登录态。渲染得到的候选会标注 `browser.required`；它们在正式运行时仍使用现有的共享浏览器会话（只用于公开页面），这一点与探索过程不同。
 
