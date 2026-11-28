@@ -37,6 +37,12 @@ def _fmt_min(sec: float) -> str:
     return f"{sec / 60:.0f} 分钟" if sec < 3600 else f"{sec / 3600:.1f} 小时"
 
 
+def _today() -> str:
+    import datetime as _dt
+
+    return _dt.date.today().isoformat()
+
+
 def _yesterday(day: Optional[str] = None) -> str:
     import datetime as _dt
 
@@ -184,12 +190,12 @@ def _session_activity_summary(paths: AgentPaths, target_day: str, limit: int = 5
 
 
 def generate_daily_digest(paths: AgentPaths, day: Optional[str] = None) -> dict:
-    """生成融合日报。day 默认是"昨天"（因为 sys:daily_digest 在当天 22 点跑，
-    覆盖的是当天数据；若在次日凌晨补跑，day 应传前一天日期）。
+    """生成融合日报。day 默认是今天：sys:daily_digest 每天 22:00 运行，覆盖
+    的就是当天数据；若需要补跑历史日期，显式传入 day。
     """
     from mini_agent.perception.behavior.analyzer import load_daily_summary
 
-    target_day = day or _yesterday()
+    target_day = day or _today()
     since, _until = _day_bounds(target_day)
 
     behavior = load_daily_summary(target_day) or {}
@@ -305,6 +311,48 @@ def _write_markdown(paths: AgentPaths, day: str, data: dict) -> None:
 
     paths.daily_reports_dir.mkdir(parents=True, exist_ok=True)
     paths.daily_report_path(day).write_text(md, encoding="utf-8")
+
+
+def notify_digest_ready(paths: AgentPaths, data: dict) -> dict:
+    """日报生成后的通知：走 NotificationDispatcher（默认渠道 + 看板兜底，
+    即"通知渠道都走"），并发布 attention 事件供桌面端弹窗。
+
+    两条路径都是尽力而为：任何一步失败只记日志，不影响日报文件本身，
+    返回 {channel: bool} 供调用方/测试检查。
+    """
+    from mini_agent.notification import attention_hub
+    from mini_agent.notification.dispatcher import NotificationDispatcher, NotificationMessage
+
+    day = data.get("day", "")
+    title = f"{day} 日报已生成"
+    try:
+        body = paths.daily_report_path(day).read_text(encoding="utf-8")
+    except Exception:
+        body = render_startup_summary(data) or title
+    errors_total = (data.get("errors") or {}).get("total") or 0
+
+    results: dict = {}
+    try:
+        msg = NotificationMessage(
+            title=title,
+            body=body,
+            source="daily_digest",
+            meta={"day": day, "errors_total": errors_total},
+        )
+        results = NotificationDispatcher(paths).dispatch(msg)
+    except Exception as exc:
+        from mini_agent.errors import log_exception
+        log_exception(exc, where="mini_agent.evolution.daily_digest.notify_digest_ready.dispatch")
+
+    try:
+        attention_hub.publish_attention(
+            attention_hub.KIND_DAILY_DIGEST, title, ref_id=day,
+            extra={"day": day, "errors_total": errors_total},
+        )
+    except Exception as exc:
+        from mini_agent.errors import log_exception
+        log_exception(exc, where="mini_agent.evolution.daily_digest.notify_digest_ready.publish")
+    return results
 
 
 def render_startup_summary(data: dict) -> Optional[str]:

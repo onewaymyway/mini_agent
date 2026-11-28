@@ -115,6 +115,11 @@ class DaemonApi:
 
     # ── S3：审批 / 交互回答 / cron 提问 ───────────────────────────────────
 
+    def digest_daily(self, date: Optional[str] = None) -> dict:
+        """GET /v1/digest/daily → {"digest": {...}|None, "markdown": str|None}。"""
+        params = {"date": date} if date else None
+        return self._get("/v1/digest/daily", params=params)
+
     def permissions_pending(self) -> list[dict]:
         return list(self._get("/v1/permissions/pending").get("permissions", []))
 

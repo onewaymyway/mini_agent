@@ -37,6 +37,7 @@ class DesktopController:
         offline_crashes: Callable[[], int] = lambda: 0,
         on_change: Callable[[], None] = lambda: None,
         on_attention: Optional[Callable[[dict], None]] = None,
+        on_connected: Optional[Callable[[DaemonApi], None]] = None,
         start_daemon: Optional[Callable[[], None]] = None,
         auto_start_daemon: bool = False,
         poll_interval: float = 30.0,
@@ -52,6 +53,7 @@ class DesktopController:
         self._offline_crashes = offline_crashes
         self._on_change = on_change
         self._on_attention = on_attention
+        self._on_connected = on_connected
         self._start_daemon = start_daemon
         self._auto_start = auto_start_daemon
         self._poll_interval = poll_interval
@@ -171,6 +173,11 @@ class DesktopController:
         self.health.on_connected(self._wall())
         self._model.set_connected()
         self._on_change()
+        if self._on_connected is not None:
+            try:
+                self._on_connected(api)   # 启动/重连后的补弹等一次性检查
+            except Exception:  # noqa: BLE001
+                log.warning("连接后回调失败", exc_info=True)
         try:
             for ev in api.stream_events(self._stop):
                 if self._stop.is_set():

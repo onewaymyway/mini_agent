@@ -3,8 +3,8 @@ cli/commands/digest_cmd.py — /digest daily 命令处理
 
 子命令：
   /digest daily [YYYY-MM-DD]  — 生成（或重新生成）指定日期的融合日报并展示
-                                 不传日期时默认为"昨天"（与 sys:daily_digest
-                                 的调度节奏一致，见 evolution/cron_scheduler.py）
+                                 不传日期时默认为"今天"（与 sys:daily_digest
+                                 每天 22:00 生成当天日报的调度一致）
 
 对应设计方案第 4.1 节。这里只做命令路由和展示，实际生成逻辑在
 evolution/daily_digest.py，保持职责分离。

@@ -72,6 +72,7 @@ class TrayUi(QObject):
         on_open_settings: Optional[Callable[[], None]] = None,
         on_open_health: Optional[Callable[[], None]] = None,
         on_open_workboard: Optional[Callable[[], None]] = None,
+        on_open_digest: Optional[Callable[[], None]] = None,
         on_toggle_context: Optional[Callable[[bool], None]] = None,
         context_checked: bool = False,
     ) -> None:
@@ -121,6 +122,10 @@ class TrayUi(QObject):
         self.workboard_action = QAction("目标与定时任务…", self.menu)
         self.workboard_action.triggered.connect(lambda: on_open_workboard and on_open_workboard())
         self.menu.addAction(self.workboard_action)
+
+        self.digest_action = QAction("今日日报…", self.menu)
+        self.digest_action.triggered.connect(lambda: on_open_digest and on_open_digest())
+        self.menu.addAction(self.digest_action)
 
         self.console_action = QAction("打开管理控制台", self.menu)
         self.console_action.triggered.connect(self._open_console)

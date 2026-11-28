@@ -35,7 +35,7 @@ class DesktopConfig:
     # 热键组合，格式见 hotkey.parse_hotkey，例如 "Ctrl+Alt+Space" / "Win+Shift+K"
     hotkey: str = "Ctrl+Alt+Space"
     # S3：Toast 总开关（Windows 原生气泡），默认关闭
-    toast_enabled: bool = False
+    toast_enabled: bool = True
     # S3：免打扰时段，如 "23:00-08:00"；空 = 不设。阻塞类提醒不受影响
     quiet_hours: str = ""
     # S4：登录自启（HKCU\...\Run）。默认关闭；启动时据此同步注册表项

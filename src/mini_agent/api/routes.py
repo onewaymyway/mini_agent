@@ -11229,6 +11229,18 @@ async def ack_pending_startup_digest(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _digest_payload(paths, data: dict) -> dict:
+    """日报响应：结构化 JSON + 同一天的 Markdown 正文（桌面端直接渲染用）。"""
+    md = None
+    try:
+        md_path = paths.daily_report_path(data.get("day", ""))
+        if md_path.exists():
+            md = md_path.read_text(encoding="utf-8")
+    except Exception:
+        md = None
+    return {"digest": data, "markdown": md}
+
+
 @router.get("/digest/daily")
 async def get_daily_digest(request: Request, date: Optional[str] = Query(None)):
     """GET /v1/digest/daily?date=YYYY-MM-DD — 读取（不生成）某天的融合日报。
@@ -11242,7 +11254,7 @@ async def get_daily_digest(request: Request, date: Optional[str] = Query(None)):
             if not json_path.exists():
                 return {"digest": None}
             import json as _json
-            return {"digest": _json.loads(json_path.read_text(encoding="utf-8"))}
+            return _digest_payload(paths, _json.loads(json_path.read_text(encoding="utf-8")))
 
         # 未指定日期：取目录里最新的一份
         d = paths.daily_reports_dir
@@ -11252,7 +11264,7 @@ async def get_daily_digest(request: Request, date: Optional[str] = Query(None)):
         if not files:
             return {"digest": None}
         import json as _json
-        return {"digest": _json.loads(files[-1].read_text(encoding="utf-8"))}
+        return _digest_payload(paths, _json.loads(files[-1].read_text(encoding="utf-8")))
     except HTTPException:
         raise
     except Exception as e:

@@ -1595,6 +1595,20 @@ class HttpServer:
                 from mini_agent.errors import log_exception
                 log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_output_patrol_job')
 
+            # 每日融合日报改为本地 handler（零 LLM 成本，确定性执行），
+            # 生成后通过 notify_digest_ready 推送看板 + 桌面弹窗。
+            try:
+                from mini_agent.evolution.daily_digest_job import ensure_daily_digest_job
+
+                _dig_cfg = agent.cfg.digest_advisor
+                ensure_daily_digest_job(
+                    paths, cron_scheduler,
+                    enabled=_dig_cfg.daily_digest_enabled,
+                )
+            except Exception as _mini_agent_exc:
+                from mini_agent.errors import log_exception
+                log_exception(_mini_agent_exc, where='mini_agent.api.server.HttpServer._build_autonomous_loop.ensure_daily_digest_job')
+
             # 外部知识反馈闭环计划 P2：daemon 启动时补注册
             # sys:wiki_utility_audit（聚合 wiki/search.py 检索命中埋点为每页
             # 利用率统计，并修剪日志，零 LLM 成本，本地回调），见

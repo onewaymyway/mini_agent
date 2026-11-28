@@ -24,7 +24,10 @@ from mini_agent_desktop.project_locator import Resolved
 from mini_agent_desktop.config import DesktopConfig, load_config, save_config
 from mini_agent_desktop.controller import DesktopController
 from mini_agent_desktop.discovery import count_unacked_crash_alerts, resolve_endpoint, spawn_daemon
-from mini_agent_desktop.attention import QuietHours, ToastPolicy
+from mini_agent_desktop.attention import KIND_DAILY_DIGEST, QuietHours, ToastPolicy
+from mini_agent_desktop.config import config_path as _desktop_config_path
+from mini_agent_desktop.digest_catchup import DigestToastMemory, pending_digest_event
+from mini_agent_desktop.digest_window import DigestWindow
 from mini_agent_desktop.hotkey import GlobalHotkey
 from mini_agent_desktop.quick import QuickSession
 from mini_agent_desktop.state import TrayModel
@@ -204,6 +207,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     except ValueError as exc:
         quiet, quiet_err = None, str(exc)
     policy = ToastPolicy(enabled=cfg.toast_enabled, quiet=quiet)
+    digest_memory = DigestToastMemory(_desktop_config_path().parent / "digest_toast_state.json")
 
     def on_attention_main(event: dict) -> None:
         toast = policy.decide(event)
@@ -215,6 +219,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         if toast is not None and "ui" in holder:
             log.info("Toast：%s — %s", toast.title, toast.body)
             holder["ui"].toast(toast.title, toast.body, toast.blocking)
+            # 只有真正弹出过 Toast 才记为"已弹过"，离线/免打扰时的日报留给下次重连补弹
+            if event.get("kind") == KIND_DAILY_DIGEST:
+                digest_memory.mark(str(event.get("ref_id") or ""))
 
     def toggle_toast(enabled: bool) -> None:
         policy.enabled = enabled
@@ -227,11 +234,21 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     attention_bridge.received.connect(on_attention_main)
 
+    def digest_on_connected(api) -> None:
+        # 启动/重连时补弹：生成日报时若桌面端不在线，这里补一次（没弹过才弹）
+        if not policy.enabled:
+            return
+        ev = pending_digest_event(api.digest_daily(), digest_memory)
+        if ev is not None:
+            log.info("补弹日报：%s", ev["ref_id"])
+            attention_bridge.received.emit(ev)
+
     controller = DesktopController(
         model, api_factory,
         offline_crashes=lambda: count_unacked_crash_alerts(project_root),
         on_change=lambda: holder["ui"].notify_changed(),
         on_attention=attention_bridge.received.emit,
+        on_connected=digest_on_connected,
         start_daemon=start_daemon,
         auto_start_daemon=args.auto_start_daemon or cfg.auto_start_daemon,
         poll_interval=cfg.poll_interval_seconds,
@@ -407,6 +424,23 @@ def main(argv: Optional[list[str]] = None) -> int:
         workboard_win["w"].raise_()
         workboard_win["w"].activateWindow()
 
+    digest_win = {"w": None}
+
+    def digest_fetch(day=None):
+        api = api_factory()
+        try:
+            return api.digest_daily(day)
+        finally:
+            api.close()
+
+    def open_digest() -> None:
+        if digest_win["w"] is None:
+            digest_win["w"] = DigestWindow(digest_fetch)
+        digest_win["w"].load(None)
+        digest_win["w"].show()
+        digest_win["w"].raise_()
+        digest_win["w"].activateWindow()
+
     def open_settings() -> None:
         dlg = SettingsDialog(cfg.hotkey_enabled, cfg.hotkey, save_hotkey)
         dlg.exec()
@@ -427,6 +461,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         on_open_settings=open_settings,
         on_open_health=open_health,
         on_open_workboard=open_workboard,
+        on_open_digest=open_digest,
         on_toggle_context=toggle_context,
         context_checked=cfg.context_awareness_enabled,
         toast_checked=cfg.toast_enabled,

@@ -5,7 +5,8 @@ Toast 范围（收窄，遵循\"主动性晚于可靠性\"）：
   - 用户自己发起的任务完成 / 失败（cron、autonomous 触发的一律静默；
     快速面板自己的 session 也静默——面板里已经直接显示结果）
   - daemon 异常退出（由控制器在离线时检测未确认崩溃告警的增长）
-  - 汇报（report）、autonomous tick、digest、巩固循环一律静默
+  - 每日融合日报生成（daily_digest）→ 非阻塞弹窗，按日期去重
+  - 汇报（report）、autonomous tick、巩固循环一律静默
 
 免打扰：quiet_hours（如 "23:00-08:00"）时段内，非阻塞类 Toast 被抑制；
 阻塞类（有任务在等你回答）不受免打扰影响——没有答案，任务就停在那里。
@@ -30,6 +31,7 @@ KIND_CRON_QUESTION = "cron_question"
 KIND_TURN_DONE = "turn_done"
 KIND_TURN_FAILED = "turn_failed"
 KIND_DAEMON_CRASH = "daemon_crash"
+KIND_DAILY_DIGEST = "daily_digest"
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -148,6 +150,10 @@ class ToastPolicy:
         elif kind == KIND_DAEMON_CRASH:
             head, body = "daemon 异常退出", title
             blocking = True
+        elif kind == KIND_DAILY_DIGEST:
+            # 日报生成是用户期望看到的提醒：非阻塞，遵守免打扰，按日期去重
+            head, body = "今日日报已生成", title
+            blocking = False
         else:
             return REASON_SILENT_KIND     # report 等一律静默
 
